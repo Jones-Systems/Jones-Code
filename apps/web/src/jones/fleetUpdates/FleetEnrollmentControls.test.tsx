@@ -1,4 +1,5 @@
-import { act, cloneElement, type ComponentProps, type ReactElement, type ReactNode } from "react";
+import { act } from "../testing/nodeRenderer";
+import { cloneElement, type ComponentProps, type ReactElement, type ReactNode } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { EnvironmentId } from "@t3tools/contracts";
@@ -57,11 +58,10 @@ beforeEach(() => {
   h.host.mockReset().mockResolvedValue(status);
   h.refresh.mockReset().mockImplementation(async () => h.state);
   h.bridge.mockReset().mockImplementation(async () => h.state);
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("window", { desktopBridge: { fleetUpdates: h.bridge } });
 });
-afterEach(() => {
-  act(() => tree?.unmount());
+afterEach(async () => {
+  await act(() => tree?.unmount());
   tree = undefined;
   vi.unstubAllGlobals();
 });

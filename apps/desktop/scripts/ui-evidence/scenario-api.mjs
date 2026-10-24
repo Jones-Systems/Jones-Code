@@ -175,7 +175,10 @@ export async function requestLocalBackend(
   const { ticket } = await response.json();
   if (typeof ticket !== "string" || !ticket)
     throw new Error("WebSocket authorization missing ticket");
-  const url = new URL("/ws", endpoint.wsBaseUrl);
+  const url = new URL(endpoint.wsBaseUrl);
+  if (url.pathname === "" || url.pathname === "/") {
+    url.pathname = "/ws";
+  }
   url.searchParams.set("wsTicket", ticket);
   url.searchParams.set("orchestrationProtocol", "2");
   return new Promise((resolve, reject) => {
@@ -238,6 +241,7 @@ export function createScenarioContext({
   theme,
   configuration = {},
   restoreConnectivity,
+  restartApplication,
 }) {
   const state = { steps: [], captures: [], assertions: [], fixture: {}, logs: [], topology: null };
   async function topology() {
@@ -258,8 +262,12 @@ export function createScenarioContext({
   }
 
   const ctx = {
-    electronApp,
-    page,
+    get electronApp() {
+      return electronApp;
+    },
+    get page() {
+      return page;
+    },
     workspace,
     artifacts,
     size,
@@ -345,6 +353,19 @@ export function createScenarioContext({
       return request("dispatch", command);
     },
     readSnapshot: () => request("snapshot"),
+    async restart() {
+      if (!restartApplication) throw new Error("Application restart is unavailable");
+      const replacement = await restartApplication();
+      electronApp = replacement.electronApp;
+      page = replacement.page;
+      restoreConnectivity = replacement.restoreConnectivity;
+      state.topology = null;
+      (state.restarts ??= []).push(replacement.evidence);
+      await ctx.topology();
+      await ctx.setWindowSize(size.width, size.height);
+      await ctx.setTheme(ctx.theme);
+      return replacement.evidence;
+    },
     readFixtureThread: (threadId) => request("fixtureThread", { threadId }),
     registerSyntheticProvider: (instanceId) => request("registerSyntheticProvider", { instanceId }),
     async reload() {

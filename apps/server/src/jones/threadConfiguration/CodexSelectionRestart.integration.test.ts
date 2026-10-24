@@ -2,6 +2,9 @@ import { assert, it } from "@effect/vitest";
 import { CommandId, MessageId, ThreadId, ProjectId, ProviderInstanceId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
+import * as Stream from "effect/Stream";
+import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts";
+import * as Sink from "../../orchestration-v2/EventSink.ts";
 import * as Deferred from "effect/Deferred";
 import * as FileSystem from "effect/FileSystem";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -22,24 +25,21 @@ it.live(
     Effect.scoped(
       Effect.gen(function* () {
         const cwd = yield* checkpointWorkspace("codex-selection-restart");
-        const read = (name: string) =>
-          Effect.gen(function* () {
-            const fs = yield* FileSystem.FileSystem;
-            return JSON.parse(
-              JSON.stringify(
-                yield* decodeProviderReplayNdjson(
-                  yield* fs.readFileString(
-                    new URL(
-                      "../../orchestration-v2/testkit/fixtures/" +
-                        name +
-                        "/codex_transcript.ndjson",
-                      import.meta.url,
-                    ).pathname,
-                  ),
+        const read = Effect.fn("CodexSelectionRestartTest.read")(function* (name: string) {
+          const fs = yield* FileSystem.FileSystem;
+          return JSON.parse(
+            JSON.stringify(
+              yield* decodeProviderReplayNdjson(
+                yield* fs.readFileString(
+                  new URL(
+                    "../../orchestration-v2/testkit/fixtures/" + name + "/codex_transcript.ndjson",
+                    import.meta.url,
+                  ).pathname,
                 ),
               ),
-            );
-          }).pipe(Effect.provide(NodeServices.layer));
+            ),
+          );
+        }, Effect.provide(NodeServices.layer));
         const raw = yield* read("turn_interrupt");
         const queued = yield* read("queued_turn");
         const initial = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-luna" };
@@ -76,6 +76,7 @@ it.live(
           entry.frame.params.model = model;
           entry.frame.params.sandboxPolicy = { type: "dangerFullAccess" };
         }
+        secondEntries[0].frame.params.effort = "medium";
         raw.entries = raw.entries.filter(
           (entry: { type: string }) => entry.type !== "runtime_exit",
         );
@@ -118,6 +119,119 @@ it.live(
         yield* Effect.gen(function* () {
           const orchestrator = yield* Orchestrator.OrchestratorV2;
           const worker = yield* Worker.OrchestrationEffectWorkerV2;
+          const failMilestone = Effect.fn("CodexSelectionRestartTest.failMilestone")(function* (
+            milestone: string,
+            message: string,
+          ) {
+            const state = yield* Ref.get(replay.state);
+            const projection = yield* orchestrator.getThreadProjection(threadId);
+            const next = transcript.entries[state.cursor];
+            const frame = next && "frame" in next ? next.frame : undefined;
+            const scalar = (value: unknown) =>
+              typeof value === "string"
+                ? value.slice(0, 160)
+                : typeof value === "number"
+                  ? value
+                  : null;
+            const record = (value: unknown): Record<string, unknown> =>
+              typeof value === "object" && value !== null && !Array.isArray(value)
+                ? (value as Record<string, unknown>)
+                : {};
+            const field = (value: unknown, key: string) => {
+              const object = record(value);
+              return {
+                present: Object.hasOwn(object, key),
+                defined: object[key] !== undefined,
+                type: object[key] === null ? "null" : typeof object[key],
+                value: scalar(object[key]),
+              };
+            };
+            const protocolFrame = (value: unknown) => {
+              const object = record(value);
+              const params = record(object.params);
+              const collaboration = record(params.collaborationMode);
+              const settings = record(collaboration.settings);
+              const keys = Object.keys(params).sort();
+              return {
+                id: field(object, "id"),
+                method: field(object, "method"),
+                params: {
+                  keys: keys.slice(0, 32).map((key) => key.slice(0, 160)),
+                  keysTruncated: keys.length > 32,
+                  model: field(params, "model"),
+                  effort: field(params, "effort"),
+                  serviceTier: field(params, "serviceTier"),
+                  threadId: field(params, "threadId"),
+                  approvalPolicy: field(params, "approvalPolicy"),
+                  approvalsReviewer: field(params, "approvalsReviewer"),
+                  sandboxPolicy: { type: field(params.sandboxPolicy, "type") },
+                  summary: field(params, "summary"),
+                  collaborationMode: {
+                    mode: field(collaboration, "mode"),
+                    settings: {
+                      model: field(settings, "model"),
+                      reasoning_effort: field(settings, "reasoning_effort"),
+                    },
+                  },
+                },
+              };
+            };
+            // Frame-mismatch messages embed full requests; expose only allowlisted protocol fields.
+            const failureMessage =
+              state.failure?._tag === "CodexAppServerReplayFrameMismatchError"
+                ? "Outbound Codex app-server frame did not match the replay entry."
+                : state.failure?.message;
+            return yield* Effect.die(
+              JSON.stringify({
+                milestone,
+                failure: {
+                  tag: state.failure?._tag ?? "MilestoneNotReached",
+                  message: (failureMessage ?? message).slice(0, 256),
+                },
+                mismatch:
+                  state.failure?._tag === "CodexAppServerReplayFrameMismatchError"
+                    ? {
+                        expected: protocolFrame(state.failure.expected),
+                        actual: protocolFrame(state.failure.actual),
+                      }
+                    : null,
+                cursor: state.cursor,
+                next: next
+                  ? {
+                      type: next.type,
+                      label: "label" in next ? scalar(next.label) : null,
+                      method:
+                        typeof frame === "object" && frame !== null && "method" in frame
+                          ? scalar(frame.method)
+                          : null,
+                      id:
+                        typeof frame === "object" && frame !== null && "id" in frame
+                          ? scalar(frame.id)
+                          : null,
+                    }
+                  : null,
+                runs: projection.runs.slice(0, 8).map((run) => ({
+                  id: scalar(run.id),
+                  status: run.status,
+                })),
+                attempts: projection.attempts.slice(0, 8).map((attempt) => ({
+                  id: scalar(attempt.id),
+                  runId: scalar(attempt.runId),
+                  providerTurnId: scalar(attempt.providerTurnId),
+                  status: attempt.status,
+                })),
+                providerTurns: projection.providerTurns.slice(0, 8).map((turn) => ({
+                  id: scalar(turn.id),
+                  runAttemptId: scalar(turn.runAttemptId),
+                  status: turn.status,
+                })),
+                checkpoints: projection.checkpoints.slice(0, 8).map((checkpoint) => ({
+                  runId: scalar(checkpoint.runId),
+                  status: checkpoint.status,
+                })),
+              }),
+            );
+          });
           yield* orchestrator.dispatch({
             type: "thread.create",
             commandId: CommandId.make("restart:create"),
@@ -146,20 +260,45 @@ it.live(
           yield* Deferred.await(reached).pipe(
             Effect.timeout("8 seconds"),
             Effect.catch(() =>
-              Effect.gen(function* () {
-                const state = yield* Ref.get(replay.state);
-                return yield* Effect.die(state.failure ?? "Codex running barrier not reached");
-              }),
+              failMilestone("account-barrier", "Codex running barrier not reached"),
             ),
           );
-          const before = yield* Effect.gen(function* () {
-            while (true) {
-              const projection = yield* orchestrator.getThreadProjection(threadId);
-              if (projection.providerTurns.some((turn) => turn.status === "running"))
-                return projection;
-              yield* Effect.sleep("10 millis");
-            }
-          }).pipe(Effect.timeout("5 seconds"));
+          const sink = yield* Sink.EventSinkV2;
+          const awaitProjection = Effect.fn("CodexSelectionRestartTest.awaitProjection")(function* (
+            milestone: "running" | "final",
+            ready: (projection: OrchestrationV2ThreadProjection) => boolean,
+          ) {
+            const readProjection = Effect.gen(function* () {
+              if (milestone === "final") {
+                const state = yield* Ref.get(replay.state);
+                if (state.failure) return yield* failMilestone(milestone, "Codex replay failed");
+              }
+              return yield* orchestrator.getThreadProjection(threadId);
+            });
+            const afterSequence = yield* sink.latestSequence();
+            const current = yield* readProjection;
+            if (ready(current)) return current;
+            const [projection] = yield* sink.stream({ threadId, afterSequence }).pipe(
+              Stream.mapEffect(() => readProjection),
+              Stream.filter(ready),
+              Stream.take(1),
+              Stream.runCollect,
+            );
+            if (projection === undefined)
+              return yield* failMilestone(
+                milestone,
+                "Codex projection stream ended before its milestone",
+              );
+            return projection;
+          });
+          const before = yield* awaitProjection("running", (projection) =>
+            projection.providerTurns.some((turn) => turn.status === "running"),
+          ).pipe(
+            Effect.timeout("5 seconds"),
+            Effect.catchTags({
+              TimeoutError: () => failMilestone("running", "Running projection deadline exceeded"),
+            }),
+          );
           const oldAttempt = before.attempts[0]!;
           const oldTurn = before.providerTurns.find((turn) => turn.runAttemptId === oldAttempt.id)!;
           assert.isNull(oldAttempt.providerTurnId);
@@ -196,34 +335,20 @@ it.live(
           yield* worker.drain().pipe(
             Effect.timeout("8 seconds"),
             Effect.catch(() =>
-              Effect.gen(function* () {
-                const state = yield* Ref.get(replay.state);
-                const projection = yield* orchestrator.getThreadProjection(threadId);
-                return yield* Effect.die(
-                  state.failure ??
-                    JSON.stringify({
-                      cursor: state.cursor,
-                      next: transcript.entries[state.cursor],
-                      attempts: projection.attempts,
-                      turns: projection.providerTurns,
-                    }),
-                );
-              }),
+              failMilestone("worker-drain", "Codex worker drain deadline exceeded"),
             ),
           );
-          const final = yield* Effect.gen(function* () {
-            while (true) {
-              const projection = yield* orchestrator.getThreadProjection(threadId);
-              if (
-                projection.runs[0]?.status === "completed" &&
-                projection.checkpoints.some((checkpoint) => checkpoint.status === "ready")
-              )
-                return projection;
-              const state = yield* Ref.get(replay.state);
-              if (state.failure) return yield* Effect.die(state.failure);
-              yield* Effect.sleep("10 millis");
-            }
-          }).pipe(Effect.timeout("8 seconds"));
+          const final = yield* awaitProjection(
+            "final",
+            (projection) =>
+              projection.runs[0]?.status === "completed" &&
+              projection.checkpoints.some((checkpoint) => checkpoint.status === "ready"),
+          ).pipe(
+            Effect.timeout("8 seconds"),
+            Effect.catchTags({
+              TimeoutError: () => failMilestone("final", "Final projection deadline exceeded"),
+            }),
+          );
           const state = yield* Ref.get(replay.state);
           assert.isNull(state.failure, state.failure?.message);
           assert.equal(replacementObserved, 1);
@@ -248,5 +373,4 @@ it.live(
         );
       }),
     ),
-  30_000,
 );

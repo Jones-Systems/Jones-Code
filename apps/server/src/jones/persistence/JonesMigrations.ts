@@ -76,12 +76,11 @@ export const jonesMigrationEntries = [
   [121, "RemoteTaskObservations", JonesMigration0121],
 ] as const;
 
-export const runMigrations = () =>
-  Effect.gen(function* () {
-    const jonesMigrations = yield* runJonesMigrations(jonesMigrationEntries);
-    if (jonesMigrations.length > 0) {
-      yield* Effect.log("Jones migrations ran successfully").pipe(
-        Effect.annotateLogs({ migrations: jonesMigrations.map(([id, name]) => `${id}_${name}`) }),
-      );
-    }
-  });
+export const runMigrations = Effect.fn("JonesMigrations.runMigrations")(function* () {
+  const jonesMigrations = yield* runJonesMigrations(jonesMigrationEntries);
+  if (jonesMigrations.length > 0) {
+    yield* Effect.log("Jones migrations ran successfully").pipe(
+      Effect.annotateLogs({ migrations: jonesMigrations.map(([id, name]) => `${id}_${name}`) }),
+    );
+  }
+});

@@ -8,12 +8,13 @@ type Options = { install: boolean; warm: boolean; reserve: bigint; peak: bigint 
 type Runner = (
   command: string,
   args: string[],
-  options: NodeChildProcess.SpawnSyncOptions,
-) => number | null;
+  options: NodeChildProcess.SpawnOptions,
+) => number | null | Promise<number | null>;
 type Dependencies = {
   available: (destination: string) => bigint;
   run: Runner;
   report: (message: string) => void;
+  afterInstall?: () => void;
 };
 
 export function parseOptions(args: string[]): Options {
@@ -79,18 +80,12 @@ function linkEnvironment(projectRoot: string, worktree: string, report: Dependen
   }
 }
 
-const defaultDependencies: Dependencies = {
-  available: availableBytes,
-  run: (command, args, options) => NodeChildProcess.spawnSync(command, args, options).status,
-  report: (message) => process.stderr.write(`${message}\n`),
-};
-
-export function setupWorktree(
+export async function setupWorktree(
   args: string[],
   projectRoot: string | undefined,
   worktree: string,
-  dependencies: Dependencies = defaultDependencies,
-): number {
+  dependencies: Dependencies,
+): Promise<number> {
   const options = parseOptions(args);
   if (!projectRoot) {
     throw new Error("T3CODE_PROJECT_ROOT is not set. Run this through the t3.json setup action.");
@@ -121,26 +116,160 @@ export function setupWorktree(
     // through vp and leave stdin closed so other prompts fail instead of hanging.
     // Install exactly the locked dependencies so setup never rewrites the lockfile.
     // A stale lockfile must fail setup rather than silently resolving a new one.
-    const status = dependencies.run("vp i --frozen-lockfile -- --yes", [], {
+    const status = await dependencies.run("vp i --frozen-lockfile -- --yes", [], {
       cwd: worktree,
       shell: true,
-      stdio: ["ignore", "inherit", "inherit"],
+      stdio: ["ignore", "pipe", "pipe"],
     });
     if (status !== 0) return status ?? 1;
+    dependencies.afterInstall?.();
   }
   linkEnvironment(projectRoot, worktree, dependencies.report);
   if (options.warm) {
     admit("Cache warm");
     return (
-      dependencies.run(
+      (await dependencies.run(
         process.execPath,
         [NodePath.join(worktree, "apps", "web", "scripts", "warm-dep-cache.ts")],
         {
           cwd: worktree,
-          stdio: "inherit",
+          stdio: ["ignore", "pipe", "pipe"],
         },
-      ) ?? 1
+      )) ?? 1
     );
   }
   return 0;
+}
+
+function reportStoreFilesystem(worktree: string, report: Dependencies["report"]) {
+  // pnpm cannot clone or hardlink across filesystems, so a store on another
+  // device silently turns every worktree install into a full copy.
+  const storeDir: unknown = JSON.parse(
+    NodeFS.readFileSync(NodePath.join(worktree, "node_modules", ".modules.yaml"), "utf8"),
+  ).storeDir;
+  if (
+    typeof storeDir === "string" &&
+    NodeFS.statSync(storeDir).dev !== NodeFS.statSync(NodePath.join(worktree, "node_modules")).dev
+  ) {
+    report(
+      [
+        "",
+        "WARNING: the pnpm store is on a different filesystem than this worktree.",
+        `  store:    ${storeDir}`,
+        `  worktree: ${worktree}`,
+        "pnpm cannot hardlink or clone across filesystems, so it copied every package into node_modules.",
+        "Fix: put the store on the worktree's filesystem, for example:",
+        `  pnpm config set store-dir ${JSON.stringify(NodePath.join(NodePath.dirname(worktree), ".pnpm-store"))} --global`,
+        "",
+      ].join("\n"),
+    );
+  }
+}
+
+type LifecycleDependencies = {
+  available: Dependencies["available"];
+  spawn: typeof NodeChildProcess.spawn;
+  report: Dependencies["report"];
+  stdout: Pick<NodeJS.WriteStream, "write">;
+  stderr: Pick<NodeJS.WriteStream, "write">;
+};
+
+export async function runSetupWorktree(
+  args: string[],
+  projectRoot: string | undefined,
+  worktree: string,
+  dependencies: LifecycleDependencies = {
+    available: availableBytes,
+    spawn: NodeChildProcess.spawn,
+    report: (message) => process.stderr.write(`${message}\n`),
+    stdout: process.stdout,
+    stderr: process.stderr,
+  },
+): Promise<number> {
+  // T3 runs setup in the background, so agents can start before it ends.
+  // `setup-running` holds this PID until setup ends with `setup-done` or
+  // `setup-failed`, so agents wait instead of racing it with their own `vp i`.
+  const markerDir = NodePath.join(worktree, ".t3");
+  const runningMarker = NodePath.join(markerDir, "setup-running");
+  const doneMarker = NodePath.join(markerDir, "setup-done");
+  const failedMarker = NodePath.join(markerDir, "setup-failed");
+  NodeFS.rmSync(doneMarker, { force: true });
+  NodeFS.rmSync(failedMarker, { force: true });
+  NodeFS.mkdirSync(markerDir, { recursive: true });
+  NodeFS.writeFileSync(runningMarker, `${process.pid}\n`);
+  let failureDetail = "";
+  const recordException = (error: Error) => {
+    failureDetail = error.stack ?? String(error);
+  };
+  const finish = (code: number) => {
+    if (code === 0) NodeFS.writeFileSync(doneMarker, "");
+    else NodeFS.writeFileSync(failedMarker, `Setup exited with code ${code}.\n${failureDetail}\n`);
+    NodeFS.rmSync(runningMarker, { force: true });
+  };
+  process.on("uncaughtExceptionMonitor", recordException);
+  process.on("exit", finish);
+  // A cancelled setup must still leave a marker, or agents would wait forever.
+  // Forward cancellation to the active producer and wait for output closure.
+  // A child left by the shell can hold output open after the shell exits, so
+  // no completion marker appears while that child can still write outputs.
+  let cancelSignal: NodeJS.Signals | undefined;
+  let activeProducer: NodeChildProcess.ChildProcess | undefined;
+  const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+  const cancel = (signal: NodeJS.Signals) => {
+    cancelSignal = signal;
+    failureDetail = `Cancelled by ${signal}.`;
+    if (activeProducer) activeProducer.kill(signal);
+    else process.exit(1);
+  };
+  const handlers = signals.map((signal) => () => cancel(signal));
+  signals.forEach((signal, index) => process.on(signal, handlers[index]!));
+  let status = 1;
+  try {
+    status = await setupWorktree(args, projectRoot, worktree, {
+      available: dependencies.available,
+      report: dependencies.report,
+      afterInstall: () => reportStoreFilesystem(worktree, dependencies.report),
+      run: async (command, commandArgs, options) => {
+        const child = dependencies.spawn(command, commandArgs, options);
+        activeProducer = child;
+        let output = "";
+        let spawnError: Error | undefined;
+        child.on("error", (error) => {
+          spawnError = error;
+        });
+        // Piped output keeps a bounded failure tail and makes `close`, rather
+        // than the shell's `exit`, the completion boundary.
+        for (const [source, target] of [
+          [child.stdout, dependencies.stdout],
+          [child.stderr, dependencies.stderr],
+        ] as const) {
+          source?.setEncoding("utf8");
+          source?.on("data", (chunk: string) => {
+            target.write(chunk);
+            output = (output + chunk).slice(-8_000);
+          });
+        }
+        const code = await new Promise<number | null>((resolve) => child.once("close", resolve));
+        activeProducer = undefined;
+        if (code !== 0 || cancelSignal || spawnError) {
+          failureDetail = cancelSignal
+            ? `Cancelled by ${cancelSignal}.`
+            : spawnError
+              ? (spawnError.stack ?? String(spawnError))
+              : output.trimEnd().split("\n").slice(-30).join("\n");
+          return code || 1;
+        }
+        return 0;
+      },
+    });
+    return status;
+  } catch (error) {
+    failureDetail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    throw error;
+  } finally {
+    finish(status);
+    process.removeListener("uncaughtExceptionMonitor", recordException);
+    process.removeListener("exit", finish);
+    signals.forEach((signal, index) => process.removeListener(signal, handlers[index]!));
+  }
 }

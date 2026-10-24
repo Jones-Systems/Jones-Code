@@ -5,7 +5,9 @@ import {
   type ComposerContextKind,
   type ComposerContextRecord,
   type ElementContextDetails,
+  type EnvironmentId,
   type KnownComposerContextRecord,
+  type ThreadContextRecord,
 } from "@t3tools/contracts";
 
 const CONTEXT_PROTOCOL = "t3-context:";
@@ -149,7 +151,7 @@ function kindDisplayName(kind: ComposerContextKind): string {
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
-export function formatComposerContextProviderMarker(
+function formatComposerContextProviderMarker(
   kind: ComposerContextKind,
   label: string,
   contextId: ComposerContextId,
@@ -339,6 +341,24 @@ export function projectComposerContextForProvider(input: {
     entries[index] = entry.slice(0, -close.length) + projected + close;
   }
   return envelope(entries);
+}
+
+// Thread reads are environment-local even when a draft moves between machines.
+export function threadContextsOutsideEnvironment(input: {
+  text: string;
+  records: ReadonlyArray<ComposerContextRecord>;
+  environmentId: EnvironmentId;
+}): ThreadContextRecord[] {
+  const referenced = new Set(
+    collectComposerContextReferences(input.text).map((occurrence) => occurrence.contextId),
+  );
+  return input.records.filter(
+    (record): record is ThreadContextRecord =>
+      record.kind === "thread" &&
+      "threadId" in record &&
+      referenced.has(record.contextId) &&
+      record.environmentId !== input.environmentId,
+  );
 }
 
 export function remapComposerContextAttachments(

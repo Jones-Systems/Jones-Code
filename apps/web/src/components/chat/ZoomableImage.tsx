@@ -3,8 +3,22 @@ import { Input } from "../ui/input";
 import { observeResize } from "~/lib/observeResize";
 import { useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type Ref } from "react";
 
+import {
+  onWindowControlsOverlayGeometryChange,
+  windowControlsOverlayHeight,
+} from "../../lib/windowControlsOverlay";
+
+import { AttachmentImage } from "../media/AttachmentImage";
+
 const MIN_ZOOM = 0.6;
 const MAX_ZOOM = 8;
+
+// The viewer lays out below the native caption strip so its controls never share a row with
+// the window buttons. ExpandedImageDialog and the media dialog viewport mirror this in CSS
+// through --native-titlebar-height.
+function readViewerSize() {
+  return { width: window.innerWidth, height: window.innerHeight - windowControlsOverlayHeight() };
+}
 
 export interface ZoomableImageHandle {
   pan: (key: string) => boolean;
@@ -13,12 +27,14 @@ export interface ZoomableImageHandle {
 export function ZoomableImage({
   src,
   name,
+  mimeType,
   onError,
   ref,
   layout = "dialog",
 }: {
   src: string;
   name: string;
+  mimeType?: string | undefined;
   onError: () => void;
   ref?: Ref<ZoomableImageHandle>;
   layout?: "dialog" | "panel";
@@ -26,10 +42,7 @@ export function ZoomableImage({
   const sizingRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const [naturalSize, setNaturalSize] = useState({ width: 0, height: 0 });
-  const [windowSize, setWindowSize] = useState(() => ({
-    width: window.innerWidth,
-    height: window.innerHeight,
-  }));
+  const [viewerSize, setViewerSize] = useState(readViewerSize);
   const [panelSize, setPanelSize] = useState({ width: 0, height: 0 });
   const [zoom, setZoom] = useState(1);
   const [percentInput, setPercentInput] = useState("100");
@@ -44,14 +57,14 @@ export function ZoomableImage({
   } | null>(null);
   const suppressClickRef = useRef(false);
   const [dragging, setDragging] = useState(false);
-  const maxHeight = Math.max(1, Math.min(windowSize.height * 0.86, windowSize.height - 160));
+  const maxHeight = Math.max(1, Math.min(viewerSize.height * 0.86, viewerSize.height - 160));
   const fit = Math.max(
     0,
     Math.min(
       1,
       (layout === "panel"
         ? panelSize.width
-        : windowSize.width * 0.92 - (windowSize.width >= 640 ? 96 : 0)) / (naturalSize.width || 1),
+        : viewerSize.width * 0.92 - (viewerSize.width >= 640 ? 96 : 0)) / (naturalSize.width || 1),
       (layout === "panel" ? panelSize.height : maxHeight) / (naturalSize.height || 1),
     ),
   );
@@ -123,11 +136,16 @@ export function ZoomableImage({
 
   useEffect(() => {
     const resize = () => {
-      setWindowSize({ width: window.innerWidth, height: window.innerHeight });
+      setViewerSize(readViewerSize());
       changeZoom(1);
     };
     window.addEventListener("resize", resize);
-    return () => window.removeEventListener("resize", resize);
+    // The caption strip can come and go around fullscreen without a matching resize event.
+    const stopOverlayListener = onWindowControlsOverlayGeometryChange(resize);
+    return () => {
+      window.removeEventListener("resize", resize);
+      stopOverlayListener();
+    };
   }, [changeZoom]);
 
   useLayoutEffect(() => {
@@ -327,7 +345,9 @@ export function ZoomableImage({
           }}
         >
           <div style={layout === "panel" ? { minHeight: "100%", display: "flex" } : undefined}>
-            <img
+            <AttachmentImage
+              name={name}
+              mimeType={mimeType}
               src={src}
               alt={name}
               draggable={false}

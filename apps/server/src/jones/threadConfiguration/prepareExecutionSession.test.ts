@@ -115,24 +115,27 @@ function makeFixture(
             }),
         }),
         Layer.mock(Sessions.ProviderSessionManagerV2)({
-          detach: ({ providerSessionId, threadId }) =>
-            Effect.gen(function* () {
-              assert.equal(threadId, projection.thread.id);
-              assert.equal(providerSessionId, projection.providerSessions[0]!.id);
-              order.push("detach");
-              if (fault === "detach")
-                return yield* new Sessions.ProviderSessionCloseError({ providerSessionId });
-            }),
+          detach: Effect.fn("PrepareExecutionSessionTest.detach")(function* ({
+            providerSessionId,
+            threadId,
+          }) {
+            assert.equal(threadId, projection.thread.id);
+            assert.equal(providerSessionId, projection.providerSessions[0]!.id);
+            order.push("detach");
+            if (fault === "detach")
+              return yield* new Sessions.ProviderSessionCloseError({ providerSessionId });
+          }),
         }),
         Layer.mock(Sink.EventSinkV2)({
-          writeIfRunCurrent: (input) =>
-            Effect.gen(function* () {
+          writeIfRunCurrent: Effect.fn("PrepareExecutionSessionTest.writeIfRunCurrent")(
+            function* (input) {
               order.push("persist");
               writes.push(input);
               if (fault === "persist")
                 return yield* new Sink.EventSinkWriteError({ eventCount: input.events.length });
               return { committed: fault !== "stale", storedEvents: [] };
-            }),
+            },
+          ),
         }),
       ),
     ),
