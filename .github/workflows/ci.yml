@@ -863,9 +863,10 @@ jobs:
 
           detect() {
             local output="$1" description="$2" pattern="$3"
-            if grep -qE "$pattern" <<< "$paths"; then
+            local selected_paths="${4-$paths}"
+            if grep -qE "$pattern" <<< "$selected_paths"; then
               echo "Changed ${description}:"
-              grep -E "$pattern" <<< "$paths"
+              grep -E "$pattern" <<< "$selected_paths"
               echo "${output}=true" >> "$GITHUB_OUTPUT"
             else
               echo "No ${description} changed."
@@ -875,9 +876,12 @@ jobs:
 
           # Sources scripts/mobile-native-static-check.ts lints, plus the tool
           # and rule configuration that decides how it lints them, plus the
-          # root package.json that defines the lint:mobile command.
+          # root package.json that defines the lint:mobile command. SwiftLint's
+          # included roots omit e2e Swift; those files have their own native
+          # qualification. Keep Kotlin E2E inputs: detekt receives them directly.
           detect mobile "mobile native sources or lint configuration" \
-            '^apps/mobile/.*\.(swift|kt|kts)$|^apps/mobile/(\.swiftlint\.yml|detekt\.yml|\.editorconfig|Brewfile)$|^scripts/mobile-native-static-check\.ts$|^package\.json$|^\.github/workflows/ci\.yml$'
+            '^apps/mobile/.*\.(swift|kt|kts)$|^apps/mobile/(\.swiftlint\.yml|detekt\.yml|\.editorconfig|Brewfile)$|^scripts/mobile-native-static-check\.ts$|^package\.json$|^\.github/workflows/ci\.yml$' \
+            "$(printf '%s\n' "$paths" | grep -vE '^apps/mobile/e2e/.*\.swift$' || true)"
 
           # The modules the native enrollment qualification names, plus the
           # dependency manifests and root test configuration that decide how
