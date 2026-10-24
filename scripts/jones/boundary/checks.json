@@ -2780,6 +2780,17 @@
         "knip --workspace apps/server --exports --preprocessor ./scripts/knip-schemas.ts --no-config-hints",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-ci-change-selection",
+      "tests": [
+        "scripts/jones/ci/selection.node-test.cjs",
+        "scripts/jones/ci/check-results.node-test.cjs"
+      ],
+      "commands": [
+        "node --test --test-concurrency=1 scripts/jones/ci/selection.node-test.cjs scripts/jones/ci/check-results.node-test.cjs",
+        "node scripts/jones/check-boundary.ts --strict --json"
+      ]
     }
   ]
 }
