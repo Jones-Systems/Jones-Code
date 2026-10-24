@@ -1828,7 +1828,10 @@
     "scripts/jones/boundary/fragments/native-electron-workflows.json": "jones-owned",
     "scripts/jones/e2e/acp-stub/agent.mjs": "jones-owned",
     "scripts/jones/e2e/acp-stub/agent.node-test.mjs": "jones-owned",
-    "apps/desktop/scripts/ui-evidence/support/pin-oracle.mjs": "jones-owned"
+    "apps/desktop/scripts/ui-evidence/support/pin-oracle.mjs": "jones-owned",
+    "packages/contracts/src/jones/threadActivitySettings.ts": "jones-owned",
+    "packages/contracts/src/jones/threadActivitySettings.test.ts": "jones-owned",
+    "apps/web/src/jones/threadStatusFilter/ThreadActivitySettings.tsx": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

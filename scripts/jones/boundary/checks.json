@@ -258,12 +258,16 @@
         "apps/web/src/jones/threadStatusFilter/useThreadStatusFilter.browser.test.tsx",
         "apps/web/src/jones/sidebarHeader/SidebarHeader.browser.test.tsx",
         "apps/web/src/components/Sidebar.logic.test.ts",
-        "apps/web/src/jones/environmentFilters/environmentFilters.test.ts"
+        "apps/web/src/jones/environmentFilters/environmentFilters.test.ts",
+        "packages/contracts/src/jones/threadActivitySettings.test.ts",
+        "apps/web/src/jones/threadStatusFilter/ThreadActivitySettings.browser.test.tsx"
       ],
       "commands": [
-        "vp test run apps/web/src/components/Sidebar.statusFilter.test.tsx apps/web/src/jones/threadStatusFilter/model.test.ts apps/web/src/components/Sidebar.logic.test.ts apps/web/src/jones/environmentFilters/environmentFilters.test.ts",
-        "vp run --filter @t3tools/web test src/jones/threadStatusFilter/ThreadStatusFilterPill.browser.test.tsx src/jones/threadStatusFilter/useThreadStatusFilter.browser.test.tsx src/jones/sidebarHeader/SidebarHeader.browser.test.tsx",
-        "vp run --filter @t3tools/web typecheck"
+        "vp test run apps/web/src/components/Sidebar.statusFilter.test.tsx apps/web/src/jones/threadStatusFilter/model.test.ts apps/web/src/components/Sidebar.logic.test.ts apps/web/src/jones/environmentFilters/environmentFilters.test.ts packages/contracts/src/jones/threadActivitySettings.test.ts",
+        "vp run --filter @t3tools/web test src/jones/threadStatusFilter/ThreadStatusFilterPill.browser.test.tsx src/jones/threadStatusFilter/useThreadStatusFilter.browser.test.tsx src/jones/sidebarHeader/SidebarHeader.browser.test.tsx src/jones/threadStatusFilter/ThreadActivitySettings.browser.test.tsx",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter @t3tools/contracts typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
       ]
     },
     {
