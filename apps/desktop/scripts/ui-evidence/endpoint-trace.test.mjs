@@ -55,7 +55,7 @@ NodeTest.test(
     NodeAssert.equal(summary.pendingDiagnosticsAtTimeout.omittedCount, 0);
     const samples = summary.pendingDiagnosticsAtTimeout.samples;
     NodeAssert.deepEqual(
-      samples.map(({ ageMs, ...sample }) => sample),
+      samples.map(({ ageMs, requestClass, pathTemplate, reloadTiming, ...sample }) => sample),
       [
         {
           sequence: 0,
@@ -99,11 +99,304 @@ NodeTest.test(
         },
       ],
     );
+    NodeAssert.deepEqual(
+      samples.map(({ requestClass, pathTemplate, reloadTiming }) => ({
+        requestClass,
+        pathTemplate,
+        reloadTiming,
+      })),
+      ["/", "/", "/", "not-endpoint"].map((pathTemplate) => ({
+        requestClass: "unavailable",
+        pathTemplate,
+        reloadTiming: { state: "reload-unmarked", requestObservedRelativeToReloadStartMs: null },
+      })),
+    );
     for (const sample of samples) NodeAssert.ok(Number.isFinite(sample.ageMs) && sample.ageMs >= 0);
     NodeAssert.ok(samples[0].ageMs >= samples[3].ageMs);
     NodeAssert.deepEqual(trace.entries, []);
     NodeAssert.equal(summary.localAssetRequests, 0);
     for (const page of [closed, detached, current]) NodeAssert.deepEqual(page.eventNames(), []);
+  },
+);
+
+NodeTest.test(
+  "reload diagnostics use one clock, preserve generation binding and never release header waits",
+  async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    let now = 10;
+    let clockReads = 0;
+    const trace = new EndpointTrace("t", {
+      diagnosticNow: () => {
+        clockReads++;
+        return now;
+      },
+    });
+    t.after(() => trace.dispose());
+    const first = new NodeEvents.EventEmitter(),
+      second = new NodeEvents.EventEmitter();
+    const held = [];
+    let headerReads = 0;
+    const emit = (page, type) => {
+      const pending = pendingRequest(A);
+      held.push(pending);
+      page.emit("request", {
+        ...pending.request,
+        resourceType: () => type,
+        allHeaders: () => {
+          headerReads++;
+          return pending.headers.promise;
+        },
+      });
+    };
+    trace.attach(first);
+    emit(first, "fetch");
+    now = 20;
+    const reloadPromise = Promise.resolve("reload-return");
+    NodeAssert.equal(
+      trace.observeReload(() => {
+        emit(first, "document");
+        return reloadPromise;
+      }),
+      reloadPromise,
+    );
+    NodeAssert.equal(await reloadPromise, "reload-return");
+    now = 25;
+    emit(first, "eventsource");
+    trace.attach(second);
+    now = 100;
+    const reloadValue = {};
+    NodeAssert.equal(
+      trace.observeReload(() => {
+        now = 105;
+        emit(second, "websocket");
+        return reloadValue;
+      }),
+      reloadValue,
+    );
+    NodeAssert.equal(headerReads, 4);
+    NodeAssert.equal(trace.summary().pending, 4);
+    const drain = NodeAssert.rejects(trace.flush(), /renderer-trace-drain-timeout/);
+    t.mock.timers.tick(999);
+    NodeAssert.equal(trace.summary().incomplete, false);
+    t.mock.timers.tick(1);
+    await drain;
+    const saved = trace.summary().pendingDiagnosticsAtTimeout;
+    NodeAssert.equal(saved.currentGeneration, 1);
+    NodeAssert.deepEqual(
+      saved.samples.map(({ generation, requestClass, pathTemplate, reloadTiming, detached }) => ({
+        generation,
+        requestClass,
+        pathTemplate,
+        reloadTiming,
+        detached,
+      })),
+      [
+        [0, "fetch", -10, true],
+        [0, "document", 0, true],
+        [0, "eventsource", 5, true],
+        [1, "websocket", 5, false],
+      ].map(([generation, requestClass, delta, detached]) => ({
+        generation,
+        requestClass,
+        pathTemplate: "/",
+        reloadTiming: { state: "observed", requestObservedRelativeToReloadStartMs: delta },
+        detached,
+      })),
+    );
+    NodeAssert.equal(trace.summary().drainTimeoutMs, 1000);
+    const copy = trace.summary().pendingDiagnosticsAtTimeout;
+    copy.samples[0].reloadTiming.state = "tampered";
+    copy.samples[0].reloadTiming.requestObservedRelativeToReloadStartMs = Infinity;
+    const readsAtTimeout = clockReads;
+    const original = new Error("private-reload-error");
+    NodeAssert.throws(
+      () =>
+        trace.observeReload(() => {
+          throw original;
+        }),
+      (error) => error === original,
+    );
+    NodeAssert.equal(clockReads, readsAtTimeout);
+    let fingerprints = 0;
+    trace.fingerprint = () => {
+      fingerprints++;
+      return "invalid";
+    };
+    for (const pending of held) pending.headers.resolve({ authorization: "Bearer private-header" });
+    await new Promise((done) => setImmediate(done));
+    NodeAssert.deepEqual(trace.summary().pendingDiagnosticsAtTimeout, saved);
+    NodeAssert.equal(trace.summary().pending, 0);
+    NodeAssert.equal(trace.summary().pendingAtTimeout, 4);
+    NodeAssert.equal(fingerprints, 0);
+    NodeAssert.deepEqual(trace.entries, []);
+    NodeAssert.deepEqual(first.eventNames(), []);
+    NodeAssert.deepEqual(second.eventNames(), []);
+    await NodeAssert.rejects(trace.checkpoint(), /renderer-trace-drain-timeout/);
+  },
+);
+
+NodeTest.test(
+  "request classes and endpoint templates are allowlisted without exposing request identity",
+  async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const trace = new EndpointTrace("t");
+    t.after(() => trace.dispose());
+    const page = new NodeEvents.EventEmitter();
+    trace.attach(page);
+    const cases = [
+      [A + "/ws?wsTicket=private-ticket", "websocket", "/ws"],
+      [
+        "http://private-user:private-password@127.0.0.1:43773/api/orchestration/threads/private-id?private-query",
+        "fetch",
+        "/api/orchestration/threads/:threadId",
+      ],
+      [
+        B + "/api/orchestration/threads/private-id/commands/private-command?private-query",
+        "xhr",
+        "/api/orchestration/threads/:threadId/commands/:commandId",
+      ],
+      [
+        A + "/api/orchestration/threads/private-id/provider-goal-state",
+        "fetch",
+        "/api/orchestration/threads/:threadId/provider-goal-state",
+      ],
+      [
+        B + "/api/orchestration/threads/private-id/transcript?private-query",
+        "eventsource",
+        "/api/orchestration/threads/:threadId/transcript",
+      ],
+      [A + "/private-path?private-query", "fetch", "other"],
+      ["https://private-host/api/orchestration/shell?private-query", "document", "not-endpoint"],
+      ["blob:" + A + "/private-path", "image", "not-endpoint"],
+      ["t3code://app/private-path?private-query", "script", "not-endpoint"],
+      [A + "/ws?private-query", "private-type", "/ws", "unavailable"],
+      [A + "/oauth/token?private-query", new Error("private-error"), "/oauth/token", "unavailable"],
+      [A + "/?private-query", undefined, "/", "unavailable"],
+      [
+        A + "/api/orchestration/shell",
+        Promise.resolve("fetch"),
+        "/api/orchestration/shell",
+        "unavailable",
+      ],
+      ["file:///private-path", 7, "not-endpoint", "unavailable"],
+      [A + "/api/auth/websocket-ticket?private-query", "other", "/api/auth/websocket-ticket"],
+      [B + "/api/orchestration/dispatch?private-query", "fetch", "/api/orchestration/dispatch"],
+    ];
+    let headerReads = 0;
+    for (const [url, type] of cases) {
+      const pending = pendingRequest(url);
+      page.emit("request", {
+        ...pending.request,
+        resourceType:
+          type === undefined
+            ? undefined
+            : () => {
+                if (type instanceof Error) throw type;
+                return type;
+              },
+        allHeaders: () => {
+          headerReads++;
+          return pending.headers.promise;
+        },
+      });
+    }
+    NodeAssert.equal(trace.summary().failure, null);
+    const drain = NodeAssert.rejects(trace.flush(), /renderer-trace-drain-timeout/);
+    t.mock.timers.tick(1000);
+    await drain;
+    NodeAssert.equal(headerReads, cases.length);
+    const summary = trace.summary();
+    NodeAssert.equal(summary.pendingAtTimeout, cases.length);
+    NodeAssert.equal(summary.pendingDiagnosticsAtTimeout.omittedCount, 0);
+    NodeAssert.deepEqual(
+      summary.pendingDiagnosticsAtTimeout.samples.map(({ requestClass, pathTemplate }) => ({
+        requestClass,
+        pathTemplate,
+      })),
+      cases.map(([, type, pathTemplate, expectedClass = type]) => ({
+        requestClass: expectedClass,
+        pathTemplate,
+      })),
+    );
+    NodeAssert.equal(JSON.stringify(summary).includes("private-"), false);
+    NodeAssert.deepEqual(trace.entries, []);
+  },
+);
+
+NodeTest.test(
+  "invalid clocks, ambiguous reloads and out-of-range offsets remain unavailable",
+  async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const cases = [
+      { times: [0, NaN], state: "clock-unavailable" },
+      { times: [0, Infinity], state: "clock-unavailable" },
+      { times: [0, -1], state: "clock-unavailable" },
+      { times: [0, "private-time"], state: "clock-unavailable" },
+      { times: [0, Number.MAX_SAFE_INTEGER + 1], state: "clock-unavailable" },
+      { times: [0, new Error("private-clock-error")], state: "clock-unavailable" },
+      { times: [new Error("private-clock-error"), 1], state: "clock-unavailable" },
+      { times: [10, 9], state: "clock-unavailable" },
+      { times: [0, 1, NaN], extraRequest: true, state: "clock-unavailable" },
+      { times: [0, 3_600_001], state: "out-of-range" },
+      { times: [0, 3_600_000], state: "observed", delta: 3_600_000 },
+      { times: [0, 3_600_001], eventFirst: true, state: "out-of-range" },
+      { times: [0, 3_600_000], eventFirst: true, state: "observed", delta: -3_600_000 },
+      { times: [0, 1], repeatReload: true, state: "multiple-reloads" },
+    ];
+    for (const { times, eventFirst, extraRequest, repeatReload, state, delta = null } of cases) {
+      let index = 0;
+      const trace = new EndpointTrace("t", {
+        diagnosticNow: () => {
+          const value = times[index++];
+          if (value instanceof Error) throw value;
+          return value;
+        },
+      });
+      t.after(() => trace.dispose());
+      const page = new NodeEvents.EventEmitter();
+      trace.attach(page);
+      let headerReads = 0;
+      const emit = () =>
+        page.emit("request", {
+          url: () => A,
+          allHeaders: () => {
+            headerReads++;
+            return new Promise(() => {});
+          },
+        });
+      if (eventFirst) emit();
+      let reloadCalls = 0;
+      NodeAssert.equal(
+        trace.observeReload(() => {
+          reloadCalls++;
+          if (!eventFirst) emit();
+          return "reload-return";
+        }),
+        "reload-return",
+      );
+      if (extraRequest) emit();
+      if (repeatReload)
+        trace.observeReload(() => {
+          reloadCalls++;
+        });
+      NodeAssert.equal(reloadCalls, repeatReload ? 2 : 1);
+      NodeAssert.equal(headerReads, extraRequest ? 2 : 1);
+      NodeAssert.equal(trace.summary().failure, null);
+      const drain = NodeAssert.rejects(trace.flush(), /renderer-trace-drain-timeout/);
+      t.mock.timers.tick(1000);
+      await drain;
+      const summary = trace.summary();
+      NodeAssert.equal(summary.drainTimeoutMs, 1000);
+      NodeAssert.equal(summary.pendingAtTimeout, extraRequest ? 2 : 1);
+      for (const sample of summary.pendingDiagnosticsAtTimeout.samples)
+        NodeAssert.deepEqual(sample.reloadTiming, {
+          state,
+          requestObservedRelativeToReloadStartMs: delta,
+        });
+      NodeAssert.equal(JSON.stringify(summary).includes("private-"), false);
+      NodeAssert.deepEqual(trace.entries, []);
+      trace.dispose();
+    }
   },
 );
 

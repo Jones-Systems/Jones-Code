@@ -2,6 +2,58 @@ import * as NodeCrypto from "node:crypto";
 
 const A = "http://127.0.0.1:43773";
 const B = "http://127.0.0.1:43774";
+const REQUEST_CLASSES = new Set([
+  "document",
+  "stylesheet",
+  "image",
+  "media",
+  "font",
+  "script",
+  "texttrack",
+  "xhr",
+  "fetch",
+  "eventsource",
+  "websocket",
+  "manifest",
+  "other",
+]);
+// Only constant templates escape into diagnostics; IDs, queries and unknown paths never do.
+const PATH_TEMPLATES = [
+  [/^\/$/, "/"],
+  [/^\/ws$/, "/ws"],
+  [/^\/oauth\/token$/, "/oauth/token"],
+  [/^\/api\/auth\/websocket-ticket$/, "/api/auth/websocket-ticket"],
+  [/^\/api\/orchestration\/shell$/, "/api/orchestration/shell"],
+  [/^\/api\/orchestration\/dispatch$/, "/api/orchestration/dispatch"],
+  [/^\/api\/projects\/mutate$/, "/api/projects/mutate"],
+  [/^\/api\/orchestration\/threads\/[^/]+$/, "/api/orchestration/threads/:threadId"],
+  [
+    /^\/api\/orchestration\/threads\/[^/]+\/commands\/[^/]+$/,
+    "/api/orchestration/threads/:threadId/commands/:commandId",
+  ],
+  [
+    /^\/api\/orchestration\/threads\/[^/]+\/provider-goal-state$/,
+    "/api/orchestration/threads/:threadId/provider-goal-state",
+  ],
+  [
+    /^\/api\/orchestration\/threads\/[^/]+\/attention$/,
+    "/api/orchestration/threads/:threadId/attention",
+  ],
+  [
+    /^\/api\/orchestration\/threads\/[^/]+\/transcript$/,
+    "/api/orchestration/threads/:threadId/transcript",
+  ],
+  [
+    /^\/api\/orchestration\/threads\/[^/]+\/bounded$/,
+    "/api/orchestration/threads/:threadId/bounded",
+  ],
+  [
+    /^\/api\/orchestration\/threads\/[^/]+\/history$/,
+    "/api/orchestration/threads/:threadId/history",
+  ],
+];
+// A serialization bound, never a wait or a qualification deadline.
+const RELOAD_DIAGNOSTIC_BOUND_MS = 3_600_000;
 
 function endpoint(value) {
   const url = new URL(value);
@@ -15,6 +67,21 @@ function originClass(url) {
   if (url.origin === A) return "A";
   if (url.origin === B) return "B";
   if (url.protocol === "t3code:" && url.hostname === "app") return "packaged";
+  return "other";
+}
+
+function requestClass(request) {
+  try {
+    const value = request.resourceType();
+    return REQUEST_CLASSES.has(value) ? value : "unavailable";
+  } catch {
+    return "unavailable";
+  }
+}
+
+function endpointPathTemplate(url) {
+  if (!["A", "B"].includes(originClass(url))) return "not-endpoint";
+  for (const [pattern, template] of PATH_TEMPLATES) if (pattern.test(url.pathname)) return template;
   return "other";
 }
 
@@ -70,10 +137,19 @@ export class EndpointTrace {
   #pendingDiagnosticsAtTimeout = null;
   #sealed = false;
   #disposed = false;
+  #diagnosticNow;
+  #diagnosticLast = null;
+  #diagnosticClockFailed = false;
+  #lifecycle = null;
 
   constructor(
     threadId,
-    { key = NodeCrypto.randomBytes(32), limit = 5000, drainTimeoutMs = 1000 } = {},
+    {
+      key = NodeCrypto.randomBytes(32),
+      limit = 5000,
+      drainTimeoutMs = 1000,
+      diagnosticNow = () => performance.now(),
+    } = {},
   ) {
     if (
       key.length !== 32 ||
@@ -89,6 +165,7 @@ export class EndpointTrace {
     this.#threadId = threadId;
     this.#limit = limit;
     this.#drainTimeoutMs = drainTimeoutMs;
+    this.#diagnosticNow = diagnosticNow;
   }
 
   fingerprint(value) {
@@ -105,6 +182,56 @@ export class EndpointTrace {
     return this.#sequence;
   }
 
+  #diagnosticTime() {
+    if (this.#diagnosticClockFailed) return null;
+    try {
+      const value = this.#diagnosticNow();
+      if (
+        typeof value === "number" &&
+        Number.isFinite(value) &&
+        value >= 0 &&
+        value <= Number.MAX_SAFE_INTEGER &&
+        (this.#diagnosticLast === null || value >= this.#diagnosticLast)
+      ) {
+        this.#diagnosticLast = value;
+        return value;
+      }
+    } catch {
+      // Unavailable diagnostics must not change header observation or the qualification result.
+    }
+    this.#diagnosticClockFailed = true;
+    return null;
+  }
+
+  observeReload(work) {
+    // Both endpoints of the delta use this trace's Node clock, not browser or wall-clock time.
+    // The marker is the invocation boundary; it is not a browser navigation timestamp.
+    if (!this.#sealed && this.#lifecycle && !this.#lifecycle.detached) {
+      if (this.#lifecycle.reloadStart !== null) this.#lifecycle.multipleReloads = true;
+      else this.#lifecycle.reloadStart = { t: this.#diagnosticTime() };
+    }
+    return work();
+  }
+
+  #reloadTiming(metadata) {
+    let state = "reload-unmarked";
+    let requestObservedRelativeToReloadStartMs = null;
+    const reload = metadata.lifecycle.reloadStart;
+    if (metadata.lifecycle.multipleReloads) state = "multiple-reloads";
+    else if (reload !== null) {
+      if (this.#diagnosticClockFailed || reload.t === null || metadata.observedAt === null)
+        state = "clock-unavailable";
+      else {
+        const delta = metadata.observedAt - reload.t;
+        if (Number.isFinite(delta) && Math.abs(delta) <= RELOAD_DIAGNOSTIC_BOUND_MS) {
+          state = "observed";
+          requestObservedRelativeToReloadStartMs = delta;
+        } else state = "out-of-range";
+      }
+    }
+    return Object.freeze({ state, requestObservedRelativeToReloadStartMs });
+  }
+
   #reserve() {
     if (this.#sealed) return null;
     if (this.#sequence >= this.#limit) {
@@ -118,7 +245,13 @@ export class EndpointTrace {
     if (this.#sealed) throw new Error(this.#failure ?? "renderer-trace-disposed");
     this.detach();
     this.#generation++;
-    const lifecycle = { pageClosed: false, detached: false };
+    const lifecycle = {
+      pageClosed: false,
+      detached: false,
+      reloadStart: null,
+      multipleReloads: false,
+    };
+    this.#lifecycle = lifecycle;
     const requests = new WeakMap();
     this.#detach.push(() => {
       lifecycle.detached = true;
@@ -145,6 +278,9 @@ export class EndpointTrace {
       const metadata = {
         ...slot,
         originClass: "other",
+        observedAt: this.#diagnosticTime(),
+        requestClass: requestClass(request),
+        pathTemplate: "unavailable",
         headerState: "pending",
         requestFinished: false,
         requestFailed: false,
@@ -154,6 +290,7 @@ export class EndpointTrace {
       const pending = (async () => {
         const url = endpoint(request.url());
         metadata.originClass = originClass(url);
+        metadata.pathTemplate = endpointPathTemplate(url);
         const headers = await request.allHeaders();
         if (this.#sealed) return;
         metadata.headerState = "resolved";
@@ -263,6 +400,9 @@ export class EndpointTrace {
                   sequence: metadata.sequence,
                   generation: metadata.generation,
                   originClass: metadata.originClass,
+                  requestClass: metadata.requestClass,
+                  pathTemplate: metadata.pathTemplate,
+                  reloadTiming: this.#reloadTiming(metadata),
                   ageMs: Math.max(0, now - metadata.t),
                   headerState: metadata.headerState,
                   requestFinished: metadata.requestFinished,

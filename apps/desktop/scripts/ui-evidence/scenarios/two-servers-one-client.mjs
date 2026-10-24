@@ -462,7 +462,7 @@ export default async function twoServersOneClient(ctx) {
       const topology = await take(() => ctx.topology());
       requireThat(new URL(topology.httpBaseUrl).origin === A, "primary-origin-mismatch");
       trace.attach(ctx.page);
-      await take(() => ctx.reload());
+      await take(() => trace.observeReload(() => ctx.reload()));
       await until(
         () => trace.entries.some((entry) => entry.kind === "websocket" && entry.origin === A),
         30000,
@@ -713,7 +713,9 @@ export default async function twoServersOneClient(ctx) {
       );
       requireThat(restart.oldProcessesClosed === true, "restart-processes-not-closed");
       trace.attach(ctx.page);
-      await recordRestartStep(ctx.artifacts, "reload", () => take(() => ctx.reload()));
+      await recordRestartStep(ctx.artifacts, "reload", () =>
+        take(() => trace.observeReload(() => ctx.reload())),
+      );
       await until(
         () =>
           trace.entries.some(
