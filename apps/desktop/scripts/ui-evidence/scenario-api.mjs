@@ -48,7 +48,7 @@ export async function requestLocalBackend(
   { desktopBridge, fetch, WebSocket, setTimeout, clearTimeout } = globalThis,
 ) {
   if (
-    method !== "snapshot" &&
+    !["snapshot", "fixtureThread", "registerSyntheticProvider"].includes(method) &&
     (method !== "dispatch" ||
       !["project.create", "thread.create", "thread.metadata.update"].includes(payload?.type))
   )
@@ -93,23 +93,68 @@ export async function requestLocalBackend(
       payload.type === "thread.create" &&
       (payload.createdBy !== "user" ||
         payload.creationSource !== "web" ||
-        payload.branch !== null ||
-        payload.worktreePath !== null)
+        !(
+          (payload.branch === null && payload.worktreePath === null) ||
+          (/^native-self-config-[a-zA-Z0-9-]{1,80}$/.test(payload.threadId) &&
+            payload.branch === "native-self-config-execution" &&
+            payload.worktreePath === "/scratch/workspace/native-self-config-execution" &&
+            ["native-fixture-a", "native-fixture-b"].includes(payload.modelSelection?.instanceId))
+        ))
     )
-      throw new Error("Fixture thread must use the private project without a worktree");
+      throw new Error(
+        "Fixture thread must use the private project or exact synthetic linked worktree",
+      );
+  }
+  if (
+    method === "fixtureThread" &&
+    (Object.keys(payload ?? {}).join() !== "threadId" ||
+      !/^native-self-config-[a-zA-Z0-9-]{1,80}$/.test(payload.threadId))
+  )
+    throw new Error("Readback is limited to native self-configuration fixture threads");
+  if (method === "registerSyntheticProvider") {
+    if (
+      Object.keys(payload ?? {}).join() !== "instanceId" ||
+      !["native-fixture-a", "native-fixture-b"].includes(payload.instanceId)
+    )
+      throw new Error("Only the fixed synthetic provider fixtures may be registered");
+    const letter = payload.instanceId.endsWith("-a") ? "A" : "B";
+    payload = {
+      patch: {},
+      providerInstanceMutation: {
+        operation: "create",
+        instanceId: payload.instanceId,
+        instance: {
+          driver: "codex",
+          displayName: "Synthetic " + letter,
+          enabled: true,
+          config: {
+            binaryPath: "/scratch/home/native-self-config/codex-" + letter,
+            homePath: "/scratch/home/native-self-config/account",
+          },
+        },
+      },
+    };
   }
   const token = await desktopBridge.getLocalEnvironmentBearerToken();
   const headers = { authorization: `Bearer ${token}` };
-  if (method === "snapshot") {
-    const response = await fetch(new URL("/api/orchestration/shell", endpoint.httpBaseUrl), {
-      headers: { ...headers, "x-t3-orchestration-protocol": "2" },
-      credentials: "omit",
-      signal: AbortSignal.timeout(15000),
-    });
+  if (method === "snapshot" || method === "fixtureThread") {
+    const response = await fetch(
+      new URL(
+        method === "snapshot"
+          ? "/api/orchestration/shell"
+          : "/api/orchestration/threads/" + encodeURIComponent(payload.threadId),
+        endpoint.httpBaseUrl,
+      ),
+      {
+        headers: { ...headers, "x-t3-orchestration-protocol": "2" },
+        credentials: "omit",
+        signal: AbortSignal.timeout(15000),
+      },
+    );
     if (!response.ok) throw new Error(`Snapshot HTTP status ${response.status}`);
     return response.json();
   }
-  if (payload.type === "project.create") {
+  if (method === "dispatch" && payload.type === "project.create") {
     const response = await fetch(new URL("/api/projects/mutate", endpoint.httpBaseUrl), {
       method: "POST",
       headers: { ...headers, "content-type": "application/json" },
@@ -155,7 +200,10 @@ export async function requestLocalBackend(
           JSON.stringify({
             _tag: "Request",
             id: "0",
-            tag: "orchestration.dispatchCommand",
+            tag:
+              method === "registerSyntheticProvider"
+                ? "server.updateSettings"
+                : "orchestration.dispatchCommand",
             payload,
             headers: [],
           }),
@@ -318,6 +366,8 @@ export function createScenarioContext({
       await ctx.setTheme(ctx.theme);
       return replacement.evidence;
     },
+    readFixtureThread: (threadId) => request("fixtureThread", { threadId }),
+    registerSyntheticProvider: (instanceId) => request("registerSyntheticProvider", { instanceId }),
     async reload() {
       await page.reload({ waitUntil: "domcontentloaded" });
       await page.waitForFunction(() => Boolean(window.desktopBridge));

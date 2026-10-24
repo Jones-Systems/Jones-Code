@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off
+// @effect-diagnostics nodeBuiltinImport:off globalTimers:off - Real worker fixtures own and clear their bounded shutdown timer.
 import { assert, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import type { JonesStagedArtifact } from "@t3tools/shared/jones/jonesActions";
@@ -7,6 +7,10 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeWorkerThreads from "node:worker_threads";
+import * as NodeUtil from "node:util";
+import * as NodeURL from "node:url";
 import {
   bundleFileSystem,
   currentQualifiedRuntimeBinding,
@@ -15,6 +19,7 @@ import {
   QUALIFIED_UPDATES_PROTOCOL,
   qualifiedRuntimeArtifactFromJonesStage,
   qualifiedPayloadDigest,
+  recentQualifiedDigestTimings,
   readQualifiedRuntimeReceipt,
   stageQualifiedRuntime,
   verifyStagedQualifiedRuntime,
@@ -22,6 +27,7 @@ import {
   QUALIFIED_RUNTIME_RECEIPT,
   type QualifiedRuntimeArtifact,
   type QualifiedRuntimeReceipt,
+  type QualifiedDigestTiming,
 } from "./qualifiedRuntime.ts";
 
 const baseline = "0.0.0-preview.20261002.100";
@@ -489,5 +495,241 @@ it("propagates install cancellation through receipt, current binding and staged 
       await verifyStagedQualifiedRuntime(base, baseline, staged.stagedHandle, fixtureHost),
       staged,
     );
+  });
+});
+
+it("measures each digest without changing its bytes and isolates a failing timing sink", async () => {
+  await fixture(async (_base, payload) => {
+    const timings: QualifiedDigestTiming[] = [];
+    const expected = "4e64a35abb1beb78d6a649a9fc06f586e186486c28bac6079d6756075811916b";
+    assert.equal(
+      await qualifiedPayloadDigest(payload, "linux", undefined, {
+        role: "launcher-activation",
+        runtimeVersion: candidateVersion,
+        expectedSha256: expected,
+        onDigestTiming: (timing) => {
+          timings.push(timing);
+          throw new Error("synthetic observation failure");
+        },
+      }),
+      expected,
+    );
+    assert.lengthOf(timings, 1);
+    const timing = timings[0]!;
+    assert.equal(timing.schema, 1);
+    assert.equal(timing.role, "launcher-activation");
+    assert.equal(timing.runtime, candidateVersion);
+    assert.equal(timing.result, "match");
+    assert.equal(timing.files, 2);
+    assert.equal(timing.bytes, Buffer.byteLength("#!/bin/sh\nexit 0\nfixture"));
+    assert.isAtLeast(timing.wallMs, 0);
+    assert.isAtLeast(timing.cpuMs, 0);
+    assert.isTrue(Number.isFinite(timing.wallMs));
+    assert.isTrue(Number.isFinite(timing.cpuMs));
+    if (timing.eventLoopDelayP99Ms !== null) {
+      assert.isAtLeast(timing.eventLoopDelayP99Ms, 0);
+      assert.isTrue(Number.isFinite(timing.eventLoopDelayP99Ms));
+    }
+    assert.isTrue(Number.isFinite(Date.parse(timing.at)));
+    assert.equal(recentQualifiedDigestTimings().at(-1), timing);
+    assert.isTrue(Object.isFrozen(timing));
+  });
+});
+
+it("reports a receipt mismatch while preserving the integrity refusal", async () => {
+  await fixture(async (base) => {
+    await NodeFSP.writeFile(
+      NodePath.join(base, "runtime", "versions", baseline, "client", "index.html"),
+      "tampered fixture",
+    );
+    const timings: QualifiedDigestTiming[] = [];
+    await NodeAssert.rejects(
+      readQualifiedRuntimeReceipt(base, baseline, fixtureHost, {
+        role: "recovery",
+        onDigestTiming: (value) => {
+          timings.push(value);
+        },
+      }),
+      (cause: unknown) =>
+        cause instanceof QualifiedRuntimeBlockedError && cause.reason === "integrity-mismatch",
+    );
+    assert.lengthOf(timings, 1);
+    assert.equal(timings[0]?.result, "mismatch");
+    assert.equal(timings[0]?.runtime, baseline);
+    assert.equal(timings[0]?.role, "recovery");
+  });
+});
+
+it("records cancellation and file errors without replacing the original failure", async () => {
+  await fixture(async (_base, payload) => {
+    const controller = new AbortController();
+    const reason = new Error("synthetic cancellation before digest");
+    controller.abort(reason);
+    const timings: QualifiedDigestTiming[] = [];
+    await NodeAssert.rejects(
+      qualifiedPayloadDigest(payload, "linux", undefined, {
+        signal: controller.signal,
+        onDigestTiming: (timing) => {
+          timings.push(timing);
+          throw new Error("secondary observation failure");
+        },
+      }),
+      (cause) => cause === reason,
+    );
+    await NodeAssert.rejects(
+      qualifiedPayloadDigest(NodePath.join(payload, "missing"), "linux", undefined, {
+        onDigestTiming: (timing) => {
+          timings.push(timing);
+        },
+      }),
+      { code: "ENOENT" },
+    );
+    assert.deepEqual(
+      timings.map((timing) => timing.result),
+      ["error", "error"],
+    );
+    assert.deepEqual(
+      timings.map((timing) => timing.files),
+      [0, 0],
+    );
+    assert.deepEqual(
+      timings.map((timing) => timing.bytes),
+      [0, 0],
+    );
+    assert.deepEqual(
+      timings.map((timing) => timing.runtime),
+      ["unspecified", "unspecified"],
+    );
+  });
+});
+
+it("bounds recent timing history and returns an independent snapshot", async () => {
+  await fixture(async (_base, payload) => {
+    const observed: QualifiedDigestTiming[] = [];
+    for (let index = 0; index < 35; index++)
+      await qualifiedPayloadDigest(payload, "linux", undefined, {
+        onDigestTiming: (timing) => {
+          observed.push(timing);
+        },
+      });
+    const snapshot = recentQualifiedDigestTimings();
+    assert.deepEqual(snapshot, observed.slice(-32));
+    await qualifiedPayloadDigest(payload);
+    assert.deepEqual(snapshot, observed.slice(-32));
+    assert.lengthOf(recentQualifiedDigestTimings(), 32);
+  });
+});
+
+it("reports null loop delay in a real worker and closes the worker after its digest", async () => {
+  await fixture(async (_base, payload) => {
+    const worker = new NodeWorkerThreads.Worker(
+      `const { parentPort, workerData } = require("node:worker_threads");
+       import(workerData.moduleUrl).then(async ({ qualifiedPayloadDigest }) => {
+         const digest = await qualifiedPayloadDigest(workerData.payload, "linux", undefined, {
+           onDigestTiming: (timing) => parentPort.postMessage(timing)
+         });
+         if (digest !== workerData.expected) throw new Error("Worker digest changed");
+       }).catch((cause) => { throw cause; });`,
+      {
+        eval: true,
+        workerData: {
+          moduleUrl: new URL("./qualifiedRuntime.ts", import.meta.url).href,
+          payload,
+          expected: "4e64a35abb1beb78d6a649a9fc06f586e186486c28bac6079d6756075811916b",
+        },
+      },
+    );
+    let completed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const result = await new Promise<QualifiedDigestTiming>((resolve, reject) => {
+        let observed: QualifiedDigestTiming | undefined;
+        timer = setTimeout(() => reject(new Error("Owned digest worker timed out")), 10_000);
+        worker.on("message", (value: QualifiedDigestTiming) => {
+          observed = value;
+        });
+        worker.once("error", reject);
+        worker.once("exit", (code) => {
+          completed = true;
+          if (code === 0 && observed !== undefined) resolve(observed);
+          else reject(new Error("Owned digest worker failed without a complete measurement"));
+        });
+      });
+      assert.equal(result.eventLoopDelayP99Ms, null);
+      assert.equal(result.files, 2);
+      assert.equal(result.result, "match");
+    } finally {
+      clearTimeout(timer);
+      if (!completed) await worker.terminate();
+    }
+  });
+});
+
+it("benchmarks an isolated payload read-only and exits after bounded synthetic load", async () => {
+  await fixture(async (_base, payload) => {
+    const before = await qualifiedPayloadDigest(payload);
+    const entries = await NodeFSP.readdir(payload);
+    const { stdout } = await NodeUtil.promisify(NodeChildProcess.execFile)(
+      process.execPath,
+      [
+        NodeURL.fileURLToPath(
+          new URL("../../../../../scripts/jones/updates/digest-benchmark.ts", import.meta.url),
+        ),
+        payload,
+        "--iterations",
+        "1",
+        "--version",
+        candidateVersion,
+      ],
+      { timeout: 10_000, maxBuffer: 64 * 1024 },
+    );
+    const report = JSON.parse(stdout) as {
+      schema: number;
+      samples: Array<{
+        mode: string;
+        digest: string;
+        bytesPerSecond: number;
+        timing: QualifiedDigestTiming;
+      }>;
+    };
+    assert.equal(report.schema, 1);
+    assert.deepEqual(
+      report.samples.map((sample) => sample.mode),
+      ["idle", "loaded"],
+    );
+    for (const sample of report.samples) {
+      assert.equal(sample.digest, before);
+      assert.equal(sample.timing.runtime, candidateVersion);
+      assert.equal(sample.timing.result, "match");
+      assert.isTrue(Number.isFinite(sample.bytesPerSecond));
+      assert.isAbove(sample.bytesPerSecond, 0);
+    }
+    assert.deepEqual(await NodeFSP.readdir(payload), entries);
+    assert.equal(await qualifiedPayloadDigest(payload), before);
+  });
+});
+
+it("omits shared-loop delay for a declared dedicated process", async () => {
+  await fixture(async (_base, payload) => {
+    const timings: QualifiedDigestTiming[] = [];
+    await qualifiedPayloadDigest(payload, "linux", undefined, {
+      eventLoop: "worker",
+      onDigestTiming: (timing) => {
+        timings.push(timing);
+      },
+    });
+    assert.lengthOf(timings, 1);
+    assert.equal(timings[0]!.eventLoopDelayP99Ms, null);
+  });
+});
+
+it("isolates a rejected asynchronous timing sink", async () => {
+  await fixture(async (_base, payload) => {
+    const digest = await qualifiedPayloadDigest(payload, "linux", undefined, {
+      onDigestTiming: async () => {
+        throw new Error("synthetic asynchronous observation failure");
+      },
+    });
+    assert.equal(digest, "4e64a35abb1beb78d6a649a9fc06f586e186486c28bac6079d6756075811916b");
   });
 });

@@ -212,7 +212,7 @@ effectIt.effect("rejects a wrong signing key and closes its listener", () =>
         },
       });
       const result = yield* invalid.registrationContext.readRegistrationContext.pipe(Effect.flip);
-      expect(result.effect).toBe("no-effect");
+      expect(result.effect).toBe("unknown-effect");
       expect(control.observations.rejected).toBe(1);
       expect(control.observations.accepted).toBe(0);
     } finally {

@@ -55,6 +55,46 @@ const staged: JonesUpdateState = {
   capability: { check: true, download: true, install: true },
   stagedHandle: "fixed-stage",
 };
+
+it("projects settlement only from reported evidence and preserves old-server status", () => {
+  expect(jonesUpdatePresentation(staged)).toMatchObject({
+    canReconcile: false,
+    settled: false,
+    settlementMessage: undefined,
+  });
+  const failed = {
+    ...staged,
+    phase: "error" as const,
+    updateId: "11111111-1111-4111-8111-111111111111",
+    settlement: "none" as const,
+    launcherSettlement: "supported" as const,
+  };
+  expect(jonesUpdatePresentation(failed)).toMatchObject({
+    canReconcile: true,
+    settled: false,
+    settlementMessage: "Previous attempt needs reconciliation",
+  });
+  expect(
+    jonesUpdatePresentation({ ...failed, launcherSettlement: "unsupported" }).canReconcile,
+  ).toBe(false);
+  for (const settlement of ["launcher-recorded", "legacy-reconciled"] as const) {
+    const state = { ...failed, settlement, cause: "backup refused" };
+    expect(jonesUpdatePresentation(state)).toMatchObject({
+      canReconcile: false,
+      settled: true,
+      settlementMessage: "Update did not start: backup refused. Nothing changed.",
+    });
+    expect(jonesUpdateActionError(AsyncResult.success(state))).toBeNull();
+    expect(
+      jonesUpdateActionError(
+        AsyncResult.success({ ...state, phase: "blocked", message: "Build lookup failed." }),
+      ),
+    ).toBe("Build lookup failed.");
+  }
+  const refused = { ...failed, settlementRefusal: "restore-pending" as const };
+  expect(jonesUpdatePresentation(refused).refusalMessage).toBe("Recovery is still pending.");
+  expect(jonesUpdateActionError(AsyncResult.success(refused))).toBe("Recovery is still pending.");
+});
 it.effect(
   "keeps relay update polling authenticated while transmitting zero and later revision cursors",
   () =>
@@ -124,6 +164,8 @@ it.effect(
           }),
       });
       const calls: Array<{ url: string; proofHtu: string; method: string }> = [];
+      const posts: Array<{ url: string; input: unknown }> = [];
+      let loseReply = false;
       const polled = yield* Deferred.make<void>();
       const observedRevision = yield* Deferred.make<void>();
       let releaseFetch = () => {};
@@ -133,6 +175,12 @@ it.effect(
       const fetchFn: typeof fetch = async (request, init) => {
         const url = String(request);
         const proof = JSON.parse(new Headers(init?.headers).get("dpop")!);
+        if (init?.method === "POST") {
+          expect(proof).toEqual({ method: "POST", htu: normalizeDpopHtu(url) });
+          posts.push({ url, input: JSON.parse(String(init.body)) });
+          if (loseReply) throw new TypeError("Synthetic lost reconciliation response");
+          return Response.json({ ...staged, settlementRefusal: "restore-pending" });
+        }
         calls.push({ url, proofHtu: proof.htu, method: init?.method ?? "GET" });
         if (calls.length === 3) Deferred.doneUnsafe(polled, Effect.void);
         if (proof.htu !== normalizeDpopHtu(url) || proof.method !== (init?.method ?? "GET"))
@@ -160,7 +208,8 @@ it.effect(
         ),
       );
       const registry = AtomRegistry.make();
-      const value = createJonesUpdateAtoms(runtime).value(target.environmentId);
+      const updates = createJonesUpdateAtoms(runtime);
+      const value = updates.value(target.environmentId);
       const observed: Array<number> = [];
       let unsubscribe = () => {};
       let unmount = () => {};
@@ -199,6 +248,31 @@ it.effect(
       yield* Deferred.await(observedRevision);
       expect(observed).toEqual([0, 7]);
       expect(registry.get(value)?.revision).toBe(7);
+      const input = {
+        operationId: "11111111-1111-4111-8111-111111111111",
+        requestId: "22222222-2222-4222-8222-222222222222",
+      };
+      const result = yield* Effect.promise(() =>
+        updates.action.run(registry, {
+          environmentId: target.environmentId,
+          input: { action: "reconcile", input },
+        }),
+      );
+      expect(result).toMatchObject({
+        _tag: "Success",
+        value: { settlementRefusal: "restore-pending" },
+      });
+      expect(posts).toEqual([{ url: `${origin}/api/jones-updates/reconcile`, input }]);
+      loseReply = true;
+      expect(
+        yield* Effect.promise(() =>
+          updates.action.run(registry, {
+            environmentId: target.environmentId,
+            input: { action: "reconcile", input },
+          }),
+        ),
+      ).toMatchObject({ _tag: "Failure" });
+      expect(posts).toHaveLength(2);
     }).pipe(Effect.scoped),
 );
 it.effect("starts observation after an initially disconnected mount prepares its connection", () =>
@@ -646,6 +720,23 @@ describe("exact-source action resolution", () => {
       reason: "staged-other",
       message: expect.stringContaining(offered.sourceSha.slice(0, 7)),
     });
+    if (decision.status !== "unavailable") throw new Error("Expected a source refusal");
+    expect(decision.message).toContain(`this app needs ${target.slice(0, 7)}`);
+    expect(decision.message).toContain("will not be installed from this notice");
+    expect(decision.message).toContain("Settings → Connections");
+    expect(decision.message).toContain("review this host's downloaded update");
+    expect(decision.message).toContain("Installing it there will not match this app");
+  });
+
+  it("directs an unknown staged source to review without claiming it matches the app", () => {
+    const decision = resolve(hostState({ phase: "staged", stagedHandle: "handle-1" }));
+    expect(decision).toMatchObject({ status: "unavailable", reason: "staged-other" });
+    if (decision.status !== "unavailable") throw new Error("Expected a source refusal");
+    expect(decision.message).toContain("no reported source");
+    expect(decision.message).toContain("will not be installed from this notice");
+    expect(decision.message).toContain("Settings → Connections");
+    expect(decision.message).toContain("review this host's downloaded update");
+    expect(decision.message).toContain("cannot confirm it matches this app");
   });
 
   it("lets an older host download only an offer that already is the target", () => {

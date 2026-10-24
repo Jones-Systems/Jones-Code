@@ -5,6 +5,7 @@ import {
   OrchestrationV2ThreadProjection,
   OrchestrationV2ConversationMessage,
   OrchestrationV2Command,
+  type OrchestrationV2Run,
   ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
@@ -111,6 +112,26 @@ function fixture(): OrchestrationV2ThreadProjection {
     checkpoints: [],
     contextHandoffs: [],
     contextTransfers: [],
+  });
+}
+const decodeMessage = Schema.decodeUnknownSync(
+  Schema.toCodecJson(OrchestrationV2ConversationMessage),
+);
+function wakeMessage(id: MessageId, wakeRunId: RunId): OrchestrationV2ConversationMessage {
+  return decodeMessage({
+    createdBy: "system",
+    creationSource: "server",
+    id,
+    threadId,
+    runId: wakeRunId,
+    nodeId: null,
+    role: "user",
+    text: "Wake",
+    attachments: [],
+    streaming: false,
+    notification: { source: { kind: "monitor" }, outcome: "completed", summary: "Wake" },
+    createdAt: "2026-10-04T00:00:00.000Z",
+    updatedAt: "2026-10-04T00:00:00.000Z",
   });
 }
 
@@ -244,6 +265,85 @@ describe("self settlement lifecycle decisions", () => {
       ],
     };
     expect(selfSettlementRun(notification, caller, owner)?.id).toBe(runId);
+  });
+  it("settles after a successor cancelled before it started", () => {
+    const projection = fixture();
+    const cancelled = {
+      ...projection.runs[0]!,
+      id: RunId.make("run-2"),
+      ordinal: 2,
+      status: "cancelled" as const,
+      startedAt: null,
+      completedAt: projection.thread.updatedAt,
+    };
+    expect(
+      selfSettlementRun({ ...projection, runs: [...projection.runs, cancelled] }, caller, owner)
+        ?.id,
+    ).toBe(runId);
+    expect(
+      selfSettlementTerminalDisposition(
+        {
+          ...projection,
+          runs: [{ ...projection.runs[0]!, status: "completed" }, cancelled],
+        },
+        runId,
+      ),
+    ).toBe("settle");
+  });
+  it("accepts exactly the successors that completion would still settle", () => {
+    const projection = fixture();
+    const now = projection.thread.updatedAt;
+    const unstarted = { startedAt: null };
+    const automatic = true;
+    const successors: ReadonlyArray<
+      readonly [string, Partial<OrchestrationV2Run> & { automatic?: boolean }, boolean]
+    > = [
+      ["preparing", { status: "preparing", ...unstarted }, false],
+      ["starting", { status: "starting" }, false],
+      ["running", { status: "running" }, false],
+      ["waiting", { status: "waiting" }, false],
+      ["queued user work", { status: "queued", ...unstarted }, false],
+      ["held user work", { status: "queued", ...unstarted, queueHeld: true }, false],
+      ["queued automatic wakeup", { status: "queued", ...unstarted, automatic }, true],
+      ["cancelled before start", { status: "cancelled", ...unstarted }, true],
+      ["wakeup cancelled before start", { status: "cancelled", ...unstarted, automatic }, true],
+      ["cancelled after start", { status: "cancelled" }, false],
+      ["completed", { status: "completed" }, false],
+      ["failed", { status: "failed" }, false],
+      ["interrupted", { status: "interrupted" }, false],
+      ["rolled back", { status: "rolled_back" }, false],
+    ];
+    for (const [label, { automatic = false, ...overrides }, settles] of successors) {
+      const successor = {
+        ...projection.runs[0]!,
+        id: RunId.make("run-2"),
+        ordinal: 2,
+        userMessageId: MessageId.make("message-2"),
+        activeAttemptId: null,
+        queuePosition: null,
+        completedAt: null,
+        ...overrides,
+      };
+      const messages = automatic ? [wakeMessage(successor.userMessageId, successor.id)] : [];
+      const accepted = selfSettlementRun(
+        { ...projection, messages, runs: [...projection.runs, successor] },
+        caller,
+        owner,
+      );
+      const disposition = selfSettlementTerminalDisposition(
+        {
+          ...projection,
+          messages,
+          runs: [{ ...projection.runs[0]!, status: "completed", completedAt: now }, successor],
+        },
+        runId,
+      );
+      expect({ label, accepted: accepted?.id ?? null, disposition }).toEqual({
+        label,
+        accepted: settles ? runId : null,
+        disposition: settles ? "settle" : "cancel",
+      });
+    }
   });
   it("never settles a successor on delayed success of the original run", () => {
     const projection = fixture();
