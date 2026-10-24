@@ -20,6 +20,7 @@ const escapeTitle = (title: string) =>
 export function composeAgentMessage(input: {
   readonly body: string;
   readonly acceptedAt: number;
+  readonly remoteSender?: string;
   readonly sender?: { readonly id: string; readonly title?: string | null };
 }): string {
   // Slash commands depend on the original prefix and sometimes the entire text.
@@ -30,8 +31,9 @@ export function composeAgentMessage(input: {
   );
   const sentAt = `${parts.month}/${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
   const sender =
-    input.sender === undefined
+    input.remoteSender ??
+    (input.sender === undefined
       ? "unavailable"
-      : `[${escapeTitle(input.sender.title ?? "") || "Untitled thread"}](t3-thread://v1/${input.sender.id})`;
+      : `[${escapeTitle(input.sender.title ?? "") || "Untitled thread"}](t3-thread://v1/${input.sender.id})`);
   return `**T3M** · From ${sender} · Sent: ${sentAt}\n\n${input.body}`;
 }

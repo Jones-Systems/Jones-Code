@@ -50,12 +50,40 @@ Known shared consumers:
   [thread attention](../../packages/shared/src/jones/threadAttention.ts) through
   [the status-filter model](../../apps/web/src/jones/threadStatusFilter/model.ts).
   A proposed plan alone creates no input status; explicit own/child requests and
-  native approvals retain precedence. Existing user-input cards render the
+  native approvals retain precedence. Working includes displayed Waiting rows in
+  its count and selection; double-click Hide working excludes both. Filtering
+  preserves the roster order, including pin order. Existing user-input cards render the
   instruction, optional choices and open response for `t3_request_user_response`.
 - [RightPanelTabs](../../apps/web/src/components/RightPanelTabs.tsx) also serves
   [Pull requests](../../apps/web/src/routes/_chat.pull-requests.tsx), outside
   this map's journeys. Shared workspace header consumers are listed in
   [Settings](settings.md#shared-layout-and-consumers).
+
+### Queued-message batch steering
+
+The active thread composer exposes
+[QueuedRunsControl](../../apps/web/src/components/chat/QueuedRunsControl.tsx).
+Its header uses the [batch action](../../apps/web/src/jones/queue/QueuedSteerBatchAction.tsx)
+and the [shared selector](../../packages/client-runtime/src/jones/queue/queuedSteerBatch.ts);
+native mobile consumes the same selector through its own queue sheet.
+
+For the account-change journey, start a synthetic active Codex turn and queue
+four ordinary messages whose saved account, provider thread and model differ
+from that turn. With no pending request or edit, **Steer all (4)** must be
+enabled. Click once: one command must contain all four ordered message IDs.
+Server readback must retain the four original messages and create one combined
+provider input. Automatic tool-boundary delivery must still reject mismatched
+queued configurations. Pending requests, stale message versions, maintenance
+commands, ended turns and input limits retain their own guards.
+
+The adjacent [browser regression](../../apps/web/src/jones/queue/QueuedSteerBatch.browser.test.tsx),
+[client tests](../../packages/client-runtime/src/jones/queue/queuedSteerBatch.test.ts)
+and [server integration](../../apps/server/src/jones/orchestration/QueuedSteerBatch.integration.test.ts)
+cover those layers separately. Use the Browser-panel workflow for interactive
+candidate evidence and retain its exact fixture, source and captures with the
+PR. Synthetic component evidence does not qualify a live provider, packaged
+desktop shell or native mobile interaction. Reset only the task-owned fixture;
+do not consume or remove messages in another thread to reproduce this case.
 
 ### Destination shell blocks
 
@@ -64,8 +92,11 @@ for `jones-shell` fences. [ChatMarkdown](../../apps/web/src/components/ChatMarkd
 dispatches these to the [Jones controller and view](../../apps/web/src/jones/shellDestination/ShellDestinationCodeBlock.tsx).
 Ordinary shell fences retain their existing source-thread terminal callback;
 `environment=` on an ordinary shell fence suppresses Play and explains the
-dedicated grammar. Other Markdown consumers without a thread and shell callback
-show the destination but cannot run. Native mobile has no new Play control.
+dedicated grammar. Other Markdown consumers without a thread, shell callback or stable
+message identity show the destination but cannot run. Each assistant message and
+block keeps its own terminal association. Legacy associations without message
+identity show an ambiguity warning and disable ordinary Play; Run again explicitly
+starts a new terminal without attaching or changing the old association. Native mobile has no new Play control.
 
 The chip uses the clicking client's exact-ID connection catalog. Its label is
 authoritative; an unknown or mismatched agent label is shown as a claim and cannot
@@ -160,6 +191,24 @@ The primary verification owner must supply those prerequisites and record
 expected versus observed outcomes for each exercised row. Native, provider,
 remote-connection and deeper panel states remain gaps. This is a partial map
 addition, not a full maintenance pass or a product defect finding.
+
+### Working includes Waiting
+
+Use the common isolated-home recipe with two connected-idle Waiting threads
+pinned in distinct order and an ordinary idle control. On All, record their
+order and the Working count. Click the status pill once: both Waiting rows must
+remain in pin order and count as Working. Double-click within 250 ms: both must
+vanish while the idle control remains. Click once to return to All and verify
+the original order. Projection fixtures prove renderer behavior only.
+
+The primary Browser check verified this journey on October 23, 2026 using
+base `7f5caa1eb1255e228d44a88c37f5a9d78227cd19` plus the Working/Waiting
+classifier change, at 1280×800 CSS pixels, device scale 2, light theme and default
+text size. Before the change the two Waiting rows counted as zero and vanished
+on Working; afterward they counted as two, stayed in pin order, and were hidden
+by double-click. Both filter variants and input/approval precedence have focused
+model and browser tests. The live journey used the current sidebar; legacy,
+native mobile, packaged desktop and provider execution were not exercised.
 
 ### Needs input filter and open response
 

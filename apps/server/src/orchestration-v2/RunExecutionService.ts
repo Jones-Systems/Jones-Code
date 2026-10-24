@@ -1322,8 +1322,8 @@ export const layer: Layer.Layer<
                   const isRootProviderThreadUpdate =
                     event.type === "provider_thread.updated" &&
                     event.providerThread.id === input.providerThread.id;
-                  // Exact routed turns retain their raw history after replacement;
-                  // settlement and run effects still require the current attempt.
+                  // The ingestor admits only the exact captured terminal history after
+                  // a committed restart; settlement still requires the current attempt.
                   const currentOrigin = yield* ProviderEventOrigin.revalidateProviderEventOrigin(
                     deliveredEvent,
                     input.session,
