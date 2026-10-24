@@ -1,3 +1,7 @@
+import {
+  threadActivitySettingsFields,
+  threadActivitySettingsPatchFields,
+} from "./jones/threadActivitySettings.ts";
 import { AgentDecisionSnapshotAccessEnabled } from "./jones/decisionSnapshotAccess.ts";
 import { WorkModeEnabled } from "./jones/workMode.ts";
 import { EasDeviceHostConfigs, SshDeviceHostConfigs } from "./device.ts";
@@ -314,6 +318,7 @@ export type ModelPreferences = {
 };
 
 export const ClientSettingsSchema = Schema.Struct({
+  ...threadActivitySettingsFields,
   promptsDefaultStage: Schema.Literals(["pending", "queued", "sent"]).pipe(
     Schema.withDecodingDefault(Effect.succeed("pending" as const)),
   ),
@@ -1656,6 +1661,7 @@ export function requiredScopesForProjectMutation(
 }
 
 export const ClientSettingsPatch = Schema.Struct({
+  ...threadActivitySettingsPatchFields,
   promptsDefaultStage: Schema.optionalKey(Schema.Literals(["pending", "queued", "sent"])),
   notificationMode: Schema.optionalKey(NotificationMode),
   inAppNotificationsEnabled: Schema.optionalKey(Schema.Boolean),
