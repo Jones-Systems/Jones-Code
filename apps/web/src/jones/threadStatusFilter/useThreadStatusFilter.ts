@@ -50,10 +50,8 @@ export function useThreadStatusSelection(
   };
   useNowMinute();
   const suppliedNow = Date.parse(now ?? "");
-  const observedNowMs = Math.max(
-    new Date().getTime(),
-    Number.isFinite(suppliedNow) ? suppliedNow : 0,
-  );
+  const currentTimeMs = new Date().getTime();
+  const observedNowMs = suppliedNow > currentTimeMs ? suppliedNow : currentTimeMs;
   const windowIdentity = `${activityWindow.threadActivityWindowEnabled}:${activityWindow.threadActivityWindowAmount}:${activityWindow.threadActivityWindowUnit}`;
   const [retention, setRetention] = useState({
     windowIdentity,
