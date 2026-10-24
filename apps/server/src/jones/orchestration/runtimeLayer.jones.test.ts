@@ -977,7 +977,31 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
         (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.at(-1)?.status,
         "queued",
       );
-      yield* f.react(f.tool("fresh-tool"));
+      const freshBoundary = yield* f.react(f.tool("fresh-tool"));
+      const freshCommandId = CommandId.make(
+        `command:queue-tool-boundary:batch:${later.id}:${f.turnId}:${freshBoundary.sequence}`,
+      );
+      // Terminal-event reactions also take this thread's lock. Wait for this
+      // boundary's committed promotion before reading its result.
+      const promoted = yield* f.sink
+        .stream({
+          threadId: f.threadId,
+          afterSequence: freshBoundary.sequence,
+          eventType: "turn-item.updated",
+        })
+        .pipe(
+          Stream.filter(
+            (stored) =>
+              stored.commandId === freshCommandId &&
+              stored.event.type === "turn-item.updated" &&
+              stored.event.payload.type === "user_message" &&
+              stored.event.payload.inputIntent === "promoted_queued_to_steer" &&
+              stored.event.payload.messageId === later.userMessageId &&
+              stored.event.payload.runId === f.run.id,
+          ),
+          Stream.runHead,
+        );
+      assert.isTrue(Option.isSome(promoted));
       assert.equal(
         (yield* f.orchestrator.getThreadProjection(f.threadId)).messages.find(
           (message) => message.text === "Later",

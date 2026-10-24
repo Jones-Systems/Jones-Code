@@ -14,7 +14,12 @@ import {
   type StagedQualifiedRuntime,
 } from "../cloud/qualifiedRuntime.ts";
 import { restoreStagedSelection, retainStagedSelection, selectionPath } from "./stagedSelection.ts";
-import { operationBinding, reserveUpdateOperation } from "./launcherOperation.ts";
+import {
+  operationBinding,
+  publishUpdateOperationSettlement,
+  reserveUpdateOperation,
+  writeFailedUpdateOperation,
+} from "./launcherOperation.ts";
 import { recoverStagedSelection } from "./recoverStagedSelection.ts";
 
 const roots: string[] = [];
@@ -240,6 +245,52 @@ describe("orphan staged-selection recovery", () => {
       operationBinding(f.selection),
     );
     expect(await apply(f)).toMatchObject({ status: "refused", reason: "unreconciled-operation" });
+  });
+
+  it("recovers a stage only after its earlier failed operation has matching settlement evidence", async () => {
+    const f = await fixture();
+    const operationId = "12345678-1234-4234-8234-123456789abc";
+    const failed = {
+      id: operationId,
+      status: "failed" as const,
+      reason: "launcher-restarted",
+      fromVersion: f.baseline,
+      targetVersion: f.selection.receipt.version,
+      qualified: f.selection,
+    };
+    await reserveUpdateOperation(f.root, operationId, operationBinding(f.selection));
+    const digests = await writeFailedUpdateOperation(f.root, failed);
+    const state = JSON.stringify({ protocol: 4, activeVersion: f.baseline, update: failed });
+    await NodeFSP.writeFile(NodePath.join(f.root, "runtime", "service-state.json"), state);
+    expect(await apply(f)).toMatchObject({ status: "refused", reason: "unreconciled-operation" });
+    await publishUpdateOperationSettlement(f.root, {
+      schema: 1,
+      operationId,
+      basis: "launcher-recorded",
+      status: "failed",
+      settlement: "no-effect",
+      ...digests,
+      evidence: {
+        phaseAtFailure: "accepted",
+        nativeReason: "launcher-restarted",
+        candidateStarted: false,
+        activeVersion: f.baseline,
+        activeSourceSha: f.selection.binding.activeSourceSha,
+        recoveryPayload: "absent",
+        restorePending: false,
+        cause: null,
+        writerLauncherVersion: f.baseline,
+        recordedAt: "2026-10-23T04:00:00.000Z",
+      },
+    });
+    expect(await apply(f)).toMatchObject({ status: "retained" });
+    expect(await restoreStagedSelection(f.root, f.baseline)).toEqual(f.selection);
+    expect(
+      await NodeFSP.readFile(NodePath.join(f.root, "runtime", "service-state.json"), "utf8"),
+    ).toBe(state);
+    expect(
+      await NodeFSP.readFile(NodePath.join(f.root, "userdata", "statev2.sqlite"), "utf8"),
+    ).toBe("unchanged-state");
   });
 
   it("refuses a busy, missing, foreign-mode or symlink lock without creating one", async () => {

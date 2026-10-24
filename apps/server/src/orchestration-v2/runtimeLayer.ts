@@ -1,3 +1,4 @@
+import * as ThreadSelfConfiguration from "../jones/threadConfiguration/ThreadSelfConfiguration.ts";
 import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
 import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
 import * as PlannedUpdateContinuity from "../jones/updates/PlannedUpdateContinuity.ts";
@@ -215,6 +216,7 @@ const layerRunExecutionServiceProvided = RunExecutionService.layer.pipe(
 );
 
 const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pipe(
+  Layer.provide(layerProviderSwitchServiceProvided),
   Layer.provide(ControlAdmission.layer),
   Layer.provide(layerRestartPreparationProvided),
   Layer.provide(layerPlannedUpdateContinuityProvided),
@@ -437,6 +439,17 @@ export const layer = Layer.mergeAll(
   layerEventSinkProvided,
   currentRuntimeStopProvided,
   providerConversationReselectionProvided,
+  ThreadSelfConfiguration.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        layerEventSinkProvided,
+        ProjectionStore.layer,
+        layerProviderSessionManagerProvided,
+        ThreadCommandExecutor.layer,
+        layerProviderSwitchServiceProvided,
+      ),
+    ),
+  ),
   layerCommandOutputHubProvided,
   layerOrchestratorProvided,
   layerMcpAppRequestsProvided,
