@@ -1743,7 +1743,8 @@
     "apps/server/src/jones/pullRequest/pullRequestScopeLocks.test.ts": "jones-owned",
     "scripts/jones/boundary/fragments/pr-cache-scope-locks.json": "jones-owned",
     "apps/web/src/jones/remoteAgentLineage/MachineIdentity.browser.test.tsx": "jones-owned",
-    "apps/web/src/jones/remoteAgentLineage/ThreadRelationships.browser.test.tsx": "jones-owned"
+    "apps/web/src/jones/remoteAgentLineage/ThreadRelationships.browser.test.tsx": "jones-owned",
+    "scripts/jones/boundary/fragments/ci-change-selection.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

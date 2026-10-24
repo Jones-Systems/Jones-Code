@@ -978,7 +978,7 @@
         "apps/server/src/jones/testShards/weightedShardSequencer.jones.test.ts",
         "apps/server/src/jones/platformCompatibility/testUtils/weightedShardSequencer.test.ts"
       ],
-      "scope": "Automatic CI wall-time capture, complete disjoint shard aggregation and read-only reuse of validated main-run weights. One selection applies to every shard; checked-in fallback preserves legacy semantics. Six shards remain default until comparable six/eight evidence."
+      "scope": "Automatic CI wall-time capture, complete disjoint shard aggregation and read-only reuse of validated main-run weights. One selection applies to every shard; checked-in fallback preserves legacy semantics. Eight shards are the default; manual six through nine selections retain complete discovery. Current-head job receipts expose the per-job budget."
     },
     {
       "id": "provider-update-trust",
@@ -1735,6 +1735,14 @@
         "apps/server/src/jones/pullRequest/pullRequestScopeLocks.test.ts"
       ],
       "scope": "Concurrent sorted shared scope reads and exclusive invalidation avoid waiting for unrelated lookups while preserving revision ordering, persistence, cancellation and fairness. Jones lock helper has a narrow cache import; small shared cache edits retain private revision state, and colocated integration tests reuse the existing filesystem/fault harness."
+    },
+    {
+      "id": "ci-change-selection",
+      "tests": [
+        "scripts/jones/ci/selection.node-test.cjs",
+        "scripts/jones/ci/check-results.node-test.cjs"
+      ],
+      "scope": "Consumes the unchanged upstream dependency classifier with conservative full runs for non-PR, stack, unreadable or unknown changes. Required Check accepts a skipped job only after successful explicit selection. Linux package suites are disjoint; standalone checks remain unconditional and native enrollment keeps its independent gate."
     }
   ]
 }
