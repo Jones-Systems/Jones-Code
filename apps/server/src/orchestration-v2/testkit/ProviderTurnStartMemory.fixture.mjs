@@ -18,6 +18,8 @@ const providerCore = (file) =>
   import(NodeURL.pathToFileURL(root + "/packages/provider-core/src/server/" + file + ".ts"));
 const [
   Start,
+  RestartPreparation,
+  ControlAdmission,
   Projection,
   Run,
   Sessions,
@@ -31,8 +33,11 @@ const [
   Config,
   Settings,
   Instances,
+  SelectionTransitions,
 ] = await Promise.all([
   app("orchestration-v2/ProviderTurnStartService"),
+  app("jones/orchestration/RestartPreparation"),
+  app("jones/orchestration/ControlAdmission"),
   app("orchestration-v2/ProjectionStore"),
   app("orchestration-v2/RunExecutionService"),
   app("orchestration-v2/ProviderSessionManager"),
@@ -46,6 +51,7 @@ const [
   app("config"),
   app("serverSettings"),
   app("provider/ProviderInstanceRegistry"),
+  app("orchestration-v2/ProviderSwitchService"),
 ]);
 let current;
 let fullReads = 0;
@@ -64,6 +70,18 @@ const session = {
   compactThread: () => Effect.void,
 };
 const dependencies = Layer.mergeAll(
+  Layer.mock(SelectionTransitions.ProviderSwitchServiceV2)({
+    plan: () =>
+      Effect.succeed({
+        instanceChanged: false,
+        modelChanged: false,
+        targetProviderThreadId: null,
+        releaseProviderSessionIds: [],
+        transition: { type: "reuse" },
+      }),
+  }),
+  ControlAdmission.layer,
+  Layer.mock(RestartPreparation.RestartPreparation)({ assertThreadOpen: () => Effect.void }),
   Layer.mock(Handoff.ContextHandoffServiceV2)({}),
   Id.layer,
   FileSystem.layerNoop({}),

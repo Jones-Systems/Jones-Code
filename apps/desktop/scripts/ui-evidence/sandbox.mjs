@@ -1,6 +1,10 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
-import { resolvedPackageDependencies } from "./runtime.mjs";
+import {
+  createPackageResolver,
+  resolvedPackageDependencies,
+  validatePackageName,
+} from "./runtime.mjs";
 
 const writableNames = ["home", "xdg-config", "xdg-data", "xdg-cache", "t3home", "workspace", "tmp"];
 export function sandboxEnvironment() {
@@ -27,7 +31,7 @@ async function copyClosedTree(source, destination) {
     for (const entry of await NodeFSP.readdir(directory, { withFileTypes: true })) {
       const file = NodePath.join(directory, entry.name);
       if (
-        [".git", ".t3"].includes(entry.name) ||
+        [".git", ".t3", ".ssh", ".codex", ".claude"].includes(entry.name) ||
         entry.name === ".env" ||
         entry.name.startsWith(".env.")
       )
@@ -49,6 +53,9 @@ async function copyClosedTree(source, destination) {
   });
 }
 export async function stageRun({ run, source, harness, scenario, closure, configuration }) {
+  const resolver = await createPackageResolver(source);
+  source = resolver.source;
+  if (closure.source !== source) throw new Error("Closure source mismatch");
   const stage = NodePath.join(run.root, "stage");
   for (const name of ["app", "harness", "deps", ...writableNames.map((name) => `writable/${name}`)])
     await NodeFSP.mkdir(NodePath.join(stage, name), { recursive: true, mode: 0o700 });
@@ -90,11 +97,13 @@ export async function stageRun({ run, source, harness, scenario, closure, config
   const mapped = new Map(closure.packages.map((pkg, index) => [pkg.root, `/deps/${index}`]));
   for (const pkg of closure.packages) {
     const target = mapped.get(pkg.root);
+    const metadata = await resolver.metadata(pkg.root);
+    const dependencies = await resolvedPackageDependencies(pkg.root, metadata, resolver);
+    if (JSON.stringify(dependencies) !== JSON.stringify(pkg.dependencies))
+      throw new Error("Runtime dependency edges changed before staging");
     await copyClosedTree(pkg.root, NodePath.join(stage, target));
-    const metadata = JSON.parse(
-      await NodeFSP.readFile(NodePath.join(pkg.root, "package.json"), "utf8"),
-    );
-    for (const { name, root: resolved } of await resolvedPackageDependencies(pkg.root, metadata)) {
+    for (const { name, root: resolved } of dependencies) {
+      validatePackageName(name);
       if (!mapped.has(resolved)) throw new Error("Incomplete dependency closure");
       const destination = NodePath.join(stage, target, "node_modules", name);
       await NodeFSP.mkdir(NodePath.dirname(destination), { recursive: true });
@@ -108,6 +117,17 @@ export async function stageRun({ run, source, harness, scenario, closure, config
     }
   }
   for (const root of closure.roots) {
+    validatePackageName(root.name);
+    const slots = [
+      `/app/apps/desktop/node_modules/${root.name}`,
+      `/app/apps/server/node_modules/${root.name}`,
+      ...(root.name === "playwright-core" ? ["/harness/node_modules/playwright-core"] : []),
+    ];
+    if (!slots.includes(root.destination) || !mapped.has(root.root))
+      throw new Error("Invalid runtime package destination");
+    const app = root.destination.startsWith("/app/apps/server/") ? "server" : "desktop";
+    const current = await resolver.resolve(root.name, NodePath.join(source, "apps", app));
+    if (current.root !== root.root) throw new Error("Runtime root changed before staging");
     const destination = NodePath.join(stage, root.destination.slice(1));
     await NodeFSP.mkdir(NodePath.dirname(destination), { recursive: true });
     await NodeFSP.symlink(

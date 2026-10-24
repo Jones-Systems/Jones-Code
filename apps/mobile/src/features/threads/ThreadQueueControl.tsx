@@ -1,3 +1,4 @@
+import { importedHistoryContinuationEligible } from "@t3tools/client-runtime/jones/imported-history/continuation";
 import {
   MobileQueuedSteerBatchAction,
   useMobileQueuedSteerBatch,
@@ -83,7 +84,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
   const projection = Option.getOrNull(
     useEnvironmentThread(target.environmentId, target.threadId).data,
   );
-  const importedThread = projection?.thread.historyOrigin === "v1_import";
+  const importedThread = importedHistoryContinuationEligible(projection);
 
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
@@ -127,10 +128,10 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
   });
   const queueBusy = busyRunId !== null || batch.pending;
   const queuedRuns = workflow?.queuedRuns ?? [];
-  const importedQueueRef = useRef({ target, queuedRuns });
-  importedQueueRef.current = { target, queuedRuns };
+  const importedQueueRef = useRef({ target, queuedRuns, importedThread });
+  importedQueueRef.current = { target, queuedRuns, importedThread };
   const reviewImportedQueued = async (runId: RunId) => {
-    if (busyRef.current) return;
+    if (!importedThread || busyRef.current) return;
     const entry = queuedRuns.find((candidate) => candidate.run.id === runId);
     if (entry === undefined) return;
     const snapshot = importedHistoryCanonicalJson(entry);
@@ -141,6 +142,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
         (candidate) => candidate.run.id === runId && candidate.messageId === entry.messageId,
       );
       return (
+        current.importedThread &&
         current.target.environmentId === target.environmentId &&
         current.target.threadId === target.threadId &&
         row !== undefined &&
@@ -400,7 +402,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
                 background={theme["--color-sheet"]}
                 onRemove={() => void act(run.id, "remove")}
               >
-                {importedThread ? (
+                {importedThread && index === 0 ? (
                   <Button
                     label="Review imported history"
                     disabled={importedState.busy || queueBusy}

@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 import {
   WORKSTREAMS_REGISTRATION_CONTEXT_MAX_RESPONSE_BYTES,
   WorkstreamsRegistrationContextResponse,
+  type WorkstreamsRegistrationContextV3T3Source,
   type WorkstreamsRegistrationContextT3Source,
 } from "@t3tools/contracts";
 import { NativeStoreAuthorityPersistenceError } from "../../../environment/nativeStoreAuthorityPersistence.ts";
@@ -19,7 +20,18 @@ import {
   encodeFixtureJson,
   fixtureTransportError,
 } from "./testFixtures.ts";
-import { RegistrationContextError, type T3RegistrationAvailability } from "./service.ts";
+import {
+  RegistrationContextError,
+  type RegistrationContextPorts,
+  type T3RegistrationAvailability,
+} from "./service.ts";
+import {
+  makeV3RegistrationFixture,
+  observedBuild,
+  preChangeClientResponse,
+  v3Response,
+  v3T3Source,
+} from "../testing/registrationV3.ts";
 
 it.effect("qualifies closed current T3 and independent GitHub registration descriptors", () =>
   Effect.gen(function* () {
@@ -354,5 +366,219 @@ it.effect("v2 keeps independent non-native registration when local authority is 
     assert.deepEqual(result.context.sources, [githubSource]);
     assert.deepEqual(result.t3Availability, { state: "unavailable", reason: "authority_fenced" });
     assert.strictEqual(fixture.reads.build, 0);
+  }),
+);
+
+it.effect(
+  "v3 profile policy alone permits build drift and emits only the observed local descriptor",
+  () =>
+    Effect.gen(function* () {
+      const policies: ReadonlyArray<
+        WorkstreamsRegistrationContextV3T3Source["accepted_native_profiles"]
+      > = [
+        ["workstreams-t3-provider/2.0.0", "workstreams-t3-provider/1.0.0"],
+        ["workstreams-t3-provider/2.0.0"],
+        ["workstreams-t3-provider/1.0.0"],
+      ];
+      for (const accepted_native_profiles of policies) {
+        for (const sources of [v3Response.sources, [...v3Response.sources].reverse()]) {
+          const fixture = makeV3RegistrationFixture({
+            readRegistrationContext: Effect.succeed(
+              encodeFixtureJson({
+                ...v3Response,
+                sources: sources.map((source) =>
+                  source.provider === "t3" ? { ...source, accepted_native_profiles } : source,
+                ),
+              }),
+            ),
+          });
+          const result = yield* fixture.service.read();
+          const ready = accepted_native_profiles.some(
+            (profile) => profile === "workstreams-t3-provider/2.0.0",
+          );
+          assert.deepEqual(
+            result.t3Availability,
+            ready ? { state: "ready" } : { state: "unavailable", reason: "contract_mismatch" },
+          );
+          assert.deepEqual(result.context, {
+            ...v2Response,
+            sources: sources.flatMap((source): (typeof v2Response.sources)[number][] => {
+              if (source.provider === "github") return [githubSource];
+              return ready && source.source_instance_id === t3Source.source_instance_id
+                ? [{ ...t3Source, build: observedBuild }]
+                : [];
+            }),
+          });
+          const text = encodeFixtureJson(result.context);
+          assert.isAtMost(
+            new TextEncoder().encode(text).byteLength,
+            WORKSTREAMS_REGISTRATION_CONTEXT_MAX_RESPONSE_BYTES,
+          );
+          assert.deepEqual(
+            yield* Schema.decodeUnknownEffect(Schema.fromJsonString(preChangeClientResponse))(text),
+            result.context,
+          );
+          assert.isFalse(text.includes("enrolled_build"));
+          assert.isFalse(text.includes("enrollment_id"));
+          assert.isFalse(text.includes("accepted_native_profiles"));
+          assert.isFalse(text.includes("remote-source"));
+        }
+      }
+      for (const makeFixture of [makeRegistrationFixture, makeV2RegistrationFixture]) {
+        const strict = yield* makeFixture({
+          build: Effect.succeedSome(observedBuild),
+        }).service.read();
+        assert.deepEqual(strict.t3Availability, {
+          state: "unavailable",
+          reason: "contract_mismatch",
+        });
+        assert.deepEqual(strict.context.sources, [githubSource]);
+      }
+      const strictV3 = yield* makeV3RegistrationFixture({
+        readRegistrationContext: Effect.succeed(
+          encodeFixtureJson({
+            ...v3Response,
+            sources: [
+              { ...v3T3Source, accepted_native_profiles: ["workstreams-t3-provider/1.0.0"] },
+            ],
+          }),
+        ),
+        build: Effect.succeedSome(build),
+      }).service.read();
+      assert.deepEqual(strictV3.t3Availability, { state: "ready" });
+      assert.deepEqual(strictV3.context.sources, [t3Source]);
+    }),
+);
+
+it.effect(
+  "v3 preserves qualification fence precedence independently of native profile policy",
+  () =>
+    Effect.gen(function* () {
+      const fenced: RegistrationContextPorts["authority"] = {
+        readCurrent: Effect.fail(
+          new NativeStoreAuthorityPersistenceError("fenced", "synthetic", "synthetic"),
+        ),
+      };
+      const unavailable: RegistrationContextPorts["authority"] = {
+        readCurrent: Effect.fail(
+          new NativeStoreAuthorityPersistenceError("missing", "synthetic", "synthetic"),
+        ),
+      };
+      const cases = [
+        {
+          sources: [],
+          ports: { authority: fenced, build: Effect.succeedNone },
+          reason: "descriptor_absent",
+        },
+        {
+          sources: [{ ...v3T3Source, source_instance_id: "remote" }],
+          ports: { authority: fenced },
+          reason: "authority_fenced",
+        },
+        {
+          sources: [v3T3Source],
+          ports: { authority: unavailable },
+          reason: "authority_unavailable",
+        },
+        {
+          sources: [{ ...v3T3Source, source_instance_id: "remote" }],
+          ports: { build: Effect.succeedNone },
+          reason: "source_mismatch",
+        },
+        {
+          sources: [{ ...v3T3Source, authority_namespace: "wrong", store_generation: 99 }],
+          ports: { build: Effect.succeedNone },
+          reason: "build_unavailable",
+        },
+        {
+          sources: [
+            {
+              ...v3T3Source,
+              authority_namespace: "wrong",
+              store_generation: 99,
+              accepted_native_profiles: ["workstreams-t3-provider/1.0.0"],
+            },
+          ],
+          ports: {},
+          reason: "contract_mismatch",
+        },
+        {
+          sources: [{ ...v3T3Source, authority_namespace: "wrong", store_generation: 99 }],
+          ports: {},
+          reason: "authority_mismatch",
+        },
+        {
+          sources: [{ ...v3T3Source, store_generation: 99 }],
+          ports: {},
+          reason: "generation_mismatch",
+        },
+      ] satisfies ReadonlyArray<{
+        sources: ReadonlyArray<WorkstreamsRegistrationContextV3T3Source>;
+        ports: Partial<RegistrationContextPorts>;
+        reason: Extract<T3RegistrationAvailability, { state: "unavailable" }>["reason"];
+      }>;
+      for (const entry of cases) {
+        const fixture = makeV3RegistrationFixture({
+          ...entry.ports,
+          readRegistrationContext: Effect.succeed(
+            encodeFixtureJson({ ...v3Response, sources: [...entry.sources, githubSource] }),
+          ),
+        });
+        const result = yield* fixture.service.read();
+        assert.deepEqual(result.t3Availability, { state: "unavailable", reason: entry.reason });
+        assert.deepEqual(result.context, { ...v2Response, sources: [githubSource] });
+      }
+    }),
+);
+
+it.effect("v3 retains owner binding, closed decoding and body bounds before qualification", () =>
+  Effect.gen(function* () {
+    for (const changed of [
+      { owner_id: "wrong" },
+      { principal_id: "wrong" },
+      { authorization_revision: 99 },
+    ]) {
+      const fixture = makeV3RegistrationFixture({
+        readRegistrationContext: Effect.succeed(encodeFixtureJson({ ...v3Response, ...changed })),
+      });
+      assert.strictEqual(
+        (yield* fixture.service.read().pipe(Effect.flip)).reason,
+        "binding_mismatch",
+      );
+      assert.strictEqual(fixture.reads.authority, 0);
+    }
+    for (const body of [response, v2Response, { ...v3Response, observed_build: observedBuild }]) {
+      const fixture = makeV3RegistrationFixture({
+        readRegistrationContext: Effect.succeed(encodeFixtureJson(body)),
+      });
+      assert.strictEqual(
+        (yield* fixture.service.read().pipe(Effect.flip)).reason,
+        "invalid_response",
+      );
+      assert.strictEqual(fixture.reads.authority, 0);
+    }
+    for (const makeFixture of [makeRegistrationFixture, makeV2RegistrationFixture]) {
+      const fixture = makeFixture({
+        readRegistrationContext: Effect.succeed(encodeFixtureJson(v3Response)),
+      });
+      assert.strictEqual(
+        (yield* fixture.service.read().pipe(Effect.flip)).reason,
+        "invalid_response",
+      );
+    }
+    for (const [text, reason] of [
+      [
+        encodeFixtureJson(v3Response).padEnd(
+          WORKSTREAMS_REGISTRATION_CONTEXT_MAX_RESPONSE_BYTES + 1,
+          " ",
+        ),
+        "response_too_large",
+      ],
+      ["[".repeat(11) + "null" + "]".repeat(11), "response_too_deep"],
+    ] as const) {
+      const fixture = makeV3RegistrationFixture({ readRegistrationContext: Effect.succeed(text) });
+      assert.strictEqual((yield* fixture.service.read().pipe(Effect.flip)).reason, reason);
+      assert.strictEqual(fixture.reads.authority, 0);
+    }
   }),
 );
