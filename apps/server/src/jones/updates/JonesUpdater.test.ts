@@ -81,6 +81,44 @@ function fixture(overrides: Partial<JonesUpdaterHost> = {}) {
     },
   };
 }
+describe("failed native attempt settlement", () => {
+  const terminal = {
+    status: "failed" as const,
+    id: "11111111-1111-4111-8111-111111111111",
+    fromVersion: "0.0.0-preview.20261002.1",
+    targetVersion: candidate.version,
+    reason: "launcher-restarted",
+  };
+
+  it.each(["launcher-recorded", "legacy-reconciled"] as const)(
+    "shows a %s no-effect failure without rewriting its blocked outcome",
+    (settlement) => {
+      const f = fixture({
+        startupOutcome: () => ({ ...terminal, settlement, cause: "backup refused" }),
+      });
+      expect(f.updater.snapshot()).toMatchObject({
+        updateId: terminal.id,
+        phase: "error",
+        settlement,
+        cause: "backup refused",
+        message: "Update did not start: backup refused. Nothing changed.",
+        outcome: { status: "blocked", reason: "launcher-restarted" },
+      });
+      expect(f.effects).toEqual([]);
+    },
+  );
+
+  it("keeps a failed attempt without proof unresolved", () => {
+    const f = fixture({ startupOutcome: () => terminal });
+    expect(f.updater.snapshot()).toMatchObject({
+      updateId: terminal.id,
+      settlement: "none",
+      message: "Previous attempt needs reconciliation",
+      outcome: { status: "blocked" },
+    });
+  });
+});
+
 describe("installed Jones build time", () => {
   const version = "0.0.45-preview.20261020.42.1";
   const startedAt = "2026-10-20T21:13:43Z";

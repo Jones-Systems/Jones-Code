@@ -171,7 +171,7 @@ async function prepareOnce(
     refuse("Native preparation requires an exact selection claim.");
   const expectedClaim = {
     protocol: 1,
-    preparationClaimProtocol: 2,
+    preparationClaimProtocol: claim.preparationClaimProtocol,
     stagedHandle: input.handle,
     transactionId: input.transactionId,
     selectionPath,
@@ -181,7 +181,10 @@ async function prepareOnce(
     profile: manifest.profile,
     environmentId: input.environmentId,
   };
-  if (!NodeUtil.isDeepStrictEqual(claim, expectedClaim))
+  if (
+    (claim.preparationClaimProtocol !== 2 && claim.preparationClaimProtocol !== 3) ||
+    !NodeUtil.isDeepStrictEqual(claim, expectedClaim)
+  )
     refuse("Native preparation requires the current helper claim protocol.");
   const selection = await boundedJson(selectionPath);
   const selectedApp = selection.value.app;
@@ -204,6 +207,16 @@ async function prepareOnce(
     ...expectedClaim,
     prepared: true,
   };
+  const requireNotWithdrawn = async () => {
+    const withdrawal = await NodeFSP.lstat(
+      NodePath.join(directory, "preparation-withdrawal.json"),
+    ).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (withdrawal !== undefined) refuse("This native preparation was withdrawn.");
+  };
+  await requireNotWithdrawn();
   const prior = await boundedJson(receiptPath).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return undefined;
     dispatch();
@@ -233,12 +246,16 @@ async function prepareOnce(
     },
   );
   if (refused !== undefined) refuse("This preparation claim was already refused.");
+  await requireNotWithdrawn();
   dispatch();
   // The helper's claim prevents discard. A separate durable dispatch record
   // makes a lost backend response an unknown effect, never a repeatable call.
   await publish(NodePath.join(directory, "prepare-dispatched.json"), expectedClaim);
   const marked = await input.prepare();
   try {
+    // A withdrawal fences activation under the helper lock. A backend already
+    // preparing also clears the thread markers returned by its preparation call.
+    await requireNotWithdrawn();
     await publish(receiptPath, receipt);
   } catch (error) {
     await input.clear(marked);

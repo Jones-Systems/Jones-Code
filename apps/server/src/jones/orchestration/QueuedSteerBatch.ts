@@ -27,14 +27,16 @@ type Projection = Pick<
   | "runtimeRequests"
 >;
 
+// Manual steering uses the active turn, like individual Steer. Automatic delivery
+// must still match the configuration captured when each message was queued.
 export function queuedSteerBatchCandidates(
   projection: Projection,
   targetRunId: QueuedSteerBatchCommand["targetRunId"],
-  skipHeld = false,
+  automaticDelivery = false,
 ) {
   const target = projection.runs.find((run) => run.id === targetRunId);
   return queuedRunsInDeliveryOrder(projection).flatMap((run) => {
-    if (skipHeld && run.queueHeld === true) return [];
+    if (automaticDelivery && run.queueHeld === true) return [];
     const message = projection.messages.find((candidate) => candidate.id === run.userMessageId);
     if (message?.delegatedCompletion !== undefined || message?.notification !== undefined)
       return [];
@@ -53,9 +55,10 @@ export function queuedSteerBatchCandidates(
           attempt !== undefined &&
           run.sourcePlanRef === undefined &&
           run.restartContinuationOfRunId === undefined &&
-          run.providerThreadId === target.providerThreadId &&
-          run.providerInstanceId === target.providerInstanceId &&
-          modelSelectionsEqual(run.modelSelection, target.modelSelection) &&
+          (!automaticDelivery ||
+            (run.providerThreadId === target.providerThreadId &&
+              run.providerInstanceId === target.providerInstanceId &&
+              modelSelectionsEqual(run.modelSelection, target.modelSelection))) &&
           !/^\/(?:compact|logout|goal)(?:\s|$)/iu.test(message.text.trim()),
       },
     ];
@@ -65,7 +68,7 @@ export function queuedSteerBatchCandidates(
 export function validateQueuedSteerBatch(
   projection: Projection,
   command: QueuedSteerBatchCommand,
-  skipHeld = false,
+  automaticDelivery = false,
 ) {
   if (projection.thread.archivedAt !== null || projection.thread.deletedAt !== null)
     return { error: "Thread is not active." } as const;
@@ -98,7 +101,7 @@ export function validateQueuedSteerBatch(
     return { error: "Wait for the active command to finish." } as const;
   if (projection.runtimeRequests.some((request) => request.status === "pending"))
     return { error: "Resolve the pending request before steering queued messages." } as const;
-  const candidates = queuedSteerBatchCandidates(projection, target.id, skipHeld);
+  const candidates = queuedSteerBatchCandidates(projection, target.id, automaticDelivery);
   const selected = candidates.slice(0, command.items.length);
   if (
     selected.length !== command.items.length ||

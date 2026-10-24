@@ -155,7 +155,7 @@ NodeTest.test(
           harness,
           "apps/desktop/scripts/ui-evidence/scenarios/two-servers-one-client.mjs",
         ),
-        closure: { packages: [], roots: [] },
+        closure: { source: await NodeFSP.realpath(source), packages: [], roots: [] },
         configuration,
       });
       await stageSecretService(selected, stage, f);

@@ -399,7 +399,7 @@ async function stagingFixture(t) {
     harness,
     scenario,
     run: { root: NodePath.join(root, "run") },
-    closure: { packages: [], roots: [] },
+    closure: { source: await NodeFSP.realpath(source), packages: [], roots: [] },
     configuration: {},
   };
 }

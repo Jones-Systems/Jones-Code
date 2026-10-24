@@ -287,6 +287,31 @@ user unit, change the database, run migrations or claim child Install. Other
 active builds, homes with native service state or an adoption record, and
 already-owned drop-ins are refused.
 
+Completed system adoption remains bound by the existing
+`runtime/jones-system-adoption.json` receipt. Service status targets its exact
+system unit. Install, repair, reinstall, restart and uninstall through the user
+service commands refuse with an external administrator prerequisite; they never
+create or remove a competing user unit. Routine qualified child updates continue
+through the existing launcher without privileged unit writes. A damaged, pending,
+partial or contradictory receipt requires reconciliation, not deletion or a
+fallback to user-service setup.
+
+The recognized priority policy is the exact unit's `90-jones-priority.conf`, a
+root:root regular file with mode `0644` containing exactly `[Service]\nNice=-15\n`.
+Adoption validates effective `Nice=-15` when this policy is present; bound service
+status requires the policy. Both reject later readable `Nice` directives, extra effective drop-ins from another scope, and any drop-in sorting
+after the owned launcher drop-in. This includes a later environment-only file;
+its settings need explicit reconciliation before adoption. An older completed
+receipt may predate this independently installed priority file. Only that exact,
+validated policy can be added without changing the original preimage binding;
+every other preimage file must still match. Status checks the owned launcher
+file's root ownership, mode and canonical path without reading its protected
+contents; the receipt and effective launcher command bind the runtime selection.
+It does not rehash a root-only launcher file. An external CLI outside the service
+cgroup cannot infer a missing receipt from the unit name alone. Restore a missing
+binding through explicit administrator reconciliation rather than using ordinary
+user-service setup.
+
 The unit's effective `ExecStart` must run the retained executable as `serve`
 with only `--host`, `--port`, `--base-dir` and `--mode`. The one other accepted
 form is the historical `start` with those flags, `--mode web`, and

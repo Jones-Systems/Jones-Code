@@ -27,10 +27,13 @@
         "setup-worktree.ts",
         "smoke-cli-archive.ts",
         "jones/ci-test-progress-reporter.ts",
+        "jones/ci/chromium-setup.mjs",
+        "jones/ci/chromium-setup.node-test.mjs",
         "jones/server-shard-weights/select.ts",
         "jones/server-shard-weights/aggregate-cli.ts",
         // Xvfb invokes this native Chromium qualifier through a wrapper command.
         "jones/updates/native-startup-chromium.mjs",
+        "jones/updates/digest-benchmark.ts",
         "jones/performance/*.node-test.mjs",
         "jones/performance/*.d.mts",
         "jones/performance/prepare-sources.mjs",
@@ -102,6 +105,8 @@
         "scripts/ui-evidence/scenarios/example.mjs",
         "scripts/ui-evidence/scenarios/sidebar-rename.mjs",
         "scripts/ui-evidence/scenarios/two-servers-one-client.mjs",
+        "scripts/ui-evidence/scenarios/thread-self-configure.mjs",
+        "scripts/ui-evidence/thread-self-configure-support.mjs",
       ],
       // The injected runtime resolves Playwright by string; release tooling runs
       // electron-builder from this workspace, outside its package scripts.

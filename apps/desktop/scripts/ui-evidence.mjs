@@ -113,10 +113,10 @@ async function runEvidence(options) {
   const secretService = await prepareSecretService(options["secret-service"]);
   const outerStart = performance.now();
   const timing = {};
-  const checked = await doctor(options.source);
+  const source = await NodeFSP.realpath(options.source);
+  const checked = await doctor(source);
   timing.preflightSeconds = (performance.now() - outerStart) / 1000;
   if (checked.outcome !== "complete") return { code: 2, ...checked };
-  const source = await NodeFSP.realpath(options.source);
   const scenarioId = options.scenario || "sidebar-rename";
   const scenario =
     scenarioId === "sidebar-rename"
