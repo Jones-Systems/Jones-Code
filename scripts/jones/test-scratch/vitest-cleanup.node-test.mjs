@@ -37,7 +37,7 @@ for (const mode of ["pass", "fail"]) {
       const scratch = NodePath.join(root, "tmp");
       NodeFS.mkdirSync(scratch);
       child = NodeChildProcess.fork(
-        NodePath.join(import.meta.dirname, "vitest-cleanup-worker.mjs"),
+        new URL("./vitest-cleanup-worker.mjs", import.meta.url),
         [root, vitestPackage, mode],
         {
           env: { ...process.env, TMPDIR: scratch, TMP: scratch, TEMP: scratch },
