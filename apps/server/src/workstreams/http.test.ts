@@ -579,7 +579,12 @@ it.effect("both live consumers share one file snapshot and keep it until the nex
       .join("");
     NodeFS.writeFileSync(file, bytes, { mode: 0o600 });
     NodeFS.writeFileSync(NodePath.join(base, "environment-id"), "environment-startup\n");
-    for (const key of Object.keys(environment)) vi.stubEnv(key, undefined);
+    for (const key of [
+      ...Object.keys(environment),
+      "T3_WORKSTREAM_REGISTRY_BINDING",
+      "T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION",
+    ])
+      vi.stubEnv(key, undefined);
     const opened = vi.spyOn(NodeFS, "openSync");
     const requests: Headers[] = [];
     vi.stubGlobal("fetch", async (_input: unknown, init: RequestInit) => {
@@ -622,6 +627,24 @@ it.effect("both live consumers share one file snapshot and keep it until the nex
         "principal-startup",
         "principal-startup",
       ]);
+      expect(process.env.T3_WORKSTREAM_SIGNING_SECRET).toBeUndefined();
+    }).pipe(Effect.provide(live));
+    expect(opened.mock.calls.filter(([path]) => path === file)).toHaveLength(1);
+    vi.stubEnv("T3_WORKSTREAM_PRINCIPAL_ID", undefined);
+    yield* Effect.gen(function* () {
+      const gateway = yield* WorkstreamGateway;
+      const registration = yield* WorkstreamsRegistrationContext;
+      expect(opened.mock.calls.filter(([path]) => path === file)).toHaveLength(2);
+      yield* gateway.readMetadata({}).pipe(Effect.result);
+      yield* registration.read().pipe(Effect.result);
+      expect(requests).toHaveLength(4);
+      expect(requests.map((headers) => headers.get("x-control-principal-id"))).toEqual([
+        "principal-startup",
+        "principal-startup",
+        "principal-replaced",
+        "principal-replaced",
+      ]);
+      expect(opened.mock.calls.filter(([path]) => path === file)).toHaveLength(2);
       expect(process.env.T3_WORKSTREAM_SIGNING_SECRET).toBeUndefined();
     }).pipe(Effect.provide(live));
   }),

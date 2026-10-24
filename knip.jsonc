@@ -3,7 +3,7 @@
   // Exported types are part of our contracts even before they have consumers.
   "rules": { "types": "off", "nsTypes": "off" },
   // These executables are supplied by the OS or installed separately from npm.
-  "ignoreBinaries": ["eas", "file", "mkfifo", "pkill", "pkg-config", "plutil", "sips"],
+  "ignoreBinaries": ["cc", "eas", "file", "mkfifo", "pkill", "pkg-config", "plutil", "sips"],
   "workspaces": {
     ".": {
       // Keep vendored reference repositories outside the root project.
@@ -78,6 +78,7 @@
         "integration/jones-e2e/physicalHost.ts",
         "integration/jones-e2e/physicalHost.worker.ts",
         "src/provider/testFixtures/*.mjs",
+        "src/jones/workstreams/operations/fullAppFixture.ts",
         // Staged native creation substrate is consumed by the deferred L39 execution slice.
         // Analyzer entries preserve these APIs without registering runtime authority or launch.
         "src/jones/nativeCreation/NativeCreationPreparation.ts",
@@ -143,6 +144,7 @@
         "src/jones/updates/fixtures/client-update-notices-entry.tsx",
         // The PR read fixture HTML loads this synthetic verification entry.
         "src/jones/pullRequestReads/fixtures/pr-read-pause-entry.tsx",
+        "src/jones/workstreams/operationsPreview.tsx",
         // Evidence fixtures run under node.
         "test/fixtures/**/*.mjs",
       ],

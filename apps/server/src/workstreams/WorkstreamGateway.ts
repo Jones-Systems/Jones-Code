@@ -14,14 +14,14 @@ import {
   type T3WorkstreamListResult,
   type Workstream,
   type WorkstreamCapabilities,
-  type WorkstreamCommand,
+  WorkstreamCommand,
   type WorkstreamDeclarationPage,
   type WorkstreamDetail,
   type WorkstreamEdgePage,
   type WorkstreamHistoryPage,
   type WorkstreamMembershipPage,
   type WorkstreamPage,
-  type WorkstreamReceipt,
+  WorkstreamReceipt,
   type WorkstreamReferenceDetail,
   type WorkstreamReferencePage,
   T3PlacementPage,
@@ -111,6 +111,19 @@ interface ContractInput {
   readonly contractManifest: typeof WORKSTREAM_CONTRACT_MANIFEST_SHA256;
 }
 
+export type WorkstreamReceiptRead =
+  | { readonly kind: "receipt"; readonly receipt: WorkstreamReceipt }
+  | { readonly kind: "absent" };
+
+export type WorkstreamReceiptRecovery = WorkstreamReceiptRead & {
+  /** Capabilities version observed before the receipt request; absence alone proves nothing. */
+  readonly witness_version: number;
+};
+
+export type WorkstreamRecoverySubmitResult =
+  | { readonly kind: "receipt"; readonly receipt: WorkstreamReceipt }
+  | { readonly kind: "idempotency_conflict" };
+
 import type {
   WorkstreamAppearanceResult,
   WorkstreamAppearanceWrite,
@@ -118,6 +131,17 @@ import type {
 } from "@t3tools/contracts";
 
 export interface WorkstreamTransport {
+  /** Only a verified frozen-contract not_found response may produce absent. */
+  readonly readCommandReceipt?: (
+    input: { readonly commandId: string } & ContractInput,
+  ) => Effect.Effect<WorkstreamReceiptRead, WorkstreamTransportError>;
+  readonly resubmitCommand?: (
+    input: {
+      readonly body: string;
+      readonly command: WorkstreamCommand;
+      readonly idempotencyKey: string;
+    } & ContractInput,
+  ) => Effect.Effect<WorkstreamRecoverySubmitResult, WorkstreamTransportError>;
   readonly getCountsCapabilities?: () => Effect.Effect<
     WorkstreamCountsCapabilities,
     WorkstreamTransportError
@@ -238,6 +262,14 @@ export class WorkstreamGateway extends Context.Service<
     readonly pollCommand: (
       commandId: string,
     ) => Effect.Effect<WorkstreamReceipt, WorkstreamGatewayError>;
+    readonly readReceipt: (
+      commandId: string,
+    ) => Effect.Effect<WorkstreamReceiptRecovery, WorkstreamGatewayError>;
+    /** Sends retained UTF-8 JSON unchanged. Every failure leaves any prior attempt unresolved. */
+    readonly resubmit: (
+      commandId: string,
+      retainedBody: string,
+    ) => Effect.Effect<WorkstreamRecoverySubmitResult, WorkstreamGatewayError>;
     readonly submit: (
       command: WorkstreamCommand,
     ) => Effect.Effect<WorkstreamReceipt, WorkstreamGatewayError>;
@@ -703,6 +735,65 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
         .pipe(Effect.mapError(transportFailure));
       return yield* validateReceipt(receipt, commandId, undefined, undefined, authorized.binding);
     });
+    const recoveryFailure = (cause: unknown) =>
+      new WorkstreamGatewayError({
+        reason: "unknown-effect",
+        detail: "Command recovery did not establish an outcome.",
+        cause,
+      });
+    const readReceipt = Effect.fn("WorkstreamGateway.readReceipt")(function* (
+      commandId: string,
+    ): Effect.fn.Return<WorkstreamReceiptRecovery, WorkstreamGatewayError> {
+      return yield* Effect.gen(function* () {
+        // These reads are separate CP snapshots: the witness must come first.
+        const authorized = yield* authorize("workstreams:read");
+        if (!transport.readCommandReceipt) return yield* recoveryFailure(undefined);
+        const result = yield* transport.readCommandReceipt({ commandId, ...contractInput });
+        if (result.kind === "receipt") {
+          const receipt = yield* Schema.decodeUnknownEffect(WorkstreamReceipt)(result.receipt, {
+            onExcessProperty: "error",
+          });
+          yield* validateReceipt(receipt, commandId, undefined, undefined, authorized.binding);
+        }
+        return { ...result, witness_version: authorized.binding.registryVersion };
+      }).pipe(Effect.mapError(recoveryFailure));
+    });
+    const resubmit = Effect.fn("WorkstreamGateway.resubmit")(function* (
+      commandId: string,
+      retainedBody: string,
+    ): Effect.fn.Return<WorkstreamRecoverySubmitResult, WorkstreamGatewayError> {
+      return yield* Effect.gen(function* () {
+        const authorized = yield* authorize("workstreams:write");
+        const command = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(WorkstreamCommand))(
+          retainedBody,
+          { onExcessProperty: "error" },
+        );
+        if (command.command_id !== commandId || !transport.resubmitCommand)
+          return yield* recoveryFailure(undefined);
+        // CP atomically checks retained bytes before deciding a fresh command. Local revision,
+        // generation and digest guards cannot resolve an earlier dispatch or an absent index.
+        const result = yield* transport.resubmitCommand({
+          body: retainedBody,
+          command,
+          idempotencyKey: commandId,
+          ...contractInput,
+        });
+        if (result.kind === "receipt") {
+          const receipt = yield* Schema.decodeUnknownEffect(WorkstreamReceipt)(result.receipt, {
+            onExcessProperty: "error",
+          });
+          yield* validateReceipt(
+            receipt,
+            commandId,
+            command.action.operation,
+            NodeCrypto.createHash("sha256").update(retainedBody).digest("hex"),
+            authorized.binding,
+          );
+        }
+        pageCache.clear();
+        return result;
+      }).pipe(Effect.mapError(recoveryFailure));
+    });
     const submit = Effect.fn("WorkstreamGateway.submit")(function* (command: WorkstreamCommand) {
       const authorized = yield* authorize("workstreams:write").pipe(
         Effect.mapError((error) =>
@@ -908,6 +999,8 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
           input,
         ),
       pollCommand,
+      readReceipt,
+      resubmit,
       submit,
       purgeAuthorization,
     });

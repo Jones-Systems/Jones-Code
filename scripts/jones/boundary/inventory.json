@@ -222,6 +222,7 @@
     "apps/desktop/src/shell/DesktopShellEnvironment.ts": "hook",
     "apps/mobile/src/components/CompactBrandTitle.tsx": "accepted-shared",
     "apps/mobile/src/components/T3Wordmark.tsx": "accepted-shared",
+    "apps/mobile/src/features/diffs/nativeReviewDiffHighlighter.test.ts": "accepted-shared",
     "apps/mobile/src/features/home/HomeScreen.tsx": "accepted-shared",
     "apps/mobile/src/features/review/shikiReviewHighlighter.test.ts": "jones-tests-in-upstream",
     "apps/mobile/src/features/settings/SettingsEnvironmentDetailRouteScreen.tsx": "hook",
@@ -927,6 +928,7 @@
     "packages/contracts/src/jones/environmentHttpGroups.test.ts": "jones-tests-in-upstream",
     "packages/contracts/src/jones/environmentHttpGroups.ts": "jones-owned",
     "packages/contracts/src/jones/fixtures/work_queue_metadata_v1.json.fixture": "jones-owned",
+    "packages/contracts/src/jones/fixtures/work_queue_metadata_v4.json.fixture": "jones-owned",
     "packages/contracts/src/jones/organizationMetadata.test.ts": "jones-tests-in-upstream",
     "packages/contracts/src/jones/organizationMetadata.ts": "jones-owned",
     "packages/contracts/src/jones/providerRuntimeIdentity.test.ts": "jones-tests-in-upstream",
@@ -1740,6 +1742,28 @@
     "packages/shared/src/jones/workstreamsRegistryBinding/contract/vectors.sha256.raw": "jones-owned",
     "apps/server/src/jones/workstreams/testing/loopbackControlPlane.fixture.mjs": "jones-owned",
     "apps/server/src/jones/workstreams/testing/loopbackControlPlane.fixture.d.mts": "jones-owned",
+    "packages/contracts/contracts/workstream-operations/v1/README.md": "jones-owned",
+    "packages/contracts/contracts/workstream-operations/v1/fixtures/conformance.json": "jones-owned",
+    "packages/contracts/contracts/workstream-operations/v1/fixtures/negative-cases.json": "jones-owned",
+    "packages/contracts/contracts/workstream-operations/v1/fixtures/semantic-cases.json": "jones-owned",
+    "packages/contracts/contracts/workstream-operations/v1/manifest.json": "jones-owned",
+    "packages/contracts/contracts/workstream-operations/v1/schemas/operation-request.schema.json": "jones-owned",
+    "packages/contracts/contracts/workstream-operations/v1/schemas/operation-result.schema.json": "jones-owned",
+    "packages/contracts/contracts/workstream-operations/v1/schemas/setup-status.schema.json": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/encoding.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/http.integration.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/live.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/loopbackFixture.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/ports.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/service.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/service.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/testFixtures.ts": "jones-owned",
+    "apps/server/src/jones/mcp/workstreams/tools.ts": "jones-owned",
+    "apps/server/src/jones/mcp/workstreams/handlers.ts": "jones-owned",
+    "apps/server/src/jones/mcp/workstreams/handlers.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/cli.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/cli.test.ts": "jones-owned",
+    "apps/server/src/jones/mcp/workstreams/registration.test.ts": "jones-owned",
     "apps/server/src/pullRequest/PullRequestReadCache.ts": "accepted-shared",
     "apps/server/src/pullRequest/PullRequestReadCache.test.ts": "jones-tests-in-upstream",
     "apps/server/src/jones/pullRequest/pullRequestScopeLocks.ts": "jones-owned",
@@ -1805,6 +1829,26 @@
     "scripts/jones/e2e/acp-stub/agent.mjs": "jones-owned",
     "scripts/jones/e2e/acp-stub/agent.node-test.mjs": "jones-owned",
     "apps/desktop/scripts/ui-evidence/support/pin-oracle.mjs": "jones-owned",
+    "apps/mobile/src/features/workstreams/Controls.operations.test.tsx": "jones-owned",
+    "apps/mobile/src/features/workstreams/operations.test.ts": "jones-owned",
+    "apps/web/src/jones/workstreams/SetupStatusContent.browser.test.tsx": "jones-owned",
+    "apps/web/src/jones/workstreams/SetupStatusContent.tsx": "jones-owned",
+    "apps/web/src/jones/workstreams/WorkstreamPicker.browser.test.tsx": "jones-owned",
+    "apps/web/src/jones/workstreams/WorkstreamPicker.tsx": "jones-owned",
+    "apps/web/src/jones/workstreams/WorkstreamsSetupStatus.tsx": "jones-owned",
+    "apps/web/src/jones/workstreams/environmentOperationsTransport.test.ts": "jones-owned",
+    "apps/web/src/jones/workstreams/environmentWorkstreamsRequest.ts": "jones-owned",
+    "apps/web/src/jones/workstreams/operations-preview.html": "jones-owned",
+    "apps/web/src/jones/workstreams/operations.fixtures.ts": "jones-owned",
+    "apps/web/src/jones/workstreams/operationsPreview.tsx": "jones-owned",
+    "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx": "jones-owned",
+    "apps/web/src/jones/workstreams/useWorkstreamOperations.browser.test.tsx": "jones-owned",
+    "apps/web/src/jones/workstreams/useWorkstreamOperations.ts": "jones-owned",
+    "apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx": "jones-owned",
+    "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx": "jones-owned",
+    "packages/client-runtime/src/jones/workstreams/operations.test.ts": "jones-owned",
+    "packages/client-runtime/src/jones/workstreams/operations.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/fullAppFixture.ts": "jones-owned",
     "packages/contracts/src/jones/threadActivitySettings.ts": "jones-owned",
     "packages/contracts/src/jones/threadActivitySettings.test.ts": "jones-owned",
     "apps/web/src/jones/threadStatusFilter/ThreadActivitySettings.tsx": "jones-owned"
@@ -1900,6 +1944,10 @@
     "apps/web/src/jones/usage/SavedTokenAccounting.test.tsx"
   ],
   "allowedImports": [
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "packages/client-runtime/src/jones/workQueueMetadata.ts"
+    },
     {
       "from": "apps/desktop/src/app/DesktopUserData.ts",
       "to": "apps/desktop/src/app/DesktopUserDataOverride.ts"
@@ -2393,6 +2441,22 @@
       "to": "apps/server/src/jones/scheduledTasks/fifoPermit.ts"
     },
     {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/workstreams/tools.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/workstreams/handlers.ts"
+    },
+    {
+      "from": "apps/server/src/environment/ServerEnvironment.ts",
+      "to": "packages/contracts/src/jones/workstreamOperations.ts"
+    },
+    {
+      "from": "packages/contracts/src/environment.ts",
+      "to": "packages/contracts/src/jones/workstreamOperations.ts"
+    },
+    {
       "from": "apps/server/src/ws.test.ts",
       "to": "apps/server/src/orchestration-v2/QueueCompatibility.ts"
     },
@@ -2487,6 +2551,10 @@
     {
       "from": "apps/web/src/components/chat/useComposerSend.ts",
       "to": "apps/web/src/jones/threadConfiguration/composerSelection.ts"
+    },
+    {
+      "from": "apps/web/src/routes/settings.jones-code.tsx",
+      "to": "apps/web/src/jones/workstreams/WorkstreamsSetupStatus.tsx"
     }
   ]
 }

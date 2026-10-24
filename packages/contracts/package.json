@@ -7,6 +7,10 @@
   ],
   "type": "module",
   "exports": {
+    "./jones/workstreamOperations": {
+      "types": "./src/jones/workstreamOperations.ts",
+      "import": "./src/jones/workstreamOperations.ts"
+    },
     "./jones/shellDestinationFence": {
       "types": "./src/jones/shellDestinationFence.ts",
       "import": "./src/jones/shellDestinationFence.ts"

@@ -263,6 +263,9 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
 
       expect(first.environmentId).toBe(second.environmentId);
       expect(first.orchestrationProtocolVersion).toBe(ORCHESTRATION_PROTOCOL_VERSION);
+      expect(second.capabilities.workstreamOperations).toEqual({
+        contract: "workstream-operations/1.0.0",
+      });
       expect(second.capabilities.repositoryIdentity).toBe(true);
       expect(second.capabilities.connectionProbe).toBe(true);
       expect(second.capabilities.attachmentUploads).toBe(true);
@@ -522,6 +525,9 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
         });
         expect(descriptor.capabilities.workQueueMetadata).toBe(true);
       }
+      expect(second.capabilities.workstreamOperations).toEqual({
+        contract: "workstream-operations/1.0.0",
+      });
       expect(second.capabilities.repositoryIdentity).toBe(true);
       expect(second.capabilities.worktreeDefaultBase).toBe(true);
       expect(second.capabilities.queuedToolBoundaryDelivery).toBe(true);

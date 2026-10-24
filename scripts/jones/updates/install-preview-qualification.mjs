@@ -1568,7 +1568,14 @@ export function rendererSteps(origin, sourceSha, runId) {
   exactCase("staged-other", "staged-other");
   exactState("It will not be installed from this notice.");
   noExactButton("Another staged source offers no action");
-  capture("exact-source-staged-other", ["This host has source", "downloaded"]);
+  capture("exact-source-staged-other", [
+    "This host has source",
+    "downloaded",
+    `this app needs ${shortSource}`,
+    "It will not be installed from this notice.",
+    "Settings → Connections",
+    "Installing it there will not match this app.",
+  ]);
   noBridge();
 
   exactCase("legacy-mismatch", "legacy-mismatch");

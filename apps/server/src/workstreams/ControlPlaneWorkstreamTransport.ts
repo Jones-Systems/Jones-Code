@@ -57,6 +57,8 @@ import {
   WORKSTREAM_ACTIVATION_DISABLED_DETAIL,
   WorkstreamTransportError,
   WorkstreamVerifiedPreDispatchRefusal,
+  type WorkstreamReceiptRead,
+  type WorkstreamRecoverySubmitResult,
   type WorkstreamTransport,
 } from "./WorkstreamGateway.ts";
 
@@ -101,6 +103,15 @@ class BoundedTransportFailure extends Error {
   ) {
     super(reason);
     this.reason = reason;
+  }
+}
+
+class VerifiedRecoveryResponse extends Error {
+  readonly code: "not_found" | "idempotency_conflict";
+
+  constructor(code: "not_found" | "idempotency_conflict") {
+    super(code);
+    this.code = code;
   }
 }
 
@@ -209,16 +220,33 @@ async function readBoundedResponse(
   }
 }
 
-function decodeResponse(response: Response, bytes: Buffer): string {
+function decodeResponse(
+  response: Response,
+  bytes: Buffer,
+  recovery?: "receipt" | "submit",
+): string {
   const body = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   if (!response.ok) {
     try {
       const error = Schema.decodeUnknownSync(Schema.fromJsonString(WorkstreamError))(body, {
         onExcessProperty: "error",
       });
+      if (
+        recovery !== undefined &&
+        response.headers.get("x-control-contract-version") === WORKSTREAM_CONTRACT_HEADER_VERSION &&
+        response.headers.get("x-control-contract-manifest") ===
+          WORKSTREAM_CONTRACT_MANIFEST_SHA256 &&
+        error.status === response.status
+      ) {
+        if (recovery === "receipt" && error.code === "not_found")
+          throw new VerifiedRecoveryResponse(error.code);
+        if (recovery === "submit" && error.code === "idempotency_conflict")
+          throw new VerifiedRecoveryResponse(error.code);
+      }
       if (error.code === "cursor_stale") throw new BoundedTransportFailure("cursor_stale");
     } catch (cause) {
-      if (cause instanceof BoundedTransportFailure) throw cause;
+      if (cause instanceof BoundedTransportFailure || cause instanceof VerifiedRecoveryResponse)
+        throw cause;
     }
     throw new BoundedTransportFailure("http_error");
   }
@@ -230,6 +258,7 @@ async function performRequest(input: {
   readonly config: ControlPlaneWorkstreamActivation;
   readonly registrationContextVersion?: WorkstreamsRegistrationContextVersion | null;
   readonly countsContract?: boolean;
+  readonly recovery?: "receipt" | "submit";
   readonly responseContractHeaders?: "required" | "optional";
   readonly method: "GET" | "POST";
   readonly target: string;
@@ -401,7 +430,7 @@ async function performRequest(input: {
     await response.body?.cancel();
     throw new BoundedTransportFailure("http_error");
   }
-  return decodeResponse(response, bytes);
+  return decodeResponse(response, bytes, input.recovery);
 }
 
 export function makeControlPlaneWorkstreamTransport(
@@ -460,6 +489,7 @@ export function makeControlPlaneWorkstreamTransport(
     body = "",
     idempotencyKey?: string,
     countsContract = false,
+    recovery?: "receipt" | "submit",
   ): Effect.Effect<S["Type"], WorkstreamTransportError, S["DecodingServices"]> => {
     const runEffect = Effect.fn("ControlPlaneWorkstreamTransport.request")(function* () {
       const sentAt = DateTime.formatIso(yield* DateTime.now);
@@ -473,8 +503,11 @@ export function makeControlPlaneWorkstreamTransport(
             body,
             sentAt,
             countsContract,
+            ...(recovery === undefined ? {} : { recovery }),
             responseContractHeaders:
-              operation === "get_command" || operation === "submit_command"
+              operation === "get_command" ||
+              operation === "submit_command" ||
+              recovery !== undefined
                 ? "optional"
                 : "required",
             ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
@@ -483,8 +516,11 @@ export function makeControlPlaneWorkstreamTransport(
         catch: (cause) =>
           new WorkstreamTransportError({
             operation,
-            ...(cause instanceof RegistryBindingRefusal ? { cause } : {}),
+            ...(cause instanceof RegistryBindingRefusal || cause instanceof VerifiedRecoveryResponse
+              ? { cause }
+              : {}),
             effect:
+              recovery !== undefined ||
               config.registryBinding !== undefined ||
               (method === "POST" &&
                 operation !== "thread_placements" &&
@@ -507,6 +543,7 @@ export function makeControlPlaneWorkstreamTransport(
               new WorkstreamTransportError({
                 operation,
                 effect:
+                  recovery !== undefined ||
                   config.registryBinding !== undefined ||
                   (method === "POST" &&
                     operation !== "thread_placements" &&
@@ -526,6 +563,7 @@ export function makeControlPlaneWorkstreamTransport(
             new WorkstreamTransportError({
               operation,
               effect:
+                recovery !== undefined ||
                 config.registryBinding !== undefined ||
                 (method === "POST" &&
                   operation !== "thread_placements" &&
@@ -600,6 +638,43 @@ export function makeControlPlaneWorkstreamTransport(
       authorizationRevision: config.authorizationRevision,
     },
     transport: {
+      readCommandReceipt: ({ commandId }) =>
+        request(
+          "read_command_receipt",
+          "GET",
+          `/workstreams/v1/commands/${encodeURIComponent(commandId)}`,
+          WorkstreamReceipt,
+          "",
+          undefined,
+          false,
+          "receipt",
+        ).pipe(
+          Effect.map((receipt): WorkstreamReceiptRead => ({ kind: "receipt", receipt })),
+          Effect.catch((error) =>
+            error.cause instanceof VerifiedRecoveryResponse && error.cause.code === "not_found"
+              ? Effect.succeed<WorkstreamReceiptRead>({ kind: "absent" })
+              : Effect.fail(error),
+          ),
+        ),
+      resubmitCommand: ({ body, idempotencyKey }) =>
+        request(
+          "resubmit_command",
+          "POST",
+          "/workstreams/v1/commands",
+          WorkstreamReceipt,
+          body,
+          idempotencyKey,
+          false,
+          "submit",
+        ).pipe(
+          Effect.map((receipt): WorkstreamRecoverySubmitResult => ({ kind: "receipt", receipt })),
+          Effect.catch((error) =>
+            error.cause instanceof VerifiedRecoveryResponse &&
+            error.cause.code === "idempotency_conflict"
+              ? Effect.succeed<WorkstreamRecoverySubmitResult>({ kind: "idempotency_conflict" })
+              : Effect.fail(error),
+          ),
+        ),
       readAppearance: (input) =>
         request(
           "appearance_read",
