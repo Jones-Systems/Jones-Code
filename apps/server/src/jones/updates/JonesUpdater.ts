@@ -60,6 +60,9 @@ export interface JonesUpdaterHost {
         fromVersion: string;
         targetVersion: string;
         reason?: string;
+        settlement?: JonesUpdateState["settlement"];
+        settlementRefusal?: JonesUpdateState["settlementRefusal"];
+        cause?: string;
       }
     | undefined;
 }
@@ -165,13 +168,23 @@ export class JonesUpdater {
         ? {}
         : {
             updateId: this.state.updateId ?? outcome.id,
+            ...(outcome.status !== "failed"
+              ? {}
+              : {
+                  settlement: outcome.settlement ?? "none",
+                  ...(outcome.cause === undefined ? {} : { cause: outcome.cause }),
+                  ...(outcome.settlementRefusal === undefined
+                    ? {}
+                    : { settlementRefusal: outcome.settlementRefusal }),
+                }),
             outcome: {
               status: outcome.status === "failed" ? ("blocked" as const) : outcome.status,
               fromVersion: outcome.fromVersion,
               targetVersion: outcome.targetVersion,
               ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
             },
-            ...(this.revision === 0 && this.state.stagedHandle === undefined
+            ...((this.revision === 0 || this.state.phase === "error") &&
+            this.state.stagedHandle === undefined
               ? {
                   phase: outcome.status === "failed" ? ("error" as const) : outcome.status,
                   message:
@@ -179,12 +192,20 @@ export class JonesUpdater {
                       ? "The selected Jones runtime was installed."
                       : outcome.status === "rolled-back"
                         ? "Installation rolled back to its retained binary and state pair."
-                        : "Native installation requires reconciliation.",
+                        : outcome.settlement === "launcher-recorded" ||
+                            outcome.settlement === "legacy-reconciled"
+                          ? `Update did not start: ${outcome.cause ?? "cause unavailable"}. Nothing changed.`
+                          : "Previous attempt needs reconciliation",
                 }
               : {}),
           }),
       revision: this.revision,
     };
+  }
+
+  /** Notify observers after the host rereads this attempt's supplemental settlement evidence. */
+  refreshStartupOutcome(): JonesUpdateState {
+    return this.publish({});
   }
 
   /**

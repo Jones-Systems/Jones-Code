@@ -247,19 +247,129 @@ NodeTest.test(
   },
 );
 
-NodeTest.test("a deliberately wrong renderer assertion cannot pass", () => {
-  const snapshot = { visibleText: "Jones main · Setup required" };
-  assertVisible(snapshot, "Setup required");
-  assertVisible(snapshot, "Committed", true);
-  NodeAssert.throws(() => assertVisible(snapshot, "Committed"), /Missing visible text/);
-  NodeAssert.throws(
-    () => assertVisible(snapshot, "Setup required", true),
-    /Unexpected visible text/,
-  );
-  NodeAssert.throws(
-    () => assertVisible({ screenshotPath: "/owned/image.png" }, "Setup required"),
+NodeTest.test("a deliberately wrong renderer assertion cannot pass", async () => {
+  const call = async (name, { tabId, expression }) => {
+    NodeAssert.equal(name, "preview_evaluate");
+    NodeAssert.equal(tabId, "owned-tab");
+    return {
+      value: new Function("document", `return ${expression}`)({
+        body: { innerText: "Jones main · Setup required" },
+      }),
+    };
+  };
+  await assertVisible(call, "owned-tab", { contains: ["Setup required"], excludes: ["Committed"] });
+  await NodeAssert.rejects(
+    assertVisible(call, "owned-tab", { contains: ["Committed"] }),
     /Missing visible text/,
   );
+  await NodeAssert.rejects(
+    assertVisible(call, "owned-tab", { excludes: ["Setup required"] }),
+    /Unexpected visible text/,
+  );
+});
+
+NodeTest.test(
+  "text assertions reject incomplete, invalid, and unavailable evaluations",
+  async () => {
+    for (const value of [
+      undefined,
+      "Setup required",
+      [],
+      [true],
+      [true, undefined],
+      [true, false, false],
+    ])
+      await NodeAssert.rejects(
+        assertVisible(async () => ({ value }), "owned-tab", {
+          contains: ["Setup required"],
+          excludes: ["Committed"],
+        }),
+      );
+    const failure = new Error("Preview unavailable");
+    await NodeAssert.rejects(
+      assertVisible(
+        async () => {
+          throw failure;
+        },
+        "owned-tab",
+        { contains: ["Setup required"] },
+      ),
+      (error) => error === failure,
+    );
+  },
+);
+
+NodeTest.test("capture assertions inspect text beyond the snapshot budget", async (t) => {
+  const prefix = "Connections settings\n".repeat(80);
+  const phrase = 'Source matches this app. "quoted"\nsecond line';
+  for (const fixture of [
+    { name: "required text after the cutoff", text: phrase },
+    { name: "missing required text", text: "Other source", error: /Missing visible text/ },
+    {
+      name: "forbidden text after the cutoff",
+      text: `${phrase}\nForbidden status`,
+      contains: [],
+      error: /Unexpected visible text/,
+    },
+  ]) {
+    await t.test(fixture.name, async () => {
+      const innerText = `${prefix}${fixture.text}\nSYNTHETIC_UNRELATED_PAGE_TEXT`;
+      const snapshot = {
+        visibleText: prefix.slice(0, 736),
+        omitted: ["visibleText after 736 characters (use preview_evaluate for more)"],
+        screenshotPath: "/owned/capture.png",
+      };
+      const values = [];
+      const client = {
+        callTool: async ({ name, arguments: args }) => {
+          if (name === "preview_evaluate") {
+            NodeAssert.equal(args.tabId, "owned-tab");
+            const value = new Function("document", `return ${args.expression}`)({
+              body: { innerText },
+            });
+            values.push(value);
+            return { structuredContent: { value } };
+          }
+          return {
+            structuredContent:
+              name === "preview_open"
+                ? { tabId: "owned-tab" }
+                : name === "preview_snapshot"
+                  ? snapshot
+                  : {},
+          };
+        },
+      };
+      const report = { calls: [], captures: [], negativeControls: {} };
+      const run = runScenario(
+        client,
+        {
+          origin: "http://127.0.0.1",
+          pairingUrl: "http://127.0.0.1/pair",
+          initialText: "Connections",
+          steps: [
+            {
+              action: "capture",
+              name: "bounded-snapshot",
+              contains: fixture.contains ?? [phrase],
+              excludes: ["Forbidden status"],
+            },
+          ],
+        },
+        report,
+      );
+      if (fixture.error) await NodeAssert.rejects(run, fixture.error);
+      else {
+        await run;
+        NodeAssert.equal(report.negativeControls.wrongUiAssertion, "rejected");
+      }
+      NodeAssert.equal(report.nativeTabClosed, true);
+      NodeAssert.deepEqual(report.captures, [{ name: "bounded-snapshot", snapshot }]);
+      NodeAssert.ok(values.length > 0);
+      NodeAssert.ok(values.every((value) => value.every((match) => typeof match === "boolean")));
+      NodeAssert.ok(!JSON.stringify(report).includes("SYNTHETIC_UNRELATED_PAGE_TEXT"));
+    });
+  }
 });
 
 function shellSubscriptionFixture(expectedTag = "orchestration.subscribeShell") {

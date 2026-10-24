@@ -59,11 +59,14 @@ export interface ServiceState {
 export interface ServiceLauncherContext {
   readonly protocol: typeof SERVICE_LAUNCHER_PROTOCOL | typeof LEGACY_SERVICE_LAUNCHER_PROTOCOL;
   readonly childVersion: string;
+  /** The running launcher's own version; absence does not imply it matches the child. */
+  readonly launcherVersion?: string;
   readonly qualifiedUpdatesProtocol?: 1;
   readonly updateOperationsProtocol?: 1;
   readonly updateRetirementProtocol?: 1;
   /** The launcher answers `reconcile-update` from its durable operation outcomes. */
   readonly updateOutcomeProtocol?: 1;
+  readonly updateSettlementProtocol?: 1;
   readonly startupGateProtocol?: 1;
   readonly update?: ServiceUpdateRecord | LegacyPendingServiceUpdate;
 }
@@ -77,7 +80,31 @@ export interface ServiceUpdateRetirement {
   readonly stagedHandle: string;
 }
 
+export interface ServiceUpdateReconciliationRequest {
+  readonly operationId: string;
+  readonly requestId: string;
+}
+
+export type ServiceUpdateReconciliationRefusal =
+  | "not-failed"
+  | "not-found"
+  | "insufficient-evidence"
+  | "restore-pending"
+  | "active-changed"
+  | "trial-evidence-present"
+  | "retired-evidence-mismatch"
+  | "settlement-write-failed";
+
+export type ServiceUpdateReconciliationResult =
+  | { readonly result: "settled" | "already-settled" }
+  | { readonly result: "refused"; readonly reason: ServiceUpdateReconciliationRefusal };
+
 export type ServiceLauncherChildMessage =
+  | ({ readonly type: "reconcile-failed-update" } & ServiceUpdateReconciliationRequest)
+  | ({
+      readonly type: "record-retired-operation";
+      readonly retiredLocation: string;
+    } & ServiceUpdateReconciliationRequest)
   | ({ readonly type: "request-retire-update" } & ServiceUpdateRetirement)
   | {
       /** Asks how a handoff ended; `queryId` pairs the answer with this question. */
@@ -100,6 +127,8 @@ export type ServiceLauncherChildMessage =
     };
 
 export type ServiceLauncherParentMessage =
+  | ({ readonly type: "update-reconciled" } & ServiceUpdateReconciliationRequest &
+      ServiceUpdateReconciliationResult)
   | {
       readonly type: "update-outcome";
       readonly operationId: string;
@@ -352,10 +381,14 @@ export function decodeServiceLauncherContext(value: string): ServiceLauncherCont
   return {
     protocol: parsed.protocol,
     childVersion: parsed.childVersion,
+    ...(typeof parsed.launcherVersion === "string" && isExactServiceVersion(parsed.launcherVersion)
+      ? { launcherVersion: parsed.launcherVersion }
+      : {}),
     ...(parsed.qualifiedUpdatesProtocol === 1 ? { qualifiedUpdatesProtocol: 1 as const } : {}),
     ...(parsed.updateOperationsProtocol === 1 ? { updateOperationsProtocol: 1 as const } : {}),
     ...(parsed.updateRetirementProtocol === 1 ? { updateRetirementProtocol: 1 as const } : {}),
     ...(parsed.updateOutcomeProtocol === 1 ? { updateOutcomeProtocol: 1 as const } : {}),
+    ...(parsed.updateSettlementProtocol === 1 ? { updateSettlementProtocol: 1 as const } : {}),
     ...(parsed.startupGateProtocol === 1 ? { startupGateProtocol: 1 as const } : {}),
     ...(update === undefined ? {} : { update }),
   };
@@ -389,6 +422,30 @@ export function decodeServiceLauncherChildMessage(
   value: unknown,
 ): ServiceLauncherChildMessage | undefined {
   if (!isRecord(value)) return undefined;
+  if (value.type === "reconcile-failed-update" || value.type === "record-retired-operation") {
+    if (
+      typeof value.operationId !== "string" ||
+      !OPERATION_ID.test(value.operationId) ||
+      typeof value.requestId !== "string" ||
+      !OPERATION_ID.test(value.requestId)
+    )
+      return undefined;
+    if (value.type === "record-retired-operation") {
+      if (
+        typeof value.retiredLocation !== "string" ||
+        value.retiredLocation.length === 0 ||
+        value.retiredLocation.length > 1024
+      )
+        return undefined;
+      return {
+        type: value.type,
+        operationId: value.operationId,
+        requestId: value.requestId,
+        retiredLocation: value.retiredLocation,
+      };
+    }
+    return { type: value.type, operationId: value.operationId, requestId: value.requestId };
+  }
   if (value.type === "reconcile-update")
     return typeof value.operationId === "string" &&
       OPERATION_ID.test(value.operationId) &&
@@ -458,6 +515,45 @@ export function decodeServiceLauncherParentMessage(
   value: unknown,
 ): ServiceLauncherParentMessage | undefined {
   if (!isRecord(value)) return undefined;
+  if (value.type === "update-reconciled") {
+    if (
+      typeof value.operationId !== "string" ||
+      !OPERATION_ID.test(value.operationId) ||
+      typeof value.requestId !== "string" ||
+      !OPERATION_ID.test(value.requestId)
+    )
+      return undefined;
+    const identity = {
+      type: value.type,
+      operationId: value.operationId,
+      requestId: value.requestId,
+    } as const;
+    if (
+      (value.result === "settled" || value.result === "already-settled") &&
+      value.reason === undefined
+    )
+      return { ...identity, result: value.result };
+    if (
+      value.result === "refused" &&
+      typeof value.reason === "string" &&
+      [
+        "not-failed",
+        "not-found",
+        "insufficient-evidence",
+        "restore-pending",
+        "active-changed",
+        "trial-evidence-present",
+        "retired-evidence-mismatch",
+        "settlement-write-failed",
+      ].includes(value.reason)
+    )
+      return {
+        ...identity,
+        result: "refused",
+        reason: value.reason as ServiceUpdateReconciliationRefusal,
+      };
+    return undefined;
+  }
   if (value.type === "update-outcome") {
     if (
       typeof value.operationId !== "string" ||

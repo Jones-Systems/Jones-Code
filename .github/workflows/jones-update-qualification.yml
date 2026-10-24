@@ -2,6 +2,7 @@ name: Jones update qualification
 
 on:
   pull_request:
+    # Keep the macOS gate in qualify-mac-changes in step with these paths.
     paths:
       - .github/workflows/jones-update-qualification.yml
       - .github/workflows/artifact-desktop-mac.yml
@@ -41,6 +42,8 @@ on:
       - scripts/stamp-jones-build*
       - scripts/build-desktop-artifact*
       - scripts/jones/updates/**
+      # For the Linux job's boundary accounting check. Most pull requests edit
+      # these files, so the macOS job skips changes confined to them.
       - scripts/jones/boundary/**
   workflow_dispatch:
 
@@ -130,8 +133,158 @@ jobs:
       - name: Verify Jones boundary accounting
         run: node scripts/jones/check-boundary.ts --strict --json
 
+  # The macOS job needs a scarce hosted runner shared across the organization,
+  # so it runs only when an update or installer path changed, not when the
+  # boundary accounting files alone triggered this workflow. Detection is
+  # API-only (no checkout) and fails open: if the diff cannot be resolved, the
+  # macOS job runs.
+  qualify-mac-changes:
+    name: Detect macOS install lifecycle changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      changed: ${{ steps.detect.outputs.changed }}
+    steps:
+      - name: Detect update and installer changes
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+
+          run_macos() {
+            echo "$* Running the macOS install lifecycle job."
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          count_rows() {
+            printf '%s\n' "$1" | grep -c . || true
+          }
+
+          # A manual run qualifies every job, as it does for the renderer Preview.
+          if [[ -z "${PR_NUMBER}" ]]; then
+            run_macos "This is a manual run."
+          fi
+
+          # One row per changed file, holding the new path and, for a rename,
+          # the path it replaced: renaming a file out of the update paths
+          # changes them just like editing it.
+          row='[.filename, (.previous_filename // empty)] | @tsv'
+
+          pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '"\(.changed_files) \(.stack.base.ref // "")"') \
+            || run_macos "Could not read the pull request."
+          read -r expected stack_base <<< "$pr"
+
+          if [[ -z "${stack_base}" ]]; then
+            # The PR files endpoint stops at 3000 files and pagination cannot
+            # extend it, so cross-check against the count the PR itself reports.
+            rows=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --paginate --jq ".[] | ${row}") \
+              || run_macos "Could not resolve changed files."
+
+            listed=$(count_rows "$rows")
+            if [[ "$listed" -lt "$expected" ]]; then
+              run_macos "GitHub listed only ${listed} of ${expected} changed files."
+            fi
+          else
+            # Native stack qualification covers lower layers as well as this
+            # PR, so a stacked PR compares its head against the stack's base.
+            rows=$(gh api "repos/${GITHUB_REPOSITORY}/compare/${stack_base}...${PR_HEAD_SHA}" --jq ".files[]? | ${row}") \
+              || run_macos "Could not resolve changed files."
+
+            # The compare endpoint reports at most 300 files and pagination does
+            # not extend that list, so a full list may be hiding update changes.
+            listed=$(count_rows "$rows")
+            if [[ "$listed" -ge 300 ]]; then
+              run_macos "GitHub listed ${listed} changed files, the compare endpoint maximum."
+            fi
+          fi
+
+          paths=$(tr '\t' '\n' <<< "$rows")
+
+          # The pull_request paths above without the boundary accounting files,
+          # plus the boundary fragments of the update and installer features.
+          # A fragment changes when its feature adds or removes files, which can
+          # lie outside the paths above. In [[ ]], * also matches across
+          # directories, so a pattern can only match more than its trigger.
+          update_paths=(
+            '.github/workflows/jones-update-qualification.yml'
+            '.github/workflows/artifact-desktop-mac.yml'
+            '.github/workflows/artifact-cli-linux.yml'
+            'apps/desktop/src/jones/updates/**'
+            'apps/desktop/src/boot.ts'
+            'apps/desktop/vite.config.ts'
+            'apps/desktop/scripts/main-process-bundle.test.mjs'
+            'packages/shared/src/jones/nativeWriterFence*'
+            'apps/web/src/jones/updates/**'
+            'apps/web/src/jones/fleetUpdates/**'
+            'apps/web/src/state/desktopUpdate.ts'
+            'apps/web/src/components/desktopUpdate.logic.ts'
+            'apps/web/src/components/desktopUpdate.toast.tsx'
+            'apps/web/src/components/sidebar/SidebarUpdatePill.tsx'
+            'apps/server/src/jones/updates/**'
+            'apps/server/src/jones/cloud/qualified*.ts'
+            'apps/server/src/jones/cloud/stoppedServerOwnership*'
+            'apps/server/src/jones/cloud/capturedProcess*'
+            'apps/server/src/serviceLauncher*'
+            'apps/server/src/cloud/serviceLauncher*'
+            'apps/server/src/cloud/serviceProtocol*'
+            'apps/server/src/cloud/selfUpdate*'
+            'apps/server/src/cloud/pinnedRuntime*'
+            'apps/server/src/cloud/bootService*'
+            'apps/server/src/jones/hostService/**'
+            'apps/server/vite.config.ts'
+            'apps/server/src/cli/servicePreflight.ts'
+            'apps/server/src/cloud/servicePreflight*'
+            'apps/server/src/orchestration-v2/RestartContinuation*'
+            'apps/server/src/orchestration-v2/ServerUpdateContinuation*'
+            'packages/client-runtime/src/jones/updates/**'
+            'packages/client-runtime/src/jones/fleetUpdates/**'
+            'packages/contracts/src/jones/jonesUpdates.ts'
+            'packages/contracts/src/jones/fleetUpdates/**'
+            'packages/shared/src/jones/jonesActions*'
+            'scripts/stamp-jones-build*'
+            'scripts/build-desktop-artifact*'
+            'scripts/jones/updates/**'
+            'scripts/jones/boundary/fragments/qualified-updates.json'
+            'scripts/jones/boundary/fragments/update-continuity.json'
+            'scripts/jones/boundary/fragments/fleet-update-access.json'
+            'scripts/jones/boundary/fragments/desktop-background-preparation.json'
+            'scripts/jones/boundary/fragments/desktop-stage-attempts.json'
+            'scripts/jones/boundary/fragments/staged-selection-recovery.json'
+            'scripts/jones/boundary/fragments/launcher-commit-diagnostics.json'
+          )
+
+          matched=$(while IFS= read -r path; do
+            for pattern in "${update_paths[@]}"; do
+              # shellcheck disable=SC2053 # The pattern is meant to glob.
+              if [[ -n "$path" && "$path" == $pattern ]]; then
+                echo "$path"
+                break
+              fi
+            done
+          done <<< "$paths")
+
+          if [[ -n "$matched" ]]; then
+            echo "Changed update or installer paths:"
+            echo "$matched"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No update or installer paths changed."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
   qualify-mac:
     name: Jones install lifecycle on macOS
+    needs: qualify-mac-changes
+    # Skip only on an explicit "no": a gate job that failed or errored leaves the
+    # output empty, and that must run the macOS job rather than silently skip it.
+    if: ${{ !cancelled() && needs.qualify-mac-changes.outputs.changed != 'false' }}
     runs-on: macos-15
     timeout-minutes: 15
     steps:

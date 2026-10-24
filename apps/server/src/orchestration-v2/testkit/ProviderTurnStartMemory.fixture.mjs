@@ -33,6 +33,7 @@ const [
   Config,
   Settings,
   Instances,
+  SelectionTransitions,
 ] = await Promise.all([
   app("orchestration-v2/ProviderTurnStartService"),
   app("jones/orchestration/RestartPreparation"),
@@ -50,6 +51,7 @@ const [
   app("config"),
   app("serverSettings"),
   app("provider/ProviderInstanceRegistry"),
+  app("orchestration-v2/ProviderSwitchService"),
 ]);
 let current;
 let fullReads = 0;
@@ -68,6 +70,16 @@ const session = {
   compactThread: () => Effect.void,
 };
 const dependencies = Layer.mergeAll(
+  Layer.mock(SelectionTransitions.ProviderSwitchServiceV2)({
+    plan: () =>
+      Effect.succeed({
+        instanceChanged: false,
+        modelChanged: false,
+        targetProviderThreadId: null,
+        releaseProviderSessionIds: [],
+        transition: { type: "reuse" },
+      }),
+  }),
   ControlAdmission.layer,
   Layer.mock(RestartPreparation.RestartPreparation)({ assertThreadOpen: () => Effect.void }),
   Layer.mock(Handoff.ContextHandoffServiceV2)({}),
