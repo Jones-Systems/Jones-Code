@@ -3,6 +3,8 @@ import {
   handlers as workstreamHandlers,
   backendLayer as workstreamBackendLayer,
 } from "../jones/mcp/workstreams/handlers.ts";
+import * as ThreadSelfConfigurationService from "../jones/threadConfiguration/ThreadSelfConfiguration.ts";
+import * as ThreadSelfConfigurationTools from "../jones/threadConfiguration/tools.ts";
 import * as RemoteAdmissionCancel from "../jones/remoteAdmissionIntegration/cancelTool.ts";
 import {
   LINKED_MESSAGE_ORIGIN_HEADER,
@@ -860,6 +862,10 @@ export const layerOrchestratorToolkit = toolkitRegistration(
   Layer.provide(GoalControl.layer.pipe(Layer.provide(GoalStartDispatch.layer))),
 );
 
+export const layerThreadSelfConfigurationToolkit = toolkitRegistration(
+  ThreadSelfConfigurationTools.ThreadSelfConfigurationToolkit,
+  ThreadSelfConfigurationTools.layer,
+);
 export const layerThreadToolkit = toolkitRegistration(ThreadToolkit, ThreadHandlers.layer);
 
 const layerWorktreeToolkitRegistration = toolkitRegistration(
@@ -947,6 +953,22 @@ export const layer = Layer.mergeAll(
   layerPreviewToolkit,
   layerOrchestratorToolkit,
   layerThreadToolkit,
+  Layer.unwrap(
+    Effect.serviceOption(ThreadSelfConfigurationService.ThreadSelfConfiguration).pipe(
+      Effect.map((service) =>
+        Option.isNone(service)
+          ? Layer.empty
+          : layerThreadSelfConfigurationToolkit.pipe(
+              Layer.provide(
+                Layer.succeed(
+                  ThreadSelfConfigurationService.ThreadSelfConfiguration,
+                  service.value,
+                ),
+              ),
+            ),
+      ),
+    ),
+  ),
   layerAttachmentToolkit,
   layerProjectRegistration,
   layerEnvironmentToolkit,

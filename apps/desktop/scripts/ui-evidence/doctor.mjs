@@ -25,6 +25,7 @@ const libraryPackages = {
   "libxkbcommon.so.0": "libxkbcommon0",
 };
 export async function doctor(source) {
+  source = await NodeFSP.realpath(source);
   const checks = [];
   const aptPackages = new Set();
   async function check(name, fn, packages = []) {
