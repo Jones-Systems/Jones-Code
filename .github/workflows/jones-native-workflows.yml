@@ -5,7 +5,8 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, labeled]
   schedule:
-    - cron: "23 7 * * *"
+    - cron: "0 4 * * *"
+      timezone: "America/New_York"
   workflow_dispatch:
 
 permissions:
