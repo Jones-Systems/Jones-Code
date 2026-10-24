@@ -292,6 +292,7 @@ async function populateFixture(root: string, options: FixtureOptions) {
     readonly platform?: "linux" | "darwin";
     readonly architecture?: "x64" | "arm64";
     readonly workflow?: string;
+    readonly event?: string;
   }) => {
     const dir = NodePath.join(root, `artifact-${artifact.index}`);
     await NodeFSP.mkdir(dir);
@@ -308,11 +309,16 @@ async function populateFixture(root: string, options: FixtureOptions) {
       platform,
       architecture,
       workflow,
-      event: workflow === ".github/workflows/artifact-cli-mac.yml" ? "workflow_dispatch" : "push",
+      event:
+        artifact.event ??
+        (workflow === ".github/workflows/artifact-cli-mac.yml" ? "workflow_dispatch" : "push"),
       ref: "refs/heads/main",
       runId: String(runId),
       runAttempt: "1",
-      artifact: `t3-${artifact.version}-${platform}-${architecture}.tar.gz`,
+      artifact:
+        workflow === ".github/workflows/artifact-desktop-mac.yml"
+          ? `T3-Code-${artifact.version}-arm64.dmg`
+          : `t3-${artifact.version}-${platform}-${architecture}.tar.gz`,
       sha256: sha(artifact.archive),
     };
     await NodeFSP.writeFile(NodePath.join(dir, "ARTIFACT.json"), JSON.stringify(m));
@@ -320,7 +326,7 @@ async function populateFixture(root: string, options: FixtureOptions) {
     metadata.set(dir, m);
     runIds.set(dir, runId);
     artifacts.set(runId, {
-      name: `jones-code-cli-${platform === "darwin" ? "mac" : "linux"}-${architecture}-${runId}-1--${artifact.version}`,
+      name: `${workflow === ".github/workflows/artifact-desktop-mac.yml" ? "desktop-mac-arm64" : `jones-code-cli-${platform === "darwin" ? "mac" : "linux"}-${architecture}`}-${runId}-1--${artifact.version}`,
       id: 200 + artifact.index,
       digest: "",
       bytes: 0,
@@ -1203,6 +1209,106 @@ it.each<[string, (m: Record<string, unknown>) => EnvelopeOptions, string]>([
     );
     expect(f.commands.every((c) => c.command === "gh")).toBe(true);
   }),
+);
+it.each(["push", "schedule"])(
+  "qualifies an authenticated desktop %s artifact with exact-source push CI",
+  (event) =>
+    fixture(async (f) => {
+      const source = "e".repeat(40);
+      const workflow = ".github/workflows/artifact-desktop-mac.yml";
+      const dir = await f.writeArtifact({
+        index: 2,
+        version: newVersion,
+        source,
+        tree: "c".repeat(40),
+        archive: Buffer.from("synthetic desktop archive"),
+        platform: "darwin",
+        architecture: "arm64",
+        workflow,
+        event,
+      });
+      const host = { ...f.host, platform: "darwin" as const, architecture: "arm64" as const };
+      const verified = await verifyAdoptionArtifact(dir, source, host);
+      expect(verified.metadata).toMatchObject({
+        workflow,
+        event,
+        artifact: `T3-Code-${newVersion}-arm64.dmg`,
+      });
+      expect(verified.artifact).toMatchObject({
+        workflow,
+        runId: 102,
+        artifactId: 202,
+        sourceSha: source,
+      });
+      expect(
+        f.commands.find((command) => command.args.at(-1)?.includes("ci.yml/runs?"))?.args.at(-1),
+      ).toContain(`head_sha=${source}&event=push&branch=main`);
+      for (const ciEvent of ["schedule", "workflow_dispatch"]) {
+        await expect(
+          verifyAdoptionArtifact(dir, source, {
+            ...host,
+            run: async (command) => {
+              const result = await host.run(command);
+              if (!command.args.at(-1)?.includes("ci.yml/runs?")) return result;
+              const ci = JSON.parse(result) as { workflow_runs: Array<Record<string, unknown>> };
+              return JSON.stringify({
+                workflow_runs: ci.workflow_runs.map((run) => ({ ...run, event: ciEvent })),
+              });
+            },
+          }),
+        ).rejects.toThrow("no successful canonical main CI run");
+      }
+      await expect(
+        verifyAdoptionArtifact(dir, source, {
+          ...host,
+          run: async (command) => {
+            const result = await host.run(command);
+            return command.args.at(-1)?.endsWith("actions/runs/102")
+              ? JSON.stringify({
+                  ...(JSON.parse(result) as object),
+                  event: event === "push" ? "schedule" : "push",
+                })
+              : result;
+          },
+        }),
+      ).rejects.toThrow("generation or source tree is unqualified");
+      await f.setEnvelope(
+        dir,
+        await f.envelope(dir, {
+          embedded: { ...f.metadata.get(dir)!, event: event === "push" ? "schedule" : "push" },
+        }),
+      );
+      await expect(verifyAdoptionArtifact(dir, source, host)).rejects.toThrow(
+        "Local metadata differs from the authenticated Actions ZIP",
+      );
+    }),
+);
+it.each([
+  ["linux", ".github/workflows/artifact-cli-linux.yml", "schedule"],
+  ["darwin", ".github/workflows/artifact-desktop-mac.yml", "workflow_dispatch"],
+  ["darwin", ".github/workflows/artifact-desktop-mac.yml", "pull_request"],
+  ["darwin", ".github/workflows/artifact-cli-mac.yml", "schedule"],
+] as const)(
+  "refuses adoption from unsupported %s workflow %s event %s",
+  (platform, workflow, event) =>
+    fixture(async (f) => {
+      const source = "e".repeat(40);
+      const dir = await f.writeArtifact({
+        index: 2,
+        version: newVersion,
+        source,
+        tree: "c".repeat(40),
+        archive: Buffer.from("synthetic archive"),
+        platform,
+        architecture: "arm64",
+        workflow,
+        event,
+      });
+      await expect(
+        verifyAdoptionArtifact(dir, source, { ...f.host, platform, architecture: "arm64" }),
+      ).rejects.toThrow("Workflow or event is not an accepted main build");
+      expect(f.commands).toEqual([]);
+    }),
 );
 it("natively qualifies an authentic CLI mac workflow_dispatch envelope", () =>
   fixture(async (f) => {
