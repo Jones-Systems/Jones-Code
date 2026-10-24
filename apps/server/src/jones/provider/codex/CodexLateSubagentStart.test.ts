@@ -220,7 +220,7 @@ describe("Codex late subagent reader progress", () => {
       });
       const adapter = yield* CodexAdapterV2.makeCodexAdapterV2({
         instanceId: modelSelection.instanceId,
-        settings: Schema.decodeSync(CodexSettings)({}),
+        settings: yield* Schema.decodeEffect(CodexSettings)({}),
         environment: {},
         crypto: yield* Crypto.Crypto,
         fileSystem,
@@ -232,19 +232,19 @@ describe("Codex late subagent reader progress", () => {
           open: (input) =>
             replayFactory.open(input).pipe(
               Effect.tap((client) => Deferred.succeed(clientReady, client)),
-              Effect.map(
-                (client): CodexClient.CodexAppServerClient["Service"] => ({
-                  ...client,
-                  request: (method, params) =>
-                    client.request(method, params).pipe(
+              Effect.map((client): CodexClient.CodexAppServerClient["Service"] => ({
+                ...client,
+                request: (method, params) =>
+                  client
+                    .request(method, params)
+                    .pipe(
                       Effect.tap(() =>
                         method === "turn/interrupt"
                           ? Deferred.succeed(interruptAcknowledged, undefined)
                           : Effect.void,
                       ),
                     ),
-                }),
-              ),
+              })),
             ),
         },
       });
