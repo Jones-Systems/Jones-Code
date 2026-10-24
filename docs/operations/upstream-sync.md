@@ -106,7 +106,41 @@ does not perform repository deletion or authorize runtime changes.
 
 ## Workflow policy
 
-The Jones-Code workflow allowlist is `ci.yml`, `artifact-cli-linux.yml`, `artifact-cli-mac.yml`, `artifact-desktop-mac.yml`, `jones-update-qualification.yml`, and `native-enrollment-candidate.yml`, using GitHub-hosted Ubuntu and macOS runners. The Jones-owned native enrollment candidate workflow was added in reviewed PR #495; it runs path-filtered pull requests and manual dispatches to qualify the exact Node/SQLite candidate and a disposable SEA fixture, with read-only repository permissions and task-owned scratch cleanup. CI runs on pull requests, main pushes, and manual dispatch. The Linux CLI and Mac desktop artifact workflows also run on main pushes, matching pull requests, and manual dispatch; the Mac desktop PR trigger is restricted to bases `main` and `work/jones-rebuild/staging`. The separate Mac CLI artifact workflow runs only on manual dispatch, with no push or PR trigger. There are no tag, release, schedule, privileged PR, workflow-completion, or repository-dispatch triggers. The Jones update qualification workflow runs affected regression and strict boundary checks on matching pull requests and manual dispatch. Additional Jones-Code-owned workflows require their own reviewed PRs. Other upstream workflows are absent from `.github/workflows/` so a sync cannot quietly activate a release, deployment, privileged PR event, or Blacksmith job. Deferred workflows remain available in upstream history; a workflow upstream itself removed may require an earlier commit. Classify any new upstream workflow before merging the sync PR; default to deferred until its trigger, runner, permissions, and secrets are reviewed.
+The Jones-Code workflow allowlist is `ci.yml`, `artifact-cli-linux.yml`,
+`artifact-cli-mac.yml`, `artifact-desktop-mac.yml`,
+`jones-update-qualification.yml`, `native-enrollment-candidate.yml`,
+`jones-native-workflows.yml`, and `jones-ios-native.yml`, using GitHub-hosted
+Ubuntu and macOS runners. CI runs on pull requests, main pushes and manual
+dispatch. `Check` is the required aggregate; selected Linux jobs may skip only
+on explicit successful classification, with full main, unknown-change and
+complete-stack backstops. The macOS enrollment and mobile-source gates remain
+independent. The enrollment candidate workflow remains path-filtered/manual,
+with read-only permissions and task-owned scratch cleanup.
+
+Linux CLI artifacts run on main pushes, packaging-filtered pull requests and
+manual dispatch. Mac desktop artifacts run nightly, on desktop/packaging-filtered
+pull requests and by manual dispatch; PR bases remain `main` and
+`work/jones-rebuild/staging`. The separate Mac CLI workflow remains manual only.
+Desktop update discovery accepts authenticated nightly artifacts; exact-source
+CI qualification remains a successful canonical main push. These trial artifacts
+do not publish a Release or install an application.
+
+Jones update qualification keeps unique native startup, macOS lifecycle and
+Preview evidence behind their path gates; the duplicate Linux Vitest batch and
+second strict boundary check are absent. Native Electron E2E runs nightly or
+by manual dispatch/`native-e2e` label. Native iOS E2E runs only by manual dispatch
+or that label while simulator startup and cleanup remain unqualified. Both
+native E2E workflows and all artifact workflows are advisory. The macOS
+enrollment and install-lifecycle path gates from #562 and #581 remain.
+
+There are no tag, release, privileged PR, workflow-completion or
+repository-dispatch triggers. Additional Jones-Code-owned workflows require
+their own reviewed PRs. Other upstream workflows are absent from
+`.github/workflows/` so a sync cannot quietly activate a release, deployment,
+privileged PR event or Blacksmith job. Deferred workflows remain available in
+upstream history; a workflow upstream itself removed may require an earlier
+commit. Classify any new upstream workflow before merging the sync PR; default
+to deferred until its trigger, runner, permissions and secrets are reviewed.
 
 | Upstream workflow                   | Main trigger                             | Jones-Code disposition | Reason                                                              |
 | ----------------------------------- | ---------------------------------------- | ---------------------- | ------------------------------------------------------------------- |

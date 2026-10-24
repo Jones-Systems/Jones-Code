@@ -104,7 +104,13 @@ for `Jones-Systems/Jones-Code` targeting `main` with normal merge commits.
 Release, deployment, sudo, branch/worktree deletion, and bypasses are excluded.
 
 Ordinary PR merges require the required `Check` job to pass on the current
-head; other checks are advisory and never hold a merge. See
+head; other checks are advisory and never hold a merge. `Check` rejects failed
+classifiers and unexplained skips; a job may skip only when its successful
+classifier explicitly selects it out. Main pushes and unknown or complete-stack
+changes retain full Linux qualification. Keep the macOS enrollment path gates.
+Native E2E and artifact workflows are advisory and use their declared nightly,
+label, manual or packaging-path triggers. Every retained test must run on a
+suitable trigger. See
 [required and advisory checks](docs/operations/contributor-guidance.md#required-and-advisory-checks).
 For an atomically selected, contiguous complete stack, follow the standing
 [atomic stack qualification policy](docs/operations/contributor-guidance.md#atomic-stack-qualification).

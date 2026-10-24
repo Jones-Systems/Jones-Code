@@ -42,6 +42,13 @@ on:
       - scripts/stamp-jones-build*
       - scripts/build-desktop-artifact*
       - scripts/jones/updates/**
+      - scripts/jones/boundary/fragments/qualified-updates.json
+      - scripts/jones/boundary/fragments/update-continuity.json
+      - scripts/jones/boundary/fragments/fleet-update-access.json
+      - scripts/jones/boundary/fragments/desktop-background-preparation.json
+      - scripts/jones/boundary/fragments/desktop-stage-attempts.json
+      - scripts/jones/boundary/fragments/staged-selection-recovery.json
+      - scripts/jones/boundary/fragments/launcher-commit-diagnostics.json
   workflow_dispatch:
 
 permissions:
@@ -156,8 +163,8 @@ jobs:
 
           paths=$(tr '\t' '\n' <<< "$rows")
 
-          # The pull_request paths above, plus the boundary fragments of the
-          # update and installer features that may change in a native stack.
+          # The pull_request paths above include the precise boundary fragments
+          # of update and installer features that may change in a native stack.
           # A fragment changes when its feature adds or removes files, which can
           # lie outside the paths above. In [[ ]], * also matches across
           # directories, so a pattern can only match more than its trigger.
