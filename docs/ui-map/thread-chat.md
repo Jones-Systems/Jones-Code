@@ -63,6 +63,25 @@ Known shared consumers:
   this map's journeys. Shared workspace header consumers are listed in
   [Settings](settings.md#shared-layout-and-consumers).
 
+### Linked thread details
+
+[ThreadDetailsPanel](../../apps/web/src/components/chat/ThreadDetailsPanel.tsx)
+mounts [ThreadRelationshipsControl](../../apps/web/src/components/chat/ThreadRelationshipsControl.tsx).
+Its [Linked section](../../apps/web/src/jones/linkedThreads/LinkedThreadsSection.tsx)
+starts collapsed and resets closed when the selected thread changes. The header
+retains the running-agent count. Expanding it exposes fork ancestry, context
+transfers and a separate delegated-task group, including previous agents and
+their existing controls. Remote rows retain their environment identity and
+destination-aware navigation.
+
+For the source-discovered journey, open thread details on a synthetic thread
+with a fork parent, active and completed delegated tasks, and a remote row.
+Expand and collapse Linked, navigate the parent and remote row, and use an
+existing task control. Switch threads and confirm Linked starts closed again.
+The [browser regression](../../apps/web/src/jones/remoteAgentLineage/ThreadRelationships.browser.test.tsx)
+covers component interactions; integrated runtime captures and backend readback
+are separate evidence. This map does not claim the journey has been exercised.
+
 ### Queued-message batch steering
 
 The active thread composer exposes
