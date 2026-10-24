@@ -61,7 +61,7 @@ sidecars. Approval for these commands must cover those effects.
 
 The store is opened through a fixed `file:` URI with extensions disabled, and
 only on these source-qualified runtime pairs: Node 24.13.1 with SQLite 3.51.2,
-24.19.0 with 3.53.3, 24.21.0, 24.22.0 or 26.8.2 with 3.53.4, and 26.12.1
+24.19.0 with 3.53.3, 24.21.0, 24.22.0, 24.22.1 or 26.8.2 with 3.53.4, and 26.12.1
 with 3.54.0. Node 26.12.1 serves the standalone CLI artifacts; the desktop's
 Electron backend uses its own embedded Node runtime. Qualification follows the
 process executing the enrollment command, not the version of a different running
@@ -70,11 +70,11 @@ server.
 The native-enrollment CI jobs exercise both exact Node 26 pairs on Linux x64
 and macOS arm64, record the test and subprocess executable identities, and check
 escaped file URIs, missing-file non-creation, read-only writes, disabled
-extension loading, WAL visibility and transaction-bound authority. The 26.8.2
-Linux job runs on every CI run. Its macOS job, which needs a scarce hosted
-runner, runs when the enrollment, store-authority or SQLite client sources, the
-CI workflow, or the dependency manifests and root test configuration change; a
-manual CI run can request it. The separate 26.12.1 workflow runs on pull
+extension loading, WAL visibility and transaction-bound authority. The Linux
+jobs for Node 24.22.1 and 26.8.2 run on every CI run. Their macOS jobs, which
+need scarce hosted runners, run when the enrollment, store-authority or SQLite
+client sources, the CI workflow, or the dependency manifests and root test
+configuration change; a manual CI run can request them. The separate 26.12.1 workflow runs on pull
 requests that change its sources and also checks SQLite engine behavior in a
 disposable SEA fixture; this does not replace the ordinary Jones artifact
 version and serve smoke tests.

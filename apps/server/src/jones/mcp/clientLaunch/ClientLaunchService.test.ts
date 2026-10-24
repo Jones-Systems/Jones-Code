@@ -188,6 +188,9 @@ function makeHarness(options: HarnessOptions = {}) {
     }),
     Layer.mock(GitWorkflow.GitWorkflowService)({
       createWorktree,
+      resolveWorktreeBaseRemote: () => Effect.succeed({ remoteName: "origin", branchName: "main" }),
+      fetchWorktreeBaseCommit: () =>
+        Effect.succeed({ commitSha: "remote-main-sha", remoteRefName: "origin/main" }),
       hasCommit: () => Effect.succeed(false),
       renameBranch,
       fetchRemote: options.fetchRemote ?? (() => Effect.void),
@@ -222,6 +225,7 @@ function makeHarness(options: HarnessOptions = {}) {
     options.managedFolders ??
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
         namedProjectsRoot: "/projects",
+        isScratchProject: () => Effect.succeed(false),
         folderForThread: () => Effect.succeed(Option.none()),
       }),
   );

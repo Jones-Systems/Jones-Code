@@ -7,12 +7,14 @@ const workflow = NodeFS.readFileSync(
   "utf8",
 );
 
-NodeTest.test("CI avoids unconditional Chromium apt work and duplicate Test apt updates", () => {
+NodeTest.test("CI avoids unconditional Chromium apt work and duplicate per-job apt updates", () => {
   NodeAssert.doesNotMatch(workflow, /install --with-deps --only-shell chromium/);
-  const packageJob = workflow.split("\n  test:\n")[1].split("\n  test_web:\n")[0];
-  NodeAssert.equal(packageJob.match(/sudo apt-get update/g)?.length, 1);
-  NodeAssert.match(packageJob, /build-essential libsecret-1-dev pkg-config/);
-  NodeAssert.match(packageJob, /command -v cc/);
+  for (const job of ["test", "test_desktop"]) {
+    const packageJob = workflow.split(`\n  ${job}:\n`)[1].split(/\n  [\w-]+:\n/)[0];
+    NodeAssert.equal(packageJob.match(/sudo apt-get update/g)?.length, 1, job);
+    NodeAssert.match(packageJob, /build-essential libsecret-1-dev pkg-config/);
+    NodeAssert.match(packageJob, /command -v cc/);
+  }
 });
 
 const { ensureChromium, resolvePlaywright } = await import("./chromium-setup.mjs");

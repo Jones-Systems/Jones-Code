@@ -212,15 +212,15 @@ async function populateFixture(root: string, options: FixtureOptions) {
   const home = NodePath.join(root, "home");
   const runtime = NodePath.join(base, "runtime");
   const active = NodePath.join(runtime, "versions", oldVersion);
-  await NodeFSP.mkdir(active, { recursive: true });
-  await NodeFSP.mkdir(NodePath.join(base, "userdata"));
+  await NodeFSP.mkdir(active, { recursive: true, mode: 0o700 });
+  await NodeFSP.mkdir(NodePath.join(base, "userdata"), { mode: 0o700 });
   await NodeFSP.writeFile(NodePath.join(active, "t3"), runtimeExecutable(oldVersion), {
     mode: 0o755,
   });
-  await NodeFSP.writeFile(NodePath.join(active, ".install-complete"), oldVersion);
+  await NodeFSP.writeFile(NodePath.join(active, ".install-complete"), oldVersion, { mode: 0o600 });
   if (options.privateSetup) {
     for (const name of ["client", "node_modules", "resource-monitor"])
-      await NodeFSP.mkdir(NodePath.join(active, name));
+      await NodeFSP.mkdir(NodePath.join(active, name), { mode: 0o700 });
   }
   if (!options.legacy && !options.privateSetup && !options.legacyMac)
     await NodeFSP.writeFile(
@@ -240,7 +240,7 @@ async function populateFixture(root: string, options: FixtureOptions) {
   const unit = options.legacyMac
     ? NodePath.join(home, "Library/LaunchAgents/com.t3tools.t3code.service.plist")
     : NodePath.join(home, ".config/systemd/user", serviceUnit);
-  await NodeFSP.mkdir(NodePath.dirname(unit), { recursive: true });
+  await NodeFSP.mkdir(NodePath.dirname(unit), { recursive: true, mode: 0o700 });
   await NodeFSP.writeFile(
     unit,
     renderBootServiceUnit(
@@ -253,6 +253,7 @@ async function populateFixture(root: string, options: FixtureOptions) {
       },
       { ...JONES_BOOT_SERVICE_IDENTITY, systemdUnitFile: serviceUnit },
     ),
+    { mode: 0o600 },
   );
   const metadata = new Map<string, Record<string, unknown>>();
   const artifacts = new Map<
@@ -291,6 +292,7 @@ async function populateFixture(root: string, options: FixtureOptions) {
     readonly platform?: "linux" | "darwin";
     readonly architecture?: "x64" | "arm64";
     readonly workflow?: string;
+    readonly event?: string;
   }) => {
     const dir = NodePath.join(root, `artifact-${artifact.index}`);
     await NodeFSP.mkdir(dir);
@@ -307,11 +309,16 @@ async function populateFixture(root: string, options: FixtureOptions) {
       platform,
       architecture,
       workflow,
-      event: workflow === ".github/workflows/artifact-cli-mac.yml" ? "workflow_dispatch" : "push",
+      event:
+        artifact.event ??
+        (workflow === ".github/workflows/artifact-cli-mac.yml" ? "workflow_dispatch" : "push"),
       ref: "refs/heads/main",
       runId: String(runId),
       runAttempt: "1",
-      artifact: `t3-${artifact.version}-${platform}-${architecture}.tar.gz`,
+      artifact:
+        workflow === ".github/workflows/artifact-desktop-mac.yml"
+          ? `T3-Code-${artifact.version}-arm64.dmg`
+          : `t3-${artifact.version}-${platform}-${architecture}.tar.gz`,
       sha256: sha(artifact.archive),
     };
     await NodeFSP.writeFile(NodePath.join(dir, "ARTIFACT.json"), JSON.stringify(m));
@@ -319,7 +326,7 @@ async function populateFixture(root: string, options: FixtureOptions) {
     metadata.set(dir, m);
     runIds.set(dir, runId);
     artifacts.set(runId, {
-      name: `jones-code-cli-${platform === "darwin" ? "mac" : "linux"}-${architecture}-${runId}-1--${artifact.version}`,
+      name: `${workflow === ".github/workflows/artifact-desktop-mac.yml" ? "desktop-mac-arm64" : `jones-code-cli-${platform === "darwin" ? "mac" : "linux"}-${architecture}`}-${runId}-1--${artifact.version}`,
       id: 200 + artifact.index,
       digest: "",
       bytes: 0,
@@ -380,7 +387,7 @@ async function populateFixture(root: string, options: FixtureOptions) {
   ];
   const directExecutable = NodePath.join(home, "Jones-Code-Install-20261016", "t3");
   if (options.legacyMac) {
-    await NodeFSP.mkdir(NodePath.dirname(directExecutable), { recursive: true });
+    await NodeFSP.mkdir(NodePath.dirname(directExecutable), { recursive: true, mode: 0o700 });
     await NodeFSP.writeFile(directExecutable, runtimeExecutable(oldVersion), { mode: 0o755 });
     await NodeFSP.writeFile(
       unit,
@@ -401,9 +408,9 @@ async function populateFixture(root: string, options: FixtureOptions) {
     await NodeFSP.rm(active, { recursive: true });
   }
   if (options.legacy) {
-    await NodeFSP.mkdir(NodePath.dirname(directExecutable));
+    await NodeFSP.mkdir(NodePath.dirname(directExecutable), { mode: 0o700 });
     await NodeFSP.writeFile(directExecutable, runtimeExecutable(oldVersion), { mode: 0o755 });
-    await NodeFSP.mkdir(`${unit}.d`);
+    await NodeFSP.mkdir(`${unit}.d`, { mode: 0o700 });
     for (const name of preserveDropin)
       await NodeFSP.writeFile(
         NodePath.join(`${unit}.d`, name),
@@ -812,32 +819,30 @@ it("archives authenticated private setup evidence before qualification and retai
     },
     { privateSetup: true },
   ));
-it(
-  "enrolls genuine private modes with authenticated 0755 archive extraction under isolated umask 0077",
-  () =>
-    fixture(
-      async (f) => {
-        const active = NodePath.join(f.runtime, "versions", oldVersion);
-        for (const directory of [
-          f.base,
-          f.runtime,
-          NodePath.dirname(active),
-          active,
-          ...["client", "node_modules", "resource-monitor"].map((name) =>
-            NodePath.join(active, name),
-          ),
-        ])
-          await NodeFSP.chmod(directory, 0o700);
-        await NodeFSP.chmod(NodePath.join(active, "t3"), 0o700);
-        for (const name of [".install-complete", ".jones-provenance.json"])
-          await NodeFSP.chmod(NodePath.join(active, name), 0o600);
-        const verified = await verifyAdoptionArtifact(
-          f.input.activeArtifactDir,
-          privateSetupSource,
-          f.host,
-        );
-        const scratch = await NodeFSP.mkdtemp(NodePath.join(f.root, "private-mode-proof-"));
-        const script = `
+it("enrolls genuine private modes with authenticated 0755 archive extraction under isolated umask 0077", () =>
+  fixture(
+    async (f) => {
+      const active = NodePath.join(f.runtime, "versions", oldVersion);
+      for (const directory of [
+        f.base,
+        f.runtime,
+        NodePath.dirname(active),
+        active,
+        ...["client", "node_modules", "resource-monitor"].map((name) =>
+          NodePath.join(active, name),
+        ),
+      ])
+        await NodeFSP.chmod(directory, 0o700);
+      await NodeFSP.chmod(NodePath.join(active, "t3"), 0o700);
+      for (const name of [".install-complete", ".jones-provenance.json"])
+        await NodeFSP.chmod(NodePath.join(active, name), 0o600);
+      const verified = await verifyAdoptionArtifact(
+        f.input.activeArtifactDir,
+        privateSetupSource,
+        f.host,
+      );
+      const scratch = await NodeFSP.mkdtemp(NodePath.join(f.root, "private-mode-proof-"));
+      const script = `
         process.umask(0o077);
         const assert = (await import("node:assert/strict")).default;
         const fs = await import("node:fs/promises");
@@ -869,35 +874,33 @@ it(
         assert.equal(await fs.readFile(path.join(archive, ".jones-provenance.json"), "utf8"), preimage.text);
         process.stdout.write(JSON.stringify({ source: receipt.sourceSha, mode: 0o700 }));
       `;
-        const input = JSON.stringify({
-          scratch,
-          archive: verified.archive,
-          baseDir: f.base,
-          artifact: verified.artifact,
-          privateSetup: {
-            directory: active,
-            uid: f.host.uid,
-            artifact: verified.metadata,
-            entrySha256: sha(runtimeExecutable(oldVersion)),
-          },
-        });
-        const stdout = await new Promise<string>((resolve, reject) =>
-          NodeChildProcess.execFile(
-            NodeProcess.execPath,
-            ["--experimental-strip-types", "--input-type=module", "-e", script, input],
-            { timeout: 30_000, maxBuffer: 64 * 1024 },
-            (error, stdout) => (error === null ? resolve(stdout) : reject(error)),
-          ),
-        );
-        expect(JSON.parse(stdout)).toEqual({ source: privateSetupSource, mode: 0o700 });
-        await expect(
-          NodeFSP.lstat(NodePath.join(active, ".jones-provenance.json")),
-        ).rejects.toMatchObject({ code: "ENOENT" });
-      },
-      { privateSetup: true },
-    ),
-  35_000,
-);
+      const input = JSON.stringify({
+        scratch,
+        archive: verified.archive,
+        baseDir: f.base,
+        artifact: verified.artifact,
+        privateSetup: {
+          directory: active,
+          uid: f.host.uid,
+          artifact: verified.metadata,
+          entrySha256: sha(runtimeExecutable(oldVersion)),
+        },
+      });
+      const stdout = await new Promise<string>((resolve, reject) =>
+        NodeChildProcess.execFile(
+          NodeProcess.execPath,
+          ["--experimental-strip-types", "--input-type=module", "-e", script, input],
+          { timeout: 30_000, maxBuffer: 64 * 1024 },
+          (error, stdout) => (error === null ? resolve(stdout) : reject(error)),
+        ),
+      );
+      expect(JSON.parse(stdout)).toEqual({ source: privateSetupSource, mode: 0o700 });
+      await expect(
+        NodeFSP.lstat(NodePath.join(active, ".jones-provenance.json")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    },
+    { privateSetup: true },
+  ));
 it.each(["missing-acceptance", "current-child-receipt", "stale-child-receipt"])(
   "refuses private setup %s before pending intent or service stop",
   (kind) =>
@@ -1206,6 +1209,106 @@ it.each<[string, (m: Record<string, unknown>) => EnvelopeOptions, string]>([
     );
     expect(f.commands.every((c) => c.command === "gh")).toBe(true);
   }),
+);
+it.each(["push", "schedule"])(
+  "qualifies an authenticated desktop %s artifact with exact-source push CI",
+  (event) =>
+    fixture(async (f) => {
+      const source = "e".repeat(40);
+      const workflow = ".github/workflows/artifact-desktop-mac.yml";
+      const dir = await f.writeArtifact({
+        index: 2,
+        version: newVersion,
+        source,
+        tree: "c".repeat(40),
+        archive: Buffer.from("synthetic desktop archive"),
+        platform: "darwin",
+        architecture: "arm64",
+        workflow,
+        event,
+      });
+      const host = { ...f.host, platform: "darwin" as const, architecture: "arm64" as const };
+      const verified = await verifyAdoptionArtifact(dir, source, host);
+      expect(verified.metadata).toMatchObject({
+        workflow,
+        event,
+        artifact: `T3-Code-${newVersion}-arm64.dmg`,
+      });
+      expect(verified.artifact).toMatchObject({
+        workflow,
+        runId: 102,
+        artifactId: 202,
+        sourceSha: source,
+      });
+      expect(
+        f.commands.find((command) => command.args.at(-1)?.includes("ci.yml/runs?"))?.args.at(-1),
+      ).toContain(`head_sha=${source}&event=push&branch=main`);
+      for (const ciEvent of ["schedule", "workflow_dispatch"]) {
+        await expect(
+          verifyAdoptionArtifact(dir, source, {
+            ...host,
+            run: async (command) => {
+              const result = await host.run(command);
+              if (!command.args.at(-1)?.includes("ci.yml/runs?")) return result;
+              const ci = JSON.parse(result) as { workflow_runs: Array<Record<string, unknown>> };
+              return JSON.stringify({
+                workflow_runs: ci.workflow_runs.map((run) => ({ ...run, event: ciEvent })),
+              });
+            },
+          }),
+        ).rejects.toThrow("no successful canonical main CI run");
+      }
+      await expect(
+        verifyAdoptionArtifact(dir, source, {
+          ...host,
+          run: async (command) => {
+            const result = await host.run(command);
+            return command.args.at(-1)?.endsWith("actions/runs/102")
+              ? JSON.stringify({
+                  ...(JSON.parse(result) as object),
+                  event: event === "push" ? "schedule" : "push",
+                })
+              : result;
+          },
+        }),
+      ).rejects.toThrow("generation or source tree is unqualified");
+      await f.setEnvelope(
+        dir,
+        await f.envelope(dir, {
+          embedded: { ...f.metadata.get(dir)!, event: event === "push" ? "schedule" : "push" },
+        }),
+      );
+      await expect(verifyAdoptionArtifact(dir, source, host)).rejects.toThrow(
+        "Local metadata differs from the authenticated Actions ZIP",
+      );
+    }),
+);
+it.each([
+  ["linux", ".github/workflows/artifact-cli-linux.yml", "schedule"],
+  ["darwin", ".github/workflows/artifact-desktop-mac.yml", "workflow_dispatch"],
+  ["darwin", ".github/workflows/artifact-desktop-mac.yml", "pull_request"],
+  ["darwin", ".github/workflows/artifact-cli-mac.yml", "schedule"],
+] as const)(
+  "refuses adoption from unsupported %s workflow %s event %s",
+  (platform, workflow, event) =>
+    fixture(async (f) => {
+      const source = "e".repeat(40);
+      const dir = await f.writeArtifact({
+        index: 2,
+        version: newVersion,
+        source,
+        tree: "c".repeat(40),
+        archive: Buffer.from("synthetic archive"),
+        platform,
+        architecture: "arm64",
+        workflow,
+        event,
+      });
+      await expect(
+        verifyAdoptionArtifact(dir, source, { ...f.host, platform, architecture: "arm64" }),
+      ).rejects.toThrow("Workflow or event is not an accepted main build");
+      expect(f.commands).toEqual([]);
+    }),
 );
 it("natively qualifies an authentic CLI mac workflow_dispatch envelope", () =>
   fixture(async (f) => {

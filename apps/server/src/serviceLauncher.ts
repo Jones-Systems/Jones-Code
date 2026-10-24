@@ -74,6 +74,7 @@ import {
 } from "./jones/updates/launcherOperation.ts";
 
 import { assertStageNotRevoked, retireNativeStage } from "./jones/updates/stageRevocation.ts";
+import * as NodeUtil from "node:util";
 
 import type {
   PendingServiceUpdate,
@@ -89,6 +90,7 @@ import {
   decodeServiceLauncherChildMessage,
   isExactServiceVersion,
   parseServiceState,
+  SERVICE_ENV_FILE,
   SERVICE_LAUNCHER_CONTEXT_ENV,
   SERVICE_LAUNCHER_PROTOCOL,
   SERVICE_STATE_FILE,
@@ -107,6 +109,7 @@ const HANDOFF_DELAY_MS = 2_000;
  * take minutes. A missed window rolls back the database, so the next attempt pays the same cost.
  */
 export const PREPARED_TIMEOUT_MS = 30 * 60_000;
+const TERMINATE_GRACE_MS = 5_000;
 // Matches SERVER_EXIT_CODE_STATE_DIR_OWNED in contracts. The standalone
 // launcher stays independent of the Effect-backed contracts package.
 const STATE_DIR_OWNED_EXIT_CODE = 78;
@@ -215,6 +218,36 @@ async function pathExists(target: string): Promise<boolean> {
     if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") return false;
     throw cause;
   }
+}
+
+const MANAGED_SERVICE_ENV_NAMES = new Set([
+  "PATH",
+  "T3CODE_HOME",
+  "T3_BOOT_SERVICE_UNIT",
+  SERVICE_LAUNCHER_CONTEXT_ENV,
+]);
+
+export async function readServiceEnvironment(
+  baseDir: string,
+  inherited: NodeJS.ProcessEnv = process.env,
+): Promise<NodeJS.ProcessEnv> {
+  const environment = { ...inherited };
+  let contents: string;
+  try {
+    contents = await NodeFSP.readFile(NodePath.join(baseDir, SERVICE_ENV_FILE), "utf8");
+  } catch (cause) {
+    if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") return environment;
+    throw cause;
+  }
+  for (const [name, value] of Object.entries(NodeUtil.parseEnv(contents))) {
+    if (
+      /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) &&
+      !MANAGED_SERVICE_ENV_NAMES.has(name.toUpperCase())
+    ) {
+      environment[name] = value;
+    }
+  }
+  return environment;
 }
 
 // Opened read-write: Windows refuses to flush a handle without write access.
@@ -778,6 +811,7 @@ export class Launcher {
   #qualifiedCommitAttempt: QualifiedCommitAttempt | undefined;
   readonly #completion = Promise.withResolvers<void>();
   readonly #backupSpaceProbe: Partial<BackupSpaceProbe> | undefined;
+  readonly #environment: Readonly<NodeJS.ProcessEnv>;
   readonly #recoveryIO: LauncherRecoveryIO;
   // A disconnected child's retries cannot reach this launcher. Keep its bounded reply cache local.
   readonly #reconciliationReplies = new WeakMap<
@@ -800,10 +834,12 @@ export class Launcher {
       };
       /** Monotonic milliseconds for the qualified exchange fence; injectable in tests. */
       readonly now?: () => number;
+      readonly environment?: Readonly<NodeJS.ProcessEnv>;
     } = {},
   ) {
     this.#baseDir = baseDir;
     this.#backupSpaceProbe = options.backupSpaceProbe;
+    this.#environment = { ...(options.environment ?? process.env) };
     this.#statePath = NodePath.join(baseDir, "runtime", SERVICE_STATE_FILE);
     this.#state = state;
     this.#startupGateProtocol = options.startupGateProtocol;
@@ -1211,7 +1247,7 @@ export class Launcher {
     const spawnArguments = runtimeSpawnArguments(paths);
     const child = NodeChildProcess.spawn(spawnArguments.command, spawnArguments.args, {
       env: {
-        ...process.env,
+        ...this.#environment,
         T3CODE_HOME: this.#baseDir,
         [SERVICE_LAUNCHER_CONTEXT_ENV]: JSON.stringify(context),
       },
@@ -1948,9 +1984,11 @@ export async function main(): Promise<void> {
   if (baseDir === undefined || baseDir === "") {
     throw new Error("T3CODE_HOME is required by the T3 Code service launcher.");
   }
+  const environment = await readServiceEnvironment(baseDir);
   const statePath = NodePath.join(baseDir, "runtime", SERVICE_STATE_FILE);
   const state = await readServiceState(statePath);
   await new Launcher(baseDir, state, {
+    environment,
     startupGateProtocol: readJonesStartupGateProtocol(),
   }).run();
 }

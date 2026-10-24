@@ -182,6 +182,12 @@ describe("sidebar status filter", () => {
 
   it("keeps Waiting, failures, and acknowledged or never-visited completions out of Done", () => {
     expect(classifyThreadStatus({ ...base, runtime: runtime("idle") }, "current")).toBe("working");
+    expect(
+      classifyThreadStatus(
+        { ...base, runtime: runtime("idle"), latestRun, lastVisitedAt: visited },
+        "current",
+      ),
+    ).toBe("working");
     for (const status of ["failed"] as const) {
       expect(
         classifyThreadStatus(

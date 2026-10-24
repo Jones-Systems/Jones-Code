@@ -83,14 +83,13 @@ it.live(
             entry.type === "expect_outbound" && entry.frame?.method === "turn/start",
         );
         first.frame.params.additionalContext = buildCodexAdditionalContext(
-          { model: initial.model, reasoningEffort: "medium" },
+          { model: initial.model },
           { browser: true, device: false },
         );
         first.frame.params.collaborationMode = {
           mode: "default",
           settings: {
             model: initial.model,
-            reasoning_effort: "medium",
             developer_instructions: "<ignored>",
           },
         };
@@ -348,5 +347,4 @@ it.live(
         }).pipe(Effect.provide(Layer.merge(runtime, tools)));
       }),
     ),
-  30_000,
 );

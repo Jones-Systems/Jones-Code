@@ -1,0 +1,623 @@
+import * as NodeOS from "node:os";
+import { describe, expect, it, vi } from "vite-plus/test";
+import {
+  assertResourceAdmission,
+  cpuSample,
+  memoryAdmitted,
+  swapRate,
+  vmSample,
+  waitForResourceAdmission,
+} from "./ios-admission.ts";
+import type { AdmissionEvent, AdmissionWaitOptions } from "./ios-admission.ts";
+
+const firstCpuSample = "CPU usage: 80.0% user, 10.0% sys, 10.0% idle\n";
+const formatterCpuSample = "CPU usage: 20.5% user, 79.95% sys, 0.0% idle";
+const hostedCpuSample = "CPU usage: 53.91% user, 46.8% sys, 0.0% idle";
+const cpuDiagnostic = (message: string, prefix = "CPU sample unavailable") => {
+  expect(message.startsWith(`${prefix}: `)).toBe(true);
+  expect(message.length).toBeLessThan(1024);
+  return JSON.parse(message.slice(prefix.length + 2)) as unknown;
+};
+const cpuFailure = (text: string, prefix?: string) => {
+  let failure: unknown;
+  try {
+    cpuSample(text);
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure).toBeInstanceOf(Error);
+  if (!(failure instanceof Error)) throw new Error("Expected CPU sample failure");
+  return cpuDiagnostic(failure.message, prefix);
+};
+
+describe("macOS resource admission", () => {
+  const base = () => ({
+    sourceSha: "a".repeat(40),
+    hostname: NodeOS.hostname(),
+    serialSlot: "owner-slot",
+    measuredAt: 100,
+    cpuUsed: 30,
+    availableMemoryBytes: 1024 ** 3,
+    memoryPressure: "normal",
+    swapBytesPerSecond: 0,
+    freeDiskBytes: 30 * 1024 ** 3,
+  });
+  const env = {
+    GITHUB_ACTIONS: "true",
+    RUNNER_ENVIRONMENT: "github-hosted",
+    RUNNER_OS: "macOS",
+    ImageOS: "macos26-arm64",
+    GITHUB_RUN_ID: "123",
+    GITHUB_RUN_ATTEMPT: "1",
+  };
+  const hosted = () => ({
+    ...base(),
+    hostClass: "github-hosted-ephemeral",
+    runId: "123",
+    runAttempt: "1",
+    serialSlot: "gh-123-1",
+    freeDiskBytes: 1024,
+  });
+  it("keeps laptop disk protection and binds the hosted exception to the actual job", () => {
+    expect(() => assertResourceAdmission(base(), base().sourceSha, 101, {})).not.toThrow();
+    expect(() =>
+      assertResourceAdmission(
+        { ...base(), freeDiskBytes: 29 * 1024 ** 3 },
+        base().sourceSha,
+        101,
+        {},
+      ),
+    ).toThrow("30 GiB");
+    expect(() => assertResourceAdmission(hosted(), base().sourceSha, 101, env)).not.toThrow();
+    for (const changed of [
+      { RUNNER_ENVIRONMENT: "self-hosted" },
+      { GITHUB_RUN_ID: "124" },
+      { ImageOS: "macos15" },
+    ])
+      expect(() =>
+        assertResourceAdmission(hosted(), base().sourceSha, 101, { ...env, ...changed }),
+      ).toThrow();
+    expect(() =>
+      assertResourceAdmission({ ...hosted(), serialSlot: "other" }, base().sourceSha, 101, env),
+    ).toThrow("slot");
+    expect(() =>
+      assertResourceAdmission({ ...base(), cpuUsed: 85 }, base().sourceSha, 101, {}),
+    ).toThrow("CPU");
+    expect(() => assertResourceAdmission(base(), base().sourceSha, 60_100, {})).toThrow("fresh");
+  });
+  it("holds critical pressure only above 10 MiB/s and rejects unknown samples", () => {
+    expect(memoryAdmitted("warning", 100 * 1024 ** 2)).toBe(true);
+    expect(memoryAdmitted("normal", 100 * 1024 ** 2)).toBe(true);
+    expect(memoryAdmitted("critical", 10 * 1024 ** 2)).toBe(true);
+    expect(memoryAdmitted("critical", 10 * 1024 ** 2 + 1)).toBe(false);
+    expect(() => memoryAdmitted("unknown", 0)).toThrow("unavailable");
+    expect(() => memoryAdmitted("normal", Number.NaN)).toThrow("unavailable");
+  });
+  it("uses the second CPU sample and actual elapsed swap interval", () => {
+    expect(
+      cpuSample(
+        "CPU usage: 80.0% user, 10.0% sys, 10.0% idle\nCPU usage: 20.0% user, 5.0% sys, 75.0% idle",
+      ),
+    ).toBe(25);
+    expect(() => cpuSample("CPU usage: 20% user, 5% sys, 75% idle")).toThrow("Two");
+    const sample = vmSample(
+      "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free: 10.\nPages inactive: 20.\nPages speculative: 3.\nSwapins: 2.\nSwapouts: 4.\n",
+    );
+    expect(sample.availableMemoryBytes).toBe(33 * 16384);
+    expect(swapRate(sample, { ...sample, swap: 10 }, 2)).toBe(2 * 16384);
+    expect(() => swapRate(sample, { ...sample, swap: 1 }, 2)).toThrow("invalid");
+    expect(() => swapRate(sample, sample, 0)).toThrow("invalid");
+  });
+
+  it.each([
+    ["20.0", "5.0", "75.0", 25],
+    ["71.53", "28.46", "0.1", 99.99000000000001],
+    ["84.99", "0.01", "15.0", 85],
+    ["84.98", "0.01", "15.1", 84.99000000000001],
+    ["20.0", "5.0", "..", 25],
+  ])("preserves the last matched CPU value for %s + %s", (user, sys, idle, used) => {
+    expect(
+      cpuSample(firstCpuSample.repeat(2) + `CPU usage: ${user}% user, ${sys}% sys, ${idle}% idle`),
+    ).toBe(used);
+  });
+
+  it("retains tokens for an Apple-formatter-constructible overrange sum without accepting it", () => {
+    // Published top formatting can print 2005/7995/0 ticks as 20.5/79.95/0.0.
+    expect(cpuFailure(firstCpuSample + formatterCpuSample)).toMatchObject({
+      reason: "out_of_range",
+      matchCount: 2,
+      selectedIndex: 1,
+      selected: {
+        user: {
+          text: "20.5",
+          length: 4,
+          truncated: false,
+          value: "20.5",
+          classification: "finite",
+        },
+        sys: {
+          text: "79.95",
+          length: 5,
+          truncated: false,
+          value: "79.95",
+          classification: "finite",
+        },
+        idle: { text: "0.0", length: 3, truncated: false, value: "0", classification: "finite" },
+      },
+      used: { value: "100.45", classification: "finite" },
+    });
+  });
+
+  it("rejects the hosted 100.71 observation without retaining surrounding output", () => {
+    const diagnostic = cpuFailure(firstCpuSample + hostedCpuSample + "\nPRIVATE PROCESS DATA");
+    expect(diagnostic).toMatchObject({
+      reason: "out_of_range",
+      matchCount: 2,
+      selectedIndex: 1,
+      selected: { user: { text: "53.91" }, sys: { text: "46.8" }, idle: { text: "0.0" } },
+      used: { value: "100.71", classification: "finite" },
+    });
+    expect(JSON.stringify(diagnostic)).not.toContain("PRIVATE PROCESS DATA");
+  });
+
+  it.each([
+    ["20..5", "nonfinite", "NaN", "NaN"],
+    ["9".repeat(400), "nonfinite", "Infinity", "infinite"],
+    ["101.0", "out_of_range", "101", "finite"],
+    ["100.00000000000001", "out_of_range", "100.00000000000001", "finite"],
+  ])(
+    "keeps malformed, nonfinite and out-of-range diagnostics bounded (case %#)",
+    (user, reason, value, classification) => {
+      expect(
+        cpuFailure(
+          firstCpuSample + `CPU usage: ${user}% user, 0% sys, 0% idle\nPRIVATE PROCESS DATA`,
+        ),
+      ).toMatchObject({
+        reason,
+        selected: { user: { value, classification } },
+        used: { value, classification },
+      });
+    },
+  );
+
+  it.each([0, 1])("reports insufficient samples with %i matches", (count) => {
+    expect(cpuFailure(firstCpuSample.repeat(count), "Two top CPU samples required")).toMatchObject({
+      reason: "insufficient_samples",
+      matchCount: count,
+      selectedIndex: count === 0 ? null : 0,
+      ...(count === 0 ? { selected: null, used: null } : { selected: { user: { text: "80.0" } } }),
+    });
+  });
+
+  it("bounds every retained token and excludes surrounding process output", () => {
+    const digits = "9".repeat(400),
+      dots = ".".repeat(400);
+    const diagnostic = cpuFailure(
+      firstCpuSample +
+        `CPU usage: ${digits}% user, ${digits}% sys, ${dots}% idle\nPRIVATE PROCESS DATA`,
+    );
+    expect(diagnostic).toMatchObject({
+      selected: {
+        user: { text: "9".repeat(32), length: 400, truncated: true },
+        sys: { text: "9".repeat(32), length: 400, truncated: true },
+        idle: { text: ".".repeat(32), length: 400, truncated: true, classification: "NaN" },
+      },
+    });
+    expect(JSON.stringify(diagnostic)).not.toContain("PRIVATE PROCESS DATA");
+  });
+});
+
+describe("bounded CPU readiness", () => {
+  const harness = (cpus = [30]) => {
+    let time = 100,
+      calls = 0,
+      heavyStarts = 0;
+    const controller = new AbortController();
+    const events: AdmissionEvent[] = [];
+    const waits: number[] = [];
+    const sample = () => ({
+      sourceSha: "a".repeat(40),
+      hostname: NodeOS.hostname(),
+      serialSlot: "owner-slot",
+      measuredAt: time,
+      cpuUsed: cpus[Math.min(calls++, cpus.length - 1)],
+      availableMemoryBytes: 1024 ** 3,
+      memoryPressure: "normal",
+      swapBytesPerSecond: 0,
+      freeDiskBytes: 30 * 1024 ** 3,
+    });
+    const options: AdmissionWaitOptions = {
+      sourceSha: "a".repeat(40),
+      serialSlot: "owner-slot",
+      signal: controller.signal,
+      sample: async () => sample(),
+      now: () => time,
+      monotonicNow: () => time,
+      env: {},
+      record: async (event) => {
+        events.push(event);
+      },
+      wait: async (ms) => {
+        waits.push(ms);
+        time += ms;
+      },
+    };
+    return {
+      options,
+      events,
+      waits,
+      controller,
+      sample,
+      advance: (ms: number) => {
+        time += ms;
+      },
+      counts: () => ({ calls, heavyStarts }),
+      run: async () => {
+        const admitted = await waitForResourceAdmission(options);
+        heavyStarts++;
+        return admitted;
+      },
+    };
+  };
+
+  it("starts immediately on a fresh passing sample without waiting", async () => {
+    const h = harness();
+    expect((await h.run()).cpuUsed).toBe(30);
+    expect(h.waits).toEqual([]);
+    expect(h.counts()).toEqual({ calls: 1, heavyStarts: 1 });
+    expect(h.events.map((event) => event.kind)).toEqual(["started", "sample", "ready"]);
+    expect(h.events[0]).toMatchObject({ at: 100, deadlineAt: 120_100, elapsedMs: 0 });
+  });
+
+  it("retains every held sample and starts once after a fresh passing sample", async () => {
+    const h = harness([85, 100, 84.99]);
+    expect((await h.run()).cpuUsed).toBe(84.99);
+    expect(h.waits).toEqual([20_000, 20_000]);
+    expect(h.counts()).toEqual({ calls: 3, heavyStarts: 1 });
+    expect(
+      h.events.filter((event) => event.kind === "sample").map((event) => event.sample),
+    ).toEqual([
+      expect.objectContaining({ cpuUsed: 85, measuredAt: 100 }),
+      expect.objectContaining({ cpuUsed: 100, measuredAt: 20_100 }),
+      expect.objectContaining({ cpuUsed: 84.99, measuredAt: 40_100 }),
+    ]);
+    expect(h.events.map((event) => event.kind)).toEqual([
+      "started",
+      "sample",
+      "held",
+      "sample",
+      "held",
+      "sample",
+      "ready",
+    ]);
+  });
+
+  it("stops permanent busy at 120 seconds with no heavy work or deadline sample", async () => {
+    const h = harness([85]);
+    await expect(h.run()).rejects.toThrow("deadline");
+    expect(h.waits).toEqual(Array(6).fill(20_000));
+    expect(h.counts()).toEqual({ calls: 6, heavyStarts: 0 });
+    expect(h.events.at(-1)).toMatchObject({
+      kind: "aborted",
+      at: 120_100,
+      deadlineAt: 120_100,
+      elapsedMs: 120_000,
+      reason: "CPU admission readiness deadline exceeded",
+    });
+  });
+
+  it.each([
+    { cpuUsed: Number.NaN },
+    { cpuUsed: -1 },
+    { cpuUsed: 101 },
+    { cpuUsed: undefined },
+    { measuredAt: -60_000 },
+    { measuredAt: 101 },
+    { sourceSha: "b".repeat(40) },
+    { hostname: "different-host" },
+    { serialSlot: "other-slot" },
+    { hostClass: "unknown" },
+    { availableMemoryBytes: 0 },
+    { memoryPressure: "unknown" },
+    { memoryPressure: "critical", swapBytesPerSecond: 10 * 1024 ** 2 + 1 },
+    { swapBytesPerSecond: Number.NaN },
+    { freeDiskBytes: 1 },
+  ])("fails closed without retry for invalid or non-CPU-held evidence: %j", async (patch) => {
+    const h = harness([85]);
+    h.options.sample = async () => ({ ...h.sample(), ...patch });
+    await expect(h.run()).rejects.toThrow();
+    expect(h.waits).toEqual([]);
+    expect(h.counts()).toEqual({ calls: 1, heavyStarts: 0 });
+    expect(h.events.map((event) => event.kind)).toEqual(["started", "sample", "aborted"]);
+  });
+
+  it("does not retry missing evidence or collector errors, even CPU assertion text", async () => {
+    for (const collect of [
+      async () => undefined,
+      async () => {
+        throw new Error("CPU admission held");
+      },
+    ]) {
+      const h = harness();
+      h.options.sample = collect;
+      await expect(h.run()).rejects.toThrow();
+      expect(h.waits).toEqual([]);
+      expect(h.counts().heavyStarts).toBe(0);
+      expect(h.events.at(-1)?.kind).toBe("aborted");
+    }
+  });
+
+  it("holds a finite out-of-range observation then busy evidence until one fresh admission", async () => {
+    const h = harness([100, 85, 84.99]);
+    h.options.sample = async () => {
+      const sample = h.sample();
+      if (h.counts().calls === 1) cpuSample(firstCpuSample + hostedCpuSample);
+      return sample;
+    };
+    expect((await h.run()).cpuUsed).toBe(84.99);
+    expect(h.waits).toEqual([20_000, 20_000]);
+    expect(h.counts()).toEqual({ calls: 3, heavyStarts: 1 });
+    expect(h.events.map((event) => event.kind)).toEqual([
+      "started",
+      "held",
+      "sample",
+      "held",
+      "sample",
+      "ready",
+    ]);
+    expect(h.events[1]).toMatchObject({ at: 100, deadlineAt: 120_100, elapsedMs: 0 });
+    expect(h.events[1]?.sample).toBeUndefined();
+    expect(cpuDiagnostic(h.events[1]?.reason ?? "")).toMatchObject({
+      reason: "out_of_range",
+      matchCount: 2,
+      selectedIndex: 1,
+      selected: { user: { text: "53.91" }, sys: { text: "46.8" }, idle: { text: "0.0" } },
+      used: { value: "100.71", classification: "finite" },
+    });
+    expect(h.events.at(-1)?.sample).toMatchObject({ cpuUsed: 84.99, measuredAt: 40_100 });
+  });
+
+  it("expires repeated finite out-of-range observations within the original collection budget", async () => {
+    const h = harness();
+    h.options.sample = async () => {
+      h.sample();
+      h.advance(2_000);
+      return cpuSample(firstCpuSample + hostedCpuSample);
+    };
+    await expect(h.run()).rejects.toThrow("deadline");
+    expect(h.waits).toEqual([20_000, 20_000, 20_000, 20_000, 20_000, 8_000]);
+    expect(h.counts()).toEqual({ calls: 6, heavyStarts: 0 });
+    expect(h.events.filter((event) => event.kind === "held")).toHaveLength(6);
+    expect(h.events.every((event) => event.deadlineAt === 120_100)).toBe(true);
+    expect(h.events.some((event) => event.kind === "sample" || event.kind === "ready")).toBe(false);
+    expect(h.events.at(-1)).toMatchObject({
+      kind: "aborted",
+      at: 120_100,
+      elapsedMs: 120_000,
+      reason: "CPU admission readiness deadline exceeded",
+    });
+  });
+
+  it.each([
+    "",
+    firstCpuSample,
+    firstCpuSample + "CPU usage: 20..5% user, 0% sys, 0% idle",
+    firstCpuSample + `CPU usage: ${"9".repeat(400)}% user, 0% sys, 0% idle`,
+  ])("does not retry missing, malformed or nonfinite parser evidence (case %#)", async (top) => {
+    const h = harness();
+    h.options.sample = async () => {
+      h.sample();
+      return cpuSample(top);
+    };
+    await expect(h.run()).rejects.toThrow();
+    expect(h.waits).toEqual([]);
+    expect(h.counts()).toEqual({ calls: 1, heavyStarts: 0 });
+    expect(h.events.map((event) => event.kind)).toEqual(["started", "aborted"]);
+  });
+
+  it("does not retry matching error text or an aggregate containing the typed parser error", async () => {
+    for (const wrap of [
+      (error: Error) => new Error(error.message),
+      (error: Error) => new AggregateError([error], "Command or cleanup failed", { cause: error }),
+    ]) {
+      const h = harness();
+      let failure: Error | undefined;
+      h.options.sample = async () => {
+        h.sample();
+        try {
+          return cpuSample(firstCpuSample + hostedCpuSample);
+        } catch (error) {
+          if (!(error instanceof Error)) throw error;
+          failure = wrap(error);
+          throw failure;
+        }
+      };
+      const result = h.run();
+      await expect(result).rejects.toThrow();
+      await expect(result).rejects.toBe(failure);
+      expect(h.waits).toEqual([]);
+      expect(h.counts()).toEqual({ calls: 1, heavyStarts: 0 });
+      expect(h.events.map((event) => event.kind)).toEqual(["started", "aborted"]);
+    }
+  });
+
+  it("stops late or cancelled out-of-range collection before recording a hold", async () => {
+    for (const cancel of [true, false]) {
+      const h = harness();
+      h.options.sample = async () => {
+        h.sample();
+        if (cancel) h.controller.abort(new Error("owner cancelled"));
+        else h.advance(120_000);
+        return cpuSample(firstCpuSample + hostedCpuSample);
+      };
+      await expect(h.run()).rejects.toThrow(cancel ? "owner cancelled" : "deadline");
+      expect(h.waits).toEqual([]);
+      expect(h.counts()).toEqual({ calls: 1, heavyStarts: 0 });
+      expect(h.events.map((event) => event.kind)).toEqual(["started", "aborted"]);
+    }
+  });
+
+  it("checks cancellation and the original deadline after an out-of-range hold is recorded", async () => {
+    for (const cancel of [true, false]) {
+      const h = harness();
+      h.options.sample = async () => {
+        h.sample();
+        return cpuSample(firstCpuSample + hostedCpuSample);
+      };
+      h.options.record = async (event) => {
+        h.events.push(event);
+        if (event.kind === "held") {
+          if (cancel) h.controller.abort(new Error("owner cancelled"));
+          else h.advance(120_000);
+        }
+      };
+      await expect(h.run()).rejects.toThrow(cancel ? "owner cancelled" : "deadline");
+      expect(h.waits).toEqual([]);
+      expect(h.counts()).toEqual({ calls: 1, heavyStarts: 0 });
+      expect(h.events.map((event) => event.kind)).toEqual(["started", "held", "aborted"]);
+    }
+  });
+
+  it("stops cancellation during an out-of-range hold wait without recollecting", async () => {
+    const h = harness();
+    h.options.sample = async () => {
+      h.sample();
+      return cpuSample(firstCpuSample + hostedCpuSample);
+    };
+    h.options.wait = async () => {
+      h.advance(5_000);
+      h.controller.abort(new Error("owner cancelled"));
+    };
+    await expect(h.run()).rejects.toThrow("owner cancelled");
+    expect(h.counts()).toEqual({ calls: 1, heavyStarts: 0 });
+    expect(h.events.at(-1)).toMatchObject({
+      kind: "aborted",
+      at: 5_100,
+      reason: "owner cancelled",
+    });
+  });
+
+  it("does not retry a held evidence-write failure even when it is a typed parser error", async () => {
+    for (const typed of [false, true]) {
+      const h = harness();
+      h.options.sample = async () => {
+        h.sample();
+        return cpuSample(firstCpuSample + hostedCpuSample);
+      };
+      h.options.record = async (event) => {
+        if (event.kind === "held") {
+          if (typed) cpuSample(firstCpuSample + hostedCpuSample);
+          throw new Error("evidence unavailable");
+        }
+        h.events.push(event);
+      };
+      await expect(h.run()).rejects.toThrow(
+        typed ? "CPU sample unavailable" : "evidence unavailable",
+      );
+      expect(h.waits).toEqual([]);
+      expect(h.counts()).toEqual({ calls: 1, heavyStarts: 0 });
+      expect(h.events.map((event) => event.kind)).toEqual(["started", "aborted"]);
+    }
+  });
+
+  it("does not sample after cancellation and cancels during a held wait", async () => {
+    const before = harness();
+    before.controller.abort(new Error("owner cancelled"));
+    await expect(before.run()).rejects.toThrow("owner cancelled");
+    expect(before.counts()).toEqual({ calls: 0, heavyStarts: 0 });
+    const held = harness([85]);
+    held.options.wait = async () => {
+      held.advance(5_000);
+      held.controller.abort(new Error("owner cancelled"));
+    };
+    await expect(held.run()).rejects.toThrow("owner cancelled");
+    expect(held.counts()).toEqual({ calls: 1, heavyStarts: 0 });
+    expect(held.events.at(-1)).toMatchObject({
+      kind: "aborted",
+      at: 5_100,
+      reason: "owner cancelled",
+    });
+  });
+
+  it("rejects samples returned after cancellation or the deadline", async () => {
+    for (const cancel of [true, false]) {
+      const h = harness();
+      h.options.sample = async () => {
+        if (cancel) h.controller.abort(new Error("owner cancelled"));
+        else h.advance(120_000);
+        return h.sample();
+      };
+      await expect(h.run()).rejects.toThrow(cancel ? "owner cancelled" : "deadline");
+      expect(h.counts()).toEqual({ calls: 1, heavyStarts: 0 });
+      expect(h.events.map((event) => event.kind)).toEqual(["started", "sample", "aborted"]);
+    }
+  });
+
+  it("caps the last wait by time spent collecting samples", async () => {
+    const h = harness([85]);
+    h.options.sample = async () => {
+      h.advance(35_000);
+      return h.sample();
+    };
+    await expect(h.run()).rejects.toThrow("deadline");
+    expect(h.waits).toEqual([20_000, 20_000]);
+    expect(h.counts().heavyStarts).toBe(0);
+    const last = harness([85]);
+    last.options.sample = async () => {
+      last.advance(110_000);
+      return last.sample();
+    };
+    await expect(last.run()).rejects.toThrow("deadline");
+    expect(last.waits).toEqual([10_000]);
+    expect(last.counts()).toEqual({ calls: 1, heavyStarts: 0 });
+  });
+
+  it("rechecks freshness and cancellation after evidence writes", async () => {
+    for (const cancel of [true, false]) {
+      const h = harness();
+      h.options.record = async (event) => {
+        h.events.push(event);
+        if (event.kind === "ready") {
+          if (cancel) h.controller.abort(new Error("owner cancelled"));
+          else h.advance(60_000);
+        }
+      };
+      await expect(h.run()).rejects.toThrow(cancel ? "owner cancelled" : "fresh");
+      expect(h.counts().heavyStarts).toBe(0);
+      expect(h.events.at(-1)?.kind).toBe("aborted");
+    }
+  });
+
+  it("fails closed when evidence cannot be retained", async () => {
+    const h = harness();
+    h.options.record = async () => {
+      throw new Error("evidence unavailable");
+    };
+    await expect(h.run()).rejects.toThrow("Admission and evidence recording failed");
+    expect(h.counts()).toEqual({ calls: 0, heavyStarts: 0 });
+  });
+
+  it("actively aborts an in-flight collector at the deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness();
+      h.options.now = Date.now;
+      h.options.monotonicNow = Date.now;
+      let sampled = false;
+      h.options.sample = (signal) =>
+        new Promise((_, reject) => {
+          sampled = true;
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      const result = expect(h.run()).rejects.toThrow("deadline");
+      await vi.advanceTimersByTimeAsync(120_000);
+      await result;
+      expect(sampled).toBe(true);
+      expect(h.counts().heavyStarts).toBe(0);
+      expect(h.events.at(-1)).toMatchObject({ kind: "aborted", elapsedMs: 120_000 });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

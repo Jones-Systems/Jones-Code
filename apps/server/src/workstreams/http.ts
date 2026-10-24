@@ -246,11 +246,10 @@ export const workstreamHttpApiLayer = HttpApiBuilder.group(
             reason: "service_unavailable",
           })
         : run(operationService.value);
-    const read = (name: string) =>
-      Effect.gen(function* () {
-        yield* annotateEnvironmentRequest(name);
-        yield* requireEnvironmentScope(AuthOrchestrationReadScope);
-      });
+    const read = Effect.fn("WorkstreamHttp.read")(function* (name: string) {
+      yield* annotateEnvironmentRequest(name);
+      yield* requireEnvironmentScope(AuthOrchestrationReadScope);
+    });
     return handlers
       .handle("operationSubmit", (args) =>
         Effect.gen(function* () {

@@ -215,8 +215,13 @@ const selectorDiagnosticsFromInput = (
   return {};
 };
 
+/**
+ * One agent: a provider session on one thread. Codex and OpenCode run every
+ * thread of a provider instance in one session, so the session alone would
+ * share one current tab, tab budget, and tab ownership across chats.
+ */
 const hostAssignmentKey = (scope: McpInvocationContext.McpThreadInvocationScope): string =>
-  `${scope.environmentId}\u0000${scope.thread.providerSessionId}`;
+  `${scope.environmentId}\u0000${scope.thread.providerSessionId}\u0000${scope.thread.threadId}`;
 
 const sameRuntime = (
   left: NonNullable<ClientConnection["runtimeIdentity"]>,

@@ -739,11 +739,28 @@ NodeTest.test(
 
 // A deterministic IDB event model checks the emitted expression's guards and cleanup;
 // only the hosted native Preview scenario establishes actual browser compatibility.
-function indexedDbExpressionFixture() {
+function indexedDbExpressionFixture({ disabledEnvironmentIds = ["synthetic-remote"] } = {}) {
   const runtimeName = "t3code:connection-runtime";
   const hintName = "t3code:connection-compatibility-hints";
   const catalog = JSON.stringify({
-    disabledEnvironmentIds: ["synthetic-remote"],
+    schemaVersion: 1,
+    targets: [
+      {
+        _tag: "BearerConnectionTarget",
+        environmentId: "synthetic-remote",
+        connectionId: "synthetic-connection",
+        label: "Synthetic incompatible Jones host",
+      },
+    ],
+    profiles: [
+      {
+        _tag: "BearerConnectionProfile",
+        environmentId: "synthetic-remote",
+        connectionId: "synthetic-connection",
+        httpBaseUrl: "http://127.0.0.1:4100",
+      },
+    ],
+    disabledEnvironmentIds,
     credentials: ["DO-NOT-PUBLISH"],
   });
   const data = new Map([
@@ -787,15 +804,27 @@ function indexedDbExpressionFixture() {
       transaction(store) {
         if (handle.closed) throw Object.assign(new Error("closed"), { name: "InvalidStateError" });
         if (!entry.stores.has(store)) throw new Error("missing store");
+        let aborted = false;
         const tx = {
+          abort: () => {
+            aborted = true;
+            queueMicrotask(() => tx.onabort?.());
+          },
           objectStore: () => ({
             get: () => request(),
             getAll: () => request(),
+            put: (value, key) => {
+              NodeAssert.equal(key, "document");
+              entry.stores.set(store, value);
+            },
           }),
         };
         const request = () => {
           const result = { result: entry.stores.get(store) };
-          queueMicrotask(() => tx.oncomplete?.());
+          queueMicrotask(() => {
+            result.onsuccess?.();
+            if (!aborted) tx.oncomplete?.();
+          });
           return result;
         };
         return tx;
@@ -878,10 +907,12 @@ function indexedDbExpressionFixture() {
     "indexedDB",
     "crypto",
     "phase",
-    `return (${indexedDbBrowserProof.toString()})(phase)`,
+    "syntheticOrigin",
+    `return (${indexedDbBrowserProof.toString()})(phase, syntheticOrigin)`,
   );
   return {
-    run: (phase) => run(window, indexedDB, { randomUUID: () => "owned-negative" }, phase),
+    run: (phase, syntheticOrigin = "http://127.0.0.1:4100") =>
+      run(window, indexedDB, { randomUUID: () => "owned-negative" }, phase, syntheticOrigin),
     data,
     handles,
     events,
@@ -925,8 +956,102 @@ NodeTest.test(
     );
     NodeAssert.ok(close > verify);
     NodeAssert.deepEqual(steps[close + 1], { action: "navigate", path: "/settings/connections" });
-    NodeAssert.equal(steps.filter((step) => step.action === "navigate").length, 2);
+    const seed = at("Save Off for the exact isolated synthetic target");
+    const seededHold = at("Hold the saved Off version-4 catalog connection");
+    NodeAssert.ok(hold < seed && seed < seededHold && seededHold < checkpoint);
+    NodeAssert.deepEqual(steps[seed + 2], { action: "navigate", path: "/settings/connections" });
+    NodeAssert.equal(steps.filter((step) => step.action === "navigate").length, 3);
     NodeAssert.ok(steps.some((step) => step.name === "saved-connection-reload"));
+  },
+);
+
+NodeTest.test(
+  "saved Off seeding changes only the isolated target preference before checkpoint",
+  async () => {
+    const fixture = indexedDbExpressionFixture({ disabledEnvironmentIds: [] });
+    const store = fixture.data.get(fixture.runtimeName).stores;
+    const before = JSON.parse(store.get("catalog"));
+    await fixture.run("hold");
+    NodeAssert.deepEqual(await fixture.run("seed-off"), { savedOffFixtureSeeded: true });
+    NodeAssert.deepEqual(JSON.parse(store.get("catalog")), {
+      ...before,
+      disabledEnvironmentIds: ["synthetic-remote"],
+    });
+    await fixture.run("close");
+    await fixture.run("hold");
+    await fixture.run("checkpoint");
+    NodeAssert.ok(Object.values(await fixture.run("verify")).every((value) => value === true));
+    await fixture.run("close");
+    NodeAssert.ok([...fixture.handles].every((handle) => handle.closed));
+  },
+);
+
+NodeTest.test("saved Off seeding accepts the normalized root URL emitted by pairing", async () => {
+  const fixture = indexedDbExpressionFixture({ disabledEnvironmentIds: [] });
+  const store = fixture.data.get(fixture.runtimeName).stores;
+  const catalog = JSON.parse(store.get("catalog"));
+  catalog.profiles[0].httpBaseUrl = "http://127.0.0.1:4100/";
+  store.set("catalog", JSON.stringify(catalog));
+  await fixture.run("hold");
+  NodeAssert.deepEqual(await fixture.run("seed-off"), { savedOffFixtureSeeded: true });
+  NodeAssert.deepEqual(JSON.parse(store.get("catalog")), {
+    ...catalog,
+    disabledEnvironmentIds: ["synthetic-remote"],
+  });
+  await fixture.run("close");
+});
+
+NodeTest.test(
+  "saved Off seeding refuses nonmatching or ambiguous synthetic catalogs without writes",
+  async () => {
+    for (const mutate of [
+      (catalog) => {
+        catalog.targets[0].label = "Unrelated host";
+      },
+      (catalog) => {
+        catalog.targets.push({ ...catalog.targets[0] });
+      },
+      (catalog) => {
+        catalog.profiles[0].httpBaseUrl = "https://unrelated.invalid";
+      },
+      (catalog) => {
+        catalog.profiles[0].environmentId = "other";
+      },
+      (catalog) => {
+        catalog.disabledEnvironmentIds = ["other"];
+      },
+      ...[
+        "http://127.0.0.1:4100/path",
+        "http://127.0.0.1:4100/?query=1",
+        "http://127.0.0.1:4100/#fragment",
+        "http://user:password@127.0.0.1:4100/",
+      ].map((httpBaseUrl) => (catalog) => {
+        catalog.profiles[0].httpBaseUrl = httpBaseUrl;
+      }),
+    ]) {
+      const fixture = indexedDbExpressionFixture({ disabledEnvironmentIds: [] });
+      const store = fixture.data.get(fixture.runtimeName).stores;
+      const catalog = JSON.parse(store.get("catalog"));
+      mutate(catalog);
+      const before = JSON.stringify(catalog);
+      store.set("catalog", before);
+      await fixture.run("hold");
+      await NodeAssert.rejects(
+        fixture.run("seed-off"),
+        /exactly one newly paired synthetic target/,
+      );
+      NodeAssert.equal(store.get("catalog"), before);
+      NodeAssert.ok([...fixture.handles].every((handle) => handle.closed));
+    }
+    const fixture = indexedDbExpressionFixture({ disabledEnvironmentIds: [] });
+    const before = fixture.data.get(fixture.runtimeName).stores.get("catalog");
+    await fixture.run("hold");
+    await NodeAssert.rejects(
+      fixture.run("seed-off", "https://unrelated.invalid"),
+      /exact synthetic origin/,
+    );
+    NodeAssert.equal(fixture.data.get(fixture.runtimeName).stores.get("catalog"), before);
+    NodeAssert.ok([...fixture.handles].every((handle) => handle.closed));
   },
 );
 
