@@ -1744,6 +1744,7 @@
     "scripts/jones/boundary/fragments/pr-cache-scope-locks.json": "jones-owned",
     "apps/web/src/jones/remoteAgentLineage/MachineIdentity.browser.test.tsx": "jones-owned",
     "apps/web/src/jones/remoteAgentLineage/ThreadRelationships.browser.test.tsx": "jones-owned",
+    "scripts/jones/boundary/fragments/ci-change-selection.json": "jones-owned",
     ".github/workflows/jones-native-workflows.yml": "policy",
     "apps/desktop/scripts/ui-evidence/endpoint-trace.test.mjs": "jones-owned",
     "apps/desktop/scripts/ui-evidence/package-admission.test.mjs": "jones-owned",
@@ -1773,7 +1774,19 @@
     "scripts/jones/e2e/acp-stub/agent.mjs": "jones-owned",
     "scripts/jones/e2e/acp-stub/agent.node-test.mjs": "jones-owned",
     "apps/desktop/scripts/ui-evidence/support/pin-oracle.mjs": "jones-owned",
-    "scripts/jones/boundary/fragments/ci-change-selection.json": "jones-owned"
+    "apps/server/integration/jones-e2e/serverFixture.ts": "jones-owned",
+    "apps/server/integration/jones-e2e/physicalHost.ts": "jones-owned",
+    "apps/server/integration/jones-e2e/physicalHost.worker.ts": "jones-owned",
+    "apps/server/integration/jones-e2e/cross-server-message.integration.test.ts": "jones-owned",
+    "apps/server/integration/jones-e2e/multi-workspace.integration.test.ts": "jones-owned",
+    "apps/server/integration/jones-e2e/same-home-refusal.integration.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/server-e2e-integration.json": "jones-owned",
+    "apps/server/integration/jones-e2e/physicalHost.relay.py": "jones-owned",
+    "apps/server/integration/jones-e2e/physicalHost.operator.py": "jones-owned",
+    "apps/server/integration/jones-e2e/physicalHost.transport.test.py": "jones-owned",
+    "apps/server/integration/jones-e2e/physicalHost.request.example.json": "jones-owned",
+    "apps/server/integration/jones-e2e/physicalHost.md": "jones-owned",
+    "scripts/jones/ci/server-e2e.node-test.cjs": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
