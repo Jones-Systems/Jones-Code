@@ -1761,7 +1761,6 @@
         "apps/desktop/scripts/ui-evidence/secondary-server.test.mjs",
         "apps/desktop/scripts/ui-evidence/secret-service-stage.test.mjs",
         "apps/desktop/scripts/ui-evidence/secret-service.test.mjs",
-        "apps/desktop/scripts/ui-evidence/sidebar-pin-reload.test.mjs",
         "apps/desktop/scripts/ui-evidence/sidebar-pin-restart.test.mjs",
         "apps/desktop/scripts/ui-evidence/startup-diagnostics.test.mjs",
         "apps/desktop/scripts/ui-evidence/thread-self-configure.test.mjs",
