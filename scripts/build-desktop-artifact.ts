@@ -25,6 +25,15 @@ import desktopPackageJson from "../apps/desktop/package.json" with { type: "json
 import gnomeCaptureBundle from "../apps/desktop/gnome-extension/bundle.json" with { type: "json" };
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 
+import { requireProductionProfile } from "./jones/signing/profile.ts";
+import { planCliArchiveDependencies } from "./jones/packaging/cliArchiveDependencies.ts";
+import {
+  desktopAppId,
+  nativePasskeysEnabled,
+  productionSigning,
+  requireProductionBuild,
+  requireProductionPasskeys,
+} from "./jones/signing/policy.ts";
 import { requireJonesBuildTarget } from "./jones/platforms/supportedTargets.ts";
 import {
   applyCompanionPackageVariant,
@@ -1332,7 +1341,7 @@ export function resolveMacPasskeySigningConfiguration(
   }
 
   return {
-    appId: DESKTOP_APP_ID,
+    appId: desktopAppId(env, DESKTOP_APP_ID),
     teamId,
     rpDomains: uniqueRpDomains,
     provisioningProfilePath,
@@ -1481,6 +1490,19 @@ export function resolveMergedStageDependencies(input: {
     ...resolveFffNativeDependencies(input.platform, input.arch, input.fffNodeVersion),
   };
 }
+
+export const planDesktopStageDependencies = (
+  input: Parameters<typeof planCliArchiveDependencies>[0],
+) =>
+  Effect.try({
+    try: () => planCliArchiveDependencies(input),
+    catch: (cause) =>
+      new DesktopBuildDependencyResolutionError({
+        kind: "desktop-runtime",
+        manifestPath: "pnpm-lock.yaml",
+        cause,
+      }),
+  });
 
 /** Cursor's helper lookup falls through the archive to this real resources tree. */
 export const stageCursorSdkPlatformPackages = Effect.fn("stageCursorSdkPlatformPackages")(
@@ -2740,7 +2762,8 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   variant?: DesktopPackageVariant,
 ) {
   const buildConfig: Record<string, unknown> = {
-    appId: DESKTOP_APP_ID,
+    appId: desktopAppId(process.env, DESKTOP_APP_ID),
+    ...(productionSigning(process.env) ? { forceCodeSigning: true } : {}),
     productName: resolveDesktopProductName(version),
     artifactName: "T3-Code-${version}-${arch}.${ext}",
     electronLanguages: [...DESKTOP_ELECTRON_LANGUAGES],
@@ -2788,6 +2811,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     const path = yield* Path.Path;
     const repoRoot = yield* RepoRoot;
     buildConfig.mac = {
+      ...(productionSigning(process.env) ? { notarize: false, hardenedRuntime: true } : {}),
       target: target === "dmg" ? [target, "zip"] : [target],
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
@@ -3502,6 +3526,7 @@ export const allocateDesktopStageRoot = Effect.fn("allocateDesktopStageRoot")(fu
 const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   options: ResolvedBuildOptions,
 ) {
+  requireProductionBuild(process.env, options);
   const repoRoot = yield* RepoRoot;
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
@@ -3744,7 +3769,10 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   yield* fs.copy(stageResourcesDir, stageProdResourcesDir);
 
   const configuredMacPasskeySigning =
-    options.variant !== "preview-companion" && options.platform === "mac" && options.signed
+    options.variant !== "preview-companion" &&
+    options.platform === "mac" &&
+    options.signed &&
+    nativePasskeysEnabled(loadRepoEnv({ repoRoot }))
       ? yield* Effect.try({
           try: () => resolveMacPasskeySigningConfiguration(loadRepoEnv({ repoRoot })),
           catch: MacPasskeySigningConfigurationResolutionError.fromCause,
@@ -3769,10 +3797,10 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
         provisioningProfilePath: macPasskeySigning.provisioningProfilePath,
       });
     }
-    macWebAuthn = resolveMacWebAuthnEntitlements(
-      yield* fs.readFileString(macPasskeySigning.provisioningProfilePath),
-      macPasskeySigning,
-    );
+    const macProfile = yield* fs.readFileString(macPasskeySigning.provisioningProfilePath);
+    requireProductionProfile(process.env, macProfile, macPasskeySigning.rpDomains);
+    macWebAuthn = resolveMacWebAuthnEntitlements(macProfile, macPasskeySigning);
+    requireProductionPasskeys(process.env, macWebAuthn);
     yield* Effect.log(
       `[desktop-artifact] In-app browser passkeys: Touch ID ${macWebAuthn.touchIdKeychainAccessGroup ? "enabled" : "disabled"}, browser passkeys ${macWebAuthn.browserPasskeys ? "enabled" : "disabled"}.`,
     );
@@ -3782,7 +3810,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     );
   }
 
-  const stageDependencies =
+  const resolvedStageDependencies =
     options.platform === "win"
       ? { ...resolvedDesktopRuntimeDependencies }
       : resolveMergedStageDependencies({
@@ -3792,10 +3820,20 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
           arch: options.arch,
           fffNodeVersion: serverPackageJson.dependencies["@ff-labs/fff-node"],
         });
-  const stagePatchedDependencies = createStagePatchedDependencies(
-    workspacePatchedDependencies,
-    stageDependencies,
-  );
+  const { dependencies: stageDependencies, patchedDependencies: stagePatchedDependencies } =
+    options.platform === "win"
+      ? {
+          dependencies: resolvedStageDependencies,
+          patchedDependencies: createStagePatchedDependencies(
+            workspacePatchedDependencies,
+            resolvedStageDependencies,
+          ),
+        }
+      : yield* planDesktopStageDependencies({
+          dependencies: resolvedStageDependencies,
+          patchedDependencies: workspacePatchedDependencies,
+          lockfile: yield* fs.readFileString(path.join(repoRoot, "pnpm-lock.yaml")),
+        });
   const windowsServerAsarPath =
     options.platform === "win"
       ? path.join(stageAppDir, WINDOWS_SERVER_RESOURCE_SOURCE_DIR, WINDOWS_SERVER_ASAR_RESOURCE)

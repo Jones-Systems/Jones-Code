@@ -25,6 +25,24 @@
       "scope": "On-demand Linux Electron synthetic Codex lifecycle with actual app-issued MCP authorization, composer messages, same-execution steering, replay/conflict/legacy controls, Git checkpoints, fresh B admission and explicit picker control. Source-bound dependency admission and peer staging retain narrow package-copy mounts; peer semantics and focused fixture reference PR507 at 238b185a9c05fccce5aedbcc485205f62b61a99f only. Unit coverage includes package containment, malformed paths, optional failures, staged peer resolution and oracle fault injection. Native positive/negative runs require exact-candidate qualification; no live inference or background-child continuity claim."
     },
     {
+      "id": "macos-signing",
+      "tests": [
+        "scripts/jones/signing/cli.node-test.mjs",
+        "packages/shared/src/jones/jonesActions.test.ts",
+        "apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts",
+        "scripts/jones/signing/admission.node-test.mjs",
+        "scripts/sign-macos.test.ts",
+        "scripts/jones/signing/policy.test.ts",
+        "scripts/jones/signing/profile.test.ts",
+        "scripts/jones/signing/sign.test.ts",
+        "apps/desktop/src/jones/updates/jonesSigningSource.test.ts",
+        "apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts",
+        "apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts",
+        "scripts/build-desktop-artifact.test.ts"
+      ],
+      "scope": "Explicit production Developer ID identities for desktop and CLI, component signing, protected default-branch workflow and credential lifecycle. CLI inventories all staged Mach-O files, preserves entitlements, requires full-distribution notarization acceptance and verifies unchanged payload bytes through tar packaging; optional native browser passkeys retain their configuration gates. Native swap and rollback enforce signatures without changing paired-state or provenance protocols. The production ID is owner-approved; the preview default remains unchanged and bootstrap activation remains held. Synthetic transaction signing commands are stubbed; actual signatures, notarization and permission continuity require trusted artifact qualification."
+    },
+    {
       "id": "thread-stall-recovery",
       "tests": [
         "apps/server/src/jones/orchestration/HistoricalTerminalHistory.test.ts",
@@ -1661,6 +1679,14 @@
         "apps/server/src/jones/pullRequest/pullRequestScopeLocks.test.ts"
       ],
       "scope": "Concurrent sorted shared scope reads and exclusive invalidation avoid waiting for unrelated lookups while preserving revision ordering, persistence, cancellation and fairness. Jones lock helper has a narrow cache import; small shared cache edits retain private revision state, and colocated integration tests reuse the existing filesystem/fault harness."
+    },
+    {
+      "id": "cli-archive-patched-dependencies",
+      "tests": [
+        "scripts/jones/packaging/cliArchiveDependencies.test.ts",
+        "scripts/build-desktop-artifact.test.ts"
+      ],
+      "scope": "CLI archive and merged macOS/Linux desktop staging pin only patched external roots to the committed apps/server lock importer, preserving applicable patch mappings and all unpatched root specifications. Missing, stale, ambiguous or unsupported patch resolutions fail before installation. Thin builder hooks retain existing external selection, merge precedence, native platform packages, workspace policies and signing; Windows staging retains its existing projector. Pure planning fixtures and real-input desktop manifest regressions run in the existing scripts test route; platform installs, unsigned DMG completion and artifact smoke checks remain hosted qualification."
     }
   ]
 }

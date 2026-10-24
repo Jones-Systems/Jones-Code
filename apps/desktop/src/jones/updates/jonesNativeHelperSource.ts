@@ -1,3 +1,4 @@
+import { jonesSigningSource } from "./jonesSigningSource.ts";
 import { jonesPairedStateSource } from "./jonesPairedStateSource.ts";
 
 /** Kept outside the app bundle before handoff so quitting Electron cannot stop activation. */
@@ -9,6 +10,8 @@ STARTUP_GATE_PROTOCOL = 1
 SETTINGS = ('settings.json', 'desktop-settings.json', 'client-settings.json', 'saved-environments.json', 'environment-id')
 TRANSIENT_PROFILE = {'SingletonLock', 'SingletonCookie', 'SingletonSocket'}
 RECOVERY_HEADROOM = 256 * 1024 * 1024
+
+${jonesSigningSource}
 
 def read(path):
     with open(path, 'r', encoding='utf8') as stream:
@@ -342,6 +345,7 @@ def prepare_bundle(expected, staged, transaction_id):
     return incoming, previous
 
 def swap_bundle(expected, incoming, previous):
+    verify_signing_transition(expected, incoming)
     stable = pathlib.Path(expected['appPath'])
     os.rename(stable, previous)
     sync_parent(stable)
@@ -358,6 +362,7 @@ def restore_bundle(expected, incoming, previous):
     stable = pathlib.Path(expected['appPath'])
     if not previous.exists(): return
     if incoming.exists(): raise RuntimeError('Occupied trial bundle path; rollback held.')
+    verify_rollback_signature(expected, previous)
     os.rename(stable, incoming)
     sync_parent(stable)
     os.rename(previous, stable)

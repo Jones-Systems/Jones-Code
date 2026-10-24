@@ -13,6 +13,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
+import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -25,6 +26,7 @@ import {
   BuildCommandFailedError,
   parseWslRuntimeArchiveMembers,
   DesktopDmgBackgroundSourceMissingError,
+  DesktopBuildDependencyResolutionError,
   createStageWorkspaceConfig,
   createStagePatchedDependencies,
   readWorkspaceConfig,
@@ -56,6 +58,7 @@ import {
   resolveMacPasskeySigningConfiguration,
   resolveDesktopRuntimeDependencies,
   resolveMergedStageDependencies,
+  planDesktopStageDependencies,
   resolveFffNativeDependencies,
   resolveBuildOptions,
   resolveDesktopBuildIconAssets,
@@ -102,6 +105,7 @@ import {
   wslRuntimeArchiveStem,
 } from "./build-desktop-artifact.ts";
 import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
+import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 
@@ -110,6 +114,40 @@ const stagePackageExtensions = {
   "electron-webauthn": { peerDependenciesMeta: { typescript: { optional: true } } },
   "@electron-webauthn/macos": { peerDependenciesMeta: { typescript: { optional: true } } },
 };
+
+const readCommittedDesktopStageInputs = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const repoRoot = yield* path.fromFileUrl(new URL("../", import.meta.url));
+  const decodeManifest = Schema.decodeEffect(
+    Schema.fromJsonString(
+      Schema.Struct({ dependencies: Schema.Record(Schema.String, Schema.String) }),
+    ),
+  );
+  const server = yield* decodeManifest(
+    yield* fs.readFileString(path.join(repoRoot, "apps/server/package.json")),
+  );
+  const desktop = yield* decodeManifest(
+    yield* fs.readFileString(path.join(repoRoot, "apps/desktop/package.json")),
+  );
+  const workspace = yield* readWorkspaceConfig();
+  const catalog = workspace.catalog ?? {};
+  const fffNodeVersion = server.dependencies["@ff-labs/fff-node"];
+  if (!fffNodeVersion) {
+    return yield* new DesktopBuildDependencyResolutionError({
+      kind: "server-production",
+      manifestPath: "apps/server/package.json",
+      cause: "Missing committed @ff-labs/fff-node version.",
+    });
+  }
+  return {
+    serverDependencies: resolveCatalogDependencies(server.dependencies, catalog, "apps/server"),
+    desktopDependencies: resolveDesktopRuntimeDependencies(desktop.dependencies, catalog),
+    fffNodeVersion,
+    workspace,
+    lockfile: yield* fs.readFileString(path.join(repoRoot, "pnpm-lock.yaml")),
+  };
+});
 
 const makeLinuxCliArchiveFixture = Effect.fn("test.makeLinuxCliArchiveFixture")(function* (input: {
   readonly root: string;
@@ -594,6 +632,96 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       },
     );
   });
+
+  it.effect.each([
+    {
+      platform: "mac",
+      arch: "arm64",
+      nativePackages: ["@ff-labs/fff-bin-darwin-arm64"],
+      architectures: { os: ["darwin"], cpu: ["arm64"] },
+    },
+    {
+      platform: "linux",
+      arch: "arm64",
+      nativePackages: ["@ff-labs/fff-bin-linux-arm64-gnu", "@ff-labs/fff-bin-linux-arm64-musl"],
+      architectures: { os: ["linux"], cpu: ["arm64"], libc: ["glibc"] },
+    },
+    {
+      platform: "linux",
+      arch: "x64",
+      nativePackages: ["@ff-labs/fff-bin-linux-x64-gnu", "@ff-labs/fff-bin-linux-x64-musl"],
+      architectures: { os: ["linux"], cpu: ["x64"], libc: ["glibc"] },
+    },
+  ] as const)("pins committed merged desktop dependencies for $platform $arch", (target) =>
+    Effect.gen(function* () {
+      const input = yield* readCommittedDesktopStageInputs;
+      const merged = resolveMergedStageDependencies({ ...input, ...target });
+      assert.equal(merged["node-pty"], "^1.2.0-beta.15");
+      const planned = yield* planDesktopStageDependencies({
+        dependencies: merged,
+        patchedDependencies: input.workspace.patchedDependencies ?? {},
+        lockfile: input.lockfile,
+      });
+      assert.deepStrictEqual(planned.dependencies, { ...merged, "node-pty": "1.2.0-beta.15" });
+      assert.deepStrictEqual(planned.patchedDependencies, {
+        "node-pty@1.2.0-beta.15": "patches/node-pty@1.2.0-beta.15.patch",
+        "@ff-labs/fff-node@0.11.0": "patches/@ff-labs__fff-node@0.11.0.patch",
+      });
+      for (const [name, spec] of Object.entries(input.desktopDependencies)) {
+        assert.equal(planned.dependencies[name], spec, `Desktop root changed: ${name}`);
+      }
+      assert.deepStrictEqual(
+        Object.keys(planned.dependencies).filter((name) => name.startsWith("@ff-labs/fff-bin-")),
+        [...target.nativePackages],
+      );
+      for (const name of target.nativePackages) {
+        assert.equal(planned.dependencies[name], input.fffNodeVersion);
+      }
+      assert.notProperty(planned.dependencies, "effect");
+      assert.equal(
+        input.workspace.patchedDependencies?.["effect@4.0.5"],
+        "patches/effect@4.0.5.patch",
+      );
+      const overrides = resolveCatalogDependencies(
+        input.workspace.overrides ?? {},
+        input.workspace.catalog ?? {},
+        "apps/desktop",
+      );
+      assert.deepStrictEqual(
+        createStageWorkspaceConfig({
+          platform: target.platform,
+          arch: target.arch,
+          allowBuilds: input.workspace.allowBuilds ?? {},
+          patchedDependencies: planned.patchedDependencies,
+          overrides,
+        }),
+        {
+          supportedArchitectures: target.architectures,
+          allowBuilds: input.workspace.allowBuilds,
+          patchedDependencies: planned.patchedDependencies,
+          overrides,
+          packageExtensions: stagePackageExtensions,
+        },
+      );
+    }),
+  );
+
+  it.effect.each(["malformed", "stale"] as const)(
+    "rejects a %s desktop stage lock before installation",
+    (kind) =>
+      Effect.gen(function* () {
+        const input = yield* readCommittedDesktopStageInputs;
+        const merged = resolveMergedStageDependencies({ ...input, platform: "mac", arch: "arm64" });
+        const error = yield* planDesktopStageDependencies({
+          dependencies: kind === "stale" ? { ...merged, "node-pty": "^1.2.0-beta.16" } : merged,
+          patchedDependencies: input.workspace.patchedDependencies ?? {},
+          lockfile: kind === "malformed" ? "lockfileVersion: [" : input.lockfile,
+        }).pipe(Effect.flip);
+        assert.instanceOf(error, DesktopBuildDependencyResolutionError);
+        assert.equal(error.kind, "desktop-runtime");
+        assert.equal(error.manifestPath, "pnpm-lock.yaml");
+      }),
+  );
 
   it("limits Electron locales and excludes separately packaged resources", () => {
     assert.deepStrictEqual(DESKTOP_ELECTRON_LANGUAGES, ["en-US"]);

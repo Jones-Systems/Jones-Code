@@ -4,8 +4,15 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
-import { jonesNativeHelperSource } from "./jonesNativeHelperSource.ts";
+import { jonesNativeHelperSource as productionNativeHelperSource } from "./jonesNativeHelperSource.ts";
 import { hashMacApp } from "./jonesMacStaging.ts";
+
+// These fixtures model filesystem/state recovery. Native signature admission has its
+// own command-boundary tests in jonesSigningSource.test.ts.
+const jonesNativeHelperSource = productionNativeHelperSource.replace(
+  "\nparser = argparse.ArgumentParser()",
+  "\nverify_signing_transition = lambda expected, candidate: None\nverify_rollback_signature = lambda expected, retained: None\nparser = argparse.ArgumentParser()",
+);
 
 const fixtures = new Set<string>();
 async function cleanupFixture(root: string): Promise<void> {
@@ -1220,21 +1227,12 @@ if boundary_fault.startswith('mount-'):
     assert {str(path): path.read_bytes() for path in tx.rglob('*') if path.is_file()} == before
 assert database.exists() and (profile / 'opaque').read_text() == 'advanced-profile'
 `;
-        NodeChildProcess.execFileSync(
-          "python3",
-          [
-            "-c",
-            `${nativeFunctions}\n${runtime}\n${scenario}`,
-            f.directory,
-            "trial-mismatch",
-            fault,
-          ],
-          {
-            encoding: "utf8",
-            timeout: 10000,
-            maxBuffer: 1024 * 1024,
-          },
-        );
+        NodeChildProcess.execFileSync("python3", ["-", f.directory, "trial-mismatch", fault], {
+          input: `${nativeFunctions}\n${runtime}\n${scenario}`,
+          encoding: "utf8",
+          timeout: 10000,
+          maxBuffer: 1024 * 1024,
+        });
       } finally {
         await f.cleanup();
       }
@@ -1394,15 +1392,12 @@ assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-ex
 assert read(staged['receiptPath'])['app'] == staged and candidate_app.exists()
 if retirement_fault == 'internal-symlink': assert (root / 'unrelated-payload').read_text() == 'must survive'
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${runtime}\n${scenario}`, f.directory, "trial-mismatch", fault],
-        {
-          encoding: "utf8",
-          timeout: 10000,
-          maxBuffer: 1024 * 1024,
-        },
-      );
+      NodeChildProcess.execFileSync("python3", ["-", f.directory, "trial-mismatch", fault], {
+        input: `${nativeFunctions}\n${runtime}\n${scenario}`,
+        encoding: "utf8",
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
