@@ -2813,17 +2813,19 @@
       "tests": [
         "apps/mobile/src/features/workstreams/Controls.operations.test.tsx",
         "apps/mobile/src/features/workstreams/operations.test.ts",
-        "apps/web/src/jones/workstreams/SetupStatusContent.test.tsx",
-        "apps/web/src/jones/workstreams/WorkstreamPicker.test.tsx",
+        "apps/web/src/jones/workstreams/SetupStatusContent.browser.test.tsx",
+        "apps/web/src/jones/workstreams/WorkstreamPicker.browser.test.tsx",
         "apps/web/src/jones/workstreams/environmentOperationsTransport.test.ts",
         "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx",
-        "apps/web/src/jones/workstreams/useWorkstreamOperations.test.tsx",
+        "apps/web/src/jones/workstreams/useWorkstreamOperations.browser.test.tsx",
         "apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx",
         "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx",
         "packages/client-runtime/src/jones/workstreams/operations.test.ts"
       ],
       "commands": [
-        "vp test run apps/mobile/src/features/workstreams/Controls.operations.test.tsx apps/mobile/src/features/workstreams/operations.test.ts apps/web/src/jones/workstreams/SetupStatusContent.test.tsx apps/web/src/jones/workstreams/WorkstreamPicker.test.tsx apps/web/src/jones/workstreams/environmentOperationsTransport.test.ts apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx apps/web/src/jones/workstreams/useWorkstreamOperations.test.tsx apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx packages/client-runtime/src/jones/workstreams/operations.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/mobile/src/features/workstreams/operations.test.ts apps/web/src/jones/workstreams/environmentOperationsTransport.test.ts apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx packages/client-runtime/src/jones/workstreams/operations.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/mobile --config vite.config.ts --project react src/features/workstreams/Controls.operations.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/web --config vite.config.ts --project browser src/jones/workstreams/SetupStatusContent.browser.test.tsx src/jones/workstreams/WorkstreamPicker.browser.test.tsx src/jones/workstreams/useWorkstreamOperations.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/client-runtime typecheck",
         "vp run --filter @t3tools/web typecheck",
         "vp run --filter @t3tools/mobile typecheck",

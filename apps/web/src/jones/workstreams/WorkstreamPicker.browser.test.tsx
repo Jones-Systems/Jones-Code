@@ -1,7 +1,6 @@
-// @vitest-environment jsdom
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { beforeEach, afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
+import { page, userEvent } from "vite-plus/test/browser";
+import { act, render } from "../../../test/render";
 import {
   WorkstreamOperationError,
   WorkstreamOperationJoined,
@@ -9,36 +8,23 @@ import {
 import type { WorkstreamListView } from "../../state/workstreams";
 import { WorkstreamPicker } from "./WorkstreamPicker";
 import { operationFixtureData, operationFixtureResult } from "./operations.fixtures";
-let root: Root;
-let container: HTMLDivElement;
 let controller: WorkstreamListView;
 const close = vi.fn();
 const button = (text: string) =>
   [...document.querySelectorAll<HTMLButtonElement>("button")].find(
     (item) => item.textContent === text,
   )!;
-const render = async () =>
-  act(async () =>
-    root.render(
-      <WorkstreamPicker
-        controller={controller}
-        thread={{ environmentId: "env:a", id: "thread", title: "Synthetic thread" }}
-        onClose={close}
-        commandId={async () => "operation-fixture-0001"}
-      />,
-    ),
-  );
-const search = async (value: string) =>
-  act(async () => {
-    const input = document.querySelector<HTMLInputElement>('[aria-label="Search Workstreams"]')!;
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-  });
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
+const picker = () => (
+  <WorkstreamPicker
+    controller={controller}
+    thread={{ environmentId: "env:a", id: "thread", title: "Synthetic thread" }}
+    onClose={close}
+    commandId={async () => "operation-fixture-0001"}
+  />
+);
+const search = (value: string) =>
+  userEvent.fill(page.getByRole("textbox", { name: "Search Workstreams" }), value);
+function setup() {
   close.mockReset();
   controller = {
     data: operationFixtureData,
@@ -54,15 +40,11 @@ beforeEach(() => {
     assignNativeThread: vi.fn(async () => {}),
     createWorkstream: vi.fn(async () => "created"),
   };
-});
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-});
+}
 describe("Workstream picker", () => {
   it("offers the exact existing name before creation and supports explicit Unassigned", async () => {
-    await render();
+    setup();
+    await using _screen = await render(picker());
     await search("alpha");
     expect(button("alpha (existing)")).toBeDefined();
     expect(button("Create 'alpha'")).toBeUndefined();
@@ -76,13 +58,14 @@ describe("Workstream picker", () => {
     expect(close).toHaveBeenCalledOnce();
   });
   it("coalesces create clicks and waits for assignment before closing without changing display data", async () => {
+    setup();
     let finish!: (value: string) => void;
     vi.mocked(controller.createWorkstream!).mockReturnValue(
       new Promise((resolve) => {
         finish = resolve;
       }),
     );
-    await render();
+    await using _screen = await render(picker());
     await search("New objective");
     await act(async () => {
       button("Create 'New objective'").click();
@@ -103,10 +86,11 @@ describe("Workstream picker", () => {
     expect(close).toHaveBeenCalledOnce();
   });
   it("shows observed conflict and retries only after the explicit retry action", async () => {
+    setup();
     vi.mocked(controller.assignNativeThread!).mockRejectedValueOnce(
       new WorkstreamOperationError(operationFixtureResult("conflict")),
     );
-    await render();
+    await using _screen = await render(picker());
     await act(async () => button("alpha").click());
     expect(document.body.textContent).toContain("Currently in Beta");
     expect(close).not.toHaveBeenCalled();
@@ -119,6 +103,7 @@ describe("Workstream picker", () => {
     );
   });
   it("keeps a pending choice open until its operation is committed", async () => {
+    setup();
     const pending = operationFixtureResult("reconciling");
     vi.mocked(controller.assignNativeThread!).mockRejectedValueOnce(
       new WorkstreamOperationError(pending),
@@ -129,7 +114,7 @@ describe("Workstream picker", () => {
         { key: "thread:thread", request: null, operationId: pending.operation_id, result: pending },
       ],
     };
-    await render();
+    await using screen = await render(picker());
     await act(async () => button("beta").click());
     expect(document.body.textContent).toContain("Reconciling");
     expect(close).not.toHaveBeenCalled();
@@ -144,10 +129,11 @@ describe("Workstream picker", () => {
         },
       ],
     };
-    await render();
+    await screen.rerender(picker());
     expect(close).toHaveBeenCalled();
   });
   it("joins an existing operation without closing as though our choice committed", async () => {
+    setup();
     const pending = operationFixtureResult("reconciling");
     vi.mocked(controller.assignNativeThread!).mockRejectedValueOnce(
       new WorkstreamOperationJoined(pending.operation_id),
@@ -163,7 +149,7 @@ describe("Workstream picker", () => {
         },
       ],
     };
-    await render();
+    await using screen = await render(picker());
     await act(async () => button("alpha").click());
     expect(close).not.toHaveBeenCalled();
     controller = {
@@ -177,22 +163,23 @@ describe("Workstream picker", () => {
         },
       ],
     };
-    await render();
+    await screen.rerender(picker());
     expect(close).not.toHaveBeenCalled();
     expect(document.body.textContent).toContain("Retry your choice");
     expect(controller.assignNativeThread).toHaveBeenCalledTimes(1);
   });
   it("aborts on unmount and ignores late results", async () => {
+    setup();
     let finish!: () => void;
     vi.mocked(controller.assignNativeThread!).mockReturnValue(
       new Promise((resolve) => {
         finish = resolve;
       }),
     );
-    await render();
+    await using screen = await render(picker());
     await act(async () => button("beta").click());
     const signal = vi.mocked(controller.assignNativeThread!).mock.calls[0]![2].signal!;
-    await act(async () => root.render(null));
+    await screen.unmount();
     expect(signal.aborted).toBe(true);
     await act(async () => finish());
     expect(close).not.toHaveBeenCalled();

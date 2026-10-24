@@ -174,11 +174,8 @@ export const workstreamCliRequestError = (cause: unknown, operation_id?: string)
 };
 
 /** The CLI and its HTTP integration tests share this exact transport adapter. */
-export const makeWorkstreamCliHttpPort = (
-  baseUrl: string,
-  headers: { readonly authorization: string },
-) =>
-  Effect.gen(function* () {
+export const makeWorkstreamCliHttpPort = Effect.fn("WorkstreamCli.makeWorkstreamCliHttpPort")(
+  function* (baseUrl: string, headers: { readonly authorization: string }) {
     const client = yield* HttpApiClient.make(EnvironmentHttpApi, { baseUrl });
     return {
       list: (query) =>
@@ -207,41 +204,45 @@ export const makeWorkstreamCliHttpPort = (
           .setupStatus({ headers })
           .pipe(Effect.mapError((cause) => workstreamCliRequestError(cause))),
     } satisfies WorkstreamCliPort;
-  });
+  },
+);
 
-const runLive = (flags: CliAuthLocationFlags, input: WorkstreamCliInput, json: boolean) =>
-  Effect.gen(function* () {
-    const config = yield* resolveCliAuthConfig(flags, yield* GlobalFlag.LogLevel);
-    // Follow the existing project CLI's local instance and short-lived auth session conventions.
-    const runtime = yield* readPersistedServerRuntimeState(config.serverRuntimeStatePath);
-    if (Option.isNone(runtime)) return yield* new WorkstreamCliError({ code: "offline" });
-    return yield* Effect.gen(function* () {
-      const auth = yield* EnvironmentAuth.EnvironmentAuth;
-      return yield* Effect.acquireUseRelease(
-        auth.issueSession({ scopes: AuthStandardClientScopes, label: "t3 workstream cli" }),
-        (issued) =>
-          Effect.gen(function* () {
-            const port = yield* makeWorkstreamCliHttpPort(runtime.value.origin, {
-              authorization: `Bearer ${issued.token}`,
-            });
-            const result = yield* dispatchWorkstreamCli(port, input);
-            const output = json
-              ? yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(result)
-              : formatWorkstreamCliResult(result);
-            yield* Console.log(output);
-          }),
-        (issued) => auth.revokeSession(issued.sessionId).pipe(Effect.ignore({ log: true })),
-      );
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(
-        EnvironmentAuth.layerRuntime.pipe(
-          Layer.provideMerge(FetchHttpClient.layer),
-          Layer.provide(ServerConfig.layer(config)),
-        ),
-      ),
+const runLive = Effect.fn("WorkstreamCli.runLive")(function* (
+  flags: CliAuthLocationFlags,
+  input: WorkstreamCliInput,
+  json: boolean,
+) {
+  const config = yield* resolveCliAuthConfig(flags, yield* GlobalFlag.LogLevel);
+  // Follow the existing project CLI's local instance and short-lived auth session conventions.
+  const runtime = yield* readPersistedServerRuntimeState(config.serverRuntimeStatePath);
+  if (Option.isNone(runtime)) return yield* new WorkstreamCliError({ code: "offline" });
+  return yield* Effect.gen(function* () {
+    const auth = yield* EnvironmentAuth.EnvironmentAuth;
+    return yield* Effect.acquireUseRelease(
+      auth.issueSession({ scopes: AuthStandardClientScopes, label: "t3 workstream cli" }),
+      (issued) =>
+        Effect.gen(function* () {
+          const port = yield* makeWorkstreamCliHttpPort(runtime.value.origin, {
+            authorization: `Bearer ${issued.token}`,
+          });
+          const result = yield* dispatchWorkstreamCli(port, input);
+          const output = json
+            ? yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(result)
+            : formatWorkstreamCliResult(result);
+          yield* Console.log(output);
+        }),
+      (issued) => auth.revokeSession(issued.sessionId).pipe(Effect.ignore({ log: true })),
     );
-  });
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(
+      EnvironmentAuth.layerRuntime.pipe(
+        Layer.provideMerge(FetchHttpClient.layer),
+        Layer.provide(ServerConfig.layer(config)),
+      ),
+    ),
+  );
+});
 
 const common = {
   ...projectLocationFlags,

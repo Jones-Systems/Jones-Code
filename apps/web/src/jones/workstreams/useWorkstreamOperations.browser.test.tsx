@@ -1,9 +1,8 @@
-// @vitest-environment jsdom
 import { RegistryContext } from "@effect/atom-react";
 import { AtomRegistry } from "effect/reactivity";
-import { act, useEffect } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { beforeEach, afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { useEffect } from "react";
+import { act, render } from "../../../test/render";
+import { describe, expect, it, vi } from "vite-plus/test";
 import type { EnvironmentCatalogState } from "@t3tools/client-runtime/state/connections";
 import type { ServerConfig, EnvironmentId } from "@t3tools/contracts";
 import { EnvironmentId as Id } from "@t3tools/contracts";
@@ -39,7 +38,8 @@ vi.mock("../../connection/catalog", () => ({
 vi.mock("../../state/session", () => ({
   environmentSession: { initialConfigValueAtom: (id: EnvironmentId) => config(id) },
 }));
-vi.mock("./environmentWorkstreamsRequest", () => ({
+vi.mock("./environmentWorkstreamsRequest", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./environmentWorkstreamsRequest")>()),
   environmentOperationsTransport: (id: string) => ({
     submit: (...args: unknown[]) => {
       fixture.selected.push(id);
@@ -50,8 +50,6 @@ vi.mock("./environmentWorkstreamsRequest", () => ({
   }),
 }));
 let registry: ReturnType<typeof AtomRegistry.make>;
-let root: Root;
-let container: HTMLDivElement;
 let latest: ReturnType<typeof useWorkstreamOperations>;
 const refresh = vi.fn();
 function Mounted() {
@@ -65,20 +63,14 @@ function Mounted() {
   }, [operations]);
   return null;
 }
-const mount = async () =>
-  act(async () =>
-    root.render(
-      <RegistryContext.Provider value={registry}>
-        <Mounted />
-      </RegistryContext.Provider>,
-    ),
+const mount = () =>
+  render(
+    <RegistryContext.Provider value={registry}>
+      <Mounted />
+    </RegistryContext.Provider>,
   );
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+function setup() {
   registry = AtomRegistry.make();
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
   window.localStorage.clear();
   refresh.mockReset();
   fixture.selected = [];
@@ -98,23 +90,25 @@ beforeEach(() => {
         capabilities: { workstreamOperations: { contract: WORKSTREAM_OPERATIONS_CONTRACT } },
       },
     } as unknown as ServerConfig);
-});
-afterEach(async () => {
-  await act(async () => root.unmount());
-  registry.dispose();
-  container.remove();
-  vi.unstubAllGlobals();
-});
+  return {
+    [Symbol.dispose]() {
+      registry.dispose();
+      window.localStorage.clear();
+    },
+  };
+}
 describe("capability-gated application operations", () => {
   it("does not use operation endpoints when the capability is absent", async () => {
+    using _setup = setup();
     registry.set(config(primary), null);
     registry.set(config(remote), null);
-    await mount();
+    await using _screen = await mount();
     expect(latest.supports(primary)).toBe(false);
     expect(fixture.read).not.toHaveBeenCalled();
   });
   it("routes a linked thread to its server and reloads only after a committed result", async () => {
-    await mount();
+    using _setup = setup();
+    await using _screen = await mount();
     let resolve!: (result: ReturnType<typeof operationFixtureResult>) => void;
     fixture.submit.mockReturnValue(
       new Promise((finish) => {
@@ -143,7 +137,8 @@ describe("capability-gated application operations", () => {
     );
   });
   it("keeps a capable server rejection on the operations path", async () => {
-    await mount();
+    using _setup = setup();
+    await using _screen = await mount();
     fixture.submit.mockRejectedValue({ code: "operation_id_conflict" });
     await act(async () => {
       await expect(
@@ -161,7 +156,8 @@ describe("capability-gated application operations", () => {
   it.each(["create", "assign", "unassigned"] as const)(
     "uses the signed UUID, not the gateway origin, for %s",
     async (action) => {
-      await mount();
+      using _setup = setup();
+      await using _screen = await mount();
       fixture.submit.mockImplementation(async ({ request }) => ({
         ...operationFixtureResult(),
         kind: request.kind,
@@ -188,11 +184,12 @@ describe("capability-gated application operations", () => {
   it.each(["create", "assign", "unassigned"] as const)(
     "does not dispatch %s without setup identity",
     async (action) => {
+      using _setup = setup();
       fixture.setup.mockResolvedValue({
         ...setupFixture,
         registry: { state: "not_configured", registry_id: null, owner_id: null, can_write: false },
       });
-      await mount();
+      await using _screen = await mount();
       const options = { commandId: vi.fn(async () => "operation-fixture-0001") };
       await act(async () => {
         const result =

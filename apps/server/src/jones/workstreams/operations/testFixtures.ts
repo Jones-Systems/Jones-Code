@@ -274,20 +274,19 @@ export const fakeControlPlane = () => {
             : { kind: "absent" as const, witness_version },
         );
       }),
-    resubmit: (_id, body) =>
-      Effect.gen(function* () {
-        const command = yield* Schema.decodeEffect(Schema.fromJsonString(CommandSchema))(body).pipe(
-          Effect.mapError(() => offline()),
-        );
-        state.writes.push(body);
-        if (state.beforeSend) yield* state.beforeSend(command, body);
-        if (state.offline) return yield* offline();
-        const prior = state.receipts.get(command.command_id);
-        if (prior && prior.body !== body) return { kind: "idempotency_conflict" as const };
-        const receipt = prior?.receipt ?? decide(command, body);
-        if (state.afterSend) yield* state.afterSend(command);
-        return { kind: "receipt" as const, receipt };
-      }),
+    resubmit: Effect.fn("WorkstreamOperationFixture.resubmit")(function* (_id, body) {
+      const command = yield* Schema.decodeEffect(Schema.fromJsonString(CommandSchema))(body).pipe(
+        Effect.mapError(() => offline()),
+      );
+      state.writes.push(body);
+      if (state.beforeSend) yield* state.beforeSend(command, body);
+      if (state.offline) return yield* offline();
+      const prior = state.receipts.get(command.command_id);
+      if (prior && prior.body !== body) return { kind: "idempotency_conflict" as const };
+      const receipt = prior?.receipt ?? decide(command, body);
+      if (state.afterSend) yield* state.afterSend(command);
+      return { kind: "receipt" as const, receipt };
+    }),
     readReference: () =>
       Effect.sync(() => ({ context: context(), reference: reference(), latest_observation: null })),
     readDetail: (id) =>
@@ -377,11 +376,10 @@ export const fakeControlPlane = () => {
     },
     threadExists: () => Effect.succeed(state.exists),
     now: Clock.currentTimeMillis,
-    sleep: (ms) =>
-      Effect.gen(function* () {
-        if (state.onSleep) yield* state.onSleep(ms);
-        yield* Effect.sleep(ms);
-      }),
+    sleep: Effect.fn("WorkstreamOperationFixture.sleep")(function* (ms) {
+      if (state.onSleep) yield* state.onSleep(ms);
+      yield* Effect.sleep(ms);
+    }),
     jitter: Effect.succeed(0),
   };
   const layer = Operations.layer.pipe(

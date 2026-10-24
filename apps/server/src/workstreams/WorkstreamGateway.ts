@@ -741,10 +741,10 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
         detail: "Command recovery did not establish an outcome.",
         cause,
       });
-    const readReceipt = (
+    const readReceipt = Effect.fn("WorkstreamGateway.readReceipt")(function* (
       commandId: string,
-    ): Effect.Effect<WorkstreamReceiptRecovery, WorkstreamGatewayError> =>
-      Effect.gen(function* () {
+    ): Effect.fn.Return<WorkstreamReceiptRecovery, WorkstreamGatewayError> {
+      return yield* Effect.gen(function* () {
         // These reads are separate CP snapshots: the witness must come first.
         const authorized = yield* authorize("workstreams:read");
         if (!transport.readCommandReceipt) return yield* recoveryFailure(undefined);
@@ -757,11 +757,12 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
         }
         return { ...result, witness_version: authorized.binding.registryVersion };
       }).pipe(Effect.mapError(recoveryFailure));
-    const resubmit = (
+    });
+    const resubmit = Effect.fn("WorkstreamGateway.resubmit")(function* (
       commandId: string,
       retainedBody: string,
-    ): Effect.Effect<WorkstreamRecoverySubmitResult, WorkstreamGatewayError> =>
-      Effect.gen(function* () {
+    ): Effect.fn.Return<WorkstreamRecoverySubmitResult, WorkstreamGatewayError> {
+      return yield* Effect.gen(function* () {
         const authorized = yield* authorize("workstreams:write");
         const command = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(WorkstreamCommand))(
           retainedBody,
@@ -792,6 +793,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
         pageCache.clear();
         return result;
       }).pipe(Effect.mapError(recoveryFailure));
+    });
     const submit = Effect.fn("WorkstreamGateway.submit")(function* (command: WorkstreamCommand) {
       const authorized = yield* authorize("workstreams:write").pipe(
         Effect.mapError((error) =>
