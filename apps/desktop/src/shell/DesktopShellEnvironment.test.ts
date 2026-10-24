@@ -203,6 +203,7 @@ describe("DesktopShellEnvironment", () => {
           T3_WORKSTREAM_KEY_ID: "test-key",
           T3_WORKSTREAM_SIGNING_SECRET: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
           T3_WORKSTREAM_AUTHORIZATION_REVISION: "7",
+          T3_WORKSTREAM_REGISTRY_BINDING: "synthetic-canonical-binding-token",
         };
 
         yield* runShellEnvironment({
@@ -234,6 +235,7 @@ describe("DesktopShellEnvironment", () => {
         T3_WORKSTREAM_KEY_ID: "inherited-key",
         T3_WORKSTREAM_SIGNING_SECRET: "",
         T3_WORKSTREAM_AUTHORIZATION_REVISION: "3",
+        T3_WORKSTREAM_REGISTRY_BINDING: "",
       };
       const env: NodeJS.ProcessEnv = { SHELL: "/bin/zsh", ...inherited };
 
@@ -249,6 +251,7 @@ describe("DesktopShellEnvironment", () => {
             T3_WORKSTREAM_KEY_ID: "shell-key",
             T3_WORKSTREAM_SIGNING_SECRET: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
             T3_WORKSTREAM_AUTHORIZATION_REVISION: "7",
+            T3_WORKSTREAM_REGISTRY_BINDING: "shell-binding-token",
           }),
       });
 

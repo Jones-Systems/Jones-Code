@@ -1,3 +1,4 @@
+// Focused peer fixture from PR507, 238b185a9c05fccce5aedbcc485205f62b61a99f; source-bound admission is additional.
 import * as NodeTest from "node:test";
 import * as NodeAssert from "node:assert/strict";
 import * as NodeFSP from "node:fs/promises";

@@ -1,3 +1,4 @@
+import { MachineRouteBadge } from "../../jones/remoteAgentLineage/MachineIdentity";
 import { GlobalHostStatusIndicators } from "../../jones/hostStatus/GlobalHostStatusIndicators";
 import {
   AuthOrchestrationOperateScope,
@@ -20,7 +21,6 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { isTrailingDoubleClick } from "../Sidebar.logic";
-import { Badge } from "../ui/badge";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 import { useThreadActionMenu } from "~/hooks/useThreadActionMenu";
@@ -43,11 +43,14 @@ interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
   activeThreadId: ThreadId;
   activeThreadTitle: string;
-  /** The linked environment that started this thread, shown beside the title. */
-  activeThreadLinkOrigin?: string | null | undefined;
   isServerThread: boolean;
   activeProject: EnvironmentProject | null;
-  parentThreadLink: { threadId: ThreadId; title: string } | null;
+  parentThreadLink: {
+    threadId: ThreadId;
+    title: string;
+    open?: (() => void) | undefined;
+    unavailableReason?: string | undefined;
+  } | null;
   onOpenThread: (threadId: ThreadId) => void;
   rightPanelOpen: boolean;
   onNewThreadInProject: () => void;
@@ -73,7 +76,6 @@ export const ChatHeader = memo(function ChatHeader({
   activeThreadEnvironmentId,
   activeThreadId,
   activeThreadTitle,
-  activeThreadLinkOrigin,
   isServerThread,
   activeProject,
   parentThreadLink,
@@ -318,7 +320,13 @@ export const ChatHeader = memo(function ChatHeader({
                     <button
                       type="button"
                       aria-label={`Open parent thread: ${parentThreadLink.title}`}
-                      onClick={() => onOpenThread(parentThreadLink.threadId)}
+                      disabled={Boolean(parentThreadLink.unavailableReason)}
+                      aria-description={parentThreadLink.unavailableReason}
+                      onClick={() =>
+                        parentThreadLink.open
+                          ? parentThreadLink.open()
+                          : onOpenThread(parentThreadLink.threadId)
+                      }
                       className="inline-flex min-w-0 max-w-full cursor-pointer items-center rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                     />
                   }
@@ -335,7 +343,9 @@ export const ChatHeader = memo(function ChatHeader({
                     </span>
                   ) : null}
                 </TooltipTrigger>
-                <TooltipPopup side="top">{parentThreadLink.title}</TooltipPopup>
+                <TooltipPopup side="top">
+                  {parentThreadLink.unavailableReason ?? parentThreadLink.title}
+                </TooltipPopup>
               </Tooltip>
             </WorkspaceBreadcrumbItem>
             <WorkspaceBreadcrumbSeparator>
@@ -401,16 +411,11 @@ export const ChatHeader = memo(function ChatHeader({
               <TooltipPopup side="top">{activeThreadTitle}</TooltipPopup>
             </Tooltip>
           )}
-          {renamingTitle === null && activeThreadLinkOrigin ? (
-            <Tooltip>
-              <TooltipTrigger render={<Badge variant="info" size="sm" />}>
-                From {activeThreadLinkOrigin}
-              </TooltipTrigger>
-              <TooltipPopup side="top">
-                Started by an agent on {activeThreadLinkOrigin} through a linked environment. It can
-                change only threads that link started here.
-              </TooltipPopup>
-            </Tooltip>
+          {renamingTitle === null ? (
+            <MachineRouteBadge
+              environmentId={activeThreadEnvironmentId}
+              threadId={activeThreadId}
+            />
           ) : null}
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>

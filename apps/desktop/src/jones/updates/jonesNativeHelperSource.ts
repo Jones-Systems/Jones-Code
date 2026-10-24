@@ -421,6 +421,7 @@ def selection_binding(active, handle, selection_path, expected_digest):
 
 def inspect_selection_transactions(active, transaction_id=None, claiming=False, staged_handle=None, retiring=None):
     root = manifest_path.parent / 'jones-updates' / 'transactions'
+    if transaction_id is not None: reject_withdrawn_preparation(transaction_id)
     if not root.exists():
         if claiming: raise SelectionRefused('unknown-state')
         return
@@ -558,8 +559,9 @@ def reconcile_running(request_path, request_sha256):
     except Exception:
         return dict(result, reason='unknown-transaction')
 
-def preparation_claim(active, staged_handle, transaction_id, selection_path, selection_digest):
-    return dict(protocol=PROTOCOL, preparationClaimProtocol=2, stagedHandle=staged_handle, transactionId=transaction_id,
+def preparation_claim(active, staged_handle, transaction_id, selection_path, selection_digest, claim_protocol=2):
+    if type(claim_protocol) is not int or claim_protocol not in (2, 3): raise SelectionRefused('claim-mismatch')
+    return dict(protocol=PROTOCOL, preparationClaimProtocol=claim_protocol, stagedHandle=staged_handle, transactionId=transaction_id,
                 selectionPath=str(selection_path), selectionSha256=selection_digest,
                 **{key: active[key] for key in ('home', 'databasePath', 'profile', 'environmentId')})
 
@@ -571,11 +573,33 @@ def attempt_selection_binding(active, staged_handle, transaction_id, selection_p
                 'selectionPath': str(selection_path), 'selectionSha256': selection_digest, 'expected': active}
     if type(value.get('protocol')) is not int or value != expected: raise SelectionRefused('selection-mismatch')
 
-# Records a preparation claim can hold before backend dispatch. Any other file
-# means preparation advanced or is unknown, so the claim remains held.
+# Dispatch records remain held unless an exact protocol-3 withdrawal excludes
+# activation. Older helpers reject protocol 3 before accepting any intent.
 PREPARATION_RECORDS = ('prepare-intent.json', 'prepare-request.json', 'prepare-refused.json', 'prepare-failure.json',
                        'preparation-retirement.json', 'attempt-selection.json')
 DISPATCHED_RECORDS = ('prepare-dispatched.json', 'continuation.json', 'activation-request.json', 'intent.json', 'journal.json')
+WITHDRAWAL_RECORDS = ('prepare-dispatched.json', 'continuation.json', 'activation-request.json', 'preparation-withdrawal.json')
+
+def reject_withdrawn_preparation(transaction_id):
+    updates = manifest_path.parent / 'jones-updates'
+    for parent in ('transactions', 'retired-preparations'):
+        marker = updates / parent / transaction_id / 'preparation-withdrawal.json'
+        if marker.exists() or marker.is_symlink(): raise SelectionRefused('preparation-withdrawn')
+
+def preparation_withdrawal_record(active, transaction_id, claim, claim_sha):
+    if claim.get('preparationClaimProtocol') != 3: raise SelectionRefused('legacy-withdrawal-unsafe')
+    return {'protocol': PROTOCOL, 'withdrawalProtocol': 1, 'transactionId': transaction_id,
+            'claimSha256': claim_sha, 'claim': claim, 'expected': active, 'evidence': 'withdrawal-protocol'}
+
+def validate_preparation_withdrawal(value, active, transaction_id, claim, claim_sha):
+    expected = preparation_withdrawal_record(active, transaction_id, claim, claim_sha)
+    if json.dumps(value, sort_keys=True, separators=(',', ':')) != json.dumps(expected, sort_keys=True, separators=(',', ':')):
+        raise SelectionRefused('withdrawal-mismatch')
+
+def valid_process_proofs(proofs):
+    return isinstance(proofs, list) and 0 < len(proofs) <= 256 and all(
+        isinstance(proof, dict) and set(proof) == {'pid', 'identity'} and type(proof['pid']) is int and proof['pid'] > 0 and isinstance(proof['identity'], str) and proof['identity'].strip()
+        for proof in proofs)
 
 def process_exited(proof):
     if not isinstance(proof, dict) or set(proof) != {'pid', 'identity'} or type(proof['pid']) is not int or proof['pid'] <= 0 or not isinstance(proof['identity'], str) or not proof['identity'].strip():
@@ -589,22 +613,25 @@ def process_exited(proof):
     if not ' '.join(proof['identity'].split()).startswith(start[1] + ' '): return True
     raise SelectionRefused('writer-unknown')
 
-def preparation_context(active, transaction_id):
+def preparation_context(active, transaction_id, allow_dispatched=False):
     if (manifest_path.parent / 'jones-maintenance').exists(): raise SelectionRefused('unknown-state')
     updates = manifest_path.parent / 'jones-updates'
     tx = updates / 'transactions' / transaction_id
     if tx.is_symlink() or not tx.is_dir() or tx.resolve(strict=True) != tx: raise SelectionRefused('unknown-transaction')
     names = sorted(child.name for child in tx.iterdir())
-    if any(name in DISPATCHED_RECORDS for name in names): raise SelectionRefused('preparation-dispatched')
+    withdrawn = 'preparation-withdrawal.json' in names
+    if any(name in ('intent.json', 'journal.json') for name in names) or (not (allow_dispatched or withdrawn) and any(name in DISPATCHED_RECORDS for name in names)):
+        raise SelectionRefused('preparation-dispatched')
     if 'prepare-intent.json' not in names: raise SelectionRefused('unknown-transaction')
-    if any(name not in PREPARATION_RECORDS for name in names): raise SelectionRefused('unknown-state')
+    allowed = PREPARATION_RECORDS + (WITHDRAWAL_RECORDS if allow_dispatched or withdrawn else ())
+    if any(name not in allowed for name in names): raise SelectionRefused('unknown-state')
     records = {name: bounded_native_json(tx / name)[:2] for name in names}
     claim, claim_raw = records['prepare-intent.json']
     handle, selection_path, selection_digest = (claim.get(key) for key in ('stagedHandle', 'selectionPath', 'selectionSha256'))
     if not all(isinstance(value, str) for value in (handle, selection_path, selection_digest)) or any(type(claim.get(key)) is not int for key in ('protocol', 'preparationClaimProtocol')):
         raise SelectionRefused('claim-mismatch')
-    path, _, _, _ = selection_binding(active, handle, selection_path, selection_digest)
-    if claim != preparation_claim(active, handle, transaction_id, path, selection_digest): raise SelectionRefused('claim-mismatch')
+    path, selection, _, _ = selection_binding(active, handle, selection_path, selection_digest)
+    if claim != preparation_claim(active, handle, transaction_id, path, selection_digest, claim['preparationClaimProtocol']): raise SelectionRefused('claim-mismatch')
     attempt = updates / 'attempt-selections' / (hashlib.sha256((str(path) + '\n' + selection_digest).encode()).hexdigest() + '.json')
     # An interrupted retirement may already hold the binding inside the transaction.
     attempt_value, attempt_raw = records['attempt-selection.json'] if 'attempt-selection.json' in records else bounded_native_json(attempt)[:2]
@@ -612,12 +639,34 @@ def preparation_context(active, transaction_id):
         raise SelectionRefused('selection-mismatch')
     claim_sha = hashlib.sha256(claim_raw).hexdigest()
     evidence = None
+    if allow_dispatched or withdrawn:
+        for name, expected_record in (('prepare-dispatched.json', claim), ('continuation.json', dict(claim, prepared=True))):
+            if name in records:
+                value = records[name][0]
+                if any(type(value.get(key)) is not int for key in ('protocol', 'preparationClaimProtocol')) or value != expected_record:
+                    raise SelectionRefused('claim-mismatch')
+        if 'continuation.json' in records and 'prepare-dispatched.json' not in records: raise SelectionRefused('unknown-state')
+        if 'activation-request.json' in records:
+            request = records['activation-request.json'][0]
+            if set(request) != {'protocol', 'transactionId', 'expected', 'staged', 'continuationReceipt', 'processes', 'listener'} or type(request['protocol']) is not int or request['protocol'] != PROTOCOL or request['transactionId'] != transaction_id or request['expected'] != active or request['staged'] != selection['app'] or request['continuationReceipt'] != str(tx / 'continuation.json') or not valid_process_proofs(request['processes']) or not isinstance(request['listener'], str) or not request['listener'].strip():
+                raise SelectionRefused('claim-mismatch')
+        if 'prepare-failure.json' in records:
+            failure = records['prepare-failure.json'][0]
+            if set(failure) != {'protocol', 'reason'} or type(failure['protocol']) is not int or failure['protocol'] != PROTOCOL or not isinstance(failure['reason'], str):
+                raise SelectionRefused('unknown-state')
+        if 'prepare-request.json' in records:
+            request = records['prepare-request.json'][0]
+            if set(request) != {'protocol', 'transactionId', 'stagedHandle', 'claimSha256', 'processes'} or type(request['protocol']) is not int or request['protocol'] != PROTOCOL or request['transactionId'] != transaction_id or request['stagedHandle'] != handle or request['claimSha256'] != claim_sha or not valid_process_proofs(request['processes']):
+                raise SelectionRefused('claim-mismatch')
+        if withdrawn:
+            validate_preparation_withdrawal(records['preparation-withdrawal.json'][0], active, transaction_id, claim, claim_sha)
+            evidence = 'withdrawn'
     if 'prepare-refused.json' in records:
         refusal = records['prepare-refused.json'][0]
         if set(refusal) != {'protocol', 'transactionId', 'stagedHandle', 'claimSha256', 'reason'} or type(refusal['protocol']) is not int or refusal['protocol'] != PROTOCOL or refusal['transactionId'] != transaction_id or refusal['stagedHandle'] != handle or refusal['claimSha256'] != claim_sha or not isinstance(refusal['reason'], str):
             raise SelectionRefused('unknown-state')
-        evidence = 'backend-refused'
-    if evidence is None and 'prepare-request.json' in records:
+        if evidence is None: evidence = 'backend-refused'
+    if evidence is None and not allow_dispatched and 'prepare-request.json' in records:
         request = records['prepare-request.json'][0]
         proofs = request.get('processes')
         if set(request) != {'protocol', 'transactionId', 'stagedHandle', 'claimSha256', 'processes'} or type(request['protocol']) is not int or request['protocol'] != PROTOCOL or request['transactionId'] != transaction_id or request['stagedHandle'] != handle or request['claimSha256'] != claim_sha or not isinstance(proofs, list) or not proofs or len(proofs) > 256:
@@ -629,6 +678,35 @@ def preparation_context(active, transaction_id):
             'attemptSelection': str(attempt), 'attemptSha256': hashlib.sha256(attempt_raw).hexdigest(),
             'retiredPath': str(updates / 'retired-preparations' / transaction_id)}
     return tx, plan, records, evidence
+
+def withdrawal_command(active, transaction_id, handle, selection_path, selection_digest, claim_sha):
+    result = {'protocol': PROTOCOL, 'operation': 'withdraw-preparation', 'transactionId': transaction_id}
+    changed = False
+    try:
+        if not isinstance(transaction_id, str) or len(transaction_id) != 64 or any(char not in '0123456789abcdef' for char in transaction_id):
+            raise SelectionRefused('unknown-transaction')
+        if read(manifest_path) != active: raise SelectionRefused('active-changed')
+        tx, plan, records, _ = preparation_context(active, transaction_id, allow_dispatched=True)
+        claim, raw = records['prepare-intent.json']
+        if hashlib.sha256(raw).hexdigest() != claim_sha or any(claim.get(key) != value for key, value in (
+            ('stagedHandle', handle), ('selectionPath', selection_path), ('selectionSha256', selection_digest))):
+            raise SelectionRefused('claim-mismatch')
+        proof = preparation_withdrawal_record(active, transaction_id, claim, claim_sha)
+        path = tx / 'preparation-withdrawal.json'
+        if 'preparation-retirement.json' in records:
+            if 'preparation-withdrawal.json' not in records: raise SelectionRefused('retirement-pending')
+            if records['preparation-retirement.json'][0] != {'protocol': PROTOCOL, 'planSha256': retirement_digest(plan), 'plan': plan, 'evidence': 'withdrawn'}:
+                raise SelectionRefused('unknown-retirement')
+        changed = True
+        if 'preparation-withdrawal.json' not in records: durable(path, proof, True)
+        observed, raw, _ = bounded_native_json(path)
+        validate_preparation_withdrawal(observed, active, transaction_id, claim, claim_sha)
+        sync_parent(path)
+        return dict(result, status='withdrawn', claimSha256=claim_sha, proofPath=str(path), proofSha256=hashlib.sha256(raw).hexdigest())
+    except SelectionRefused as failure:
+        return dict(result, status='uncertain' if changed else 'refused', reason=failure.reason)
+    except Exception:
+        return dict(result, status='uncertain' if changed else 'refused', reason='reconciliation-required' if changed else 'unknown-state')
 
 def preparation_command(operation, active, transaction_id, plan_sha=None, quiescent=False):
     result = {'protocol': PROTOCOL, 'operation': operation, 'transactionId': transaction_id}
@@ -659,7 +737,7 @@ def preparation_command(operation, active, transaction_id, plan_sha=None, quiesc
             # Its evidence was proved before the intent was recorded; finish the same plan.
             changed = True
             intent = records['preparation-retirement.json'][0]
-            if intent.get('protocol') != PROTOCOL or intent.get('planSha256') != approved or intent.get('plan') != plan or intent.get('evidence') not in ('backend-refused', 'requester-exited', 'writers-quiescent'):
+            if intent.get('protocol') != PROTOCOL or intent.get('planSha256') != approved or intent.get('plan') != plan or intent.get('evidence') not in ('backend-refused', 'requester-exited', 'writers-quiescent', 'withdrawn'):
                 raise SelectionRefused('plan-changed')
             evidence = intent['evidence']
         elif evidence is None and quiescent:
@@ -898,7 +976,7 @@ def retirement_command(operation, active, transaction_id, plan_sha=None):
         return dict(result, status='uncertain' if changed else 'refused', reason='reconciliation-required' if changed else 'unknown-state')
     finally: release_writer_exclusion(connections)
 
-def selection_command(operation, active, handle, selection_path, expected_digest, request_path=None, transaction_id=None):
+def selection_command(operation, active, handle, selection_path, expected_digest, request_path=None, transaction_id=None, withdrawable=False):
     result = {'protocol': PROTOCOL, 'operation': operation, 'handle': handle}
     if operation in ('claim-preparation', 'claim-activation'): result['transactionId'] = transaction_id
     try:
@@ -912,7 +990,8 @@ def selection_command(operation, active, handle, selection_path, expected_digest
         transaction = manifest_path.parent / 'jones-updates' / 'transactions' / transaction_id if transaction_id is not None else None
         if operation in ('claim-preparation', 'claim-activation'):
             attempt_selection_binding(active, handle, transaction_id, path, expected_digest)
-            claim = preparation_claim(active, handle, transaction_id, path, expected_digest)
+            if operation == 'claim-preparation':
+                claim = preparation_claim(active, handle, transaction_id, path, expected_digest, 3 if withdrawable else 2)
         if operation == 'claim-activation':
             request = pathlib.Path(request_path)
             if request != transaction / 'activation-request.json' or request.resolve(strict=True) != request:
@@ -924,6 +1003,7 @@ def selection_command(operation, active, handle, selection_path, expected_digest
             continuation, _, _ = bounded_native_json(transaction / 'continuation.json')
             preparation, _, _ = bounded_native_json(transaction / 'prepare-intent.json')
             dispatched, _, _ = bounded_native_json(transaction / 'prepare-dispatched.json')
+            claim = preparation_claim(active, handle, transaction_id, path, expected_digest, preparation.get('preparationClaimProtocol'))
             if any(type(value.get('protocol')) is not int or type(value.get('preparationClaimProtocol')) is not int for value in (continuation, preparation, dispatched)) or continuation != dict(claim, prepared=True) or preparation != claim or dispatched != claim:
                 raise SelectionRefused('unknown-state')
             proofs = intent.get('processes')
@@ -966,6 +1046,7 @@ def activate(intent_file):
     transaction_id = intent.get('transactionId')
     if not isinstance(transaction_id, str) or len(transaction_id) != 64 or any(char not in '0123456789abcdef' for char in transaction_id) or tx != manifest_path.parent / 'jones-updates' / 'transactions' / transaction_id:
         raise RuntimeError('Native activation transaction path changed.')
+    reject_withdrawn_preparation(transaction_id)
     journal_path = tx / 'journal.json'
     if journal_path.exists():
         journal = read(journal_path)
@@ -981,9 +1062,9 @@ def activate(intent_file):
     for field in ('transactionId', 'home', 'databasePath', 'profile', 'environmentId'):
         wanted = intent['transactionId'] if field == 'transactionId' else expected[field]
         if continuation.get(field) != wanted: raise RuntimeError('Continuation receipt has a stale native binding.')
-    if type(continuation.get('protocol')) is not int or continuation['protocol'] != PROTOCOL or type(continuation.get('preparationClaimProtocol')) is not int or continuation['preparationClaimProtocol'] != 2 or continuation.get('stagedHandle') != staged['handle'] or continuation.get('prepared') is not True:
+    if type(continuation.get('protocol')) is not int or continuation['protocol'] != PROTOCOL or type(continuation.get('preparationClaimProtocol')) is not int or continuation['preparationClaimProtocol'] not in (2, 3) or continuation.get('stagedHandle') != staged['handle'] or continuation.get('prepared') is not True:
         raise RuntimeError('Native continuations were not prepared.')
-    claim = preparation_claim(expected, staged['handle'], intent['transactionId'], continuation['selectionPath'], continuation['selectionSha256'])
+    claim = preparation_claim(expected, staged['handle'], intent['transactionId'], continuation['selectionPath'], continuation['selectionSha256'], continuation['preparationClaimProtocol'])
     if continuation != dict(claim, prepared=True) or read(tx / 'prepare-intent.json') != claim or read(tx / 'prepare-dispatched.json') != claim:
         raise RuntimeError('Native preparation dispatch did not prove its selection claim.')
     _, selection, _, _ = selection_binding(expected, staged['handle'], claim['selectionPath'], claim['selectionSha256'])
@@ -1064,8 +1145,8 @@ def activate(intent_file):
         record('resumed')
     except Exception as failure:
         try:
-            # Error evidence has its own small reserve. Keep recovery headroom
-            # reserved until candidate shutdown is proved.
+            # Error evidence has its own small reserve. Before durable resume,
+            # retain recovery headroom until candidate shutdown is proved.
             release_recovery_reserve(recovery_reserves, 'journal')
         except Exception:
             record('blocked', message='Recovery reserve ownership or release is uncertain; state retained.')
@@ -1107,6 +1188,12 @@ def activate(intent_file):
             launch(expected)
         except Exception as recovery_failure:
             record('blocked', message='Paired recovery could not be proved; retained state requires reconciliation: ' + str(recovery_failure))
+    else:
+        # Cleanup failure cannot undo durable activation success. Even a failed
+        # cleanup-evidence write must preserve the resumed phase.
+        try: release_recovery_reserve(recovery_reserves)
+        except Exception:
+            record('resumed', recoveryReserveCleanup='held', message='Update resumed; recovery reserve cleanup is held for reconciliation.')
     finally:
         release_writer_exclusion(exclusive_writers)
 
@@ -1247,6 +1334,9 @@ action.add_argument('--inspect-retirement')
 action.add_argument('--retire-transaction')
 action.add_argument('--inspect-preparation')
 action.add_argument('--retire-preparation')
+action.add_argument('--withdraw-preparation')
+parser.add_argument('--withdrawable', action='store_true')
+parser.add_argument('--claim-sha256')
 parser.add_argument('--quiescent', action='store_true')
 parser.add_argument('--transaction')
 parser.add_argument('--staged-handle')
@@ -1277,6 +1367,9 @@ with os.fdopen(descriptor, 'r+', encoding='utf8') as lock:
     transaction_id = args.transaction if args.claim_preparation else pathlib.Path(args.claim_activation).parent.name if args.claim_activation else None
     try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
+        if args.withdraw_preparation:
+            print(json.dumps({'protocol': PROTOCOL, 'operation': 'withdraw-preparation', 'transactionId': args.withdraw_preparation, 'status': 'refused', 'reason': 'busy'}))
+            raise SystemExit(0)
         if args.reconcile_running:
             print(json.dumps({'protocol': PROTOCOL, 'status': 'refused', 'reason': 'busy'}))
             raise SystemExit(0)
@@ -1303,12 +1396,14 @@ with os.fdopen(descriptor, 'r+', encoding='utf8') as lock:
         print(json.dumps(manual_install(manual_plan, args.plan_sha256, apply=args.manual_install is not None)))
         raise SystemExit(0)
     bundle_identity(active)
-    if retirement_operation:
+    if args.withdraw_preparation:
+        print(json.dumps(withdrawal_command(active, args.withdraw_preparation, handle, args.selection, args.selection_sha256, args.claim_sha256)))
+    elif retirement_operation:
         print(json.dumps(retirement_command(retirement_operation, active, args.inspect_retirement or args.retire_transaction, args.plan_sha256)))
     elif preparation_operation:
         print(json.dumps(preparation_command(preparation_operation, active, args.inspect_preparation or args.retire_preparation, args.plan_sha256, args.quiescent)))
     elif operation:
-        print(json.dumps(selection_command(operation, active, handle, args.selection, args.selection_sha256, args.claim_activation, transaction_id)))
+        print(json.dumps(selection_command(operation, active, handle, args.selection, args.selection_sha256, args.claim_activation, transaction_id, args.withdrawable)))
     elif args.activate: activate(args.activate)
     elif args.launch:
         transactions = manifest_path.parent / 'jones-updates' / 'transactions'

@@ -23,8 +23,8 @@ type Owner = {
   readonly providerThreadId: ProviderThreadId;
 };
 
-function blocksSettlement(projection: SettlementProjection, exceptRunId: RunId): boolean {
-  const automatic = new Set(
+function automaticMessageIds(projection: SettlementProjection): ReadonlySet<string> {
+  return new Set(
     projection.messages
       .filter(
         (message) =>
@@ -32,6 +32,10 @@ function blocksSettlement(projection: SettlementProjection, exceptRunId: RunId):
       )
       .map((message) => message.id),
   );
+}
+
+function blocksSettlement(projection: SettlementProjection, exceptRunId: RunId): boolean {
+  const automatic = automaticMessageIds(projection);
   return (
     projection.runs.some(
       (run) =>
@@ -44,6 +48,18 @@ function blocksSettlement(projection: SettlementProjection, exceptRunId: RunId):
         request.status === "pending" &&
         (request.kind !== "user_input" || request.responseCapability.type !== "message"),
     )
+  );
+}
+
+// Acceptance and completion share this rule so an accepted request is not silently dropped.
+// Work withdrawn before it started and queued automatic wakeups leave the turn final.
+function hasSuccessorWork(projection: SettlementProjection, run: OrchestrationV2Run): boolean {
+  const automatic = automaticMessageIds(projection);
+  return projection.runs.some(
+    (candidate) =>
+      candidate.ordinal > run.ordinal &&
+      !(candidate.status === "cancelled" && candidate.startedAt === null) &&
+      !(candidate.status === "queued" && automatic.has(candidate.userMessageId)),
   );
 }
 
@@ -74,7 +90,8 @@ export function selfSettlementRun(
         attempt.providerInstanceId === owner.instanceId &&
         (attempt.status === "pending" || attempt.status === "running"),
     ) ||
-    blocksSettlement(projection, run.id)
+    blocksSettlement(projection, run.id) ||
+    hasSuccessorWork(projection, run)
   )
     return undefined;
   return run;
@@ -87,22 +104,7 @@ export function selfSettlementTerminalDisposition(
   const intent = projection.thread.selfSettlement;
   if (intent == null) return "ignore";
   const run = projection.runs.find((candidate) => candidate.id === intent.runId);
-  if (
-    run === undefined ||
-    projection.runs.some(
-      (candidate) =>
-        candidate.ordinal > run.ordinal &&
-        !(
-          candidate.status === "queued" &&
-          projection.messages.some(
-            (message) =>
-              message.id === candidate.userMessageId &&
-              (message.notification !== undefined || message.delegatedCompletion !== undefined),
-          )
-        ),
-    )
-  )
-    return "cancel";
+  if (run === undefined || hasSuccessorWork(projection, run)) return "cancel";
   if (terminalRunId !== intent.runId) return "ignore";
   if (["starting", "running", "waiting"].includes(run.status)) return "ignore";
   if (
