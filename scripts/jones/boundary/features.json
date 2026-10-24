@@ -142,6 +142,17 @@
       "scope": "Web and desktop sidebar thread rows share the ordinary pointer threshold and cancellation behavior for Workstream movement and native active ordering. Context menus put primary assignment and removal below Snooze/Wake, retaining secondary membership context. Groups come from stored assignments read at one registry version; proof requests cover only stored identities in batches within the per-request identity and byte caps, each with its own canonical hash, and only upgrade assurance. Stale snapshots stay visible read-only, conflicts block membership changes, and only access loss hides them. Display trust also accepts each connected environment's live config descriptor, so remote threads can show as verified; disagreeing descriptors mark that environment's threads as conflicts, and membership changes keep primary placement trust. A thread from another environment is registered, verified and assigned through that environment's own server after its owner registry, registration source and write access are checked; commands reconcile only on the accepting environment. Shared menu builder and pointer edits expose only optional assignment items and the existing drag-distance constant."
     },
     {
+      "id": "ios-native-pin-workflow",
+      "tests": [
+        "scripts/jones/mobile/ios-pin-workflow.test.ts",
+        "scripts/jones/mobile/xcuitest.test.ts",
+        "scripts/jones/mobile/ios-admission.test.ts",
+        "scripts/jones/mobile/ios-native-build.test.ts",
+        "scripts/jones/mobile/ios-cleanup-sentinel.test.ts"
+      ],
+      "scope": "One provider-free iOS pin/unpin persistence journey using an opt-in Expo XCUITest target. Ordinary pairing and command-created synthetic threads feed authenticated target/control-thread readbacks through pin, unpin and app relaunch. Captured-child lifecycle, admission, negative-control, startup-timeout and cancellation checks protect the harness without adding app journeys. The advisory macOS workflow runs only by manual dispatch or native-e2e PR label. Pure checks establish boundary evidence only; native execution and cleanup remain unqualified until real current-source receipts establish them."
+    },
+    {
       "id": "client-update-notices",
       "tests": [
         "apps/web/src/jones/updates/versionSkew.test.ts",
@@ -1737,23 +1748,23 @@
       "scope": "Concurrent sorted shared scope reads and exclusive invalidation avoid waiting for unrelated lookups while preserving revision ordering, persistence, cancellation and fairness. Jones lock helper has a narrow cache import; small shared cache edits retain private revision state, and colocated integration tests reuse the existing filesystem/fault harness."
     },
     {
-      "id": "ios-native-pin-workflow",
-      "tests": [
-        "scripts/jones/mobile/ios-pin-workflow.test.ts",
-        "scripts/jones/mobile/xcuitest.test.ts",
-        "scripts/jones/mobile/ios-admission.test.ts",
-        "scripts/jones/mobile/ios-native-build.test.ts",
-        "scripts/jones/mobile/ios-cleanup-sentinel.test.ts"
-      ],
-      "scope": "One provider-free iOS pin/unpin persistence journey using an opt-in Expo XCUITest target. Ordinary pairing and command-created synthetic threads feed authenticated target/control-thread readbacks through pin, unpin and app relaunch. Captured-child lifecycle, admission, negative-control, startup-timeout and cancellation checks protect the harness without adding app journeys. The advisory macOS workflow runs only by manual dispatch or native-e2e PR label. Pure checks establish boundary evidence only; native execution and cleanup remain unqualified until real current-source receipts establish them."
-    },
-    {
       "id": "ci-change-selection",
       "tests": [
         "scripts/jones/ci/selection.node-test.cjs",
         "scripts/jones/ci/check-results.node-test.cjs"
       ],
       "scope": "Consumes the unchanged upstream dependency classifier with conservative full runs for non-PR, stack, unreadable or unknown changes. Required Check accepts a skipped job only after successful explicit selection. Linux package suites are disjoint; standalone checks remain unconditional and native enrollment keeps its independent gate."
+    },
+    {
+      "id": "server-e2e-integration",
+      "tests": [
+        "apps/server/integration/jones-e2e/cross-server-message.integration.test.ts",
+        "apps/server/integration/jones-e2e/multi-workspace.integration.test.ts",
+        "apps/server/integration/jones-e2e/same-home-refusal.integration.test.ts",
+        "apps/server/integration/jones-e2e/physicalHost.transport.test.py",
+        "scripts/jones/ci/server-e2e.node-test.cjs"
+      ],
+      "scope": "Real disk SQLite and loopback Effect-service integration for cross-server MCP delivery idempotency and destination/third-server absence, workspace placement after reopening state, and same-home startup refusal with owned listener cleanup. Provider opens fail closed. Local caller-context and peer metadata are injected; this group does not prove ordinary client enrollment, independent CLI-process restart, native UI, or distinct physical hosts. The explicit physicalHost.ts command accepts an operator-bound request and relay for a separate B process on another host, with offline ledger reconciliation and sequential repeats. Source checks alone do not qualify that opt-in physical run; its redacted host/process/cleanup receipts are required separately. Repository-owned Python relay/operator scripts bind existing SSH aliases, source/storage and admission inputs; focused pure transport tests do not start remote workers. physicalHost.md documents the separate opt-in import, lifecycle and four-run qualification procedure. Lifecycle failure qualification requires an exact injected-after-listening origin; startup and cleanup failures cannot satisfy that negative oracle."
     }
   ]
 }
