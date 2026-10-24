@@ -364,6 +364,30 @@ reported problems against the source, and follow the task's authority for
 disposition and fixes. Stay quiet when nothing changes. Report current-head
 results and unresolved findings; absence of a bot review is not a failure.
 
+### Required and advisory checks
+
+The required merge check is **`Check`**, the final job of the `CI` workflow
+(`.github/workflows/ci.yml`). It aggregates every pull-request job in that
+workflow and fails if any of them fails, is cancelled, or is skipped without
+a reason. No branch protection or ruleset enforces it today; this contract
+does.
+
+Every other check is advisory:
+
+- `Jones update qualification`;
+- `Native enrollment candidate`;
+- `Linux CLI artifacts`;
+- `Mac Desktop Artifact`;
+- `Mac CLI artifact`;
+- any native E2E workflow.
+
+An advisory failure gets investigated, fixed, or filed as an issue, but it
+does not hold a merge. A pending advisory check is not a reason to wait.
+When a workflow or job is added, renamed or moved, update this list in the
+same change. The organization-wide rules live in the Codex V3
+[CI budget and placement](https://github.com/Jones-Systems/Codex-V3/blob/main/docs/design/test-performance-practice.md#ci-budget-and-placement)
+practice.
+
 ### Standing delivery and merge contract
 
 M Jones authorizes ordinary scoped task delivery in the canonical
@@ -381,11 +405,12 @@ new per-PR merge request. It does not extend to other repositories or bases.
   explicitly requested early checkpoint or visibility-only handoff. An owner
   merge/review hold still permits publication unless it also limits publication.
 - **Qualify the current head.** Inspect live repository merge settings, branch
-  protections and rulesets; require passing applicable checks on the exact PR
-  head, all required reviews, and resolved review threads. Repair in-scope CI
-  failures and refresh evidence after every head change. Missing, pending,
-  skipped, unavailable, stale or unrelated checks are not passing evidence.
-  Absence of branch protection does not waive these policy requirements.
+  protections and rulesets; require the [required checks](#required-and-advisory-checks)
+  to pass on the exact PR head, all required reviews, and resolved review
+  threads. Repair in-scope CI failures and refresh evidence after every head
+  change. A missing, pending, skipped, unavailable, stale or unrelated required
+  check is not passing evidence. Absence of branch protection does not waive
+  these policy requirements. Advisory checks never hold a merge.
   Use app-owned PR watching when available; otherwise use bounded observation.
   Do not invoke reviewer bots or bypass a required review.
 - **Merge with a guard.** Immediately before merging, re-read the PR head and

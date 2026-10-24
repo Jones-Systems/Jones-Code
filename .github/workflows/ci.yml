@@ -837,11 +837,13 @@ jobs:
       - name: Exercise release-only workflow steps
         run: node scripts/release-smoke.ts
 
-  # Branch protection requires this job by its name, `Check`. It fails when any
-  # other job fails, is cancelled, or is skipped without a reason, so splitting
-  # or resharding jobs needs no ruleset change. Add every new job to `needs`.
-  # `always()` rather than `!cancelled()`: a skipped job reports success to
-  # branch protection, so a cancelled run must still produce a failing check.
+  # `Check` is the required merge check named in
+  # docs/operations/contributor-guidance.md (no branch protection or ruleset
+  # enforces it today). It fails when any other job fails, is cancelled, or is
+  # skipped without a reason, so splitting or resharding jobs needs no policy
+  # change. Add every new job to `needs`. `always()` rather than
+  # `!cancelled()`: a skipped job reports success, so a cancelled run must
+  # still produce a failing check.
   check:
     name: Check
     if: ${{ always() }}
