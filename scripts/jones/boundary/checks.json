@@ -194,24 +194,6 @@
       ]
     },
     {
-      "id": "jones-ios-native-pin-workflow",
-      "tests": [
-        "scripts/jones/mobile/ios-pin-workflow.test.ts",
-        "scripts/jones/mobile/xcuitest.test.ts",
-        "scripts/jones/mobile/ios-admission.test.ts",
-        "scripts/jones/mobile/ios-native-build.test.ts",
-        "scripts/jones/mobile/ios-cleanup-sentinel.test.ts"
-      ],
-      "commands": [
-        "vp test run scripts/jones/mobile/ios-pin-workflow.test.ts scripts/jones/mobile/xcuitest.test.ts scripts/jones/mobile/ios-admission.test.ts scripts/jones/mobile/ios-native-build.test.ts scripts/jones/mobile/ios-cleanup-sentinel.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp lint scripts/jones/mobile/ios-pin-workflow.ts scripts/jones/mobile/ios-pin-workflow.test.ts scripts/jones/mobile/xcuitest.ts scripts/jones/mobile/xcuitest.test.ts scripts/jones/mobile/ios-admission.ts scripts/jones/mobile/ios-admission.test.ts scripts/jones/mobile/ios-native-build.ts scripts/jones/mobile/ios-native-build.test.ts scripts/jones/mobile/ios-cleanup-sentinel.ts scripts/jones/mobile/ios-cleanup-sentinel.test.ts apps/mobile/app.config.ts apps/mobile/plugins/withJonesE2eUITests.cjs",
-        "vp run --filter @t3tools/scripts typecheck",
-        "node scripts/jones/mobile/ios-pin-workflow.ts --plan",
-        "vp fmt --check .github/workflows/jones-ios-native.yml scripts/jones/mobile/ios-admission.ts scripts/jones/mobile/ios-admission.test.ts scripts/jones/mobile/ios-native-build.ts scripts/jones/mobile/ios-native-build.test.ts scripts/jones/mobile/ios-cleanup-sentinel.ts scripts/jones/mobile/ios-cleanup-sentinel.test.ts scripts/jones/mobile/ios-pin-workflow.ts scripts/jones/mobile/ios-pin-workflow.test.ts scripts/jones/boundary/fragments/ios-native-pin-workflow.json docs/operations/synthetic-environments.md",
-        "node scripts/jones/check-boundary.ts --strict"
-      ]
-    },
-    {
       "id": "jones-workstream-thread-controls",
       "tests": [
         "apps/web/src/components/workstreams/WorkstreamNativeSidebar.browser.test.tsx",
@@ -2800,17 +2782,6 @@
       ]
     },
     {
-      "id": "jones-ci-change-selection",
-      "tests": [
-        "scripts/jones/ci/selection.node-test.cjs",
-        "scripts/jones/ci/check-results.node-test.cjs"
-      ],
-      "commands": [
-        "node --test --test-concurrency=1 scripts/jones/ci/selection.node-test.cjs scripts/jones/ci/check-results.node-test.cjs",
-        "node scripts/jones/check-boundary.ts --strict --json"
-      ]
-    },
-    {
       "id": "jones-server-e2e-integration",
       "tests": [
         "apps/server/integration/jones-e2e/cross-server-message.integration.test.ts",
@@ -2828,6 +2799,66 @@
         "node --check apps/server/integration/jones-e2e/physicalHost.worker.ts",
         "PYTHONDONTWRITEBYTECODE=1 python3 apps/server/integration/jones-e2e/physicalHost.transport.test.py",
         "node --test scripts/jones/ci/server-e2e.node-test.cjs"
+      ]
+    },
+    {
+      "id": "jones-ci-change-selection",
+      "tests": [
+        "scripts/jones/ci/selection.node-test.cjs",
+        "scripts/jones/ci/check-results.node-test.cjs"
+      ],
+      "commands": [
+        "node --test --test-concurrency=1 scripts/jones/ci/selection.node-test.cjs scripts/jones/ci/check-results.node-test.cjs",
+        "node scripts/jones/check-boundary.ts --strict --json"
+      ]
+    },
+    {
+      "id": "jones-ios-native-pin-workflow",
+      "tests": [
+        "scripts/jones/mobile/ios-pin-workflow.test.ts",
+        "scripts/jones/mobile/xcuitest.test.ts",
+        "scripts/jones/mobile/ios-admission.test.ts",
+        "scripts/jones/mobile/ios-native-build.test.ts",
+        "scripts/jones/mobile/ios-cleanup-sentinel.test.ts"
+      ],
+      "commands": [
+        "vp test run scripts/jones/mobile/ios-pin-workflow.test.ts scripts/jones/mobile/xcuitest.test.ts scripts/jones/mobile/ios-admission.test.ts scripts/jones/mobile/ios-native-build.test.ts scripts/jones/mobile/ios-cleanup-sentinel.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint scripts/jones/mobile/ios-pin-workflow.ts scripts/jones/mobile/ios-pin-workflow.test.ts scripts/jones/mobile/xcuitest.ts scripts/jones/mobile/xcuitest.test.ts scripts/jones/mobile/ios-admission.ts scripts/jones/mobile/ios-admission.test.ts scripts/jones/mobile/ios-native-build.ts scripts/jones/mobile/ios-native-build.test.ts scripts/jones/mobile/ios-cleanup-sentinel.ts scripts/jones/mobile/ios-cleanup-sentinel.test.ts apps/mobile/app.config.ts apps/mobile/plugins/withJonesE2eUITests.cjs",
+        "vp run --filter @t3tools/scripts typecheck",
+        "node scripts/jones/mobile/ios-pin-workflow.ts --plan",
+        "vp fmt --check .github/workflows/jones-ios-native.yml scripts/jones/mobile/ios-admission.ts scripts/jones/mobile/ios-admission.test.ts scripts/jones/mobile/ios-native-build.ts scripts/jones/mobile/ios-native-build.test.ts scripts/jones/mobile/ios-cleanup-sentinel.ts scripts/jones/mobile/ios-cleanup-sentinel.test.ts scripts/jones/mobile/ios-pin-workflow.ts scripts/jones/mobile/ios-pin-workflow.test.ts scripts/jones/boundary/fragments/ios-native-pin-workflow.json docs/operations/synthetic-environments.md",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-native-electron-workflows",
+      "tests": [
+        "apps/desktop/scripts/ui-evidence/endpoint-trace.test.mjs",
+        "apps/desktop/scripts/ui-evidence/lifecycle.test.mjs",
+        "apps/desktop/scripts/ui-evidence/manifest.test.mjs",
+        "apps/desktop/scripts/ui-evidence/package-admission.test.mjs",
+        "apps/desktop/scripts/ui-evidence/peer-dependency.test.mjs",
+        "apps/desktop/scripts/ui-evidence/provenance.test.mjs",
+        "apps/desktop/scripts/ui-evidence/queue-edit-cancel.test.mjs",
+        "apps/desktop/scripts/ui-evidence/runner-restart-progress.test.mjs",
+        "apps/desktop/scripts/ui-evidence/runtime.test.mjs",
+        "apps/desktop/scripts/ui-evidence/sandbox.test.mjs",
+        "apps/desktop/scripts/ui-evidence/scenario-api.test.mjs",
+        "apps/desktop/scripts/ui-evidence/secondary-server.test.mjs",
+        "apps/desktop/scripts/ui-evidence/secret-service-stage.test.mjs",
+        "apps/desktop/scripts/ui-evidence/secret-service.test.mjs",
+        "apps/desktop/scripts/ui-evidence/sidebar-pin-reload.test.mjs",
+        "apps/desktop/scripts/ui-evidence/sidebar-pin-restart.test.mjs",
+        "apps/desktop/scripts/ui-evidence/startup-diagnostics.test.mjs",
+        "apps/desktop/scripts/ui-evidence/thread-self-configure.test.mjs",
+        "apps/desktop/scripts/ui-evidence/two-clients-one-server.test.mjs",
+        "apps/desktop/scripts/ui-evidence/two-servers-one-client.test.mjs",
+        "scripts/jones/e2e/acp-stub/agent.node-test.mjs"
+      ],
+      "commands": [
+        "vp run test:ui-evidence",
+        "node --test --test-concurrency=1 scripts/jones/e2e/acp-stub/agent.node-test.mjs",
+        "node scripts/jones/check-boundary.ts --strict"
       ]
     }
   ]
