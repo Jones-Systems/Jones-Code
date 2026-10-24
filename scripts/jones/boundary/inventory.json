@@ -1655,7 +1655,9 @@
     "scripts/jones/signing/sign.test.ts": "jones-owned",
     "scripts/jones/signing/sign.ts": "jones-owned",
     "scripts/sign-macos.ts": "hook",
-    "docs/operations/macos-signing.md": "policy"
+    "docs/operations/macos-signing.md": "policy",
+    "scripts/jones/packaging/cliArchiveDependencies.ts": "jones-owned",
+    "scripts/jones/packaging/cliArchiveDependencies.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -2182,6 +2184,10 @@
     {
       "from": "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
       "to": "apps/server/src/jones/scheduledTasks/fifoPermit.ts"
+    },
+    {
+      "from": "scripts/build-cli-archive.ts",
+      "to": "scripts/jones/packaging/cliArchiveDependencies.ts"
     }
   ]
 }

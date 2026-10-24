@@ -1679,6 +1679,11 @@
         "apps/server/src/jones/pullRequest/pullRequestScopeLocks.test.ts"
       ],
       "scope": "Concurrent sorted shared scope reads and exclusive invalidation avoid waiting for unrelated lookups while preserving revision ordering, persistence, cancellation and fairness. Jones lock helper has a narrow cache import; small shared cache edits retain private revision state, and colocated integration tests reuse the existing filesystem/fault harness."
+    },
+    {
+      "id": "cli-archive-patched-dependencies",
+      "tests": ["scripts/jones/packaging/cliArchiveDependencies.test.ts"],
+      "scope": "CLI archive staging pins only patched external roots to the committed apps/server lock importer, preserving applicable patch mappings and all unpatched root specifications. Missing, stale, ambiguous or unsupported patch resolutions fail before installation. The existing build-cli-archive hook retains external selection, native platform packages, overrides, build permissions and signing; the desktop projector is unchanged. Pure planning fixtures run in the existing scripts test route; platform archive installs and smoke checks remain hosted qualification."
     }
   ]
 }

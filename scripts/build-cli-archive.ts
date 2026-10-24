@@ -24,6 +24,7 @@ import rootPackageJson from "../package.json" with { type: "json" };
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 
 import { requireJonesBuildTarget } from "./jones/platforms/supportedTargets.ts";
+import { planCliArchiveDependencies } from "./jones/packaging/cliArchiveDependencies.ts";
 import {
   assertCliPayloadUnchanged,
   requireProductionCliBuild,
@@ -31,7 +32,6 @@ import {
   type CliPayloadSeal,
 } from "./jones/signing/cli.ts";
 import {
-  createStagePatchedDependencies,
   createStageWorkspaceConfig,
   resolveFffNativeDependencies,
   STAGE_INSTALL_ARGS,
@@ -163,14 +163,14 @@ const stageRuntimeExternals = Effect.fn("stageRuntimeExternals")(function* (inpu
       hint: "The archive stages fff's platform binary from this version.",
     });
   }
-  const dependencies = {
-    ...selectCliRuntimeExternalDependencies(serverDependencies),
-    ...resolveFffNativeDependencies(input.platform, input.arch, fffNodeVersion),
-  };
-  const patchedDependencies = createStagePatchedDependencies(
-    workspace.patchedDependencies ?? {},
-    dependencies,
-  );
+  const { dependencies, patchedDependencies } = planCliArchiveDependencies({
+    dependencies: {
+      ...selectCliRuntimeExternalDependencies(serverDependencies),
+      ...resolveFffNativeDependencies(input.platform, input.arch, fffNodeVersion),
+    },
+    patchedDependencies: workspace.patchedDependencies ?? {},
+    lockfile: yield* fs.readFileString(path.join(input.repoRoot, "pnpm-lock.yaml")),
+  });
 
   yield* fs.writeFileString(
     path.join(input.stageDir, "package.json"),
