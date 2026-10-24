@@ -74,6 +74,9 @@
         "scripts/probe-claude-fork-local-rollback-replay.ts",
         "scripts/update-test-shard-weights.ts",
         "scripts/verify-background-live.ts",
+        // The physical-host operator and relay launch these fixtures by filename.
+        "integration/jones-e2e/physicalHost.ts",
+        "integration/jones-e2e/physicalHost.worker.ts",
         "src/provider/testFixtures/*.mjs",
         // Staged native creation substrate is consumed by the deferred L39 execution slice.
         // Analyzer entries preserve these APIs without registering runtime authority or launch.
@@ -113,6 +116,7 @@
         // The namespace launcher stages and loads these modules by filename.
         "scripts/ui-evidence/probe.mjs",
         "scripts/ui-evidence/runner.mjs",
+        "scripts/ui-evidence/support/pin-oracle.mjs",
         "scripts/ui-evidence/scenarios/example.mjs",
         "scripts/ui-evidence/scenarios/sidebar-rename.mjs",
         "scripts/ui-evidence/scenarios/two-servers-one-client.mjs",

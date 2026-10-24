@@ -2782,6 +2782,17 @@
       ]
     },
     {
+      "id": "jones-ci-change-selection",
+      "tests": [
+        "scripts/jones/ci/selection.node-test.cjs",
+        "scripts/jones/ci/check-results.node-test.cjs"
+      ],
+      "commands": [
+        "node --test --test-concurrency=1 scripts/jones/ci/selection.node-test.cjs scripts/jones/ci/check-results.node-test.cjs",
+        "node scripts/jones/check-boundary.ts --strict --json"
+      ]
+    },
+    {
       "id": "jones-native-electron-workflows",
       "tests": [
         "apps/desktop/scripts/ui-evidence/endpoint-trace.test.mjs",
@@ -2812,14 +2823,23 @@
       ]
     },
     {
-      "id": "jones-ci-change-selection",
+      "id": "jones-server-e2e-integration",
       "tests": [
-        "scripts/jones/ci/selection.node-test.cjs",
-        "scripts/jones/ci/check-results.node-test.cjs"
+        "apps/server/integration/jones-e2e/cross-server-message.integration.test.ts",
+        "apps/server/integration/jones-e2e/multi-workspace.integration.test.ts",
+        "apps/server/integration/jones-e2e/same-home-refusal.integration.test.ts",
+        "apps/server/integration/jones-e2e/physicalHost.transport.test.py",
+        "scripts/jones/ci/server-e2e.node-test.cjs"
       ],
       "commands": [
-        "node --test --test-concurrency=1 scripts/jones/ci/selection.node-test.cjs scripts/jones/ci/check-results.node-test.cjs",
-        "node scripts/jones/check-boundary.ts --strict --json"
+        "vp test run --config vite.config.ts --maxWorkers=1 --no-file-parallelism --testTimeout=120000 apps/server/integration/jones-e2e/cross-server-message.integration.test.ts apps/server/integration/jones-e2e/multi-workspace.integration.test.ts apps/server/integration/jones-e2e/same-home-refusal.integration.test.ts",
+        "vp lint apps/server/integration/jones-e2e/serverFixture.ts apps/server/integration/jones-e2e/cross-server-message.integration.test.ts apps/server/integration/jones-e2e/multi-workspace.integration.test.ts apps/server/integration/jones-e2e/same-home-refusal.integration.test.ts apps/server/integration/jones-e2e/physicalHost.ts apps/server/integration/jones-e2e/physicalHost.worker.ts",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict",
+        "node --check apps/server/integration/jones-e2e/physicalHost.ts",
+        "node --check apps/server/integration/jones-e2e/physicalHost.worker.ts",
+        "PYTHONDONTWRITEBYTECODE=1 python3 apps/server/integration/jones-e2e/physicalHost.transport.test.py",
+        "node --test scripts/jones/ci/server-e2e.node-test.cjs"
       ]
     }
   ]
