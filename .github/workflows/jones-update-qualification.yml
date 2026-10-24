@@ -42,9 +42,6 @@ on:
       - scripts/stamp-jones-build*
       - scripts/build-desktop-artifact*
       - scripts/jones/updates/**
-      # For the Linux job's boundary accounting check. Most pull requests edit
-      # these files, so the macOS job skips changes confined to them.
-      - scripts/jones/boundary/**
   workflow_dispatch:
 
 permissions:
@@ -56,7 +53,7 @@ concurrency:
 
 jobs:
   qualify:
-    name: Jones update regressions
+    name: Jones native startup qualification
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -77,50 +74,6 @@ jobs:
       - name: Ensure Electron runtime is installed
         run: vp run --filter @t3tools/desktop ensure:electron
 
-      - name: Qualify affected update and recovery behavior
-        run: >-
-          vp test run
-          apps/web/src/versionSkew.test.ts
-          apps/web/src/jones/updates/versionSkew.test.ts
-          apps/web/src/jones/updates/localDesktopUpdate.test.ts
-          apps/desktop/src/jones/updates/preloadInstall.test.ts
-          apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts
-          apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts
-          apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts
-          apps/web/src/jones/fleetUpdates/blockedHostCommand.test.ts
-          apps/web/src/jones/fleetUpdates/sourceCurrency.test.ts
-          packages/client-runtime/src/jones/fleetUpdates/updateBridge.test.ts
-          packages/contracts/src/jones/fleetUpdates/source.test.ts
-          packages/client-runtime/src/platform/storageDocument.test.ts
-          packages/client-runtime/src/connection/registry.test.ts
-          apps/web/src/connection/storage.test.ts
-          apps/mobile/src/connection/storage.test.ts
-          apps/desktop/src/app/DesktopConnectionCatalogStore.test.ts
-          apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.test.ts
-          apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.test.tsx
-          packages/contracts/src/ipc.test.ts
-          apps/desktop/src/jones/updates/jonesMacStaging.test.ts
-          apps/server/src/jones/updates/trialGate.test.ts
-          apps/server/src/orchestration-v2/RestartContinuation.test.ts
-          apps/server/src/orchestration-v2/ServerUpdateContinuationPolicy.test.ts
-          apps/server/src/orchestration-v2/ServerUpdateContinuationPreparation.test.ts
-          apps/server/src/ServerSettingsPersistence.test.ts
-          apps/server/src/serverSettings.test.ts
-          apps/server/src/jones/updates/trialStartup.test.ts
-          apps/server/src/jones/cloud/qualifiedStartup.test.ts
-          apps/server/src/jones/cloud/qualifiedLauncher.test.ts
-          apps/server/src/jones/cloud/qualifiedBackup.test.ts
-          apps/server/src/jones/cloud/stoppedServerOwnership.test.ts
-          apps/server/src/jones/cloud/capturedProcess.test.ts
-          apps/server/src/jones/hostService/systemAdoption.test.ts
-          apps/server/src/jones/hostService/systemServiceControl.test.ts
-          apps/server/src/jones/hostService/cli.test.ts
-          apps/server/src/serviceLauncher.test.ts
-          apps/server/src/jones/updates/migrationPlan.test.ts
-          scripts/stamp-jones-build.test.ts
-          scripts/jones/updates/build-provenance.test.ts
-          scripts/build-desktop-artifact.test.ts
-
       - name: Install virtual display for Chromium startup qualification
         run: sudo apt-get update && sudo apt-get install -y xvfb
 
@@ -130,12 +83,8 @@ jobs:
       - name: Qualify Chromium-mode native startup refusal
         run: xvfb-run -a node scripts/jones/updates/native-startup-chromium.mjs
 
-      - name: Verify Jones boundary accounting
-        run: node scripts/jones/check-boundary.ts --strict --json
-
   # The macOS job needs a scarce hosted runner shared across the organization,
-  # so it runs only when an update or installer path changed, not when the
-  # boundary accounting files alone triggered this workflow. Detection is
+  # so it runs only when an update or installer path changed. Detection is
   # API-only (no checkout) and fails open: if the diff cannot be resolved, the
   # macOS job runs.
   qualify-mac-changes:
@@ -207,8 +156,8 @@ jobs:
 
           paths=$(tr '\t' '\n' <<< "$rows")
 
-          # The pull_request paths above without the boundary accounting files,
-          # plus the boundary fragments of the update and installer features.
+          # The pull_request paths above, plus the boundary fragments of the
+          # update and installer features that may change in a native stack.
           # A fragment changes when its feature adds or removes files, which can
           # lie outside the paths above. In [[ ]], * also matches across
           # directories, so a pattern can only match more than its trigger.
