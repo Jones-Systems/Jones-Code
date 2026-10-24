@@ -112,6 +112,19 @@ rename a thread, regenerate its title, or link and unlink a pull request. These 
 appear on web, desktop, and mobile without requiring the originating browser to remain
 open.
 
+### Filter by recent activity
+
+On web and desktop, click the sidebar's Working / Input / Done pill to cycle
+through those views, then back to All. Double-click to hide working threads.
+
+In **Settings → Jones Code → Thread activity window**, turn on a recent-activity
+window and choose an amount in minutes, hours, days or weeks. For example, use
+**3 hours** to see Done threads worked on in the past three hours, including
+completions you have already read. Working and Input counts use the same window.
+Threads leave these views as the window expires; All keeps the full list. The
+setting is off by default and saved on this device. Servers without reliable
+completion times cannot include those completions in the recent Done view.
+
 ### Fold working threads (beta)
 
 Turn on **Settings → General → Working section (beta)** on web and desktop, or **Settings →
