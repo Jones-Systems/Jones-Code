@@ -47,6 +47,9 @@ export class NativeEnrollments extends Context.Service<
     readonly inspect: (
       request: NativeEnrollmentRequest,
     ) => Effect.Effect<NativeEnrollmentInspection, NativeEnrollmentError>;
+    readonly inspectExisting: (
+      request: NativeEnrollmentRequest,
+    ) => Effect.Effect<NativeEnrollmentInspection, NativeEnrollmentError>;
     readonly reserve: (
       request: NativeEnrollmentRequest,
     ) => Effect.Effect<NativeEnrollmentInspection, NativeEnrollmentError>;
@@ -93,7 +96,7 @@ export const makeNativeEnrollments = (ports: NativeEnrollmentPorts) =>
       decodeRequest(input).pipe(
         Effect.mapError(() => new NativeEnrollmentError({ code: "invalid_request" })),
       );
-    const qualify = (request: NativeEnrollmentRequest) =>
+    const qualifyExisting = (request: NativeEnrollmentRequest) =>
       Effect.gen(function* () {
         const now = yield* DateTime.now;
         if (
@@ -111,12 +114,17 @@ export const makeNativeEnrollments = (ports: NativeEnrollmentPorts) =>
         )
           return yield* new NativeEnrollmentError({ code: "authority_mismatch" });
         const build = yield* ports.build;
-        if (Option.isNone(build))
+        if (Option.isNone(build) || !Schema.is(WorkstreamsNativeBuild)(build.value))
           return yield* new NativeEnrollmentError({ code: "build_unavailable" });
+        return build.value;
+      });
+    const qualify = (request: NativeEnrollmentRequest) =>
+      Effect.gen(function* () {
+        const build = yield* qualifyExisting(request);
         if (
-          build.value.repository !== request.context.build.repository ||
-          build.value.sha !== request.context.build.sha ||
-          build.value.tree !== request.context.build.tree
+          build.repository !== request.context.build.repository ||
+          build.sha !== request.context.build.sha ||
+          build.tree !== request.context.build.tree
         )
           return yield* new NativeEnrollmentError({ code: "build_mismatch" });
       });
@@ -151,15 +159,19 @@ export const makeNativeEnrollments = (ports: NativeEnrollmentPorts) =>
           return yield* new NativeEnrollmentError({ code: "session_conflict" });
         return true;
       });
-    const inspectRecords = (request: NativeEnrollmentRequest) =>
+    const inspectRecords = (request: NativeEnrollmentRequest, existingOnly = false) =>
       Effect.gen(function* () {
         const rows = yield* read(request.enrollment_id, request.session.session_id);
+        if (existingOnly && rows.length === 0) return { state: "absent" as const };
         const active = yield* activeSession(request);
         if (rows.length === 0) return { state: "absent" as const };
         if (rows.length !== 1)
           return yield* new NativeEnrollmentError({ code: "enrollment_conflict" });
         const stored = yield* checkedRowRequest(rows[0]!);
-        if (nativeEnrollmentRequestSha256(stored) !== nativeEnrollmentRequestSha256(request))
+        if (
+          canonicalNativeEnrollmentRequest(stored) !== canonicalNativeEnrollmentRequest(request) ||
+          nativeEnrollmentRequestSha256(stored) !== nativeEnrollmentRequestSha256(request)
+        )
           return yield* new NativeEnrollmentError({ code: "enrollment_conflict" });
         if (!active) return yield* new NativeEnrollmentError({ code: "session_conflict" });
         return { state: "reserved" as const };
@@ -170,6 +182,13 @@ export const makeNativeEnrollments = (ports: NativeEnrollmentPorts) =>
         yield* qualify(request);
         const result = yield* inspectRecords(request);
         yield* qualify(request);
+        return result;
+      });
+    const inspectExisting: NativeEnrollments["Service"]["inspectExisting"] = (input) =>
+      Effect.gen(function* () {
+        const request = yield* validate(input);
+        const result = yield* inspectRecords(request, true);
+        if (result.state === "reserved") yield* qualifyExisting(request);
         return result;
       });
     const reserve: NativeEnrollments["Service"]["reserve"] = (input) =>
@@ -220,7 +239,7 @@ export const makeNativeEnrollments = (ports: NativeEnrollmentPorts) =>
           return Option.none<NativeProviderEnrollmentBinding>();
         return Option.some(deriveNativeEnrollmentBinding(request));
       }).pipe(Effect.catch(() => Effect.succeed(Option.none<NativeProviderEnrollmentBinding>())));
-    return NativeEnrollments.of({ inspect, reserve, getBySessionId });
+    return NativeEnrollments.of({ inspect, inspectExisting, reserve, getBySessionId });
   });
 
 export const NativeEnrollmentsLive = Layer.effect(

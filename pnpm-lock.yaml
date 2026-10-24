@@ -86,6 +86,7 @@ catalogs:
       version: 11.0.5
 
 overrides:
+  '@expo/fingerprint': 0.21.5
   '@exodus/bytes>@noble/hashes': 1.8.0
   '@react-navigation/core': 7.24.0
   dbus-next>usocket: '-'

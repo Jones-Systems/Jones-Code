@@ -13,6 +13,7 @@ on:
       - scripts/update-release-package-versions.ts
       - scripts/stamp-jones-build.ts
       - scripts/jones/updates/build-provenance.ts
+      - scripts/jones/updates/desktop-worker-smoke*
       - packages/shared/src/jones/nativeWriterFence*
       - apps/server/src/jones/updates/**
       - apps/server/vite.config.ts
@@ -137,9 +138,32 @@ jobs:
           fi
           JONES_BUILD_STARTED_AT="$build_started_at" node scripts/stamp-jones-build.ts
 
+      - name: Bound compiler jobs to hosted runner capacity
+        id: build_capacity
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import os from 'node:os';
+          import fs from 'node:fs';
+          const logicalCores = os.cpus().length;
+          const availableCores = os.availableParallelism();
+          const inheritedCaps = [process.env.CARGO_BUILD_JOBS, process.env.CMAKE_BUILD_PARALLEL_LEVEL]
+            .filter(value => value !== undefined)
+            .map(value => /^\d+$/.test(value) ? Number(value) : NaN);
+          const bounds = [6, logicalCores, availableCores, ...inheritedCaps];
+          if (bounds.some(value => !Number.isSafeInteger(value) || value < 1))
+            throw new Error('Hosted compiler capacity is unavailable or invalid.');
+          const jobs = Math.min(...bounds);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `jobs=${jobs}\n`);
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+            `Hosted build capacity: ${logicalCores} logical cores, ${availableCores} available; ${jobs} compiler jobs.\n`);
+          NODE
+
       - name: Build unsigned preview DMG
         env:
           BUILD_VERSION: ${{ steps.version.outputs.value }}
+          CARGO_BUILD_JOBS: ${{ steps.build_capacity.outputs.jobs }}
+          CMAKE_BUILD_PARALLEL_LEVEL: ${{ steps.build_capacity.outputs.jobs }}
         run: >-
           node scripts/build-desktop-artifact.ts
           --platform mac --target dmg --arch arm64
@@ -147,6 +171,7 @@ jobs:
           --output-dir artifacts/desktop-mac
 
       - name: Verify DMG and write checksum
+        id: dmg_verify
         env:
           BUILD_VERSION: ${{ steps.version.outputs.value }}
         shell: bash
@@ -182,7 +207,7 @@ jobs:
             echo 'Preview versions have no automatic update feed. No GitHub Release is created.'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Smoke-test packaged update preparation worker
+      - name: Smoke-test packaged server update preparation worker
         env:
           BUILD_VERSION: ${{ steps.version.outputs.value }}
         shell: bash
@@ -202,6 +227,29 @@ jobs:
             --worker "$app/Contents/MacOS/$executable" \
             --worker-entry "$app/Contents/Resources/app.asar/apps/server/dist/bin.mjs"
 
+      - name: Qualify packaged desktop staging worker
+        id: desktop_worker
+        if: ${{ !cancelled() && steps.dmg_verify.outcome == 'success' }}
+        env:
+          BUILD_VERSION: ${{ steps.version.outputs.value }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: >-
+          exec node scripts/jones/updates/desktop-worker-smoke.ts
+          --dmg "artifacts/desktop-mac/T3-Code-${BUILD_VERSION}-arm64.dmg"
+          --source "$JONES_SOURCE_SHA" --tree "$JONES_SOURCE_TREE"
+          --version "$BUILD_VERSION" --scratch-parent "$TMPDIR"
+          --report artifacts/desktop-worker-proof/qualification.json
+
+      - name: Upload desktop worker qualification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: desktop-worker-proof-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/desktop-worker-proof/qualification.json
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Upload DMG and checksum
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -217,4 +265,20 @@ jobs:
 
       - name: Clean job scratch
         if: always() && steps.job_scratch.outcome == 'success'
-        run: rm -rf -- "$TMPDIR"
+        env:
+          DESKTOP_WORKER_OUTCOME: ${{ steps.desktop_worker.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "$DESKTOP_WORKER_OUTCOME" && "$DESKTOP_WORKER_OUTCOME" != skipped ]]; then
+            # A missing proof must not turn outer cleanup into deletion through an unknown mount or writer.
+            if ! node --input-type=module -e '
+              import fs from "node:fs";
+              const proof = JSON.parse(fs.readFileSync("artifacts/desktop-worker-proof/qualification.json", "utf8"));
+              process.exit(proof.cleanup.status === "pass" ? 0 : 1);
+            '; then
+              echo '::warning::Desktop worker cleanup is unproved; preserving scratch on the disposable runner.'
+              exit 1
+            fi
+          fi
+          rm -rf -- "$TMPDIR"

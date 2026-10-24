@@ -135,6 +135,19 @@ export const reads = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>)
 export const readsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
   declare((params: P) => requireThreadCaller.pipe(Effect.flatMap(() => handle(params))), undefined);
 
+/** The domain service checks immutable receipts before its locked execution guard. */
+export const actsAsCallerWithReceipt = <P, A, E, R>(
+  handle: (params: P) => Effect.Effect<A, E, R>,
+) =>
+  declare(
+    (params: P) =>
+      requireThreadCaller.pipe(
+        Effect.andThen(readCaller()),
+        Effect.flatMap(() => handle(params)),
+      ),
+    undefined,
+  );
+
 export const actsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
   declare(
     (params: P) =>

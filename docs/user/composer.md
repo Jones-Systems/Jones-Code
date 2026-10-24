@@ -225,6 +225,12 @@ messages queued. It preserves each message's sender and timeline entry. Editing,
 or approvals, and providers that require a restart can make the batch action unavailable. Older
 servers retain the individual row controls.
 
+Choosing **Steer all** sends one combined input to the currently running agent, including messages
+queued before you changed accounts or models. The separate timeline cards preserve the original
+messages; they do not mean each message started a separate turn. If the active turn finishes before
+delivery, the messages are preserved for follow-up delivery. Automatic delivery at a tool boundary
+still requires the queued messages to match the active provider and model.
+
 If the server restarts, saved queued messages keep their order and are held. Press
 **Resume** in an empty composer on web or desktop, or **Resume queue** in the queue
 sheet on mobile, to continue. You can edit, reorder, or remove held messages without starting them.

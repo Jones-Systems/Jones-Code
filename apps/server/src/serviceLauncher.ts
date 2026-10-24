@@ -55,12 +55,22 @@ import type { MigrationPlan } from "./jones/updates/migrationPlan.ts";
 import {
   archiveUpdateOperation,
   assertNoUnreconciledUpdateOperations,
+  evaluateLegacyUpdateSettlement,
+  FailedOperationUnsettledError,
   operationBinding,
+  publishUpdateOperationSettlement,
   readOperationReservation,
+  readUpdateOperationCause,
+  readUpdateOperationSettlement,
   reconcileUpdateOperation,
   reserveUpdateOperation,
   resolveUpdateOperation,
   settleAbandonedUpdateOperations,
+  verifyRetiredUpdateOperation,
+  writeFailedUpdateOperation,
+  writeUpdateOperationCause,
+  type UpdateOperationCause,
+  type UpdateOperationSettlement,
 } from "./jones/updates/launcherOperation.ts";
 
 import { assertStageNotRevoked, retireNativeStage } from "./jones/updates/stageRevocation.ts";
@@ -72,6 +82,7 @@ import type {
   ServiceLauncherParentMessage,
   ServiceState,
   ServiceUpdateRecord,
+  ServiceUpdateReconciliationResult,
 } from "./cloud/serviceProtocol.ts";
 import {
   compareExactServiceVersions,
@@ -617,6 +628,7 @@ async function cleanupTerminalDatabaseBackup(
   baseDir: string,
   pending: PendingServiceUpdate,
   terminal?: "committed" | "rolled-back" | "failed-before-trial",
+  required = false,
 ): Promise<void> {
   try {
     if (pending.qualified === undefined) await discardDatabaseBackup(baseDir, pending.id);
@@ -628,7 +640,8 @@ async function cleanupTerminalDatabaseBackup(
         { transactionId: pending.id, qualified: pending.qualified },
         terminal,
       );
-  } catch {
+  } catch (cause) {
+    if (required) throw cause;
     process.stderr.write(
       "[service-launcher] Recovery payload cleanup did not finish; the durable update outcome is unchanged and remaining recovery files were retained.\n",
     );
@@ -732,6 +745,17 @@ const stopMarkerPath = (baseDir: string) =>
 const restartPendingPath = (baseDir: string) =>
   NodePath.join(baseDir, "runtime", SERVICE_RESTART_PENDING_FILE);
 
+// Native seams let restart tests interrupt each durable prefix without touching a real service.
+interface LauncherRecoveryIO {
+  readonly verify: typeof verifyStagedQualifiedRuntime;
+  readonly ownership: typeof withStoppedServerOwnership;
+  readonly failedOutcome: typeof writeFailedUpdateOperation;
+  readonly cleanup: typeof cleanupTerminalDatabaseBackup;
+  readonly settle: typeof publishUpdateOperationSettlement;
+  readonly cause: typeof writeUpdateOperationCause;
+  readonly writeState: typeof writeServiceState;
+}
+
 export class Launcher {
   readonly #baseDir: string;
   readonly #statePath: string;
@@ -754,6 +778,12 @@ export class Launcher {
   #qualifiedCommitAttempt: QualifiedCommitAttempt | undefined;
   readonly #completion = Promise.withResolvers<void>();
   readonly #backupSpaceProbe: Partial<BackupSpaceProbe> | undefined;
+  readonly #recoveryIO: LauncherRecoveryIO;
+  // A disconnected child's retries cannot reach this launcher. Keep its bounded reply cache local.
+  readonly #reconciliationReplies = new WeakMap<
+    ManagedChild,
+    Map<string, ServiceUpdateReconciliationResult>
+  >();
 
   constructor(
     baseDir: string,
@@ -763,6 +793,7 @@ export class Launcher {
       readonly startupGateProtocol?: 1;
       readonly preparedTimeoutMs?: number;
       readonly backupAdapter?: QualifiedBackupAdapter;
+      readonly recoveryIO?: Partial<LauncherRecoveryIO>;
       readonly updateOperationIO?: {
         readonly archive: typeof archiveUpdateOperation;
         readonly reserve: typeof reserveUpdateOperation;
@@ -778,6 +809,16 @@ export class Launcher {
     this.#startupGateProtocol = options.startupGateProtocol;
     this.#preparedTimeoutMs = options.preparedTimeoutMs ?? PREPARED_TIMEOUT_MS;
     this.#backupAdapter = options.backupAdapter;
+    this.#recoveryIO = {
+      verify: verifyStagedQualifiedRuntime,
+      ownership: withStoppedServerOwnership,
+      failedOutcome: writeFailedUpdateOperation,
+      cleanup: cleanupTerminalDatabaseBackup,
+      settle: publishUpdateOperationSettlement,
+      cause: writeUpdateOperationCause,
+      writeState: writeServiceState,
+      ...options.recoveryIO,
+    };
     this.#updateOperationIO = options.updateOperationIO ?? {
       archive: archiveUpdateOperation,
       reserve: reserveUpdateOperation,
@@ -933,7 +974,7 @@ export class Launcher {
     if (update.qualified !== undefined) {
       // Pending restart recovery holds state ownership before changing the old pair.
       if (update.phase === "accepted") {
-        await withStoppedServerOwnership(this.#baseDir, () =>
+        await this.#recoveryIO.ownership(this.#baseDir, () =>
           this.#finishWithoutTrial(update, "launcher-restarted", false),
         );
         await this.#startChild(this.#state.activeVersion, "active", this.#state.update);
@@ -965,22 +1006,35 @@ export class Launcher {
 
   async #startTrial(pending: PendingServiceUpdate): Promise<void> {
     if (pending.qualified !== undefined) {
-      const staged = await verifyStagedQualifiedRuntime(
-        this.#baseDir,
-        pending.fromVersion,
-        pending.qualified.stagedHandle,
-      );
-      if (JSON.stringify(staged) !== JSON.stringify(pending.qualified))
-        throw new Error("The qualified trial binding changed after handoff.");
+      try {
+        const staged = await this.#recoveryIO.verify(
+          this.#baseDir,
+          pending.fromVersion,
+          pending.qualified.stagedHandle,
+        );
+        if (JSON.stringify(staged) !== JSON.stringify(pending.qualified))
+          throw new Error("The qualified trial binding changed after handoff.");
+      } catch (cause) {
+        if (pending.phase === "accepted")
+          await this.#recordPretrialCause(pending, "reverify", cause);
+        throw cause;
+      }
     }
     if (pending.phase === "accepted") {
+      let step: UpdateOperationCause["step"] = "ownership";
       try {
-        const backup = () => backupDatabaseOnce(this.#baseDir, pending, this.#backupAdapter);
+        const backup = () => {
+          step = "backup";
+          return backupDatabaseOnce(this.#baseDir, pending, this.#backupAdapter);
+        };
         if (pending.qualified !== undefined)
-          await withStoppedServerOwnership(this.#baseDir, backup);
+          await this.#recoveryIO.ownership(this.#baseDir, backup);
         else await backup();
       } catch (cause) {
-        if (pending.qualified !== undefined) throw cause;
+        if (pending.qualified !== undefined) {
+          await this.#recordPretrialCause(pending, step, cause);
+          throw cause;
+        }
         await this.#finishWithoutTrial(pending, "db-backup-failed");
         return;
       }
@@ -1014,6 +1068,23 @@ export class Launcher {
       activeVersion: pending.fromVersion,
       update: outcome,
     };
+    if (
+      pending.qualified !== undefined &&
+      pending.phase === "accepted" &&
+      reason === "launcher-restarted" &&
+      (await readOperationReservation(this.#baseDir, pending.id)) !== undefined
+    ) {
+      if (pending.startupReceipt !== undefined)
+        throw new Error("Pre-trial recovery has trial evidence; settlement held.");
+      const evaluated = await this.#evaluateFailedSettlement(outcome);
+      if (evaluated.result === "refused")
+        throw new Error(`Pre-trial settlement held: ${evaluated.reason}`);
+      await this.#settleFailedUpdate(pending, "launcher-recorded");
+      await this.#recoveryIO.writeState(this.#statePath, next);
+      this.#state = next;
+      if (startChild) await this.#startChild(next.activeVersion, "active", outcome);
+      return;
+    }
     await writeServiceState(this.#statePath, next);
     this.#state = next;
     await cleanupTerminalDatabaseBackup(
@@ -1024,6 +1095,85 @@ export class Launcher {
         : undefined,
     );
     if (startChild) await this.#startChild(next.activeVersion, "active", outcome);
+  }
+
+  async #recordPretrialCause(
+    pending: PendingServiceUpdate,
+    step: UpdateOperationCause["step"],
+    cause: unknown,
+  ): Promise<void> {
+    const code =
+      cause instanceof Error &&
+      "code" in cause &&
+      typeof cause.code === "string" &&
+      /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(cause.code)
+        ? cause.code
+        : `qualified-${step}-failed`;
+    try {
+      await this.#recoveryIO.cause(this.#baseDir, {
+        schema: 1,
+        operationId: pending.id,
+        step,
+        code,
+        message: cause instanceof Error ? cause.message : "Qualified preparation failed.",
+      });
+    } catch {
+      // Diagnostic failure must never replace the exception that deliberately restarts the launcher.
+      process.stderr.write(
+        "[service-launcher] Pre-trial cause could not be retained; original failure preserved.\n",
+      );
+    }
+  }
+
+  async #evaluateFailedSettlement(update: ServiceUpdateRecord) {
+    const active = await readQualifiedRuntimeReceipt(this.#baseDir, this.#state.activeVersion);
+    return evaluateLegacyUpdateSettlement({
+      baseDir: this.#baseDir,
+      operationId: update.id,
+      current: update,
+      active: { activeVersion: this.#state.activeVersion, activeSourceSha: active.sourceSha },
+    });
+  }
+
+  async #settleFailedUpdate(
+    pending: PendingServiceUpdate,
+    basis: "launcher-recorded" | "legacy-reconciled",
+  ) {
+    const digests = await this.#recoveryIO.failedOutcome(this.#baseDir, pending);
+    const staging = await NodeFSP.lstat(
+      `${databaseBackupDir(this.#baseDir, pending.id)}.staging`,
+    ).catch((cause: NodeJS.ErrnoException) => {
+      if (cause.code === "ENOENT") return undefined;
+      throw cause;
+    });
+    if (staging !== undefined)
+      throw new Error(
+        "recovery-cleanup: snapshot staging has unknown prior effects; settlement held.",
+      );
+    const payloadExisted = await pathExists(databaseBackupDir(this.#baseDir, pending.id));
+    await this.#recoveryIO.cleanup(this.#baseDir, pending, "failed-before-trial", true);
+    const cause = await readUpdateOperationCause(this.#baseDir, pending.id);
+    const receipt: UpdateOperationSettlement = {
+      schema: 1,
+      operationId: pending.id,
+      status: "failed",
+      settlement: "no-effect",
+      basis,
+      ...digests,
+      evidence: {
+        phaseAtFailure: "accepted",
+        nativeReason: "launcher-restarted",
+        candidateStarted: false,
+        activeVersion: pending.fromVersion,
+        activeSourceSha: pending.qualified!.binding.activeSourceSha,
+        recoveryPayload: payloadExisted ? "removed" : "absent",
+        restorePending: false,
+        cause: cause === undefined ? null : cause.message || cause.code,
+        writerLauncherVersion: packageJson.version,
+        recordedAt: new Date().toISOString(),
+      },
+    };
+    return this.#recoveryIO.settle(this.#baseDir, receipt);
   }
 
   async #startChild(version: string, role: ChildRole, update?: ServiceUpdateRecord): Promise<void> {
@@ -1047,10 +1197,12 @@ export class Launcher {
     const context: ServiceLauncherContext = {
       protocol: SERVICE_LAUNCHER_PROTOCOL,
       childVersion: version,
+      launcherVersion: packageJson.version,
       qualifiedUpdatesProtocol: QUALIFIED_UPDATES_PROTOCOL,
       updateOperationsProtocol: 1,
       updateRetirementProtocol: 1,
       updateOutcomeProtocol: 1,
+      updateSettlementProtocol: 1,
       ...(this.#startupGateProtocol === undefined
         ? {}
         : { startupGateProtocol: this.#startupGateProtocol }),
@@ -1120,6 +1272,7 @@ export class Launcher {
         launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
         qualifiedUpdatesProtocol: QUALIFIED_UPDATES_PROTOCOL,
         startupGateProtocol: 1,
+        updateSettlementProtocol: 1,
         childPid: child.pid,
         childVersion: version,
       });
@@ -1144,6 +1297,10 @@ export class Launcher {
     receivedAt: number,
   ): Promise<void> {
     if (this.#child !== child || this.#stopping) return;
+    if (message.type === "reconcile-failed-update" || message.type === "record-retired-operation") {
+      await this.#handleSettlementRequest(child, message);
+      return;
+    }
     if (message.type === "reconcile-update") {
       // Answered in IPC order, after every earlier request from this child has finished.
       const resolved = await resolveUpdateOperation(
@@ -1189,6 +1346,108 @@ export class Launcher {
       return;
     }
     await this.#handlePrepared(child, message, receivedAt);
+  }
+
+  async #handleSettlementRequest(
+    child: ManagedChild,
+    message: Extract<
+      ServiceLauncherChildMessage,
+      { type: "reconcile-failed-update" | "record-retired-operation" }
+    >,
+  ): Promise<void> {
+    let replies = this.#reconciliationReplies.get(child);
+    if (replies === undefined) {
+      replies = new Map();
+      this.#reconciliationReplies.set(child, replies);
+    }
+    const key = `${message.operationId}:${message.requestId}`;
+    let result = replies.get(key);
+    if (result === undefined) {
+      // Never evict a reply and reinterpret its request ID. A new child gets its own budget.
+      result =
+        replies.size >= 256
+          ? { result: "refused", reason: "settlement-write-failed" }
+          : await this.#reconcileFailedRequest(child, message);
+      if (replies.size < 256) replies.set(key, result);
+    }
+    await sendMessage(child.process, {
+      type: "update-reconciled",
+      operationId: message.operationId,
+      requestId: message.requestId,
+      ...result,
+    });
+  }
+
+  async #reconcileFailedRequest(
+    child: ManagedChild,
+    message: Extract<
+      ServiceLauncherChildMessage,
+      { type: "reconcile-failed-update" | "record-retired-operation" }
+    >,
+  ): Promise<ServiceUpdateReconciliationResult> {
+    if (
+      child.role !== "active" ||
+      child.version !== this.#state.activeVersion ||
+      this.#stopRequested ||
+      this.#state.update?.status === "pending"
+    )
+      return { result: "refused", reason: "insufficient-evidence" };
+    try {
+      const existing = await readUpdateOperationSettlement(this.#baseDir, message.operationId);
+      if (existing !== undefined) {
+        if (
+          message.type === "record-retired-operation" &&
+          (existing.basis !== "retired-exception" ||
+            existing.evidence.retiredLocation !== message.retiredLocation)
+        )
+          return { result: "refused", reason: "retired-evidence-mismatch" };
+        // Re-flush an existing receipt before acknowledging a prior publication prefix.
+        await this.#recoveryIO.settle(this.#baseDir, existing);
+        return { result: "already-settled" };
+      }
+      if (message.type === "record-retired-operation") {
+        const evidence = await verifyRetiredUpdateOperation({
+          baseDir: this.#baseDir,
+          operationId: message.operationId,
+          retiredLocation: message.retiredLocation,
+        });
+        if (evidence.result === "refused") return evidence;
+        const settled = await this.#recoveryIO.settle(this.#baseDir, {
+          schema: 1,
+          operationId: message.operationId,
+          status: "failed",
+          settlement: "no-effect",
+          basis: "retired-exception",
+          reservationSha256: evidence.reservationSha256,
+          outcomeSha256: evidence.outcomeSha256,
+          evidence: {
+            retiredLocation: evidence.retiredLocation,
+            recordedAt: new Date().toISOString(),
+            writerLauncherVersion: packageJson.version,
+          },
+        });
+        return { result: settled.result };
+      }
+      const active = await readQualifiedRuntimeReceipt(this.#baseDir, this.#state.activeVersion);
+      const evaluated = await evaluateLegacyUpdateSettlement({
+        baseDir: this.#baseDir,
+        operationId: message.operationId,
+        current: this.#state.update,
+        active: { activeVersion: this.#state.activeVersion, activeSourceSha: active.sourceSha },
+      });
+      if (evaluated.result === "refused") return evaluated;
+      await this.#updateOperationIO.archive(this.#baseDir, evaluated.current);
+      const pending: PendingServiceUpdate = {
+        ...evaluated.current,
+        status: "pending",
+        phase: "accepted",
+        dbPath: evaluated.binding.dbPath,
+      };
+      const settled = await this.#settleFailedUpdate(pending, "legacy-reconciled");
+      return { result: settled.result };
+    } catch {
+      return { result: "refused", reason: "settlement-write-failed" };
+    }
   }
 
   async #handleUpdateRequest(
@@ -1394,11 +1653,13 @@ export class Launcher {
           operationBinding(qualified),
         );
       }
-    } catch {
+    } catch (cause) {
       // A failed fsync may leave a reservation; the refusal records it as rejected
       // while the unchanged active child continues serving.
       await reject(
-        "operation-reconciliation-required: Native operation receipts could not be durably prepared; the current server remains active.",
+        cause instanceof FailedOperationUnsettledError
+          ? `failed-operation-unsettled: ${cause.operationId} requires reconciliation before another Install; the current server remains active.`
+          : "operation-reconciliation-required: Native operation receipts could not be durably prepared; the current server remains active.",
       );
       return;
     }

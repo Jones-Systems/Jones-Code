@@ -17,9 +17,12 @@ vi.mock("@shikijs/core", async (importOriginal) => {
       const highlighter = await original.createHighlighterCore(...args);
       return {
         ...highlighter,
-        codeToTokensBase: (...input: Parameters<typeof highlighter.codeToTokensBase>) => {
-          tokenization.calls.push(input[0]);
-          const result = highlighter.codeToTokensBase(...input);
+        codeToTokensBase: (...[code, options]: Parameters<typeof highlighter.codeToTokensBase>) => {
+          tokenization.calls.push(code);
+          // Shiki stops a line after 500ms by default and leaves its remainder as one
+          // token with a truncated grammar state. Cold regex compilation on a busy
+          // runner can exceed that, so these comparisons disable the wall-clock limit.
+          const result = highlighter.codeToTokensBase(code, { ...options, tokenizeTimeLimit: 0 });
           tokenization.afterCall?.();
           return result;
         },

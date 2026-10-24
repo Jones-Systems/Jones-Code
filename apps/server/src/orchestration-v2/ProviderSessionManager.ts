@@ -210,6 +210,7 @@ export interface ProviderSessionManagerV2Shape {
   >;
   readonly get: (
     providerSessionId: ProviderSessionId,
+    options?: { readonly touchActivity: boolean },
   ) => Effect.Effect<
     Option.Option<ProviderAdapter.ProviderAdapterV2SessionRuntime>,
     ProviderSessionManagerV2Error
@@ -1894,6 +1895,7 @@ export const layerWithOptions = (
         providerSessionId: ProviderSessionId,
         providerThreadId: ProviderThreadId,
         runOrdinal: number,
+        activityKey = busyTurnKey(providerThreadId, runOrdinal),
       ) =>
         withActivityError(
           providerSessionId,
@@ -1906,7 +1908,7 @@ export const layerWithOptions = (
                 return current;
               }
               const busyTurns = new Set(entry.busyTurns);
-              busyTurns.delete(busyTurnKey(providerThreadId, runOrdinal));
+              busyTurns.delete(activityKey);
               const updated = new Map(current);
               updated.set(key, {
                 ...entry,
@@ -2308,6 +2310,43 @@ export const layerWithOptions = (
                 }),
               ),
             ),
+          ...(runtime.compactForContextHandoff === undefined
+            ? {}
+            : {
+                compactForContextHandoff: (input: ProviderAdapter.ProviderAdapterV2TurnInput) =>
+                  Effect.gen(function* () {
+                    const activityKey = `${busyTurnKey(input.providerThread.id, input.runOrdinal)}:handoff:${input.attemptId}`;
+                    yield* observeActivity(
+                      providerSessionId,
+                      ensureThreadAttached({
+                        providerSessionId,
+                        threadId: input.threadId,
+                        providerInstanceId: runtime.instanceId,
+                      }),
+                    );
+                    yield* holdThreadLoaded({
+                      providerSessionId,
+                      threadId: input.threadId,
+                      providerThread: input.providerThread,
+                    });
+                    // The caller's delivery scope spans compaction, injection and prompt dispatch.
+                    // A separate key must not clear the original turn's lease on success.
+                    yield* Effect.acquireRelease(
+                      observeActivity(providerSessionId, markBusy(providerSessionId, activityKey)),
+                      () =>
+                        observeActivity(
+                          providerSessionId,
+                          markIdle(
+                            providerSessionId,
+                            input.providerThread.id,
+                            input.runOrdinal,
+                            activityKey,
+                          ),
+                        ),
+                    );
+                    return yield* runtime.compactForContextHandoff!(input);
+                  }),
+              }),
           startTurn: (input) =>
             observeActivity(
               providerSessionId,
@@ -3054,13 +3093,13 @@ export const layerWithOptions = (
           Ref.get(sessions).pipe(
             Effect.map((current) => current.has(sessionKey(providerSessionId))),
           ),
-        get: (providerSessionId) =>
+        get: (providerSessionId, options) =>
           Effect.gen(function* () {
             const entry = (yield* Ref.get(sessions)).get(sessionKey(providerSessionId));
             if (entry === undefined) {
               return Option.none<ProviderAdapter.ProviderAdapterV2SessionRuntime>();
             }
-            yield* touchActivity(providerSessionId);
+            if (options?.touchActivity !== false) yield* touchActivity(providerSessionId);
             return Option.some(entry.exposedRuntime);
           }).pipe(
             Effect.mapError(

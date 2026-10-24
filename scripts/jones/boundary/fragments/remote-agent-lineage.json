@@ -1,0 +1,43 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "remote-agent-lineage",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/remoteAgentLineage/MachineIdentity.tsx",
+    "apps/web/src/jones/remoteAgentLineage/model.test.ts",
+    "apps/web/src/jones/remoteAgentLineage/model.ts",
+    "apps/web/src/jones/remoteAgentLineage/useParentLink.ts",
+    "apps/web/src/jones/remoteAgentLineage/RemoteRows.tsx"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/jones/remoteAgentLineage/useParentLink.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ChatHeader.tsx",
+      "to": "apps/web/src/jones/remoteAgentLineage/MachineIdentity.tsx"
+    },
+    {
+      "from": "apps/web/src/components/BranchToolbar.tsx",
+      "to": "apps/web/src/jones/remoteAgentLineage/MachineIdentity.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/ThreadRelationshipsControl.tsx",
+      "to": "apps/web/src/jones/remoteAgentLineage/model.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ThreadRelationshipsControl.tsx",
+      "to": "apps/web/src/jones/remoteAgentLineage/useParentLink.ts"
+    },
+    {
+      "from": "apps/web/src/components/BranchToolbar.panel.browser.test.tsx",
+      "to": "apps/web/src/jones/remoteAgentLineage/MachineIdentity.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/ThreadRelationshipsControl.tsx",
+      "to": "apps/web/src/jones/remoteAgentLineage/RemoteRows.tsx"
+    }
+  ]
+}
