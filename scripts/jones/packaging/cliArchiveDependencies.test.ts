@@ -1,4 +1,7 @@
-import * as NodeFS from "node:fs";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { fromYaml } from "@t3tools/shared/schemaYaml";
 import { describe, expect, it } from "vite-plus/test";
@@ -55,14 +58,22 @@ function plan(input: ReturnType<typeof fixture>) {
 }
 
 describe("CLI archive patched dependencies", () => {
-  it("binds the real committed server externals to their exact mandatory patches", () => {
-    const read = (path: string) =>
-      NodeFS.readFileSync(new URL(`../../../${path}`, import.meta.url), "utf8");
+  it("binds the real committed server externals to their exact mandatory patches", async () => {
+    const inputs = await Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* path.fromFileUrl(new URL("../../../", import.meta.url));
+      return {
+        manifest: yield* fs.readFileString(path.join(root, "apps/server/package.json")),
+        workspace: yield* fs.readFileString(path.join(root, "pnpm-workspace.yaml")),
+        lockfile: yield* fs.readFileString(path.join(root, "pnpm-lock.yaml")),
+      };
+    }).pipe(Effect.provide(NodeServices.layer), Effect.runPromise);
     const manifest = Schema.decodeUnknownSync(
       Schema.fromJsonString(
         Schema.Struct({ dependencies: Schema.Record(Schema.String, Schema.String) }),
       ),
-    )(read("apps/server/package.json"));
+    )(inputs.manifest);
     const workspace = Schema.decodeUnknownSync(
       fromYaml(
         Schema.Struct({
@@ -70,7 +81,7 @@ describe("CLI archive patched dependencies", () => {
           patchedDependencies: Schema.Record(Schema.String, Schema.String),
         }),
       ),
-    )(read("pnpm-workspace.yaml"));
+    )(inputs.workspace);
     const dependencies = selectCliRuntimeExternalDependencies(
       resolveCatalogDependencies(manifest.dependencies, workspace.catalog, "apps/server"),
     );
@@ -78,7 +89,7 @@ describe("CLI archive patched dependencies", () => {
     const result = planCliArchiveDependencies({
       dependencies,
       patchedDependencies: workspace.patchedDependencies,
-      lockfile: read("pnpm-lock.yaml"),
+      lockfile: inputs.lockfile,
     });
     expect(result.dependencies).toEqual({ ...dependencies, "node-pty": "1.2.0-beta.15" });
     expect(result.patchedDependencies).toEqual({
