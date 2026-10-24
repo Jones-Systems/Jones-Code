@@ -1682,8 +1682,11 @@
     },
     {
       "id": "cli-archive-patched-dependencies",
-      "tests": ["scripts/jones/packaging/cliArchiveDependencies.test.ts"],
-      "scope": "CLI archive staging pins only patched external roots to the committed apps/server lock importer, preserving applicable patch mappings and all unpatched root specifications. Missing, stale, ambiguous or unsupported patch resolutions fail before installation. The existing build-cli-archive hook retains external selection, native platform packages, overrides, build permissions and signing; the desktop projector is unchanged. Pure planning fixtures run in the existing scripts test route; platform archive installs and smoke checks remain hosted qualification."
+      "tests": [
+        "scripts/jones/packaging/cliArchiveDependencies.test.ts",
+        "scripts/build-desktop-artifact.test.ts"
+      ],
+      "scope": "CLI archive and merged macOS/Linux desktop staging pin only patched external roots to the committed apps/server lock importer, preserving applicable patch mappings and all unpatched root specifications. Missing, stale, ambiguous or unsupported patch resolutions fail before installation. Thin builder hooks retain existing external selection, merge precedence, native platform packages, workspace policies and signing; Windows staging retains its existing projector. Pure planning fixtures and real-input desktop manifest regressions run in the existing scripts test route; platform installs, unsigned DMG completion and artifact smoke checks remain hosted qualification."
     }
   ]
 }

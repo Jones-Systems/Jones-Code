@@ -26,6 +26,7 @@ import gnomeCaptureBundle from "../apps/desktop/gnome-extension/bundle.json" wit
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 
 import { requireProductionProfile } from "./jones/signing/profile.ts";
+import { planCliArchiveDependencies } from "./jones/packaging/cliArchiveDependencies.ts";
 import {
   desktopAppId,
   nativePasskeysEnabled,
@@ -1489,6 +1490,19 @@ export function resolveMergedStageDependencies(input: {
     ...resolveFffNativeDependencies(input.platform, input.arch, input.fffNodeVersion),
   };
 }
+
+export const planDesktopStageDependencies = (
+  input: Parameters<typeof planCliArchiveDependencies>[0],
+) =>
+  Effect.try({
+    try: () => planCliArchiveDependencies(input),
+    catch: (cause) =>
+      new DesktopBuildDependencyResolutionError({
+        kind: "desktop-runtime",
+        manifestPath: "pnpm-lock.yaml",
+        cause,
+      }),
+  });
 
 /** Cursor's helper lookup falls through the archive to this real resources tree. */
 export const stageCursorSdkPlatformPackages = Effect.fn("stageCursorSdkPlatformPackages")(
@@ -3796,7 +3810,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     );
   }
 
-  const stageDependencies =
+  const resolvedStageDependencies =
     options.platform === "win"
       ? { ...resolvedDesktopRuntimeDependencies }
       : resolveMergedStageDependencies({
@@ -3806,10 +3820,20 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
           arch: options.arch,
           fffNodeVersion: serverPackageJson.dependencies["@ff-labs/fff-node"],
         });
-  const stagePatchedDependencies = createStagePatchedDependencies(
-    workspacePatchedDependencies,
-    stageDependencies,
-  );
+  const { dependencies: stageDependencies, patchedDependencies: stagePatchedDependencies } =
+    options.platform === "win"
+      ? {
+          dependencies: resolvedStageDependencies,
+          patchedDependencies: createStagePatchedDependencies(
+            workspacePatchedDependencies,
+            resolvedStageDependencies,
+          ),
+        }
+      : yield* planDesktopStageDependencies({
+          dependencies: resolvedStageDependencies,
+          patchedDependencies: workspacePatchedDependencies,
+          lockfile: yield* fs.readFileString(path.join(repoRoot, "pnpm-lock.yaml")),
+        });
   const windowsServerAsarPath =
     options.platform === "win"
       ? path.join(stageAppDir, WINDOWS_SERVER_RESOURCE_SOURCE_DIR, WINDOWS_SERVER_ASAR_RESOURCE)
