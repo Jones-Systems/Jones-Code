@@ -1,5 +1,8 @@
 const assert = require("node:assert/strict");
-const { readFileSync } = require("node:fs");
+const { execFileSync } = require("node:child_process");
+const { mkdtempSync, readFileSync, rmSync } = require("node:fs");
+const { tmpdir } = require("node:os");
+const { join } = require("node:path");
 const { test } = require("node:test");
 const { failures, LINUX_GATES, NATIVE_GATES, REQUIRED_JOBS } = require("./check-results.cjs");
 const { receipt } = require("./test-evidence.cjs");
@@ -143,4 +146,53 @@ test("test evidence binds complete case counts and a digest to the run, and refu
   assert.match(result.reportSha256, /^[a-f0-9]{64}$/);
   assert.throws(() => receipt(null, { outcome: "success" }), /case report/);
   assert.equal(receipt(null, { outcome: "failure" }).reportSha256, null);
+});
+
+test("native lint gate skips only Swift E2E inputs while preserving production and enrollment inputs", () => {
+  const workflow = readFileSync(
+    new URL("../../../.github/workflows/ci.yml", `file://${__filename}`),
+    "utf8",
+  );
+  const start = workflow.indexOf("          detect() {");
+  const end = workflow.indexOf("\n  mobile_native_static_analysis:", start);
+  assert.ok(start >= 0 && end > start);
+  const script = workflow.slice(start, end).replace(/^ {10}/gm, "");
+  const cases = [
+    [["apps/mobile/e2e/xcuitest/PinWorkflowTests.swift"], false, false],
+    [["apps/mobile/e2e/android/Workflow.kt"], true, false],
+    [["apps/mobile/ios/T3Code/AppDelegate.swift"], true, false],
+    [["apps/mobile/modules/t3-terminal/ios/Terminal.swift"], true, false],
+    [["apps/mobile/.swiftlint.yml"], true, false],
+    [["apps/mobile/Brewfile"], true, false],
+    [["scripts/mobile-native-static-check.ts"], true, false],
+    [["package.json"], true, true],
+    [[".github/workflows/ci.yml"], true, true],
+    [["apps/mobile/e2e/PinTests.swift", "apps/mobile/ios/T3Code/AppDelegate.swift"], true, false],
+    [
+      ["apps/mobile/e2e/PinTests.swift", "apps/server/src/jones/workstreams/enrollment/store.ts"],
+      false,
+      true,
+    ],
+  ];
+  const scratch = mkdtempSync(join(tmpdir(), "jones-native-gate-"));
+  try {
+    for (const [paths, mobile, enrollment] of cases) {
+      // Both names of a rename arrive as separate paths, including a production
+      // file moved into e2e. Exercise the actual workflow shell, not a copied regex.
+      execFileSync("bash", ["-c", 'set -euo pipefail; paths="$PATHS_FOR_TEST";\n' + script], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATHS_FOR_TEST: paths.join("\n"),
+          GITHUB_OUTPUT: join(scratch, "outputs"),
+        },
+      });
+      const output = readFileSync(join(scratch, "outputs"), "utf8");
+      rmSync(join(scratch, "outputs"));
+      assert.match(output, new RegExp(`^mobile=${mobile}$`, "m"), paths.join(", "));
+      assert.match(output, new RegExp(`^enrollment=${enrollment}$`, "m"), paths.join(", "));
+    }
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 });
