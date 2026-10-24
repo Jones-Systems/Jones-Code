@@ -1,7 +1,13 @@
-import { act, render as renderTest, type Screen } from "../../../test/render";
+import * as DateTime from "effect/DateTime";
+import {
+  __setClientSettingsForTests,
+  __resetClientSettingsPersistenceForTests,
+  persistClientSettingsPatch,
+} from "../../hooks/useSettings";
+import { act, fakeTimers, render as renderTest, type Screen } from "../../../test/render";
 
 import { describe, expect, it, vi } from "vite-plus/test";
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { DEFAULT_CLIENT_SETTINGS, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { makeThreadFixture } from "../../test-fixtures";
 import { useUiStateStore } from "../../uiStateStore";
@@ -75,7 +81,6 @@ const render = async (updates: Partial<Input> = {}) => {
 const visible = () => [...container.querySelectorAll("ul li")].map((row) => row.textContent);
 async function setupTest(): Promise<AsyncDisposable> {
   let initialized = false;
-  let ownedContainer: HTMLDivElement | undefined;
   async function cleanup() {
     const screen = initialized ? root : undefined;
     try {
@@ -84,13 +89,16 @@ async function setupTest(): Promise<AsyncDisposable> {
       try {
         await screen?.[Symbol.asyncDispose]();
       } finally {
+        vi.restoreAllMocks();
+        __resetClientSettingsPersistenceForTests();
         vi.unstubAllGlobals();
       }
     }
   }
   try {
+    __setClientSettingsForTests(DEFAULT_CLIENT_SETTINGS);
     useUiStateStore.setState({ threadLastVisitedAtById: {} });
-    ownedContainer = container = document.createElement("div");
+    container = document.createElement("div");
     root = await renderTest(null, { container: container, router: false });
     initialized = true;
     input = { threads: [thread], layout: "current", filter: "done", selected: key(thread) };
@@ -154,5 +162,83 @@ describe.each(["current", "legacy"] as const)("%s active status-filter retention
       useUiStateStore.setState({ threadLastVisitedAtById: { [key(thread)]: completed } }),
     );
     expect(visible()).toEqual([key(thread)]);
+  });
+});
+
+describe.each(["current", "legacy"] as const)("%s activity window selection", (layout) => {
+  it("updates settings, includes read Done, preserves All and Hide working, then expires the active row", async () => {
+    await using _fixture = await setupTest();
+    using _timers = fakeTimers();
+    vi.setSystemTime(new Date("2026-10-17T15:00:00.000Z"));
+    const read = {
+      ...thread,
+      lastVisitedAt: completed,
+      source: { ...thread.source, latestRunCompletedAt: DateTime.makeUnsafe(completed) },
+    };
+    const staleWorking = {
+      ...thread,
+      id: ThreadId.make("stale-working"),
+      runtime: {
+        status: "running" as const,
+        providerName: "Codex",
+        providerInstanceId: thread.providerInstanceId,
+        activeRunId: null,
+        lastError: null,
+        updatedAt: completed,
+      },
+    };
+    await render({ layout, threads: [read, staleWorking] });
+    expect(visible()).toEqual([]);
+    await act(async () => {
+      await persistClientSettingsPatch({ threadActivityWindowEnabled: true }, async () => {});
+    });
+    expect(visible()).toEqual([key(thread)]);
+    expect(container.querySelector("output")?.textContent).toBe('{"working":0,"input":0,"done":1}');
+    await render({ filter: "all" });
+    expect(visible()).toEqual([key(thread), key(staleWorking)]);
+    await render({ filter: "hide-working" });
+    expect(visible()).toEqual([key(thread)]);
+    expect(container.querySelector("output")?.textContent).toBe('{"working":0,"input":0,"done":1}');
+    await render({ filter: "done" });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(visible()).toEqual([]);
+    await act(async () => {
+      await persistClientSettingsPatch({ threadActivityWindowAmount: 4 }, async () => {});
+    });
+    expect(visible()).toEqual([key(thread)]);
+    await act(async () => {
+      await persistClientSettingsPatch({ threadActivityWindowAmount: 1 }, async () => {});
+    });
+    expect(visible()).toEqual([]);
+  });
+  it("drops acknowledged Input retention at expiry and when the window changes", async () => {
+    await using _fixture = await setupTest();
+    using _timers = fakeTimers();
+    vi.setSystemTime(new Date("2026-10-17T14:00:00.000Z"));
+    await act(async () => {
+      await persistClientSettingsPatch({ threadActivityWindowEnabled: true }, async () => {});
+    });
+    await render({ layout, filter: "input", threads: [{ ...thread, hasPendingUserInput: true }] });
+    expect(visible()).toEqual([key(thread)]);
+    await render({ threads: [thread] });
+    expect(visible()).toEqual([key(thread)]);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(visible()).toEqual([]);
+    await render({
+      threads: [
+        { ...thread, hasPendingUserInput: true, latestUserMessageAt: "2026-10-17T14:01:00.000Z" },
+      ],
+    });
+    expect(visible()).toEqual([key(thread)]);
+    await render({ threads: [{ ...thread, latestUserMessageAt: "2026-10-17T14:01:00.000Z" }] });
+    expect(visible()).toEqual([key(thread)]);
+    await act(async () => {
+      await persistClientSettingsPatch({ threadActivityWindowUnit: "days" }, async () => {});
+    });
+    expect(visible()).toEqual([]);
   });
 });

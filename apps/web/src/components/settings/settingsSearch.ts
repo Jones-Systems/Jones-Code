@@ -136,6 +136,14 @@ const SOURCE_CONTROL_HOST_SEARCH_ITEMS = sourceControlClients.definitions.flatMa
 
 export const SETTINGS_SEARCH_ITEMS = [
   {
+    id: "thread-activity-window",
+    title: "Thread activity window",
+    to: "/settings/jones-code",
+    searchTerms: [
+      "sidebar working input done recent recency time minutes hours days weeks read completed",
+    ],
+  },
+  {
     id: "prompts-default-stage",
     title: "Default prompt view",
     to: "/settings/jones-code",
