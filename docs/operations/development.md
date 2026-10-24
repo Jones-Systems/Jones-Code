@@ -59,6 +59,27 @@ pairing token.
 
 Prefer a container? See [Dev container](../internals/devcontainer.md) for VS Code and Codespaces setup.
 
+### Updating dependencies and verifying test scratch cleanup
+
+Updating source does not synchronize `node_modules`. A global `vp` can delegate
+to the checkout's installed VitePlus, so updating the global tool alone does not
+replace an older local Vitest. After updating source, use the supported Node and
+pnpm versions above and run an authorized `vp install --frozen-lockfile` before
+verification. Apply the same storage admission described above when installing
+without the setup helper.
+
+From the repository root, verify the actual installed Vitest cleanup behavior:
+
+```sh
+node --test --test-concurrency=1 scripts/jones/test-scratch/vitest-cleanup.node-test.mjs
+```
+
+This serial regression observes temporary transformed modules during both a
+passing and a deliberately failing fixture, then checks removal after close
+and process exit. Its unique fixtures live in disk-backed `node_modules` and
+are removed after owned consumers close. A source PR does not update other
+checkouts' dependencies or remove older temporary data.
+
 ## Choosing a dev process
 
 Use `vp run dev` for server and web, or `vp run dev:desktop` for the Electron client.

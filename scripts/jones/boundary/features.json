@@ -4,6 +4,11 @@
   "baseline": "05b697f6a2012497ae790425e197fbd1fcef7de7",
   "features": [
     {
+      "id": "vitest-scratch-cleanup",
+      "tests": ["scripts/jones/test-scratch/vitest-cleanup.node-test.mjs"],
+      "scope": "Serial real Vitest pass/fail fixtures resolve through installed VitePlus, positively observe transformed SHA1 modules with filesystem caching disabled, and require removal after context close and child exit. Exact owned disk fixtures are removed only after consumers close. The scripts package registration is an accepted shared edit; no app, dependency, lockfile or runtime changes."
+    },
+    {
       "id": "provider-switch-before-start",
       "tests": [
         "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.test.ts",
