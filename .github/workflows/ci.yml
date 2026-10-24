@@ -66,9 +66,17 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 24.22.0
+          node-version: 26.12.1
           cache: true
           run-install: true
+
+      # electron's install.js (run by ensure:electron) reads this cache before it
+      # downloads from GitHub. The key changes only with the Electron version.
+      - name: Cache Electron download
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/electron
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/.pnpm/electron@*/node_modules/electron/package.json') }}
 
       - name: Ensure Electron runtime is installed
         run: vp run --filter @t3tools/desktop ensure:electron
@@ -79,6 +87,9 @@ jobs:
 
       - name: Verify Jones boundary accounting
         run: node scripts/jones/check-boundary.ts --strict --json
+
+      - name: Check generated Expo GraphQL operations
+        run: vp run --filter t3 generate --check
 
       - name: Check
         run: vp check
@@ -114,9 +125,17 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 24.22.0
+          node-version: 26.12.1
           cache: true
           run-install: true
+
+      # electron's install.js (run by ensure:electron) reads this cache before it
+      # downloads from GitHub. The key changes only with the Electron version.
+      - name: Cache Electron download
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/electron
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/.pnpm/electron@*/node_modules/electron/package.json') }}
 
       - name: Ensure Electron runtime is installed
         run: vp run --filter @t3tools/desktop ensure:electron
@@ -140,7 +159,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 24.22.0
+          node-version: 26.12.1
           cache: true
           run-install: true
 
@@ -184,9 +203,17 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 24.22.0
+          node-version: 26.12.1
           cache: true
           run-install: true
+
+      # electron's install.js (run by ensure:electron) reads this cache before it
+      # downloads from GitHub. The key changes only with the Electron version.
+      - name: Cache Electron download
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/electron
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/.pnpm/electron@*/node_modules/electron/package.json') }}
 
       - name: Ensure Electron runtime is installed
         run: vp run --filter @t3tools/desktop ensure:electron
@@ -196,6 +223,14 @@ jobs:
 
       - name: Test nightly release checks
         run: node --test .github/scripts/check-nightly-release.test.cjs
+
+      - name: Test Vercel deployment output for enabled workflows
+        run: |
+          if test -f .github/workflows/release.yml && test -f .github/workflows/web-preview.yml; then
+            node --test .github/scripts/vercel-deployment-output.test.cjs
+          else
+            echo "Vercel deployment integration: not applicable while Jones release and preview workflows are disabled."
+          fi
 
       - name: Test Chromium setup
         run: node --test scripts/jones/ci/chromium-setup.node-test.mjs
@@ -227,7 +262,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 24.22.0
+          node-version: 26.12.1
           cache: true
           run-install: true
 
@@ -284,7 +319,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 24.22.0
+          node-version: 26.12.1
           cache: false
           run-install: false
 
@@ -323,7 +358,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 24.22.0
+          node-version: 26.12.1
           cache: true
           run-install: true
 
@@ -436,9 +471,6 @@ jobs:
   transfer-report:
     name: Transfer report artifact
     needs: test_server
-    # On Blacksmith like every other job here: the GitHub-hosted queue is shared
-    # with the PR bots and can leave this job waiting until it is abandoned,
-    # which fails `Check` on an otherwise green run.
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -470,7 +502,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 24.22.0
+          node-version: 26.12.1
           cache: false
           run-install: false
 
@@ -675,7 +707,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 24.22.0
+          node-version: 26.12.1
           cache: true
           run-install: |
             args:
@@ -691,7 +723,15 @@ jobs:
   # and differ only in runner and expected platform. Only the macOS leg is
   # gated, because it needs the scarce runner.
   native_enrollment_qualification:
-    name: Native Enrollment (ubuntu-24.04, Node 26.8.2)
+    name: Native Enrollment (ubuntu-24.04, Node ${{ matrix.node }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - node: "24.22.1"
+            sqlite: "3.53.4"
+          - node: "26.8.2"
+            sqlite: "3.53.4"
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -709,18 +749,19 @@ jobs:
       - name: Install dependencies on the supported development runtime
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 24.22.0
+          node-version: 26.12.1
           cache: true
           run-install: true
 
       - name: Setup the standalone CLI runtime
         uses: actions/setup-node@v6
         with:
-          node-version: 26.8.2
+          node-version: ${{ matrix.node }}
 
       - name: Qualify native enrollment and store authority on the actual runtime
         env:
-          JONES_NATIVE_ENROLLMENT_QUALIFICATION_NODE: 26.8.2
+          JONES_NATIVE_ENROLLMENT_QUALIFICATION_NODE: ${{ matrix.node }}
+          JONES_NATIVE_ENROLLMENT_QUALIFICATION_SQLITE: ${{ matrix.sqlite }}
         run: |
           qualification_node="$(command -v node)"
           "$qualification_node" --input-type=module <<'NODE'
@@ -728,8 +769,8 @@ jobs:
           import { lstatSync, realpathSync } from 'node:fs';
           import { tmpdir } from 'node:os';
           import { join, parse, sep } from 'node:path';
-          assert.equal(process.versions.node, '26.8.2');
-          assert.equal(process.versions.sqlite, '3.53.4');
+          assert.equal(process.versions.node, process.env.JONES_NATIVE_ENROLLMENT_QUALIFICATION_NODE);
+          assert.equal(process.versions.sqlite, process.env.JONES_NATIVE_ENROLLMENT_QUALIFICATION_SQLITE);
           assert.equal(process.platform, process.env.QUALIFICATION_PLATFORM);
           assert.equal(process.arch, process.env.QUALIFICATION_ARCHITECTURE);
           console.log({ node: process.versions.node, sqlite: process.versions.sqlite, executable: realpathSync(process.execPath), platform: process.platform, architecture: process.arch });
@@ -752,7 +793,15 @@ jobs:
             packages/shared/src/nodeSqliteClient.test.ts
 
   native_enrollment_qualification_macos:
-    name: Native Enrollment (macos-15, Node 26.8.2)
+    name: Native Enrollment (macos-15, Node ${{ matrix.node }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - node: "24.22.1"
+            sqlite: "3.53.4"
+          - node: "26.8.2"
+            sqlite: "3.53.4"
     needs: native_changes
     # Skip only on an explicit "no", as for the mobile lint.
     if: ${{ !cancelled() && needs.native_changes.outputs.enrollment != 'false' }}
@@ -779,7 +828,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 24.22.0
+          node-version: 26.12.1
           cache: true
           run-install: |
             args:

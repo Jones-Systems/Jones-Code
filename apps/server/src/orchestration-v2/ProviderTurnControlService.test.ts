@@ -191,8 +191,9 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
         resumeThread: () => Effect.die("unused resumeThread"),
         startTurn: () => Effect.die("unused startTurn"),
         steerTurn: () => Effect.die("unused steerTurn"),
-        interruptTurn: ({ providerThread: target, providerTurnId: targetTurnId }) =>
+        interruptTurn: ({ providerThread: target, providerTurnId: targetTurnId, preserveGoal }) =>
           Effect.gen(function* () {
+            assert.isTrue(preserveGoal);
             assert.equal(target.providerInstanceId, runtime.instanceId);
             assert.equal(target.providerSessionId, runtime.providerSessionId);
             assert.equal(target.id, providerThreadId);
@@ -270,6 +271,7 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
               })),
             ),
           getCheckpointContext: () => Effect.die("not used"),
+          getCheckpointRollbackContext: () => Effect.die("unused rollback context"),
           getCheckpointCaptureContext: () => Effect.die("not used"),
           getRunMessage: () => Effect.die("not used"),
           isNodeStored: () => Effect.die("not used"),

@@ -1,3 +1,5 @@
+import * as Schema from "effect/Schema";
+import * as PlatformError from "effect/PlatformError";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ORCHESTRATION_PROTOCOL_VERSION } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
@@ -7,8 +9,6 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as PlatformError from "effect/PlatformError";
-import * as Schema from "effect/Schema";
 
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -27,10 +27,6 @@ const buildMetadata = vi.hoisted(
   () => ({ version: "0.0.45-preview.20261020.42.1" }) as Record<string, unknown>,
 );
 vi.mock("../../package.json", () => ({ default: buildMetadata }));
-
-const isServerEnvironmentIdPersistenceError = Schema.is(
-  ServerEnvironment.ServerEnvironmentIdPersistenceError,
-);
 
 const layerServerEnvironment = (baseDir: string) =>
   ServerEnvironment.layer.pipe(
@@ -98,7 +94,13 @@ const layerIsolatedServerConfig = (baseDir: string) =>
     }),
   );
 
-it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
+// Descriptor tests do not inherit the launching service's managed-child context.
+const layerDescriptorHost = Layer.merge(
+  NodeServices.layer,
+  Layer.succeed(HostProcess.Environment, {}),
+);
+
+it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
   it.effect.each(["2026-10-20T21:13:43Z", undefined, "invalid"])(
     "forwards only valid embedded build time %s with the descriptor version",
     (startedAt) =>
@@ -270,6 +272,7 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
       expect(second.capabilities.usagePriceOverrides).toBe(true);
       expect(second.capabilities.threadActiveReorder).toBe(true);
       expect(second.capabilities.threadTitleRegeneration).toBe(true);
+      expect(second.capabilities.queuedRunStart).toBe(true);
       expect(second.capabilities.threadPullRequests).toBe(true);
       expect(second.capabilities.threadPullRequestLinking).toBe(true);
       expect(second.capabilities.serverResolvedCommandContext).toBe(true);
@@ -530,6 +533,7 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
       expect(second.capabilities.usagePriceOverrides).toBe(true);
       expect(second.capabilities.threadActiveReorder).toBe(true);
       expect(second.capabilities.threadTitleRegeneration).toBe(true);
+      expect(second.capabilities.queuedRunStart).toBe(true);
       expect(second.capabilities.threadPullRequests).toBe(true);
       expect(second.capabilities.threadPullRequestLinking).toBe(true);
       expect(second.capabilities.serverResolvedCommandContext).toBe(true);
@@ -687,3 +691,7 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
     }),
   );
 });
+
+const isServerEnvironmentIdPersistenceError = Schema.is(
+  ServerEnvironment.ServerEnvironmentIdPersistenceError,
+);

@@ -90,83 +90,85 @@ const make = Effect.gen(function* () {
     WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${threadId}
       AND event_type IN ('thread.created', 'thread.model-selection-updated', 'thread.provider-switched')
   `.pipe(Effect.map((rows) => rows[0]?.revision ?? 0));
-  const snapshot = (threadId: ThreadId, scope: McpInvocationScope) =>
-    Effect.gen(function* () {
-      const projection = yield* projections.getThreadRecords(threadId, [
-        "runs",
-        "attempts",
-        "providerThreads",
-        "providerSessions",
-      ]);
-      const run = projection.runs.find((run) =>
-        ["starting", "running", "waiting"].includes(run.status),
-      );
-      const provider = projection.providerThreads.find(
-        (provider) => provider.id === run?.providerThreadId,
-      );
-      const caller = scope.thread;
-      const attached =
-        caller?.threadId === threadId &&
-        provider?.providerSessionId != null &&
-        provider.providerInstanceId === caller.providerInstanceId &&
-        (yield* sessions.isMcpCallerAttached({
-          threadId,
-          providerSessionId: provider.providerSessionId,
-          providerInstanceId: caller.providerInstanceId,
-          mcpCredentialId: caller.providerSessionId,
-        }));
-      const resident =
-        attached && provider?.providerSessionId != null
-          ? yield* sessions.get(provider.providerSessionId, { touchActivity: false })
-          : Option.none();
-      // Fence the actual resident object even when an adapter has no native attestation.
-      // This nonce is execution authority, never evidence of provider model or options.
-      const residentGeneration = Option.isSome(resident)
-        ? yield* Effect.sync(() => {
-            let generation = residentGenerations.get(resident.value);
-            if (generation === undefined) {
-              generation = generationNamespace + ":" + ++nextGeneration;
-              residentGenerations.set(resident.value, generation);
-            }
-            return generation;
-          })
+  const snapshot = Effect.fn("ThreadSelfConfiguration.snapshot")(function* (
+    threadId: ThreadId,
+    scope: McpInvocationScope,
+  ) {
+    const projection = yield* projections.getThreadRecords(threadId, [
+      "runs",
+      "attempts",
+      "providerThreads",
+      "providerSessions",
+    ]);
+    const run = projection.runs.find((run) =>
+      ["starting", "running", "waiting"].includes(run.status),
+    );
+    const provider = projection.providerThreads.find(
+      (provider) => provider.id === run?.providerThreadId,
+    );
+    const caller = scope.thread;
+    const attached =
+      caller?.threadId === threadId &&
+      provider?.providerSessionId != null &&
+      provider.providerInstanceId === caller.providerInstanceId &&
+      (yield* sessions.isMcpCallerAttached({
+        threadId,
+        providerSessionId: provider.providerSessionId,
+        providerInstanceId: caller.providerInstanceId,
+        mcpCredentialId: caller.providerSessionId,
+      }));
+    const resident =
+      attached && provider?.providerSessionId != null
+        ? yield* sessions.get(provider.providerSessionId, { touchActivity: false })
+        : Option.none();
+    // Fence the actual resident object even when an adapter has no native attestation.
+    // This nonce is execution authority, never evidence of provider model or options.
+    const residentGeneration = Option.isSome(resident)
+      ? yield* Effect.sync(() => {
+          let generation = residentGenerations.get(resident.value);
+          if (generation === undefined) {
+            generation = generationNamespace + ":" + ++nextGeneration;
+            residentGenerations.set(resident.value, generation);
+          }
+          return generation;
+        })
+      : null;
+    const precondition: ThreadExecutionPrecondition | null =
+      residentGeneration !== null &&
+      run?.activeAttemptId != null &&
+      provider?.providerSessionId != null
+        ? {
+            runId: run.id,
+            attemptId: run.activeAttemptId,
+            providerThreadId: provider.id,
+            providerSessionId: provider.providerSessionId,
+            runtimeGeneration: `resident:${residentGeneration}:native:${provider.runtimeIdentity?.runtimeGeneration ?? "unavailable"}`,
+          }
         : null;
-      const precondition: ThreadExecutionPrecondition | null =
-        residentGeneration !== null &&
-        run?.activeAttemptId != null &&
-        provider?.providerSessionId != null
-          ? {
+    const evidence: ThreadConfigurationEvidence = {
+      configurationRevision: yield* revision(threadId),
+      savedSelection: projection.thread.modelSelection,
+      executionPrecondition: precondition,
+      currentExecution:
+        run === undefined
+          ? null
+          : {
               runId: run.id,
               attemptId: run.activeAttemptId,
-              providerThreadId: provider.id,
-              providerSessionId: provider.providerSessionId,
-              runtimeGeneration: `resident:${residentGeneration}:native:${provider.runtimeIdentity?.runtimeGeneration ?? "unavailable"}`,
-            }
-          : null;
-      const evidence: ThreadConfigurationEvidence = {
-        configurationRevision: yield* revision(threadId),
-        savedSelection: projection.thread.modelSelection,
-        executionPrecondition: precondition,
-        currentExecution:
-          run === undefined
-            ? null
-            : {
-                runId: run.id,
-                attemptId: run.activeAttemptId,
-                requestedSelection: run.modelSelection,
-                providerObservation: provider?.runtimeIdentity ?? null,
-                reasoningEffortObservation: "unavailable",
-              },
-      };
-      return { projection, evidence };
-    }).pipe(sql.withTransaction);
+              requestedSelection: run.modelSelection,
+              providerObservation: provider?.runtimeIdentity ?? null,
+              reasoningEffortObservation: "unavailable",
+            },
+    };
+    return { projection, evidence };
+  }, sql.withTransaction);
   const read = (threadId: ThreadId, scope: McpInvocationScope) =>
     snapshot(threadId, scope).pipe(
       Effect.map(({ evidence }) => evidence),
       Effect.mapError(() => new ThreadSelfConfigurationError({ reason: "state_unavailable" })),
     );
-  const save = (input: ThreadSelfConfigurationInput, scope: McpInvocationScope) =>
-    Effect.gen(function* () {
+  const save = Effect.fn("ThreadSelfConfiguration.save")(
+    function* (input: ThreadSelfConfigurationInput, scope: McpInvocationScope) {
       const caller = scope.thread;
       if (
         caller === undefined ||
@@ -207,8 +209,8 @@ const make = Effect.gen(function* () {
             } satisfies ThreadSelfConfigurationResult;
           }
           const initial = yield* snapshot(threadId, scope);
-          const validate = () =>
-            Effect.gen(function* () {
+          const validate = Effect.fn("ThreadSelfConfiguration.validate")(
+            function* () {
               const current = yield* snapshot(threadId, scope);
               if (
                 current.projection.thread.archivedAt !== null ||
@@ -220,13 +222,13 @@ const make = Effect.gen(function* () {
                 return yield* new ThreadSelfConfigurationError({ reason: "execution_changed" });
               if (current.evidence.configurationRevision !== input.expectedConfigurationRevision)
                 return yield* new ThreadSelfConfigurationError({ reason: "configuration_changed" });
-            }).pipe(
-              Effect.mapError((error) =>
-                isConfigurationError(error)
-                  ? error
-                  : new ThreadSelfConfigurationError({ reason: "state_unavailable" }),
-              ),
-            );
+            },
+            Effect.mapError((error) =>
+              isConfigurationError(error)
+                ? error
+                : new ThreadSelfConfigurationError({ reason: "state_unavailable" }),
+            ),
+          );
           yield* validate();
           if (Option.isNone(registry))
             return yield* new ThreadSelfConfigurationError({ reason: "provider_unavailable" });
@@ -304,8 +306,8 @@ const make = Effect.gen(function* () {
               events: [event],
               effects: [],
               threadSelfConfiguration: {
-                revalidate: () =>
-                  Effect.gen(function* () {
+                revalidate: Effect.fn("ThreadSelfConfiguration.revalidate")(
+                  function* () {
                     yield* validate();
                     const current = yield* projections.getThread(threadId);
                     if (current === null)
@@ -323,18 +325,18 @@ const make = Effect.gen(function* () {
                         },
                       },
                     ];
-                  }).pipe(
-                    Effect.mapError((error) =>
-                      isConfigurationError(error)
-                        ? error
-                        : new ThreadSelfConfigurationError({ reason: "state_unavailable" }),
-                    ),
-                    Effect.tapError((error) =>
-                      Effect.sync(() => {
-                        refusal = error;
-                      }),
-                    ),
+                  },
+                  Effect.mapError((error) =>
+                    isConfigurationError(error)
+                      ? error
+                      : new ThreadSelfConfigurationError({ reason: "state_unavailable" }),
                   ),
+                  Effect.tapError((error) =>
+                    Effect.sync(() => {
+                      refusal = error;
+                    }),
+                  ),
+                ),
               },
             })
             .pipe(
@@ -357,13 +359,13 @@ const make = Effect.gen(function* () {
           } satisfies ThreadSelfConfigurationResult;
         }),
       );
-    }).pipe(
-      Effect.mapError((error) =>
-        isConfigurationError(error)
-          ? error
-          : new ThreadSelfConfigurationError({ reason: "state_unavailable" }),
-      ),
-    );
+    },
+    Effect.mapError((error) =>
+      isConfigurationError(error)
+        ? error
+        : new ThreadSelfConfigurationError({ reason: "state_unavailable" }),
+    ),
+  );
   return ThreadSelfConfiguration.of({ read, save });
 });
 export const layer = Layer.effect(ThreadSelfConfiguration, make).pipe(

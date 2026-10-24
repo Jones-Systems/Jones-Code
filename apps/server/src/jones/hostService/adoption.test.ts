@@ -212,15 +212,15 @@ async function populateFixture(root: string, options: FixtureOptions) {
   const home = NodePath.join(root, "home");
   const runtime = NodePath.join(base, "runtime");
   const active = NodePath.join(runtime, "versions", oldVersion);
-  await NodeFSP.mkdir(active, { recursive: true });
-  await NodeFSP.mkdir(NodePath.join(base, "userdata"));
+  await NodeFSP.mkdir(active, { recursive: true, mode: 0o700 });
+  await NodeFSP.mkdir(NodePath.join(base, "userdata"), { mode: 0o700 });
   await NodeFSP.writeFile(NodePath.join(active, "t3"), runtimeExecutable(oldVersion), {
     mode: 0o755,
   });
-  await NodeFSP.writeFile(NodePath.join(active, ".install-complete"), oldVersion);
+  await NodeFSP.writeFile(NodePath.join(active, ".install-complete"), oldVersion, { mode: 0o600 });
   if (options.privateSetup) {
     for (const name of ["client", "node_modules", "resource-monitor"])
-      await NodeFSP.mkdir(NodePath.join(active, name));
+      await NodeFSP.mkdir(NodePath.join(active, name), { mode: 0o700 });
   }
   if (!options.legacy && !options.privateSetup && !options.legacyMac)
     await NodeFSP.writeFile(
@@ -240,7 +240,7 @@ async function populateFixture(root: string, options: FixtureOptions) {
   const unit = options.legacyMac
     ? NodePath.join(home, "Library/LaunchAgents/com.t3tools.t3code.service.plist")
     : NodePath.join(home, ".config/systemd/user", serviceUnit);
-  await NodeFSP.mkdir(NodePath.dirname(unit), { recursive: true });
+  await NodeFSP.mkdir(NodePath.dirname(unit), { recursive: true, mode: 0o700 });
   await NodeFSP.writeFile(
     unit,
     renderBootServiceUnit(
@@ -253,6 +253,7 @@ async function populateFixture(root: string, options: FixtureOptions) {
       },
       { ...JONES_BOOT_SERVICE_IDENTITY, systemdUnitFile: serviceUnit },
     ),
+    { mode: 0o600 },
   );
   const metadata = new Map<string, Record<string, unknown>>();
   const artifacts = new Map<
@@ -380,7 +381,7 @@ async function populateFixture(root: string, options: FixtureOptions) {
   ];
   const directExecutable = NodePath.join(home, "Jones-Code-Install-20261016", "t3");
   if (options.legacyMac) {
-    await NodeFSP.mkdir(NodePath.dirname(directExecutable), { recursive: true });
+    await NodeFSP.mkdir(NodePath.dirname(directExecutable), { recursive: true, mode: 0o700 });
     await NodeFSP.writeFile(directExecutable, runtimeExecutable(oldVersion), { mode: 0o755 });
     await NodeFSP.writeFile(
       unit,
@@ -401,9 +402,9 @@ async function populateFixture(root: string, options: FixtureOptions) {
     await NodeFSP.rm(active, { recursive: true });
   }
   if (options.legacy) {
-    await NodeFSP.mkdir(NodePath.dirname(directExecutable));
+    await NodeFSP.mkdir(NodePath.dirname(directExecutable), { mode: 0o700 });
     await NodeFSP.writeFile(directExecutable, runtimeExecutable(oldVersion), { mode: 0o755 });
-    await NodeFSP.mkdir(`${unit}.d`);
+    await NodeFSP.mkdir(`${unit}.d`, { mode: 0o700 });
     for (const name of preserveDropin)
       await NodeFSP.writeFile(
         NodePath.join(`${unit}.d`, name),
@@ -812,32 +813,30 @@ it("archives authenticated private setup evidence before qualification and retai
     },
     { privateSetup: true },
   ));
-it(
-  "enrolls genuine private modes with authenticated 0755 archive extraction under isolated umask 0077",
-  () =>
-    fixture(
-      async (f) => {
-        const active = NodePath.join(f.runtime, "versions", oldVersion);
-        for (const directory of [
-          f.base,
-          f.runtime,
-          NodePath.dirname(active),
-          active,
-          ...["client", "node_modules", "resource-monitor"].map((name) =>
-            NodePath.join(active, name),
-          ),
-        ])
-          await NodeFSP.chmod(directory, 0o700);
-        await NodeFSP.chmod(NodePath.join(active, "t3"), 0o700);
-        for (const name of [".install-complete", ".jones-provenance.json"])
-          await NodeFSP.chmod(NodePath.join(active, name), 0o600);
-        const verified = await verifyAdoptionArtifact(
-          f.input.activeArtifactDir,
-          privateSetupSource,
-          f.host,
-        );
-        const scratch = await NodeFSP.mkdtemp(NodePath.join(f.root, "private-mode-proof-"));
-        const script = `
+it("enrolls genuine private modes with authenticated 0755 archive extraction under isolated umask 0077", () =>
+  fixture(
+    async (f) => {
+      const active = NodePath.join(f.runtime, "versions", oldVersion);
+      for (const directory of [
+        f.base,
+        f.runtime,
+        NodePath.dirname(active),
+        active,
+        ...["client", "node_modules", "resource-monitor"].map((name) =>
+          NodePath.join(active, name),
+        ),
+      ])
+        await NodeFSP.chmod(directory, 0o700);
+      await NodeFSP.chmod(NodePath.join(active, "t3"), 0o700);
+      for (const name of [".install-complete", ".jones-provenance.json"])
+        await NodeFSP.chmod(NodePath.join(active, name), 0o600);
+      const verified = await verifyAdoptionArtifact(
+        f.input.activeArtifactDir,
+        privateSetupSource,
+        f.host,
+      );
+      const scratch = await NodeFSP.mkdtemp(NodePath.join(f.root, "private-mode-proof-"));
+      const script = `
         process.umask(0o077);
         const assert = (await import("node:assert/strict")).default;
         const fs = await import("node:fs/promises");
@@ -869,35 +868,33 @@ it(
         assert.equal(await fs.readFile(path.join(archive, ".jones-provenance.json"), "utf8"), preimage.text);
         process.stdout.write(JSON.stringify({ source: receipt.sourceSha, mode: 0o700 }));
       `;
-        const input = JSON.stringify({
-          scratch,
-          archive: verified.archive,
-          baseDir: f.base,
-          artifact: verified.artifact,
-          privateSetup: {
-            directory: active,
-            uid: f.host.uid,
-            artifact: verified.metadata,
-            entrySha256: sha(runtimeExecutable(oldVersion)),
-          },
-        });
-        const stdout = await new Promise<string>((resolve, reject) =>
-          NodeChildProcess.execFile(
-            NodeProcess.execPath,
-            ["--experimental-strip-types", "--input-type=module", "-e", script, input],
-            { timeout: 30_000, maxBuffer: 64 * 1024 },
-            (error, stdout) => (error === null ? resolve(stdout) : reject(error)),
-          ),
-        );
-        expect(JSON.parse(stdout)).toEqual({ source: privateSetupSource, mode: 0o700 });
-        await expect(
-          NodeFSP.lstat(NodePath.join(active, ".jones-provenance.json")),
-        ).rejects.toMatchObject({ code: "ENOENT" });
-      },
-      { privateSetup: true },
-    ),
-  35_000,
-);
+      const input = JSON.stringify({
+        scratch,
+        archive: verified.archive,
+        baseDir: f.base,
+        artifact: verified.artifact,
+        privateSetup: {
+          directory: active,
+          uid: f.host.uid,
+          artifact: verified.metadata,
+          entrySha256: sha(runtimeExecutable(oldVersion)),
+        },
+      });
+      const stdout = await new Promise<string>((resolve, reject) =>
+        NodeChildProcess.execFile(
+          NodeProcess.execPath,
+          ["--experimental-strip-types", "--input-type=module", "-e", script, input],
+          { timeout: 30_000, maxBuffer: 64 * 1024 },
+          (error, stdout) => (error === null ? resolve(stdout) : reject(error)),
+        ),
+      );
+      expect(JSON.parse(stdout)).toEqual({ source: privateSetupSource, mode: 0o700 });
+      await expect(
+        NodeFSP.lstat(NodePath.join(active, ".jones-provenance.json")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    },
+    { privateSetup: true },
+  ));
 it.each(["missing-acceptance", "current-child-receipt", "stale-child-receipt"])(
   "refuses private setup %s before pending intent or service stop",
   (kind) =>
