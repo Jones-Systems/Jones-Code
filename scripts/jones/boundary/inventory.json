@@ -1848,7 +1848,10 @@
     "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx": "jones-owned",
     "packages/client-runtime/src/jones/workstreams/operations.test.ts": "jones-owned",
     "packages/client-runtime/src/jones/workstreams/operations.ts": "jones-owned",
-    "apps/server/src/jones/workstreams/operations/fullAppFixture.ts": "jones-owned"
+    "apps/server/src/jones/workstreams/operations/fullAppFixture.ts": "jones-owned",
+    "packages/contracts/src/jones/threadActivitySettings.ts": "jones-owned",
+    "packages/contracts/src/jones/threadActivitySettings.test.ts": "jones-owned",
+    "apps/web/src/jones/threadStatusFilter/ThreadActivitySettings.tsx": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

@@ -1,3 +1,4 @@
+import { useClientSettings } from "../../hooks/useSettings";
 import { useRef } from "react";
 import { cn } from "../../lib/utils";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
@@ -41,8 +42,14 @@ export function ThreadStatusFilterPill({
   onCycle: () => void;
   onHideWorking?: (() => void) | undefined;
 }) {
+  const enabled = useClientSettings((settings) => settings.threadActivityWindowEnabled);
+  const amount = useClientSettings((settings) => settings.threadActivityWindowAmount);
+  const unit = useClientSettings((settings) => settings.threadActivityWindowUnit);
+  const windowLabel = enabled
+    ? ` Activity in the past ${amount} ${unit}; Done includes read completions. All shows every thread.`
+    : "";
   const pointerSequence = useRef<{ at: number; consumed: boolean } | null>(null);
-  const label = `${counts.working} working, ${counts.input} needs input, ${counts.done} done. Showing ${labels[filter]}. Next: ${labels[nextThreadStatusFilter(filter)]}. Double-click within 250 ms to hide working threads.`;
+  const label = `${counts.working} working, ${counts.input} needs input, ${counts.done} done. Showing ${labels[filter]}. Next: ${labels[nextThreadStatusFilter(filter)]}. Double-click within 250 ms to hide working threads.${windowLabel}`;
   return (
     <Tooltip>
       <TooltipTrigger
