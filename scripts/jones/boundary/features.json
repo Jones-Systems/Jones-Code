@@ -978,7 +978,7 @@
         "apps/server/src/jones/testShards/weightedShardSequencer.jones.test.ts",
         "apps/server/src/jones/platformCompatibility/testUtils/weightedShardSequencer.test.ts"
       ],
-      "scope": "Automatic CI wall-time capture, complete disjoint shard aggregation and read-only reuse of validated main-run weights. One selection applies to every shard; checked-in fallback preserves legacy semantics. Six shards remain default until comparable six/eight evidence."
+      "scope": "Automatic CI wall-time capture, complete disjoint shard aggregation and read-only reuse of validated main-run weights. One selection applies to every shard; checked-in fallback preserves legacy semantics. Eight shards are the default; manual six through nine selections retain complete discovery. Current-head job receipts expose the per-job budget."
     },
     {
       "id": "provider-update-trust",
@@ -1762,6 +1762,14 @@
         "scripts/jones/e2e/acp-stub/agent.node-test.mjs"
       ],
       "scope": "Five advisory Linux Electron journeys run nightly, manually or on the native-e2e PR label: pin/unpin and rename through reload and full process restart with unchanged backend control; synthetic-provider self-configuration and follow-up continuity; queue edit/cancel with unchanged-draft and exactly-once delivery oracles; ordinarily paired read-only Node observer updates and reconnect; independent-server endpoint/credential isolation and encrypted catalog disable/re-enable persistence. The observer sends zero commands; its cache guards do not prove production-client cache behavior. Source tests preserve lifecycle, process identity, sibling isolation, unknown cleanup, endpoint trace truth and synthetic ACP protocol checks. Native checks bind the observed Electron version to the candidate manifest, build once and preserve first failures. Source checks do not qualify native execution, live provider inference, physical hosts or timing. The inherited two-server trace timeout remains an unresolved native qualification gap."
+    },
+    {
+      "id": "ci-change-selection",
+      "tests": [
+        "scripts/jones/ci/selection.node-test.cjs",
+        "scripts/jones/ci/check-results.node-test.cjs"
+      ],
+      "scope": "Consumes the unchanged upstream dependency classifier with conservative full runs for non-PR, stack, unreadable or unknown changes. Required Check accepts a skipped job only after successful explicit selection. Linux package suites are disjoint; standalone checks remain unconditional and native enrollment keeps its independent gate."
     }
   ]
 }
