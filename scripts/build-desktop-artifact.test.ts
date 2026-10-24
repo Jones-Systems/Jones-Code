@@ -133,7 +133,13 @@ const readCommittedDesktopStageInputs = Effect.gen(function* () {
   const workspace = yield* readWorkspaceConfig();
   const catalog = workspace.catalog ?? {};
   const fffNodeVersion = server.dependencies["@ff-labs/fff-node"];
-  if (!fffNodeVersion) return yield* Effect.fail(new Error("Missing committed FFF version."));
+  if (!fffNodeVersion) {
+    return yield* new DesktopBuildDependencyResolutionError({
+      kind: "server-production",
+      manifestPath: "apps/server/package.json",
+      cause: "Missing committed @ff-labs/fff-node version.",
+    });
+  }
   return {
     serverDependencies: resolveCatalogDependencies(server.dependencies, catalog, "apps/server"),
     desktopDependencies: resolveDesktopRuntimeDependencies(desktop.dependencies, catalog),
@@ -666,7 +672,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       }
       assert.deepStrictEqual(
         Object.keys(planned.dependencies).filter((name) => name.startsWith("@ff-labs/fff-bin-")),
-        target.nativePackages,
+        [...target.nativePackages],
       );
       for (const name of target.nativePackages) {
         assert.equal(planned.dependencies[name], input.fffNodeVersion);
