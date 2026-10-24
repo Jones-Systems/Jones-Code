@@ -1,3 +1,7 @@
+import {
+  acknowledgeComposerSelection,
+  composerSelectionForDispatch,
+} from "../../jones/threadConfiguration/composerSelection";
 import { useImportedHistoryComposer } from "../../jones/importedHistory/useImportedHistoryComposer";
 import { clearSubmittedComposer, restoreFailedComposerSend } from "./composerSendRecovery";
 import {
@@ -1261,7 +1265,7 @@ export function useComposerSend(input: ComposerSendInput) {
             appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment
               .capabilities.worktreeDefaultBase === true,
           message: { messageId: newMessageId(), role: "user", text: "/compact", attachments: [] },
-          modelSelection: ctxSelectedModelSelection,
+          ...composerSelectionForDispatch(ctxSelectedModelSelection, submittedComposerDraft),
           runtimeMode,
           interactionMode: sendInteractionMode,
         },
@@ -1329,7 +1333,7 @@ export function useComposerSend(input: ComposerSendInput) {
                   .capabilities.inlineMessageContext === true,
             }),
           },
-          modelSelection: ctxSelectedModelSelection,
+          ...composerSelectionForDispatch(ctxSelectedModelSelection, submittedComposerDraft),
           titleSeed: title,
           runtimeMode,
           interactionMode: sendInteractionMode,
@@ -1366,6 +1370,7 @@ export function useComposerSend(input: ComposerSendInput) {
         failure = startResult;
       } else {
         turnStartSucceeded = true;
+        acknowledgeComposerSelection(composerDraftTarget, submittedComposerDraft);
         setKeepFullHistory(routeThreadKey, false);
         clearUsageLimitsFor(routeThreadKey);
         if (turnUsesAttachmentUploads) {

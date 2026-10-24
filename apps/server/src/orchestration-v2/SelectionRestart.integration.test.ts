@@ -351,6 +351,22 @@ it.live("retries a failed selection restart session open before completing", () 
           return yield* Effect.die("active restart test run is missing");
         }
 
+        const oldAttempt = activeProjection.attempts.find(
+          (attempt) => attempt.id === activeProjection.runs[0]?.activeAttemptId,
+        )!;
+        const oldTurn = activeProjection.providerTurns.find(
+          (turn) =>
+            turn.runAttemptId === oldAttempt.id &&
+            turn.nodeId === oldAttempt.rootNodeId &&
+            turn.status === "running",
+        )!;
+        assert.isNull(
+          oldAttempt.providerTurnId,
+          "observed native precondition: running attempt has no turn binding yet",
+        );
+        assert.isNull(oldAttempt.providerSettlement);
+        assert.isDefined(oldTurn);
+
         const completed = yield* eventSink
           .stream({
             threadId,
@@ -377,6 +393,18 @@ it.live("retries a failed selection restart session open before completing", () 
           modelSelection: replacementSelection,
           dispatchMode: { type: "restart_active", targetRunId: activeRunId },
         });
+        const retired = (yield* orchestrator.getThreadProjection(threadId)).attempts.find(
+          (attempt) => attempt.id === oldAttempt.id,
+        )!;
+        assert.equal(
+          retired.providerTurnId,
+          oldTurn.id,
+          "supersession captures the exact running provider turn",
+        );
+        assert.isNull(
+          retired.providerSettlement,
+          "retirement does not fabricate provider completion",
+        );
         yield* Fiber.join(completed);
         yield* worker.drain();
         return {

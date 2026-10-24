@@ -161,6 +161,44 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
 });
 
 describe("V2 environment commands", () => {
+  it.effect.each([false, true, undefined])(
+    "preserves composer selection intent %s through ordinary and immediate dispatch",
+    (modelSelectionExplicit) =>
+      Effect.gen(function* () {
+        const commands: OrchestrationV2Command[] = [];
+        const supervisor = yield* makeSupervisor({ commands, projects: [] });
+        for (const dispatchMode of ["auto", "start"] as const) {
+          yield* startThreadTurn({
+            commandId: CommandId.make("composer-" + dispatchMode),
+            threadId: v2ThreadId,
+            message: {
+              messageId: MessageId.make("composer-" + dispatchMode),
+              role: "user",
+              text: "continue",
+              attachments: [],
+            },
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex-compatible-b"),
+              model: "gpt-6-astra",
+            },
+            ...(modelSelectionExplicit === undefined ? {} : { modelSelectionExplicit }),
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            dispatchMode,
+          }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+        }
+        expect(commands).toHaveLength(2);
+        for (const command of commands) {
+          expect(command.type).toBe("message.dispatch");
+          if (command.type !== "message.dispatch") throw new Error("Expected message dispatch");
+          expect(command.modelSelection?.instanceId).toBe("codex-compatible-b");
+          expect(command.modelSelectionExplicit).toBe(modelSelectionExplicit);
+          if (modelSelectionExplicit === undefined)
+            expect(command).not.toHaveProperty("modelSelectionExplicit");
+        }
+      }).pipe(Effect.provide(layerTestCrypto)),
+  );
+
   it.effect("withholds start-one without its capability while explicit resume survives", () =>
     Effect.gen(function* () {
       for (const advertiseQueuedRunStart of [undefined, false]) {

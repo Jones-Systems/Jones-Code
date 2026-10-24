@@ -33,6 +33,7 @@ export function classifyThreadStatus(
   if (layout === "legacy") {
     switch (pill?.label) {
       case "Working":
+      case "Waiting":
       case "Connecting":
         return "working";
       case "Pending Approval":
@@ -50,7 +51,7 @@ export function classifyThreadStatus(
     isUnread: hasUnseenCompletion(thread),
     isWoke,
   });
-  if (topStatus === "working") return "working";
+  if (topStatus === "working" || topStatus === "waiting") return "working";
   if (topStatus === "approval" || topStatus === "input") return "input";
   return topStatus === "done" ? "done" : null;
 }

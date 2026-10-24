@@ -1690,7 +1690,30 @@
     "apps/server/src/jones/remoteDelegation/ObservationSupport.ts": "jones-owned",
     "apps/server/src/mcp/toolkits/worktree/registration.test.ts": "upstream-deleted",
     "apps/server/src/persistence/Migrations/055_OrchestrationV2.test.ts": "upstream-deleted",
-    "packages/contracts/src/environmentHttp.test.ts": "upstream-deleted"
+    "packages/contracts/src/environmentHttp.test.ts": "upstream-deleted",
+    "apps/web/src/jones/threadConfiguration/composerSelection.ts": "jones-owned",
+    "apps/web/src/jones/threadConfiguration/composerSelection.test.ts": "jones-owned",
+    "packages/contracts/src/jones/threadSelfConfiguration.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/native-self-configuration-harness.json": "jones-owned",
+    ".agents/skills/capture-ui-evidence/references/native-self-configuration.md": "policy",
+    "apps/desktop/scripts/ui-evidence/scenarios/thread-self-configure.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/thread-self-configure-support.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/thread-self-configure.test.mjs": "jones-owned",
+    "apps/server/src/jones/threadConfiguration/testkit.ts": "jones-owned",
+    "apps/server/src/jones/threadConfiguration/executionSelection.ts": "jones-owned",
+    "apps/server/src/jones/threadConfiguration/prepareExecutionSession.ts": "jones-owned",
+    "apps/server/src/jones/threadConfiguration/CodexSelfConfiguration.integration.test.ts": "jones-owned",
+    "apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.integration.test.ts": "jones-owned",
+    "apps/server/src/jones/threadConfiguration/tools.ts": "jones-owned",
+    "apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.ts": "jones-owned",
+    "packages/contracts/src/jones/threadSelfConfiguration.ts": "jones-owned",
+    "packages/provider-core/src/server/jones/ThreadSelfConfigurationInstructions.ts": "jones-owned",
+    "packages/provider-core/src/server/jones/ThreadSelfConfigurationInstructions.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/thread-self-configuration.json": "jones-owned",
+    "apps/server/src/jones/threadConfiguration/prepareExecutionSession.test.ts": "jones-owned",
+    "apps/server/src/jones/threadConfiguration/CodexSelectionRestart.integration.test.ts": "jones-owned",
+    "packages/provider-testing/src/replayWorkspace.test.ts": "jones-owned",
+    "packages/provider-testing/package.json": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -2365,6 +2388,10 @@
     {
       "from": "apps/web/src/components/settings/SavedEnvironmentRows.tsx",
       "to": "apps/web/src/jones/updates/JonesUpdateControls.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/useComposerSend.ts",
+      "to": "apps/web/src/jones/threadConfiguration/composerSelection.ts"
     }
   ]
 }

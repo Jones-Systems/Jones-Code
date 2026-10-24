@@ -143,6 +143,40 @@ describe.each(["current", "legacy"] as const)("%s status shortcut", (layout) => 
     await clickAt(1551);
     expect(titles()).toEqual(["Working", "Input", "Done", "Idle"]);
   });
+  it("counts Waiting on the first click, hides it on double click, and restores roster order", async () => {
+    await using _fixture = await setupTest();
+    const waiting = makeThreadFixture({
+      ...done,
+      id: ThreadId.make("waiting"),
+      title: "Waiting",
+      runtime: { ...working.runtime!, status: "idle" },
+      pendingBackgroundTasks: [{ taskId: "monitor", kind: "monitor" }],
+    });
+    const approval = makeThreadFixture({
+      ...waiting,
+      id: ThreadId.make("approval"),
+      title: "Approval",
+      hasPendingApprovals: true,
+    });
+    const waitingInput = {
+      ...waiting,
+      ...input,
+      runtime: waiting.runtime,
+      pendingBackgroundTasks: waiting.pendingBackgroundTasks,
+    };
+    const rows = [done, waiting, approval, idle, working, waitingInput];
+    await act(async () => await root.rerender(<Fixture layout={layout} rows={rows} />));
+    await clickAt(1000);
+    expect(titles()).toEqual(["Waiting", "Working"]);
+    expect(button().getAttribute("aria-label")).toContain(
+      "2 working, 2 needs input, 1 done. Showing working.",
+    );
+    await clickAt(1200);
+    expect(titles()).toEqual(["Done", "Approval", "Idle", "Input"]);
+    await clickAt(1501);
+    expect(titles()).toEqual(rows.map((row) => row.title));
+    expect(button().getAttribute("aria-label")).toContain("Showing all threads.");
+  });
   it("cycles at 251 ms even if the operating system would group the clicks", async () => {
     await using _fixture = await setupTest();
     await act(async () => await root.rerender(<Fixture layout={layout} />));

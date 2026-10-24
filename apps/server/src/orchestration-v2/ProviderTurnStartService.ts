@@ -1,3 +1,5 @@
+import * as ProviderSwitchService from "./ProviderSwitchService.ts";
+import { prepareExecutionSession } from "../jones/threadConfiguration/prepareExecutionSession.ts";
 import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
 import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
 import { findSteerFailure } from "../jones/orchestration/LateSteer.ts";
@@ -151,10 +153,12 @@ export const layer: Layer.Layer<
   | RuntimePolicy.RuntimePolicyV2
   | ServerSettings.ServerSettingsService
   | ProviderInstanceRegistry.ProviderInstanceRegistry
+  | ProviderSwitchService.ProviderSwitchServiceV2
 > = Layer.effect(
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
     const eventSink = yield* EventSink.EventSinkV2;
+    const selectionTransitions = yield* ProviderSwitchService.ProviderSwitchServiceV2;
     const restartPreparation = yield* RestartPreparation.RestartPreparation;
     const controlAdmission = yield* ControlAdmission.ControlAdmission;
     const contextHandoffService = yield* ContextHandoffService.ContextHandoffServiceV2;
@@ -293,7 +297,7 @@ export const layer: Layer.Layer<
       }
       const rootNode = projection.nodes.find((candidate) => candidate.id === run.rootNodeId);
       const attempt = projection.attempts.find((candidate) => candidate.id === run.activeAttemptId);
-      const providerThread = projection.providerThreads.find(
+      let providerThread = projection.providerThreads.find(
         (candidate) => candidate.id === run.providerThreadId,
       );
       if (
@@ -631,7 +635,7 @@ export const layer: Layer.Layer<
       ): ReturnType<typeof RunExecutionService.selectInheritedBackgroundTurnItems> =>
         RunExecutionService.selectInheritedBackgroundTurnItems({
           threadId: current.thread.id,
-          currentProviderThreadId: providerThread.id,
+          currentProviderThreadId: run.providerThreadId!,
           currentRunOrdinal: run.ordinal,
           runs: current.runs,
           turnItems: current.turnItems,
@@ -639,7 +643,15 @@ export const layer: Layer.Layer<
       const inheritedBackgroundTurnItems = yield* projectionStore
         .getRuntimeRecoveryProjection(projection.thread.id)
         .pipe(Effect.map(selectInheritedBackgroundItems));
+      providerThread = yield* prepareExecutionSession(run, providerThread, projection).pipe(
+        Effect.provideService(ProviderSessionManager.ProviderSessionManagerV2, providerSessions),
+        Effect.provideService(EventSink.EventSinkV2, eventSink),
+        Effect.provideService(ProviderSwitchService.ProviderSwitchServiceV2, selectionTransitions),
+        Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })),
+      );
       const providerSessionId = providerThread.providerSessionId;
+      if (providerSessionId === null)
+        return yield* new ProviderTurnStartError({ runId, cause: "Missing provider session." });
       const runControls = makeRunControls({
         threadId: projection.thread.id,
         runId: run.id,

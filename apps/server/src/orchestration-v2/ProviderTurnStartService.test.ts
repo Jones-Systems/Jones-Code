@@ -1,3 +1,4 @@
+import * as ProviderSwitchService from "./ProviderSwitchService.ts";
 import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
 import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -134,6 +135,18 @@ function startWithMissingWorktree(
     Layer.provide(ControlAdmission.layer),
     Layer.provide(
       Layer.mock(RestartPreparation.RestartPreparation)({ assertThreadOpen: () => Effect.void }),
+    ),
+    Layer.provide(
+      Layer.mock(ProviderSwitchService.ProviderSwitchServiceV2)({
+        plan: () =>
+          Effect.succeed({
+            instanceChanged: false,
+            modelChanged: false,
+            targetProviderThreadId: null,
+            releaseProviderSessionIds: [],
+            transition: { type: "reuse" },
+          }),
+      }),
     ),
     Layer.provide(
       Layer.mergeAll(
@@ -825,6 +838,18 @@ function makeLocalCommandHarness(input: {
     Layer.provide(ControlAdmission.layer),
     Layer.provide(
       Layer.mock(RestartPreparation.RestartPreparation)({ assertThreadOpen: () => Effect.void }),
+    ),
+    Layer.provide(
+      Layer.mock(ProviderSwitchService.ProviderSwitchServiceV2)({
+        plan: () =>
+          Effect.succeed({
+            instanceChanged: false,
+            modelChanged: false,
+            targetProviderThreadId: null,
+            releaseProviderSessionIds: [],
+            transition: { type: "reuse" },
+          }),
+      }),
     ),
     Layer.provide(
       Layer.mergeAll(
