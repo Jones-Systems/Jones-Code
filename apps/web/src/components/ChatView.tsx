@@ -1,3 +1,4 @@
+import { useParentLink } from "../jones/remoteAgentLineage/useParentLink";
 import { ClientServerBuildLabels } from "../jones/updates/ClientServerBuildLabels";
 import { listenForWorkspaceFileDragEnd } from "../jones/questionAnswer/workspaceFileDragLifecycle";
 import { ComposerPendingUserInputPanel } from "./chat/ComposerPendingUserInputPanel";
@@ -324,6 +325,10 @@ import { isPreviewFocused } from "../lib/previewFocus";
 import { getTerminalFocusOwner } from "../lib/terminalFocus";
 import { resolveNewDraftStartFromOrigin } from "../lib/chatThreadActions";
 import {
+  acknowledgeComposerSelection,
+  composerSelectionForDispatch,
+} from "../jones/threadConfiguration/composerSelection";
+import {
   deriveLogicalProjectKeyFromSettings,
   selectProjectGroupingSettings,
 } from "../logicalProject";
@@ -386,7 +391,6 @@ import { useProjectClone } from "../state/projectClones";
 import { projectCloneDisplayName, projectCloneProgressSummary } from "@t3tools/contracts";
 import {
   type EnvironmentPresentation,
-  useEnvironment,
   useEnvironmentProviders,
   useEnvironments,
   usePrimaryEnvironment,
@@ -1536,65 +1540,10 @@ export default function ChatView(props: ChatViewProps) {
       ? run.id
       : null;
   })();
-  const parentSubagentThreadId =
-    activeThread?.lineage.relationshipToParent === "subagent"
-      ? activeThread.lineage.parentThreadId
-      : null;
-  const parentSubagentEnvironmentId = activeThread?.environmentId ?? null;
-  const parentSubagentThreadRef = (() => {
-    if (parentSubagentEnvironmentId === null || parentSubagentThreadId === null) {
-      return null;
-    }
-    return scopeThreadRef(parentSubagentEnvironmentId, parentSubagentThreadId);
-  })();
-  const parentSubagentThread = useQuietThreadShell(parentSubagentThreadRef);
-  // A linked environment's agent may have delegated this thread from there.
-  const delegatedFrom = activeThread?.delegatedFrom ?? null;
-  const delegatedFromEnvironment = useEnvironment(delegatedFrom?.environmentId ?? null);
-  const delegatedFromRef =
-    delegatedFrom === null
-      ? null
-      : scopeThreadRef(delegatedFrom.environmentId, delegatedFrom.threadId);
-  // The title it had at delegation, until this client sees the parent itself.
-  const delegatedFromThread = useQuietThreadShell(delegatedFromRef);
-  const parentThreadLink = (() => {
-    if (parentSubagentThreadRef !== null) {
-      return {
-        title: parentSubagentThread?.title ?? "Parent thread",
-        open: (): void => {
-          void navigate({
-            to: "/$environmentId/$threadId",
-            params: buildThreadRouteParams(parentSubagentThreadRef),
-          });
-        },
-      };
-    }
-    if (delegatedFrom === null || delegatedFromRef === null) return null;
-    const parentRef = delegatedFromRef;
-    return {
-      title: delegatedFromThread?.title ?? delegatedFrom.title,
-      environmentLabel: delegatedFromEnvironment?.label ?? activeThread?.linkOrigin?.label ?? "",
-      // Only an environment this client is connected to can open the parent.
-      ...(delegatedFromEnvironment === null
-        ? {}
-        : {
-            open: (): void => {
-              void navigate({
-                to: "/$environmentId/$threadId",
-                params: buildThreadRouteParams(parentRef),
-              });
-            },
-          }),
-    };
-  })();
-  // The header's breadcrumb opens a parent in this environment only.
-  const headerParentThreadLink =
-    parentSubagentThreadRef === null
-      ? null
-      : {
-          threadId: parentSubagentThreadRef.threadId,
-          title: parentSubagentThread?.title ?? "Parent thread",
-        };
+  const parentThreadLink = useParentLink(
+    activeThread?.environmentId ?? environmentId,
+    activeThread,
+  );
   const threadError = isServerThread
     ? (localServerError ?? serverRuntime?.lastError ?? null)
     : localDraftError;
@@ -7106,7 +7055,7 @@ export default function ChatView(props: ChatViewProps) {
         input: {
           threadId: threadIdForSend,
           message: { messageId: newMessageId(), role: "user", text: "/compact", attachments: [] },
-          modelSelection: ctxSelectedModelSelection,
+          ...composerSelectionForDispatch(ctxSelectedModelSelection, submittedComposerDraft),
           runtimeMode,
           interactionMode: sendInteractionMode,
         },
@@ -7190,7 +7139,7 @@ export default function ChatView(props: ChatViewProps) {
               return { context };
             })(),
           },
-          modelSelection: ctxSelectedModelSelection,
+          ...composerSelectionForDispatch(ctxSelectedModelSelection, submittedComposerDraft),
           titleSeed: title,
           runtimeMode,
           interactionMode: sendInteractionMode,
@@ -7228,6 +7177,7 @@ export default function ChatView(props: ChatViewProps) {
         failure = startResult;
       } else {
         turnStartSucceeded = true;
+        acknowledgeComposerSelection(composerDraftTarget, submittedComposerDraft);
         setKeepFullHistory(routeThreadKey, false);
         clearUsageLimitsFor(routeThreadKey);
         if (turnUsesAttachmentUploads) {
@@ -8103,9 +8053,8 @@ export default function ChatView(props: ChatViewProps) {
             activeThreadId={activeThread.id}
             isServerThread={isServerThread}
             activeThreadTitle={activeThread.title}
-            activeThreadLinkOrigin={activeThreadShell?.linkOrigin?.label ?? null}
             activeProject={activeProject ?? null}
-            parentThreadLink={headerParentThreadLink}
+            parentThreadLink={parentThreadLink}
             onOpenThread={onOpenRelatedThreadStable}
             rightPanelOpen={inlineRightPanelOwnsTitleBar}
             onNewThreadInProject={handleNewThreadInActiveProjectStable}

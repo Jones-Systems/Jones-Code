@@ -1491,3 +1491,38 @@ it.effect.each([
     expect(dispatched).toEqual(settles ? ["thread.settle"] : []);
   }),
 );
+
+it.effect(
+  "checks the inherited saved provider instead of a stale disabled composer snapshot",
+  () => {
+    const dispatched: Array<string> = [];
+    const enabled = ProviderInstanceId.make("codex_work");
+    const disabled = ProviderInstanceId.make("codex_old");
+    const layerTest = layerDispatchChokepointTest(
+      ServerSettings.layerTest({
+        providerInstances: {
+          [enabled]: { driver: "codex", enabled: true },
+          [disabled]: { driver: "codex", enabled: false },
+        },
+      }),
+    )(dispatched);
+    return Effect.gen(function* () {
+      const threads = yield* ThreadManagementService.ThreadManagementService;
+      yield* threads.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("inherited-composer"),
+        threadId: ThreadId.make("thread:thread-management:chokepoint"),
+        messageId: MessageId.make("inherited-composer"),
+        text: "continue",
+        attachments: [],
+        createdBy: "user",
+        creationSource: "web",
+        modelSelection: { instanceId: disabled, model: "old" },
+        modelSelectionExplicit: false,
+        deliveryIntent: "auto",
+        dispatchMode: { type: "start_immediately" },
+      });
+      expect(dispatched).toEqual(["message.dispatch"]);
+    }).pipe(Effect.provide(layerTest));
+  },
+);
