@@ -1759,7 +1759,6 @@
     "apps/desktop/scripts/ui-evidence/secret-service-stage.mjs": "jones-owned",
     "apps/desktop/scripts/ui-evidence/secret-service-stage.test.mjs": "jones-owned",
     "apps/desktop/scripts/ui-evidence/secret-service.test.mjs": "jones-owned",
-    "apps/desktop/scripts/ui-evidence/sidebar-pin-reload.test.mjs": "jones-owned",
     "apps/desktop/scripts/ui-evidence/sidebar-pin-restart.test.mjs": "jones-owned",
     "apps/desktop/scripts/ui-evidence/startup-diagnostics.mjs": "jones-owned",
     "apps/desktop/scripts/ui-evidence/startup-diagnostics.test.mjs": "jones-owned",
@@ -1787,6 +1786,7 @@
     "scripts/jones/"
   ],
   "tombstones": [
+    "apps/desktop/scripts/ui-evidence/sidebar-pin-reload.test.mjs",
     "apps/web/src/components/voiceReview/VoiceReviewDeviceSetup.tsx",
     "apps/web/src/components/voiceReview/VoiceReviewDeviceSetup.browser.test.tsx",
     "apps/server/src/mcp/ThreadMetadataMcpService.test.ts",
