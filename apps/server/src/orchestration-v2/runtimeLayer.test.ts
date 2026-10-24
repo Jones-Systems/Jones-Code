@@ -4351,7 +4351,15 @@ it.layer(layerTest)("RuntimeLayer.layer lifecycle", (it) => {
       const started = after.runs.find((run) => run.id === available.id);
       assert.equal(started?.status, "starting");
       assert.deepEqual(started?.modelSelection, queuedSelection);
-      assert.deepEqual(after.thread.modelSelection, queuedSelection);
+      assert.equal(started?.providerInstanceId, queuedSelection.instanceId);
+      const attempt = after.attempts.find((row) => row.id === started?.activeAttemptId);
+      assert.equal(attempt?.providerInstanceId, queuedSelection.instanceId);
+      assert.equal(attempt?.providerThreadId, started?.providerThreadId);
+      const providerThread = after.providerThreads.find(
+        (row) => row.id === started?.providerThreadId,
+      );
+      assert.equal(providerThread?.providerInstanceId, queuedSelection.instanceId);
+      assert.deepEqual(after.thread.modelSelection, modelSelection);
     }),
   );
 

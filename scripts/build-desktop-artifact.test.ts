@@ -34,6 +34,8 @@ import {
   parseWslRuntimeArchiveMembers,
   readWorkspaceConfig,
   createBuildConfig,
+  createStagePatchedDependencies,
+  createStageWorkspaceConfig,
   DESKTOP_FILE_EXCLUSIONS,
   DESKTOP_EXTRA_RESOURCES,
   InvalidMacPasskeyRpDomainError,
@@ -47,6 +49,7 @@ import {
   resolveMacWebAuthnEntitlements,
   resolveMacPasskeySigningConfiguration,
   resolveMergedStageDependencies,
+  resolveFffNativeDependencies,
   resolveBuildOptions,
   resolveDesktopBuildIconAssets,
   resolveDesktopProductName,
@@ -77,6 +80,9 @@ import {
   ReleasePackageManifestError,
   releasePackageFiles,
 } from "./update-release-package-versions.ts";
+import serverPackageJson from "../apps/server/package.json" with { type: "json" };
+import { selectCliRuntimeExternalDependencies } from "./lib/cli-external-packages.ts";
+import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
@@ -602,6 +608,49 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         );
       }
     }),
+  );
+
+  it.effect.each(["x64", "arm64"] as const)(
+    "pins staged runtime patch versions for Linux %s from repository configuration",
+    (arch) =>
+      Effect.gen(function* () {
+        const workspace = yield* readWorkspaceConfig();
+        const catalog = workspace.catalog ?? {};
+        const serverDependencies = resolveCatalogDependencies(
+          serverPackageJson.dependencies,
+          catalog,
+          "apps/server",
+        );
+        const dependencies = {
+          ...selectCliRuntimeExternalDependencies(serverDependencies),
+          ...resolveFffNativeDependencies("linux", arch, serverDependencies["@ff-labs/fff-node"]!),
+        };
+        const config = createStageWorkspaceConfig({
+          platform: "linux",
+          arch,
+          patchedDependencies: createStagePatchedDependencies(
+            workspace.patchedDependencies ?? {},
+            dependencies,
+          ),
+          overrides: resolveCatalogDependencies(workspace.overrides ?? {}, catalog, "apps/server"),
+        });
+
+        assert.property(dependencies, "node-pty");
+        assert.strictEqual(config.overrides?.["node-pty"], "1.2.0-beta.15");
+        assert.strictEqual(
+          config.patchedDependencies?.["node-pty@1.2.0-beta.15"],
+          "patches/node-pty@1.2.0-beta.15.patch",
+        );
+        assert.strictEqual(
+          config.patchedDependencies?.["@ff-labs/fff-node@0.11.0"],
+          "patches/@ff-labs__fff-node@0.11.0.patch",
+        );
+        assert.deepStrictEqual(config.supportedArchitectures, {
+          os: ["linux"],
+          cpu: [arch],
+          libc: ["glibc"],
+        });
+      }),
   );
 
   it.effect("preserves the Jones installer title and layout", () =>
