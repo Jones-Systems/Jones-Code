@@ -1,3 +1,4 @@
+import { importedHistoryContinuationEligible } from "@t3tools/client-runtime/jones/imported-history/continuation";
 import {
   getMobileImportedHistoryChoice,
   mobileImportedHistoryCommands,
@@ -701,7 +702,7 @@ export function useThreadComposerState() {
       });
 
       if (
-        selectedThreadProjection?.projection.thread.historyOrigin === "v1_import" &&
+        importedHistoryContinuationEligible(selectedThreadProjection?.projection) &&
         followUpDispatchMode !== "queue"
       ) {
         if (importedPreparationRef.current) return null;

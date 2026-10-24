@@ -7,6 +7,10 @@
   ],
   "type": "module",
   "exports": {
+    "./jones/shellDestinationFence": {
+      "types": "./src/jones/shellDestinationFence.ts",
+      "import": "./src/jones/shellDestinationFence.ts"
+    },
     "./jones/userResponseRequest": {
       "types": "./src/jones/userResponseRequest.ts",
       "import": "./src/jones/userResponseRequest.ts"

@@ -3,9 +3,73 @@ import {
   type ImportedHistoryReview,
   type ImportedHistoryOutcome,
   EnvironmentId,
+  type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { importedHistoryCanonicalJson } from "@t3tools/shared/jones/importedHistoryCanonical";
+
+export function importedHistoryContinuationEligible(
+  projection:
+    | Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "providerThreads">
+    | null
+    | undefined,
+): boolean {
+  return (
+    projection?.thread?.historyOrigin === "v1_import" &&
+    Array.isArray(projection.runs) &&
+    Array.isArray(projection.providerThreads) &&
+    !projection.runs.some((run) => run.status === "completed") &&
+    projection.providerThreads.every(
+      (provider) =>
+        provider.providerSessionId === null &&
+        provider.nativeThreadRef === null &&
+        provider.nativeConversationHeadRef === null,
+    )
+  );
+}
+
+export function importedHistoryReasonText(reason: string | null | undefined): string | null {
+  if (!reason) return null;
+  const messages: Record<string, string> = {
+    existing_native_context_requires_review:
+      "This thread already has an existing provider conversation. Send your message normally to continue it.",
+    imported_birth_unavailable:
+      "The original import record is unavailable. This history cannot start a fresh conversation.",
+    imported_thread_unavailable:
+      "The imported thread is unavailable. Reopen the thread and try again.",
+    native_workspace_owned:
+      "This thread already belongs to a provider workspace. Continue it normally.",
+    imported_transcript_unavailable:
+      "The imported transcript is unavailable. A fresh conversation cannot use this history.",
+    imported_transcript_decode_unavailable:
+      "The imported transcript could not be read. A fresh conversation cannot use this history.",
+    other_work_pending:
+      "This thread has work in progress. Wait for it to finish before reviewing imported history.",
+    queued_delivery_changed: "The queued message changed. Review it again.",
+    queued_execution_identity_unavailable:
+      "The queued message's provider settings are unavailable. Review its settings and try again.",
+    queued_delivery_requires_review:
+      "Review the first queued message before continuing with imported history.",
+    project_unavailable:
+      "The project is unavailable. Reopen an available project before continuing.",
+    unresolved_effects:
+      "Earlier work still needs reconciliation. Check its status before continuing.",
+    target_handoff_unavailable:
+      "The selected provider cannot receive this imported history. Choose a supported provider.",
+    execution_requires_reconciliation:
+      "The request is saved, but execution is unconfirmed. Check continuation status before sending again.",
+    start_reservation_unavailable:
+      "A continuation request is already reserved. Check continuation status before sending again.",
+    choice_unavailable:
+      "The saved continuation request is unavailable. Reopen the thread and check its status.",
+  };
+  return (
+    messages[reason] ??
+    (/^[a-z]+(?:_[a-z]+)+$/.test(reason)
+      ? "Imported history continuation is unavailable. Reopen the thread and review it again."
+      : reason)
+  );
+}
 
 export type ImportedHistoryCorrelation = {
   readonly environmentId: EnvironmentId;
@@ -48,7 +112,8 @@ export function resolveImportedHistoryReview(review: ImportedHistoryReview | nul
     : {
         status: "unavailable" as const,
         reviewedBasis: null,
-        reason: review?.reason ?? "Imported history review is unavailable.",
+        reason:
+          importedHistoryReasonText(review?.reason) ?? "Imported history review is unavailable.",
       };
 }
 export function resolveImportedHistoryOutcome(
@@ -61,7 +126,7 @@ export function resolveImportedHistoryOutcome(
     reason,
   });
   if (outcome == null)
-    return unknown("Response unavailable. Observe this same command before continuing.");
+    return unknown("Response unavailable. Check continuation status before continuing.");
   if (
     outcome.threadId !== expected.command.threadId ||
     outcome.commandId !== expected.command.commandId ||
@@ -75,7 +140,7 @@ export function resolveImportedHistoryOutcome(
     return {
       status: "rejected",
       intentAccepted: false,
-      reason: outcome.reason ?? "The reviewed choice was rejected.",
+      reason: importedHistoryReasonText(outcome.reason) ?? "The reviewed choice was rejected.",
     };
   if (outcome.status === "accepted")
     return {
@@ -83,7 +148,7 @@ export function resolveImportedHistoryOutcome(
       intentAccepted: true,
       reason: "Choice accepted; execution is not confirmed.",
     };
-  return unknown(outcome.reason ?? "The choice needs reconciliation.");
+  return unknown(importedHistoryReasonText(outcome.reason) ?? "The choice needs reconciliation.");
 }
 export function encodeImportedHistoryCorrelation(value: ImportedHistoryCorrelation): string {
   return importedHistoryCanonicalJson({
@@ -166,8 +231,7 @@ export function createImportedHistoryChoiceController(
             return {
               status: "unknown",
               intentAccepted: false,
-              reason:
-                "The draft or target changed after reservation. Observe the reserved command.",
+              reason: "The draft or target changed after reservation. Check continuation status.",
             };
           let outcome: ImportedHistoryOutcome | null;
           try {
@@ -186,7 +250,7 @@ export function createImportedHistoryChoiceController(
           status: "unknown",
           intentAccepted: false,
           reason: submitted
-            ? "The choice was submitted; observe the reserved command before continuing."
+            ? "The choice was submitted; check continuation status before continuing."
             : "The choice could not be saved. No new start was submitted.",
         };
       } finally {

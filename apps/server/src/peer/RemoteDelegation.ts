@@ -5,13 +5,13 @@ import {
   OrchestratorMcpFailure,
   type OrchestratorMcpDelegateTaskInput,
   type OrchestratorMcpTaskCancelResult,
-  type OrchestratorMcpThreadTimelineItem,
   type OrchestrationV2RemoteTaskChild,
   type OrchestrationV2Subagent,
   type ProjectId,
   type ProviderInstanceId,
   ProviderDriverKind,
   type RunId,
+  type RemoteTaskObservation,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -43,6 +43,8 @@ import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as RemoteLifecycle from "../jones/remoteDelegation/Lifecycle.ts";
 import * as PeerMonitor from "../jones/remoteDelegation/PeerMonitor.ts";
+import * as FinalText from "../jones/remoteDelegation/FinalText.ts";
+import * as ObservationSupport from "../jones/remoteDelegation/ObservationSupport.ts";
 
 /** How long one follow of a remote task waits on its thread there before checking again. */
 const FOLLOW_WAIT_MS = 50_000;
@@ -65,6 +67,16 @@ type ThreadScope = McpInvocationContext.McpThreadInvocationScope;
 export class RemoteDelegation extends Context.Service<
   RemoteDelegation,
   {
+    readonly observe: (
+      scope: ThreadScope,
+      task: OrchestrationV2Subagent,
+    ) => Effect.Effect<
+      {
+        readonly observation: RemoteTaskObservation;
+        readonly latestTerminalSummary: string | null;
+      },
+      OrchestratorMcpFailure
+    >;
     readonly delegate: (
       scope: ThreadScope,
       input: OrchestratorMcpDelegateTaskInput & {
@@ -164,6 +176,49 @@ const make = Effect.gen(function* () {
             ? `No project there has this repository (${key}). Pass target.projectId; t3_project_list with this environmentId lists them. To bring the repository there, use t3_project_clone and then t3_project_create with this environmentId.`
             : `Several projects there have this repository: ${matches.map((project) => `${project.title} (${project.id})`).join(", ")}. Pass target.projectId.`,
       });
+    });
+
+  const observe: RemoteDelegation["Service"]["observe"] = (scope, task) =>
+    Effect.gen(function* () {
+      const remote = task.remoteChild;
+      if (remote?.runId === undefined)
+        return yield* new OrchestratorMcpFailure({
+          code: "orchestration_error",
+          message:
+            "Remote child progress is unavailable: the original remote run is not attributed.",
+        });
+      const snapshot = yield* forwarding.readThread(scope, remote.environmentId, {
+        threadId: remote.threadId,
+        childProgressForRunId: remote.runId,
+        limit: 1,
+      });
+      const observation = snapshot.remoteObservation;
+      if (observation === undefined || observation.childProgress === undefined)
+        return yield* new OrchestratorMcpFailure({
+          code: "orchestration_error",
+          message:
+            "Remote child progress is unsupported by this linked environment. Upgrade the receiving server to observe later runs.",
+        });
+      if (
+        observation.environmentId !== remote.environmentId ||
+        observation.threadId !== remote.threadId ||
+        observation.originalRunId !== remote.runId
+      )
+        return yield* new OrchestratorMcpFailure({
+          code: "orchestration_error",
+          message: "Remote child progress returned a mismatched task binding.",
+        });
+      const progress = observation.childProgress;
+      const latestTerminalSummary =
+        progress.latestTerminalRunId === null
+          ? null
+          : ((yield* lastReply(
+              scope,
+              remote,
+              progress.latestTerminalRunId,
+              progress.latestTerminalStatus === "failed",
+            )) ?? null);
+      return { observation, latestTerminalSummary };
     });
 
   const delegate: RemoteDelegation["Service"]["delegate"] = (scope, input) =>
@@ -384,57 +439,18 @@ const make = Effect.gen(function* () {
       })
       .pipe(Effect.asVoid);
 
-  /**
-   * The last reply `runId` gave on the task's thread there, which is its
-   * result, read whole however long it is. A failed run prefers its error
-   * from the activity view over an earlier reply, without taking another run's.
-   */
   const lastReply = (
     scope: ThreadScope,
     remote: OrchestrationV2RemoteTaskChild,
     runId: RunId,
     failed = false,
   ) =>
-    Effect.gen(function* () {
-      let reply: OrchestratorMcpThreadTimelineItem | undefined;
-      let error: OrchestratorMcpThreadTimelineItem | undefined;
-      let afterPosition: number | undefined;
-      while (true) {
-        const read = yield* forwarding.readThread(scope, remote.environmentId, {
-          threadId: remote.threadId,
-          view: failed ? "activity" : "messages",
-          limit: 100,
-          ...(afterPosition === undefined ? {} : { afterPosition }),
-        });
-        reply =
-          read.items.findLast(
-            (item) => item.type === "assistant_message" && item.runId === runId,
-          ) ?? reply;
-        if (failed) {
-          error =
-            read.items.findLast((item) => item.type === "error" && item.runId === runId) ?? error;
-        }
-        if (!read.hasMore || read.nextPosition === null) break;
-        afterPosition = read.nextPosition;
-      }
-      reply = error ?? reply;
-      if (reply === undefined) return undefined;
-      let text = reply.text ?? "";
-      let textOffset = reply.textTruncated ? (reply.nextTextOffset ?? null) : null;
-      while (textOffset !== null) {
-        const rest = yield* forwarding.readThread(scope, remote.environmentId, {
-          threadId: remote.threadId,
-          itemId: reply.itemId,
-          textOffset,
-          maxCharsPerItem: 50_000,
-        });
-        const part = rest.items[0];
-        if (part === undefined) break;
-        text += part.text ?? "";
-        textOffset = part.textTruncated ? (part.nextTextOffset ?? null) : null;
-      }
-      return text;
-    });
+    FinalText.lastReply(
+      (input) => forwarding.readThread(scope, remote.environmentId, input),
+      remote.threadId,
+      runId,
+      failed,
+    );
 
   /**
    * Why following a task can never succeed, if that is what `error` means.
@@ -541,6 +557,18 @@ const make = Effect.gen(function* () {
           code: "orchestration_error",
           message: "The remote task has no attributed run; reconciliation remains pending.",
         });
+      const previousObservation =
+        threads.readRemoteTaskObservation === undefined
+          ? undefined
+          : yield* threads.readRemoteTaskObservation(parentThreadId, taskId);
+      if (previousObservation !== undefined && threads.observeRemoteTask !== undefined)
+        yield* threads.observeRemoteTask({
+          parentThreadId,
+          taskId,
+          observation: previousObservation,
+        });
+      if (previousObservation !== undefined && threads.reconcileRemoteTaskQuestions !== undefined)
+        yield* threads.reconcileRemoteTaskQuestions(parentThreadId, taskId);
       const endedHere = threads
         .streamStoredEventsFrom({
           threadId: parentThreadId,
@@ -567,13 +595,46 @@ const make = Effect.gen(function* () {
           timeoutMs: FOLLOW_WAIT_MS,
           // A thread there whose run ended may still be waiting on its own
           // tasks to wake it for the answer, which a task here waits for too.
-          // An older peer ignores this and reports the run alone.
+          // Observation support is required for new launches. Existing tasks on
+          // older peers still get one bounded chance to return their final result.
           untilDelegatedWorkSettled: true,
+          observeBlockingQuestions: true,
+          ...(previousObservation === undefined
+            ? {}
+            : { questionResumeToken: previousObservation.blockingQuestions.resumeToken }),
         }),
       ).pipe(Effect.raceFirst(endedHere));
       // The next look reads the result and stops it there.
       if ("endedHere" in waited) return false;
-      if (waited.timedOut) return false;
+      if (
+        waited.remoteObservation === undefined &&
+        (waited.timedOut ||
+          waited.observationChanged === true ||
+          waited.threadId !== remote.threadId ||
+          waited.runId !== remote.runId ||
+          !isTerminal(waited.status) ||
+          (waited.resultRun !== undefined && !isTerminal(waited.resultRun.status)))
+      )
+        return yield* ObservationSupport.unsupported();
+      if (waited.remoteObservation !== undefined) {
+        const observation = waited.remoteObservation;
+        if (
+          observation.environmentId !== remote.environmentId ||
+          observation.threadId !== remote.threadId ||
+          observation.originalRunId !== remote.runId
+        )
+          return yield* new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message: "The remote question observation returned a mismatched task binding.",
+          });
+        if (threads.observeRemoteTask === undefined)
+          return yield* new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message: "Remote question observation storage is unavailable.",
+          });
+        yield* threads.observeRemoteTask({ parentThreadId, taskId, observation });
+      }
+      if (waited.timedOut || waited.observationChanged === true) return false;
       // Missing run attribution is unresolved, never an empty successful completion.
       if (waited.runId === null)
         return yield* new OrchestratorMcpFailure({
@@ -751,6 +812,11 @@ const make = Effect.gen(function* () {
     forkParked(
       Effect.gen(function* () {
         yield* lifecycle.start;
+        if (threads.recoverRemoteTaskQuestions !== undefined)
+          yield* threads.recoverRemoteTaskQuestions.pipe(
+            Effect.retry(backoff),
+            Effect.forkIn(followers),
+          );
         // A finished task's follower has ended, so a Stop here that owes its
         // thread there a stop starts it again. Started before the scan below;
         // a Stop that slips between the two stays owed for the next start.
@@ -774,7 +840,7 @@ const make = Effect.gen(function* () {
       }).pipe(Effect.ignoreCause({ log: true })),
     );
 
-  return RemoteDelegation.of({ delegate, cancel, start });
+  return RemoteDelegation.of({ observe, delegate, cancel, start });
 });
 
 const isTerminal = (status: string) =>

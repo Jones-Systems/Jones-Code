@@ -1,3 +1,4 @@
+import { HistoryIcon } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
 import {
   CommandId,
@@ -9,6 +10,7 @@ import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { createImportedHistoryCommands } from "@t3tools/client-runtime/jones/imported-history/commands";
 import {
   createImportedHistoryChoiceController,
+  importedHistoryReasonText,
   type ImportedHistoryChoiceState,
 } from "@t3tools/client-runtime/jones/imported-history/continuation";
 import { connectionAtomRuntime } from "../../connection/runtime";
@@ -132,7 +134,7 @@ export function ContinuationChoiceBanner(props: {
           setState({
             status: "unknown",
             intentAccepted: false,
-            reason: "Observe the saved choice before continuing.",
+            reason: "Check continuation status before continuing.",
           });
       }
     })().finally(() => {
@@ -142,35 +144,43 @@ export function ContinuationChoiceBanner(props: {
   };
   if (!saved && props.prepared === null && !props.reason && state === null) return null;
   return (
-    <ComposerBanner.Root variant="warning">
-      <ComposerBanner.Row>
-        <ComposerBanner.Content>
-          <span role="status">
-            {state?.reason ??
-              props.reason ??
-              (saved
-                ? "A saved choice awaits observation; execution is unconfirmed."
-                : "Start a new conversation with the reviewed imported history?")}
-          </span>
-        </ComposerBanner.Content>
-        <ComposerBanner.Actions>
-          <Button
-            size="xs"
-            variant="ghost"
-            disabled={busy || (!saved && (props.prepared === null || !props.prepared.unchanged()))}
-            onClick={() => {
-              void act();
-            }}
-          >
-            {saved ? "Observe choice" : "Use imported history"}
-          </Button>
-          {!saved && props.onDismiss ? (
-            <Button size="xs" variant="ghost" disabled={busy} onClick={props.onDismiss}>
-              Cancel
-            </Button>
-          ) : null}
-        </ComposerBanner.Actions>
-      </ComposerBanner.Row>
-    </ComposerBanner.Root>
+    <ComposerBanner.Attachment>
+      <ComposerBanner.Root variant="warning" aria-label="Imported history continuation">
+        <ComposerBanner.Row layout="wrap-actions">
+          <ComposerBanner.Icon>
+            <HistoryIcon />
+          </ComposerBanner.Icon>
+          <ComposerBanner.Content>
+            <span role="status">
+              {importedHistoryReasonText(state?.reason ?? props.reason) ??
+                (saved
+                  ? "Your continuation request is saved. Check its status; execution is not confirmed."
+                  : "Start a fresh provider conversation using the old history and your message?")}
+            </span>
+          </ComposerBanner.Content>
+          <ComposerBanner.Actions>
+            {saved || props.prepared !== null ? (
+              <Button
+                size="xs"
+                variant="ghost"
+                disabled={
+                  busy || (!saved && (props.prepared === null || !props.prepared.unchanged()))
+                }
+                onClick={() => {
+                  void act();
+                }}
+              >
+                {saved ? "Check continuation status" : "Start fresh conversation"}
+              </Button>
+            ) : null}
+            {!saved && props.onDismiss ? (
+              <Button size="xs" variant="ghost" disabled={busy} onClick={props.onDismiss}>
+                Dismiss
+              </Button>
+            ) : null}
+          </ComposerBanner.Actions>
+        </ComposerBanner.Row>
+      </ComposerBanner.Root>
+    </ComposerBanner.Attachment>
   );
 }

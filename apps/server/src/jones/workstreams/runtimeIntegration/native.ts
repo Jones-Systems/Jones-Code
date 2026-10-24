@@ -47,6 +47,7 @@ export class NativeWorkstreamsRuntime extends Context.Service<
   NativeWorkstreamsRuntime,
   {
     readonly provider: WorkstreamsNativeProvider;
+    readonly providerV2: WorkstreamsNativeProvider<"v2">;
     readonly enrollments: NativeProviderEnrollment["Service"];
     readonly ownerOperations?: (
       request: WorkstreamsNativeOwnerRequest,
@@ -101,6 +102,17 @@ const makeNativeWorkstreamsRuntimeLayer = (
           evidence,
           attempts,
         }),
+        providerV2: makeWorkstreamsNativeProvider(
+          {
+            authority,
+            threadExists: (threadId) =>
+              engine.getThreadShell(threadId).pipe(Effect.map((shell) => shell !== null)),
+            engine,
+            evidence,
+            attempts,
+          },
+          "v2",
+        ),
       });
     }),
   ).pipe(
@@ -119,6 +131,7 @@ const scopes = Object.values(NATIVE_PROVIDER_SCOPES);
 const createNativeWorkstreamsHttpHandler = (
   runtime: NativeWorkstreamsRuntime["Service"],
   operation: NativeProviderOperation,
+  profile: "v1" | "v2" = "v1",
 ) =>
   Effect.fn("environment.workstreams.native")(function* () {
     const scope =
@@ -156,11 +169,10 @@ const createNativeWorkstreamsHttpHandler = (
       request.source instanceof Request && request.source.body === null
         ? Stream.empty
         : request.stream;
-    return yield* createNativeProviderHandlers(runtime.provider, enrollments).handle(
-      operation,
-      principal.sessionId,
-      body,
-    );
+    return yield* createNativeProviderHandlers(
+      profile === "v2" ? runtime.providerV2 : runtime.provider,
+      enrollments,
+    ).handle(operation, principal.sessionId, body);
   });
 
 export const nativeWorkstreamsHttpApiLayer = HttpApiBuilder.group(
@@ -202,6 +214,16 @@ export const nativeWorkstreamsHttpApiLayer = HttpApiBuilder.group(
       .handleRaw(
         "settlementLookup",
         createNativeWorkstreamsHttpHandler(runtime, "settlements/lookup"),
+      )
+      .handleRaw("contextV2", createNativeWorkstreamsHttpHandler(runtime, "context", "v2"))
+      .handleRaw(
+        "attestationsV2",
+        createNativeWorkstreamsHttpHandler(runtime, "attestations", "v2"),
+      )
+      .handleRaw("settlementsV2", createNativeWorkstreamsHttpHandler(runtime, "settlements", "v2"))
+      .handleRaw(
+        "settlementLookupV2",
+        createNativeWorkstreamsHttpHandler(runtime, "settlements/lookup", "v2"),
       );
   }),
 );

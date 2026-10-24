@@ -62,7 +62,7 @@ NodeTest.test("PNG metadata uses encoded physical dimensions", () => {
 const endpoint = {
   id: "primary",
   httpBaseUrl: "http://127.0.0.1:43773",
-  wsBaseUrl: "ws://127.0.0.1:43773/ws",
+  wsBaseUrl: "ws://127.0.0.1:43773/",
 };
 const threadCommand = {
   type: "thread.create",
@@ -306,6 +306,138 @@ NodeTest.test(
     NodeAssert.equal(cleared, "synthetic-timer");
   },
 );
+
+NodeTest.test(
+  "synthetic registration fixes executable/account and uses create-only settings RPC",
+  async () => {
+    for (const [instanceId, letter] of [
+      ["native-fixture-a", "A"],
+      ["native-fixture-b", "B"],
+    ]) {
+      const fixture = backendFixture();
+      await requestLocalBackend(
+        { endpoint, method: "registerSyntheticProvider", payload: { instanceId } },
+        fixture.dependencies,
+      );
+      const request = fixture.sockets[0].messages[0];
+      NodeAssert.equal(request.tag, "server.updateSettings");
+      NodeAssert.deepEqual(request.payload, {
+        patch: {},
+        providerInstanceMutation: {
+          operation: "create",
+          instanceId,
+          instance: {
+            driver: "codex",
+            displayName: "Synthetic " + letter,
+            enabled: true,
+            config: {
+              binaryPath: "/scratch/home/native-self-config/codex-" + letter,
+              homePath: "/scratch/home/native-self-config/account",
+            },
+          },
+        },
+      });
+      NodeAssert.equal(fixture.sockets[0].closed, true);
+    }
+  },
+);
+NodeTest.test(
+  "fixture thread readback uses authenticated V2 HTTP within its namespace",
+  async () => {
+    const fixture = backendFixture();
+    await requestLocalBackend(
+      { endpoint, method: "fixtureThread", payload: { threadId: "native-self-config-control" } },
+      fixture.dependencies,
+    );
+    NodeAssert.equal(
+      fixture.calls[0].url,
+      endpoint.httpBaseUrl + "/api/orchestration/threads/native-self-config-control",
+    );
+    NodeAssert.equal(fixture.calls[0].options.headers["x-t3-orchestration-protocol"], "2");
+    NodeAssert.equal(fixture.calls[0].options.credentials, "omit");
+  },
+);
+NodeTest.test(
+  "native hooks reject arbitrary providers, paths, methods and thread reads before authentication",
+  async () => {
+    const fixture = backendFixture();
+    fixture.dependencies.desktopBridge.getLocalEnvironmentBearerToken = () => {
+      throw new Error("authentication reached");
+    };
+    for (const [method, payload] of [
+      ["registerSyntheticProvider", { instanceId: "codex" }],
+      [
+        "registerSyntheticProvider",
+        { instanceId: "native-fixture-a", binaryPath: "/usr/bin/codex" },
+      ],
+      ["registerSyntheticProvider", { instanceId: "native-fixture-a", patch: {} }],
+      ["fixtureThread", { threadId: "live-thread" }],
+      ["fixtureThread", { threadId: "native-self-config-../escape" }],
+      ["fixtureThread", { threadId: "native-self-config-valid", arbitrary: true }],
+      ["arbitrary", {}],
+      ["dispatch", { type: "message.dispatch" }],
+      ["dispatch", { type: "thread.model-selection.update" }],
+    ])
+      await NodeAssert.rejects(
+        requestLocalBackend({ endpoint, method, payload }, fixture.dependencies),
+        (error) => !error.message.includes("authentication reached"),
+      );
+    NodeAssert.equal(fixture.calls.length, 0);
+  },
+);
+
+NodeTest.test(
+  "fixture RPC accepts the already-normalized /ws endpoint without duplicating its path",
+  async () => {
+    const fixture = backendFixture();
+    await requestLocalBackend(
+      {
+        endpoint: { ...endpoint, wsBaseUrl: "ws://127.0.0.1:43773/ws" },
+        method: "dispatch",
+        payload: threadCommand,
+      },
+      fixture.dependencies,
+    );
+    const url = new URL(fixture.sockets[0].url);
+    NodeAssert.equal(url.pathname, "/ws");
+    NodeAssert.equal(url.searchParams.get("orchestrationProtocol"), "2");
+    NodeAssert.equal(url.searchParams.get("wsTicket"), "synthetic-ticket");
+    NodeAssert.equal(fixture.sockets[0].closed, true);
+  },
+);
+
+NodeTest.test("linked checkpoint metadata admits only the exact synthetic fixture", async () => {
+  const payload = {
+    ...threadCommand,
+    threadId: "native-self-config-linked",
+    modelSelection: { instanceId: "native-fixture-a", model: "native-model-a" },
+    branch: "native-self-config-execution",
+    worktreePath: "/scratch/workspace/native-self-config-execution",
+  };
+  const accepted = backendFixture();
+  await requestLocalBackend({ endpoint, method: "dispatch", payload }, accepted.dependencies);
+  NodeAssert.equal(accepted.sockets[0].messages[0].payload.worktreePath, payload.worktreePath);
+  for (const mutation of [
+    { worktreePath: "/scratch/workspace/native-self-config-execution/../other" },
+    { worktreePath: "/scratch/workspace/.git" },
+    { branch: "other" },
+    { threadId: "live-thread" },
+    { modelSelection: { instanceId: "codex", model: "gpt-5" } },
+  ]) {
+    const rejected = backendFixture();
+    rejected.dependencies.desktopBridge.getLocalEnvironmentBearerToken = () => {
+      throw new Error("authentication reached");
+    };
+    await NodeAssert.rejects(
+      requestLocalBackend(
+        { endpoint, method: "dispatch", payload: { ...payload, ...mutation } },
+        rejected.dependencies,
+      ),
+      /exact synthetic linked worktree/,
+    );
+    NodeAssert.equal(rejected.calls.length, 0);
+  }
+});
 
 for (const [name, wsBaseUrl, expectedPath] of [
   ["root bootstrap URL", "ws://127.0.0.1:43773", "/ws"],
