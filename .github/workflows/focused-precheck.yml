@@ -1,0 +1,183 @@
+name: Focused precheck
+run-name: Focused precheck ${{ inputs.profile }} / ${{ inputs.request_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact candidate commit (40 lowercase hex)
+        type: string
+        required: true
+      candidate_branch:
+        description: Candidate branch label (concurrency only)
+        type: string
+        required: true
+      profile:
+        description: Pre-PR checks to run
+        type: choice
+        options: [static, tests, static-and-tests]
+        required: true
+        default: static
+      test_paths:
+        description: Up to 20 whitespace-separated tracked test files; empty for static
+        type: string
+        default: ""
+      request_id:
+        description: Unique correlation ID, 8-64 lowercase letters, digits or hyphens
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: focused-precheck-${{ inputs.candidate_branch }}-${{ inputs.profile }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  precheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      FP: ${{ runner.temp }}/focused-precheck/focused-precheck.cjs
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      INPUT_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      INPUT_CANDIDATE_BRANCH: ${{ inputs.candidate_branch }}
+      INPUT_PROFILE: ${{ inputs.profile }}
+      INPUT_TEST_PATHS: ${{ inputs.test_paths }}
+      INPUT_REQUEST_ID: ${{ inputs.request_id }}
+    steps:
+      # Keep the helper from the dispatch revision before checking out candidate code.
+      - name: Checkout trusted helper
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          path: .precheck-trusted
+          sparse-checkout: /.github/scripts/focused-precheck.cjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Preserve trusted helper
+        run: |
+          mkdir -p "$RUNNER_TEMP/focused-precheck"
+          cp .precheck-trusted/.github/scripts/focused-precheck.cjs "$FP"
+          sha256sum "$FP"
+          rm -rf -- .precheck-trusted
+
+      - name: Validate request before candidate checkout
+        id: validate
+        run: node "$FP" validate
+
+      - name: Checkout exact candidate
+        id: checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ steps.validate.outputs.candidate_sha }}
+          fetch-depth: 0
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Bind candidate and exact test selection
+        id: plan
+        run: node "$FP" plan
+
+      - name: Install C toolchain for process-tree fixtures
+        id: toolchain
+        if: steps.plan.outputs.tests == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential
+          command -v cc
+
+      - name: Setup Vite+
+        id: setup
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          # This action has no restore-only mode. Candidate installs must not write a main cache.
+          cache: false
+          run-install: true
+
+      - name: Ensure Electron runtime is installed
+        id: electron
+        run: vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Install browser secret helper build libraries
+        id: libraries
+        if: steps.plan.outputs.tests == 'true'
+        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
+
+      - name: Install Chromium for server browser integration tests
+        id: chromium
+        if: steps.plan.outputs.server == 'true'
+        run: node apps/server/node_modules/playwright-core/cli.js install --with-deps --only-shell chromium
+
+      - name: Record setup completion
+        id: ready
+        run: echo 'ready=true' >> "$GITHUB_OUTPUT"
+
+      - name: Check unused code
+        if: ${{ !cancelled() && steps.ready.outputs.ready == 'true' && steps.plan.outputs.static == 'true' }}
+        timeout-minutes: 10
+        run: node "$FP" run-check knip
+
+      - name: Verify Jones boundary accounting
+        if: ${{ !cancelled() && steps.ready.outputs.ready == 'true' && steps.plan.outputs.static == 'true' }}
+        timeout-minutes: 10
+        run: node "$FP" run-check boundary
+
+      - name: Check
+        if: ${{ !cancelled() && steps.ready.outputs.ready == 'true' && steps.plan.outputs.static == 'true' }}
+        timeout-minutes: 10
+        run: node "$FP" run-check vp-check
+
+      - name: Typecheck
+        if: ${{ !cancelled() && steps.ready.outputs.ready == 'true' && steps.plan.outputs.static == 'true' }}
+        timeout-minutes: 10
+        run: node "$FP" run-check typecheck
+
+      - name: Run exact test groups serially
+        if: ${{ !cancelled() && steps.ready.outputs.ready == 'true' && steps.plan.outputs.tests == 'true' }}
+        timeout-minutes: 15
+        run: node "$FP" run-tests
+
+      # Cancellation can stop the runner before these best-effort receipt steps execute.
+      - name: Finish receipt and require complete evidence
+        if: always()
+        env:
+          PRECHECK_SETUP_OK: ${{ steps.ready.outputs.ready == 'true' && !cancelled() }}
+        run: |
+          if test -f "$FP"; then
+            node "$FP" finish
+          else
+            mkdir -p "$RUNNER_TEMP/focused-precheck"
+            node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const receipt = { request: 'unknown', result: 'unavailable', checks: [], reason: 'trusted helper unavailable', not_covered: 'candidate tree, not the PR merge commit; not a required check; not merge approval' };
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'focused-precheck', 'receipt.json'), JSON.stringify(receipt, null, 2));
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, 'Focused precheck unavailable: trusted helper did not initialize.\n');
+          NODE
+            exit 1
+          fi
+
+      - name: Upload receipt
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ${{ steps.validate.outputs.artifact || format('focused-precheck-invalid-request-a{0}', github.run_attempt) }}
+          path: ${{ runner.temp }}/focused-precheck/receipt.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Remove task-owned temporary evidence after upload
+        if: always()
+        run: |
+          rm -rf -- "$RUNNER_TEMP/focused-precheck" .precheck-trusted
