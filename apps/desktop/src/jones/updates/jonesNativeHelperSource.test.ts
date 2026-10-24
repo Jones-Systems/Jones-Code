@@ -390,11 +390,11 @@ assert os.fsync is observed_fsync, 'Failed fixture seeding did not restore real 
 assert len(fsync_calls) == 2 * len(records)
 assert not list(manifest_path.parent.glob(manifest_path.name + '.*'))
 `;
-      runPython(
-        `${definitions}\n${observe}\n${setup}\n${scenario}`,
-        [f.directory, "success"],
-        { encoding: "utf8", timeout: 10000, maxBuffer: 1024 * 1024 },
-      );
+      runPython(`${definitions}\n${observe}\n${setup}\n${scenario}`, [f.directory, "success"], {
+        encoding: "utf8",
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
@@ -453,11 +453,11 @@ assert retired['status'] == 'retired', retired
 assert not (oldest / 'previous-pair' / 'state.sqlite').exists()
 assert all((generation / 'previous-pair' / 'state.sqlite').exists() for generation in generations[1:])
 `;
-      runPython(
-        `${definitions}\n${runtime}\n${scenario}`,
-        [f.directory, "success"],
-        { encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024 },
-      );
+      runPython(`${definitions}\n${runtime}\n${scenario}`, [f.directory, "success"], {
+        encoding: "utf8",
+        timeout: 10_000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
@@ -533,11 +533,11 @@ else:
             assert 'cleanup' in journal['message']
         else: assert 'recoveryReserveCleanup' not in journal
 `;
-        runPython(
-          `${definitions}\n${runtime}\n${scenario}`,
-          [f.directory, "success", boundary],
-          { encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024 },
-        );
+        runPython(`${definitions}\n${runtime}\n${scenario}`, [f.directory, "success", boundary], {
+          encoding: "utf8",
+          timeout: 10_000,
+          maxBuffer: 1024 * 1024,
+        });
       } finally {
         await f.cleanup();
       }
@@ -594,11 +594,11 @@ assert run('--claim-preparation', staged['handle'], '--transaction', transaction
 assert run('--claim-activation', str(request))['reason'] == 'preparation-withdrawn'
 assert read(pathlib.Path(retired['retiredPath']) / 'preparation-withdrawal.json') == proof
 `;
-      runPython(
-        `${definitions}\n${setup}\n${scenario}`,
-        [f.directory, "withdraw"],
-        { encoding: "utf8", timeout: 15_000, maxBuffer: 1024 * 1024 },
-      );
+      runPython(`${definitions}\n${setup}\n${scenario}`, [f.directory, "withdraw"], {
+        encoding: "utf8",
+        timeout: 15_000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
@@ -689,11 +689,11 @@ else:
 assert selection_path.exists() and attempt_path.exists()
 assert (profile / 'opaque').read_text() == 'same-host-profile'
 `;
-      runPython(
-        `${definitions}\n${setup}\n${scenario}`,
-        [f.directory, fault],
-        { encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024 },
-      );
+      runPython(`${definitions}\n${setup}\n${scenario}`, [f.directory, fault], {
+        encoding: "utf8",
+        timeout: 10_000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
@@ -767,11 +767,11 @@ finally:
     if child.poll() is None: child.kill()
     child.wait(timeout=5)
 `;
-        runPython(
-          `${definitions}\n${setup}\n${scenario}`,
-          [f.directory, order],
-          { encoding: "utf8", timeout: 20_000, maxBuffer: 1024 * 1024 },
-        );
+        runPython(`${definitions}\n${setup}\n${scenario}`, [f.directory, order], {
+          encoding: "utf8",
+          timeout: 20_000,
+          maxBuffer: 1024 * 1024,
+        });
       } finally {
         await f.cleanup();
       }
@@ -896,11 +896,10 @@ else:
     assert (tx / 'journal.json').read_bytes() == before_journal
     assert writes == []
 `;
-      runPython(
-        definitions + "\n" + setup + "\n" + scenario,
-        [f.directory, "success", mode],
-        { encoding: "utf8", timeout: 10000 },
-      );
+      runPython(definitions + "\n" + setup + "\n" + scenario, [f.directory, "success", mode], {
+        encoding: "utf8",
+        timeout: 10000,
+      });
     } finally {
       await f.cleanup();
     }
@@ -940,14 +939,10 @@ assert read(manifest_path.with_name(manifest_path.name + '.superseded')) == stal
 assert (state / 'statev2.sqlite').read_bytes() == b'synthetic state'
 assert reconcile_running(request, digest(request)) == {'protocol': 1, 'status': 'refused', 'reason': 'running-changed'}
 `;
-      runPython(
-        definitions + "\n" + scenario,
-        [f.directory],
-        {
-          encoding: "utf8",
-          timeout: 10000,
-        },
-      );
+      runPython(definitions + "\n" + scenario, [f.directory], {
+        encoding: "utf8",
+        timeout: 10000,
+      });
     } finally {
       await f.cleanup();
     }
@@ -1129,15 +1124,11 @@ else:
     assert result == ({'kind': 'absent'} if fault == 'absent' else guard) if operation == 'fence' else result['state'] in ('advanced', 'absent')
 assert len(calls) == (0 if fault in ('wrong-source', 'wrong-version', 'digest-drift', 'binary-link', 'binary-mode') else 1)
 `;
-        runPython(
-          nativeFunctions + "\n" + scenario,
-          [f.directory, fault],
-          {
-            encoding: "utf8",
-            maxBuffer: 1024 * 1024,
-            timeout: 10000,
-          },
-        );
+        runPython(nativeFunctions + "\n" + scenario, [f.directory, fault], {
+          encoding: "utf8",
+          maxBuffer: 1024 * 1024,
+          timeout: 10000,
+        });
       } finally {
         await f.cleanup();
       }
@@ -1165,15 +1156,11 @@ assert all(name not in captured for name in selectors)
 assert captured['T3CODE_JONES_ACTIVE_GENERATION'] == 'new-generation'
 assert captured['T3CODE_HOME'] == '/synthetic'
 `;
-    runPython(
-      nativeFunctions + "\n" + scenario,
-      [],
-      {
-        encoding: "utf8",
-        maxBuffer: 1024 * 1024,
-        timeout: 10000,
-      },
-    );
+    runPython(nativeFunctions + "\n" + scenario, [], {
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 10000,
+    });
   });
 
   it.each([
@@ -1640,15 +1627,11 @@ assert (profile / 'opaque').read_text() == 'advanced-profile'
 assert {str(path): digest(path) for path in first.rglob('*') if path.is_file()} == retained
 assert read(staged['receiptPath'])['app'] == staged
 `;
-      runPython(
-        `${nativeFunctions}\n${runtime}\n${scenario}`,
-        [f.directory, "trial-mismatch"],
-        {
-          encoding: "utf8",
-          timeout: 10000,
-          maxBuffer: 1024 * 1024,
-        },
-      );
+      runPython(`${nativeFunctions}\n${runtime}\n${scenario}`, [f.directory, "trial-mismatch"], {
+        encoding: "utf8",
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
@@ -1692,15 +1675,11 @@ assert read(tx / 'journal.json') == prior_journal
 assert (tx / 'retained-evidence').read_text() == 'previous attempt retained'
 assert read(staged['receiptPath'])['app']['handle'] == staged['handle']
 `;
-        runPython(
-          `${nativeFunctions}\n${setup}\n${scenario}`,
-          [f.directory, fault],
-          {
-            encoding: "utf8",
-            timeout: 10000,
-            maxBuffer: 1024 * 1024,
-          },
-        );
+        runPython(`${nativeFunctions}\n${setup}\n${scenario}`, [f.directory, fault], {
+          encoding: "utf8",
+          timeout: 10000,
+          maxBuffer: 1024 * 1024,
+        });
       } finally {
         await f.cleanup();
       }
@@ -1747,15 +1726,11 @@ finally:
     sys.platform = original_platform
 assert not path.exists() and sibling.read_text() == 'keep'
 `;
-      runPython(
-        `${nativeFunctions}\n${scenario}`,
-        [f.directory],
-        {
-          encoding: "utf8",
-          timeout: 10000,
-          maxBuffer: 1024 * 1024,
-        },
-      );
+      runPython(`${nativeFunctions}\n${scenario}`, [f.directory], {
+        encoding: "utf8",
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
@@ -1807,15 +1782,11 @@ else:
         assert not (tx / 'journal.json').exists()
 assert (profile / 'opaque').read_text() == 'same-host-profile'
 `;
-      runPython(
-        `${nativeFunctions}\n${setup}\n${scenario}`,
-        [f.directory, fault],
-        {
-          encoding: "utf8",
-          timeout: 10000,
-          maxBuffer: 1024 * 1024,
-        },
-      );
+      runPython(`${nativeFunctions}\n${setup}\n${scenario}`, [f.directory, fault], {
+        encoding: "utf8",
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
@@ -1872,15 +1843,11 @@ finally:
     if child.poll() is None: child.kill()
     child.wait(timeout=5)
 `;
-      runPython(
-        `${nativeFunctions}\n${setup}\n${scenario}`,
-        [f.directory, "interleaved"],
-        {
-          encoding: "utf8",
-          timeout: 15000,
-          maxBuffer: 1024 * 1024,
-        },
-      );
+      runPython(`${nativeFunctions}\n${setup}\n${scenario}`, [f.directory, "interleaved"], {
+        encoding: "utf8",
+        timeout: 15000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
@@ -1930,15 +1897,11 @@ except RuntimeError as error: assert 'inode changed' in str(error)
 else: raise AssertionError('Replaced lease inode was accepted')
 assert old.exists()
 `;
-      runPython(
-        `${nativeFunctions}\n${scenario}`,
-        [f.directory],
-        {
-          encoding: "utf8",
-          timeout: 10000,
-          maxBuffer: 1024 * 1024,
-        },
-      );
+      runPython(`${nativeFunctions}\n${scenario}`, [f.directory], {
+        encoding: "utf8",
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
@@ -2019,11 +1982,11 @@ assert payload.read_text() == 'synthetic-qualified-dmg'
 assert (profile / 'opaque').read_text() == 'same-host-profile'
 with sqlite3.connect(database) as db: assert db.execute('SELECT value FROM identity').fetchone()[0] == 'previous-state'
 `;
-      runPython(
-        `${nativeFunctions}\n${setup}\n${scenario}`,
-        [f.directory, fault],
-        { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
-      );
+      runPython(`${nativeFunctions}\n${setup}\n${scenario}`, [f.directory, fault], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      });
     } finally {
       await f.cleanup();
     }
@@ -2280,15 +2243,11 @@ with open(lock_path, 'r+') as lock:
         assert json.loads(result.stdout) == {'protocol': 1, 'operation': operation, 'transactionId': 'e' * 64, 'status': 'refused', 'reason': 'busy'}
 assert sorted(path.name for path in root.iterdir()) == ['jones-activation.lock', 'manifest.json', 'synthetic-helper.py']
 `;
-      runPython(
-        `${nativeFunctions}\n${scenario}`,
-        [f.directory],
-        {
-          encoding: "utf8",
-          maxBuffer: 1024 * 1024,
-          timeout: 10000,
-        },
-      );
+      runPython(`${nativeFunctions}\n${scenario}`, [f.directory], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      });
     } finally {
       await f.cleanup();
     }
@@ -2468,11 +2427,11 @@ restore_pair(expected, root / 'pair', root / 'advanced', expected)
 with sqlite3.connect(database) as db:
     assert db.execute('SELECT value FROM identity').fetchone()[0] == 'previous'
 `;
-      runPython(
-        `${nativeFunctions}\n${scenario}`,
-        [f.directory],
-        { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
-      );
+      runPython(`${nativeFunctions}\n${scenario}`, [f.directory], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      });
     } finally {
       await f.cleanup();
     }
@@ -2534,15 +2493,11 @@ try: storage_preflight(expected, staged, recursive)
 except RuntimeError as error: assert 'own destination' in str(error)
 else: raise AssertionError('Recursive database snapshot was accepted')
 `;
-      runPython(
-        `${nativeFunctions}\n${scenario}`,
-        [f.directory],
-        {
-          encoding: "utf8",
-          maxBuffer: 1024 * 1024,
-          timeout: 10000,
-        },
-      );
+      runPython(`${nativeFunctions}\n${scenario}`, [f.directory], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      });
     } finally {
       await f.cleanup();
     }
@@ -2587,15 +2542,11 @@ for suffix in ('', '-wal', '-shm'):
     assert pathlib.Path(str(database) + suffix).read_bytes() == ('old' + suffix).encode()
     assert (tx / 'advanced' / (database.name + suffix)).read_bytes() == ('advanced' + suffix).encode()
 `;
-      runPython(
-        `${nativeFunctions}\n${scenario}`,
-        [f.directory],
-        {
-          encoding: "utf8",
-          maxBuffer: 1024 * 1024,
-          timeout: 10000,
-        },
-      );
+      runPython(`${nativeFunctions}\n${scenario}`, [f.directory], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      });
     } finally {
       await f.cleanup();
     }
@@ -2637,11 +2588,11 @@ for suffix, content in contents.items():
     assert pathlib.Path(str(database) + suffix).read_bytes() == content
     assert (root / 'copy-advanced' / ('state.sqlite' + suffix)).read_bytes() == b'advanced state'
 `;
-      runPython(
-        `${nativeFunctions}\n${scenario}`,
-        [f.directory],
-        { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
-      );
+      runPython(`${nativeFunctions}\n${scenario}`, [f.directory], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      });
     } finally {
       await f.cleanup();
     }
@@ -2683,15 +2634,11 @@ finally:
     if child.returncode is None: child.kill()
     child.wait(timeout=2)
 `;
-    runPython(
-      `${nativeFunctions}\n${scenario}`,
-      [],
-      {
-        encoding: "utf8",
-        maxBuffer: 1024 * 1024,
-        timeout: 10000,
-      },
-    );
+    runPython(`${nativeFunctions}\n${scenario}`, [], {
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 10000,
+    });
   });
 
   it("withholds signals on reused identities and failed observations, and retains the stop deadline", () => {
@@ -2769,15 +2716,11 @@ for birth in ('Sa 10 Okt 08:20:14 2026', '2026年10月10日 08:20:14'):
     blocked([result(birth + ' /different/process'), result(birth + ' S')], 'Process identity changed; signal withheld.')
     blocked([zombie, result(birth.replace('08:20:14', '08:20:15') + ' Z')], 'Process identity changed; signal withheld.')
 `;
-    runPython(
-      `${nativeFunctions}\n${scenario}`,
-      [],
-      {
-        encoding: "utf8",
-        maxBuffer: 1024 * 1024,
-        timeout: 10000,
-      },
-    );
+    runPython(`${nativeFunctions}\n${scenario}`, [], {
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 10000,
+    });
   });
 
   it("checks native files and the whole profile tree, refusing writers or incomplete access", () => {
@@ -2808,15 +2751,11 @@ try: inspect('', 1, "lsof: WARNING: can't stat() /synthetic/profile/Local Storag
 except RuntimeError: pass
 else: raise AssertionError('An incomplete profile inspection was accepted')
 `;
-    runPython(
-      `${nativeFunctions}\n${scenario}`,
-      [],
-      {
-        encoding: "utf8",
-        maxBuffer: 1024 * 1024,
-        timeout: 10000,
-      },
-    );
+    runPython(`${nativeFunctions}\n${scenario}`, [], {
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 10000,
+    });
   });
 
   it("checks normal native launch identity from bounded plist and ASAR metadata", async () => {
@@ -2849,11 +2788,11 @@ for key, bad in (('sourceSha', 'c' * 40), ('sourceTree', 'd' * 40), ('version', 
     except RuntimeError: pass
     else: raise AssertionError('A changed bundle identity was accepted')
 `;
-      runPython(
-        `${nativeFunctions}\n${scenario}`,
-        [f.directory],
-        { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
-      );
+      runPython(`${nativeFunctions}\n${scenario}`, [f.directory], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      });
     } finally {
       await f.cleanup();
     }
@@ -2923,11 +2862,11 @@ assert (root / 'advanced-state' / 'profile').exists() == legacy
 if legacy: assert (root / 'advanced-state' / 'profile' / 'opaque-profile').read_text() == 'advanced-profile'
 assert (pair / 'state.sqlite').exists() == legacy
 `;
-        runPython(
-          `${nativeFunctions}\n${scenario}`,
-          [f.directory, String(legacy)],
-          { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
-        );
+        runPython(`${nativeFunctions}\n${scenario}`, [f.directory, String(legacy)], {
+          encoding: "utf8",
+          maxBuffer: 1024 * 1024,
+          timeout: 10000,
+        });
       } finally {
         await f.cleanup();
       }
@@ -2995,11 +2934,10 @@ else:
     assert (profile / 'opaque').read_bytes() == b'profile'
     assert not (advanced / 'profile').exists()
 `;
-        runPython(
-          definitions + "\n" + scenario,
-          [f.directory, fault],
-          { encoding: "utf8", timeout: 10000 },
-        );
+        runPython(definitions + "\n" + scenario, [f.directory, fault], {
+          encoding: "utf8",
+          timeout: 10000,
+        });
       } finally {
         await f.cleanup();
       }
@@ -3019,11 +2957,11 @@ else:
       const nativeFunctions = jonesNativeHelperSource.split(
         "\nparser = argparse.ArgumentParser()",
       )[0];
-      const digest = runPython(
-        `${nativeFunctions}\nprint(app_digest(sys.argv[1]))`,
-        [app],
-        { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
-      ).trim();
+      const digest = runPython(`${nativeFunctions}\nprint(app_digest(sys.argv[1]))`, [app], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      }).trim();
       expect(await hashMacApp(app)).toBe(digest);
       await NodeFSP.symlink(f.directory, NodePath.join(app, "escape"));
       await expect(hashMacApp(app)).rejects.toThrow("escapes");
