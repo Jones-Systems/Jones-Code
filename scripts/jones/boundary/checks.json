@@ -2780,6 +2780,37 @@
         "knip --workspace apps/server --exports --preprocessor ./scripts/knip-schemas.ts --no-config-hints",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-native-electron-workflows",
+      "tests": [
+        "apps/desktop/scripts/ui-evidence/endpoint-trace.test.mjs",
+        "apps/desktop/scripts/ui-evidence/lifecycle.test.mjs",
+        "apps/desktop/scripts/ui-evidence/manifest.test.mjs",
+        "apps/desktop/scripts/ui-evidence/package-admission.test.mjs",
+        "apps/desktop/scripts/ui-evidence/peer-dependency.test.mjs",
+        "apps/desktop/scripts/ui-evidence/provenance.test.mjs",
+        "apps/desktop/scripts/ui-evidence/queue-edit-cancel.test.mjs",
+        "apps/desktop/scripts/ui-evidence/runner-restart-progress.test.mjs",
+        "apps/desktop/scripts/ui-evidence/runtime.test.mjs",
+        "apps/desktop/scripts/ui-evidence/sandbox.test.mjs",
+        "apps/desktop/scripts/ui-evidence/scenario-api.test.mjs",
+        "apps/desktop/scripts/ui-evidence/secondary-server.test.mjs",
+        "apps/desktop/scripts/ui-evidence/secret-service-stage.test.mjs",
+        "apps/desktop/scripts/ui-evidence/secret-service.test.mjs",
+        "apps/desktop/scripts/ui-evidence/sidebar-pin-reload.test.mjs",
+        "apps/desktop/scripts/ui-evidence/sidebar-pin-restart.test.mjs",
+        "apps/desktop/scripts/ui-evidence/startup-diagnostics.test.mjs",
+        "apps/desktop/scripts/ui-evidence/thread-self-configure.test.mjs",
+        "apps/desktop/scripts/ui-evidence/two-clients-one-server.test.mjs",
+        "apps/desktop/scripts/ui-evidence/two-servers-one-client.test.mjs",
+        "scripts/jones/e2e/acp-stub/agent.node-test.mjs"
+      ],
+      "commands": [
+        "vp run test:ui-evidence",
+        "node --test --test-concurrency=1 scripts/jones/e2e/acp-stub/agent.node-test.mjs",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }

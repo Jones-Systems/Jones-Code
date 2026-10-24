@@ -1735,6 +1735,33 @@
         "apps/server/src/jones/pullRequest/pullRequestScopeLocks.test.ts"
       ],
       "scope": "Concurrent sorted shared scope reads and exclusive invalidation avoid waiting for unrelated lookups while preserving revision ordering, persistence, cancellation and fairness. Jones lock helper has a narrow cache import; small shared cache edits retain private revision state, and colocated integration tests reuse the existing filesystem/fault harness."
+    },
+    {
+      "id": "native-electron-workflows",
+      "tests": [
+        "apps/desktop/scripts/ui-evidence/endpoint-trace.test.mjs",
+        "apps/desktop/scripts/ui-evidence/lifecycle.test.mjs",
+        "apps/desktop/scripts/ui-evidence/manifest.test.mjs",
+        "apps/desktop/scripts/ui-evidence/package-admission.test.mjs",
+        "apps/desktop/scripts/ui-evidence/peer-dependency.test.mjs",
+        "apps/desktop/scripts/ui-evidence/provenance.test.mjs",
+        "apps/desktop/scripts/ui-evidence/queue-edit-cancel.test.mjs",
+        "apps/desktop/scripts/ui-evidence/runner-restart-progress.test.mjs",
+        "apps/desktop/scripts/ui-evidence/runtime.test.mjs",
+        "apps/desktop/scripts/ui-evidence/sandbox.test.mjs",
+        "apps/desktop/scripts/ui-evidence/scenario-api.test.mjs",
+        "apps/desktop/scripts/ui-evidence/secondary-server.test.mjs",
+        "apps/desktop/scripts/ui-evidence/secret-service-stage.test.mjs",
+        "apps/desktop/scripts/ui-evidence/secret-service.test.mjs",
+        "apps/desktop/scripts/ui-evidence/sidebar-pin-reload.test.mjs",
+        "apps/desktop/scripts/ui-evidence/sidebar-pin-restart.test.mjs",
+        "apps/desktop/scripts/ui-evidence/startup-diagnostics.test.mjs",
+        "apps/desktop/scripts/ui-evidence/thread-self-configure.test.mjs",
+        "apps/desktop/scripts/ui-evidence/two-clients-one-server.test.mjs",
+        "apps/desktop/scripts/ui-evidence/two-servers-one-client.test.mjs",
+        "scripts/jones/e2e/acp-stub/agent.node-test.mjs"
+      ],
+      "scope": "Five advisory Linux Electron journeys run nightly, manually or on the native-e2e PR label: pin/unpin and rename through reload and full process restart with unchanged backend control; synthetic-provider self-configuration and follow-up continuity; queue edit/cancel with unchanged-draft and exactly-once delivery oracles; ordinarily paired read-only Node observer updates and reconnect; independent-server endpoint/credential isolation and encrypted catalog disable/re-enable persistence. The observer sends zero commands; its cache guards do not prove production-client cache behavior. Source tests preserve lifecycle, process identity, sibling isolation, unknown cleanup, endpoint trace truth and synthetic ACP protocol checks. Native checks bind the observed Electron version to the candidate manifest, build once and preserve first failures. Source checks do not qualify native execution, live provider inference, physical hosts or timing. The inherited two-server trace timeout remains an unresolved native qualification gap."
     }
   ]
 }

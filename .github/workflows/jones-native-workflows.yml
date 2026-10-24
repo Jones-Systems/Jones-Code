@@ -1,0 +1,970 @@
+# Advisory until current-head native qualification: https://github.com/Jones-Systems/Jones-Code/issues/592
+name: Jones native workflows
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+  schedule:
+    - cron: "23 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jones-native-workflows-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect native workflow changes
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'native-e2e')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      changed: ${{ steps.paths.outputs.changed }}
+    steps:
+      - name: Fetch exact pull request commits anonymously
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$REPOSITORY" == Jones-Systems/Jones-Code ]]
+          cd "$GITHUB_WORKSPACE"
+          test -z "$(ls -A)"
+          git init -q .
+          git remote add origin "https://github.com/$REPOSITORY.git"
+          for attempt in 1 2 3; do
+            if git fetch --no-tags --no-recurse-submodules origin \
+                "+$BASE_SHA:refs/remotes/origin/pr-base" "+$HEAD_SHA:refs/remotes/origin/pr-head"; then break; fi
+            echo "Anonymous fetch attempt $attempt failed" >> "$GITHUB_STEP_SUMMARY"
+            test "$attempt" != 3; sleep 10
+          done
+          test "$(git rev-parse "$BASE_SHA^{commit}")" = "$BASE_SHA"
+          test "$(git rev-parse "$HEAD_SHA^{commit}")" = "$HEAD_SHA"
+          git merge-base "$BASE_SHA" "$HEAD_SHA" > /dev/null
+          if git config --local --name-only --get-regexp '^(http\..*\.extraheader|credential\..*|includeif\..*|url\..*\.insteadof|core\.sshcommand)$'; then
+            echo 'Unexpected local credential configuration' >&2
+            exit 1
+          else
+            config_status=$?
+            if [ "$config_status" != 1 ]; then
+              echo 'Cannot verify local credential configuration' >&2
+              exit "$config_status"
+            fi
+          fi
+          if compgen -G "$RUNNER_TEMP/git-credentials-*" > /dev/null; then
+            echo 'Unexpected checkout credential file' >&2
+            exit 1
+          fi
+      - name: Select native workflow paths
+        id: paths
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT_NAME" != pull_request ]; then
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          else
+            changed_paths=$(git diff --name-only "$BASE_SHA...$HEAD_SHA" -- \
+              .github/workflows/jones-native-workflows.yml \
+              'apps/desktop/**' 'apps/web/src/components/Sidebar*' \
+              'apps/web/src/components/sidebar/**' 'apps/web/src/jones/workstreams/**' \
+              'apps/web/src/state/**' 'apps/web/src/lib/api*' \
+              'apps/server/src/jones/workstreams/**' 'apps/server/src/orchestration-v2/**' \
+              'apps/server/src/auth/**' 'apps/server/src/ws*' \
+              'apps/server/src/persistence/**' 'scripts/jones/e2e/**' \
+              'packages/client-runtime/**' 'packages/contracts/**' 'packages/shared/**' \
+              'scripts/lib/**' 'native/browser-secret/**' \
+              'apps/server/package.json' 'apps/server/vite.config.ts' \
+              'apps/web/package.json' 'apps/web/vite.config.ts' \
+              package.json pnpm-lock.yaml pnpm-workspace.yaml vite.config.ts patches)
+            if [ -n "$changed_paths" ]; then
+              echo 'changed=true' >> "$GITHUB_OUTPUT"
+            else
+              echo 'changed=false' >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+  # This dedicated check is not part of CI's aggregate Check. Native qualification
+  # here covers five Linux journeys: sidebar persistence, self-configuration,
+  # queue editing/cancellation, observer reconnect and independent-server isolation.
+  electron-ui-evidence:
+    name: Jones Electron native workflows
+    needs: changes
+    if: needs.changes.outputs.changed == 'true' && github.event.pull_request.draft != true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    env:
+      JCUE_HARNESS_OID: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Allocate job-owned evidence and state
+        run: |
+          task_root=$(mktemp -d "$RUNNER_TEMP/jones-native.XXXXXX")
+          mkdir -m 700 "$task_root/evidence" "$task_root/state"
+          echo "JCUE_TASK_ROOT=$task_root" >> "$GITHUB_ENV"
+          echo "JCUE_RUNTIME_CACHE=$RUNNER_TEMP/jones-native-runtime-cache" >> "$GITHUB_ENV"
+          echo "JCUE_OUTPUT=$task_root/evidence" >> "$GITHUB_ENV"
+          echo "XDG_STATE_HOME=$task_root/state" >> "$GITHUB_ENV"
+          date +%s > "$task_root/evidence/steps-started-epoch.txt"
+
+      - name: Checkout exact candidate anonymously
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$REPOSITORY" == Jones-Systems/Jones-Code ]]
+          test "$CANDIDATE_SHA" = "$JCUE_HARNESS_OID"
+          cd "$GITHUB_WORKSPACE"
+          test -z "$(ls -A)"
+          git --version > "$JCUE_OUTPUT/checkout-git-version.txt"
+          git init -q .
+          git remote add origin "https://github.com/$REPOSITORY.git"
+          git config --local core.sparseCheckout true
+          printf '/*\n!/.repos/\n' > "$(git rev-parse --git-path info/sparse-checkout)"
+          for attempt in 1 2 3; do
+            if git fetch --no-tags --no-recurse-submodules origin "+$CANDIDATE_SHA:refs/remotes/origin/candidate"; then break; fi
+            echo "Anonymous fetch attempt $attempt failed" >> "$GITHUB_STEP_SUMMARY"
+            test "$attempt" != 3; sleep 10
+          done
+          git checkout -q --detach "$CANDIDATE_SHA"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git diff-index --cached --quiet HEAD
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          test ! -e .repos
+          if git config --local --name-only --get-regexp '^(http\..*\.extraheader|credential\..*|includeif\..*|url\..*\.insteadof|core\.sshcommand)$'; then
+            echo 'Unexpected local credential configuration' >&2
+            exit 1
+          else
+            config_status=$?
+            if [ "$config_status" != 1 ]; then
+              echo 'Cannot verify local credential configuration' >&2
+              exit "$config_status"
+            fi
+          fi
+          test "$(git config --local --get remote.origin.url)" = "https://github.com/$REPOSITORY.git"
+          if compgen -G "$RUNNER_TEMP/git-credentials-*" > /dev/null; then
+            echo 'Unexpected checkout credential file' >&2
+            exit 1
+          fi
+          { git rev-parse HEAD; git ls-files --stage | awk '$1 == "160000"'; } > "$JCUE_OUTPUT/checkout-readback.txt"
+
+      - name: Setup pinned Vite+ and dependencies
+        uses: voidzero-dev/setup-vp@8a7496fd44e8a1b0a88a7459e36213b2fefc1d15 # v1
+        with:
+          version: 1.3.0
+          node-version: 26.12.1
+          cache: true
+          cache-dependency-path: pnpm-lock.yaml
+          run-install: |
+            args: ['--frozen-lockfile']
+
+      - name: Bind driver pins to the candidate manifests
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          const pkg = JSON.parse(fs.readFileSync('apps/desktop/package.json'));
+          const electron = pkg.dependencies.electron;
+          assert.match(electron, /^\d+\.\d+\.\d+$/);
+          fs.appendFileSync(process.env.GITHUB_ENV, `JCUE_ELECTRON_VERSION=${electron}\n`);
+          assert.equal(pkg.dependencies['playwright-core'], '1.60.0');
+          const root = JSON.parse(fs.readFileSync('package.json'));
+          assert.equal(process.version, `v${root.engines.node}`);
+          NODE
+          vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Install native prerequisites on the ephemeral runner
+        run: |
+          sudo -n apt-get update
+          sudo -n apt-get install -y --no-install-recommends \
+            bubblewrap xvfb unzip fontconfig fonts-dejavu-core \
+            libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libdrm2 \
+            libxcomposite1 libxdamage1 libxrandr2 libgbm1 libasound2t64 \
+            libgtk-3-0t64 libx11-6 libxcb1 libxkbcommon0 libsecret-1-dev pkg-config \
+            gnome-keyring dbus libglib2.0-bin
+          dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' \
+            gnome-keyring dbus libglib2.0-bin > "$JCUE_OUTPUT/secret-service-packages.txt"
+          dpkg-query -S /usr/bin/gnome-keyring-daemon /usr/bin/dbus-daemon /usr/bin/gdbus \
+            > "$JCUE_OUTPUT/secret-service-package-owners.txt"
+          sha256sum /usr/bin/gnome-keyring-daemon /usr/bin/dbus-daemon /usr/bin/gdbus \
+            > "$JCUE_OUTPUT/secret-service-system.sha256"
+          # The sandbox mounts /usr, not the tool cache containing setup-vp's Node.
+          pinned_node=$(node -p 'process.execPath')
+          if [ -x /usr/bin/node ]; then
+            /usr/bin/node --version > "$JCUE_OUTPUT/system-node-before.txt"
+          else
+            printf '%s\n' 'unavailable: /usr/bin/node is absent or not executable' > "$JCUE_OUTPUT/system-node-before.txt"
+          fi
+          if ! cmp -s "$pinned_node" /usr/bin/node; then
+            sudo -n install -m 0755 "$pinned_node" /usr/bin/node
+          fi
+          cmp "$pinned_node" /usr/bin/node
+          /usr/bin/node --version > "$JCUE_OUTPUT/system-node-after.txt"
+          sha256sum /usr/bin/node > "$JCUE_OUTPUT/system-node.sha256"
+
+      - name: Restore checksum-verified Electron download cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ env.JCUE_RUNTIME_CACHE }}/jones-code-ui-evidence/electron/${{ env.JCUE_ELECTRON_VERSION }}
+          key: jones-native-electron-ubuntu-24.04-x64-${{ env.JCUE_ELECTRON_VERSION }}-${{ hashFiles('pnpm-lock.yaml', 'apps/desktop/scripts/ui-evidence/runtime.mjs') }}
+
+      - name: Prepare pinned sandbox runtime
+        env:
+          XDG_CACHE_HOME: ${{ env.JCUE_RUNTIME_CACHE }}
+        run: node apps/desktop/scripts/ui-evidence.mjs setup --source "$GITHUB_WORKSPACE" > "$JCUE_OUTPUT/runtime-setup.json"
+
+      - name: Probe rootless namespaces before any runner-only adjustment
+        env:
+          XDG_CACHE_HOME: ${{ env.JCUE_RUNTIME_CACHE }}
+        run: |
+          doctor_code=0
+          node apps/desktop/scripts/ui-evidence.mjs doctor --source "$GITHUB_WORKSPACE" > "$JCUE_OUTPUT/doctor-before-build.json" || doctor_code=$?
+          test "$doctor_code" = 0 || test "$doctor_code" = 2
+          restricted=$(node --input-type=module -e '
+            import fs from "node:fs";
+            const report = JSON.parse(fs.readFileSync(process.env.JCUE_OUTPUT + "/doctor-before-build.json"));
+            const check = report.checks.find(c => c.name === "nested-user-namespace");
+            if (!check) throw new Error("Missing namespace probe");
+            console.log(check.status === "failed" ? "yes" : "no");')
+          if [ "$restricted" = yes ]; then
+            test "$RUNNER_ENVIRONMENT" = github-hosted
+            test "$(id -u)" != 0
+            key=kernel.apparmor_restrict_unprivileged_userns
+            before=$(sysctl -n "$key")
+            printf '%s\n' "$before" > "$JCUE_OUTPUT/userns-before.txt"
+            test "$before" = 1
+            sudo -n sysctl -w "$key=0" > "$JCUE_OUTPUT/userns-adjustment.txt"
+            sysctl -n "$key" > "$JCUE_OUTPUT/userns-after.txt"
+            test "$(cat "$JCUE_OUTPUT/userns-after.txt")" = 0
+          fi
+
+      - name: Check the focused harness source group
+        run: |
+          vp run test:ui-evidence
+          node --test --test-concurrency=1 scripts/jones/e2e/acp-stub/agent.node-test.mjs
+
+      - name: Build once and bind the operator receipt
+        run: |
+          unset T3CODE_DESKTOP_DEV T3CODE_PACK_EXE T3CODE_PACK_EXE_TARGET VITE_HTTP_URL VITE_WS_URL
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs/promises';
+          import { execFileSync, spawnSync } from 'node:child_process';
+          import { collectProvenance, sha256 } from './apps/desktop/scripts/ui-evidence/provenance.mjs';
+          const git = (...args) => execFileSync('git', args);
+          const head = git('rev-parse', 'HEAD').toString().trim();
+          assert.equal(head, process.env.JCUE_HARNESS_OID);
+          assert.equal(git('status', '--porcelain=v1', '-z', '--untracked-files=all').length, 0);
+          for (const file of ['.env', '.env.local']) {
+            await assert.rejects(fs.lstat(file), { code: 'ENOENT' });
+          }
+          const startedAt = new Date().toISOString();
+          const build = spawnSync('vp', ['run', 'build:desktop'], { stdio: 'inherit' });
+          if (build.error) throw build.error;
+          if (build.status !== 0) process.exit(build.status ?? 1);
+          const finishedAt = new Date().toISOString();
+          const source = process.cwd();
+          const artifacts = `${process.env.JCUE_OUTPUT}/build`;
+          await fs.mkdir(artifacts);
+          const result = await collectProvenance({ source, harness: source, artifacts,
+            buildPaths: { desktop: `${source}/apps/desktop/dist-electron`,
+              server: `${source}/apps/server/dist`, web: `${source}/apps/server/dist/client` } });
+          assert.equal(result.source.head, head);
+          assert.equal(result.source.clean, true);
+          assert.equal(result.source.statusSha256, sha256(''));
+          assert.equal(result.source.patch.sha256, sha256(''));
+          assert.equal(result.source.untracked.sha256, sha256('[]'));
+          const receipt = { schema: 'jones-code-ui-evidence-build/v1',
+            source: { head, statusSha256: result.source.statusSha256,
+              patchSha256: result.source.patch.sha256, untrackedSha256: result.source.untracked.sha256 },
+            build: Object.fromEntries(['desktop', 'server', 'web', 'boot'].map(n => [n, result.build[n].sha256])),
+            invocation: 'vp run build:desktop (development/packaged overrides unset)', startedAt, finishedAt };
+          await fs.writeFile(`${artifacts}/receipt.json`, JSON.stringify(receipt, null, 2));
+          NODE
+
+      - name: Require complete native doctor
+        env:
+          XDG_CACHE_HOME: ${{ env.JCUE_RUNTIME_CACHE }}
+        run: node apps/desktop/scripts/ui-evidence.mjs doctor --source "$GITHUB_WORKSPACE" > "$JCUE_OUTPUT/doctor.json"
+
+      - name: Derive only the no-action negative control
+        shell: python
+        run: |
+          import difflib, hashlib, json, os, pathlib
+          source = pathlib.Path('apps/desktop/scripts/ui-evidence/scenarios/sidebar-pin-restart.mjs').read_bytes()
+          needle = b'skipPinGesture = false'
+          assert source.count(needle) == 1, 'Expected exactly one default gesture switch'
+          negative = source.replace(needle, b'skipPinGesture = true', 1)
+          output = pathlib.Path(os.environ['JCUE_OUTPUT'])
+          (output / 'negative.mjs').write_bytes(negative)
+          (output / 'negative.diff').write_text(''.join(difflib.unified_diff(
+              source.decode().splitlines(True), negative.decode().splitlines(True),
+              fromfile='sidebar-pin-restart.mjs', tofile='negative.mjs')))
+          (output / 'scenario-hashes.json').write_text(json.dumps({
+              'positive': hashlib.sha256(source).hexdigest(),
+              'negative': hashlib.sha256(negative).hexdigest()}, indent=2))
+
+      - name: Run JE-01R and its unchanged-oracle negative once each
+        env:
+          XDG_CACHE_HOME: ${{ env.JCUE_RUNTIME_CACHE }}
+        run: |
+          for variant in positive negative; do
+            export JCUE_VARIANT="$variant"
+            python3 - <<'PY'
+          import json, os, pathlib, time
+          def cpu():
+              values = list(map(int, pathlib.Path('/proc/stat').read_text().splitlines()[0].split()[1:9]))
+              return sum(values), values[3] + values[4]
+          total0, idle0 = cpu()
+          time.sleep(1)
+          total1, idle1 = cpu()
+          assert total1 > total0, 'CPU sample unavailable'
+          used = 100 * (1 - (idle1 - idle0) / (total1 - total0))
+          memory = dict(line.split(':', 1) for line in pathlib.Path('/proc/meminfo').read_text().splitlines())
+          available = int(memory['MemAvailable'].split()[0])
+          sample = {'cpuUsedPercent': used, 'logicalCores': os.cpu_count(), 'availableKiB': available}
+          output = pathlib.Path(os.environ['JCUE_OUTPUT'])
+          (output / (os.environ['JCUE_VARIANT'] + '-admission.json')).write_text(json.dumps(sample, indent=2))
+          assert used < 85 and available > 0, 'Native run not admitted; no retry'
+          PY
+            scenario="$GITHUB_WORKSPACE/apps/desktop/scripts/ui-evidence/scenarios/sidebar-pin-restart.mjs"
+            if [ "$variant" = negative ]; then scenario="$JCUE_OUTPUT/negative.mjs"; fi
+            native_code=0
+            node apps/desktop/scripts/ui-evidence.mjs run --source "$GITHUB_WORKSPACE" \
+              --scenario "$scenario" --build-receipt "$JCUE_OUTPUT/build/receipt.json" \
+              --out "$JCUE_OUTPUT/$variant" > "$JCUE_OUTPUT/$variant-result.json" || native_code=$?
+            export JCUE_NATIVE_CODE="$native_code"
+            printf '%s\n' "$native_code" > "$JCUE_OUTPUT/$variant-exit-code.txt"
+            # Preserve the first positive failure; never run another behavior attempt.
+            if [ "$variant" = positive ] && [ "$native_code" != 0 ]; then exit "$native_code"; fi
+            node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import { validateManifest } from './apps/desktop/scripts/ui-evidence/manifest.mjs';
+          const variant = process.env.JCUE_VARIANT;
+          const output = process.env.JCUE_OUTPUT;
+          const read = p => JSON.parse(fs.readFileSync(`${output}/${p}`));
+          const result = read(`${variant}-result.json`);
+          const manifest = validateManifest(read(`${variant}/manifest.json`));
+          const inner = read(`${variant}/inner.json`);
+          const expectedCode = variant === 'positive' ? 0 : 1;
+          const expectedStatus = variant === 'positive' ? 'passed' : 'failed';
+          assert.equal(Number(process.env.JCUE_NATIVE_CODE), expectedCode);
+          assert.equal(result.code, expectedCode);
+          for (const value of [result, manifest, inner]) assert.equal(value.status, expectedStatus);
+          for (const value of [result, manifest]) {
+            assert.equal(value.cleanup.outcome, 'complete');
+            assert.equal(value.cleanup.rootAbsent, true);
+          }
+          assert.equal(manifest.namespaceProcess.exited, true);
+          assert.equal(manifest.build.sourceCorrespondence.status, 'receipt-matched');
+          assert.equal(manifest.source.head, process.env.JCUE_HARNESS_OID);
+          assert.equal(manifest.source.clean, true);
+          assert.equal(manifest.scenario.sha256, read('scenario-hashes.json')[variant]);
+          assert.equal(manifest.runtime.electron, process.env.JCUE_ELECTRON_VERSION);
+          assert.equal(manifest.resources.settledIntervalSeconds, 20);
+          assert.equal(inner.closeError, undefined);
+          assert.equal(inner.startupDiagnosticsError, undefined);
+          const generations = inner.processGenerations;
+          assert.equal(generations.length, variant === 'positive' ? 3 : 1);
+          for (const generation of generations) {
+            assert.equal(generation.closed, true);
+            assert.equal(generation.exit.code, 0);
+            assert.equal(generation.exit.signal, null);
+            assert.equal(generation.closeError, undefined);
+          }
+          if (variant === 'positive') {
+            assert.equal(manifest.error, null);
+            assert.equal(manifest.assertions.length, 91);
+            assert.ok(manifest.assertions.every(a => a.status === 'passed'));
+            for (const role of ['electron', 'server'])
+              assert.equal(new Set(generations.map(g => g.processes[role].pid)).size, 3);
+            for (const generation of generations.slice(1)) {
+              assert.deepEqual(generation.database, generations[0].database);
+              assert.deepEqual(generation.paths, generations[0].paths);
+            }
+          } else {
+            const expected = 'Scenario assertion failed: Backend target is pinned';
+            for (const value of [result, manifest, inner]) assert.equal(value.error, expected);
+            const failures = manifest.assertions.filter(a => a.status !== 'passed');
+            assert.equal(failures.length, 1);
+            assert.equal(failures[0].name, 'Backend target is pinned');
+            assert.equal(failures[0].status, 'failed');
+            assert.equal(manifest.fixture.variant, 'no-action-negative');
+          }
+          NODE
+          done
+
+      - name: Verify Electron A and ordinarily paired read-only Node B
+        env:
+          XDG_CACHE_HOME: ${{ env.JCUE_RUNTIME_CACHE }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, time
+          def cpu():
+              values = list(map(int, pathlib.Path('/proc/stat').read_text().splitlines()[0].split()[1:9]))
+              return sum(values), values[3] + values[4]
+          total0, idle0 = cpu()
+          time.sleep(1)
+          total1, idle1 = cpu()
+          assert total1 > total0, 'CPU sample unavailable'
+          used = 100 * (1 - (idle1 - idle0) / (total1 - total0))
+          memory = dict(line.split(':', 1) for line in pathlib.Path('/proc/meminfo').read_text().splitlines())
+          available = int(memory['MemAvailable'].split()[0])
+          sample = {'cpuUsedPercent': used, 'logicalCores': os.cpu_count(), 'availableKiB': available}
+          output = pathlib.Path(os.environ['JCUE_OUTPUT'])
+          (output / 'two-clients-admission.json').write_text(json.dumps(sample, indent=2))
+          assert used < 85 and available > 0, 'Native run not admitted; no retry'
+          PY
+          native_code=0
+          node apps/desktop/scripts/ui-evidence.mjs run --source "$GITHUB_WORKSPACE" \
+            --scenario "$GITHUB_WORKSPACE/apps/desktop/scripts/ui-evidence/scenarios/two-clients-one-server.mjs" \
+            --build-receipt "$JCUE_OUTPUT/build/receipt.json" --out "$JCUE_OUTPUT/two-clients" \
+            > "$JCUE_OUTPUT/two-clients-result.json" || native_code=$?
+          printf '%s\n' "$native_code" > "$JCUE_OUTPUT/two-clients-exit-code.txt"
+          if [ "$native_code" != 0 ]; then exit "$native_code"; fi
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
+          import { validateManifest } from './apps/desktop/scripts/ui-evidence/manifest.mjs';
+          const output = process.env.JCUE_OUTPUT;
+          const read = p => JSON.parse(fs.readFileSync(`${output}/${p}`));
+          const result = read('two-clients-result.json');
+          const manifest = validateManifest(read('two-clients/manifest.json'));
+          const inner = read('two-clients/inner.json');
+          assert.equal(result.code, 0);
+          for (const value of [result, manifest, inner]) assert.equal(value.status, 'passed');
+          for (const value of [result, manifest]) {
+            assert.equal(value.cleanup.outcome, 'complete');
+            assert.equal(value.cleanup.rootAbsent, true);
+          }
+          assert.equal(manifest.namespaceProcess.exited, true);
+          assert.equal(manifest.source.head, process.env.JCUE_HARNESS_OID);
+          assert.equal(manifest.source.clean, true);
+          assert.equal(manifest.build.sourceCorrespondence.status, 'receipt-matched');
+          const scenario = fs.readFileSync('apps/desktop/scripts/ui-evidence/scenarios/two-clients-one-server.mjs');
+          assert.equal(manifest.scenario.sha256, crypto.createHash('sha256').update(scenario).digest('hex'));
+          assert.equal(manifest.runtime.electron, process.env.JCUE_ELECTRON_VERSION);
+          assert.equal(manifest.error, null);
+          assert.equal(manifest.assertions.length, 59);
+          assert.ok(manifest.assertions.every(a => a.status === 'passed'));
+          assert.equal(inner.closeError, undefined);
+          assert.equal(inner.startupDiagnosticsError, undefined);
+          const client = manifest.fixture.nodeClient;
+          assert.equal(client.commandCount, 0);
+          assert.deepEqual(client.requests, ['orchestration.subscribeShell', 'orchestration.subscribeShell']);
+          assert.equal(client.connections.length, 2);
+          for (const connection of client.connections) {
+            assert.equal(connection.snapshots, 1);
+            assert.equal(connection.synchronized, true);
+          }
+          assert.ok(client.connections[0].updates > 0);
+          for (const key of ['removed', 'credentialsCleared', 'projectionCleared', 'socketClosed'])
+            assert.equal(client[key], true);
+          for (const generation of inner.processGenerations) {
+            assert.equal(generation.closed, true);
+            assert.equal(generation.exit.code, 0);
+            assert.equal(generation.exit.signal, null);
+          }
+          NODE
+
+      - name: Verify native thread self-configuration and follow-up continuity
+        env:
+          XDG_CACHE_HOME: ${{ env.JCUE_RUNTIME_CACHE }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, time
+          def cpu():
+              values = list(map(int, pathlib.Path('/proc/stat').read_text().splitlines()[0].split()[1:9]))
+              return sum(values), values[3] + values[4]
+          total0, idle0 = cpu()
+          time.sleep(1)
+          total1, idle1 = cpu()
+          assert total1 > total0, 'CPU sample unavailable'
+          used = 100 * (1 - (idle1 - idle0) / (total1 - total0))
+          memory = dict(line.split(':', 1) for line in pathlib.Path('/proc/meminfo').read_text().splitlines())
+          available = int(memory['MemAvailable'].split()[0])
+          sample = {'cpuUsedPercent': used, 'logicalCores': os.cpu_count(), 'availableKiB': available}
+          output = pathlib.Path(os.environ['JCUE_OUTPUT'])
+          (output / 'self-configure-admission.json').write_text(json.dumps(sample, indent=2))
+          assert used < 85 and available > 0, 'Native run not admitted; no retry'
+          PY
+          native_code=0
+          node apps/desktop/scripts/ui-evidence.mjs run --source "$GITHUB_WORKSPACE" \
+            --scenario "$GITHUB_WORKSPACE/apps/desktop/scripts/ui-evidence/scenarios/thread-self-configure.mjs" \
+            --build-receipt "$JCUE_OUTPUT/build/receipt.json" --out "$JCUE_OUTPUT/self-configure" \
+            > "$JCUE_OUTPUT/self-configure-result.json" || native_code=$?
+          printf '%s\n' "$native_code" > "$JCUE_OUTPUT/self-configure-exit-code.txt"
+          if [ "$native_code" != 0 ]; then exit "$native_code"; fi
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
+          import { validateManifest } from './apps/desktop/scripts/ui-evidence/manifest.mjs';
+          const output = process.env.JCUE_OUTPUT;
+          const read = p => JSON.parse(fs.readFileSync(`${output}/${p}`));
+          const result = read('self-configure-result.json');
+          const manifest = validateManifest(read('self-configure/manifest.json'));
+          const inner = read('self-configure/inner.json');
+          assert.equal(result.code, 0);
+          for (const value of [result, manifest, inner]) assert.equal(value.status, 'passed');
+          for (const value of [result, manifest]) {
+            assert.equal(value.cleanup.outcome, 'complete');
+            assert.equal(value.cleanup.rootAbsent, true);
+          }
+          assert.equal(manifest.namespaceProcess.exited, true);
+          assert.equal(manifest.source.head, process.env.JCUE_HARNESS_OID);
+          assert.equal(manifest.source.clean, true);
+          assert.equal(manifest.build.sourceCorrespondence.status, 'receipt-matched');
+          const scenario = fs.readFileSync('apps/desktop/scripts/ui-evidence/scenarios/thread-self-configure.mjs');
+          assert.equal(manifest.scenario.sha256, crypto.createHash('sha256').update(scenario).digest('hex'));
+          assert.equal(manifest.runtime.electron, process.env.JCUE_ELECTRON_VERSION);
+          assert.equal(manifest.error, null);
+          assert.ok(manifest.assertions.length > 0);
+          assert.ok(manifest.scenario.steps.length > 0);
+          assert.ok(manifest.scenario.steps.every(step => step.status === 'passed'));
+          assert.ok(manifest.assertions.every(a => a.status === 'passed'));
+          assert.equal(inner.closeError, undefined);
+          assert.equal(inner.startupDiagnosticsError, undefined);
+          const evidence = read('self-configure/self-configuration-evidence.json');
+          assert.equal(evidence.firstFailure, undefined);
+          assert.equal(evidence.syntheticProvider, true);
+          assert.equal(evidence.liveInference, 'unproved');
+          assert.equal(evidence.ordinaryUiSubmitted, true);
+          assert.deepEqual(evidence.controlAfterPicker, evidence.controlBefore);
+          assert.equal(manifest.fixture.lifecycleEvidence.providerEngine, 'synthetic');
+          assert.equal(manifest.fixture.lifecycleEvidence.sha256,
+            crypto.createHash('sha256').update(fs.readFileSync(`${output}/self-configure/self-configuration-evidence.json`)).digest('hex'));
+          for (const generation of inner.processGenerations) {
+            assert.equal(generation.closed, true);
+            assert.equal(generation.exit.code, 0);
+            assert.equal(generation.exit.signal, null);
+          }
+          NODE
+
+      - name: Run JE-06 and its unchanged-oracle no-edit negative once each
+        env:
+          XDG_CACHE_HOME: ${{ env.JCUE_RUNTIME_CACHE }}
+        run: |
+          for queue_case in workflow no-edit-negative; do
+            export JCUE_QUEUE_CASE="$queue_case"
+            python3 - <<'PY'
+          import json, os, pathlib, time
+          def cpu():
+              values = list(map(int, pathlib.Path('/proc/stat').read_text().splitlines()[0].split()[1:9]))
+              return sum(values), values[3] + values[4]
+          total0, idle0 = cpu()
+          time.sleep(1)
+          total1, idle1 = cpu()
+          assert total1 > total0, 'CPU sample unavailable'
+          used = 100 * (1 - (idle1 - idle0) / (total1 - total0))
+          memory = dict(line.split(':', 1) for line in pathlib.Path('/proc/meminfo').read_text().splitlines())
+          available = int(memory['MemAvailable'].split()[0])
+          cores = os.cpu_count()
+          sample = {'cpuUsedPercent': used, 'logicalCores': cores,
+                    'oneCorePercent': 100 / cores if cores else None, 'availableKiB': available}
+          output = pathlib.Path(os.environ['JCUE_OUTPUT'])
+          (output / ('queue-' + os.environ['JCUE_QUEUE_CASE'] + '-admission.json')).write_text(json.dumps(sample, indent=2))
+          assert cores and used < 85 and available > 0, 'Native run not admitted; no retry'
+          PY
+            native_code=0
+            node apps/desktop/scripts/ui-evidence.mjs run --source "$GITHUB_WORKSPACE" \
+              --scenario "$GITHUB_WORKSPACE/apps/desktop/scripts/ui-evidence/scenarios/queue-edit-cancel.mjs" \
+              --queue-case "$queue_case" --build-receipt "$JCUE_OUTPUT/build/receipt.json" \
+              --out "$JCUE_OUTPUT/queue-$queue_case" \
+              > "$JCUE_OUTPUT/queue-$queue_case-result.json" || native_code=$?
+            export JCUE_NATIVE_CODE="$native_code"
+            printf '%s\n' "$native_code" > "$JCUE_OUTPUT/queue-$queue_case-exit-code.txt"
+            # Preserve the first positive failure; never run another behavior attempt.
+            if [ "$queue_case" = workflow ] && [ "$native_code" != 0 ]; then exit "$native_code"; fi
+            node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
+          import { validateManifest } from './apps/desktop/scripts/ui-evidence/manifest.mjs';
+          import { assertDeliveries, assertFullQueueEvidence } from './apps/desktop/scripts/ui-evidence/scenarios/queue-edit-cancel.mjs';
+          const queueCase = process.env.JCUE_QUEUE_CASE;
+          const positive = queueCase === 'workflow';
+          const output = process.env.JCUE_OUTPUT;
+          const read = p => JSON.parse(fs.readFileSync(`${output}/${p}`));
+          const hash = value => crypto.createHash('sha256').update(value).digest('hex');
+          const prefix = `queue-${queueCase}`;
+          const result = read(`${prefix}-result.json`);
+          const manifest = validateManifest(read(`${prefix}/manifest.json`));
+          const inner = read(`${prefix}/inner.json`);
+          const expectedCode = positive ? 0 : 1;
+          assert.equal(Number(process.env.JCUE_NATIVE_CODE), expectedCode);
+          assert.equal(result.code, expectedCode);
+          for (const value of [result, manifest, inner])
+            assert.equal(value.status, positive ? 'passed' : 'failed');
+          for (const value of [result, manifest]) {
+            assert.equal(value.cleanup.outcome, 'complete');
+            assert.equal(value.cleanup.rootAbsent, true);
+          }
+          assert.equal(manifest.namespaceProcess.exited, true);
+          assert.equal(manifest.source.head, process.env.JCUE_HARNESS_OID);
+          assert.equal(manifest.harness.head, process.env.JCUE_HARNESS_OID);
+          assert.equal(manifest.source.clean, true);
+          assert.equal(manifest.source.statusSha256, hash(''));
+          assert.equal(manifest.source.patch.sha256, hash(''));
+          assert.equal(manifest.source.untracked.sha256, hash('[]'));
+          assert.equal(manifest.build.sourceCorrespondence.status, 'receipt-matched');
+          const receipt = read('build/receipt.json');
+          assert.equal(receipt.source.head, process.env.JCUE_HARNESS_OID);
+          assert.equal(manifest.build.sourceCorrespondence.receipt.sha256,
+            hash(fs.readFileSync(`${output}/build/receipt.json`)));
+          for (const name of ['desktop', 'server', 'web', 'boot'])
+            assert.equal(manifest.build[name].sha256, receipt.build[name]);
+          assert.equal(manifest.scenario.sha256,
+            hash(fs.readFileSync('apps/desktop/scripts/ui-evidence/scenarios/queue-edit-cancel.mjs')));
+          assert.equal(manifest.scenario.queueCase, queueCase);
+          assert.equal(manifest.runtime.electron, process.env.JCUE_ELECTRON_VERSION);
+          assert.equal(inner.isolation.status, 'passed');
+          assert.equal(inner.closeError, undefined);
+          assert.equal(inner.startupDiagnosticsError, undefined);
+          assert.ok(inner.processGenerations.length > 0);
+          for (const generation of inner.processGenerations) {
+            assert.equal(generation.closed, true);
+            assert.equal(generation.exit.code, 0);
+            assert.equal(generation.exit.signal, null);
+            assert.equal(generation.closeError, undefined);
+          }
+          const fixture = manifest.fixture;
+          assert.equal(fixture.queueCase, queueCase);
+          assert.equal(fixture.agentSha256, hash(fs.readFileSync('scripts/jones/e2e/acp-stub/agent.mjs')));
+          assert.equal(fixture.providerGate.status, 'ready');
+          assert.equal(fixture.providerGate.protocolVersion, 2);
+          assert.match(fixture.runId, /^[0-9a-f-]{36}$/);
+          const ledger = read(`${prefix}/je06-${fixture.runId}-ledger.json`);
+          const beforeCleanup = read(`${prefix}/je06-${fixture.runId}-ledger-before-cleanup.json`);
+          assert.equal(ledger.runId, fixture.runId);
+          assert.equal(beforeCleanup.runId, fixture.runId);
+          assert.equal(fixture.stubCleanup.closed, true);
+          assert.deepEqual(ledger.cleanup, fixture.stubCleanup);
+          assert.ok(ledger.cleanup.starts.length > 0);
+          assert.equal(ledger.ledger.filter(row => row.event === 'start').length, ledger.cleanup.starts.length);
+          assert.equal(new Set(ledger.cleanup.starts.map(start => start.processId)).size, ledger.cleanup.starts.length);
+          assert.ok(ledger.ledger.every(row => row.runId === fixture.runId));
+          assert.deepEqual(ledger.ledger.slice(0, beforeCleanup.ledger.length), beforeCleanup.ledger);
+          for (const start of ledger.cleanup.starts) {
+            assert.ok(Number.isInteger(start.pid) && start.pid > 0);
+            assert.match(start.startTicks, /^\d+$/);
+            assert.equal(ledger.ledger.filter(row => row.event === 'start' &&
+              row.processId === start.processId && row.pid === start.pid && row.startTicks === start.startTicks).length, 1);
+            assert.equal(ledger.ledger.filter(row => row.event === 'close' && row.processId === start.processId).length, 1);
+          }
+          assertDeliveries(beforeCleanup.ledger, fixture, positive);
+          assertDeliveries(ledger.ledger, fixture, positive);
+          if (positive) {
+            assert.equal(manifest.error, null);
+            assert.equal(manifest.assertions.length, 99);
+            assert.ok(manifest.assertions.every(a => a.status === 'passed'));
+            assert.equal(manifest.scenario.steps.length, 7);
+            assert.ok(manifest.scenario.steps.every(step => step.status === 'passed'));
+            assertFullQueueEvidence(fixture);
+            assert.match(fixture.replay.payloadSha256, /^[0-9a-f]{64}$/);
+            assert.ok(Number.isInteger(fixture.replay.resultSequence) && fixture.replay.resultSequence > 0);
+            assert.match(fixture.durable.controlSha256, /^[0-9a-f]{64}$/);
+            assert.ok(manifest.assertions.some(a => a.name === 'Normal unsent draft is restored unchanged'));
+          } else {
+            const expected = 'Scenario assertion failed: M2 retains exactly the edited text';
+            for (const value of [result, manifest, inner]) assert.equal(value.error, expected);
+            assert.equal(fixture.variant, 'no-edit-negative');
+            assert.equal(manifest.assertions.length, 25);
+            assert.deepEqual(manifest.assertions.filter(a => a.status !== 'passed'),
+              [{ name: 'M2 retains exactly the edited text', status: 'failed' }]);
+            assert.equal(manifest.scenario.steps.length, 5);
+            assert.ok(manifest.scenario.steps.slice(0, 4).every(step => step.status === 'passed'));
+            assert.equal(manifest.scenario.steps[4].status, 'failed');
+          }
+          NODE
+          done
+
+      - name: Run JE-03 with private Secret Service and a whole-run deadline
+        env:
+          XDG_CACHE_HOME: ${{ env.JCUE_RUNTIME_CACHE }}
+        shell: python
+        run: |
+          import hashlib, json, os, pathlib, re, shutil, signal, subprocess, sys, time
+          output = pathlib.Path(os.environ['JCUE_OUTPUT'])
+          def cpu():
+              values = list(map(int, pathlib.Path('/proc/stat').read_text().splitlines()[0].split()[1:9]))
+              return sum(values), values[3] + values[4]
+          total0, idle0 = cpu()
+          time.sleep(1)
+          total1, idle1 = cpu()
+          assert total1 > total0, 'CPU sample unavailable'
+          used = 100 * (1 - (idle1 - idle0) / (total1 - total0))
+          memory = dict(line.split(':', 1) for line in pathlib.Path('/proc/meminfo').read_text().splitlines())
+          available = int(memory['MemAvailable'].split()[0])
+          cores = os.cpu_count()
+          admission = {'cpuUsedPercent': used, 'logicalCores': cores,
+                       'oneCorePercent': 100 / cores if cores else None, 'availableKiB': available}
+          (output / 'two-servers-admission.json').write_text(json.dumps(admission, indent=2))
+          assert cores and used < 85 and available > 3 * 1024 * 1024, 'Native run not admitted; no retry'
+          started = time.monotonic()
+          child = None
+          identity = None
+          signals = []
+          report = {'status': 'unknown', 'wholeRunCapSeconds': 390, 'attempts': 1}
+          def ticks(pid):
+              try:
+                  raw = pathlib.Path(f'/proc/{pid}/stat').read_text()
+                  return raw[raw.rfind(')') + 2:].split()[19]
+              except FileNotFoundError:
+                  return None
+          def group_exists(pgid):
+              try:
+                  os.killpg(pgid, 0)
+                  return True
+              except ProcessLookupError:
+                  return False
+          def signal_owned(sig):
+              if child is None or child.poll() is not None:
+                  return
+              assert identity is not None, 'Unknown child identity; no signal sent'
+              assert ticks(child.pid) == identity['startTicks'] and os.getpgid(child.pid) == identity['pgid'], 'Child identity changed; no signal sent'
+              os.killpg(identity['pgid'], sig)
+              signals.append(signal.Signals(sig).name)
+          def save_report():
+              report.update({'elapsedSeconds': time.monotonic() - started, 'cleanupSignals': signals})
+              (output / 'two-servers-controller.json').write_text(json.dumps(report, indent=2))
+          def deadline(_signal, _frame):
+              report.update({'status': 'unknown', 'error': '390-second whole-run deadline expired'})
+              try:
+                  signal_owned(signal.SIGKILL)
+              finally:
+                  save_report()
+                  os._exit(124)
+          def cancelled(signum, _frame):
+              raise RuntimeError(f'Controller cancelled: {signal.Signals(signum).name}')
+          signal.signal(signal.SIGALRM, deadline)
+          signal.setitimer(signal.ITIMER_REAL, max(0.001, 390 - (time.monotonic() - started)))
+          signal.signal(signal.SIGTERM, cancelled)
+          signal.signal(signal.SIGINT, cancelled)
+          def read(relative):
+              path = output / relative
+              assert path.is_file() and not path.is_symlink() and path.stat().st_size <= 2 * 1024 * 1024
+              return json.loads(path.read_text())
+          def sha(path):
+              return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+
+          def je03_checks(inner,evidence):
+           if not isinstance(inner,dict) or not isinstance(evidence,dict): return {'nativeEvidencePresent':False}
+           service=inner.get('secretService',{});storage=service.get('generations',[]);children=service.get('services',[])
+           apps=inner.get('processGenerations',[]);restarts=inner.get('restarts',[])
+           b=evidence.get('b',{});b_id=b.get('identity',{}) or {};b_stop=b.get('stop',{})
+           fp=evidence.get('trace',{}).get('fingerprints',{});catalog=evidence.get('catalog',{});restored=catalog.get('restored',{})
+           nc2=evidence.get('nc2',{});nc3=evidence.get('nc3',{});a_live=evidence.get('aLive',{});reenable=evidence.get('reenable',{})
+           steps=['onboarding-and-observability','seed-a','start-and-seed-b','pair-b-ui','pre-action-non-vacuity','pin-b','credential-fence','switch-off-b','b-not-live','a-stays-live','restart-disabled-b','reenable-b']
+           def ident(value): return isinstance(value,dict) and isinstance(value.get('pid'),int) and value['pid']>0 and isinstance(value.get('startTicks'),str) and re.fullmatch(r'[0-9]+',value['startTicks']) is not None
+           def fingerprint(value): return isinstance(value,str) and re.fullmatch(r'[a-f0-9]{16}',value) is not None
+           def digest(value): return isinstance(value,str) and re.fullmatch(r'[a-f0-9]{64}',value) is not None
+           return {
+            'scenarioPassed':evidence.get('schema')=='je03-two-servers/v1' and evidence.get('status')=='passed',
+            'allNativeStepsPassed':evidence.get('scenarioCapMs')==300000 and evidence.get('operatorCapMs')==390000 and [s.get('name') for s in evidence.get('steps',[])]==steps and all(s.get('status')=='passed' for s in evidence.get('steps',[])),
+            'secondaryStopped':ident(b_id) and b_id.get('origin')=='http://127.0.0.1:43774' and b_stop.get('outcome')=='stopped' and b_stop.get('pid')==b_id.get('pid') and b_stop.get('startTicks')==b_id.get('startTicks'),
+            'distinctEnvironments':bool(evidence.get('environments',{}).get('a')) and bool(evidence.get('environments',{}).get('b')) and evidence['environments']['a']!=evidence['environments']['b'] and b_id.get('primaryEnvironmentId')==evidence['environments']['a'] and b_id.get('environmentId')==evidence['environments']['b'],
+            'crossover':evidence.get('crossover',{}).get('ok') is True and evidence.get('trace',{}).get('failure') is None and 0<evidence.get('trace',{}).get('count',0)<=5000,
+            'pinOnlyB':evidence.get('pinRouting',{})=={'ok':True,'count':1,'origin':'http://127.0.0.1:43774'},
+            'aStrictInvariance':evidence.get('aStrictInvariance') is True and digest(evidence.get('aBeforeSha256')) and evidence.get('aBeforeSha256')==evidence.get('aAfterSha256'),
+            'credentialFence':nc2.get('ok') is True and nc2.get('aStatus') in [401,403] and nc2.get('bStatus')==200,
+            'disabledNotLive':nc3.get('ok') is True and nc3.get('quietWindowMs')==5000 and evidence.get('bDisabledHidden',{}).get('ok') is True and evidence.get('bRestartHidden',{}).get('ok') is True and evidence.get('bReenableRestored',{}).get('ok') is True,
+            'aLiveAndInvariant':a_live.get('ok') is True and digest(a_live.get('selectedSha256')) and a_live.get('selectedSha256')==evidence.get('aRestartSelectedSha256')==evidence.get('aFinalSelectedSha256'),
+            'encryptedCatalog':catalog.get('encrypted') is True and catalog.get('plaintextAbsent') is True and 0<catalog.get('bytes',0)<=1048576 and catalog.get('storage')=={'available':True,'backend':'gnome_libsecret'} and all(restored.get(key) is True for key in ['target','profile','credential','disabled']),
+            'credentialUnchangedOnReenable':set(fp)=={'0','1'} and all(fingerprint(fp[g].get(role)) for g in ['0','1'] for role in ['a','b']) and fp['0']['a']!=fp['0']['b'] and fp['1']['a']!=fp['1']['b'] and fp['0']['b']==fp['1']['b']==restored.get('b') and reenable=={'ok':True,'sameCredential':True,'pairedAgain':False},
+            'managedClosed':service.get('status')=='closed' and len(storage)==2 and all(g.get('backend')=='gnome_libsecret' and g.get('available') is True for g in storage) and len(children)==2 and all(ident(g) and g.get('closed') is True and g.get('exited') is True for g in children),
+            'twoGenerationsClosed':len(apps)==2 and all(g.get('closed') is True and g.get('closeAttempted') is True and ident(g.get('processes',{}).get('electron')) and ident(g.get('processes',{}).get('server')) for g in apps),
+            'actualRestart':len(restarts)==1 and restarts[0].get('oldProcessesClosed') is True and all(ident(restarts[0].get('before',{}).get(role)) and ident(restarts[0].get('after',{}).get(role)) and restarts[0]['before'][role]['pid']!=restarts[0]['after'][role]['pid'] for role in ['electron','server']),
+            'innerPassed':inner.get('status')=='passed' and inner.get('runtime',{}).get('electron')==os.environ['JCUE_ELECTRON_VERSION'] and not inner.get('pendingElectronLaunch'),
+           }
+
+          gate_read, gate_write = os.pipe()
+          try:
+              argv = [shutil.which('node'), 'apps/desktop/scripts/ui-evidence.mjs', 'run',
+                      '--source', os.environ['GITHUB_WORKSPACE'],
+                      '--scenario', os.environ['GITHUB_WORKSPACE'] + '/apps/desktop/scripts/ui-evidence/scenarios/two-servers-one-client.mjs',
+                      '--secret-service', 'system', '--build-receipt', str(output / 'build/receipt.json'),
+                      '--out', str(output / 'two-servers')]
+              assert argv[0], 'Pinned Node unavailable'
+              bootstrap = "import json,os,sys; a=json.loads(sys.argv[1]); fd=int(sys.argv[2]); b=os.read(fd,1); os.close(fd); sys.exit(125) if b!=b'1' else os.execv(a[0],a)"
+              with (output / 'two-servers-result.json').open('xb') as stdout, (output / 'two-servers-stderr.log').open('xb') as stderr:
+                  child = subprocess.Popen([sys.executable, '-I', '-S', '-c', bootstrap, json.dumps(argv), str(gate_read)],
+                                           stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
+                                           start_new_session=True, close_fds=True, pass_fds=(gate_read,))
+                  os.close(gate_read)
+                  gate_read = -1
+                  identity = {'pid': child.pid, 'pgid': os.getpgid(child.pid), 'startTicks': ticks(child.pid)}
+                  assert identity['pgid'] == child.pid and identity['startTicks'], 'Captured child identity unavailable'
+                  with (output / 'two-servers-started.json').open('x') as journal:
+                      json.dump({'identity': identity, 'argv': argv, 'wholeRunCapSeconds': 390}, journal, indent=2)
+                      journal.flush()
+                      os.fsync(journal.fileno())
+                  report['identity'] = identity
+                  os.write(gate_write, b'1')
+                  os.close(gate_write)
+                  gate_write = -1
+                  code = child.wait(timeout=max(0.1, 355 - (time.monotonic() - started)))
+              report['exitCode'] = code
+              (output / 'two-servers-exit-code.txt').write_text(str(code) + '\n')
+              assert code == 0, 'JE03 first attempt failed'
+              assert not group_exists(identity['pgid']), 'Captured child group still present'
+              result = read('two-servers-result.json')
+              manifest = read('two-servers/manifest.json')
+              inner = read('two-servers/inner.json')
+              evidence = read('two-servers/je03-evidence.json')
+              assert result['code'] == 0
+              assert manifest['schema'] == 'jones-code-ui-evidence/v1'
+              assert result['status'] == manifest['status'] == inner['status'] == 'passed'
+              assert all(value['cleanup'] == {'outcome': 'complete', 'rootAbsent': True} for value in [result, manifest])
+              namespace = manifest['namespaceProcess']
+              assert namespace['exited'] is True and isinstance(namespace['pid'], int) and namespace['pid'] > 0
+              assert re.fullmatch(r'[0-9]+', namespace['startTicks']) and ticks(namespace['pid']) != namespace['startTicks']
+              registry = pathlib.Path(os.environ['XDG_STATE_HOME']) / 'jones-code-ui-evidence/registry' / (manifest['runId'] + '.json')
+              assert re.fullmatch(r'[a-zA-Z0-9-]+', manifest['runId']) and result['runId'] == manifest['runId']
+              assert registry.is_file() and not registry.is_symlink()
+              record = json.loads(registry.read_text())
+              assert record['id'] == manifest['runId'] and record['cleanup'] == 'complete'
+              assert not pathlib.Path(record['root']).exists() and not pathlib.Path(record['root']).is_symlink()
+              receipt = read('build/receipt.json')
+              head = os.environ['JCUE_HARNESS_OID']
+              assert manifest['source']['head'] == manifest['harness']['head'] == receipt['source']['head'] == head
+              assert manifest['source']['clean'] is True and manifest['harness']['clean'] is True
+              assert manifest['source']['statusSha256'] == manifest['source']['patch']['sha256'] == hashlib.sha256(b'').hexdigest()
+              assert manifest['source']['untracked']['sha256'] == hashlib.sha256(b'[]').hexdigest()
+              assert manifest['build']['sourceCorrespondence']['status'] == 'receipt-matched'
+              assert manifest['build']['sourceCorrespondence']['receipt']['sha256'] == sha(output / 'build/receipt.json')
+              assert all(manifest['build'][key]['sha256'] == receipt['build'][key] for key in ['desktop', 'server', 'web', 'boot'])
+              assert manifest['scenario']['sha256'] == sha(argv[6])
+              assert manifest['error'] is None and manifest['assertions'] and all(a['status'] == 'passed' for a in manifest['assertions'])
+              assert inner['isolation']['status'] == 'passed' and 'closeError' not in inner and 'startupDiagnosticsError' not in inner
+              inputs = read('two-servers/secret-service-inputs.json')
+              assert inputs['schema'] == 'jones-system-secret-service-stage/v1'
+              config = inputs['configuration']['managedSecretService']
+              assert config['libraries'] == [] and config['libraryDirectories'] == []
+              for name, path in [('daemon', '/usr/bin/gnome-keyring-daemon'), ('bus', '/usr/bin/dbus-daemon'), ('client', '/usr/bin/gdbus')]:
+                  assert inputs['inputs'][name] == {'path': path, 'sha256': sha(path)}
+              assert config['daemon'] == {'path': '/harness/support/native/bin/gnome-keyring-daemon', 'sha256': inputs['inputs']['daemon']['sha256']}
+              assert config['bus'] == inputs['inputs']['bus'] and config['client'] == inputs['inputs']['client']
+              assert inner['secretService']['inputs'] == [config['daemon'], config['bus'], config['client']]
+              checks = je03_checks(inner, evidence)
+              report['nativeChecks'] = checks
+              assert all(checks.values()), 'Direct JE03 evidence predicates failed'
+              assert time.monotonic() - started < 390, 'Whole-run cap exceeded'
+              report['status'] = 'passed'
+          except BaseException as error:
+              report.update({'status': 'unknown', 'error': type(error).__name__ + ': ' + str(error)})
+          finally:
+              for fd in [gate_read, gate_write]:
+                  if fd >= 0:
+                      os.close(fd)
+              try:
+                  if child is not None and child.poll() is None:
+                      signal_owned(signal.SIGTERM)
+                      try:
+                          child.wait(timeout=20)
+                      except subprocess.TimeoutExpired:
+                          signal_owned(signal.SIGKILL)
+                          child.wait(timeout=5)
+                  report['childReaped'] = child is not None and child.returncode is not None
+                  report['groupAbsent'] = identity is not None and not group_exists(identity['pgid'])
+                  if not report['childReaped'] or not report['groupAbsent']:
+                      report['status'] = 'unknown'
+              except BaseException as error:
+                  report.update({'status': 'unknown', 'cleanupError': str(error)})
+              save_report()
+              signal.setitimer(signal.ITIMER_REAL, 0)
+          assert report['status'] == 'passed', report.get('error', 'Cleanup unproved')
+
+      - name: Verify cleanup of this job's registered runs
+        if: always() && env.JCUE_TASK_ROOT != ''
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs/promises';
+          import path from 'node:path';
+          const parent = path.join(process.env.XDG_STATE_HOME, 'jones-code-ui-evidence');
+          const report = [];
+          let failed = false;
+          const entries = await fs.readdir(path.join(parent, 'registry')).catch(e => {
+            if (e.code === 'ENOENT') return [];
+            throw e;
+          });
+          for (const file of entries) {
+            const record = JSON.parse(await fs.readFile(path.join(parent, 'registry', file)));
+            try {
+              assert.equal(record.parent, parent);
+              assert.equal(file, `${record.id}.json`);
+              if (record.cleanup !== 'complete') {
+                const { cleanupRegistered } = await import('./apps/desktop/scripts/ui-evidence/lifecycle.mjs');
+                await cleanupRegistered(record.id);
+              }
+              await assert.rejects(fs.lstat(record.root), { code: 'ENOENT' });
+              report.push({ runId: record.id, outcome: 'complete', rootAbsent: true });
+            } catch (error) {
+              failed = true;
+              report.push({ runId: record.id, outcome: 'unknown', error: error.message });
+            }
+          }
+          const scratch = await fs.readdir(path.join(parent, 'scratch')).catch(e => {
+            if (e.code === 'ENOENT') return [];
+            throw e;
+          });
+          if (scratch.length) failed = true;
+          await fs.writeFile(`${process.env.JCUE_OUTPUT}/cleanup.json`, JSON.stringify({
+            outcome: failed ? 'unknown' : 'complete', runs: report, remainingRoots: scratch.length }, null, 2));
+          if (failed) process.exitCode = 1;
+          NODE
+
+      - name: Record measured runner-step time
+        if: always() && env.JCUE_TASK_ROOT != ''
+        shell: python
+        run: |
+          import json, os, pathlib, time
+          output = pathlib.Path(os.environ['JCUE_OUTPUT'])
+          started = int((output / 'steps-started-epoch.txt').read_text())
+          report = {'runnerStepsSeconds': time.time() - started,
+                    'scope': 'Allocation through cleanup; excludes queue, upload and action post steps',
+                    'fullJobWall': 'Read the completed Actions job started_at/completed_at; not yet available'}
+          (output / 'timing.json').write_text(json.dumps(report, indent=2))
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write(f"Measured runner steps: {report['runnerStepsSeconds']:.1f}s (excludes upload/post steps).\n")
+              summary.write('Full job wall requires the completed Actions job timestamps. No timing target is certified here.\n')
+
+      - name: Preserve bounded native evidence on success or failure
+        id: evidence
+        if: always() && env.JCUE_TASK_ROOT != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: jones-electron-native-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.JCUE_OUTPUT }}/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove only this job's scratch after evidence upload
+        if: always() && env.JCUE_TASK_ROOT != '' && steps.evidence.outcome == 'success'
+        shell: python
+        run: |
+          import json, os, pathlib, shutil
+          root = pathlib.Path(os.environ['JCUE_TASK_ROOT'])
+          assert not root.is_symlink() and root.parent.resolve() == pathlib.Path(os.environ['RUNNER_TEMP']).resolve()
+          cleanup = json.loads((root / 'evidence/cleanup.json').read_text())
+          assert cleanup['outcome'] == 'complete', 'Unproved cleanup: leave state for ephemeral runner disposal'
+          shutil.rmtree(root)
+          assert not root.exists()

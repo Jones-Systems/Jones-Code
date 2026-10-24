@@ -14,6 +14,7 @@ import {
 import { stageRun, bwrapArguments } from "./ui-evidence/sandbox.mjs";
 import { collectProvenance } from "./ui-evidence/provenance.mjs";
 import { createManifest, writeManifest } from "./ui-evidence/manifest.mjs";
+import { prepareSecretService, stageSecretService } from "./ui-evidence/secret-service-stage.mjs";
 
 export const harness = NodePath.resolve(
   NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)),
@@ -26,7 +27,18 @@ export function parseOptions(argv) {
   const allowed = {
     doctor: ["source"],
     setup: ["source"],
-    run: ["source", "scenario", "size", "scale", "theme", "comparison", "out", "build-receipt"],
+    run: [
+      "source",
+      "scenario",
+      "size",
+      "scale",
+      "theme",
+      "comparison",
+      "out",
+      "build-receipt",
+      "queue-case",
+      "secret-service",
+    ],
     cleanup: ["run"],
   }[command];
   const options = {};
@@ -42,6 +54,13 @@ export function parseOptions(argv) {
       throw new Error(`Invalid option: ${rest[index]}`);
     options[key] = rest[index + 1];
   }
+  if (
+    options["queue-case"] !== undefined &&
+    !["workflow", "gate-only", "no-edit-negative"].includes(options["queue-case"])
+  )
+    throw new Error("Queue case must be workflow, gate-only, or no-edit-negative");
+  if (options["secret-service"] !== undefined && options["secret-service"] !== "system")
+    throw new Error("Secret Service must be system");
   const size = (options.size || "1280x800").match(/^(\d+)x(\d+)$/);
   if (!size || size.slice(1).some((value) => Number(value) < 320 || Number(value) > 8192))
     throw new Error("Size must be 320..8192 by 320..8192");
@@ -59,6 +78,26 @@ export function parseOptions(argv) {
     theme,
   };
 }
+export async function queueCaseConfiguration(options) {
+  const queueCase = options["queue-case"];
+  if (queueCase === undefined) return {};
+  if (
+    options.command !== "run" ||
+    !["workflow", "gate-only", "no-edit-negative"].includes(queueCase)
+  )
+    throw new Error("Invalid queue case for this command");
+  const expected = NodePath.join(
+    await NodeFSP.realpath(harness),
+    "apps/desktop/scripts/ui-evidence/scenarios/queue-edit-cancel.mjs",
+  );
+  if (options.scenario !== expected)
+    throw new Error("Queue case requires the canonical real queue scenario path");
+  const stat = await NodeFSP.lstat(expected);
+  if (!stat.isFile() || stat.isSymbolicLink() || (await NodeFSP.realpath(expected)) !== expected)
+    throw new Error("Queue scenario must be a real regular file without symlink aliases");
+  return { queueCase };
+}
+
 export async function assertHarnessPin() {
   const pin = process.env.JCUE_HARNESS_OID;
   if (!pin) return;
@@ -70,6 +109,8 @@ export async function assertHarnessPin() {
     throw new Error("Pinned harness revision mismatch or dirty harness");
 }
 async function runEvidence(options) {
+  const queueConfiguration = await queueCaseConfiguration(options);
+  const secretService = await prepareSecretService(options["secret-service"]);
   const outerStart = performance.now();
   const timing = {};
   const source = await NodeFSP.realpath(options.source);
@@ -105,6 +146,7 @@ async function runEvidence(options) {
   const identity = {
     id: scenarioId === "sidebar-rename" ? scenarioId : "custom",
     path: scenario,
+    ...(queueConfiguration.queueCase ? { queueCase: queueConfiguration.queueCase } : {}),
     sha256: await sha256(scenario),
   };
   try {
@@ -136,6 +178,8 @@ async function runEvidence(options) {
     if (!Number.isFinite(clockTicks) || clockTicks <= 0)
       throw new Error("Cannot determine CPU clock tick units");
     const configuration = {
+      ...queueConfiguration,
+      ...secretService?.configuration,
       size: options.size,
       scale: options.scale,
       theme: options.theme,
@@ -144,6 +188,14 @@ async function runEvidence(options) {
       hostEffectiveCores: NodeOS.availableParallelism(),
     };
     const stage = await stageRun({ run, source, harness, scenario, closure, configuration });
+    if (secretService) {
+      await NodeFSP.writeFile(
+        NodePath.join(artifacts, "secret-service-inputs.json"),
+        JSON.stringify(secretService, null, 2),
+        { mode: 0o600, flag: "wx" },
+      );
+      await stageSecretService(secretService, stage);
+    }
     if ((await sha256(NodePath.join(stage, "harness/scenario.mjs"))) !== identity.sha256)
       throw new Error("Scenario changed during staging");
     timing.stagingSeconds = (performance.now() - stagingStart) / 1000;
