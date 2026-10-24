@@ -770,6 +770,134 @@ finally:
     },
   );
 
+  it.each([
+    "success",
+    "default",
+    "journal-hash",
+    "intent-hash",
+    "live",
+    "identity-unknown",
+    "previous",
+    "previous-pair",
+    "trial-descriptor.json",
+    "trial-receipt.json",
+    "commit-grant.json",
+    "resume-dispatched.json",
+    "advanced-state",
+    "advanced-state-authority-guard.json",
+    "retirement-intent.json",
+    "extra",
+    "journal-extra",
+    "incoming",
+    "old-app",
+    "unknown-transaction",
+    "unknown-path",
+    "claim",
+    "lease-busy",
+    "revalidate",
+    "durability",
+    "durability-lost",
+    "reserve-drift",
+  ])("requires exact pre-swap recovery evidence for %s", async (mode) => {
+    const f = await fixture();
+    try {
+      const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const setup = activationScenario.split("\nevents = []")[0];
+      const scenario = String.raw`
+mode = sys.argv[3]
+(home / 'environment-id').write_text(expected['environmentId'])
+for path, scope in native_writer_lease_paths(expected): initialize_native_lease(path, scope)
+incoming, previous = prepare_bundle(expected, staged, transaction_id)
+seed_record(tx / 'activation-request.json', intent, True)
+seed_record(tx / 'prepare-request.json', {'protocol': 1, 'transactionId': transaction_id, 'stagedHandle': staged['handle'], 'claimSha256': digest(tx / 'prepare-intent.json'), 'processes': intent['processes']}, True)
+seed_record(tx / 'prepare-failure.json', {'protocol': 1, 'reason': 'TIMEOUT'}, True)
+reserve_path = tx / 'recovery-reserve.bin'
+reserve_path.write_bytes(bytes(4096))
+reserve_info = reserve_path.stat()
+reserves = [{'path': str(reserve_path), 'bytes': reserve_info.st_size, 'device': str(reserve_info.st_dev), 'inode': str(reserve_info.st_ino), 'purpose': 'recovery'}, {'path': str(tx / 'recovery-journal-reserve.bin'), 'bytes': 4096, 'device': '0', 'inode': '0', 'purpose': 'journal'}]
+seed_record(tx / 'journal.json', {'intent': intent, 'phase': 'blocked', 'message': 'Untrusted diagnostic text', 'incomingBundle': str(incoming), 'previousBundle': str(previous), 'recoveryReserves': reserves}, True)
+bound = {'transactionId': transaction_id, 'journalSha256': digest(tx / 'journal.json'), 'intentSha256': digest(tx / 'intent.json')}
+if mode in ('journal-hash', 'intent-hash'): bound['journalSha256' if mode == 'journal-hash' else 'intentSha256'] = '0' * 64
+if mode == 'unknown-transaction': bound['transactionId'] = '0' * 64
+if mode == 'unknown-path': bound['transactionId'] = '../' + transaction_id
+if mode == 'previous': previous.mkdir()
+if mode == 'reserve-drift': reserve_path.write_bytes(bytes(8192))
+if mode == 'incoming': (incoming / 'Contents/MacOS/Jones').write_text('changed')
+if mode == 'old-app': (previous_app / 'Contents/MacOS/Jones').write_text('changed')
+if mode == 'claim': durable(tx / 'prepare-dispatched.json', dict(claim, stagedHandle='0' * 64))
+if mode == 'journal-extra':
+    durable(tx / 'journal.json', dict(read(tx / 'journal.json'), candidateWriter={'pid': 321, 'identity': 'unknown'}))
+    bound['journalSha256'] = digest(tx / 'journal.json')
+if mode in ('previous-pair', 'advanced-state'): (tx / mode).mkdir()
+elif mode in ('trial-descriptor.json', 'trial-receipt.json', 'commit-grant.json', 'resume-dispatched.json', 'advanced-state-authority-guard.json', 'retirement-intent.json', 'extra'):
+    seed_record(tx / mode, {'unknown': True}, True)
+request = manifest_path.parent / 'pre-swap-request.json'
+seed_record(request, dict({'manifestSha256': digest(manifest_path), 'observed': expected}, **({} if mode == 'default' else {'preSwapPreparationRecovery': bound})), True)
+before_manifest, before_state, before_journal = manifest_path.read_bytes(), database.read_bytes(), (tx / 'journal.json').read_bytes()
+bundle_identity = lambda active, stable=True: None
+process_identity = lambda pid: 'owned-native-process' if mode == 'live' else None
+if mode == 'identity-unknown':
+    def process_identity(pid): raise RuntimeError('Uncertain process inspection')
+quiescence = []
+prove_quiescence = lambda active: quiescence.append('checked')
+native_acquire = acquire_writer_exclusion
+leases = []
+def acquire_writer_exclusion(active, initialize=True):
+    assert initialize is False, 'Recovery must not initialize lease databases'
+    if mode == 'lease-busy': raise RuntimeError('Busy writer lease')
+    held = native_acquire(active, initialize)
+    leases.extend(held)
+    if mode == 'revalidate': native_durable(tx / 'intent.json', dict(intent, listener='changed'))
+    return held
+native_durable = durable
+writes = []
+def durable(path, value, exclusive=False):
+    assert pathlib.Path(path) == tx / 'journal.json', 'Recovery wrote outside the journal'
+    assert leases and all(connection.in_transaction for connection in leases)
+    assert len(quiescence) >= 2
+    writes.append(str(path))
+    if mode == 'durability': raise OSError('Synthetic journal publication failure')
+    result = native_durable(path, value, exclusive)
+    if mode == 'durability-lost': raise OSError('Synthetic lost durable acknowledgment')
+    return result
+result = reconcile_running(request, digest(request))
+assert manifest_path.read_bytes() == before_manifest
+assert database.read_bytes() == before_state
+for connection in leases:
+    try: connection.execute('SELECT 1')
+    except sqlite3.ProgrammingError: pass
+    else: raise AssertionError('Writer exclusion leaked')
+if mode == 'success':
+    assert result['status'] == 'reconciled', result
+    journal = read(tx / 'journal.json')
+    assert journal['phase'] == 'rolled-back' and journal['intent'] == intent
+    assert journal['preSwapPreparationRecovery'] == bound
+    assert writes == [str(tx / 'journal.json')]
+    assert incoming.exists() and not previous.exists()
+    assert not (tx / 'previous-pair').exists()
+    assert reconcile_running(request, digest(request))['status'] == 'reconciled'
+elif mode in ('durability', 'durability-lost'):
+    assert result == {'protocol': 1, 'status': 'uncertain', 'reason': 'journal-publication-unknown'}, result
+    assert writes == [str(tx / 'journal.json')]
+    if mode == 'durability': assert (tx / 'journal.json').read_bytes() == before_journal
+    else:
+        assert read(tx / 'journal.json')['phase'] == 'rolled-back'
+        assert reconcile_running(request, digest(request))['status'] == 'reconciled'
+else:
+    assert result['status'] == 'refused', result
+    assert (tx / 'journal.json').read_bytes() == before_journal
+    assert writes == []
+`;
+      NodeChildProcess.execFileSync(
+        "python3",
+        ["-c", definitions + "\n" + setup + "\n" + scenario, f.directory, "success", mode],
+        { encoding: "utf8", timeout: 10000 },
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
   it("re-adopts a stale manifest from independently observed bundle metadata and preserves one preimage", async () => {
     const f = await fixture();
     try {
