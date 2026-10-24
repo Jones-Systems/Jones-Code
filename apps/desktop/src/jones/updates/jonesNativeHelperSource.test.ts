@@ -7,6 +7,14 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import { jonesNativeHelperSource } from "./jonesNativeHelperSource.ts";
 import { hashMacApp } from "./jonesMacStaging.ts";
 
+function runPython(
+  source: string,
+  args: ReadonlyArray<string>,
+  options: Omit<NodeChildProcess.ExecFileSyncOptionsWithStringEncoding, "input">,
+): string {
+  return NodeChildProcess.execFileSync("python3", ["-", ...args], { ...options, input: source });
+}
+
 const fixtures = new Set<string>();
 async function cleanupFixture(root: string): Promise<void> {
   await NodeFSP.rm(root, { recursive: true, force: true });
@@ -382,9 +390,9 @@ assert os.fsync is observed_fsync, 'Failed fixture seeding did not restore real 
 assert len(fsync_calls) == 2 * len(records)
 assert not list(manifest_path.parent.glob(manifest_path.name + '.*'))
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${definitions}\n${observe}\n${setup}\n${scenario}`, f.directory, "success"],
+      runPython(
+        `${definitions}\n${observe}\n${setup}\n${scenario}`,
+        [f.directory, "success"],
         { encoding: "utf8", timeout: 10000, maxBuffer: 1024 * 1024 },
       );
     } finally {
@@ -445,9 +453,9 @@ assert retired['status'] == 'retired', retired
 assert not (oldest / 'previous-pair' / 'state.sqlite').exists()
 assert all((generation / 'previous-pair' / 'state.sqlite').exists() for generation in generations[1:])
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${definitions}\n${runtime}\n${scenario}`, f.directory, "success"],
+      runPython(
+        `${definitions}\n${runtime}\n${scenario}`,
+        [f.directory, "success"],
         { encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024 },
       );
     } finally {
@@ -525,9 +533,9 @@ else:
             assert 'cleanup' in journal['message']
         else: assert 'recoveryReserveCleanup' not in journal
 `;
-        NodeChildProcess.execFileSync(
-          "python3",
-          ["-c", `${definitions}\n${runtime}\n${scenario}`, f.directory, "success", boundary],
+        runPython(
+          `${definitions}\n${runtime}\n${scenario}`,
+          [f.directory, "success", boundary],
           { encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024 },
         );
       } finally {
@@ -586,9 +594,9 @@ assert run('--claim-preparation', staged['handle'], '--transaction', transaction
 assert run('--claim-activation', str(request))['reason'] == 'preparation-withdrawn'
 assert read(pathlib.Path(retired['retiredPath']) / 'preparation-withdrawal.json') == proof
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${definitions}\n${setup}\n${scenario}`, f.directory, "withdraw"],
+      runPython(
+        `${definitions}\n${setup}\n${scenario}`,
+        [f.directory, "withdraw"],
         { encoding: "utf8", timeout: 15_000, maxBuffer: 1024 * 1024 },
       );
     } finally {
@@ -681,9 +689,9 @@ else:
 assert selection_path.exists() and attempt_path.exists()
 assert (profile / 'opaque').read_text() == 'same-host-profile'
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${definitions}\n${setup}\n${scenario}`, f.directory, fault],
+      runPython(
+        `${definitions}\n${setup}\n${scenario}`,
+        [f.directory, fault],
         { encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024 },
       );
     } finally {
@@ -759,9 +767,9 @@ finally:
     if child.poll() is None: child.kill()
     child.wait(timeout=5)
 `;
-        NodeChildProcess.execFileSync(
-          "python3",
-          ["-c", `${definitions}\n${setup}\n${scenario}`, f.directory, order],
+        runPython(
+          `${definitions}\n${setup}\n${scenario}`,
+          [f.directory, order],
           { encoding: "utf8", timeout: 20_000, maxBuffer: 1024 * 1024 },
         );
       } finally {
@@ -888,9 +896,9 @@ else:
     assert (tx / 'journal.json').read_bytes() == before_journal
     assert writes == []
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", definitions + "\n" + setup + "\n" + scenario, f.directory, "success", mode],
+      runPython(
+        definitions + "\n" + setup + "\n" + scenario,
+        [f.directory, "success", mode],
         { encoding: "utf8", timeout: 10000 },
       );
     } finally {
@@ -932,10 +940,14 @@ assert read(manifest_path.with_name(manifest_path.name + '.superseded')) == stal
 assert (state / 'statev2.sqlite').read_bytes() == b'synthetic state'
 assert reconcile_running(request, digest(request)) == {'protocol': 1, 'status': 'refused', 'reason': 'running-changed'}
 `;
-      NodeChildProcess.execFileSync("python3", ["-c", definitions + "\n" + scenario, f.directory], {
-        encoding: "utf8",
-        timeout: 10000,
-      });
+      runPython(
+        definitions + "\n" + scenario,
+        [f.directory],
+        {
+          encoding: "utf8",
+          timeout: 10000,
+        },
+      );
     } finally {
       await f.cleanup();
     }
@@ -1117,9 +1129,9 @@ else:
     assert result == ({'kind': 'absent'} if fault == 'absent' else guard) if operation == 'fence' else result['state'] in ('advanced', 'absent')
 assert len(calls) == (0 if fault in ('wrong-source', 'wrong-version', 'digest-drift', 'binary-link', 'binary-mode') else 1)
 `;
-        NodeChildProcess.execFileSync(
-          "python3",
-          ["-c", nativeFunctions + "\n" + scenario, f.directory, fault],
+        runPython(
+          nativeFunctions + "\n" + scenario,
+          [f.directory, fault],
           {
             encoding: "utf8",
             maxBuffer: 1024 * 1024,
@@ -1153,11 +1165,15 @@ assert all(name not in captured for name in selectors)
 assert captured['T3CODE_JONES_ACTIVE_GENERATION'] == 'new-generation'
 assert captured['T3CODE_HOME'] == '/synthetic'
 `;
-    NodeChildProcess.execFileSync("python3", ["-c", nativeFunctions + "\n" + scenario], {
-      encoding: "utf8",
-      maxBuffer: 1024 * 1024,
-      timeout: 10000,
-    });
+    runPython(
+      nativeFunctions + "\n" + scenario,
+      [],
+      {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      },
+    );
   });
 
   it.each([
@@ -1274,9 +1290,9 @@ else:
 print(json.dumps({'case': manual_fault, 'passed': True}))
 `;
         const result = JSON.parse(
-          NodeChildProcess.execFileSync(
-            "python3",
-            ["-c", nativeFunctions + "\n" + setup + "\n" + scenario, f.directory, "success", fault],
+          runPython(
+            nativeFunctions + "\n" + setup + "\n" + scenario,
+            [f.directory, "success", fault],
             { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
           ),
         ) as { passed: boolean };
@@ -1400,15 +1416,9 @@ if boundary_fault.startswith('mount-'):
     assert {str(path): path.read_bytes() for path in tx.rglob('*') if path.is_file()} == before
 assert database.exists() and (profile / 'opaque').read_text() == 'advanced-profile'
 `;
-        NodeChildProcess.execFileSync(
-          "python3",
-          [
-            "-c",
-            `${nativeFunctions}\n${runtime}\n${scenario}`,
-            f.directory,
-            "trial-mismatch",
-            fault,
-          ],
+        runPython(
+          `${nativeFunctions}\n${runtime}\n${scenario}`,
+          [f.directory, "trial-mismatch", fault],
           {
             encoding: "utf8",
             timeout: 10000,
@@ -1630,9 +1640,9 @@ assert (profile / 'opaque').read_text() == 'advanced-profile'
 assert {str(path): digest(path) for path in first.rglob('*') if path.is_file()} == retained
 assert read(staged['receiptPath'])['app'] == staged
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${runtime}\n${scenario}`, f.directory, "trial-mismatch"],
+      runPython(
+        `${nativeFunctions}\n${runtime}\n${scenario}`,
+        [f.directory, "trial-mismatch"],
         {
           encoding: "utf8",
           timeout: 10000,
@@ -1682,9 +1692,9 @@ assert read(tx / 'journal.json') == prior_journal
 assert (tx / 'retained-evidence').read_text() == 'previous attempt retained'
 assert read(staged['receiptPath'])['app']['handle'] == staged['handle']
 `;
-        NodeChildProcess.execFileSync(
-          "python3",
-          ["-c", `${nativeFunctions}\n${setup}\n${scenario}`, f.directory, fault],
+        runPython(
+          `${nativeFunctions}\n${setup}\n${scenario}`,
+          [f.directory, fault],
           {
             encoding: "utf8",
             timeout: 10000,
@@ -1737,9 +1747,9 @@ finally:
     sys.platform = original_platform
 assert not path.exists() and sibling.read_text() == 'keep'
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
+      runPython(
+        `${nativeFunctions}\n${scenario}`,
+        [f.directory],
         {
           encoding: "utf8",
           timeout: 10000,
@@ -1797,9 +1807,9 @@ else:
         assert not (tx / 'journal.json').exists()
 assert (profile / 'opaque').read_text() == 'same-host-profile'
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${setup}\n${scenario}`, f.directory, fault],
+      runPython(
+        `${nativeFunctions}\n${setup}\n${scenario}`,
+        [f.directory, fault],
         {
           encoding: "utf8",
           timeout: 10000,
@@ -1862,9 +1872,9 @@ finally:
     if child.poll() is None: child.kill()
     child.wait(timeout=5)
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${setup}\n${scenario}`, f.directory, "interleaved"],
+      runPython(
+        `${nativeFunctions}\n${setup}\n${scenario}`,
+        [f.directory, "interleaved"],
         {
           encoding: "utf8",
           timeout: 15000,
@@ -1920,9 +1930,9 @@ except RuntimeError as error: assert 'inode changed' in str(error)
 else: raise AssertionError('Replaced lease inode was accepted')
 assert old.exists()
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
+      runPython(
+        `${nativeFunctions}\n${scenario}`,
+        [f.directory],
         {
           encoding: "utf8",
           timeout: 10000,
@@ -2009,9 +2019,9 @@ assert payload.read_text() == 'synthetic-qualified-dmg'
 assert (profile / 'opaque').read_text() == 'same-host-profile'
 with sqlite3.connect(database) as db: assert db.execute('SELECT value FROM identity').fetchone()[0] == 'previous-state'
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${setup}\n${scenario}`, f.directory, fault],
+      runPython(
+        `${nativeFunctions}\n${setup}\n${scenario}`,
+        [f.directory, fault],
         { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
       );
     } finally {
@@ -2191,14 +2201,9 @@ else:
 assert (profile / 'opaque').read_text() == 'same-host-profile'
 with sqlite3.connect(database) as db: assert db.execute('SELECT value FROM identity').fetchone()[0] == 'previous-state'
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        [
-          "-c",
-          `${nativeFunctions}\n${setup}\n${preparationOnlyScenario}\n${scenario}`,
-          f.directory,
-          fault,
-        ],
+      runPython(
+        `${nativeFunctions}\n${setup}\n${preparationOnlyScenario}\n${scenario}`,
+        [f.directory, fault],
         { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
       );
     } finally {
@@ -2236,14 +2241,9 @@ held()
 recovered(run('--retire-preparation', transaction_id, '--plan-sha256', inspected['planSha256'], '--quiescent'), 'writers-quiescent')
 assert run('--discard-staged', staged['handle'], '--selection', str(selection_path), '--selection-sha256', selection_digest)['reason'] == 'activation-pending'
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        [
-          "-c",
-          `${nativeFunctions}\n${setup}\n${preparationOnlyScenario}\n${scenario}`,
-          f.directory,
-          "operator",
-        ],
+      runPython(
+        `${nativeFunctions}\n${setup}\n${preparationOnlyScenario}\n${scenario}`,
+        [f.directory, "operator"],
         { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 20000 },
       );
     } finally {
@@ -2280,9 +2280,9 @@ with open(lock_path, 'r+') as lock:
         assert json.loads(result.stdout) == {'protocol': 1, 'operation': operation, 'transactionId': 'e' * 64, 'status': 'refused', 'reason': 'busy'}
 assert sorted(path.name for path in root.iterdir()) == ['jones-activation.lock', 'manifest.json', 'synthetic-helper.py']
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
+      runPython(
+        `${nativeFunctions}\n${scenario}`,
+        [f.directory],
         {
           encoding: "utf8",
           maxBuffer: 1024 * 1024,
@@ -2468,9 +2468,9 @@ restore_pair(expected, root / 'pair', root / 'advanced', expected)
 with sqlite3.connect(database) as db:
     assert db.execute('SELECT value FROM identity').fetchone()[0] == 'previous'
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
+      runPython(
+        `${nativeFunctions}\n${scenario}`,
+        [f.directory],
         { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
       );
     } finally {
@@ -2534,9 +2534,9 @@ try: storage_preflight(expected, staged, recursive)
 except RuntimeError as error: assert 'own destination' in str(error)
 else: raise AssertionError('Recursive database snapshot was accepted')
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
+      runPython(
+        `${nativeFunctions}\n${scenario}`,
+        [f.directory],
         {
           encoding: "utf8",
           maxBuffer: 1024 * 1024,
@@ -2587,9 +2587,9 @@ for suffix in ('', '-wal', '-shm'):
     assert pathlib.Path(str(database) + suffix).read_bytes() == ('old' + suffix).encode()
     assert (tx / 'advanced' / (database.name + suffix)).read_bytes() == ('advanced' + suffix).encode()
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
+      runPython(
+        `${nativeFunctions}\n${scenario}`,
+        [f.directory],
         {
           encoding: "utf8",
           maxBuffer: 1024 * 1024,
@@ -2637,9 +2637,9 @@ for suffix, content in contents.items():
     assert pathlib.Path(str(database) + suffix).read_bytes() == content
     assert (root / 'copy-advanced' / ('state.sqlite' + suffix)).read_bytes() == b'advanced state'
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
+      runPython(
+        `${nativeFunctions}\n${scenario}`,
+        [f.directory],
         { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
       );
     } finally {
@@ -2683,11 +2683,15 @@ finally:
     if child.returncode is None: child.kill()
     child.wait(timeout=2)
 `;
-    NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`], {
-      encoding: "utf8",
-      maxBuffer: 1024 * 1024,
-      timeout: 10000,
-    });
+    runPython(
+      `${nativeFunctions}\n${scenario}`,
+      [],
+      {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      },
+    );
   });
 
   it("withholds signals on reused identities and failed observations, and retains the stop deadline", () => {
@@ -2765,11 +2769,15 @@ for birth in ('Sa 10 Okt 08:20:14 2026', '2026年10月10日 08:20:14'):
     blocked([result(birth + ' /different/process'), result(birth + ' S')], 'Process identity changed; signal withheld.')
     blocked([zombie, result(birth.replace('08:20:14', '08:20:15') + ' Z')], 'Process identity changed; signal withheld.')
 `;
-    NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`], {
-      encoding: "utf8",
-      maxBuffer: 1024 * 1024,
-      timeout: 10000,
-    });
+    runPython(
+      `${nativeFunctions}\n${scenario}`,
+      [],
+      {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      },
+    );
   });
 
   it("checks native files and the whole profile tree, refusing writers or incomplete access", () => {
@@ -2800,11 +2808,15 @@ try: inspect('', 1, "lsof: WARNING: can't stat() /synthetic/profile/Local Storag
 except RuntimeError: pass
 else: raise AssertionError('An incomplete profile inspection was accepted')
 `;
-    NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`], {
-      encoding: "utf8",
-      maxBuffer: 1024 * 1024,
-      timeout: 10000,
-    });
+    runPython(
+      `${nativeFunctions}\n${scenario}`,
+      [],
+      {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      },
+    );
   });
 
   it("checks normal native launch identity from bounded plist and ASAR metadata", async () => {
@@ -2837,9 +2849,9 @@ for key, bad in (('sourceSha', 'c' * 40), ('sourceTree', 'd' * 40), ('version', 
     except RuntimeError: pass
     else: raise AssertionError('A changed bundle identity was accepted')
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
+      runPython(
+        `${nativeFunctions}\n${scenario}`,
+        [f.directory],
         { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
       );
     } finally {
@@ -2911,9 +2923,9 @@ assert (root / 'advanced-state' / 'profile').exists() == legacy
 if legacy: assert (root / 'advanced-state' / 'profile' / 'opaque-profile').read_text() == 'advanced-profile'
 assert (pair / 'state.sqlite').exists() == legacy
 `;
-        NodeChildProcess.execFileSync(
-          "python3",
-          ["-c", `${nativeFunctions}\n${scenario}`, f.directory, String(legacy)],
+        runPython(
+          `${nativeFunctions}\n${scenario}`,
+          [f.directory, String(legacy)],
           { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
         );
       } finally {
@@ -2983,9 +2995,9 @@ else:
     assert (profile / 'opaque').read_bytes() == b'profile'
     assert not (advanced / 'profile').exists()
 `;
-        NodeChildProcess.execFileSync(
-          "python3",
-          ["-c", definitions + "\n" + scenario, f.directory, fault],
+        runPython(
+          definitions + "\n" + scenario,
+          [f.directory, fault],
           { encoding: "utf8", timeout: 10000 },
         );
       } finally {
@@ -3007,9 +3019,9 @@ else:
       const nativeFunctions = jonesNativeHelperSource.split(
         "\nparser = argparse.ArgumentParser()",
       )[0];
-      const digest = NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\nprint(app_digest(sys.argv[1]))`, app],
+      const digest = runPython(
+        `${nativeFunctions}\nprint(app_digest(sys.argv[1]))`,
+        [app],
         { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
       ).trim();
       expect(await hashMacApp(app)).toBe(digest);
