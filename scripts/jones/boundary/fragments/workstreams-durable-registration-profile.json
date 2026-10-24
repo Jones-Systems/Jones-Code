@@ -1,0 +1,15 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "workstreams-durable-registration-profile",
+  "jonesOwnedPaths": [
+    "packages/contracts/contracts/workstreams-registration-context/v3/README.md",
+    "packages/contracts/contracts/workstreams-registration-context/v3/fixtures/conformance.json",
+    "packages/contracts/contracts/workstreams-registration-context/v3/fixtures/negative-cases.json",
+    "packages/contracts/contracts/workstreams-registration-context/v3/fixtures/semantic-cases.json",
+    "packages/contracts/contracts/workstreams-registration-context/v3/manifest.json",
+    "packages/contracts/contracts/workstreams-registration-context/v3/schemas/registration-context.schema.json"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": []
+}

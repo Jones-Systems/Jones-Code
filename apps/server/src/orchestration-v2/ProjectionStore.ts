@@ -5928,6 +5928,40 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       readonly item: TimelineIndexItem;
       readonly synthetic?: OrchestrationV2TurnItem;
     };
+    const timelinePayloadIdentity = (threadId: string, itemId: string) =>
+      JSON.stringify([threadId, itemId]);
+    const readTimelinePayloads = Effect.fn("ProjectionStore.readTimelinePayloads")(function* (
+      rows: ReadonlyArray<TimelineIndexRow>,
+    ) {
+      const sourcesByIdentity = new Map(
+        rows
+          .filter((row) => row.synthetic === undefined)
+          .map(
+            (row) =>
+              [
+                timelinePayloadIdentity(row.sourceThreadId, row.sourceItemId),
+                { threadId: row.sourceThreadId, id: row.sourceItemId },
+              ] as const,
+          ),
+      );
+      if (sourcesByIdentity.size === 0) return new Map<string, string>();
+      const sources = yield* encodeTimelineSources([...sourcesByIdentity.values()]);
+      const payloads = yield* sql<{
+        thread_id: string;
+        turn_item_id: string;
+        payload_json: string;
+      }>`
+          SELECT item.thread_id, item.turn_item_id, item.payload_json
+          FROM orchestration_v2_projection_turn_items item JOIN json_each(${sources}) wanted
+          ON item.thread_id = json_extract(wanted.value, '$.threadId')
+            AND item.turn_item_id = json_extract(wanted.value, '$.id')`;
+      return new Map(
+        payloads.map((row) => [
+          timelinePayloadIdentity(row.thread_id, row.turn_item_id),
+          row.payload_json,
+        ]),
+      );
+    });
     const readTimelineIndex: (
       threadId: ThreadId,
       seen: ReadonlySet<ThreadId>,
@@ -6081,26 +6115,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               conversationOnly && hasUserTurns
                 ? page.items.filter((row) => isConversationHistoryItem(row.item))
                 : page.items;
-            const sources = yield* encodeTimelineSources(
-              materialized
-                .filter((row) => !row.synthetic)
-                .map((row) => ({ threadId: row.sourceThreadId, id: row.sourceItemId })),
-            );
-            const payloads = yield* sql<{
-              thread_id: string;
-              turn_item_id: string;
-              payload_json: string;
-            }>`
-          SELECT item.thread_id, item.turn_item_id, item.payload_json
-          FROM orchestration_v2_projection_turn_items item JOIN json_each(${sources}) wanted
-          ON item.thread_id = json_extract(wanted.value, '$.threadId')
-            AND item.turn_item_id = json_extract(wanted.value, '$.id')`;
-            const byIdentity = new Map(
-              payloads.map((row) => [`${row.thread_id}:${row.turn_item_id}`, row.payload_json]),
-            );
+            const byIdentity = yield* readTimelinePayloads(materialized);
             const items = yield* Effect.forEach(materialized, (row) =>
               Effect.gen(function* () {
-                const payload = byIdentity.get(`${row.sourceThreadId}:${row.sourceItemId}`);
+                const payload = byIdentity.get(
+                  timelinePayloadIdentity(row.sourceThreadId, row.sourceItemId),
+                );
                 const item =
                   row.synthetic ??
                   (payload === undefined
@@ -6169,6 +6189,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               : [];
             if (options.tail && index.records.thread.deletedAt !== null)
               return yield* new ProjectionStoreThreadNotFoundError({ threadId });
+            const byIdentity = yield* readTimelinePayloads(page);
             const items = yield* Effect.forEach(page, (row) =>
               Effect.gen(function* () {
                 if (row.synthetic !== undefined)
@@ -6179,13 +6200,13 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     visibility: row.visibility,
                     item: row.synthetic,
                   };
-                const payloads =
-                  yield* sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_turn_items
-          WHERE thread_id = ${row.sourceThreadId} AND turn_item_id = ${row.sourceItemId}`;
+                const payload = byIdentity.get(
+                  timelinePayloadIdentity(row.sourceThreadId, row.sourceItemId),
+                );
                 const decoded = yield* decodeRows(
                   decodeTurnItemPayload,
                   row.sourceThreadId,
-                )(payloads);
+                )(payload === undefined ? [] : [{ payload_json: payload }]);
                 const item = decoded[0];
                 if (item === undefined)
                   return yield* new ProjectionStoreReadError({

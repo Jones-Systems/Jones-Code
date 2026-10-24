@@ -241,6 +241,8 @@ export const make = Effect.gen(function* () {
   const broadcasterScope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
     Scope.close(scope, Exit.void),
   );
+  // The map stays private; synchronous updates replace snapshots so readers
+  // can retain them across yields without observing later writes.
   const cacheRef = yield* Ref.make(new Map<string, CachedVcsStatus>());
   // One permit per cwd for remote reads that write the cache. Without it a
   // periodic poll that started before `gh pr create` can finish after the
@@ -264,12 +266,11 @@ export const make = Effect.gen(function* () {
       } satisfies CachedValue<VcsStatusLocalResult>;
       const shouldPublish = yield* Ref.modify(cacheRef, (cache) => {
         const previous = cache.get(cwd) ?? { local: null, remote: null };
-        const nextCache = new Map(cache);
-        nextCache.set(cwd, {
+        cache.set(cwd, {
           ...previous,
           local: nextLocal,
         });
-        return [previous.local?.fingerprint !== nextLocal.fingerprint, nextCache] as const;
+        return [previous.local?.fingerprint !== nextLocal.fingerprint, cache] as const;
       });
 
       if (options?.publish && shouldPublish) {
@@ -294,12 +295,11 @@ export const make = Effect.gen(function* () {
       } satisfies CachedValue<VcsStatusRemoteResult | null>;
       const shouldPublish = yield* Ref.modify(cacheRef, (cache) => {
         const previous = cache.get(cwd) ?? { local: null, remote: null };
-        const nextCache = new Map(cache);
-        nextCache.set(cwd, {
+        cache.set(cwd, {
           ...previous,
           remote: nextRemote,
         });
-        return [previous.remote?.fingerprint !== nextRemote.fingerprint, nextCache] as const;
+        return [previous.remote?.fingerprint !== nextRemote.fingerprint, cache] as const;
       });
 
       if (options?.publish && shouldPublish) {
@@ -332,15 +332,14 @@ export const make = Effect.gen(function* () {
     } satisfies CachedValue<VcsStatusRemoteResult | null>;
     const shouldPublish = yield* Ref.modify(cacheRef, (cache) => {
       const previous = cache.get(cwd) ?? { local: null, remote: null };
-      const nextCache = new Map(cache);
-      nextCache.set(cwd, {
+      cache.set(cwd, {
         local: nextLocal,
         remote: nextRemote,
       });
       return [
         previous.local?.fingerprint !== nextLocal.fingerprint ||
           previous.remote?.fingerprint !== nextRemote.fingerprint,
-        nextCache,
+        cache,
       ] as const;
     });
 

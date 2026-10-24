@@ -226,6 +226,19 @@ Queued messages appear above the composer. Rows show a thumbnail of any attached
 the text. Drag a row by its handle to reorder it, use the handle's arrow keys, promote the message
 to a steer, or remove it.
 
+On supporting servers, **Steer all** in the queue header sends compatible queued messages together
+to the active agent. Its count shows how many messages will be sent. If the queue exceeds the
+server's text or attachment limits, the action sends the fitting prefix and leaves the remaining
+messages queued. It preserves each message's sender and timeline entry. Editing, pending questions
+or approvals, and providers that require a restart can make the batch action unavailable. Older
+servers retain the individual row controls.
+
+Choosing **Steer all** sends one combined input to the currently running agent, including messages
+queued before you changed accounts or models. The separate timeline cards preserve the original
+messages; they do not mean each message started a separate turn. If the active turn finishes before
+delivery, the messages are preserved for follow-up delivery. Automatic delivery at a tool boundary
+still requires the queued messages to match the active provider and model.
+
 If you stop the agent or the server restarts, queued messages keep their order and are held.
 Press **Resume** in an empty composer on web and desktop, or **Resume queue** on mobile, to
 continue. Sending a new message also resumes the queue, unless it steers a turn that is already

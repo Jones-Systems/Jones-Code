@@ -14,6 +14,7 @@ import { Launcher, main, readServiceState, writeServiceState } from "../../servi
 import {
   QUALIFIED_STARTUP_STATE_FILES,
   readQualifiedBackupReceipt,
+  removeQualifiedRecoveryPayload,
   type QualifiedBackupAdapter,
 } from "./qualifiedBackup.ts";
 import {
@@ -22,9 +23,14 @@ import {
 } from "./qualifiedStartup.ts";
 import {
   archiveUpdateOperation,
+  operationBinding,
+  publishUpdateOperationSettlement,
   readOperationReservation,
+  readUpdateOperationCause,
+  readUpdateOperationSettlement,
   reconcileUpdateOperation,
   reserveUpdateOperation,
+  writeFailedUpdateOperation,
 } from "../updates/launcherOperation.ts";
 import {
   currentQualifiedRuntimeBinding,
@@ -32,7 +38,9 @@ import {
   stageQualifiedRuntime,
   QUALIFIED_RUNTIME_RECEIPT,
   type QualifiedRuntimeReceipt,
+  type StagedQualifiedRuntime,
 } from "./qualifiedRuntime.ts";
+import type { ServiceLauncherChildMessage, ServiceState } from "../../cloud/serviceProtocol.ts";
 
 import { retainStagedSelection } from "../updates/stagedSelection.ts";
 import { assertStageNotRevoked } from "../updates/stageRevocation.ts";
@@ -82,6 +90,12 @@ async function runScenario(
     readonly previous?: "committed" | "rolled-back" | "failed" | "accepted";
     readonly previousFault?: "directory" | "binding" | "restore-intent";
     readonly recoveryOnly?: boolean;
+    readonly settlementRetry?: boolean;
+    readonly settlementRequests?: readonly ServiceLauncherChildMessage[];
+    readonly settlementActiveDrift?: boolean;
+    readonly clearRestoreAfterReply?: boolean;
+    readonly beforeLaunch?: (base: string, staged: StagedQualifiedRuntime) => Promise<void>;
+    readonly recoveryIO?: NonNullable<ConstructorParameters<typeof Launcher>[2]>["recoveryIO"];
     readonly preparedTimeoutMs?: number;
   } = {},
 ) {
@@ -127,7 +141,37 @@ if (process.argv.includes("__service-preflight")) {
 const ownership = new NodeSqlite.DatabaseSync(${JSON.stringify(NodePath.join(userdata, "server-owner.sqlite"))});
 ownership.exec("PRAGMA busy_timeout=0; BEGIN EXCLUSIVE;");
 const context = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
-if (${JSON.stringify(options.retirementRace !== undefined)} && context.update === undefined) {
+if (${JSON.stringify(options.settlementRequests !== undefined)}) {
+  const requests = ${JSON.stringify(options.settlementRequests ?? [])};
+  const replies = [];
+  if (${JSON.stringify(options.settlementActiveDrift === true)}) {
+    const file = ${JSON.stringify(NodePath.join(base, "runtime", "versions", baseline, QUALIFIED_RUNTIME_RECEIPT))};
+    writeFileSync(file, JSON.stringify({...JSON.parse(readFileSync(file, "utf8")), sourceSha:${JSON.stringify("e".repeat(40))}}));
+  }
+  process.on("message", async m => {
+    if (m.type !== "update-reconciled") return;
+    replies.push(m);
+    if (${JSON.stringify(options.clearRestoreAfterReply === true)} && replies.length === 1) {
+      const {unlinkSync} = await import("node:fs");
+      unlinkSync(${JSON.stringify(NodePath.join(base, "runtime", "db-backup", previousId, ".restore-pending"))});
+    }
+    if (replies.length < requests.length) process.send(requests[replies.length]);
+    else {writeFileSync(${JSON.stringify(NodePath.join(base, "runtime", "settlement-replies.json"))}, JSON.stringify({context, replies})); process.exit(0);}
+  });
+  process.send(requests[0]);
+  setInterval(() => {}, 1000);
+} else if (${JSON.stringify(options.settlementRetry === true)} && context.update?.status === "failed" && existsSync(${JSON.stringify(NodePath.join(base, "runtime", "retry-settled"))})) {
+  const install = {type:"request-update", targetVersion:${JSON.stringify(target)}, dbPath:${JSON.stringify(dbPath)}, stagedHandle:readFileSync(${JSON.stringify(NodePath.join(base, "runtime", "test-handle"))}, "utf8"), operationId:context.update.id};
+  let rejections = 0;
+  process.on("message", m => {
+    if (m.type !== "update-rejected") return;
+    writeFileSync(${JSON.stringify(NodePath.join(base, "runtime", "settlement-rejection-"))} + (++rejections) + ".json", JSON.stringify(m));
+    if (rejections === 1) process.send({...install, operationId:"32345678-1234-4234-8234-123456789abc"});
+    else process.exit(0);
+  });
+  process.send(install);
+  setInterval(() => {}, 1000);
+} else if (${JSON.stringify(options.retirementRace !== undefined)} && context.update === undefined) {
   const handle = readFileSync(${JSON.stringify(NodePath.join(base, "runtime", "test-handle"))}, "utf8");
   const install = {type:"request-update", targetVersion:${JSON.stringify(target)}, dbPath:${JSON.stringify(dbPath)}, stagedHandle:handle, operationId:"12345678-1234-4234-8234-123456789abc"};
   const retire = {type:"request-retire-update", operationId:install.operationId, stagedHandle:handle, currentVersion:${JSON.stringify(baseline)}, environmentId:"synthetic-jones-environment", expectedInstalledSource:${JSON.stringify("c".repeat(40))}, targetSource:${JSON.stringify("a".repeat(40))}};
@@ -383,10 +427,12 @@ if (${JSON.stringify(options.retirementRace !== undefined)} && context.update ==
       activeVersion: baseline,
       ...(previousUpdate === undefined ? {} : { update: previousUpdate }),
     });
+    await options.beforeLaunch?.(base, staged);
     let reservations = 0;
     const launcher = new Launcher(base, await readServiceState(statePath), {
       ...(options.startupGateProtocol === "missing" ? {} : { startupGateProtocol: 1 as const }),
       ...(options.backupAdapter === undefined ? {} : { backupAdapter: options.backupAdapter }),
+      ...(options.recoveryIO === undefined ? {} : { recoveryIO: options.recoveryIO }),
       ...(options.operationFailure === undefined && options.afterOperationReserve === undefined
         ? {}
         : {
@@ -790,6 +836,7 @@ it("commits a qualified trial and retains the resume guard after snapshot cleanu
         launcherProtocol: 4,
         qualifiedUpdatesProtocol: 1,
         startupGateProtocol: 1,
+        updateSettlementProtocol: 1,
         childPid: observed.childPid,
         childVersion,
       });
@@ -1503,6 +1550,530 @@ it.each([false, true])(
     );
   },
 );
+
+it("settles a pre-trial re-verification failure before admitting a fresh Install ID", async () => {
+  let original: Buffer | undefined;
+  await runScenario(
+    "commit",
+    async (base, failure) => {
+      assert.match(String(failure), /payload|digest/i);
+      const statePath = NodePath.join(base, "runtime", "service-state.json");
+      const accepted = await readServiceState(statePath);
+      assert.equal(accepted.update?.status, "pending");
+      const failedId = accepted.update!.id;
+      await NodeFSP.writeFile(NodePath.join(base, "runtime", "versions", target, "t3"), original!);
+      const recover = new Launcher(base, accepted, { startupGateProtocol: 1 });
+      await NodeAssert.rejects(recover.run(), /Active child exited unexpectedly/);
+      const failed = await readServiceState(statePath);
+      assert.equal(failed.update?.status, "failed");
+      assert.equal(failed.activeVersion, baseline);
+      assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
+      const settled = await readUpdateOperationSettlement(base, failedId);
+      assert.equal(settled?.basis, "launcher-recorded");
+      assert.equal((await readUpdateOperationCause(base, failedId))?.step, "reverify");
+      await NodeFSP.writeFile(NodePath.join(base, "runtime", "retry-settled"), "");
+      await NodeAssert.rejects(
+        new Launcher(base, failed, { startupGateProtocol: 1 }).run(),
+        /Active child exited unexpectedly/,
+      );
+      const final = await readServiceState(statePath);
+      const rejectionPath = NodePath.join(base, "runtime", "settlement-rejection-2.json");
+      assert.equal(
+        final.update?.status,
+        "committed",
+        NodeFS.existsSync(rejectionPath)
+          ? await NodeFSP.readFile(rejectionPath, "utf8")
+          : "Fresh Install must commit",
+      );
+      assert.equal(final.update?.id, "32345678-1234-4234-8234-123456789abc");
+      const rejected = JSON.parse(
+        await NodeFSP.readFile(
+          NodePath.join(base, "runtime", "settlement-rejection-1.json"),
+          "utf8",
+        ),
+      );
+      assert.equal(rejected.operationId, failedId);
+      assert.equal((await reconcileUpdateOperation(base, failedId, final.update)).state, "blocked");
+    },
+    undefined,
+    {
+      settlementRetry: true,
+      afterOperationReserve: async (base) => {
+        const entry = NodePath.join(base, "runtime", "versions", target, "t3");
+        original = await NodeFSP.readFile(entry);
+        await NodeFSP.appendFile(entry, "\n// synthetic changed payload\n");
+      },
+    },
+  );
+});
+
+it.each(["reverify", "backup", "ownership", "cause-write"] as const)(
+  "retains a qualified %s failure without changing live state and settles on restart",
+  async (step) => {
+    const injected = Object.assign(new Error("synthetic preparation failure at /private/fixture"), {
+      code: "EIO",
+    });
+    await runScenario(
+      "commit",
+      async (base, failure) => {
+        assert.equal(failure, injected);
+        const statePath = NodePath.join(base, "runtime", "service-state.json");
+        const accepted = await readServiceState(statePath);
+        assert.equal(accepted.update?.status, "pending");
+        const id = accepted.update!.id;
+        const cause = await readUpdateOperationCause(base, id);
+        if (step === "cause-write") assert.isUndefined(cause);
+        else {
+          assert.equal(cause?.step, step);
+          assert.equal(cause?.code, "EIO");
+          assert.notInclude(cause!.message, "/private/fixture");
+        }
+        await NodeAssert.rejects(
+          new Launcher(base, accepted, { startupGateProtocol: 1 }).run(),
+          /Active child exited unexpectedly/,
+        );
+        const failed = await readServiceState(statePath);
+        assert.equal(failed.update?.status, "failed");
+        assert.equal(failed.activeVersion, baseline);
+        assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
+        const settlement = await readUpdateOperationSettlement(base, id);
+        assert.equal(settlement?.basis, "launcher-recorded");
+        assert.isFalse(
+          NodeFS.existsSync(NodePath.join(base, "runtime", "db-backup", id, "database")),
+        );
+        if (settlement?.basis !== "retired-exception")
+          assert.equal(settlement?.evidence.cause, cause?.message ?? null);
+      },
+      undefined,
+      {
+        afterOperationReserve: async () => {},
+        ...(step === "backup"
+          ? {
+              backupAdapter: {
+                availableBytes: async () => 100 * 1024 * 1024,
+                copyFile: async (source, destination, flags) => {
+                  if (source.endsWith("statev2.sqlite")) throw injected;
+                  await NodeFSP.copyFile(source, destination, flags);
+                },
+              },
+            }
+          : {}),
+        recoveryIO: {
+          ...(step === "reverify" || step === "cause-write"
+            ? {
+                verify: async () => {
+                  throw injected;
+                },
+              }
+            : {}),
+          ...(step === "ownership"
+            ? {
+                ownership: async () => {
+                  throw injected;
+                },
+              }
+            : {}),
+          ...(step === "cause-write"
+            ? {
+                cause: async () => {
+                  throw new Error("diagnostic write failure");
+                },
+              }
+            : {}),
+        },
+      },
+    );
+  },
+);
+
+async function seedSettlementFixture(
+  base: string,
+  qualified: StagedQualifiedRuntime,
+  pending = false,
+) {
+  await reserveUpdateOperation(base, previousId, operationBinding(qualified));
+  const update = {
+    id: previousId,
+    fromVersion: baseline,
+    targetVersion: target,
+    qualified,
+    ...(pending
+      ? { status: "pending" as const, phase: "accepted" as const, dbPath: qualified.binding.dbPath }
+      : { status: "failed" as const, reason: "launcher-restarted" }),
+  };
+  const state: ServiceState = { protocol: 4, activeVersion: baseline, update };
+  const backup = NodePath.join(base, "runtime", "db-backup", previousId);
+  await NodeFSP.mkdir(backup, { recursive: true, mode: 0o700 });
+  await NodeFSP.copyFile(qualified.binding.dbPath, NodePath.join(backup, "database"));
+  await NodeFSP.writeFile(
+    NodePath.join(backup, "paired-binding.json"),
+    JSON.stringify({ transactionId: previousId, qualified }),
+    { mode: 0o600 },
+  );
+  await writeServiceState(NodePath.join(base, "runtime", "service-state.json"), state);
+  return state;
+}
+
+it.each([
+  "outcome",
+  "cleanup",
+  "written",
+  "file-synced",
+  "linked",
+  "directory-synced",
+  "native-state",
+] as const)(
+  "repeats the durable pre-trial settlement prefix after interruption at %s",
+  async (phase) => {
+    const interrupted = new Error(`synthetic interruption after ${phase}`);
+    await runScenario(
+      "commit",
+      async (base, failure) => {
+        assert.equal(failure, interrupted);
+        const statePath = NodePath.join(base, "runtime", "service-state.json");
+        const before = await readServiceState(statePath);
+        assert.equal(before.update?.status, phase === "native-state" ? "failed" : "pending");
+        const outcomePath = NodePath.join(
+          base,
+          "runtime",
+          "jones-update-operations",
+          `${previousId}.outcome.json`,
+        );
+        const outcomeBytes = await NodeFSP.readFile(outcomePath);
+        assert.equal(JSON.parse(outcomeBytes.toString()).status, "failed");
+        assert.notProperty(JSON.parse(outcomeBytes.toString()), "reason");
+        await NodeAssert.rejects(
+          new Launcher(base, before, { startupGateProtocol: 1 }).run(),
+          /Active child exited unexpectedly/,
+        );
+        const after = await readServiceState(statePath);
+        assert.equal(after.update?.status, "failed");
+        assert.equal(after.activeVersion, baseline);
+        assert.deepEqual(await NodeFSP.readFile(outcomePath), outcomeBytes);
+        assert.equal(
+          (await readUpdateOperationSettlement(base, previousId))?.basis,
+          "launcher-recorded",
+        );
+        assert.isFalse(
+          NodeFS.existsSync(NodePath.join(base, "runtime", "db-backup", previousId, "database")),
+        );
+        assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
+      },
+      undefined,
+      {
+        beforeLaunch: async (base, qualified) => {
+          await seedSettlementFixture(base, qualified, true);
+        },
+        recoveryIO: {
+          ...(phase === "outcome"
+            ? {
+                failedOutcome: async (...args: Parameters<typeof writeFailedUpdateOperation>) => {
+                  await writeFailedUpdateOperation(...args);
+                  throw interrupted;
+                },
+              }
+            : {}),
+          ...(phase === "cleanup"
+            ? {
+                cleanup: async (base, pending) => {
+                  await removeQualifiedRecoveryPayload(
+                    base,
+                    pending.id,
+                    pending.dbPath,
+                    { transactionId: pending.id, qualified: pending.qualified },
+                    "failed-before-trial",
+                  );
+                  throw interrupted;
+                },
+              }
+            : {}),
+          ...(["written", "file-synced", "linked", "directory-synced"].includes(phase)
+            ? {
+                settle: (base, receipt) =>
+                  publishUpdateOperationSettlement(base, receipt, {
+                    onPhase: async (current) => {
+                      if (current === phase) throw interrupted;
+                    },
+                  }),
+              }
+            : {}),
+          ...(phase === "native-state"
+            ? {
+                writeState: async (...args: Parameters<typeof writeServiceState>) => {
+                  await writeServiceState(...args);
+                  throw interrupted;
+                },
+              }
+            : {}),
+        },
+      },
+    );
+  },
+);
+
+const reconciliationRequest = (requestId = "22345678-1234-4234-8234-123456789abc") => ({
+  type: "reconcile-failed-update" as const,
+  operationId: previousId,
+  requestId,
+});
+
+it("keeps uncertain snapshot staging held before publishing pre-trial settlement", async () => {
+  await runScenario(
+    "commit",
+    async (base, failure) => {
+      assert.match(String(failure), /snapshot staging has unknown prior effects/);
+      const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+      assert.equal(state.update?.status, "pending");
+      assert.equal(state.activeVersion, baseline);
+      assert.isUndefined(await readUpdateOperationSettlement(base, previousId));
+      assert.equal(
+        await NodeFSP.readFile(
+          NodePath.join(base, "runtime", "db-backup", `${previousId}.staging`, "partial"),
+          "utf8",
+        ),
+        "retained",
+      );
+      assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
+    },
+    undefined,
+    {
+      beforeLaunch: async (base, qualified) => {
+        await seedSettlementFixture(base, qualified, true);
+        const staging = NodePath.join(base, "runtime", "db-backup", `${previousId}.staging`);
+        await NodeFSP.mkdir(staging, { mode: 0o700 });
+        await NodeFSP.writeFile(NodePath.join(staging, "partial"), "retained");
+      },
+    },
+  );
+});
+
+it("bounds per-child settlement replies without evicting an earlier request result", async () => {
+  const requests = Array.from({ length: 257 }, () =>
+    reconciliationRequest(NodeCrypto.randomUUID()),
+  );
+  requests.push(requests[0]!);
+  await runScenario(
+    "commit",
+    async (base, failure) => {
+      assert.match(String(failure), /Active child exited unexpectedly/);
+      const { replies } = await readSettlementReplies(base);
+      assert.equal(replies.length, 258);
+      for (const reply of replies.slice(0, 256)) assert.equal(reply.reason, "not-found");
+      assert.equal(replies[256].reason, "settlement-write-failed");
+      assert.deepEqual(replies[257], replies[0]);
+    },
+    undefined,
+    { settlementRequests: requests },
+  );
+});
+const readSettlementReplies = async (base: string) =>
+  JSON.parse(
+    await NodeFSP.readFile(NodePath.join(base, "runtime", "settlement-replies.json"), "utf8"),
+  );
+
+it("serializes legacy reconciliation and returns the original reply for a repeated request ID", async () => {
+  const first = reconciliationRequest();
+  await runScenario(
+    "commit",
+    async (base, failure) => {
+      assert.match(String(failure), /Active child exited unexpectedly/);
+      const { context, replies } = await readSettlementReplies(base);
+      assert.equal(context.updateSettlementProtocol, 1);
+      assert.deepEqual(
+        replies.map((reply: { result: string }) => reply.result),
+        ["settled", "settled", "already-settled"],
+      );
+      assert.deepEqual(replies[0], replies[1]);
+      assert.equal(
+        (await readUpdateOperationSettlement(base, previousId))?.basis,
+        "legacy-reconciled",
+      );
+      assert.isFalse(
+        NodeFS.existsSync(NodePath.join(base, "runtime", "db-backup", previousId, "database")),
+      );
+      assert.equal(
+        (await readServiceState(NodePath.join(base, "runtime", "service-state.json"))).update
+          ?.status,
+        "failed",
+      );
+    },
+    undefined,
+    {
+      beforeLaunch: async (base, qualified) => {
+        await seedSettlementFixture(base, qualified);
+      },
+      settlementRequests: [
+        first,
+        first,
+        reconciliationRequest("32345678-1234-4234-8234-123456789abc"),
+      ],
+    },
+  );
+});
+
+it.each([
+  "not-failed",
+  "not-found",
+  "insufficient-evidence",
+  "restore-pending",
+  "active-changed",
+  "trial-evidence-present",
+  "retired-evidence-mismatch",
+  "settlement-write-failed",
+] as const)("returns %s without claiming a legacy operation was settled", async (reason) => {
+  await runScenario(
+    "commit",
+    async (base, failure) => {
+      assert.match(String(failure), /Active child exited unexpectedly/);
+      const { replies } = await readSettlementReplies(base);
+      assert.deepEqual(replies, [
+        {
+          type: "update-reconciled",
+          operationId: previousId,
+          requestId: reconciliationRequest().requestId,
+          result: "refused",
+          reason,
+        },
+      ]);
+      assert.isUndefined(await readUpdateOperationSettlement(base, previousId));
+      assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
+    },
+    undefined,
+    {
+      settlementRequests: [
+        reason === "retired-evidence-mismatch"
+          ? {
+              ...reconciliationRequest(),
+              type: "record-retired-operation",
+              retiredLocation: "../untrusted",
+            }
+          : reconciliationRequest(),
+      ],
+      settlementActiveDrift: reason === "active-changed",
+      beforeLaunch: async (base, qualified) => {
+        if (reason === "not-found" || reason === "retired-evidence-mismatch") return;
+        const state = await seedSettlementFixture(base, qualified);
+        const file = NodePath.join(base, "runtime", "service-state.json");
+        if (reason === "not-failed")
+          await writeServiceState(file, {
+            ...state,
+            update: { ...state.update!, status: "rolled-back" },
+          });
+        if (reason === "insufficient-evidence") {
+          await archiveUpdateOperation(base, state.update);
+          await writeServiceState(file, { protocol: 4, activeVersion: baseline });
+        }
+        if (reason === "restore-pending" || reason === "trial-evidence-present")
+          await NodeFSP.writeFile(
+            NodePath.join(
+              base,
+              "runtime",
+              "db-backup",
+              previousId,
+              reason === "restore-pending" ? ".restore-pending" : "resume-dispatched.json",
+            ),
+            "",
+          );
+      },
+      ...(reason === "settlement-write-failed"
+        ? {
+            recoveryIO: {
+              settle: async () => {
+                throw new Error("synthetic settlement EIO");
+              },
+            },
+          }
+        : {}),
+    },
+  );
+});
+
+it("retains a refusal for its request ID after evidence changes, then evaluates a new request", async () => {
+  const first = reconciliationRequest();
+  await runScenario(
+    "commit",
+    async (base) => {
+      const { replies } = await readSettlementReplies(base);
+      assert.deepEqual(replies[0], replies[1]);
+      assert.equal(replies[0].reason, "restore-pending");
+      assert.equal(replies[2].result, "settled");
+    },
+    undefined,
+    {
+      settlementRequests: [
+        first,
+        first,
+        reconciliationRequest("32345678-1234-4234-8234-123456789abc"),
+      ],
+      clearRestoreAfterReply: true,
+      beforeLaunch: async (base, qualified) => {
+        await seedSettlementFixture(base, qualified);
+        await NodeFSP.writeFile(
+          NodePath.join(base, "runtime", "db-backup", previousId, ".restore-pending"),
+          "",
+        );
+      },
+    },
+  );
+});
+
+it("records a retired-operation tombstone from exact retained copies and keeps its ID unavailable", async () => {
+  const request = {
+    ...reconciliationRequest(),
+    type: "record-retired-operation" as const,
+    retiredLocation: `retired/${previousId}`,
+  };
+  await runScenario(
+    "commit",
+    async (base) => {
+      const { replies } = await readSettlementReplies(base);
+      assert.deepEqual(
+        replies.map((reply: { result: string }) => reply.result),
+        ["settled", "settled", "already-settled", "refused"],
+      );
+      assert.equal(replies[3].reason, "retired-evidence-mismatch");
+      assert.equal(
+        (await readUpdateOperationSettlement(base, previousId))?.basis,
+        "retired-exception",
+      );
+      const staged = JSON.parse(
+        await NodeFSP.readFile(
+          NodePath.join(base, "runtime", "retired", previousId, `${previousId}.json`),
+          "utf8",
+        ),
+      );
+      await NodeAssert.rejects(reserveUpdateOperation(base, previousId, staged.binding));
+    },
+    undefined,
+    {
+      settlementRequests: [
+        request,
+        request,
+        { ...request, requestId: "32345678-1234-4234-8234-123456789abc" },
+        {
+          ...request,
+          requestId: "42345678-1234-4234-8234-123456789abc",
+          retiredLocation: "retired/different",
+        },
+      ],
+      beforeLaunch: async (base, qualified) => {
+        const state = await seedSettlementFixture(base, qualified);
+        await archiveUpdateOperation(base, state.update);
+        const retired = NodePath.join(base, "runtime", request.retiredLocation);
+        await NodeFSP.mkdir(retired, { recursive: true, mode: 0o700 });
+        for (const suffix of [".json", ".outcome.json"])
+          await NodeFSP.rename(
+            NodePath.join(base, "runtime", "jones-update-operations", previousId + suffix),
+            NodePath.join(retired, previousId + suffix),
+          );
+        await writeServiceState(NodePath.join(base, "runtime", "service-state.json"), {
+          protocol: 4,
+          activeVersion: baseline,
+        });
+      },
+    },
+  );
+});
 
 it("does not clean a terminal generation during launcher startup", async () => {
   await runScenario(

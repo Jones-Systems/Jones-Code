@@ -15,11 +15,13 @@ import { EventSinkV2 } from "./EventSink.ts";
 import { legacyBootstrapBirth } from "./LegacyBootstrap.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import { makeGoalResumeCorrelation } from "../jones/goals/GoalResumeCorrelation.ts";
 
 export const makeCommandObservationQuery = Effect.fn("makeCommandObservationQuery")(function* () {
   const sql = yield* SqlClient.SqlClient;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const eventSink = yield* EventSinkV2;
+  const goalResumeCompanionSequences = yield* makeGoalResumeCorrelation;
   const readTarget = Effect.fn("CommandObservation.readTarget")(function* (threadId: ThreadId) {
     const [row] = yield* sql<{ snapshotSequence: number; lastEventSequence: number }>`SELECT
       COALESCE((SELECT MAX(sequence) FROM orchestration_events), 0) AS snapshotSequence,
@@ -172,10 +174,19 @@ export const makeCommandObservationQuery = Effect.fn("makeCommandObservationQuer
             }
           }
         }
+        const companions = yield* goalResumeCompanionSequences({
+          ...input,
+          commandType: receipt?.command_type,
+          events,
+        });
         if (
           (receipt !== undefined &&
             (receipt.aggregate_kind !== "thread" || receipt.aggregate_id !== input.threadId)) ||
-          events.some((e) => e.aggregate_kind !== "thread" || e.stream_id !== input.threadId) ||
+          events.some(
+            (e) =>
+              e.aggregate_kind !== "thread" ||
+              (e.stream_id !== input.threadId && !companions.has(e.sequence)),
+          ) ||
           created.some((r) => r.threadId !== input.threadId || r.userMessageId !== input.messageId)
         )
           correlation = "mismatched";

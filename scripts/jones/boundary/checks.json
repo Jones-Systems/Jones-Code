@@ -2700,6 +2700,86 @@
         "vp run --filter @t3tools/provider-testing typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-remote-agent-lineage",
+      "tests": [
+        "apps/web/src/jones/remoteAgentLineage/model.test.ts",
+        "apps/web/src/jones/remoteAgentLineage/ThreadRelationships.browser.test.tsx",
+        "apps/web/src/jones/remoteAgentLineage/MachineIdentity.browser.test.tsx"
+      ],
+      "commands": [
+        "vp test run --root apps/web --config vite.config.ts src/jones/remoteAgentLineage/model.test.ts --project unit --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/web --config vite.config.ts src/components/chat/ThreadRelationshipsControl.agents.browser.test.tsx src/components/BranchToolbar.panel.browser.test.tsx --project browser --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/web/src/jones/remoteAgentLineage apps/web/src/components/ChatView.tsx apps/web/src/components/chat/ChatHeader.tsx apps/web/src/components/chat/ThreadRelationshipsControl.tsx apps/web/src/components/BranchToolbar.tsx",
+        "vp run --filter @t3tools/web typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-vcs-cache-efficiency",
+      "tests": ["apps/server/src/vcs/VcsStatusBroadcaster.test.ts"],
+      "commands": [
+        "vp test run apps/server/src/vcs/VcsStatusBroadcaster.test.ts",
+        "vp lint apps/server/src/vcs/VcsStatusBroadcaster.ts apps/server/src/vcs/VcsStatusBroadcaster.test.ts",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-timeline-payload-batching",
+      "tests": [
+        "apps/server/src/jones/orchestration/threadReferenceTail.test.ts",
+        "apps/server/src/orchestration-v2/ProjectionStore.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/orchestration/threadReferenceTail.test.ts",
+        "vp test run apps/server/src/orchestration-v2/ProjectionStore.test.ts -t 'keeps fork visible items stable after a source run is rolled back'",
+        "vp lint apps/server/src/orchestration-v2/ProjectionStore.ts apps/server/src/jones/orchestration/threadReferenceTail.test.ts",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-ci-registry-search-timers",
+      "tests": ["apps/web/src/components/settings/AcpRegistrySearchStep.browser.test.tsx"],
+      "commands": [
+        "cd apps/web && vp test run --project browser src/components/settings/AcpRegistrySearchStep.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-workstreams-registry-binding",
+      "tests": [
+        "packages/shared/src/jones/workstreamsRegistryBinding.test.ts",
+        "apps/server/src/jones/workstreams/registryBinding.test.ts",
+        "apps/server/src/jones/workstreams/activation.test.ts",
+        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
+        "apps/server/src/workstreams/WorkstreamGateway.test.ts",
+        "apps/server/src/jones/workstreams/runtimeIntegration/loopbackBinding.test.ts",
+        "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx"
+      ],
+      "commands": [
+        "vp test run packages/shared/src/jones/workstreamsRegistryBinding.test.ts apps/server/src/jones/workstreams/registryBinding.test.ts apps/server/src/jones/workstreams/activation.test.ts apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts apps/server/src/workstreams/WorkstreamGateway.test.ts apps/server/src/jones/workstreams/runtimeIntegration/loopbackBinding.test.ts apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx --maxWorkers=1",
+        "vp run --filter t3 typecheck",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter @t3tools/shared typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-pr-cache-scope-locks",
+      "tests": [
+        "apps/server/src/pullRequest/PullRequestReadCache.test.ts",
+        "apps/server/src/jones/pullRequest/pullRequestScopeLocks.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/pullRequest/PullRequestReadCache.test.ts apps/server/src/jones/pullRequest/pullRequestScopeLocks.test.ts",
+        "vp lint apps/server/src/pullRequest/PullRequestReadCache.ts apps/server/src/pullRequest/PullRequestReadCache.test.ts apps/server/src/jones/pullRequest/pullRequestScopeLocks.ts apps/server/src/jones/pullRequest/pullRequestScopeLocks.test.ts",
+        "vp run --filter t3 typecheck",
+        "knip --workspace apps/server --exports --preprocessor ./scripts/knip-schemas.ts --no-config-hints",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }

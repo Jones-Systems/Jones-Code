@@ -217,6 +217,123 @@ describe("VcsStatusBroadcaster", () => {
     },
   );
 
+  it.effect("reuses the cached VCS status across repeated reads", () => {
+    const state = {
+      currentLocalStatus: baseLocalStatus,
+      currentRemoteStatus: baseRemoteStatus,
+      localStatusCalls: 0,
+      remoteStatusCalls: 0,
+      localInvalidationCalls: 0,
+      remoteInvalidationCalls: 0,
+    };
+
+    return Effect.gen(function* () {
+      const broadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
+
+      const first = yield* broadcaster.getStatus({ cwd: "/repo" });
+      const second = yield* broadcaster.getStatus({ cwd: "/repo" });
+
+      assert.deepStrictEqual(first, baseStatus);
+      assert.deepStrictEqual(second, baseStatus);
+      assert.equal(state.localStatusCalls, 1);
+      assert.equal(state.remoteStatusCalls, 1);
+      assert.equal(state.localInvalidationCalls, 0);
+      assert.equal(state.remoteInvalidationCalls, 0);
+    }).pipe(Effect.provide(layerTestFor(state)));
+  });
+
+  it.effect("preserves other cached snapshots and deduplicates updates across many cwds", () => {
+    const state = {
+      currentLocalStatus: baseLocalStatus,
+      currentRemoteStatus: baseRemoteStatus,
+      localStatusCalls: 0,
+      remoteStatusCalls: 0,
+      localInvalidationCalls: 0,
+      remoteInvalidationCalls: 0,
+    };
+
+    return Effect.gen(function* () {
+      const broadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
+      const originals = new Map<
+        string,
+        { local: VcsStatusLocalResult; remote: VcsStatusRemoteResult }
+      >();
+      for (let index = 0; index < 256; index += 1) {
+        const cwd = `/vcs-cache-test/repo-${index}`;
+        state.currentLocalStatus = { ...baseLocalStatus, refName: `feature/${index}` };
+        state.currentRemoteStatus = { ...baseRemoteStatus, aheadCount: index };
+        originals.set(cwd, {
+          local: state.currentLocalStatus,
+          remote: state.currentRemoteStatus,
+        });
+        yield* broadcaster.getStatus({ cwd });
+      }
+
+      const cwd = "/vcs-cache-test/repo-0";
+      const original = originals.get(cwd)!;
+      const ready = yield* Deferred.make<void>();
+      const drained = yield* Deferred.make<void>();
+      const events: Array<VcsStatusStreamEvent> = [];
+      yield* Stream.runForEach(broadcaster.streamStatus({ cwd, includeRemote: false }), (event) =>
+        Effect.gen(function* () {
+          events.push(event);
+          if (events.length === 1) yield* Deferred.succeed(ready, undefined);
+          if (event._tag === "localUpdated" && event.local.hasWorkingTreeChanges) {
+            yield* Deferred.succeed(drained, undefined);
+          }
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Deferred.await(ready);
+
+      state.currentLocalStatus = { ...original.local, refName: "feature/local-update" };
+      yield* broadcaster.refreshLocalStatus(cwd);
+      state.currentLocalStatus = { ...state.currentLocalStatus };
+      yield* broadcaster.refreshLocalStatus(cwd);
+      state.currentRemoteStatus = remoteStatusWithPr;
+      yield* broadcaster.refreshPullRequestStatus(cwd);
+      state.currentRemoteStatus = { ...remoteStatusWithPr };
+      yield* broadcaster.refreshPullRequestStatus(cwd);
+      state.currentLocalStatus = { ...original.local, refName: "feature/full-update" };
+      yield* broadcaster.refreshStatus(cwd);
+      yield* broadcaster.refreshStatus(cwd);
+      state.currentLocalStatus = { ...state.currentLocalStatus, hasWorkingTreeChanges: true };
+      yield* broadcaster.refreshLocalStatus(cwd);
+      yield* Deferred.await(drained);
+
+      assert.deepStrictEqual(
+        events.map((event) => event._tag),
+        ["snapshot", "localUpdated", "remoteUpdated", "snapshot", "localUpdated"],
+      );
+      const initial = events[0];
+      assert.isDefined(initial);
+      if (initial?._tag !== "snapshot") throw new Error("Expected initial snapshot");
+      assert.strictEqual(initial.local, original.local);
+      assert.strictEqual(initial.remote, original.remote);
+      assert.equal(initial.local.refName, "feature/0");
+      assert.equal(initial.remote?.pr, null);
+
+      for (const [otherCwd, expected] of originals) {
+        const snapshot = Option.getOrThrow(
+          yield* Stream.runHead(broadcaster.streamStatus({ cwd: otherCwd, includeRemote: false })),
+        );
+        if (snapshot._tag !== "snapshot") throw new Error("Expected cached snapshot");
+        assert.strictEqual(
+          snapshot.local,
+          otherCwd === cwd ? state.currentLocalStatus : expected.local,
+        );
+        assert.strictEqual(
+          snapshot.remote,
+          otherCwd === cwd ? state.currentRemoteStatus : expected.remote,
+        );
+        yield* broadcaster.getStatus({ cwd: otherCwd });
+      }
+      assert.equal(state.localStatusCalls, originals.size + 5);
+      assert.equal(state.remoteStatusCalls, originals.size + 4);
+      assert.equal(state.localInvalidationCalls, 5);
+      assert.equal(state.remoteInvalidationCalls, 2);
+    }).pipe(Effect.provide(layerTestFor(state)));
+  });
+
   it.effect("refreshes a loaded cwd without reusing a previous branch's PR", () => {
     const state = {
       currentLocalStatus: baseLocalStatus,

@@ -1,6 +1,6 @@
 import { importedHistoryContinuationEligible } from "@t3tools/client-runtime/jones/imported-history/continuation";
 import { ContinuationChoiceBanner } from "../jones/importedHistory/ContinuationChoiceBanner";
-import { buildThreadRouteParams } from "../threadRoutes";
+import { useParentLink } from "../jones/remoteAgentLineage/useParentLink";
 import { listenForWorkspaceFileDragEnd } from "../jones/questionAnswer/workspaceFileDragLifecycle";
 import { ComposerPendingUserInputPanel } from "./chat/ComposerPendingUserInputPanel";
 import {
@@ -236,7 +236,6 @@ import { resolveProviderSkillsForCwd } from "@t3tools/client-runtime/providerSki
 import { vcsEnvironment } from "../state/vcs";
 import {
   type EnvironmentPresentation,
-  useEnvironment,
   useEnvironmentProviders,
   useEnvironments,
   usePrimaryEnvironment,
@@ -782,18 +781,11 @@ export default function ChatView(props: ChatViewProps) {
       ? run.id
       : null;
   })();
-  const parentSubagentThreadId =
-    activeThread?.lineage.relationshipToParent === "subagent"
-      ? activeThread.lineage.parentThreadId
-      : null;
-  const parentSubagentEnvironmentId = activeThread?.environmentId ?? null;
-  const parentSubagentThreadRef = (() => {
-    if (parentSubagentEnvironmentId === null || parentSubagentThreadId === null) {
-      return null;
-    }
-    return scopeThreadRef(parentSubagentEnvironmentId, parentSubagentThreadId);
-  })();
-  const parentSubagentThread = useQuietThreadShell(parentSubagentThreadRef);
+  const parentThreadLink = useParentLink(
+    activeThread?.environmentId ?? environmentId,
+    activeThread,
+  );
+  const workflowOpeningEnvironmentId = activeThread?.environmentId ?? null;
   // A workflow coordinator's thread opens with its script; the plan that replaces it lives on
   // the parent's coordinator row, so the parent's detail loads only for such a thread.
   const workflowOpeningParentId =
@@ -804,9 +796,9 @@ export default function ChatView(props: ChatViewProps) {
           messages: serverProjection.messages,
         });
   const workflowOpeningParentProjection = useThreadProjection(
-    workflowOpeningParentId === null || parentSubagentEnvironmentId === null
+    workflowOpeningParentId === null || workflowOpeningEnvironmentId === null
       ? null
-      : scopeThreadRef(parentSubagentEnvironmentId, workflowOpeningParentId),
+      : scopeThreadRef(workflowOpeningEnvironmentId, workflowOpeningParentId),
   );
   const workflowOpening =
     serverProjection === null || workflowOpeningParentId === null
@@ -816,53 +808,6 @@ export default function ChatView(props: ChatViewProps) {
           messages: serverProjection.messages,
           parentSubagents: workflowOpeningParentProjection?.projection.subagents ?? null,
         });
-  // A linked environment's agent may have delegated this thread from there.
-  const delegatedFrom = activeThread?.delegatedFrom ?? null;
-  const delegatedFromEnvironment = useEnvironment(delegatedFrom?.environmentId ?? null);
-  const delegatedFromRef =
-    delegatedFrom === null
-      ? null
-      : scopeThreadRef(delegatedFrom.environmentId, delegatedFrom.threadId);
-  // The title it had at delegation, until this client sees the parent itself.
-  const delegatedFromThread = useQuietThreadShell(delegatedFromRef);
-  const parentThreadLink = (() => {
-    if (parentSubagentThreadRef !== null) {
-      return {
-        title: parentSubagentThread?.title ?? "Parent thread",
-        open: (): void => {
-          void navigate({
-            to: "/$environmentId/$threadId",
-            params: buildThreadRouteParams(parentSubagentThreadRef),
-          });
-        },
-      };
-    }
-    if (delegatedFrom === null || delegatedFromRef === null) return null;
-    const parentRef = delegatedFromRef;
-    return {
-      title: delegatedFromThread?.title ?? delegatedFrom.title,
-      environmentLabel: delegatedFromEnvironment?.label ?? activeThread?.linkOrigin?.label ?? "",
-      // Only an environment this client is connected to can open the parent.
-      ...(delegatedFromEnvironment === null
-        ? {}
-        : {
-            open: (): void => {
-              void navigate({
-                to: "/$environmentId/$threadId",
-                params: buildThreadRouteParams(parentRef),
-              });
-            },
-          }),
-    };
-  })();
-  // The header's breadcrumb opens a parent in this environment only.
-  const headerParentThreadLink =
-    parentSubagentThreadRef === null
-      ? null
-      : {
-          threadId: parentSubagentThreadRef.threadId,
-          title: parentSubagentThread?.title ?? "Parent thread",
-        };
   const threadError = isServerThread
     ? (localServerError ?? serverRuntime?.lastError ?? null)
     : localDraftError;
@@ -3263,9 +3208,8 @@ export default function ChatView(props: ChatViewProps) {
             activeThreadId={activeThread.id}
             isServerThread={isServerThread}
             activeThreadTitle={activeThread.title}
-            activeThreadLinkOrigin={activeThreadShell?.linkOrigin?.label ?? null}
             activeProject={activeProject ?? null}
-            parentThreadLink={headerParentThreadLink}
+            parentThreadLink={parentThreadLink}
             onOpenThread={onOpenRelatedThreadStable}
             rightPanelOpen={inlineRightPanelOwnsTitleBar}
             onNewThreadInProject={handleNewThreadInActiveProjectStable}

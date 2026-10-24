@@ -207,6 +207,131 @@ const makeClient = (host: FakeLauncherProcess, currentVersion: string) =>
     Effect.provideService(HostProcess.Environment, host.env),
   );
 
+it.effect("reports launcher and child versions separately without inferring missing metadata", () =>
+  Effect.gen(function* () {
+    for (const protocol of [LEGACY_SERVICE_LAUNCHER_PROTOCOL, SERVICE_LAUNCHER_PROTOCOL]) {
+      for (const launcherVersion of ["0.1.0", undefined, "invalid", null]) {
+        const host = new FakeLauncherProcess({
+          protocol,
+          childVersion: "1.0.0",
+          launcherVersion,
+        });
+        const client = yield* makeClient(host, "1.0.0");
+        expect(client.managed).toBe(true);
+        expect(client.currentVersion).toBe("1.0.0");
+        expect(client.launcherVersion).toBe(launcherVersion === "0.1.0" ? "0.1.0" : undefined);
+        expect(host.sent).toEqual([]);
+        expect(host.listenerCount()).toBe(0);
+      }
+    }
+  }),
+);
+
+it.effect("gates both settlement requests without sending IPC to an older launcher", () =>
+  Effect.gen(function* () {
+    for (const capability of [undefined, 2]) {
+      const host = new FakeLauncherProcess({
+        protocol: 4,
+        childVersion: "1.0.0",
+        updateSettlementProtocol: capability,
+      });
+      const client = yield* makeClient(host, "1.0.0");
+      expect(client.qualifiedSettlement).toBe(false);
+      const input = {
+        operationId: "12345678-1234-4234-8234-123456789abc",
+        requestId: "22345678-1234-4234-8234-123456789abc",
+      };
+      expect(yield* client.reconcileFailedUpdate!(input)).toEqual({
+        result: "refused",
+        reason: "capability-unsupported",
+      });
+      expect(
+        yield* client.recordRetiredOperation!({ ...input, retiredLocation: "retired/operation" }),
+      ).toEqual({ result: "refused", reason: "capability-unsupported" });
+      expect(host.sent).toEqual([]);
+      expect(host.listenerCount()).toBe(0);
+    }
+  }),
+);
+
+it.effect("correlates settlement replies by both IDs and releases IPC listeners", () =>
+  Effect.gen(function* () {
+    for (const type of ["reconcile-failed-update", "record-retired-operation"] as const) {
+      for (const result of ["settled", "already-settled", "refused"] as const) {
+        const host = new FakeLauncherProcess({
+          protocol: 4,
+          childVersion: "1.0.0",
+          updateSettlementProtocol: 1,
+        });
+        const client = yield* makeClient(host, "1.0.0");
+        expect(client.qualifiedSettlement).toBe(true);
+        const input = {
+          operationId: "12345678-1234-4234-8234-123456789abc",
+          requestId: "22345678-1234-4234-8234-123456789abc",
+        };
+        const request = yield* Effect.forkChild(
+          type === "reconcile-failed-update"
+            ? client.reconcileFailedUpdate!(input)
+            : client.recordRetiredOperation!({ ...input, retiredLocation: "retired/operation" }),
+          { startImmediately: true },
+        );
+        yield* Effect.promise(() => host.sentSignal.promise);
+        expect(host.sent).toEqual([
+          {
+            type,
+            ...input,
+            ...(type === "record-retired-operation"
+              ? { retiredLocation: "retired/operation" }
+              : {}),
+          },
+        ]);
+        const reply = {
+          type: "update-reconciled" as const,
+          ...input,
+          ...(result === "refused"
+            ? { result, reason: "insufficient-evidence" as const }
+            : { result }),
+        };
+        host.emit({ ...reply, requestId: "32345678-1234-4234-8234-123456789abc" });
+        host.emit({ ...reply, operationId: "32345678-1234-4234-8234-123456789abc" });
+        host.emitUnknown({ ...reply, result: "refused", reason: "invented-success" });
+        expect(host.listenerCount()).toBe(2);
+        host.emit(reply);
+        expect(yield* Fiber.join(request)).toEqual(
+          result === "refused" ? { result, reason: "insufficient-evidence" } : { result },
+        );
+        expect(host.listenerCount()).toBe(0);
+      }
+    }
+  }),
+);
+
+it.effect("a lost settlement response remains unknown and detaches its listeners", () =>
+  Effect.gen(function* () {
+    for (const failure of ["disconnect", "timeout"] as const) {
+      const host = new FakeLauncherProcess({
+        protocol: 4,
+        childVersion: "1.0.0",
+        updateSettlementProtocol: 1,
+      });
+      const client = yield* makeClient(host, "1.0.0");
+      const request = yield* Effect.forkChild(
+        client.reconcileFailedUpdate!({
+          operationId: "12345678-1234-4234-8234-123456789abc",
+          requestId: "22345678-1234-4234-8234-123456789abc",
+        }).pipe(Effect.flip),
+        { startImmediately: true },
+      );
+      yield* Effect.promise(() => host.sentSignal.promise);
+      if (failure === "disconnect") host.disconnect();
+      else yield* TestClock.adjust("31 seconds");
+      expect((yield* Fiber.join(request)).operation).toBe(failure);
+      expect(host.sent).toHaveLength(1);
+      expect(host.listenerCount()).toBe(0);
+    }
+  }),
+);
+
 it.effect(
   "requires explicit caller-operation support and correlates acceptance to the exact ID",
   () =>

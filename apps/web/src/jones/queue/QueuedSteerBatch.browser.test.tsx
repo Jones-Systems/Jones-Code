@@ -44,7 +44,7 @@ import {
   type QueuedRunsControlHandle,
 } from "../../components/chat/QueuedRunsControl";
 
-function queueProjection(): OrchestrationV2ThreadProjection {
+function queueProjection(count = 22): OrchestrationV2ThreadProjection {
   const modelSelection = { instanceId: "codex", model: "gpt-test" };
   return {
     thread: {
@@ -65,7 +65,7 @@ function queueProjection(): OrchestrationV2ThreadProjection {
         providerThreadId: "provider",
         modelSelection,
       },
-      ...Array.from({ length: 22 }, (_, i) => ({
+      ...Array.from({ length: count }, (_, i) => ({
         id: `queued-${i}`,
         userMessageId: `message-${i}`,
         ordinal: i + 2,
@@ -77,7 +77,7 @@ function queueProjection(): OrchestrationV2ThreadProjection {
         modelSelection,
       })),
     ],
-    messages: Array.from({ length: 22 }, (_, i) => ({
+    messages: Array.from({ length: count }, (_, i) => ({
       id: `message-${i}`,
       text: `Queued context ${i}`,
       attachments: [],
@@ -86,8 +86,8 @@ function queueProjection(): OrchestrationV2ThreadProjection {
       updatedAt: DateTime.makeUnsafe("2026-10-20T12:00:00Z"),
     })),
     runtimeRequests: [],
-    nodes: Array.from({ length: 22 }, (_, i) => ({ id: `node-${i}` })),
-    attempts: Array.from({ length: 22 }, (_, i) => ({ id: `attempt-${i}` })),
+    nodes: Array.from({ length: count }, (_, i) => ({ id: `node-${i}` })),
+    attempts: Array.from({ length: count }, (_, i) => ({ id: `attempt-${i}` })),
     providerThreads: [{ id: "provider", providerSessionId: "session" }],
     providerSessions: [
       {
@@ -192,6 +192,42 @@ describe("queue header batch action", () => {
       button(view, "Collapse queued messages")!.click();
     });
     expect(button(view, "Expand queued messages")?.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("steers all four messages queued before an account switch in one dispatch", async () => {
+    setupTest();
+    const projection = queueProjection(4);
+    state.projection = {
+      ...projection,
+      runs: projection.runs.map((run) =>
+        run.status !== "queued"
+          ? run
+          : {
+              ...run,
+              providerInstanceId: "old-account",
+              providerThreadId: "old-provider-thread",
+              modelSelection: {
+                instanceId: "old-account",
+                model: "old-model",
+                options: [{ id: "reasoningEffort", value: "low" }],
+              },
+            },
+      ),
+    };
+    await using screen = await render();
+    const view = screen.container;
+    const send = button(view, "Steer all (4)")!;
+    expect(send.disabled).toBe(false);
+    await act(async () => {
+      send.click();
+    });
+    expect(state.batch).toHaveBeenCalledTimes(1);
+    expect(
+      state.batch.mock.calls[0]![0].input.items.map(
+        (item: { messageId: string }) => item.messageId,
+      ),
+    ).toEqual(["message-0", "message-1", "message-2", "message-3"]);
+    expect(state.row).not.toHaveBeenCalled();
   });
 
   it("hides on old servers and never dispatches a fallback", async () => {

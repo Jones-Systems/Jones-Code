@@ -60,6 +60,28 @@ it("publishes owner-only evidence and checks both exact live process identities"
   });
 });
 
+it("accepts older receipts and advertises settlement only when explicitly supported", async () => {
+  await fixture(async (base, receipt) => {
+    const guard = { uid: owner, isOwnedLive: async () => true };
+    await publishLauncherCapabilityReceipt(receipt);
+    assert.isUndefined(
+      (await readLauncherCapabilityReceipt(base, receipt, guard))?.updateSettlementProtocol,
+    );
+    await publishLauncherCapabilityReceipt({ ...receipt, updateSettlementProtocol: 1 });
+    assert.equal(
+      (await readLauncherCapabilityReceipt(base, receipt, guard))?.updateSettlementProtocol,
+      1,
+    );
+    for (const unsupported of [0, 2, "1", null]) {
+      await NodeFSP.writeFile(
+        NodePath.join(base, "runtime", "jones-launcher-capability.json"),
+        JSON.stringify({ ...receipt, updateSettlementProtocol: unsupported }),
+      );
+      await NodeAssert.rejects(readLauncherCapabilityReceipt(base, receipt, guard), /malformed/);
+    }
+  });
+});
+
 it("refuses stale launcher or child identity and nonlive native ownership evidence", async () => {
   await fixture(async (base, receipt) => {
     await publishLauncherCapabilityReceipt(receipt);

@@ -1,4 +1,8 @@
-import type { ServiceUpdateRetirement } from "./serviceProtocol.ts";
+import type {
+  ServiceUpdateRetirement,
+  ServiceUpdateReconciliationRequest,
+  ServiceUpdateReconciliationResult,
+} from "./serviceProtocol.ts";
 import type { MigrationPlan } from "../jones/updates/migrationPlan.ts";
 import type { ServerSelfUpdateOutcome } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -130,6 +134,21 @@ export class ServiceLauncherClient extends Context.Service<
     readonly qualifiedRetirement?: boolean;
     /** The launcher reports how a handoff ended from its durable operation receipts. */
     readonly qualifiedOutcomes?: boolean;
+    readonly qualifiedSettlement?: boolean;
+    readonly reconcileFailedUpdate?: (
+      input: ServiceUpdateReconciliationRequest,
+    ) => Effect.Effect<
+      | ServiceUpdateReconciliationResult
+      | { readonly result: "refused"; readonly reason: "capability-unsupported" },
+      ServiceLauncherClientError
+    >;
+    readonly recordRetiredOperation?: (
+      input: ServiceUpdateReconciliationRequest & { readonly retiredLocation: string },
+    ) => Effect.Effect<
+      | ServiceUpdateReconciliationResult
+      | { readonly result: "refused"; readonly reason: "capability-unsupported" },
+      ServiceLauncherClientError
+    >;
     /**
      * Asks the launcher how the handoff of `operationId` ended, after every earlier request from
      * this server. `unknown`, or any failure, proves nothing.
@@ -148,6 +167,7 @@ export class ServiceLauncherClient extends Context.Service<
       ServiceLauncherClientError
     >;
     readonly currentVersion?: string;
+    readonly launcherVersion?: string;
     /** Last durable terminal result; reading it never sends a prepared IPC message. */
     readonly qualifiedStartupOutcome?: ServerSelfUpdateOutcome | undefined;
     readonly qualifiedUpdateMigrationPlan?: MigrationPlan | undefined;
@@ -454,6 +474,30 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
       )
     : ordinaryPrepareTrial;
 
+  const reconcileFailed = (
+    message: Extract<
+      ServiceLauncherChildMessage,
+      { type: "reconcile-failed-update" | "record-retired-operation" }
+    >,
+  ) =>
+    context?.updateSettlementProtocol !== 1
+      ? Effect.succeed({ result: "refused" as const, reason: "capability-unsupported" as const })
+      : exchange(
+          message,
+          (reply) =>
+            reply.type === "update-reconciled" &&
+            reply.operationId === message.operationId &&
+            reply.requestId === message.requestId,
+        ).pipe(
+          Effect.map((reply): ServiceUpdateReconciliationResult => {
+            if (reply.type !== "update-reconciled")
+              throw new Error("Unexpected settlement response.");
+            return reply.result === "refused"
+              ? { result: reply.result, reason: reply.reason }
+              : { result: reply.result };
+          }),
+        );
+
   return ServiceLauncherClient.of({
     managed,
     requiresQualifiedTrialGate,
@@ -463,6 +507,11 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
     qualifiedOperations: context?.updateOperationsProtocol === 1,
     qualifiedRetirement: context?.updateRetirementProtocol === 1,
     qualifiedOutcomes: context?.updateOutcomeProtocol === 1,
+    qualifiedSettlement: context?.updateSettlementProtocol === 1,
+    reconcileFailedUpdate: (input) =>
+      reconcileFailed({ type: "reconcile-failed-update", ...input }),
+    recordRetiredOperation: (input) =>
+      reconcileFailed({ type: "record-retired-operation", ...input }),
     reconcileUpdate: (operationId) =>
       context?.updateOutcomeProtocol !== 1
         ? Effect.succeed({
@@ -511,6 +560,7 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
             }),
           ),
     ...(context === undefined ? {} : { currentVersion: context.childVersion }),
+    ...(context?.launcherVersion === undefined ? {} : { launcherVersion: context.launcherVersion }),
     requestUpdate,
     get qualifiedUpdateMigrationPlan() {
       return acceptedMigrationPlan;

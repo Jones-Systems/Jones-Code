@@ -62,6 +62,67 @@ const precedes = (first: Node, second: Node) =>
   (first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
 
 describe("Jones build status", () => {
+  const failed: JonesUpdateState = {
+    ...available,
+    phase: "error",
+    message: "Previous attempt needs reconciliation",
+    updateId: "11111111-1111-4111-8111-111111111111",
+    settlement: "none",
+    launcherSettlement: "supported",
+    launcherRefresh: "none",
+    outcome: {
+      status: "blocked",
+      fromVersion: available.currentVersion!,
+      targetVersion: "0.1.0-preview.20261023.1.1",
+    },
+  };
+
+  it("reconciles one supported attempt with a new correlation ID and never offers retirement", async () => {
+    await using screen = await renderStatus({ state: failed });
+    const { container, onRequest } = screen;
+    expect(container.textContent).toContain("Previous attempt needs reconciliation");
+    expect(container.querySelector('[aria-label*="attempt ID"]')).not.toBeNull();
+    await act(async () => buttonNamed(container, "Reconcile").click());
+    expect(onRequest).toHaveBeenCalledTimes(1);
+    expect(onRequest).toHaveBeenCalledWith({
+      action: "reconcile",
+      input: { operationId: failed.updateId, requestId: expect.stringMatching(/^[a-f0-9-]{36}$/) },
+    });
+    expect(container.textContent).not.toContain("Record retired");
+  });
+
+  it("hides reconciliation for old launchers and older servers, and disables stale requests", async () => {
+    await using screen = await renderStatus({
+      state: { ...failed, launcherSettlement: "unsupported", launcherRefresh: "recommended" },
+    });
+    const { container, onRequest } = screen;
+    expect(buttonNamed(container, "Reconcile")).toBeUndefined();
+    expect(container.textContent).toContain("Launcher refresh recommended");
+    await screen.rerender(statusUi({ state: available }, onRequest));
+    expect(buttonNamed(container, "Reconcile")).toBeUndefined();
+    expect(container.textContent).not.toContain("Launcher refresh recommended");
+    await screen.rerender(statusUi({ state: failed, freshness: "stale" }, onRequest));
+    expect(buttonNamed(container, "Reconcile").disabled).toBe(true);
+    await act(async () => buttonNamed(container, "Reconcile").click());
+    expect(onRequest).not.toHaveBeenCalled();
+  });
+
+  it("shows proved no-effect failure and typed refusal without implying installation", async () => {
+    await using screen = await renderStatus({
+      state: { ...failed, settlement: "launcher-recorded", cause: "backup refused" },
+    });
+    const { container } = screen;
+    expect(container.textContent).toContain(
+      "Update did not start: backup refused. Nothing changed.",
+    );
+    expect(buttonNamed(container, "Reconcile")).toBeUndefined();
+    expect(container.textContent).toContain("No changes:");
+    await screen.rerender(statusUi({ state: { ...failed, settlementRefusal: "restore-pending" } }));
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+      "Recovery is still pending.",
+    );
+  });
+
   it("shows both builds compactly and keeps exact identities one disclosure away", async () => {
     await using screen = await renderStatus();
     const { container, onRequest } = screen;

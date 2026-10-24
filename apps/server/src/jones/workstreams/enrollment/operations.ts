@@ -37,7 +37,10 @@ export interface NativeEnrollmentReceipt {
     | "publication_unresolved";
 }
 export interface NativeEnrollmentOperationPorts {
-  readonly enrollments: Pick<NativeEnrollments["Service"], "inspect" | "reserve">;
+  readonly enrollments: Pick<
+    NativeEnrollments["Service"],
+    "inspect" | "inspectExisting" | "reserve"
+  >;
   readonly materialize: (
     expected: CreateAuthSessionInput,
   ) => Effect.Effect<IssuedSession, SessionCredentialIssueError>;
@@ -89,7 +92,7 @@ export const makeNativeEnrollmentOperations = (ports: NativeEnrollmentOperationP
     request: NativeEnrollmentRequest,
     expectedCredentialSha256: string,
   ) {
-    const records = yield* ports.enrollments.inspect(request).pipe(Effect.result);
+    const records = yield* ports.enrollments.inspectExisting(request).pipe(Effect.result);
     if (records._tag === "Failure") return receipt(request, recordFailure(records.failure.code));
     if (records.success.state !== "reserved")
       return receipt(request, { state: "unknown", reason: "records_absent" });

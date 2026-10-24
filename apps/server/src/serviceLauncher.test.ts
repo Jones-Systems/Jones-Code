@@ -9,6 +9,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import { vi } from "vite-plus/test";
+import packageJson from "../package.json" with { type: "json" };
 
 import {
   configuredDatabasePathForBaseDir,
@@ -24,6 +25,8 @@ import {
 import {
   compareExactServiceVersions,
   decodeServiceLauncherContext,
+  decodeServiceLauncherChildMessage,
+  decodeServiceLauncherParentMessage,
   LEGACY_SERVICE_LAUNCHER_PROTOCOL,
   decodeServiceState,
   isExactServiceVersion,
@@ -54,6 +57,67 @@ const writeSparseFile = (filePath: string, size: number) =>
     yield* fileSystem.writeFileString(filePath, "");
     yield* fileSystem.truncate(filePath, size);
   });
+
+it("adds bounded settlement messages without changing the older launcher protocol", () => {
+  assert.equal(SERVICE_LAUNCHER_PROTOCOL, 4);
+  assert.equal(LEGACY_SERVICE_LAUNCHER_PROTOCOL, 3);
+  const identity = {
+    operationId: "12345678-1234-4234-8234-123456789abc",
+    requestId: "22345678-1234-4234-8234-123456789abc",
+  };
+  for (const type of ["reconcile-failed-update", "record-retired-operation"] as const) {
+    const message = {
+      type,
+      ...identity,
+      ...(type === "record-retired-operation" ? { retiredLocation: "retired/old" } : {}),
+    };
+    assert.deepEqual<unknown>(decodeServiceLauncherChildMessage(message), message);
+    for (const change of [
+      { operationId: "../other" },
+      { requestId: "" },
+      { requestId: 1 },
+      { requestId: null },
+    ])
+      assert.isUndefined(decodeServiceLauncherChildMessage({ ...message, ...change }));
+    if (type === "record-retired-operation")
+      for (const retiredLocation of [undefined, "", "x".repeat(1025)])
+        assert.isUndefined(decodeServiceLauncherChildMessage({ ...message, retiredLocation }));
+  }
+  for (const reason of [
+    "not-failed",
+    "not-found",
+    "insufficient-evidence",
+    "restore-pending",
+    "active-changed",
+    "trial-evidence-present",
+    "retired-evidence-mismatch",
+    "settlement-write-failed",
+  ]) {
+    const message = { type: "update-reconciled", ...identity, result: "refused", reason };
+    assert.deepEqual<unknown>(decodeServiceLauncherParentMessage(message), message);
+  }
+  for (const result of ["settled", "already-settled"]) {
+    const message = { type: "update-reconciled", ...identity, result };
+    assert.deepEqual<unknown>(decodeServiceLauncherParentMessage(message), message);
+    assert.isUndefined(decodeServiceLauncherParentMessage({ ...message, reason: "not-found" }));
+  }
+  for (const change of [
+    { result: "unknown" },
+    { result: "refused" },
+    { result: "refused", reason: "capability-unsupported" },
+    { result: "refused", reason: ["not-found"] },
+    { result: "settled", requestId: "bad" },
+  ])
+    assert.isUndefined(
+      decodeServiceLauncherParentMessage({ type: "update-reconciled", ...identity, ...change }),
+    );
+  for (const message of [
+    { type: "request-update", targetVersion: "1.1.0", dbPath: "/synthetic/statev2.sqlite" },
+    { type: "prepared", updateId: "older-child-id" },
+    { type: "reconcile-update", operationId: identity.operationId, queryId: 1 },
+  ])
+    assert.deepEqual<unknown>(decodeServiceLauncherChildMessage(message), message);
+});
 
 it("accepts only exact semantic versions", () => {
   for (const version of ["0.0.0", "1.2.3", "1.2.3-alpha.1", "1.2.3-0", "1.2.3+001"]) {
@@ -336,6 +400,7 @@ process.exit(0);
       const context = decodeServiceLauncherContext(observed.context ?? "");
       assert.equal(context?.protocol, SERVICE_LAUNCHER_PROTOCOL);
       assert.equal(context?.childVersion, "1.0.0");
+      assert.equal(context?.launcherVersion, packageJson.version);
     }),
   );
 
