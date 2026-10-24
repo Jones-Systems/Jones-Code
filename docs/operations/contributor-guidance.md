@@ -368,9 +368,12 @@ results and unresolved findings; absence of a bot review is not a failure.
 
 The required merge check is **`Check`**, the final job of the `CI` workflow
 (`.github/workflows/ci.yml`). It aggregates every pull-request job in that
-workflow and fails if any of them fails, is cancelled, or is skipped without
-a reason. No branch protection or ruleset enforces it today; this contract
-does.
+workflow and fails on failed or cancelled jobs, failed change detection, and
+unexplained skips. A skip is intentional only when a successful classifier
+explicitly selects that job out. Linux selection preserves full runs for main
+pushes, unknown or unreadable changes, and complete-stack qualification; the
+macOS enrollment and native-source gates remain independent. No branch
+protection or ruleset enforces it today; this contract does.
 
 Every other check is advisory:
 

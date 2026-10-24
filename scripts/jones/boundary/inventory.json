@@ -1759,7 +1759,8 @@
     "scripts/jones/mobile/ios-pin-workflow.ts": "jones-owned",
     "scripts/jones/mobile/ios-pin-workflow.test.ts": "jones-owned",
     "scripts/jones/mobile/xcuitest.ts": "jones-owned",
-    "scripts/jones/mobile/xcuitest.test.ts": "jones-owned"
+    "scripts/jones/mobile/xcuitest.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/ci-change-selection.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
