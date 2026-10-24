@@ -31,7 +31,8 @@ export function excludedSidebarEnvironmentIds(
     );
     const machine = machines?.get(identity.environmentId);
     if (label === undefined) {
-      if (normalized === "home") label = "Laptop";
+      if (normalized === "test server") label = "Test";
+      else if (normalized === "home") label = "Laptop";
       else if (normalized === "mac mini" || normalized === "mac-mini") label = "Mini";
       else if (machine === "laptop") label = "Laptop";
       else if (machine === "mac-mini") label = "Mini";

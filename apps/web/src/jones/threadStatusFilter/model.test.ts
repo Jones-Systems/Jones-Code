@@ -101,6 +101,43 @@ describe("sidebar status filter", () => {
     },
   );
 
+  it.each(["current", "legacy"] as const)(
+    "includes background Waiting in Working while preserving requests and order in %s",
+    (layout) => {
+      const waiting: StatusThread = {
+        ...base,
+        runtime: runtime("idle"),
+        latestRun,
+        lastVisitedAt: visited,
+        pendingBackgroundTasks: [{ taskId: "monitor", kind: "monitor" }],
+      };
+      const working = { ...base, runtime: runtime("running") };
+      const requests: StatusThread[] = [
+        { ...waiting, hasPendingUserInput: true },
+        { ...waiting, hasPendingApprovals: true },
+        { ...waiting, pendingSubagentRequest: "user_input" },
+        { ...waiting, pendingSubagentRequest: "approval" },
+      ];
+      const roster = [requests[0]!, waiting, base, working, ...requests.slice(1)];
+      const classify = (row: StatusThread) => classifyThreadStatus(row, layout);
+      expect(classify(waiting)).toBe("working");
+      for (const request of requests) expect(classify(request)).toBe("input");
+      const selected = selectThreadStatus(roster, nextThreadStatusFilter("all"), classify);
+      expect(selected).toEqual({
+        counts: { working: 2, input: 4, done: 0 },
+        threads: [waiting, working],
+      });
+      expect(selectThreadStatus(roster, "hide-working", classify).threads).toEqual([
+        requests[0],
+        base,
+        ...requests.slice(1),
+      ]);
+      expect(
+        selectThreadStatus(roster, nextThreadStatusFilter("hide-working"), classify).threads,
+      ).toBe(roster);
+    },
+  );
+
   it("cycles every state, including empty states, back to all", () => {
     let filter: ThreadStatusFilter = "all";
     const seen = [];
@@ -144,7 +181,8 @@ describe("sidebar status filter", () => {
   );
 
   it("keeps Waiting, failures, and acknowledged or never-visited completions out of Done", () => {
-    for (const status of ["idle", "failed"] as const) {
+    expect(classifyThreadStatus({ ...base, runtime: runtime("idle") }, "current")).toBe("working");
+    for (const status of ["failed"] as const) {
       expect(
         classifyThreadStatus(
           { ...base, runtime: runtime(status), latestRun, lastVisitedAt: visited },

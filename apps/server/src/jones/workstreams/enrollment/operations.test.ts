@@ -29,6 +29,7 @@ it.effect(
       const operations = makeNativeEnrollmentOperations({
         enrollments: {
           inspect: () => Effect.succeed({ state: "reserved" }),
+          inspectExisting: () => Effect.succeed({ state: "reserved" }),
           reserve: () =>
             Effect.sync(() => {
               effects++;
@@ -60,6 +61,7 @@ it.effect(
       const operations = makeNativeEnrollmentOperations({
         enrollments: {
           inspect: () => Effect.succeed({ state: "reserved" }),
+          inspectExisting: () => Effect.succeed({ state: "reserved" }),
           reserve: () =>
             Effect.sync(() => {
               reserves++;
@@ -102,6 +104,7 @@ it.effect(
       const operations = makeNativeEnrollmentOperations({
         enrollments: {
           inspect: () => Effect.succeed({ state: "absent" }),
+          inspectExisting: () => Effect.succeed({ state: "absent" }),
           reserve: () =>
             Effect.sync(() => {
               reserves++;

@@ -26,6 +26,7 @@ export function RemoteAdmissionSettings({
   readonly environmentId: EnvironmentId;
 }) {
   const [snapshot, setSnapshot] = useState<RemoteAdmissionSnapshot | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [selection, setSelection] = useState<ModelSelection | null>(null);
@@ -60,6 +61,7 @@ export function RemoteAdmissionSettings({
         const result = await remoteAdmissionRequest(environmentId, { action: "snapshot" });
         if (active && "pending" in result) {
           setSnapshot(result);
+          setLoadFailed(false);
           setError(null);
           if (!initialized && result.policy.modelSelection) {
             setSelection(result.policy.modelSelection);
@@ -67,7 +69,7 @@ export function RemoteAdmissionSettings({
           }
         }
       } catch {
-        if (active) setSnapshot(null);
+        if (active) setLoadFailed(true);
       }
       inFlight = false;
     };
@@ -91,7 +93,7 @@ export function RemoteAdmissionSettings({
     }
     setBusy(false);
   };
-  if (!snapshot) return null;
+  const disabled = busy || loadFailed;
   return (
     <section className="space-y-3 rounded-lg border p-4" aria-label="Remote request review">
       <div className="flex items-center justify-between gap-4">
@@ -101,135 +103,151 @@ export function RemoteAdmissionSettings({
             Evaluate incoming tasks before they start. Requests that need your input wait here.
           </p>
         </div>
-        <Switch
-          aria-label="Evaluate remote requests"
-          checked={snapshot.policy.enabled}
-          disabled={busy || selected === null}
-          onCheckedChange={(enabled) => {
-            void act(() =>
-              remoteAdmissionRequest(environmentId, {
-                action: "policy",
-                input: {
-                  enabled,
-                  expectedRevision: snapshot.policy.revision,
-                  modelSelection: selected,
-                },
-              }),
-            );
-          }}
-        />
-      </div>
-      <div className="flex items-center gap-2">
-        {selected ? (
-          <ProviderModelPicker
-            environmentId={environmentId}
-            activeInstanceId={selected.instanceId}
-            model={selected.model}
-            lockedProvider={null}
-            instanceEntries={entries}
-            modelOptionsByInstance={modelOptions}
-            disabled={busy}
-            triggerAriaLabel="Evaluator model"
-            onInstanceModelChange={(instanceId, model) => setSelection({ instanceId, model })}
+        {snapshot ? (
+          <Switch
+            aria-label="Evaluate remote requests"
+            checked={snapshot.policy.enabled}
+            disabled={disabled || selected === null}
+            onCheckedChange={(enabled) => {
+              void act(() =>
+                remoteAdmissionRequest(environmentId, {
+                  action: "policy",
+                  input: {
+                    enabled,
+                    expectedRevision: snapshot.policy.revision,
+                    modelSelection: selected,
+                  },
+                }),
+              );
+            }}
           />
-        ) : (
-          <p className="text-sm text-muted-foreground">
-            Set up a Claude Code provider in Providers to choose an evaluator model.
-          </p>
-        )}
-        <Button
-          variant="outline"
-          disabled={busy || selected === null}
-          onClick={() => {
-            void act(() =>
-              remoteAdmissionRequest(environmentId, {
-                action: "policy",
-                input: {
-                  enabled: snapshot.policy.enabled,
-                  expectedRevision: snapshot.policy.revision,
-                  modelSelection: selected,
-                },
-              }),
-            );
-          }}
-        >
-          Save model
-        </Button>
+        ) : null}
       </div>
-      {error ? (
+      {loadFailed ? (
         <p role="alert" className="text-sm text-destructive">
-          {error}
+          Remote request review could not be loaded. Retrying automatically.
+        </p>
+      ) : !snapshot ? (
+        <p role="status" className="text-sm text-muted-foreground">
+          Loading remote request review…
         </p>
       ) : null}
-      {snapshot.pending.map((request) => {
-        const view = admissionPresentation(request);
-        return (
-          <article className="space-y-2 rounded-md border p-3" key={request.id}>
-            <div className="text-sm font-medium">
-              {request.status === "held"
-                ? "Needs input"
-                : request.status === "dispatching"
-                  ? "Dispatch awaiting confirmation"
-                  : "Request pending"}{" "}
-              · {view.title}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              From {view.source} · {view.target}
-            </p>
-            <p className="whitespace-pre-wrap text-sm">{view.message}</p>
-            {request.reason ? (
-              <p className="text-sm text-muted-foreground">{request.reason}</p>
-            ) : null}
-
-            {request.status === "held" ? (
-              <div className="flex gap-2">
-                <Button
-                  disabled={
-                    busy || request.envelope.receiverPolicy.revision !== snapshot.policy.revision
-                  }
-                  onClick={() => {
-                    void act(() =>
-                      remoteAdmissionRequest(environmentId, {
-                        action: "decide",
-                        input: {
-                          id: request.id,
-                          bindingDigest: request.bindingDigest,
-                          decision: "approve",
-                        },
-                      }),
-                    );
-                  }}
-                >
-                  Approve
-                </Button>
-                <Button
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() => {
-                    void act(() =>
-                      remoteAdmissionRequest(environmentId, {
-                        action: "decide",
-                        input: {
-                          id: request.id,
-                          bindingDigest: request.bindingDigest,
-                          decision: "deny",
-                        },
-                      }),
-                    );
-                  }}
-                >
-                  Deny
-                </Button>
-              </div>
-            ) : null}
-            {request.envelope.receiverPolicy.revision !== snapshot.policy.revision ? (
-              <p className="text-xs text-muted-foreground">
-                Settings changed. Deny this request and ask the sender to submit a new request.
+      {snapshot ? (
+        <>
+          <div className="flex items-center gap-2">
+            {selected ? (
+              <ProviderModelPicker
+                environmentId={environmentId}
+                activeInstanceId={selected.instanceId}
+                model={selected.model}
+                lockedProvider={null}
+                instanceEntries={entries}
+                modelOptionsByInstance={modelOptions}
+                disabled={disabled}
+                triggerAriaLabel="Evaluator model"
+                onInstanceModelChange={(instanceId, model) => setSelection({ instanceId, model })}
+              />
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                Set up a Claude Code provider in Providers to choose an evaluator model.
               </p>
-            ) : null}
-          </article>
-        );
-      })}
+            )}
+            <Button
+              variant="outline"
+              disabled={disabled || selected === null}
+              onClick={() => {
+                void act(() =>
+                  remoteAdmissionRequest(environmentId, {
+                    action: "policy",
+                    input: {
+                      enabled: snapshot.policy.enabled,
+                      expectedRevision: snapshot.policy.revision,
+                      modelSelection: selected,
+                    },
+                  }),
+                );
+              }}
+            >
+              Save model
+            </Button>
+          </div>
+          {error ? (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
+            </p>
+          ) : null}
+          {snapshot.pending.map((request) => {
+            const view = admissionPresentation(request);
+            return (
+              <article className="space-y-2 rounded-md border p-3" key={request.id}>
+                <div className="text-sm font-medium">
+                  {request.status === "held"
+                    ? "Needs input"
+                    : request.status === "dispatching"
+                      ? "Dispatch awaiting confirmation"
+                      : "Request pending"}{" "}
+                  · {view.title}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  From {view.source} · {view.target}
+                </p>
+                <p className="whitespace-pre-wrap text-sm">{view.message}</p>
+                {request.reason ? (
+                  <p className="text-sm text-muted-foreground">{request.reason}</p>
+                ) : null}
+
+                {request.status === "held" ? (
+                  <div className="flex gap-2">
+                    <Button
+                      disabled={
+                        disabled ||
+                        request.envelope.receiverPolicy.revision !== snapshot.policy.revision
+                      }
+                      onClick={() => {
+                        void act(() =>
+                          remoteAdmissionRequest(environmentId, {
+                            action: "decide",
+                            input: {
+                              id: request.id,
+                              bindingDigest: request.bindingDigest,
+                              decision: "approve",
+                            },
+                          }),
+                        );
+                      }}
+                    >
+                      Approve
+                    </Button>
+                    <Button
+                      variant="outline"
+                      disabled={disabled}
+                      onClick={() => {
+                        void act(() =>
+                          remoteAdmissionRequest(environmentId, {
+                            action: "decide",
+                            input: {
+                              id: request.id,
+                              bindingDigest: request.bindingDigest,
+                              decision: "deny",
+                            },
+                          }),
+                        );
+                      }}
+                    >
+                      Deny
+                    </Button>
+                  </div>
+                ) : null}
+                {request.envelope.receiverPolicy.revision !== snapshot.policy.revision ? (
+                  <p className="text-xs text-muted-foreground">
+                    Settings changed. Deny this request and ask the sender to submit a new request.
+                  </p>
+                ) : null}
+              </article>
+            );
+          })}
+        </>
+      ) : null}
     </section>
   );
 }

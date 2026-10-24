@@ -1,3 +1,4 @@
+import * as ControlAdmission from "../../jones/orchestration/ControlAdmission.ts";
 import * as CodexInstallation from "../CodexInstallation.ts";
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
@@ -47,6 +48,7 @@ const layerDeps = ServerConfig.layerTest(process.cwd(), {
 }).pipe(
   Layer.provideMerge(NodeServices.layer),
   Layer.provideMerge(IdAllocator.layer),
+  Layer.provideMerge(ControlAdmission.layer),
   Layer.provideMerge(McpProviderSessions.layer),
   Layer.provideMerge(
     Layer.mock(CodexAdapterV2.CodexAppServerClientFactory)({

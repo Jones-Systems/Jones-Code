@@ -207,7 +207,7 @@ NodeTest.test(
         source,
         harness,
         scenario,
-        closure: { packages: [], roots: [] },
+        closure: { source: await NodeFSP.realpath(source), packages: [], roots: [] },
         configuration,
       });
       const staged = JSON.parse(

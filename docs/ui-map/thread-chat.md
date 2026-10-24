@@ -50,12 +50,108 @@ Known shared consumers:
   [thread attention](../../packages/shared/src/jones/threadAttention.ts) through
   [the status-filter model](../../apps/web/src/jones/threadStatusFilter/model.ts).
   A proposed plan alone creates no input status; explicit own/child requests and
-  native approvals retain precedence. Existing user-input cards render the
+  native approvals retain precedence. Working includes displayed Waiting rows in
+  its count and selection; double-click Hide working excludes both. Filtering
+  preserves the roster order, including pin order. Existing user-input cards render the
   instruction, optional choices and open response for `t3_request_user_response`.
 - [RightPanelTabs](../../apps/web/src/components/RightPanelTabs.tsx) also serves
   [Pull requests](../../apps/web/src/routes/_chat.pull-requests.tsx), outside
   this map's journeys. Shared workspace header consumers are listed in
   [Settings](settings.md#shared-layout-and-consumers).
+
+### Queued-message batch steering
+
+The active thread composer exposes
+[QueuedRunsControl](../../apps/web/src/components/chat/QueuedRunsControl.tsx).
+Its header uses the [batch action](../../apps/web/src/jones/queue/QueuedSteerBatchAction.tsx)
+and the [shared selector](../../packages/client-runtime/src/jones/queue/queuedSteerBatch.ts);
+native mobile consumes the same selector through its own queue sheet.
+
+For the account-change journey, start a synthetic active Codex turn and queue
+four ordinary messages whose saved account, provider thread and model differ
+from that turn. With no pending request or edit, **Steer all (4)** must be
+enabled. Click once: one command must contain all four ordered message IDs.
+Server readback must retain the four original messages and create one combined
+provider input. Automatic tool-boundary delivery must still reject mismatched
+queued configurations. Pending requests, stale message versions, maintenance
+commands, ended turns and input limits retain their own guards.
+
+The adjacent [browser regression](../../apps/web/src/jones/queue/QueuedSteerBatch.browser.test.tsx),
+[client tests](../../packages/client-runtime/src/jones/queue/queuedSteerBatch.test.ts)
+and [server integration](../../apps/server/src/jones/orchestration/QueuedSteerBatch.integration.test.ts)
+cover those layers separately. Use the Browser-panel workflow for interactive
+candidate evidence and retain its exact fixture, source and captures with the
+PR. Synthetic component evidence does not qualify a live provider, packaged
+desktop shell or native mobile interaction. Reset only the task-owned fixture;
+do not consume or remove messages in another thread to reproduce this case.
+
+### Destination shell blocks
+
+The accepted code-block toolbar also hosts the destination chip and Play control
+for `jones-shell` fences. [ChatMarkdown](../../apps/web/src/components/ChatMarkdown.tsx)
+dispatches these to the [Jones controller and view](../../apps/web/src/jones/shellDestination/ShellDestinationCodeBlock.tsx).
+Ordinary shell fences retain their existing source-thread terminal callback;
+`environment=` on an ordinary shell fence suppresses Play and explains the
+dedicated grammar. Other Markdown consumers without a thread, shell callback or stable
+message identity show the destination but cannot run. Each assistant message and
+block keeps its own terminal association. Legacy associations without message
+identity show an ambiguity warning and disable ordinary Play; Run again explicitly
+starts a new terminal without attaching or changing the old association. Native mobile has no new Play control.
+
+The chip uses the clicking client's exact-ID connection catalog. Its label is
+authoritative; an unknown or mismatched agent label is shown as a claim and cannot
+select a computer. The toolbar retains its existing insets and actions. Status
+and long labels wrap within the block; the inline terminal has a 256px viewport
+and a wrapping header with destination, destination cwd, status, Close and Run
+again. Check narrow widths, keyboard focus and enlarged text alongside an ordinary
+shell block and Mermaid block, which share the toolbar/frame.
+The composer [code-block node](../../apps/web/src/components/chat/ComposerCodeBlockNodeView.tsx)
+also uses the frame. [File previews](../../apps/web/src/components/files/FileMarkdownPreview.tsx),
+[pull-request Markdown](../../apps/web/src/components/pullRequest/PullRequestMarkdown.tsx),
+plans, item inspection and pending user-input panels consume ChatMarkdown without
+the project shell callback; their new destination blocks must remain disabled.
+These secondary consumer journeys remain runtime-unverified.
+
+Runtime evidence: primary verification on the repaired source in
+`e84312a33afe1d9ae932b26ad820bceb445bdd95` used two isolated server environments
+on one VPS. Play opened the destination-local PTY and cwd, accepted interactive
+input, reattached after reload without replay, and explicitly closed. An unknown
+destination stayed disabled. Screenshot and recording are published in
+[PR #521](https://github.com/Jones-Systems/Jones-Code/pull/521).
+This establishes the shared-renderer native terminal path; it does not establish
+physical multi-host behavior or packaged macOS behavior. Navigation, process
+restart, source-self behavior and the other disabled-state variations below have
+focused harness coverage where applicable and remain runtime-unverified.
+
+Runtime qualification recipe:
+
+1. Start two isolated synthetic environments using the common development recipe;
+   connect the same browser client to both and retain their exact IDs and labels.
+   Give each a distinct disposable server cwd. Use a project-backed thread on A.
+2. Supply a completed assistant fixture with a `jones-shell` fence whose metadata
+   is `environment=<B's exact ID> label="<B's label>"`, and whose single command
+   prints `pwd` plus a unique marker. Use the existing supported fixture/message
+   path; no private conversation or credential copy is part of this recipe.
+3. Click Play twice quickly. Observe one B-local terminal and one marker, B's
+   server cwd, and no terminal opened on A. Type into the inline terminal to check
+   interactivity. Navigate away/back and reload; output remains without replay.
+4. Explicitly Close; verify the session and history are removed. Run again should
+   allocate a different terminal ID. Let a separate run exit and check its output
+   remains readable. Stop/restart only the owned B fixture and reattach: show the
+   missing/restarted state, with no automatic command or replacement shell.
+5. Repeat with A as the destination: the existing thread drawer/cwd behavior must
+   remain. Test unknown ID, an ID prefix, mismatched label, disconnected B and a
+   terminal-permission-limited synthetic connection; each must visibly disable
+   execution. Also check incomplete/streaming and multiline blocks.
+
+Pure resolver/controller tests and the focused browser harness exercise the
+real Markdown toolbar with synthetic connection/terminal adapters. They do not
+prove native PTY behavior, transport reconnect, desktop packaging or another
+client's catalog. The primary agent owns actual two-environment execution,
+captures, candidate/build/viewport evidence and fixture cleanup. Explicit Close
+is the per-run cleanup; navigation and component unmount intentionally leave
+sessions alive. The all-terminals view can expose these destination-local
+synthetic-thread sessions.
 
 ## Entry points and journeys
 
@@ -95,6 +191,24 @@ The primary verification owner must supply those prerequisites and record
 expected versus observed outcomes for each exercised row. Native, provider,
 remote-connection and deeper panel states remain gaps. This is a partial map
 addition, not a full maintenance pass or a product defect finding.
+
+### Working includes Waiting
+
+Use the common isolated-home recipe with two connected-idle Waiting threads
+pinned in distinct order and an ordinary idle control. On All, record their
+order and the Working count. Click the status pill once: both Waiting rows must
+remain in pin order and count as Working. Double-click within 250 ms: both must
+vanish while the idle control remains. Click once to return to All and verify
+the original order. Projection fixtures prove renderer behavior only.
+
+The primary Browser check verified this journey on October 23, 2026 using
+base `7f5caa1eb1255e228d44a88c37f5a9d78227cd19` plus the Working/Waiting
+classifier change, at 1280×800 CSS pixels, device scale 2, light theme and default
+text size. Before the change the two Waiting rows counted as zero and vanished
+on Working; afterward they counted as two, stayed in pin order, and were hidden
+by double-click. Both filter variants and input/approval precedence have focused
+model and browser tests. The live journey used the current sidebar; legacy,
+native mobile, packaged desktop and provider execution were not exercised.
 
 ### Needs input filter and open response
 

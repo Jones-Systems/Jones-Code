@@ -20,6 +20,8 @@ const state = vi.hoisted(() => ({
   projects: [] as unknown[],
   configs: new Map<string, unknown>(),
   showTooltips: false,
+  environments: new Map<string, unknown>(),
+  quietShells: new Map<string, unknown>(),
   command: vi.fn().mockResolvedValue({ _tag: "Success" }),
   workflowCommand: vi.fn().mockResolvedValue({ _tag: "Success" }),
   toast: vi.fn(),
@@ -37,9 +39,12 @@ vi.mock(import("../../state/entities"), async (original) => ({
       .filter((shell) => shell.environmentId === ref.environmentId)
       .map((shell) => shell.source)) as never,
   useProjects: (() => state.projects) as never,
+  useQuietThreadShell: ((ref: { environmentId: string; threadId: string } | null) =>
+    ref ? (state.quietShells.get(`${ref.environmentId}:${ref.threadId}`) ?? null) : null) as never,
 }));
 vi.mock(import("../../state/environments"), async (original) => ({
   ...(await original()),
+  useEnvironment: ((id: string) => state.environments.get(id) ?? null) as never,
   useEnvironmentProviders: (() =>
     new Map(
       [...state.configs].map(([id, config]) => [id, (config as { providers: unknown }).providers]),
@@ -138,6 +143,7 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
+  state.environments.set("test", { label: "VPS", connection: { phase: "connected" } });
 });
 
 afterEach(async () => {
@@ -147,6 +153,8 @@ afterEach(async () => {
   state.shells = [];
   state.projects = [];
   state.configs.clear();
+  state.environments.clear();
+  state.quietShells.clear();
   state.showTooltips = false;
   state.navigate.mockClear();
   state.command.mockClear();
@@ -678,9 +686,9 @@ it("shows the matching child agent details and refreshes them when the agent set
   expect(text()).not.toContain("Checker");
   await click(sectionToggle(false));
   expect(text()).toContain("Checker");
-  expect(text()).toContain("Checker 2m");
+  expect(text()).toContain("Checker on VPS · Done");
   expect(text()).not.toContain("(1)");
-  expect(text()).not.toContain("Done");
+  expect(text()).toContain("Done");
   expect(text()).not.toContain("running");
   expect(text()).not.toContain("Worker");
   await click(sectionToggle(true));
@@ -1040,6 +1048,8 @@ it("shows readable models and only differing workspace details in agent tooltips
   expect(text()).not.toContain("My GPT ·");
   const config = state.configs.get("test");
   state.configs.clear();
+  state.environments.clear();
+  state.quietShells.clear();
   await update();
   expect(text()).toContain("GPT-5.4");
   expect(text()).not.toContain("GPT-5.4 ·");
@@ -1113,6 +1123,8 @@ it("shows readable models and only differing workspace details in agent tooltips
 
   state.shells = [];
   state.configs.clear();
+  state.environments.clear();
+  state.quietShells.clear();
   await update();
   expect(text()).toContain("GPT-5.4");
   expect(text()).not.toContain("GPT-5.4 ·");
@@ -1234,3 +1246,192 @@ it.each(["source", "target"])(
     }
   },
 );
+
+it("combines remote and local history before collapse and pagination, then restores resumed tasks", async () => {
+  const timestamp = DateTime.makeUnsafe("2026-09-21T12:00:00Z");
+  const statuses = ["completed", "failed", "cancelled", "interrupted", "idle", "completed"];
+  const agents = statuses.map((status, index) => ({
+    id: `remote-${index}`,
+    threadId: "parent",
+    childThreadId: null,
+    driver: "codex",
+    providerInstanceId: "codex",
+    title: `Remote task ${index}`,
+    status,
+    startedAt: timestamp,
+    updatedAt: timestamp,
+    completedAt: timestamp,
+    remoteChild: {
+      environmentId: "destination",
+      threadId: `child-${index}`,
+      label: "Test Server",
+      stoppedThere: index % 2 === 0,
+    },
+  }));
+  const local = {
+    ...agents[0],
+    id: "local",
+    childThreadId: "local-child",
+    title: "Local history",
+    remoteChild: undefined,
+  };
+  const projection = {
+    thread: { id: "parent", lineage: { relationshipToParent: null } },
+    runs: [],
+    providerThreads: [],
+    providerSessions: [],
+    contextTransfers: [],
+    subagents: [local, ...agents],
+  };
+  state.projection = projection;
+  state.environments.set("destination", {
+    label: "Test Server",
+    connection: { phase: "connected" },
+  });
+  await render(
+    <ThreadRelationshipsPanel
+      environmentId={EnvironmentId.make("test")}
+      threadId={ThreadId.make("parent")}
+    />,
+  );
+  expect(textNodes(" ").replace(/\s+/g, " ")).toContain("Previous agents (7)");
+  expect(textNodes(" ").replace(/\s+/g, " ")).not.toContain("Remote task");
+  await click(sectionToggle(false));
+  expect(container.querySelectorAll("li")).toHaveLength(6);
+  const more = buttons().find((button) => button.textContent?.includes("Show 1 more"))!;
+  await click(more);
+  expect(container.querySelectorAll("li")).toHaveLength(7);
+  expect(textNodes(" ").replace(/\s+/g, " ")).toContain("on TSV");
+  state.projection = {
+    ...projection,
+    subagents: [
+      local,
+      ...agents.map((agent, index) =>
+        index === 0
+          ? {
+              ...agent,
+              status: "running",
+              completedAt: null,
+              remoteChild: { ...agent.remoteChild, stoppedThere: true },
+            }
+          : agent,
+      ),
+    ],
+  };
+  await update();
+  expect(heading()).toBe("Lineage · 1 running");
+  await click(sectionToggle(true));
+  expect(textNodes(" ").replace(/\s+/g, " ")).toContain("Previous agents (6)");
+  expect(container.querySelectorAll("li")).toHaveLength(1);
+  const resumed = buttons().find((button) => button.textContent?.includes("Remote task 0"))!;
+  await click(resumed);
+  expect(state.navigate).toHaveBeenLastCalledWith({
+    to: "/$environmentId/$threadId",
+    params: { environmentId: "destination", threadId: "child-0" },
+  });
+});
+
+it("opens a scoped remote parent, retains its cached title offline, and preserves local precedence", async () => {
+  const thread = {
+    id: "child",
+    lineage: { relationshipToParent: null },
+    delegatedFrom: { environmentId: "origin", threadId: "equal-id", title: "Delegation title" },
+    linkOrigin: { label: "Laptop" },
+  };
+  const projection = {
+    thread,
+    runs: [],
+    providerThreads: [],
+    providerSessions: [],
+    contextTransfers: [],
+    subagents: [],
+  };
+  state.projection = projection;
+  state.showTooltips = true;
+  state.quietShells.set("test:equal-id", { title: "Wrong local title" });
+  await render(
+    <ThreadRelationshipsPanel
+      environmentId={EnvironmentId.make("test")}
+      threadId={ThreadId.make("child")}
+    />,
+  );
+  expect(byLabel("Parent agent: Delegation title").disabled).toBe(true);
+  expect(textNodes(" ").replace(/\s+/g, " ")).toContain("Connect to it to open the parent");
+  expect(textNodes(" ").replace(/\s+/g, " ")).not.toContain("Wrong local title");
+  state.quietShells.set("origin:equal-id", { title: "Cached parent" });
+  state.environments.set("origin", { label: "Laptop", connection: { phase: "offline" } });
+  await update();
+  expect(byLabel("Parent agent: Cached parent").disabled).toBe(true);
+  state.environments.set("origin", { label: "Laptop", connection: { phase: "connected" } });
+  await update();
+  await click(byLabel("Parent agent: Cached parent"));
+  expect(state.navigate).toHaveBeenLastCalledWith({
+    to: "/$environmentId/$threadId",
+    params: { environmentId: "origin", threadId: "equal-id" },
+  });
+  state.projection = {
+    ...projection,
+    thread: {
+      ...thread,
+      lineage: { relationshipToParent: "subagent", parentThreadId: "equal-id" },
+    },
+  };
+  state.shells = [
+    { environmentId: "test", source: (state.projection as typeof projection).thread },
+    {
+      environmentId: "test",
+      source: {
+        id: "equal-id",
+        title: "Local parent",
+        lineage: { relationshipToParent: null, parentThreadId: null },
+        status: "idle",
+      },
+    },
+  ];
+  await update();
+  expect(allByLabel("Parent agent: Cached parent")).toHaveLength(0);
+  expect(textNodes(" ").replace(/\s+/g, " ")).toContain("Local parent");
+});
+
+it("keeps a long remote title ellipsized and full on hover beside unknown environment metadata", async () => {
+  const title = "A long remote task title ".repeat(20);
+  const timestamp = DateTime.makeUnsafe("2026-09-21T12:00:00Z");
+  container.style.width = "360px";
+  state.projection = {
+    thread: { id: "parent", lineage: { relationshipToParent: null } },
+    runs: [],
+    providerThreads: [],
+    providerSessions: [],
+    contextTransfers: [],
+    subagents: [
+      {
+        id: "task",
+        title,
+        status: "running",
+        driver: "codex",
+        childThreadId: null,
+        startedAt: timestamp,
+        completedAt: null,
+        updatedAt: timestamp,
+        remoteChild: { environmentId: "unknown", threadId: "child", label: "Other host" },
+      },
+    ],
+  };
+  await render(
+    <ThreadRelationshipsPanel
+      environmentId={EnvironmentId.make("test")}
+      threadId={ThreadId.make("parent")}
+    />,
+  );
+  const label = container.querySelector<HTMLElement>("span.truncate")!;
+  expect(label.closest("button")?.getAttribute("aria-label")).toContain(title);
+  state.showTooltips = true;
+  await update();
+  expect(textNodes(" ")).toContain(title);
+  expect(getComputedStyle(label).textOverflow).toBe("ellipsis");
+  expect(label.scrollWidth).toBeGreaterThan(label.clientWidth);
+  expect(textNodes(" ").replace(/\s+/g, " ")).toContain("on Other host");
+  expect(buttons().find((button) => button.textContent?.includes("Other host"))?.disabled).toBe(
+    true,
+  );
+});

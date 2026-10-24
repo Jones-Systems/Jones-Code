@@ -5,11 +5,13 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 
 import * as PeerLinks from "../../peer/PeerLinks.ts";
 import * as PeerMcpClient from "../../peer/PeerMcpClient.ts";
+import * as PeerMonitor from "../remoteDelegation/PeerMonitor.ts";
 
 const input = {
   environmentId: EnvironmentId.make("session-test"),
@@ -188,3 +190,185 @@ it.effect("preserves typed refusals in JSON-RPC error.data", () => {
     ),
   );
 });
+
+it.effect.each(["execute", "body"] as const)(
+  "bounds a stalled %s, cancels local work, and never replays an uncertain mutation",
+  (stage) =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const done = yield* Deferred.make<void>();
+      let calls = 0;
+      let cancelled = 0;
+      const stalled = Deferred.succeed(started, undefined).pipe(
+        Effect.andThen(Effect.never),
+        Effect.onInterrupt(() =>
+          Effect.sync(() => {
+            cancelled++;
+          }),
+        ),
+      );
+      const http = HttpClient.make((request) =>
+        Effect.gen(function* () {
+          if (request.body._tag !== "Uint8Array") return yield* Effect.die("Expected JSON request");
+          const body = JSON.parse(new TextDecoder().decode(request.body.body));
+          if (body.method === "initialize")
+            return HttpClientResponse.fromWeb(request, initialization(body.id, "s"));
+          if (body.method === "notifications/initialized")
+            return HttpClientResponse.fromWeb(request, new Response(null, { status: 202 }));
+          calls++;
+          const response = HttpClientResponse.fromWeb(
+            request,
+            Response.json({
+              jsonrpc: "2.0",
+              id: body.id,
+              result: { content: [{ type: "text", text: '{"ok":true}' }] },
+            }),
+          );
+          if (calls > 1) return response;
+          if (stage === "execute") return yield* stalled;
+          return Object.defineProperty(response, "text", { value: stalled });
+        }),
+      );
+      yield* Effect.gen(function* () {
+        const client = yield* PeerMcpClient.PeerMcpClient;
+        const first = yield* client.call(input).pipe(
+          Effect.result,
+          Effect.tap(() => Deferred.succeed(done, undefined)),
+          Effect.forkChild,
+        );
+        yield* Deferred.await(started);
+        yield* TestClock.adjust("60 seconds");
+        expect(yield* Deferred.isDone(done)).toBe(true);
+        const result = yield* Fiber.join(first);
+        expect(result._tag).toBe("Failure");
+        if (result._tag === "Failure") {
+          expect(result.failure.code).toBe("orchestration_error");
+          expect(result.failure.message).toContain("not replayed");
+          expect(result.failure.message).toContain("Reconcile");
+        }
+        expect(cancelled).toBe(1);
+        expect(calls).toBe(1);
+        expect(yield* client.call(input)).toEqual({ ok: true });
+        expect(calls).toBe(2);
+      }).pipe(
+        Effect.provide(
+          PeerMcpClient.layer.pipe(
+            Layer.provide(links),
+            Layer.provide(Layer.succeed(HttpClient.HttpClient, http)),
+          ),
+        ),
+      );
+    }),
+);
+
+it.effect.each(["interrupt", "deadline"] as const)(
+  "%s releases saturated peer monitoring permits and allows a later call",
+  (release) =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const recovered = yield* Deferred.make<void>();
+      let calls = 0;
+      const stalledSignals: Array<AbortSignal> = [];
+      const http = HttpClient.make((request, _url, signal) =>
+        Effect.gen(function* () {
+          if (request.body._tag !== "Uint8Array") return yield* Effect.die("Expected JSON request");
+          const body = JSON.parse(new TextDecoder().decode(request.body.body));
+          if (body.method === "initialize")
+            return HttpClientResponse.fromWeb(request, initialization(body.id, "s"));
+          if (body.method === "notifications/initialized")
+            return HttpClientResponse.fromWeb(request, new Response(null, { status: 202 }));
+          const response = HttpClientResponse.fromWeb(
+            request,
+            Response.json({
+              jsonrpc: "2.0",
+              id: body.id,
+              result: { content: [{ type: "text", text: '{"ok":true}' }] },
+            }),
+          );
+          calls++;
+          if (calls > 4) return response;
+          stalledSignals.push(signal);
+          return Object.defineProperty(response, "text", {
+            value: Effect.gen(function* () {
+              if (calls === 4) yield* Deferred.succeed(started, undefined);
+              return yield* Effect.never;
+            }),
+          });
+        }),
+      );
+      yield* Effect.gen(function* () {
+        const client = yield* PeerMcpClient.PeerMcpClient;
+        const monitor = yield* PeerMonitor.make;
+        const blocked = yield* Effect.forEach([0, 1, 2, 3], () =>
+          monitor(input.environmentId, client.call(input)).pipe(Effect.result, Effect.forkChild),
+        );
+        yield* Deferred.await(started);
+        const later = yield* monitor(input.environmentId, client.call(input)).pipe(
+          Effect.tap(() => Deferred.succeed(recovered, undefined)),
+          Effect.forkChild,
+        );
+        expect(calls).toBe(4);
+        if (release === "interrupt") yield* Fiber.interrupt(blocked[0]!);
+        else yield* TestClock.adjust("2 minutes");
+        yield* Deferred.await(recovered);
+        expect(yield* Fiber.join(later)).toEqual({ ok: true });
+        expect(calls).toBe(5);
+        expect(stalledSignals[0]?.aborted).toBe(true);
+        yield* Effect.forEach(blocked, Fiber.interrupt);
+        expect(stalledSignals.every((signal) => signal.aborted)).toBe(true);
+      }).pipe(
+        Effect.provide(
+          PeerMcpClient.layer.pipe(
+            Layer.provide(links),
+            Layer.provide(Layer.succeed(HttpClient.HttpClient, http)),
+          ),
+        ),
+      );
+    }),
+);
+
+it.effect("allows a supported 50-second remote wait plus body-read margin", () =>
+  Effect.gen(function* () {
+    const started = yield* Deferred.make<void>();
+    const http = HttpClient.make((request) =>
+      Effect.gen(function* () {
+        if (request.body._tag !== "Uint8Array") return yield* Effect.die("Expected JSON request");
+        const body = JSON.parse(new TextDecoder().decode(request.body.body));
+        if (body.method === "initialize")
+          return HttpClientResponse.fromWeb(request, initialization(body.id, "s"));
+        if (body.method === "notifications/initialized")
+          return HttpClientResponse.fromWeb(request, new Response(null, { status: 202 }));
+        yield* Deferred.succeed(started, undefined);
+        yield* Effect.sleep("50 seconds");
+        const response = HttpClientResponse.fromWeb(
+          request,
+          Response.json({
+            jsonrpc: "2.0",
+            id: body.id,
+            result: { content: [{ type: "text", text: '{"ok":true}' }] },
+          }),
+        );
+        const text = response.text;
+        return Object.defineProperty(response, "text", {
+          value: Effect.sleep("5 seconds").pipe(Effect.andThen(text)),
+        });
+      }),
+    );
+    yield* Effect.gen(function* () {
+      const client = yield* PeerMcpClient.PeerMcpClient;
+      const waiting = yield* client
+        .call({ ...input, tool: "wait_for_thread", arguments: { timeoutMs: 50_000 } })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(started);
+      yield* TestClock.adjust("55 seconds");
+      expect(yield* Fiber.join(waiting)).toEqual({ ok: true });
+    }).pipe(
+      Effect.provide(
+        PeerMcpClient.layer.pipe(
+          Layer.provide(links),
+          Layer.provide(Layer.succeed(HttpClient.HttpClient, http)),
+        ),
+      ),
+    );
+  }),
+);
