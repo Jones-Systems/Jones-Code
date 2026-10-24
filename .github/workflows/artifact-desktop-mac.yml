@@ -2,7 +2,7 @@ name: Mac Desktop Artifact
 
 on:
   schedule:
-    - cron: "0 4 * * *"
+    - cron: "45 4 * * *"
       timezone: "America/New_York"
   workflow_dispatch:
   pull_request:
