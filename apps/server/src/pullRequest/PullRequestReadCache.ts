@@ -21,6 +21,7 @@ import * as Persistable from "effect/persistence/Persistable";
 import * as PersistedCache from "effect/persistence/PersistedCache";
 import * as Persistence from "effect/persistence/Persistence";
 import * as ServerConfig from "../config.ts";
+import { makePullRequestScopeLocks } from "../jones/pullRequest/pullRequestScopeLocks.ts";
 import { forkParked } from "../serverActivation.ts";
 
 const CONCURRENT_READS = 512;
@@ -83,7 +84,9 @@ export const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const clock = yield* Clock.Clock;
   let enabled = true;
-  const lock = yield* Semaphore.make(CONCURRENT_READS);
+  const readPermits = yield* Semaphore.make(CONCURRENT_READS);
+  const scopeLocks = yield* makePullRequestScopeLocks;
+  const revisionMutex = yield* Semaphore.make(1);
   const digest = (key: string) =>
     crypto.digest("SHA-256", new TextEncoder().encode(key)).pipe(Effect.map(Hex.encode));
   const revisions = yield* Cache.makeWith(
@@ -130,8 +133,11 @@ export const make = Effect.gen(function* () {
       if (!enabled) return yield* lookup;
       const read = yield* Effect.cached(lookup);
       return yield* Effect.gen(function* () {
-        const current = yield* Cache.get(revisions, undefined);
+        // An invalidation may disable caching while this read waits for its scopes.
+        if (!enabled) return yield* read;
+        const current = yield* Cache.get(revisions, undefined).pipe(revisionMutex.withPermit);
         const now = clock.currentTimeMillisUnsafe();
+        // Scope locks sort acquisition only; the persisted vector follows caller order.
         const revision = scopes
           .map((scope) => {
             const value = current[scope];
@@ -150,7 +156,8 @@ export const make = Effect.gen(function* () {
           PersistenceError: () => read,
           SchemaError: () => read,
         }),
-        lock.withPermits(1),
+        scopeLocks.withReadScopes(scopes),
+        readPermits.withPermits(1),
       );
     }),
     invalidate: (scope) =>
@@ -170,7 +177,10 @@ export const make = Effect.gen(function* () {
           return Effect.logWarning("PR cache disabled after clearing failed");
         }),
         Effect.uninterruptible,
-        lock.withPermits(CONCURRENT_READS),
+        // Lock order: read permit (reads only), sorted scopes, then this mutex.
+        // Only revision I/O runs under the mutex; payload lookups and writes do not.
+        revisionMutex.withPermit,
+        scopeLocks.withWriteScope(scope),
       ),
   });
 });

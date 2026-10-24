@@ -49,10 +49,13 @@ const sameBinding = (
 ) =>
   right !== undefined &&
   left.id === right.id &&
+  left.appThreadId === right.appThreadId &&
+  left.driver === right.driver &&
   left.providerSessionId === right.providerSessionId &&
   left.providerInstanceId === right.providerInstanceId &&
   left.nativeThreadRef?.nativeId === right.nativeThreadRef?.nativeId &&
   left.nativeThreadRef?.driver === right.nativeThreadRef?.driver &&
+  left.nativeThreadRef?.strength === right.nativeThreadRef?.strength &&
   sameIdentity(left.runtimeIdentity, right.runtimeIdentity);
 interface Receipt {
   readonly fingerprint: string;
@@ -68,6 +71,25 @@ interface Binding {
   readonly receipts: Map<string, Receipt>;
   uncertain: boolean;
 }
+
+const sameConversation = (
+  binding: Binding,
+  provider: OrchestrationV2ProviderThread,
+  runtime: ProviderAdapterV2SessionRuntime,
+) =>
+  binding.runtime === runtime &&
+  binding.provider.nativeThreadRef?.strength === "strong" &&
+  binding.provider.runtimeIdentity?.runtimeGeneration !== undefined &&
+  sameBinding(
+    {
+      ...binding.provider,
+      runtimeIdentity: {
+        ...binding.provider.runtimeIdentity,
+        evidenceRevision: provider.runtimeIdentity?.evidenceRevision,
+      },
+    },
+    provider,
+  );
 
 const make = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
@@ -162,12 +184,30 @@ const make = Effect.gen(function* () {
             !sameBinding(binding.provider, provider)
           ) {
             if (mutation) return answer("stale", "read_current_goal_before_mutation");
+            const token = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+            const retain = binding !== undefined && sameConversation(binding, provider, runtime);
+            // Preserve rejected keys across an ownership change so durable command dedupe
+            // cannot attribute an old conversation's run to its replacement.
+            const receipts = retain
+              ? binding!.receipts
+              : new Map(
+                  [...(binding?.receipts ?? [])].map(([key, receipt]) => [
+                    key,
+                    {
+                      fingerprint: receipt.fingerprint,
+                      result: answer("stale", "goal_binding_changed", {
+                        action: receipt.result.action,
+                        controlToken: token,
+                      }),
+                    },
+                  ]),
+                );
             binding = {
-              token: yield* crypto.randomUUIDv4().pipe(Effect.orDie),
+              token,
               provider,
               runtime,
-              receipts: new Map(),
-              uncertain: false,
+              receipts,
+              uncertain: retain && binding!.uncertain,
             };
             bindings.set(bindingKey, binding);
           }
@@ -186,7 +226,7 @@ const make = Effect.gen(function* () {
                 code: "invalid_request",
                 message: "clientRequestId was already used for a different goal operation.",
               });
-            return { ...prior.result, replayed: true };
+            return { ...prior.result, controlToken: binding.token, replayed: true };
           }
           if (mutation && binding.uncertain)
             return answer("unknown", "prior_mutation_unresolved", { controlToken: binding.token });
@@ -309,7 +349,7 @@ const make = Effect.gen(function* () {
             ...(observed.goal === null ? {} : { previousStatus: observed.goal.status }),
             result: answer("unknown", "mutation_in_progress_or_acknowledgement_lost", base),
           };
-          // Session-bound receipts survive caller cancellation; a restart invalidates every old token.
+          // Receipts survive caller cancellation; every rebind still expires old control tokens.
           binding.receipts.set(key, receipt);
           binding.uncertain = true;
           if (input.action === "resume" && !active) {

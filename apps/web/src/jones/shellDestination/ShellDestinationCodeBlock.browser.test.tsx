@@ -1,9 +1,9 @@
-import { act, type ReactElement } from "react";
+import { act, createRef, type ComponentProps, type ReactElement } from "react";
 import { RegistryContext } from "@effect/atom-react";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, MessageId, ThreadId } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { DestinationEnvironment, ShellDestination } from "./model";
 import { ShellRunController } from "./controller";
@@ -13,6 +13,7 @@ import {
   type ShellRun,
   ShellRunStore,
   shellRunKey,
+  legacyShellRunKey,
   shellRunStore,
 } from "./runStore";
 
@@ -118,11 +119,13 @@ vi.mock(
 );
 
 import ChatMarkdown from "../../components/ChatMarkdown";
+import { MessagesTimeline } from "../../components/chat/MessagesTimeline";
 import { getSyntaxHighlighterPromise } from "../../lib/syntaxHighlighting";
 
 const roots: Root[] = [];
 let fixture = 0;
 let registry: AtomRegistry.AtomRegistry;
+let savedRuns: string | null;
 function publishMetadata() {
   registry.set(
     state.metadata!,
@@ -135,6 +138,9 @@ function publishMetadata() {
   );
 }
 beforeEach(() => {
+  savedRuns = localStorage.getItem(SHELL_RUN_STORAGE_KEY);
+  localStorage.removeItem(SHELL_RUN_STORAGE_KEY);
+  shellRunStore().observe();
   registry = AtomRegistry.make();
   state.metadata = Atom.make<AsyncResult.AsyncResult<readonly TestTerminal[], never>>(
     AsyncResult.initial(),
@@ -172,6 +178,9 @@ beforeEach(() => {
 afterEach(async () => {
   for (const root of roots.splice(0)) await act(async () => root.unmount());
   document.body.replaceChildren();
+  if (savedRuns === null) localStorage.removeItem(SHELL_RUN_STORAGE_KEY);
+  else localStorage.setItem(SHELL_RUN_STORAGE_KEY, savedRuns);
+  shellRunStore().observe();
   registry.dispose();
   vi.unstubAllGlobals();
 });
@@ -203,16 +212,19 @@ function message(
     streaming?: boolean;
     callback?: (command: string) => void;
     backed?: boolean;
+    messageId?: string | null;
+    threadId?: string;
   } = {},
 ) {
   const threadRef = scopeThreadRef(
     EnvironmentId.make(options.source ?? "source"),
-    ThreadId.make(`shell-fixture-${++fixture}`),
+    ThreadId.make(options.threadId ?? `shell-fixture-${++fixture}`),
   );
   return (
     <ChatMarkdown
       cwd="/source/worktree"
       text={text}
+      messageId={options.messageId === null ? undefined : (options.messageId ?? "message")}
       threadRef={options.backed === false ? undefined : threadRef}
       onRunShellCommand={options.backed === false ? undefined : (options.callback ?? vi.fn())}
       isStreaming={options.streaming ?? false}
@@ -237,7 +249,168 @@ async function waitForRun(phase: ShellRun["phase"], writes = 1) {
   });
 }
 
+function timeline(threadId: string) {
+  const environmentId = EnvironmentId.make("source");
+  const props: ComponentProps<typeof MessagesTimeline> = {
+    isWorking: false,
+    activeTurnInProgress: false,
+    listRef: createRef(),
+    latestRun: null,
+    turnDiffSummaries: [],
+    runs: [],
+    routeThreadKey: `source:${threadId}`,
+    onOpenTurnDiff: () => {},
+    onOpenThread: () => {},
+    onForkFromRun: async () => {},
+    onRollbackCheckpoint: () => {},
+    supportsConversationRollback: false,
+    onRevertToTurnCount: () => {},
+    isRevertingCheckpoint: false,
+    onImageExpand: () => {},
+    activeThreadEnvironmentId: environmentId,
+    markdownCwd: "/source/worktree",
+    resolvedTheme: "light",
+    timestampFormat: "locale",
+    workspaceRoot: "/source/worktree",
+    anchorMessageId: null,
+    onAnchorReady: () => {},
+    onAnchorSizeChanged: () => {},
+    contentInsetEndAdjustment: 0,
+    liveFollowEnabled: true,
+    onIsAtEndChange: () => {},
+    onManualNavigation: () => {},
+    onRunShellCommand: vi.fn(),
+    timelineEntries: ["native-a", "native-b"].map((id) => ({
+      id: `entry-${id}`,
+      kind: "message",
+      createdAt: "2026-03-17T19:12:28.000Z",
+      message: {
+        id: MessageId.make(id),
+        role: "assistant",
+        text: fence(),
+        runId: null,
+        createdAt: "2026-03-17T19:12:28.000Z",
+        updatedAt: "2026-03-17T19:12:28.000Z",
+        streaming: false,
+      },
+    })),
+  };
+  return (
+    <div style={{ height: 1200, width: 900, display: "flex", flexDirection: "column" }}>
+      <MessagesTimeline {...props} />
+    </div>
+  );
+}
+
 describe("destination shell Markdown UI", () => {
+  it("propagates native message identity through the production timeline and keeps Close independent", async () => {
+    const threadId = `production-${++fixture}`;
+    const view = await render(timeline(threadId));
+    const blocks = () => [
+      ...view.container.querySelectorAll<HTMLElement>("[data-shell-destination]"),
+    ];
+    await expect.poll(() => blocks().length).toBe(2);
+    await act(async () => play(blocks()[0]!).click());
+    await waitForRun("running");
+    expect(play(blocks()[1]!).disabled).toBe(false);
+    expect(blocks()[1]!.querySelector("textarea")).toBeNull();
+    await act(async () => play(blocks()[1]!).click());
+    await waitForRun("running", 2);
+    const runs: ShellRun[] = JSON.parse(localStorage.getItem(SHELL_RUN_STORAGE_KEY)!);
+    expect(runs.map((run) => run.key).sort()).toEqual(
+      ["native-a", "native-b"]
+        .map((id) => shellRunKey("source", threadId, 0, "mini", "pwd\n", id))
+        .sort(),
+    );
+    expect(new Set(runs.map((run) => run.terminalId)).size).toBe(2);
+    await view.rerender(timeline(threadId));
+    expect(view.container.querySelectorAll("textarea")).toHaveLength(2);
+    await act(async () =>
+      [...blocks()[0]!.querySelectorAll("button")]
+        .find((button) => button.textContent === "Close")!
+        .click(),
+    );
+    await act(async () => {
+      await expect.poll(() => state.close.mock.calls.length).toBe(1);
+      await expect.poll(() => shellRunStore().get(runs[0]!.key)?.phase).toBe("closed");
+    });
+    expect(blocks()[0]!.querySelector("textarea")).toBeNull();
+    expect(blocks()[1]!.querySelector("textarea")).not.toBeNull();
+    await view.unmount();
+    shellRunStore().observe();
+    const remount = await render(
+      <>
+        {message(fence(), { threadId, messageId: "native-a" })}
+        {message(fence(), { threadId, messageId: "native-b" })}
+      </>,
+    );
+    await expect.poll(() => remount.container.querySelectorAll("textarea").length).toBe(1);
+    expect(state.write).toHaveBeenCalledTimes(2);
+    expect(state.close.mock.calls[0]?.[0].input.terminalId).toBe(runs[0]!.terminalId);
+  });
+  it("keeps repeated blocks within one message separate", async () => {
+    const { container } = await render(message(`${fence()}\n\n${fence()}`));
+    const blocks = [...container.querySelectorAll<HTMLElement>("[data-shell-destination]")];
+    expect(blocks).toHaveLength(2);
+    await act(async () => play(blocks[0]!).click());
+    await waitForRun("running");
+    expect(blocks[1]!.querySelector("textarea")).toBeNull();
+    await act(async () => play(blocks[1]!).click());
+    await waitForRun("running", 2);
+    expect(container.querySelectorAll("textarea")).toHaveLength(2);
+  });
+  it.each(["source", "mini"])(
+    "visibly refuses a missing message identity on %s",
+    async (source) => {
+      const callback = vi.fn();
+      const { container } = await render(message(fence(), { source, messageId: null, callback }));
+      expect(play(container).disabled).toBe(true);
+      expect(container.textContent).toContain("no stable identity");
+      expect(callback).not.toHaveBeenCalled();
+      expect(state.open).not.toHaveBeenCalled();
+    },
+  );
+  it.each(["opening", "writing", "writeUnknown"] as const)(
+    "shows ambiguous legacy %s without attaching or replaying it",
+    async (phase) => {
+      const threadId = `legacy-${++fixture}`;
+      const legacy = {
+        key: legacyShellRunKey(shellRunKey("source", threadId, 0, "mini", "pwd\n", "message"))!,
+        environmentId: "mini",
+        terminalId: `run-${randomUUID()}`,
+        cwd: "/destination-only",
+        phase,
+        updatedAt: Date.now(),
+      };
+      localStorage.setItem(SHELL_RUN_STORAGE_KEY, JSON.stringify([legacy]));
+      shellRunStore().observe();
+      const { container } = await render(
+        <>
+          {message(fence(), { threadId, messageId: "message-a" })}
+          {message(fence(), { threadId, messageId: "message-b" })}
+        </>,
+      );
+      const blocks = [...container.querySelectorAll<HTMLElement>("[data-shell-destination]")];
+      for (const block of blocks) {
+        expect(play(block).disabled).toBe(true);
+        expect(block.textContent).toContain("terminal cannot be safely assigned");
+      }
+      expect(container.querySelector("textarea")).toBeNull();
+      expect(state.open).not.toHaveBeenCalled();
+      await act(async () =>
+        [...blocks[0]!.querySelectorAll("button")]
+          .find((button) => button.textContent === "Run again")!
+          .click(),
+      );
+      await waitForRun("running");
+      expect(state.open.mock.calls[0]?.[0].input.terminalId).not.toBe(legacy.terminalId);
+      expect(play(blocks[1]!).disabled).toBe(true);
+      expect(blocks[1]!.querySelector("textarea")).toBeNull();
+      expect(JSON.parse(localStorage.getItem(SHELL_RUN_STORAGE_KEY)!)).toContainEqual(legacy);
+      expect(state.write).toHaveBeenCalledTimes(1);
+      expect(state.close).not.toHaveBeenCalled();
+    },
+  );
   it("uses a successful waiting metadata stream to mount, focus, and preserve the native terminal", async () => {
     const element = message(fence());
     const view = await render(element);
@@ -413,12 +586,19 @@ describe("browser cross-context run coordination", () => {
       write: vi.fn(async () => false),
       close: vi.fn(async () => true),
     };
-    const key = shellRunKey("source", `native-locks-${++fixture}`, 0, "mini", "pwd\n");
+    const key = shellRunKey("source", `native-locks-${++fixture}`, 0, "mini", "pwd\n", "message");
     const input = { key, code: "pwd\n", complete: true, destination: () => destination, terminal };
     await Promise.all([a.run(input), b.run(input)]);
     expect(terminal.open).toHaveBeenCalledTimes(1);
     expect(terminal.write).toHaveBeenCalledTimes(1);
-    const otherKey = shellRunKey("source", `native-locks-${fixture}`, 1, "mini", "pwd\n");
+    const otherKey = shellRunKey(
+      "source",
+      `native-locks-${fixture}`,
+      1,
+      "mini",
+      "pwd\n",
+      "message",
+    );
     await b.run({ ...input, key: otherKey });
     // This notification is a real storage event from the other browsing context.
     await expect.poll(() => aStore.get(otherKey)?.phase).toBe("writeUnknown");

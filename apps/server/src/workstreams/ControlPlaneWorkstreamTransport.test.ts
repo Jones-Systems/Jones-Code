@@ -1,8 +1,11 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Synthetic response proofs exercise exact wire bytes without host credentials.
+import * as NodeCrypto from "node:crypto";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import {
+  WORKSTREAMS_REGISTRATION_CONTEXT_CONTRACTS,
   WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL,
   WORKSTREAMS_REGISTRATION_CONTEXT_V2_PROTOCOL,
   WORKSTREAMS_REGISTRATION_CONTEXT_V2_MANIFEST_SHA256,
@@ -29,6 +32,11 @@ import {
   v2Response,
   encodeFixtureJson,
 } from "../jones/workstreams/registrationContext/testFixtures.ts";
+
+import {
+  makeV3RegistrationFixture,
+  v3Response,
+} from "../jones/workstreams/testing/registrationV3.ts";
 
 const decodeCapabilities = Schema.decodeUnknownSync(WorkstreamCapabilities);
 
@@ -285,36 +293,13 @@ const capabilitiesResponse = () =>
     { status: 200, headers: { "content-type": "application/json" } },
   );
 
-it.effect("accepts only IP-literal loopback HTTP origins besides HTTPS", () =>
+it.effect("refuses unbound loopback and non-loopback HTTP before any wire request", () =>
   Effect.gen(function* () {
-    for (const [raw, expectedUrl] of [
-      ["http://127.0.0.1:8787/", "http://127.0.0.1:8787/workstreams/v1/capabilities"],
-      ["http://127.0.0.1", "http://127.0.0.1/workstreams/v1/capabilities"],
-      ["http://[::1]:8787/", "http://[::1]:8787/workstreams/v1/capabilities"],
-    ] as const) {
-      const observed: Array<{ readonly url: string; readonly headers: Headers }> = [];
-      const configured = makeControlPlaneWorkstreamTransport(
-        { ...activation, value: { ...activation.value, baseUrl: new URL(raw) } },
-        async (input, init) => {
-          observed.push({ url: String(input), headers: new Headers(init?.headers) });
-          return capabilitiesResponse();
-        },
-      );
-      expect(configured.binding.authorizationRevision, raw).toBe(2);
-      expect(configured.binding.registryId, raw).toBe(new URL(raw).origin);
-      yield* configured.transport.getCapabilities({
-        contractVersion: "workstreams/1.0.0",
-        contractManifest: WORKSTREAM_CONTRACT_MANIFEST_SHA256,
-      });
-      expect(observed.map(({ url }) => url)).toEqual([expectedUrl]);
-      expect(observed[0]?.headers.get("x-control-signature")).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    }
-
     let requests = 0;
     for (const raw of [
+      "http://127.0.0.1:8787/",
+      "http://[::1]:8787/",
       "http://localhost:8787/",
-      "http://10.0.0.1:8787/",
-      "http://control-plane.example:8787/",
       "http://127.0.0.2:8787/",
       "http://127.0.0.1:8787/workstreams/",
       "http://127.0.0.1:8787/?route=workstreams",
@@ -328,20 +313,20 @@ it.effect("accepts only IP-literal loopback HTTP origins besides HTTPS", () =>
           return capabilitiesResponse();
         },
       );
-      expect(configured.binding.authorizationRevision, raw).toBe(0);
+      expect(configured.activationState).toBe("invalid");
       const unavailable = yield* configured.transport
         .getCapabilities({
           contractVersion: "workstreams/1.0.0",
           contractManifest: WORKSTREAM_CONTRACT_MANIFEST_SHA256,
         })
         .pipe(Effect.flip);
-      expect(unavailable.effect, raw).toBe("no-effect");
+      expect(unavailable.effect).toBe("no-effect");
     }
     expect(requests).toBe(0);
   }),
 );
 
-it("reads a loopback control-plane origin from the environment", () => {
+it("refuses unbound loopback environment activation before transport", () => {
   const environment = {
     T3_WORKSTREAM_CONTROL_PLANE_URL: "http://127.0.0.1:8787/",
     T3_WORKSTREAM_OWNER_ID: activation.value.ownerId,
@@ -361,13 +346,8 @@ it("reads a loopback control-plane origin from the environment", () => {
     return makeControlPlaneWorkstreamTransport(undefined, noFetch).binding;
   };
   try {
-    expect(configure("http://127.0.0.1:8787/")).toEqual({
-      registryId: "http://127.0.0.1:8787",
-      ownerId: activation.value.ownerId,
-      principalId: activation.value.principalId,
-      authorizationRevision: activation.value.authorizationRevision,
-    });
-    expect(configure("http://[::1]:8787/").registryId).toBe("http://[::1]:8787");
+    expect(configure("http://127.0.0.1:8787/").authorizationRevision).toBe(0);
+    expect(configure("http://[::1]:8787/").authorizationRevision).toBe(0);
     expect(configure("http://localhost:8787/").authorizationRevision).toBe(0);
   } finally {
     for (const [name, value] of Object.entries(previous)) {
@@ -841,4 +821,187 @@ it.effect.each([
       effect: "no-effect",
     });
   }),
+);
+
+it.effect(
+  "v3 signs the selected version and manifest and never falls back after registry rejection",
+  () =>
+    Effect.gen(function* () {
+      const contract = WORKSTREAMS_REGISTRATION_CONTEXT_CONTRACTS["3.0.0"];
+      const headers = {
+        "x-control-contract-version": contract.protocol,
+        "x-control-contract-manifest": contract.manifest,
+      };
+      let calls = 0;
+      const configured = makeControlPlaneWorkstreamTransport(
+        { ...activation, value: { ...activation.value, registrationContextVersion: "3.0.0" } },
+        async (url, init) => {
+          calls += 1;
+          const sent = new Headers(init?.headers);
+          expect(String(url)).toBe(
+            "https://control-plane.example/workstreams/v1/t3/registration-context",
+          );
+          expect(init?.method).toBe("GET");
+          expect(init?.body).toBeUndefined();
+          expect(sent.get("idempotency-key")).toBeNull();
+          expect(sent.get("x-control-contract-version")).toBe(contract.protocol);
+          expect(sent.get("x-control-contract-manifest")).toBe(contract.manifest);
+          expect(sent.get("x-control-signature")).toBe(
+            signWorkstreamRequest({
+              contractVersion: contract.protocol,
+              contractManifest: contract.manifest,
+              requestId: sent.get("x-control-request-id")!,
+              sentAt: sent.get("x-control-timestamp")!,
+              nonce: sent.get("x-control-nonce")!,
+              principalId: activation.value.principalId,
+              keyId: activation.value.keyId,
+              method: "GET",
+              target: "/workstreams/v1/t3/registration-context",
+              contentSha256: sent.get("x-control-content-sha256")!,
+              signingSecret: activation.value.signingSecret,
+            }),
+          );
+          return new Response(encodeFixtureJson(v3Response), { headers });
+        },
+      );
+      expect(yield* configured.registrationContext.readRegistrationContext).toBe(
+        encodeFixtureJson(v3Response),
+      );
+      expect(calls).toBe(1);
+      for (const rejection of [
+        { status: 400, headers },
+        { status: 404, headers: {} },
+        { status: 200, headers: registrationHeaders },
+        {
+          status: 200,
+          headers: {
+            ...headers,
+            "x-control-contract-manifest": WORKSTREAMS_REGISTRATION_CONTEXT_V2_MANIFEST_SHA256,
+          },
+        },
+      ]) {
+        let attempts = 0;
+        const rejected = makeControlPlaneWorkstreamTransport(
+          { ...activation, value: { ...activation.value, registrationContextVersion: "3.0.0" } },
+          async (_url, init) => {
+            attempts += 1;
+            expect(new Headers(init?.headers).get("x-control-contract-version")).toBe(
+              contract.protocol,
+            );
+            return new Response("{}", rejection);
+          },
+        );
+        const fixture = makeV3RegistrationFixture({
+          readRegistrationContext: rejected.registrationContext.readRegistrationContext,
+        });
+        expect((yield* fixture.service.read().pipe(Effect.flip)).reason).toBe(
+          "registry_unavailable",
+        );
+        expect(fixture.reads.authority).toBe(0);
+        expect(attempts).toBe(1);
+      }
+    }),
+);
+
+it.effect(
+  "v3 preserves canonical identity, bound signatures and authenticated bounded response proofs",
+  () =>
+    Effect.gen(function* () {
+      const principalId = "11111111-1111-4111-8111-111111111111";
+      const contract = WORKSTREAMS_REGISTRATION_CONTEXT_CONTRACTS["3.0.0"];
+      const registryBinding = Buffer.from(
+        JSON.stringify({
+          protocol: "workstreams-registry-binding/1.0.0",
+          manifest_sha256: "15ce45061966ce9c247192d6ef43724b6638bb0e7ccf7bbe9eae4afdd576f30c",
+          registry_instance_id: "22222222-2222-4222-8222-222222222222",
+          canonical_origin: "https://control-plane.example",
+          owner_id: activation.value.ownerId,
+          principal_id: principalId,
+          authorization_revision: activation.value.authorizationRevision,
+        }),
+      ).toString("base64url");
+      const secret = Buffer.from(activation.value.signingSecret, "base64");
+      for (const scenario of ["valid", "missing-proof", "wrong-body", "oversize"] as const) {
+        let calls = 0;
+        const configured = makeControlPlaneWorkstreamTransport(
+          {
+            ...activation,
+            value: {
+              ...activation.value,
+              principalId,
+              baseUrl: new URL("http://127.0.0.1:8787/"),
+              registrationContextVersion: "3.0.0",
+              registryBinding,
+            },
+          },
+          async (url, init) => {
+            calls += 1;
+            expect(String(url)).toBe(
+              "http://127.0.0.1:8787/workstreams/v1/t3/registration-context",
+            );
+            const sent = new Headers(init?.headers);
+            expect(sent.get("x-control-registry-binding")).toBe(registryBinding);
+            const signature = signWorkstreamRequest({
+              contractVersion: contract.protocol,
+              contractManifest: contract.manifest,
+              registryBinding,
+              requestId: sent.get("x-control-request-id")!,
+              sentAt: sent.get("x-control-timestamp")!,
+              nonce: sent.get("x-control-nonce")!,
+              principalId,
+              keyId: activation.value.keyId,
+              method: "GET",
+              target: "/workstreams/v1/t3/registration-context",
+              contentSha256: sent.get("x-control-content-sha256")!,
+              signingSecret: activation.value.signingSecret,
+            });
+            expect(sent.get("x-control-signature")).toBe(signature);
+            const body = encodeFixtureJson(v3Response);
+            const canonical = [
+              "workstreams-registry-response/1.0.0",
+              signature,
+              "200",
+              contract.protocol,
+              contract.manifest,
+              registryBinding,
+              "dispatched",
+              NodeCrypto.createHash("sha256").update(body).digest("hex"),
+            ].join("\n");
+            const headers = {
+              "x-control-contract-version": contract.protocol,
+              "x-control-contract-manifest": contract.manifest,
+              ...(scenario === "missing-proof"
+                ? {}
+                : {
+                    "x-control-registry-binding": registryBinding,
+                    "x-control-registry-dispatch": "dispatched",
+                    "x-control-registry-response-mac": NodeCrypto.createHmac("sha256", secret)
+                      .update(canonical)
+                      .digest("base64url"),
+                  }),
+            };
+            return new Response(
+              scenario === "oversize"
+                ? "x".repeat(8_193)
+                : body + (scenario === "wrong-body" ? " " : ""),
+              { headers },
+            );
+          },
+        );
+        expect(configured.binding.registryId).toBe("https://control-plane.example");
+        if (scenario === "valid") {
+          expect(yield* configured.registrationContext.readRegistrationContext).toBe(
+            encodeFixtureJson(v3Response),
+          );
+        } else {
+          const fixture = makeV3RegistrationFixture({
+            readRegistrationContext: configured.registrationContext.readRegistrationContext,
+          });
+          expect((yield* fixture.service.read().pipe(Effect.flip)).reason).toBe(
+            "registry_unavailable",
+          );
+        }
+        expect(calls).toBe(1);
+      }
+    }),
 );

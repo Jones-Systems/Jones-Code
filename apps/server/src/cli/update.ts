@@ -38,6 +38,7 @@ import { createUpdateProgress } from "./updateProgress.ts";
 import * as CliService from "./service.ts";
 import { jonesBootServiceLayer } from "./service.ts";
 import { JONES_BOOT_SERVICE_IDENTITY } from "../jones/hostService/identity.ts";
+import * as SystemBootService from "../jones/hostService/systemBootService.ts";
 
 export class CliUpdateError extends Schema.TaggedError<CliUpdateError>()("CliUpdateError", {
   reason: Schema.String,
@@ -314,16 +315,20 @@ export const assertReleaseUpdateAllowed = Effect.fn("cli.update.assert_release_u
 const findForegroundServer = Effect.fn("cli.update.find_foreground_server")(function* (input: {
   readonly serverRuntimeStatePath: string;
   readonly serviceInstalled: boolean;
+  readonly baseDir: string;
 }) {
   const state = yield* readPersistedServerRuntimeState(input.serverRuntimeStatePath);
   if (Option.isNone(state) || state.value.serviceManaged || !isProcessAlive(state.value.pid)) {
     return undefined;
   }
-  if (input.serviceInstalled && (yield* belongsToBootService(state.value.pid))) return undefined;
+  if (input.serviceInstalled && (yield* belongsToBootService(state.value.pid, input.baseDir)))
+    return undefined;
   return state.value;
 });
 
-export function isJonesBootServiceCgroup(contents: string): boolean {
+export function isJonesBootServiceCgroup(contents: string, boundSystemUnit?: string): boolean {
+  if (boundSystemUnit !== undefined)
+    return SystemBootService.systemServiceUnitFromCgroup(contents) === boundSystemUnit;
   return contents
     .split("\n")
     .some((line) =>
@@ -338,13 +343,15 @@ export function isJonesBootServiceCgroup(contents: string): boolean {
 
 const belongsToBootService = Effect.fn("cli.update.belongs_to_boot_service")(function* (
   pid: number,
+  baseDir: string,
 ) {
   const platform = yield* HostProcess.Platform;
   const fs = yield* FileSystem.FileSystem;
   const runner = yield* ProcessRunner.ProcessRunner;
   if (platform === "linux") {
     const cgroup = yield* fs.readFileString(`/proc/${pid}/cgroup`).pipe(Effect.option);
-    return Option.isSome(cgroup) && isJonesBootServiceCgroup(cgroup.value);
+    const binding = yield* SystemBootService.readBinding(baseDir);
+    return Option.isSome(cgroup) && isJonesBootServiceCgroup(cgroup.value, binding?.systemUnit);
   }
   if (platform === "darwin") {
     const parent = yield* runner
@@ -428,9 +435,8 @@ const runUpdate = Effect.fn("cli.update.run")(function* (input: {
   }
 
   const status = yield* service.status;
-  // The unit name is per user, not per T3 home. Only touch the service when it
-  // serves the home this update targets; otherwise it belongs to another
-  // install on this machine and restarting it would take that server down.
+  // A service unit can belong to another T3 home. Only touch it when it serves
+  // this update's home; restarting another install would take that server down.
   const servesThisHome =
     status.installedBaseDir !== undefined &&
     path.resolve(status.installedBaseDir) === path.resolve(input.baseDir);
@@ -438,6 +444,7 @@ const runUpdate = Effect.fn("cli.update.run")(function* (input: {
   const foreground = yield* findForegroundServer({
     serverRuntimeStatePath: input.serverRuntimeStatePath,
     serviceInstalled,
+    baseDir: input.baseDir,
   });
   const serviceVersion = serviceInstalled ? status.installedVersion : undefined;
   const executableCurrent = targetVersion === currentVersion;

@@ -1,4 +1,4 @@
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { searchableMessageSegments } from "@t3tools/shared/threadFindText";
 import { countThreadSearchOccurrences } from "@t3tools/shared/threadSearch";
 import { act, type ReactElement } from "react";
@@ -88,6 +88,21 @@ function fileOptions(container: HTMLElement) {
     .map((button) => button.getAttribute("aria-label"))
     .filter((label) => label?.startsWith("File options for "));
 }
+
+describe("ChatMarkdown shell identity", () => {
+  it("visibly disables a destination block when a callback consumer lacks native message identity", async () => {
+    const callback = vi.fn();
+    const container = await renderText("```jones-shell environment=mini label=Mini\npwd\n```", {
+      threadRef: { environmentId: EnvironmentId.make("source"), threadId: ThreadId.make("thread") },
+      onRunShellCommand: callback,
+    });
+    expect(container.textContent).toContain("no stable identity");
+    const button = container.querySelector<HTMLButtonElement>('button[aria-label^="Run on"]')!;
+    expect(button.disabled).toBe(true);
+    await act(async () => button.click());
+    expect(callback).not.toHaveBeenCalled();
+  });
+});
 
 describe("ChatMarkdown bare anchor placeholders", () => {
   it.each(["<A>", "<a>", "<a >", "<a/>", "<A/>", "<a />"])(

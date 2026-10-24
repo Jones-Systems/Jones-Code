@@ -8,6 +8,8 @@ import "~/index.css";
 
 const state = vi.hoisted(() => ({
   worktreePath: "/tmp/worktree" as string | null,
+  delegated: false,
+  environments: new Map<string, unknown>(),
   showContextMenu: vi.fn(),
   writeTextToClipboard: vi.fn(),
 }));
@@ -30,11 +32,22 @@ vi.mock(import("../state/entities"), async (original) => ({
     environmentId: "local",
     projectId: "project",
     worktreePath: state.worktreePath,
+    ...(state.delegated
+      ? {
+          delegatedFrom: { environmentId: "origin", threadId: "parent", title: "Parent" },
+          linkOrigin: { label: "Laptop" },
+        }
+      : {}),
   })) as never,
   useProject: (() => ({ workspaceRoot: "/tmp/project" })) as never,
   useThreadShellsForProjectRefs: () => [],
 }));
 
+vi.mock(import("../state/environments"), async (original) => ({
+  ...(await original()),
+  useEnvironment: ((id: string) => state.environments.get(id) ?? null) as never,
+}));
+import { MachineRouteBadge } from "../jones/remoteAgentLineage/MachineIdentity";
 import { BranchToolbar } from "./BranchToolbar";
 
 let root: Root;
@@ -43,6 +56,8 @@ let container: HTMLDivElement;
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   state.worktreePath = "/tmp/worktree";
+  state.delegated = false;
+  state.environments.clear();
   state.showContextMenu.mockReset().mockResolvedValue("copy-path");
   state.writeTextToClipboard.mockReset().mockResolvedValue(true);
   container = document.createElement("div");
@@ -130,3 +145,71 @@ it.each([
     }
   },
 );
+
+it("shows destination identity and a quiet origin independently of the project workspace", async () => {
+  state.delegated = true;
+  state.environments.set("origin", { label: "Laptop", connection: { phase: "offline" } });
+  await render({
+    envLocked: true,
+    availableEnvironments: [
+      {
+        environmentId: EnvironmentId.make("local"),
+        projectId: ProjectId.make("unrelated-project"),
+        label: "VPS",
+        machine: "server",
+        isPrimary: true,
+      },
+    ],
+  });
+  const row = container.querySelector<HTMLElement>('[aria-label="Run context"]')!;
+  expect(row.textContent).toContain("🧠");
+  expect(row.textContent).toContain("from 🏡");
+  expect(row.textContent).not.toContain("unrelated-project");
+  const origin = row.querySelector<HTMLElement>('[aria-label="From Laptop"]')!;
+  expect(origin.getBoundingClientRect().left).toBeGreaterThan(row.getBoundingClientRect().left);
+  state.worktreePath = "/another/project";
+  await render({
+    envLocked: true,
+    availableEnvironments: [
+      {
+        environmentId: EnvironmentId.make("local"),
+        projectId: null,
+        label: "VPS",
+        machine: "server",
+        isPrimary: true,
+      },
+    ],
+  });
+  expect(container.textContent).toContain("🧠");
+  expect(container.textContent).toContain("from 🏡");
+});
+
+it("keeps the approved touching emoji pair and scaled outlined route arrow when disconnected", async () => {
+  state.delegated = true;
+  state.environments.set("origin", { label: "Laptop", connection: { phase: "offline" } });
+  state.environments.set("local", { label: "Test Server", connection: { phase: "connected" } });
+  await act(async () =>
+    root.render(
+      <MachineRouteBadge
+        environmentId={EnvironmentId.make("local")}
+        threadId={ThreadId.make("thread")}
+      />,
+    ),
+  );
+  const pair = container.querySelector<HTMLElement>('[role="img"]')!;
+  expect(pair.getAttribute("aria-label")).toBe("From Laptop to Test Server");
+  expect(pair.textContent).toBe("🏡🤖");
+  const [source, destination] = [...pair.children].map((element) =>
+    element.getBoundingClientRect(),
+  );
+  expect(pair.getBoundingClientRect().width).toBe(32);
+  expect(source!.width).toBe(16);
+  expect(destination!.width).toBe(16);
+  expect(destination!.left - source!.right).toBe(0);
+  const arrow = pair.querySelector("svg")!;
+  expect(arrow.getBoundingClientRect().width).toBeCloseTo(12.96, 1);
+  expect(arrow.getBoundingClientRect().height).toBeCloseTo(10.8, 1);
+  const arrowCenter = arrow.getBoundingClientRect().top + arrow.getBoundingClientRect().height / 2;
+  const pairCenter = pair.getBoundingClientRect().top + pair.getBoundingClientRect().height / 2;
+  expect(arrowCenter - pairCenter).toBeCloseTo(3.2, 1);
+});
