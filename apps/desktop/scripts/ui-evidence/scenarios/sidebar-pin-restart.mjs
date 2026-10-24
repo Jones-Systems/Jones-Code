@@ -1,8 +1,12 @@
 import * as NodeAssert from "node:assert/strict";
 import * as NodeCrypto from "node:crypto";
 
-// Both entry points use the same pin oracle; the restart suite owns its cases.
-import { assertBackendPinState } from "./sidebar-pin-reload.mjs";
+// The runner stages the selected scenario at /harness/scenario.mjs.
+const { assertBackendPinState } = await import(
+  new URL(import.meta.url).pathname.endsWith("/harness/scenario.mjs")
+    ? "./support/pin-oracle.mjs"
+    : "../support/pin-oracle.mjs"
+);
 export { assertBackendPinState };
 
 function shelfRow(page, threadId, pinned) {

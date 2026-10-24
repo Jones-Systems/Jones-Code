@@ -7,6 +7,7 @@ import * as NodeChildProcess from "node:child_process";
 import { sandboxEnvironment, bwrapArguments, stageAcpAgent, stageRun } from "./sandbox.mjs";
 import { parseOptions, queueCaseConfiguration, harness } from "../ui-evidence.mjs";
 import { resolveQueueCase } from "./scenarios/queue-edit-cancel.mjs";
+import { loadScenario } from "./scenario-api.mjs";
 
 NodeTest.test(
   "containment has private namespaces, a cleared environment and narrow mounts",
@@ -222,3 +223,28 @@ NodeTest.test(
     }
   },
 );
+
+NodeTest.test("pin scenarios load from the real flattened staging layout", async (t) => {
+  const fixture = await acpStageFixture(t);
+  const source = NodePath.join(fixture.root, "source");
+  for (const directory of ["apps/desktop/dist-electron", "apps/server/dist"])
+    await NodeFSP.mkdir(NodePath.join(source, directory), { recursive: true });
+  for (const file of ["package.json", "apps/desktop/package.json", "apps/server/package.json"])
+    await NodeFSP.writeFile(NodePath.join(source, file), "{}\n");
+  for (const name of ["sidebar-pin-restart", "sidebar-pin-reload"]) {
+    const scenario = NodePath.join(
+      harness,
+      `apps/desktop/scripts/ui-evidence/scenarios/${name}.mjs`,
+    );
+    const stage = await stageRun({
+      run: { root: NodePath.join(fixture.root, name) },
+      source,
+      harness,
+      scenario,
+      closure: { source: await NodeFSP.realpath(source), packages: [], roots: [] },
+      configuration: {},
+    });
+    const loaded = await loadScenario(NodePath.join(stage, "harness/scenario.mjs"));
+    NodeAssert.equal(typeof loaded.run, "function");
+  }
+});
