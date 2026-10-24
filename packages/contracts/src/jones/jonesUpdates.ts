@@ -92,6 +92,28 @@ export const JonesUpdateState = Schema.Struct({
     }),
   ),
   updateId: Schema.optionalKey(TrimmedNonEmptyString),
+  settlement: Schema.optionalKey(
+    Schema.Literals(["none", "launcher-recorded", "legacy-reconciled"]),
+  ),
+  settlementRefusal: Schema.optionalKey(
+    Schema.Literals([
+      "not-failed",
+      "not-found",
+      "insufficient-evidence",
+      "restore-pending",
+      "active-changed",
+      "trial-evidence-present",
+      "retired-evidence-mismatch",
+      "settlement-write-failed",
+      "capability-unsupported",
+    ]),
+  ),
+  cause: Schema.optionalKey(Schema.String),
+  launcherVersion: Schema.optionalKey(Schema.String),
+  childVersion: Schema.optionalKey(Schema.String),
+  launcherSettlement: Schema.optionalKey(Schema.Literals(["supported", "unsupported"])),
+  launcherRefresh: Schema.optionalKey(Schema.Literals(["none", "recommended"])),
+  launcherRefreshReason: Schema.optionalKey(Schema.Literal("settlement-unsupported")),
   outcome: Schema.optionalKey(
     Schema.Struct({
       status: Schema.Literals(["committed", "rolled-back", "blocked"]),
@@ -137,6 +159,23 @@ export const JonesUpdateInstallInput = Schema.Struct({
   continueRunningThreads: Schema.optionalKey(Schema.Boolean),
 });
 export type JonesUpdateInstallInput = typeof JonesUpdateInstallInput.Type;
+
+const JonesUpdateOperationId = Schema.String.check(
+  Schema.isPattern(/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/),
+);
+
+export const JonesUpdateReconcileInput = Schema.Struct({
+  operationId: JonesUpdateOperationId,
+  requestId: JonesUpdateOperationId,
+});
+export type JonesUpdateReconcileInput = typeof JonesUpdateReconcileInput.Type;
+
+export const JonesUpdateRecordRetiredInput = Schema.Struct({
+  operationId: JonesUpdateOperationId,
+  requestId: JonesUpdateOperationId,
+  retiredLocation: TrimmedNonEmptyString.check(Schema.isMaxLength(1024)),
+});
+export type JonesUpdateRecordRetiredInput = typeof JonesUpdateRecordRetiredInput.Type;
 
 /** Native preparation binds one durable attempt independently of its reusable staged artifact. */
 export const JonesNativePrepareInput = Schema.Struct({

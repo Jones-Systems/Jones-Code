@@ -28,6 +28,8 @@ node apps/desktop/scripts/ui-evidence.mjs run [--source DIR] [--scenario sidebar
 node apps/desktop/scripts/ui-evidence.mjs cleanup --run <run-id>
 ```
 
+For the opt-in synthetic provider/composer lifecycle scenario, read [native self-configuration verification](references/native-self-configuration.md). Its fixed provider-registration and fixture-thread readback hooks are the only extensions to metadata setup; ordinary messages remain real UI actions. It needs exact-candidate qualification and a separately built negative control.
+
 The repository also exposes the CLI and its bounded test group as package scripts `ui:evidence` and `test:ui-evidence`, invoked through the existing `vp run <script>` pattern. The test group does not qualify the live Electron route.
 
 `doctor` is read-only and reports prerequisites or exact missing system package names; it installs nothing. `setup` downloads the lockfile-matched Electron runtime into its owned user cache and checks the official checksum. No command elevates privileges. `run` requires an existing built app, defaults to the harness source and `sidebar-rename`, and writes to `<source>/.t3/ui-evidence/runs/<run-id>/` unless `--out` names a path that does not already exist. A full commit OID may be supplied to `--comparison`; `--build-receipt FILE` records a receipt for the exact source and output hashes. Every command emits JSON with an `outcome` of `complete`, `no_change`, `rejected`, `partial`, or `unknown`. A run returns 0 for a pass, 1 for a scenario failure, 2 for a rejected precondition, or 130/143 for cancellation.

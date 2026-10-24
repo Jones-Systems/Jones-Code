@@ -10,6 +10,7 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import type {
   JonesUpdateDownloadInput,
   JonesUpdateInstallInput,
+  JonesUpdateReconcileInput,
   JonesUpdateState,
 } from "@t3tools/contracts/jones/jonesUpdates";
 import { ArrowRightIcon } from "lucide-react";
@@ -29,10 +30,12 @@ import {
   INLINE_ACTIONS_CLASSNAME,
 } from "./disclosure";
 import { BuildVersion, CopyableValue } from "./updateDisplay";
+import { randomUUID } from "../../lib/utils";
 
 export type JonesBuildRequest =
   | { readonly action: "check" }
   | { readonly action: "download"; readonly input: JonesUpdateDownloadInput }
+  | { readonly action: "reconcile"; readonly input: JonesUpdateReconcileInput }
   | { readonly action: "install"; readonly input: JonesUpdateInstallInput };
 
 const LAYOUTS = {
@@ -238,7 +241,11 @@ export function JonesBuildStatus({
 
   const statusLine = (
     <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-muted-foreground">
-      <span className="min-w-0">{presentation.message}</span>
+      <span className="min-w-0">
+        {presentation.busy
+          ? presentation.message
+          : (presentation.settlementMessage ?? presentation.message)}
+      </span>
       <DisclosureButton
         open={detailsOpen}
         controls={detailsId}
@@ -260,6 +267,22 @@ export function JonesBuildStatus({
           {statusLine}
         </div>
         <div className={styles.actions}>
+          {presentation.canReconcile ? (
+            <Button
+              size={styles.button}
+              variant="outline"
+              disabled={busy}
+              onClick={() => {
+                if (state.updateId === undefined) return;
+                onRequest({
+                  action: "reconcile",
+                  input: { operationId: state.updateId, requestId: randomUUID() },
+                });
+              }}
+            >
+              Reconcile
+            </Button>
+          ) : null}
           <Button
             size={styles.button}
             variant="outline"
@@ -314,6 +337,25 @@ export function JonesBuildStatus({
         </div>
       </div>
       <div className={styles.after}>
+        {presentation.settlementMessage !== undefined && state.updateId !== undefined ? (
+          <p role="status" className="text-muted-foreground">
+            Attempt{" "}
+            <CopyableValue
+              label="attempt ID"
+              value={state.updateId}
+              display={state.updateId.slice(0, 8)}
+            />
+          </p>
+        ) : null}
+        {state.launcherRefresh === "recommended" || state.launcherSettlement === "unsupported" ? (
+          <p className="text-muted-foreground">Launcher refresh recommended</p>
+        ) : null}
+        {presentation.refusalMessage !== undefined &&
+        actionError !== presentation.refusalMessage ? (
+          <p role="alert" className="text-destructive">
+            {presentation.refusalMessage}
+          </p>
+        ) : null}
         {freshness !== "fresh" ? (
           <p role="status" className="text-muted-foreground">
             {freshnessMessage}
@@ -340,13 +382,18 @@ export function JonesBuildStatus({
               render={
                 <p
                   role="status"
-                  className="text-destructive"
+                  className={presentation.settled ? "text-muted-foreground" : "text-destructive"}
                   tabIndex={0}
                   aria-label={`${outcome.status}: ${outcomeBuildDetail(state)}${outcome.reason ? `; ${outcome.reason}` : ""}`}
                 />
               }
             >
-              {outcome.status === "rolled-back" ? "Rolled back" : "Blocked"}: {outcomeText}
+              {presentation.settled
+                ? "No changes"
+                : outcome.status === "rolled-back"
+                  ? "Rolled back"
+                  : "Blocked"}
+              : {outcomeText}
             </TooltipTrigger>
             <TooltipPopup side="top">{outcomeBuildDetail(state)}</TooltipPopup>
           </Tooltip>
@@ -359,6 +406,12 @@ export function JonesBuildStatus({
         {detailsOpen ? (
           <div id={detailsId} className={DETAIL_PANEL_CLASSNAME}>
             <DetailList>
+              {state.launcherVersion === undefined ? null : (
+                <DetailItem label="Launcher version">{state.launcherVersion}</DetailItem>
+              )}
+              {state.childVersion === undefined ? null : (
+                <DetailItem label="Server version">{state.childVersion}</DetailItem>
+              )}
               {state.currentVersion !== undefined ? (
                 <DetailItem label="Installed">
                   <CopyableValue label="installed version" value={state.currentVersion} />
