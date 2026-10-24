@@ -1,8 +1,8 @@
 name: Mac Desktop Artifact
 
 on:
-  push:
-    branches: [main]
+  schedule:
+    - cron: "23 6 * * *"
   workflow_dispatch:
   pull_request:
     branches: [main, work/jones-rebuild/staging]
@@ -41,7 +41,7 @@ jobs:
     name: Unsigned Apple Silicon DMG
     if: >-
       github.repository == 'Jones-Systems/Jones-Code' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
        github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: macos-15
     timeout-minutes: 45
