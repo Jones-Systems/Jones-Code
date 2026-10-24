@@ -79,7 +79,7 @@ export interface JonesArtifactReceipt {
   readonly source: string;
   readonly tree: string;
   readonly workflow: string;
-  readonly event: "push";
+  readonly event: "push" | "schedule";
   readonly ref: "refs/heads/main";
   readonly runId: string;
   readonly runAttempt: string;
@@ -161,22 +161,35 @@ function spec(platform: JonesActionsPlatform, architecture: JonesActionsArchitec
     return {
       workflow: ".github/workflows/artifact-desktop-mac.yml",
       name: "desktop-mac-arm64",
+      events: ["push", "schedule"],
     };
   if (platform === "linux" && (architecture === "x64" || architecture === "arm64"))
     return {
       workflow: ".github/workflows/artifact-cli-linux.yml",
       name: `jones-code-cli-linux-${architecture}`,
+      events: ["push"],
     };
   throw new JonesActionsError("unsupported-platform");
 }
 function canonicalRun(run: Record<string, unknown>, workflow: string): boolean {
   return (
     run.path === workflow &&
-    run.event === "push" &&
     run.head_branch === "main" &&
     record(run.repository).full_name === JONES_ACTIONS_REPOSITORY &&
     record(run.head_repository).full_name === JONES_ACTIONS_REPOSITORY
   );
+}
+function artifactEvent(approved: ReturnType<typeof spec>, event: unknown): boolean {
+  return typeof event === "string" && approved.events.includes(event);
+}
+function canonicalArtifactRun(
+  run: Record<string, unknown>,
+  approved: ReturnType<typeof spec>,
+): boolean {
+  return canonicalRun(run, approved.workflow) && artifactEvent(approved, run.event);
+}
+function canonicalCiRun(run: Record<string, unknown>): boolean {
+  return canonicalRun(run, ".github/workflows/ci.yml") && run.event === "push";
 }
 function safeTransportError(error: unknown): JonesActionsError {
   return error instanceof JonesActionsError ? error : new JonesActionsError("unavailable");
@@ -295,13 +308,13 @@ export class JonesActionsClient {
       for (let page = 1; page <= 3; page++) {
         const runs = rows(
           await this.transport.api(
-            `${API_ROOT}/actions/workflows/${NodePath.posix.basename(approved.workflow)}/runs?branch=main&event=push${targetSource === undefined ? "" : `&head_sha=${targetSource}`}&per_page=50&page=${page}`,
+            `${API_ROOT}/actions/workflows/${NodePath.posix.basename(approved.workflow)}/runs?branch=main${input.platform === "linux" ? "&event=push" : ""}${targetSource === undefined ? "" : `&head_sha=${targetSource}`}&per_page=50&page=${page}`,
           ),
           "workflow_runs",
         );
         for (const listed of runs) {
           if (
-            !canonicalRun(listed, approved.workflow) ||
+            !canonicalArtifactRun(listed, approved) ||
             (targetSource !== undefined && listed.head_sha !== targetSource)
           )
             continue;
@@ -314,7 +327,7 @@ export class JonesActionsClient {
             await this.transport.api(`${API_ROOT}/actions/runs/${positive(listed.id)}`),
           );
           if (
-            !canonicalRun(run, approved.workflow) ||
+            !canonicalArtifactRun(run, approved) ||
             run.status !== "completed" ||
             run.conclusion !== "success"
           )
@@ -334,8 +347,7 @@ export class JonesActionsClient {
             "workflow_runs",
           );
           const sourceCi = ciRuns.filter(
-            (item) =>
-              canonicalRun(item, ".github/workflows/ci.yml") && item.head_sha === candidateSource,
+            (item) => canonicalCiRun(item) && item.head_sha === candidateSource,
           );
           const ci = sourceCi.find(
             (item) => item.status === "completed" && item.conclusion === "success",
@@ -492,13 +504,13 @@ export class JonesActionsClient {
     const commit = record(await this.transport.api(`${API_ROOT}/git/commits/${candidate.source}`));
     const main = record(await this.transport.api(`${API_ROOT}/commits/main`));
     if (
-      !canonicalRun(run, candidate.workflow) ||
+      !canonicalArtifactRun(run, spec(candidate.platform, candidate.architecture)) ||
       run.status !== "completed" ||
       run.conclusion !== "success" ||
       run.head_sha !== candidate.source ||
       run.run_attempt !== candidate.runAttempt ||
       run.workflow_id !== candidate.workflowId ||
-      !canonicalRun(ci, ".github/workflows/ci.yml") ||
+      !canonicalCiRun(ci) ||
       ci.status !== "completed" ||
       ci.conclusion !== "success" ||
       ci.head_sha !== candidate.source ||
@@ -536,7 +548,11 @@ export class JonesActionsClient {
         stagedHandle,
         JONES_ACTIONS_RECEIPT_FILE,
       );
-      if (completed !== undefined) return await validateJonesStagedArtifact(completed, candidate);
+      if (completed !== undefined) {
+        const cached = await validateJonesStagedArtifact(completed, candidate);
+        if (cached.receipt.event !== run.event) throw new JonesActionsError("unqualified");
+        return cached;
+      }
     } catch (error) {
       throw error instanceof JonesActionsError ? error : new JonesActionsError("occupied-cache");
     }
@@ -564,6 +580,7 @@ export class JonesActionsClient {
         JSON.parse(await NodeFSP.readFile(receiptPath, "utf8")) as unknown,
         candidate,
       );
+      if (receipt.event !== run.event) throw new JonesActionsError("unqualified");
       const permitted = new Set([
         "ARTIFACT.json",
         "SOURCE_COMMIT",
@@ -615,6 +632,7 @@ export class JonesActionsClient {
       );
       if (selected === working) return verified;
       const winner = await validateJonesStagedArtifact(selected, candidate);
+      if (winner.receipt.event !== run.event) throw new JonesActionsError("unqualified");
       retainAttempt = false;
       return winner;
     } catch (cause) {
@@ -706,7 +724,7 @@ function parseJonesArtifactReceipt(
     item.source !== candidate.source ||
     item.tree !== candidate.tree ||
     item.workflow !== candidate.workflow ||
-    item.event !== "push" ||
+    !artifactEvent(spec(candidate.platform, candidate.architecture), item.event) ||
     item.ref !== "refs/heads/main" ||
     item.runId !== String(candidate.runId) ||
     item.runAttempt !== String(candidate.runAttempt) ||
@@ -769,7 +787,8 @@ export async function validateJonesStagedArtifact(
       ) as unknown,
       candidate,
     );
-    if (original.sha256 !== receipt.sha256) throw new JonesActionsError("integrity");
+    if (original.sha256 !== receipt.sha256 || original.event !== receipt.event)
+      throw new JonesActionsError("integrity");
     return item as unknown as JonesStagedArtifact;
   } catch (error) {
     throw error instanceof JonesActionsError ? error : new JonesActionsError("occupied-cache");
