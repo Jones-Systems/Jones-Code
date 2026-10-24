@@ -81,23 +81,26 @@ export function EnvironmentRow({
     <div
       className={cn(
         "grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 px-3 py-2.5 sm:px-4",
-        dimmed && "opacity-60",
         className,
       )}
     >
-      <EnvironmentMachineIcon aria-hidden kind={kind} className="size-4 text-muted-foreground" />
+      <EnvironmentMachineIcon
+        aria-hidden
+        kind={kind}
+        className={cn("size-4 text-muted-foreground", dimmed && "opacity-60")}
+      />
       {header ? (
-        name
+        <div className={cn("min-w-0", dimmed && "opacity-60")}>{name}</div>
       ) : (
-        <div className="min-w-0">
+        <div className={cn("min-w-0", dimmed && "opacity-60")}>
           {name}
           {line}
         </div>
       )}
-      {/* In a header, this box is the name's line height; taller controls center on that line. */}
-      <div className={cn("flex shrink-0 items-center gap-1", header && "h-5")}>{children}</div>
+      {/* Reserve at least the name's line height, and let taller controls push the subtitle below. */}
+      <div className={cn("flex shrink-0 items-center gap-1", header && "min-h-5")}>{children}</div>
       {header ? (
-        <div className="col-span-2 col-start-2 min-w-0">
+        <div className={cn("col-span-2 col-start-2 min-w-0", dimmed && "opacity-60")}>
           {line}
           {below}
         </div>

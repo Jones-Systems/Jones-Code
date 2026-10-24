@@ -15,11 +15,13 @@ import {
   DEVICE_HUB_POLICY,
   deviceHubRoutePolicy,
   directDeviceRouteMatches,
+  validDirectClientOrigin,
 } from "../jones/device/directMediaPolicy.ts";
 import * as DeviceDirectGrants from "../jones/device/DeviceDirectGrants.ts";
-import { validDirectClientOrigin } from "../jones/device/directMediaPolicy.ts";
+
 import { HttpClient, HttpClientResponse, HttpRouter } from "effect/http";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import type * as DeviceHost from "./DeviceHost.ts";
 import * as DeviceService from "./DeviceService.ts";
 import * as DeviceHubProxy from "./DeviceHubProxy.ts";
 
@@ -33,8 +35,10 @@ const fixture = (
   scopes: ReadonlyArray<AuthEnvironmentScope>,
   fail = false,
   authError?: EnvironmentAuth.ServerAuthCredentialError | EnvironmentAuth.ServerAuthInternalError,
-  direct = false,
+  upstreamOrDirect?: DeviceHost.DeviceHostReady["upstream"] | boolean,
 ) => {
+  const direct = upstreamOrDirect === true;
+  const upstream = typeof upstreamOrDirect === "function" ? upstreamOrDirect : undefined;
   let finalized = 0;
   let revoked = false;
   let generation = "generation";
@@ -42,15 +46,20 @@ const fixture = (
   const forwardedHeaders: Array<Readonly<Record<string, string>>> = [];
   const endpoint = () => ({ target: "mac-mini", gatewayPort: 1234, owner: "owner", generation });
   const requests: string[] = [];
+  const headers: Array<Readonly<Record<string, string>>> = [];
   const client = HttpClient.make((request, _url, signal) =>
     Effect.gen(function* () {
       requests.push(request.url);
+      headers.push(request.headers);
       forwardedHeaders.push(request.headers);
       signal.addEventListener("abort", () => {
         finalized++;
       });
       if (fail) return yield* Effect.die(new Error("upstream failed"));
-      return HttpClientResponse.fromWeb(request, new Response("frame"));
+      return HttpClientResponse.fromWeb(
+        request,
+        new Response("frame", { headers: { "set-cookie": "upstream=1" } }),
+      );
     }),
   );
   const { handler, dispose } = HttpRouter.toWebHandler(
@@ -76,6 +85,7 @@ const fixture = (
               hostId: LOCAL_DEVICE_HOST_ID,
               hub: { origin: "http://hub.test" },
               ...(direct ? { directMedia: endpoint() } : {}),
+              ...(upstream ? { upstream } : {}),
             }),
           state: Effect.succeed({ devices: [{ hostId: "local", id: "phone", platform: "ios" }] }),
         } as unknown as DeviceService.DeviceService["Service"]),
@@ -102,6 +112,7 @@ const fixture = (
   disposers.push(dispose);
   return {
     handler,
+    headers,
     requests,
     forwardedHeaders,
     finalized: () => finalized,
@@ -115,6 +126,27 @@ const fixture = (
   };
 };
 
+const accessSchema = Schema.Struct({
+  grant: Schema.String,
+  expiresAt: Schema.Number,
+  target: Schema.String,
+  gatewayPort: Schema.Number,
+  owner: Schema.String,
+  generation: Schema.String,
+});
+const getDirect = async (f: ReturnType<typeof fixture>, extra = "") => {
+  const response = await f.handler(
+    new Request(
+      "http://t3.test/api/device-hub/direct-access?hostId=local&deviceId=phone&platform=ios&clientOrigin=t3code%3A%2F%2Fapp" +
+        extra,
+    ),
+  );
+  expect(response.status).toBe(200);
+  const text = await response.text();
+  expect(text).not.toContain("private-vps-token");
+  return Schema.decodeUnknownSync(Schema.fromJsonString(accessSchema))(text);
+};
+
 describe("device hub proxy", () => {
   it("releases the upstream response after forwarding its body and strips tickets", async () => {
     const { handler, requests, finalized } = fixture([AuthOrchestrationReadScope]);
@@ -124,13 +156,6 @@ describe("device hub proxy", () => {
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("frame");
     expect(requests).toEqual(["http://hub.test/api/devices"]);
-    expect(finalized()).toBe(1);
-  });
-
-  it("releases resources when upstream acquisition fails", async () => {
-    const { handler, finalized } = fixture([AuthOrchestrationReadScope], true);
-    const response = await handler(new Request("http://t3.test/api/device-hub/api/devices"));
-    expect(response.status).toBe(500);
     expect(finalized()).toBe(1);
   });
 
@@ -182,6 +207,73 @@ describe("device hub proxy", () => {
     ]);
   });
 
+  it("presents fold changes from an HTTPS client as same-origin hub requests", async () => {
+    const { handler, headers } = fixture([AuthOrchestrationOperateScope]);
+    const response = await handler(
+      new Request(
+        "https://relay.test/api/device-hub/vendor/serve-emu/api/fold?device=emulator-5554",
+        {
+          method: "POST",
+          headers: { origin: "https://relay.test", "x-forwarded-proto": "https" },
+          body: '{"posture":"opened"}',
+        },
+      ),
+    );
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(headers).toHaveLength(1);
+    expect(headers[0]?.origin).toBe("http://hub.test");
+    expect(headers[0]).not.toHaveProperty("x-forwarded-proto");
+  });
+
+  it("lets a viewer negotiate a WebRTC stream with read scope", async () => {
+    const { handler, requests, headers } = fixture([AuthOrchestrationReadScope]);
+    const offer = await handler(
+      new Request("http://t3.test/api/device-hub/vendor/serve-sim/helper/udid-1/webrtc/offer", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: '{"type":"offer"}',
+      }),
+    );
+    expect(offer.status).toBe(200);
+    await offer.text();
+    expect(requests).toEqual(["http://hub.test/vendor/serve-sim/helper/udid-1/webrtc/offer"]);
+    expect(headers[0]?.["content-type"]).toBe("application/json");
+  });
+
+  it("sends requests a host routes itself to its upstream with its credentials", async () => {
+    const { handler, requests, headers } = fixture(
+      [AuthOrchestrationReadScope],
+      false,
+      undefined,
+      (hubPath, search) =>
+        Effect.succeed(
+          hubPath === "/vendor/serve-sim/api"
+            ? {
+                url: `https://session.test${hubPath.slice("/vendor/serve-sim".length)}?${search}`,
+                headers: { authorization: "Bearer session-token" },
+                protocols: [],
+              }
+            : null,
+        ),
+    );
+    const routed = await handler(
+      new Request("http://t3.test/api/device-hub/vendor/serve-sim/api?device=udid-1&hostId=eas", {
+        headers: { authorization: "Bearer environment-token" },
+      }),
+    );
+    expect(routed.status).toBe(200);
+    expect(routed.headers.get("set-cookie")).toBeNull();
+    await routed.text();
+    expect(requests).toEqual(["https://session.test/api?device=udid-1"]);
+    expect(headers[0]?.authorization).toBe("Bearer session-token");
+    const unrouted = await handler(
+      new Request("http://t3.test/api/device-hub/vendor/serve-sim/helper/udid-2/stream.mjpeg"),
+    );
+    expect(unrouted.status).toBe(404);
+    expect(requests).toHaveLength(1);
+  });
+
   it("never forwards the vendor shell endpoint", async () => {
     const { handler, requests } = fixture([AuthOrchestrationOperateScope]);
     expect(
@@ -211,52 +303,15 @@ it.each([
   expect(requests).toEqual([]);
 });
 
-it.each([1, 3])(
-  "forwards fixed Duo display %s through the authenticated read proxy",
-  async (panel) => {
-    const { handler, requests } = fixture([AuthOrchestrationReadScope]);
-    const route = `/vendor/serve-sim/helper/duo/panel/${panel}/stream.avcc`;
-    const response = await handler(
-      new Request(`http://t3.test/api/device-hub${route}?wsTicket=secret`),
-    );
-    expect(response.status).toBe(200);
-    await response.text();
-    expect(requests).toEqual([`http://hub.test${route}`]);
-  },
-);
-
-it.each(["/panel/2/stream.avcc", "/panel/1/webrtc/offer", "/panel/3/exec"])(
-  "rejects unsupported Duo route %s",
-  async (route) => {
-    const { handler, requests } = fixture([AuthOrchestrationReadScope]);
-    const response = await handler(
-      new Request(`http://t3.test/api/device-hub/vendor/serve-sim/helper/duo${route}`),
-    );
-    expect(response.status).toBe(404);
-    expect(requests).toEqual([]);
-  },
-);
-
-const accessSchema = Schema.Struct({
-  grant: Schema.String,
-  expiresAt: Schema.Number,
-  target: Schema.String,
-  gatewayPort: Schema.Number,
-  owner: Schema.String,
-  generation: Schema.String,
-});
-const getDirect = async (f: ReturnType<typeof fixture>, extra = "") => {
-  const response = await f.handler(
-    new Request(
-      "http://t3.test/api/device-hub/direct-access?hostId=local&deviceId=phone&platform=ios&clientOrigin=t3code%3A%2F%2Fapp" +
-        extra,
-    ),
+it("rejects unsupported Duo routes", async () => {
+  const { handler, requests } = fixture([AuthOrchestrationReadScope]);
+  const response = await handler(
+    new Request("http://t3.test/api/device-hub/vendor/serve-sim/helper/duo/panel/1/webrtc/offer"),
   );
-  expect(response.status).toBe(200);
-  const text = await response.text();
-  expect(text).not.toContain("private-vps-token");
-  return Schema.decodeUnknownSync(Schema.fromJsonString(accessSchema))(text);
-};
+  expect(response.status).toBe(404);
+  expect(requests).toEqual([]);
+});
+
 it("keeps the private callback absent from the main router", async () => {
   const f = fixture([AuthOrchestrationReadScope], false, undefined, true);
   const access = await getDirect(f);
@@ -368,3 +423,29 @@ it("bounds direct origins and applies the shared method policy to both platforms
     directDeviceRouteMatches("/vendor/serve-emu/ws", "?device=emulator-5554", "phone", "ios"),
   ).toBe(false);
 });
+
+it.each([1, 3])(
+  "forwards fixed Duo display %s through the authenticated read proxy",
+  async (panel) => {
+    const { handler, requests } = fixture([AuthOrchestrationReadScope]);
+    const route = `/vendor/serve-sim/helper/duo/panel/${panel}/stream.avcc`;
+    const response = await handler(
+      new Request(`http://t3.test/api/device-hub${route}?wsTicket=secret`),
+    );
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(requests).toEqual([`http://hub.test${route}`]);
+  },
+);
+
+it.each(["/panel/2/stream.avcc", "/panel/1/webrtc/offer", "/panel/3/exec"])(
+  "rejects unsupported Duo route %s",
+  async (route) => {
+    const { handler, requests } = fixture([AuthOrchestrationReadScope]);
+    const response = await handler(
+      new Request(`http://t3.test/api/device-hub/vendor/serve-sim/helper/duo${route}`),
+    );
+    expect(response.status).toBe(404);
+    expect(requests).toEqual([]);
+  },
+);

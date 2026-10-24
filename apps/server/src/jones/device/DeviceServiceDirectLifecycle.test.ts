@@ -31,7 +31,13 @@ it.effect(
       let settings: ServerSettings = {
         ...DEFAULT_SERVER_SETTINGS,
         deviceHosts: [
-          { id: hostId, label: "Mini", target: "vps-mini", directSshTarget: "laptop-mini-a" },
+          {
+            kind: "ssh",
+            id: hostId,
+            label: "Mini",
+            target: "vps-mini",
+            directSshTarget: "laptop-mini-a",
+          },
         ],
       };
       const instances: Array<{

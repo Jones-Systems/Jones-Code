@@ -211,6 +211,12 @@ export const planThreadDeletion = Effect.fn("ThreadDeletion.planThreadDeletion")
     });
   }
   effects.push({
+    id: `effect:${command.commandId}:scheduled-tasks.cleanup`,
+    commandId: command.commandId,
+    threadId: command.threadId,
+    request: { type: "scheduled-tasks.cleanup" },
+  });
+  effects.push({
     id: `effect:${command.commandId}:terminal.cleanup`,
     commandId: command.commandId,
     threadId: command.threadId,
@@ -237,7 +243,9 @@ export const planThreadDeletion = Effect.fn("ThreadDeletion.planThreadDeletion")
 export function threadCreationCleanupEffects(effects: ReadonlyArray<OrchestrationEffectV2>) {
   return effects.filter(
     ({ request }) =>
+      request.type === "scheduled-tasks.cleanup" ||
       request.type === "terminal.cleanup" ||
+      request.type === "preview.cleanup" ||
       request.type === "attachment.cleanup" ||
       request.type === "provider-session.detach",
   );

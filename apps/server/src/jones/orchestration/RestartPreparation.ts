@@ -88,12 +88,12 @@ export type RestartPreparationWriteError =
   | ProjectionStore.ProjectionStoreV2Error
   | EventSink.EventSinkV2Error;
 
-export const awaitRestartTerminal = (input: {
-  readonly target: OldTarget;
-  readonly projections: ProjectionStore.ProjectionStoreV2["Service"];
-  readonly sink: EventSink.EventSinkV2["Service"];
-}) =>
-  Effect.gen(function* () {
+export const awaitRestartTerminal = Effect.fn("RestartPreparation.awaitRestartTerminal")(
+  function* (input: {
+    readonly target: OldTarget;
+    readonly projections: ProjectionStore.ProjectionStoreV2["Service"];
+    readonly sink: EventSink.EventSinkV2["Service"];
+  }) {
     const { target, projections, sink } = input;
     const read = projections
       .getProviderControlContext(target.threadId, {
@@ -135,19 +135,22 @@ export const awaitRestartTerminal = (input: {
         yield* Fiber.join(observation);
       }),
     );
-  }).pipe(
-    Effect.timeoutOrElse({
-      duration: Duration.millis(RESTART_TERMINAL_TIMEOUT_MS),
-      orElse: () =>
-        Effect.fail(
-          new RestartPreparationError({
-            threadId: input.target.threadId,
-            stage: "terminal",
-            cause: "The captured old provider turn has no persisted terminal evidence.",
-          }),
-        ),
-    }),
-  );
+  },
+  (effect, input) =>
+    effect.pipe(
+      Effect.timeoutOrElse({
+        duration: Duration.millis(RESTART_TERMINAL_TIMEOUT_MS),
+        orElse: () =>
+          Effect.fail(
+            new RestartPreparationError({
+              threadId: input.target.threadId,
+              stage: "terminal",
+              cause: "The captured old provider turn has no persisted terminal evidence.",
+            }),
+          ),
+      }),
+    ),
+);
 
 export class RestartPreparation extends Context.Service<
   RestartPreparation,
@@ -198,38 +201,40 @@ const make = Effect.gen(function* () {
       stage: "interrupt" | "detach";
     }
   >();
-  const assertThreadOpen = (threadId: ThreadId) =>
-    Effect.gen(function* () {
-      for (const [id, hold] of holds) {
-        if (hold.target.threadId !== threadId) continue;
-        if (hold.stage === "interrupt") {
-          const current = yield* projections.getProviderControlContext(threadId, {
-            providerThreadId: hold.target.providerThreadId,
-            providerTurnId: hold.target.providerTurnId,
-            attemptId: hold.target.interruptedAttemptId,
-          });
-          if (
-            current.providerTurn?.id === hold.target.providerTurnId &&
-            current.providerTurn.runAttemptId === hold.target.interruptedAttemptId &&
-            current.providerTurn.status !== "running"
-          ) {
-            holds.delete(id);
-            continue;
-          }
+  const assertThreadOpen = Effect.fn("RestartPreparation.assertThreadOpen")(function* (
+    threadId: ThreadId,
+  ) {
+    for (const [id, hold] of holds) {
+      if (hold.target.threadId !== threadId) continue;
+      if (hold.stage === "interrupt") {
+        const current = yield* projections.getProviderControlContext(threadId, {
+          providerThreadId: hold.target.providerThreadId,
+          providerTurnId: hold.target.providerTurnId,
+          attemptId: hold.target.interruptedAttemptId,
+        });
+        if (
+          current.providerTurn?.id === hold.target.providerTurnId &&
+          current.providerTurn.runAttemptId === hold.target.interruptedAttemptId &&
+          current.providerTurn.status !== "running"
+        ) {
+          holds.delete(id);
+          continue;
         }
-        return yield* new RestartThreadHeld({ threadId });
       }
-    });
+      return yield* new RestartThreadHeld({ threadId });
+    }
+  });
   return RestartPreparation.of({
     assertThreadOpen,
-    captureHeldRuntimeStop: (threadId) =>
-      Effect.gen(function* () {
-        const targets = Array.from(holds.values()).filter(
-          (hold) => hold.target.threadId === threadId,
-        );
-        const capture = targets.length === 1 ? targets[0]!.capture : null;
-        return capture !== null && (yield* capture.isCurrent) ? capture : null;
-      }),
+    captureHeldRuntimeStop: Effect.fn("RestartPreparation.captureHeldRuntimeStop")(function* (
+      threadId: ThreadId,
+    ) {
+      const targets = Array.from(holds.values()).filter(
+        (hold) => hold.target.threadId === threadId,
+      );
+      const capture = targets.length === 1 ? targets[0]!.capture : null;
+      return capture !== null && (yield* capture.isCurrent) ? capture : null;
+    }),
     resolveAfterTeardown: (binding) =>
       Effect.sync(() => {
         for (const [id, hold] of holds) {
@@ -242,243 +247,247 @@ const make = Effect.gen(function* () {
             holds.delete(id);
         }
       }),
-    run: ({ effect, interrupt, detach, start, captureStop }) =>
-      Effect.gen(function* () {
-        const { request, threadId } = effect;
-        const committed = yield* events
-          .readByCommandId({ commandId: effect.commandId })
-          .pipe(Stream.runCollect);
-        const runEvent = committed.find(
-          ({ event }) => event.type === "run.updated" && event.payload.id === request.runId,
-        )?.event;
-        const attemptEvent = committed.find(
-          ({ event }) =>
-            event.type === "run-attempt.created" && event.payload.runId === request.runId,
-        )?.event;
-        const nodeEvent = committed.find(
-          ({ event }) =>
-            runEvent?.type === "run.updated" &&
-            event.type === "node.updated" &&
-            event.payload.runId === request.runId &&
-            event.payload.id === runEvent.payload.rootNodeId &&
-            event.payload.parentNodeId === null,
-        )?.event;
-        if (
-          runEvent?.type !== "run.updated" ||
-          attemptEvent?.type !== "run-attempt.created" ||
-          nodeEvent?.type !== "node.updated" ||
-          runEvent.threadId !== threadId ||
-          runEvent.payload.activeAttemptId !== attemptEvent.payload.id ||
-          attemptEvent.payload.id === request.interruptedAttemptId ||
-          runEvent.payload.rootNodeId !== nodeEvent.payload.id ||
-          attemptEvent.payload.rootNodeId !== nodeEvent.payload.id
-        ) {
-          return yield* new RestartPreparationError({
-            threadId,
-            stage: "admission",
-            cause: "The recorded restart successor is unavailable.",
-          });
-        }
-        const run = runEvent.payload;
-        const attempt = attemptEvent.payload;
-        const node = nodeEvent.payload;
-        const current = yield* projections.getThreadRecords(threadId, ["runs"], {
-          runIds: [run.id],
+    run: Effect.fn("RestartPreparation.run")(function* ({
+      effect,
+      interrupt,
+      detach,
+      start,
+      captureStop,
+    }: Parameters<RestartPreparation["Service"]["run"]>[0]) {
+      const { request, threadId } = effect;
+      const committed = yield* events
+        .readByCommandId({ commandId: effect.commandId })
+        .pipe(Stream.runCollect);
+      const runEvent = committed.find(
+        ({ event }) => event.type === "run.updated" && event.payload.id === request.runId,
+      )?.event;
+      const attemptEvent = committed.find(
+        ({ event }) =>
+          event.type === "run-attempt.created" && event.payload.runId === request.runId,
+      )?.event;
+      const nodeEvent = committed.find(
+        ({ event }) =>
+          runEvent?.type === "run.updated" &&
+          event.type === "node.updated" &&
+          event.payload.runId === request.runId &&
+          event.payload.id === runEvent.payload.rootNodeId &&
+          event.payload.parentNodeId === null,
+      )?.event;
+      if (
+        runEvent?.type !== "run.updated" ||
+        attemptEvent?.type !== "run-attempt.created" ||
+        nodeEvent?.type !== "node.updated" ||
+        runEvent.threadId !== threadId ||
+        runEvent.payload.activeAttemptId !== attemptEvent.payload.id ||
+        attemptEvent.payload.id === request.interruptedAttemptId ||
+        runEvent.payload.rootNodeId !== nodeEvent.payload.id ||
+        attemptEvent.payload.rootNodeId !== nodeEvent.payload.id
+      ) {
+        return yield* new RestartPreparationError({
+          threadId,
+          stage: "admission",
+          cause: "The recorded restart successor is unavailable.",
         });
-        if (
-          !current.runs.some(
-            (row) =>
-              row.id === run.id && row.status === "starting" && row.activeAttemptId === attempt.id,
-          )
+      }
+      const run = runEvent.payload;
+      const attempt = attemptEvent.payload;
+      const node = nodeEvent.payload;
+      const current = yield* projections.getThreadRecords(threadId, ["runs"], {
+        runIds: [run.id],
+      });
+      if (
+        !current.runs.some(
+          (row) =>
+            row.id === run.id && row.status === "starting" && row.activeAttemptId === attempt.id,
         )
-          return;
-        const old = yield* projections.getProviderControlContext(threadId, {
-          providerThreadId: request.providerThreadId,
-          providerTurnId: request.providerTurnId,
-          attemptId: request.interruptedAttemptId,
-        });
-        const generation = old.providerThread?.runtimeIdentity?.runtimeGeneration;
-        const oldThread =
-          old.providerThread !== undefined && old.attempt !== undefined
-            ? {
-                ...old.providerThread,
-                providerSessionId: request.providerSessionId,
-                providerInstanceId: old.attempt.providerInstanceId,
-              }
-            : undefined;
-        const binding =
-          oldThread !== undefined && generation !== undefined
-            ? runtimeBinding(oldThread, generation)
-            : undefined;
-        const candidate =
-          captureStop !== undefined && oldThread !== undefined
-            ? yield* captureStop(oldThread).pipe(
-                Effect.catchCause((cause) =>
-                  Cause.hasInterruptsOnly(cause)
-                    ? Effect.failCause(
-                        Cause.fromReasons<never>(cause.reasons.filter(Cause.isInterruptReason)),
-                      )
-                    : Effect.succeed(null),
-                ),
-              )
-            : null;
-        const capture =
-          candidate !== null &&
-          binding !== undefined &&
-          Object.entries(binding).every(
-            ([key, value]) => candidate.binding[key as keyof ProviderRuntimeBinding] === value,
-          )
-            ? candidate
-            : null;
-        let stage: "interrupt" | "detach" | "admission" = "admission";
-        const preparation = Effect.gen(function* () {
-          yield* assertThreadOpen(threadId);
-          stage = "interrupt";
-          yield* interrupt;
-          stage = "detach";
-          yield* detach;
-        });
-        const result = yield* Effect.uninterruptibleMask((restore) =>
-          Effect.gen(function* () {
-            const result = yield* Effect.exit(restore(preparation));
-            if (Exit.isSuccess(result)) return result;
-            // Hold before publishing failure: queued work may react to that commit.
-            if (stage !== "admission")
-              holds.set(effect.id, { target: { threadId, ...request }, binding, capture, stage });
-            const now = yield* DateTime.now;
-            const eventBase = {
-              threadId,
-              runId: run.id,
-              nodeId: node.id,
-              providerInstanceId: run.providerInstanceId,
-              occurredAt: now,
-            };
-            const failure = {
-              class: "provider_error" as const,
-              message: `Restart preparation failed during ${stage}. The replacement was not started. Stop the previous runtime before trying again.`,
-              code: null,
-              retryable: false,
-            };
-            const failureEvents: ReadonlyArray<OrchestrationV2DomainEvent> = [
-              {
-                ...eventBase,
-                id: EventId.make(`${effect.id}:preparation:item`),
-                type: "turn-item.updated",
-                payload: {
-                  id: TurnItemId.make(`${effect.id}:preparation`),
-                  threadId,
-                  runId: run.id,
-                  nodeId: node.id,
-                  providerThreadId: attempt.providerThreadId,
-                  providerTurnId: null,
-                  nativeItemRef: null,
-                  parentItemId: null,
-                  ordinal: 0,
-                  type: "error",
-                  title: "Provider restart could not finish",
-                  failure,
-                  status: "failed",
-                  startedAt: now,
-                  completedAt: now,
-                  updatedAt: now,
-                },
-              },
-              {
-                ...eventBase,
-                id: EventId.make(`${effect.id}:preparation:run`),
-                type: "run.updated",
-                payload: { ...run, status: "failed", completedAt: now },
-              },
-              {
-                ...eventBase,
-                id: EventId.make(`${effect.id}:preparation:attempt`),
-                type: "run-attempt.updated",
-                payload: { ...attempt, status: "failed", completedAt: now },
-              },
-              {
-                ...eventBase,
-                id: EventId.make(`${effect.id}:preparation:node`),
-                type: "node.updated",
-                payload: { ...node, status: "failed", completedAt: now },
-              },
-            ];
-            yield* sink
-              .writeIfRunCurrent({
+      )
+        return;
+      const old = yield* projections.getProviderControlContext(threadId, {
+        providerThreadId: request.providerThreadId,
+        providerTurnId: request.providerTurnId,
+        attemptId: request.interruptedAttemptId,
+      });
+      const generation = old.providerThread?.runtimeIdentity?.runtimeGeneration;
+      const oldThread =
+        old.providerThread !== undefined && old.attempt !== undefined
+          ? {
+              ...old.providerThread,
+              providerSessionId: request.providerSessionId,
+              providerInstanceId: old.attempt.providerInstanceId,
+            }
+          : undefined;
+      const binding =
+        oldThread !== undefined && generation !== undefined
+          ? runtimeBinding(oldThread, generation)
+          : undefined;
+      const candidate =
+        captureStop !== undefined && oldThread !== undefined
+          ? yield* captureStop(oldThread).pipe(
+              Effect.catchCause((cause) =>
+                Cause.hasInterruptsOnly(cause)
+                  ? Effect.failCause(
+                      Cause.fromReasons<never>(cause.reasons.filter(Cause.isInterruptReason)),
+                    )
+                  : Effect.succeed(null),
+              ),
+            )
+          : null;
+      const capture =
+        candidate !== null &&
+        binding !== undefined &&
+        Object.entries(binding).every(
+          ([key, value]) => candidate.binding[key as keyof ProviderRuntimeBinding] === value,
+        )
+          ? candidate
+          : null;
+      let stage: "interrupt" | "detach" | "admission" = "admission";
+      const preparation = Effect.gen(function* () {
+        yield* assertThreadOpen(threadId);
+        stage = "interrupt";
+        yield* interrupt;
+        stage = "detach";
+        yield* detach;
+      });
+      const result = yield* Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          const result = yield* Effect.exit(restore(preparation));
+          if (Exit.isSuccess(result)) return result;
+          // Hold before publishing failure: queued work may react to that commit.
+          if (stage !== "admission")
+            holds.set(effect.id, { target: { threadId, ...request }, binding, capture, stage });
+          const now = yield* DateTime.now;
+          const eventBase = {
+            threadId,
+            runId: run.id,
+            nodeId: node.id,
+            providerInstanceId: run.providerInstanceId,
+            occurredAt: now,
+          };
+          const failure = {
+            class: "provider_error" as const,
+            message: `Restart preparation failed during ${stage}. The replacement was not started. Stop the previous runtime before trying again.`,
+            code: null,
+            retryable: false,
+          };
+          const failureEvents: ReadonlyArray<OrchestrationV2DomainEvent> = [
+            {
+              ...eventBase,
+              id: EventId.make(`${effect.id}:preparation:item`),
+              type: "turn-item.updated",
+              payload: {
+                id: TurnItemId.make(`${effect.id}:preparation`),
                 threadId,
                 runId: run.id,
-                activeAttemptId: attempt.id,
-                expectedStatus: "starting",
-                events: failureEvents,
-              })
-              .pipe(
-                Effect.catchCause((cause) =>
-                  Effect.fail(new RestartPreparationError({ threadId, stage, cause })),
-                ),
-              );
-            return result;
-          }),
-        );
-        if (Exit.isFailure(result))
-          return yield* new RestartPreparationError({ threadId, stage, cause: result.cause });
-        yield* start;
-      }),
-    recordSteerFailure: (effect, cause) =>
-      Effect.gen(function* () {
-        if (
-          effect.request.type !== "provider-turn.steer" &&
-          effect.request.type !== "provider-turn.steer-batch"
-        )
-          return;
-        const failure = findSteerFailure(cause);
-        if (failure === undefined) return;
-        const context = yield* projections.getProviderControlContext(
-          effect.threadId,
-          effect.request,
-        );
-        if (context.run === undefined || context.providerTurn === undefined) return;
-        const now = yield* DateTime.now;
-        const id = TurnItemId.make(`${effect.id}:control-failure`);
-        const existing = yield* projections.getTurnItem({ threadId: effect.threadId, itemId: id });
-        if (existing !== null) return;
-        const unknown = failure._tag === "SteerOutcomeUnknown";
-        yield* sink.write({
-          events: [
-            {
-              id: EventId.make(`${effect.id}:control-failure`),
-              type: "turn-item.updated",
-              threadId: effect.threadId,
-              runId: context.run.id,
-              nodeId: context.providerTurn.nodeId,
-              occurredAt: now,
-              payload: {
-                id,
-                threadId: effect.threadId,
-                runId: context.run.id,
-                nodeId: context.providerTurn.nodeId,
-                providerThreadId: effect.request.providerThreadId,
-                providerTurnId: effect.request.providerTurnId,
+                nodeId: node.id,
+                providerThreadId: attempt.providerThreadId,
+                providerTurnId: null,
                 nativeItemRef: null,
                 parentItemId: null,
                 ordinal: 0,
                 type: "error",
-                title: "Steering message not confirmed",
-                failure: {
-                  class: "provider_error",
-                  message: unknown
-                    ? "The provider did not acknowledge this steering message in time. Delivery is unknown; it will not be sent again. New work on this provider account is held until the request is reconciled or its runtime is stopped."
-                    : "This steering message was not sent because provider control admission was unavailable. It will not be retried automatically.",
-                  code: null,
-                  retryable: false,
-                },
+                title: "Provider restart could not finish",
+                failure,
                 status: "failed",
                 startedAt: now,
                 completedAt: now,
                 updatedAt: now,
               },
             },
-          ],
-        });
-      }),
+            {
+              ...eventBase,
+              id: EventId.make(`${effect.id}:preparation:run`),
+              type: "run.updated",
+              payload: { ...run, status: "failed", completedAt: now },
+            },
+            {
+              ...eventBase,
+              id: EventId.make(`${effect.id}:preparation:attempt`),
+              type: "run-attempt.updated",
+              payload: { ...attempt, status: "failed", completedAt: now },
+            },
+            {
+              ...eventBase,
+              id: EventId.make(`${effect.id}:preparation:node`),
+              type: "node.updated",
+              payload: { ...node, status: "failed", completedAt: now },
+            },
+          ];
+          yield* sink
+            .writeIfRunCurrent({
+              threadId,
+              runId: run.id,
+              activeAttemptId: attempt.id,
+              expectedStatus: "starting",
+              events: failureEvents,
+            })
+            .pipe(
+              Effect.catchCause((cause) =>
+                Effect.fail(new RestartPreparationError({ threadId, stage, cause })),
+              ),
+            );
+          return result;
+        }),
+      );
+      if (Exit.isFailure(result))
+        return yield* new RestartPreparationError({ threadId, stage, cause: result.cause });
+      yield* start;
+    }),
+    recordSteerFailure: Effect.fn("RestartPreparation.recordSteerFailure")(function* (
+      effect: EffectOutbox.OrchestrationEffectV2,
+      cause: unknown,
+    ) {
+      if (
+        effect.request.type !== "provider-turn.steer" &&
+        effect.request.type !== "provider-turn.steer-batch"
+      )
+        return;
+      const failure = findSteerFailure(cause);
+      if (failure === undefined) return;
+      const context = yield* projections.getProviderControlContext(effect.threadId, effect.request);
+      if (context.run === undefined || context.providerTurn === undefined) return;
+      const now = yield* DateTime.now;
+      const id = TurnItemId.make(`${effect.id}:control-failure`);
+      const existing = yield* projections.getTurnItem({ threadId: effect.threadId, itemId: id });
+      if (existing !== null) return;
+      const unknown = failure._tag === "SteerOutcomeUnknown";
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make(`${effect.id}:control-failure`),
+            type: "turn-item.updated",
+            threadId: effect.threadId,
+            runId: context.run.id,
+            nodeId: context.providerTurn.nodeId,
+            occurredAt: now,
+            payload: {
+              id,
+              threadId: effect.threadId,
+              runId: context.run.id,
+              nodeId: context.providerTurn.nodeId,
+              providerThreadId: effect.request.providerThreadId,
+              providerTurnId: effect.request.providerTurnId,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: 0,
+              type: "error",
+              title: "Steering message not confirmed",
+              failure: {
+                class: "provider_error",
+                message: unknown
+                  ? "The provider did not acknowledge this steering message in time. Delivery is unknown; it will not be sent again. New work on this provider account is held until the request is reconciled or its runtime is stopped."
+                  : "This steering message was not sent because provider control admission was unavailable. It will not be retried automatically.",
+                code: null,
+                retryable: false,
+              },
+              status: "failed",
+              startedAt: now,
+              completedAt: now,
+              updatedAt: now,
+            },
+          },
+        ],
+      });
+    }),
   });
 });
 
