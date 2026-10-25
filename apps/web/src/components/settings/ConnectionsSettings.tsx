@@ -1,5 +1,5 @@
 import { clientServerBuildLabels } from "../../jones/updates/buildPairs";
-import { RemoteAdmissionSettings } from "../../jones/remoteAdmission/RemoteAdmissionSettings";
+import { RemoteAdmissionConfigurations } from "../../jones/remoteAdmission/RemoteAdmissionSettings";
 import { JonesUpdateControls } from "~/jones/updates/JonesUpdateControls";
 import { SessionPermissions } from "./SessionPermissions";
 import { ChevronRightIcon, EllipsisIcon } from "lucide-react";
@@ -1492,9 +1492,7 @@ export function ConnectionsSettings() {
   return (
     <SettingsPageContainer>
       {primarySettings}
-      {primaryEnvironmentId ? (
-        <RemoteAdmissionSettings environmentId={primaryEnvironmentId} />
-      ) : null}
+      <RemoteAdmissionConfigurations />
       <SettingsSection
         {...searchableSetting("remote-environments")}
         title="Environments"
