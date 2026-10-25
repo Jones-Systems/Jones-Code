@@ -14,8 +14,26 @@ export const jonesPairedStateSource = Object.freeze({
         descriptor = os.open(entry, os.O_RDONLY)
         try: os.fsync(descriptor)
         finally: os.close(descriptor)`,
-  copyAndTopology: String.raw`def clone_file(source, target):
+  copyAndTopology: String.raw`def darwin_clonefile():
+    import ctypes
+    function = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True).clonefile
+    function.argtypes, function.restype = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32), ctypes.c_int
+    return function
+
+def clone_file(source, target, required=False):
     if source.is_symlink() or not source.is_file(): raise RuntimeError('Unexpected recovery file type.')
+    if required:
+        # clonefile shares blocks or fails; cp -c may copy. CLONE_NOFOLLOW (1)
+        # clones a raced-in link as a link, refused by the regular-file check.
+        import ctypes
+        if darwin_clonefile()(os.fsencode(source), os.fsencode(target), 1) != 0:
+            code = ctypes.get_errno()
+            raise OSError(code, os.strerror(code) + '; required recovery clone made no copy', str(target))
+        before, cloned = source.lstat(), target.lstat()
+        if not stat.S_ISREG(cloned.st_mode) or cloned.st_nlink != 1 or cloned.st_size != before.st_size or cloned.st_dev != before.st_dev:
+            raise RuntimeError('Required recovery clone is not an exact regular file.')
+        os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
+        return True
     result = subprocess.run(['/bin/cp', '-c', '-p', str(source), str(target)], capture_output=True, text=True)
     return result.returncode == 0
 
@@ -67,18 +85,18 @@ def recovery_topology(expected, transaction, legacy_profile=False):
             state_bytes += path.stat().st_size
     return state_bytes
 
-def storage_preflight(expected, staged, transaction):
+def storage_preflight(expected, staged, transaction, clone_required=False):
     state, profile, transaction = recovery_topology(expected, transaction)
     state_bytes = recovery_state_bytes(expected)
     app_parent = pathlib.Path(expected['appPath']).parent.resolve(strict=True)
     candidate_bytes = tree_storage_size(staged['appPath'])
     requirements = {}
-    for path, amount in ((transaction, state_bytes), (app_parent, candidate_bytes)):
+    for path, amount in ((transaction, 0 if clone_required else state_bytes), (app_parent, candidate_bytes)):
         device = path.stat().st_dev
         if device not in requirements: requirements[device] = [path, RECOVERY_HEADROOM]
         requirements[device][1] += amount
-    # Budget physical copies even when clonefile currently works: fallback and
-    # later copy-on-write allocation must not consume rollback's entire budget.
+    # The candidate app may still copy. Default state recovery budgets a full
+    # copy; strict clones retain headroom but can grow as the live state changes.
     capacity = []
     for device, (path, required) in requirements.items():
         space = os.statvfs(path)
@@ -86,8 +104,10 @@ def storage_preflight(expected, staged, transaction):
         capacity.append({'path': str(path), 'device': str(device), 'requiredBytes': required, 'availableBytes': available})
         if available < required:
             raise RuntimeError('Insufficient free space for native installation and paired recovery: needed ' + str(required) + ' bytes, available ' + str(available) + ' bytes; installation held.')
-    return {'stateBytes': state_bytes, 'candidateBytes': candidate_bytes,
+    result = {'stateBytes': state_bytes, 'candidateBytes': candidate_bytes,
             'requiredBytes': sum(required for _, required in requirements.values()), 'headroomBytesPerVolume': RECOVERY_HEADROOM, 'volumes': capacity}
+    if clone_required: result['stateRecovery'] = 'clone-required'
+    return result
 
 def allocate_recovery_file(path, size):
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -164,15 +184,17 @@ def recovery_capacity_before_restore(expected, pair):
         if available < required:
             raise RuntimeError('Insufficient free space after recovery reserve release: needed ' + str(required) + ' bytes, available ' + str(available) + ' bytes; recovery held before state mutation.')
 
-def pair_state(expected, directory):
+def pair_state(expected, directory, clone_required=False):
+    def clone(source, target):
+        return clone_file(source, target, required=True) if clone_required else clone_file(source, target)
     directory.mkdir(mode=0o700)
     sync_parent(directory)
     database = pathlib.Path(expected['databasePath'])
     started = time.time()
-    copied = clone_file(database, directory / 'state.sqlite')
+    copied = clone(database, directory / 'state.sqlite')
     for suffix in ('-wal', '-shm'):
         source = pathlib.Path(str(database) + suffix)
-        if source.exists(): copied = clone_file(source, directory / ('state.sqlite' + suffix)) and copied
+        if source.exists(): copied = clone(source, directory / ('state.sqlite' + suffix)) and copied
     method = 'clone'
     if not copied:
         # Writers are stopped before this snapshot; preserve the exact DB/WAL/SHM pair.
@@ -187,7 +209,7 @@ def pair_state(expected, directory):
         source = database.parent / name
         presence[name] = source.exists()
         if source.exists():
-            if not clone_file(source, directory / name): shutil.copy2(source, directory / name)
+            if not clone(source, directory / name): shutil.copy2(source, directory / name)
     files = {suffix: (directory / ('state.sqlite' + suffix)).exists() for suffix in ('', '-wal', '-shm')}
     sync_tree(directory)
     durable(directory / 'pair.json', {'expected': expected, 'stateScope': 'database-settings', 'files': files, 'settings': presence,
