@@ -1974,7 +1974,8 @@
     "scripts/jones/boundary/fragments/workspace-content-search-slicing.json": "jones-owned",
     "scripts/jones/boundary/fragments/terminal-history-urgent-flush.json": "jones-owned",
     "apps/server/src/jones/terminal/TerminalHistoryWorker.ts": "jones-owned",
-    "apps/server/src/jones/terminal/TerminalHistoryWorker.test.ts": "jones-owned"
+    "apps/server/src/jones/terminal/TerminalHistoryWorker.test.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/threadMetadataCallers.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

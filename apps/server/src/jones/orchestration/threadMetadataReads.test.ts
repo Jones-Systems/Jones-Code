@@ -94,10 +94,39 @@ it.effect(
       const projections = yield* ProjectionStore.ProjectionStoreV2;
       assert.equal(yield* metadata.count, 0);
       assert.equal(yield* metadata.watermark, 0);
+      const reference = {
+        projectId,
+        repository: "acme/project",
+        number: 42,
+        url: "https://github.com/acme/project/pull/42",
+      };
       const rows = [
-        thread("metadata:a-archive", { archivedAt: now }),
-        thread("metadata:b-active", { updatedAt: DateTime.add(now, { minutes: 1 }) }),
-        thread("metadata:c-settled", { settledAt: now }),
+        thread("metadata:a-archive", { archivedAt: now, linkedPullRequest: reference }),
+        thread("metadata:b-active", {
+          updatedAt: DateTime.add(now, { minutes: 1 }),
+          pinnedAt: now,
+          pinOrderKey: "a0",
+          runtimeMode: "approval-required",
+          interactionMode: "plan",
+          branchPullRequest: reference,
+          pullRequests: [
+            {
+              host: "github.com",
+              repository: reference.repository,
+              number: reference.number,
+              url: reference.url,
+              source: "manual",
+              linkedAt: "2026-10-01T00:00:00Z",
+              snapshot: null,
+              stack: null,
+            },
+          ],
+        }),
+        thread("metadata:c-settled", {
+          settledAt: now,
+          linkedPullRequest: null,
+          branchPullRequest: null,
+        }),
         thread("metadata:d-override", { settledOverride: "settled" }),
         thread("metadata:e-other", { projectId: otherProjectId, worktreePath: "/other" }),
         thread("metadata:f-branch", { branch: "different" }),
@@ -146,7 +175,29 @@ it.effect(
         );
         assert.deepEqual(
           result.threads,
-          expected.map(({ id, lineage }) => ({ id, lineage })),
+          expected.map((row) => ({
+            id: row.id,
+            lineage: row.lineage,
+            projectId: row.projectId,
+            branch: row.branch,
+            worktreePath: row.worktreePath,
+            pullRequests: row.pullRequests,
+            ...(row.linkedPullRequest === undefined
+              ? {}
+              : { linkedPullRequest: row.linkedPullRequest }),
+            ...(row.branchPullRequest === undefined
+              ? {}
+              : { branchPullRequest: row.branchPullRequest }),
+            archivedAt: row.archivedAt,
+            settledOverride: row.settledOverride,
+            settledAt: row.settledAt,
+            createdAt: row.createdAt,
+            pinnedAt: row.pinnedAt,
+            pinOrderKey: row.pinOrderKey,
+            deletedAt: row.deletedAt,
+            runtimeMode: row.runtimeMode,
+            interactionMode: row.interactionMode,
+          })),
         );
         assert.equal(result.snapshotSequence, shell.snapshotSequence);
       }
@@ -332,7 +383,10 @@ it.effect("rows and watermark share a WAL snapshot across an intervening writer 
       );
     assert.equal(gates, 1);
     assert.equal(result.snapshotSequence, firstSequence);
-    assert.deepEqual(result.threads, [{ id: before.id, lineage: before.lineage }]);
+    assert.deepEqual(
+      result.threads.map(({ id, lineage }) => ({ id, lineage })),
+      [{ id: before.id, lineage: before.lineage }],
+    );
     const nextSequence = yield* Fiber.join(writer);
     assert.isAbove(nextSequence, firstSequence);
     const next = yield* metadata.list().pipe(NodeSqliteClient.readOnly);
