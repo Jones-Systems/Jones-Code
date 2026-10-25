@@ -1884,6 +1884,17 @@
       "scope": "Sparse Jones-owned navigation links join ordinary launch parent/child relationships, offered and receiver-accepted continuations, and manual peers. Existing fork and delegated-task lineage folds into one default-collapsed Linked section with scoped deduplication, connected-environment discovery, truthful incomplete/offline coverage, existing task controls and portable origin/return-address text. Automatic launch claims preserve creation receipts, retry fences and first-message rejection semantics. Authenticated remote origins retain current endpoint and access checks; link copies grant no connection or task authority. Soft removal prevents automatic retry resurrection. Existing toolkit embeddings without the application layers retain lineage-only behavior. Tests cover storage, migration, launch hooks, forwarding, handoff delivery, RPC/MCP registration, presentation and UI interactions; component tests do not establish installed cross-machine runtime availability."
     },
     {
+      "id": "coherent-reference-reads",
+      "tests": [
+        "apps/server/src/jones/orchestration/threadReferenceExcerpt.test.ts",
+        "apps/server/src/jones/orchestration/threadReferenceTail.test.ts",
+        "apps/server/src/jones/orchestration/threadReferenceCoherent.test.ts",
+        "apps/server/src/relay/AgentAwarenessRelay.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts"
+      ],
+      "scope": "Read ordered reference message/activity selections from one canonical index and union payload transaction after writer-side transcript hydration. Preserve global snapshot provenance, source/ancestor visibility, cancellation, missing/deleted errors, exact excerpts and existing wire/history contracts. Existing relay/control test doubles implement the internal read service API."
+    },
+    {
       "id": "workspace-refresh-efficiency",
       "tests": [
         "apps/server/src/workspace/WorkspaceEntries.test.ts",
