@@ -63,6 +63,40 @@ Known shared consumers:
   this map's journeys. Shared workspace header consumers are listed in
   [Settings](settings.md#shared-layout-and-consumers).
 
+### Linked thread details
+
+[ThreadDetailsPanel](../../apps/web/src/components/chat/ThreadDetailsPanel.tsx)
+mounts [ThreadRelationshipsControl](../../apps/web/src/components/chat/ThreadRelationshipsControl.tsx).
+Its [Linked section](../../apps/web/src/jones/linkedThreads/LinkedThreadsSection.tsx)
+starts collapsed and resets closed when the selected thread changes. The header
+shows distinct related threads, a plus sign for incomplete results, the running
+agent count and a Continued shortcut when a successor exists. Expanding it
+exposes Continuations, Parents, Delegated tasks, Children, and Siblings & peers.
+The groups retain fork ancestry, context transfers, previous agents and their
+existing task controls. A related thread appears once, with additional
+relationships shown as secondary labels.
+
+[useLinkedThreads](../../apps/web/src/jones/linkedThreads/useLinkedThreads.ts)
+combines navigation links from connected capable environments with existing
+lineage. Remote rows retain environment identity and destination-aware
+navigation; offline destinations are disabled and incomplete coverage remains
+visible. Old servers retain the lineage view. Links grant no task control or
+connection access. The section menu offers Link thread and Copy handoff text;
+continuation recipients can accept an offered handoff from the row menu.
+
+For the source-discovered journey, open details on synthetic threads with a
+continuation, launch parent, sibling, fork and delegated task. Expand Linked,
+open its groups, navigate related threads, and use an existing task control.
+Create a manual link, accept a received handoff, copy its full origin/return
+address, unlink it and reload to verify persistence. Switch threads and confirm
+Linked starts closed again. Test unavailable environments and the lineage-only
+compatibility view separately.
+
+The [Linked browser regression](../../apps/web/src/jones/linkedThreads/LinkedThreads.browser.test.tsx)
+and [lineage browser regression](../../apps/web/src/jones/remoteAgentLineage/ThreadRelationships.browser.test.tsx)
+cover component interactions; integrated runtime captures and backend readback
+are separate evidence. This map does not claim the journey has been exercised.
+
 ### Queued-message batch steering
 
 The active thread composer exposes
