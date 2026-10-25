@@ -6,7 +6,8 @@
     "apps/web/src/jones/environmentFilters/environmentFilters.test.ts",
     "apps/web/src/jones/environmentFilters/model.ts",
     "apps/web/src/jones/environmentFilters/state.ts",
-    "apps/web/src/jones/environmentFilters/useSidebarEnvironmentFilter.ts"
+    "apps/web/src/jones/environmentFilters/useSidebarEnvironmentFilter.ts",
+    "apps/web/src/jones/environmentFilters/SidebarEnvironmentFilters.sizing.browser.test.tsx"
   ],
   "hookPaths": [],
   "tombstones": [],

@@ -1929,6 +1929,7 @@
     "scripts/jones/boundary/fragments/editor-serialization-efficiency.json": "jones-owned",
     "apps/web/src/jones/composer/editorSerializationCache.test.ts": "jones-owned",
     "apps/web/src/jones/markdown/MermaidDiagram.browser.test.tsx": "jones-owned",
+    "apps/web/src/jones/environmentFilters/SidebarEnvironmentFilters.sizing.browser.test.tsx": "jones-owned",
     "packages/client-runtime/src/jones/projectGroupTitle.ts": "jones-owned",
     "packages/client-runtime/src/jones/projectGroupTitle.test.ts": "jones-owned",
     "scripts/jones/boundary/fragments/project-group-title.json": "jones-owned",

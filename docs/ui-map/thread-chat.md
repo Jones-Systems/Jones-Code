@@ -63,6 +63,28 @@ Known shared consumers:
   this map's journeys. Shared workspace header consumers are listed in
   [Settings](settings.md#shared-layout-and-consumers).
 
+### Sidebar build label
+
+The environment-filter footer in current and legacy sidebars, and the Settings
+sidebar, shares `SidebarEnvironmentFilters`. Keep its environment buttons at
+their normal size. The build label uses the remaining width with a 2px minimum
+gap, shrinks from its normal type size to 6px, then shortens timed labels to the
+last four digits. Widening restores the full label. Focus/hover retains the exact
+build identity; source/version fallbacks are not shortened to a fabricated time.
+
+The browser sizing regression beside the component covers the 6px boundary,
+shortening, expansion, containment and filter interaction. The existing browser
+test covers the source fallback. On October 25, 2026, isolated development
+readback at 1280 CSS pixels and device scale 2 exercised the current sidebar
+from 256–420px and back: the full label reached 6.05px at a 268.3px sidebar,
+then used four digits below that boundary with at least a 2px button gap.
+The fixture used a synthetic build timestamp and an empty task-owned project;
+it did not run a provider. Candidate: base `139eee2f067297f93813e1218b253f08705e9be1`,
+component SHA-256 `a743ea20a26e73bb08644156fa86f4140592d0b4ac82596d98042f9ccac4ba5f`.
+PR attachments show the actual component before/after at 280px in Chromium.
+Integrated Browser snapshots timed out; geometry and filter readback succeeded.
+Settings, legacy navigation and packaged native shells were not exercised.
+
 ### Linked thread details
 
 [ThreadDetailsPanel](../../apps/web/src/components/chat/ThreadDetailsPanel.tsx)
