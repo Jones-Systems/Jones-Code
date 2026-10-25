@@ -2799,6 +2799,16 @@
       ]
     },
     {
+      "id": "jones-incremental-typecheck",
+      "tests": ["scripts/jones/incremental-typecheck/incrementalTypecheck.node-test.mjs"],
+      "commands": [
+        "node --test --test-concurrency=1 scripts/jones/incremental-typecheck/*.node-test.mjs",
+        "vp lint scripts/jones/incremental-typecheck/cli.ts scripts/jones/incremental-typecheck/incrementalTypecheck.ts scripts/jones/incremental-typecheck/incrementalTypecheck.node-test.mjs",
+        "vp run --filter @t3tools/scripts typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-vcs-cache-efficiency",
       "tests": ["apps/server/src/vcs/VcsStatusBroadcaster.test.ts"],
       "commands": [

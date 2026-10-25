@@ -24,6 +24,7 @@
     "build:marketing": "vp run --filter @t3tools/marketing build",
     "build:desktop": "vp run --filter @t3tools/desktop --filter t3 build",
     "build:resource-monitor": "cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml",
+    "typecheck:incremental": "node scripts/jones/incremental-typecheck/cli.ts",
     "typecheck:tsrs:experimental": "node scripts/jones/experimental-typecheck/cli.mjs",
     "typecheck": "vp run -r --cache --concurrency-limit 4 typecheck",
     "tc": "vp run -r --cache --concurrency-limit 4 typecheck",
