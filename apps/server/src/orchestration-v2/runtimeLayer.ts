@@ -1,3 +1,4 @@
+import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
 import * as ThreadSelfConfiguration from "../jones/threadConfiguration/ThreadSelfConfiguration.ts";
 import * as WorkspaceLifecycleRuntime from "../jones/workspaceLifecycle/RuntimeIntegration.ts";
 import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
@@ -114,6 +115,7 @@ const layerLegacyV1ThreadImporterProvided = LegacyV1ThreadImporter.layer.pipe(
 );
 
 export const layerProjectService = ProjectService.layer.pipe(
+  Layer.provide(ThreadMetadataReads.layer),
   Layer.provide(
     Layer.mergeAll(
       ProjectStore.layer,
@@ -344,6 +346,7 @@ const layerManagedProjectFoldersProvided = ManagedProjectFolders.layer.pipe(
   Layer.provide(layerProjectService),
 );
 const layerThreadLaunchProvided = ThreadLaunchService.layer.pipe(
+  Layer.provide(ThreadMetadataReads.layer),
   Layer.provide(
     Layer.mergeAll(
       nativeCreationProviderExecutorProvided.pipe(Layer.provide(layerProjectService)),

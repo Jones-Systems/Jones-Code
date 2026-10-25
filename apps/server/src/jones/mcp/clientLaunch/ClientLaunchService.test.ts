@@ -1,3 +1,4 @@
+import * as ThreadMetadataReads from "../../orchestration/threadMetadataReads.ts";
 import * as LinkedThreads from "../../linkedThreads/LinkedThreads.ts";
 import * as ServerEnvironment from "../../../environment/ServerEnvironment.ts";
 import * as WorktreeSetupTracker from "../../../project/WorktreeSetupTracker.ts";
@@ -232,6 +233,7 @@ function makeHarness(options: HarnessOptions = {}) {
       }),
   );
   const launch = ThreadLaunch.layer.pipe(
+    Layer.provide(ThreadMetadataReads.layer.pipe(Layer.provide(database))),
     Layer.provide(
       Layer.mergeAll(
         externalServices,
