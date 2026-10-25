@@ -139,6 +139,7 @@ import * as EnvironmentTheme from "./environmentTheme.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as ThreadManagementService from "./orchestration-v2/ThreadManagementService.ts";
+import * as ShellMaterialization from "./jones/orchestration/shellMaterialization.ts";
 import * as CommandOutputHub from "./orchestration-v2/CommandOutputHub.ts";
 import * as McpAppRequests from "./mcpApps/McpAppRequests.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
@@ -592,6 +593,7 @@ type ServerWsRpcHandlerServices = {
     | ProjectService.ProjectService
     | ProjectStore.ProjectStoreV2
     | SqlClient.SqlClient
+    | ShellMaterialization.ShellMaterialization
     | ThreadManagementService.ThreadManagementService;
   [ORCHESTRATION_V2_WS_METHODS.subscribeThread]:
     | OrchestrationEventStore.OrchestrationEventStore
@@ -1021,6 +1023,8 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
   }) {
     const sql = yield* SqlClient.SqlClient;
     const threadManagement = yield* ThreadManagementService.ThreadManagementService;
+    const shellMaterialization = yield* ShellMaterialization.ShellMaterialization;
+    const shellReader = yield* shellMaterialization.forSubscription;
     const applicationEvents = yield* OrchestrationEventStore.OrchestrationEventStore;
     const projects = yield* ProjectStore.ProjectStoreV2;
     const projectService = yield* ProjectService.ProjectService;
@@ -1092,10 +1096,7 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
             if ("aggregateKind" in stored) {
               return yield* projectItem(stored);
             }
-            // Events publish after their commit, so the reader already sees the row.
-            const shell = yield* threadManagement
-              .getThreadShell(stored.event.threadId)
-              .pipe(NodeSqliteClient.readOnly);
+            const shell = yield* shellReader.get(stored.event.threadId, stored.sequence);
             return shellStreamItemFromThreadShell({ stored, shell });
           }),
         { concurrency: 8 },
@@ -1282,6 +1283,7 @@ const layerWsRpc = (
       });
       const sql = yield* SqlClient.SqlClient;
       const threadManagement = yield* ThreadManagementService.ThreadManagementService;
+      const shellMaterialization = yield* ShellMaterialization.ShellMaterialization;
       const threadReferenceExcerpts = yield* ThreadReferenceExcerpts.ThreadReferenceExcerpts.pipe(
         Effect.provide(ThreadReferenceExcerpts.layer),
       );
@@ -1871,6 +1873,7 @@ const layerWsRpc = (
         "ws.orchestrationV2.subscribeArchivedShell",
       )(function* () {
         const snapshot = yield* getOrchestrationV2ArchivedShellSnapshot;
+        const shellReader = yield* shellMaterialization.forSubscription;
         const live = threadManagement
           .streamStoredEventsFrom({ afterSequence: snapshot.snapshotSequence })
           .pipe(
@@ -1879,12 +1882,13 @@ const layerWsRpc = (
               Effect.forEach(
                 coalesceStoredThreadEvents(Array.from(events)),
                 (stored) =>
-                  threadManagement.getThreadShell(stored.event.threadId).pipe(
-                    NodeSqliteClient.readOnly,
-                    Effect.map((shell) =>
-                      archivedShellStreamItemFromThreadShell({ stored, shell }),
+                  shellReader
+                    .get(stored.event.threadId, stored.sequence)
+                    .pipe(
+                      Effect.map((shell) =>
+                        archivedShellStreamItemFromThreadShell({ stored, shell }),
+                      ),
                     ),
-                  ),
                 { concurrency: 8 },
               ),
             ),
@@ -3366,6 +3370,7 @@ type WsLayerServices =
   | ServerBrowser.ServerBrowser
   | ServerSelfUpdate.ServerSelfUpdate
   | SqlClient.SqlClient
+  | ShellMaterialization.ShellMaterialization
   | HttpRouter.Request.From<
       "Requires",
       | AcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator
@@ -3458,6 +3463,7 @@ const layerWs = Layer.unwrap(
     const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
     const peerLinks = yield* PeerLinks.PeerLinks;
     const sql = yield* SqlClient.SqlClient;
+    const shellMaterialization = yield* ShellMaterialization.ShellMaterialization;
     const readNativeStoreAuthorityConfig = yield* makeNativeStoreAuthorityConfigReader;
     return HttpRouter.add(
       "GET",
@@ -3521,6 +3527,9 @@ const layerWs = Layer.unwrap(
               // their defects, not the rest of the server's.
               Layer.provide(DefectReporter.layer),
               Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
+              Layer.provide(
+                Layer.succeed(ShellMaterialization.ShellMaterialization, shellMaterialization),
+              ),
               Layer.provide(AgentSessionScanner.layer),
               Layer.provide(ProviderMaintenanceRunner.layer),
               Layer.provide(Layer.succeed(ServerSelfUpdate.ServerSelfUpdate, serverSelfUpdate)),

@@ -11,6 +11,7 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
+import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -30,6 +31,7 @@ import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import * as ProjectEnrichmentService from "../../project/ProjectEnrichmentService.ts";
 import { subscribeOrchestrationV2Shell } from "../../ws.ts";
+import * as ShellMaterialization from "./shellMaterialization.ts";
 
 const layer = ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory));
 const iso = "2026-10-01T00:00:00.000Z";
@@ -262,6 +264,17 @@ function scenario(clients: number, ending: "complete" | "cancel" | "failure", hi
     let markerCount = 0;
     let releaseAt = 0;
     let publishedAt = 0;
+    let committedSequence = 0;
+    const sharedMeasurements: Measurement[] = [];
+    const sharedShellCalls: ThreadId[] = [];
+    const readThreadShell: ThreadManagementService.ThreadManagementService["Service"]["getThreadShell"] =
+      (id) =>
+        Effect.suspend(() => {
+          sharedShellCalls.push(id);
+          return measure(`getThreadShell:${id}`, store.getThreadShell(id), sharedMeasurements).pipe(
+            Effect.orDie,
+          );
+        });
     const observations = Array.from({ length: clients }, (_, subscriber) => ({
       subscriber,
       measurements: [] as Measurement[],
@@ -271,7 +284,6 @@ function scenario(clients: number, ending: "complete" | "cancel" | "failure", hi
         threadId?: ThreadId;
         releaseMilliseconds: number;
       }>,
-      shellCalls: [] as ThreadId[],
       firstLiveAfterPublishMilliseconds: null as number | null,
     }));
     const bounded = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -292,7 +304,7 @@ function scenario(clients: number, ending: "complete" | "cancel" | "failure", hi
     const applicationEvents = boundedService<
       OrchestrationEventStore.OrchestrationEventStore["Service"]
     >({
-      latestApplicationSequence: Effect.succeed(0),
+      latestApplicationSequence: Effect.sync(() => committedSequence),
       streamProjectedApplicationEvents: ({ project }) =>
         Stream.unwrap(
           Effect.gen(function* () {
@@ -330,6 +342,19 @@ function scenario(clients: number, ending: "complete" | "cancel" | "failure", hi
     );
     yield* Effect.scoped(
       Effect.gen(function* () {
+        const materializationContext = yield* Layer.build(ShellMaterialization.layer).pipe(
+          Effect.provideService(
+            ThreadManagementService.ThreadManagementService,
+            boundedService<ThreadManagementService.ThreadManagementService["Service"]>({
+              getThreadShell: readThreadShell,
+            }),
+          ),
+          Effect.provideService(OrchestrationEventStore.OrchestrationEventStore, applicationEvents),
+        );
+        const materialization = Context.get(
+          materializationContext,
+          ShellMaterialization.ShellMaterialization,
+        );
         const fibers = yield* Effect.forEach(observations, (observation) => {
           const threadManagement = boundedService<
             ThreadManagementService.ThreadManagementService["Service"]
@@ -349,15 +374,7 @@ function scenario(clients: number, ending: "complete" | "cancel" | "failure", hi
                   Effect.orDie,
                 );
               }),
-            getThreadShell: (id) =>
-              Effect.suspend(() => {
-                observation.shellCalls.push(id);
-                return measure(
-                  `getThreadShell:${id}`,
-                  store.getThreadShell(id),
-                  observation.measurements,
-                ).pipe(Effect.orDie);
-              }),
+            getThreadShell: readThreadShell,
           });
           const client = Effect.scoped(
             Effect.gen(function* () {
@@ -431,6 +448,7 @@ function scenario(clients: number, ending: "complete" | "cancel" | "failure", hi
             }),
           ).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.provideService(ShellMaterialization.ShellMaterialization, materialization),
             Effect.provideService(
               ThreadManagementService.ThreadManagementService,
               threadManagement,
@@ -481,6 +499,7 @@ function scenario(clients: number, ending: "complete" | "cancel" | "failure", hi
             };
           });
           publishedAt = performance.now();
+          committedSequence = 512;
           yield* PubSub.publishAll(eventBus, events);
           const results = yield* bounded(Effect.forEach(fibers, Fiber.join));
           for (const result of results) {
@@ -505,7 +524,6 @@ function scenario(clients: number, ending: "complete" | "cancel" | "failure", hi
         observation.frames.filter(({ kind }) => kind === "synchronized"),
         1,
       );
-      assert.sameMembers(observation.shellCalls, ending === "complete" ? [targetId, otherId] : []);
       assert.lengthOf(
         observation.measurements.filter(({ operation }) => operation === "snapshot-read"),
         1,
@@ -525,20 +543,23 @@ function scenario(clients: number, ending: "complete" | "cancel" | "failure", hi
         );
         assert.isNotNull(observation.firstLiveAfterPublishMilliseconds);
       }
-      for (const measurement of observation.measurements.filter(({ operation }) =>
-        operation.startsWith("getThreadShell:"),
-      )) {
-        assert.isAbove(measurement.statements.length, 0);
-        assert.isTrue(measurement.statements.some(({ parameters }) => parameters !== undefined));
-      }
     }
-    const measurements = observations.flatMap(({ measurements }) => measurements);
+    assert.sameMembers(sharedShellCalls, ending === "complete" ? [targetId, otherId] : []);
+    for (const measurement of sharedMeasurements) {
+      assert.isAbove(measurement.statements.length, 0);
+      assert.isTrue(measurement.statements.some(({ parameters }) => parameters !== undefined));
+    }
+    const measurements = [
+      ...sharedMeasurements,
+      ...observations.flatMap(({ measurements }) => measurements),
+    ];
     const queries = yield* queryEvidence(measurements);
     // @effect-diagnostics-next-line globalConsoleInEffect:off -- Raw diagnostic JSON must reach the invoking harness rather than Effect TestConsole.
     NodeConsole.log(
       JSON.stringify({
         diagnostic: "v2-shell-cost",
         surface: "direct handler service-stream delivery",
+        versionSource: "synthetic committed watermark; global-sequence SQL cost excluded",
         clock: "performance.now monotonic milliseconds; instrumentation included",
         clients,
         ending,
@@ -552,6 +573,11 @@ function scenario(clients: number, ending: "complete" | "cancel" | "failure", hi
         activeLive,
         activeEnrichment,
         fixtureCounts,
+        sharedShellCalls,
+        sharedMeasurements: sharedMeasurements.map(({ statements, ...measurement }) => ({
+          ...measurement,
+          observedSqlStatements: statements.length,
+        })),
         subscribers: observations.map(({ measurements, ...observation }) => ({
           ...observation,
           measurements: measurements.map(({ statements, ...measurement }) => ({

@@ -2427,6 +2427,25 @@
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-shell-materialization-efficiency",
+      "tests": [
+        "apps/server/src/jones/orchestration/shellMaterialization.test.ts",
+        "apps/server/src/jones/orchestration/shellMaterialization.snapshot.test.ts",
+        "apps/server/src/jones/orchestration/shellFanout.test.ts",
+        "apps/server/src/jones/orchestration/shellCost.diagnostic.test.ts",
+        "apps/server/src/ws.test.ts",
+        "apps/server/src/jones/requestEconomy/foregroundReads.test.ts",
+        "apps/server/src/orchestration-v2/ShellStream.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/orchestration/shellMaterialization.test.ts apps/server/src/jones/orchestration/shellMaterialization.snapshot.test.ts apps/server/src/jones/orchestration/shellFanout.test.ts apps/server/src/jones/orchestration/shellCost.diagnostic.test.ts apps/server/src/ws.test.ts apps/server/src/jones/requestEconomy/foregroundReads.test.ts apps/server/src/orchestration-v2/ShellStream.test.ts",
+        "vp lint apps/server/src/jones/orchestration/shellMaterialization.ts apps/server/src/jones/orchestration/shellMaterialization.test.ts apps/server/src/jones/orchestration/shellMaterialization.snapshot.test.ts apps/server/src/jones/orchestration/shellFanout.test.ts apps/server/src/jones/orchestration/shellCost.diagnostic.test.ts apps/server/src/ws.ts apps/server/src/server.ts apps/server/src/ws.test.ts apps/server/src/jones/requestEconomy/foregroundReads.test.ts",
+        "vp run --filter t3 typecheck",
+        "knip --workspace apps/server --exports --preprocessor ./scripts/knip-schemas.ts --no-config-hints",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }

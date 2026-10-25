@@ -1565,7 +1565,12 @@
     "apps/server/src/jones/provider/codex/CodexHandoffCompaction.ts": "jones-owned",
     "apps/server/src/jones/provider/codex/CodexHandoffCompaction.test.ts": "jones-owned",
     "apps/server/src/jones/provider/codex/ContextHandoffRecovery.ts": "jones-owned",
-    "scripts/jones/boundary/fragments/context-handoff-recovery.json": "jones-owned"
+    "scripts/jones/boundary/fragments/context-handoff-recovery.json": "jones-owned",
+    "apps/server/src/jones/orchestration/shellMaterialization.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/shellMaterialization.test.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/shellMaterialization.snapshot.test.ts": "jones-owned",
+    "apps/server/src/ws.test.ts": "jones-tests-in-upstream",
+    "scripts/jones/boundary/fragments/shell-materialization-efficiency.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

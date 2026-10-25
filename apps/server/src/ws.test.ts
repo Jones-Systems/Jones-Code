@@ -24,6 +24,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/process";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import * as ShellMaterialization from "./jones/orchestration/shellMaterialization.ts";
 import * as EventStore from "./orchestration-v2/EventStore.ts";
 import * as ProjectionMaintenance from "./orchestration-v2/ProjectionMaintenance.ts";
 import * as ProjectionStore from "./orchestration-v2/ProjectionStore.ts";
@@ -325,6 +326,7 @@ it.live.each(["thread", "shell"] as const)(
             }).pipe(Effect.flatMap(consume));
       });
       const items = yield* subscription.pipe(
+        Effect.provide(ShellMaterialization.layer),
         Effect.provideService(ThreadManagement.ThreadManagementService, {
           ensureLegacyTranscript: () => Effect.void,
           streamStoredEventsFrom: (

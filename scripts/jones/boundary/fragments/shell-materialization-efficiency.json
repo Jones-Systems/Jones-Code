@@ -1,0 +1,17 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "shell-materialization-efficiency",
+  "jonesOwnedPaths": [],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/jones/orchestration/shellMaterialization.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/orchestration/shellMaterialization.ts"
+    }
+  ]
+}

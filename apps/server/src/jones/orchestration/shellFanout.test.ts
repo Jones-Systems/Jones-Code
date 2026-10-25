@@ -5,10 +5,12 @@ import {
   type ApplicationStoredEvent,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -19,6 +21,7 @@ import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import * as ProjectEnrichmentService from "../../project/ProjectEnrichmentService.ts";
 import { subscribeOrchestrationV2Shell } from "../../ws.ts";
+import * as ShellMaterialization from "./shellMaterialization.ts";
 
 // Service-boundary accounting, not SQLite-query counts or WebSocket throughput.
 // Only the exported V2 handler is exercised; unsupported fake calls fail closed.
@@ -43,6 +46,7 @@ for (const clients of [1, 2, 8, 32]) {
         const ready = yield* Deferred.make<void, OrchestrationV2GetShellSnapshotError>();
         let snapshots = 0;
         let shellReads = 0;
+        let committedSequence = 0;
         let projectReads = 0;
         let activeEnrichment = 0;
         let activeLive = 0;
@@ -121,9 +125,17 @@ for (const clients of [1, 2, 8, 32]) {
         const applicationEvents = boundedService<
           OrchestrationEventStore.OrchestrationEventStore["Service"]
         >({
-          latestApplicationSequence: Effect.succeed(0),
+          latestApplicationSequence: Effect.sync(() => committedSequence),
           streamProjectedApplicationEvents: ({ project }) => live.pipe(Stream.map(project)),
         });
+        const materializationContext = yield* Layer.build(ShellMaterialization.layer).pipe(
+          Effect.provideService(ThreadManagementService.ThreadManagementService, threadManagement),
+          Effect.provideService(OrchestrationEventStore.OrchestrationEventStore, applicationEvents),
+        );
+        const materialization = Context.get(
+          materializationContext,
+          ShellMaterialization.ShellMaterialization,
+        );
         const enrichment = boundedService<
           ProjectEnrichmentService.ProjectEnrichmentService["Service"]
         >({
@@ -146,6 +158,7 @@ for (const clients of [1, 2, 8, 32]) {
           }),
         ).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.provideService(ShellMaterialization.ShellMaterialization, materialization),
           Effect.provideService(ThreadManagementService.ThreadManagementService, threadManagement),
           Effect.provideService(OrchestrationEventStore.OrchestrationEventStore, applicationEvents),
           Effect.provideService(
@@ -183,6 +196,7 @@ for (const clients of [1, 2, 8, 32]) {
         if (ending === "cancel") {
           yield* boundedPhase("cancellation", Effect.forEach(fibers, Fiber.interrupt));
         } else {
+          committedSequence = 512;
           yield* PubSub.publishAll(eventBus, events);
           const results = yield* boundedPhase("completion", Effect.forEach(fibers, Fiber.join));
           for (const result of results) {
@@ -204,11 +218,11 @@ for (const clients of [1, 2, 8, 32]) {
         }
         assert.strictEqual(snapshots, clients);
         assert.strictEqual(projectReads, clients);
-        assert.strictEqual(shellReads, ending === "complete" ? clients : 0);
+        assert.strictEqual(shellReads, ending === "complete" ? 1 : 0);
         assert.strictEqual(liveStarts, clients);
         assert.strictEqual(activeLive, 0);
         assert.strictEqual(activeEnrichment, 0);
-      }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+      }).pipe(Effect.scoped, Effect.provide(SqlitePersistence.layerMemory)),
     );
   }
 }

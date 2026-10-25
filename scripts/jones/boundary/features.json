@@ -1483,6 +1483,19 @@
         "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts"
       ],
       "scope": "One confirmed Codex maintenance compaction after a local reclaimable handoff budget rejection; never attributes the unsent request to maintenance. Shared adapter replay and turn-start test exceptions exercise existing native and orchestration harnesses. ProviderAdapter adds an optional server-only capability; session hooks preserve activity. Other providers and explicit /compact retain existing paths. Session-manager integration tests prove the scoped maintenance activity lease survives delivery and clears on failure without clearing an accepted prompt lease. Jones recovery imports the existing upstream ContextHandoffDelivery helper to preserve budget selection and persistence semantics."
+    },
+    {
+      "id": "shell-materialization-efficiency",
+      "tests": [
+        "apps/server/src/jones/orchestration/shellMaterialization.test.ts",
+        "apps/server/src/jones/orchestration/shellMaterialization.snapshot.test.ts",
+        "apps/server/src/jones/orchestration/shellFanout.test.ts",
+        "apps/server/src/jones/orchestration/shellCost.diagnostic.test.ts",
+        "apps/server/src/ws.test.ts",
+        "apps/server/src/jones/requestEconomy/foregroundReads.test.ts",
+        "apps/server/src/orchestration-v2/ShellStream.test.ts"
+      ],
+      "scope": "Environment-owned shared shell materialization uses committed snapshot versions, per-subscription monotonic floors, bounded newest-success retention and cancellation isolation. Narrow WS/server hooks and existing harness adaptations preserve replay, resend, freshness and reader routing; dedicated Jones tests cover fanout and file-backed snapshot interleaving."
     }
   ]
 }

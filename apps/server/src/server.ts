@@ -51,6 +51,7 @@ import * as ServerHttp from "./http.ts";
 import { guardHttpResponseWriteErrors } from "./httpResponseErrorGuard.ts";
 import { fixPath } from "./os-jank.ts";
 import * as Ws from "./ws.ts";
+import * as ShellMaterialization from "./jones/orchestration/shellMaterialization.ts";
 import {
   workstreamGatewayLayerLive,
   workstreamHttpApiLayer,
@@ -770,6 +771,7 @@ const layerMakeRoutes = Layer.mergeAll(
     RemoteDelegation.RemoteDelegation.pipe(Effect.flatMap((remote) => remote.start())),
   ),
 ).pipe(
+  Layer.provide(ShellMaterialization.layer),
   Layer.provide(
     PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
   ),
