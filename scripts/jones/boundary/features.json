@@ -1902,9 +1902,7 @@
     },
     {
       "id": "pele-lifecycle-acceptance",
-      "tests": [
-        "apps/web/src/jones/markdown/MermaidDiagram.browser.test.tsx"
-      ],
+      "tests": ["apps/web/src/jones/markdown/MermaidDiagram.browser.test.tsx"],
       "scope": "Focused browser acceptance of existing Pele integration: commit-only mounting, balanced cleanup through source changes, navigation and source toggle, unchanged rerenders, chunk-load retry, invalid-source recovery, and real SVG/MathML sanitization. The real components and DOMPurify run against a controlled Pele engine; navigation uses content replacement and native core-import rejection, parsing/layout, device behavior and live performance remain unqualified. No production behavior is changed."
     }
   ]

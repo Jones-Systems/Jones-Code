@@ -3030,9 +3030,7 @@
     },
     {
       "id": "jones-pele-lifecycle-acceptance",
-      "tests": [
-        "apps/web/src/jones/markdown/MermaidDiagram.browser.test.tsx"
-      ],
+      "tests": ["apps/web/src/jones/markdown/MermaidDiagram.browser.test.tsx"],
       "commands": [
         "vp test run --root apps/web --config vite.config.ts --project browser src/jones/markdown/MermaidDiagram.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
         "vp lint apps/web/src/jones/markdown/MermaidDiagram.browser.test.tsx",
