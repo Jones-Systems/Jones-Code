@@ -19,6 +19,7 @@ import {
   compareJonesSource,
   createJonesUpdateAtoms,
   jonesExactSourceResultError,
+  jonesInstallRefusal,
   jonesFollowerHold,
   jonesFollowerSummary,
   jonesUpdateActionError,
@@ -711,6 +712,100 @@ describe("exact-source action resolution", () => {
     );
   });
 
+  it("offers replacement only with explicit opt-in, native capability and a complete host binding", () => {
+    const staged = hostState({
+      environmentId,
+      phase: "staged",
+      stagedHandle: "old-handle",
+      provenance: offered,
+      capability: {
+        check: true,
+        download: true,
+        install: true,
+        exactSource: true,
+        replaceStaged: true,
+      },
+    });
+    expect(unavailable(resolve(staged))).toBe("staged-other");
+    expect(resolve(staged, { allowReplace: true, subject: "this laptop" })).toEqual({
+      status: "ready",
+      step: {
+        kind: "replace-exact",
+        targetSource: target,
+        replace: {
+          environmentId,
+          currentVersion: staged.currentVersion,
+          expectedInstalledSource: installed.sha,
+          stagedHandle: "old-handle",
+          sourceSha: offered.sourceSha,
+        },
+      },
+    });
+    const { installedSource: _installedSource, ...withoutInstalled } = staged;
+    const { provenance: _provenance, ...withoutProvenance } = staged;
+    for (const changed of [
+      { ...staged, capability: { ...staged.capability, replaceStaged: false } },
+      { ...staged, environmentId: EnvironmentId.make("another-host") },
+      withoutInstalled,
+      withoutProvenance,
+    ])
+      expect(unavailable(resolve(changed, { allowReplace: true }))).toBe("staged-other");
+    expect(unavailable(resolve(staged, { allowReplace: true, freshness: "stale" }))).toBe(
+      "waiting",
+    );
+    expect(
+      unavailable(resolve({ ...staged, provenance: targetBuild }, { allowInstall: false })),
+    ).toBe("already-downloaded");
+  });
+
+  it("rejects missing or competing target provenance throughout preparation", () => {
+    const step = { kind: "download-exact", targetSource: target } as const;
+    for (const phase of ["downloading", "verifying", "staged"] as const) {
+      expect(
+        jonesExactSourceResultError(
+          step,
+          AsyncResult.success(hostState({ phase, provenance: offered })),
+          target,
+        ),
+      ).toContain(offered.sourceSha.slice(0, 7));
+      expect(
+        jonesExactSourceResultError(step, AsyncResult.success(hostState({ phase })), target),
+      ).toContain("did not report");
+      expect(
+        jonesExactSourceResultError(
+          step,
+          AsyncResult.success(hostState({ phase, provenance: targetBuild })),
+          target,
+        ),
+      ).toBeNull();
+    }
+  });
+
+  it("revalidates the complete install selection and follower policy after confirmation", () => {
+    const state = hostState({
+      environmentId,
+      phase: "staged",
+      stagedHandle: "handle-1",
+      provenance: targetBuild,
+    });
+    const input = {
+      environmentId,
+      currentVersion: state.currentVersion!,
+      stagedHandle: "handle-1",
+    };
+    expect(jonesInstallRefusal(input, { state, freshness: "fresh" })).toBeUndefined();
+    for (const changed of [
+      { ...state, stagedHandle: "competing-handle" },
+      { ...state, currentVersion: "changed" },
+      { ...state, environmentId: EnvironmentId.make("another-host") },
+      { ...state, phase: "installing" as const },
+      { ...state, capability: { ...state.capability, install: false } },
+      { ...state, policy: { role: "follower" as const, leaderSource: "b".repeat(40) } },
+    ])
+      expect(jonesInstallRefusal(input, { state: changed, freshness: "fresh" })).toBeDefined();
+    expect(jonesInstallRefusal(input, { state, freshness: "stale" })).toBeDefined();
+  });
+
   it("names the other staged source and offers nothing for it", () => {
     const decision = resolve(
       hostState({ phase: "staged", stagedHandle: "handle-1", provenance: offered }),
@@ -894,7 +989,7 @@ describe("exact-source action resolution", () => {
     expect(
       jonesExactSourceResultError(
         step,
-        AsyncResult.success(hostState({ phase: "downloading" })),
+        AsyncResult.success(hostState({ phase: "downloading", provenance: targetBuild })),
         target,
       ),
     ).toBeNull();

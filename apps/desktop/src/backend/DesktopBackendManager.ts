@@ -27,6 +27,7 @@ import {
   type DesktopTelemetryControlMessage as DesktopTelemetryControlMessageValue,
 } from "@t3tools/contracts";
 import { waitForHttpReady as waitForHttpReadyShared } from "@t3tools/shared/httpReadiness";
+import { SERVER_CHILD_SHUTDOWN_GRACE_MS } from "@t3tools/shared/jones/shutdownBudget";
 
 import {
   startJonesColdBackend,
@@ -50,9 +51,9 @@ const MAX_PREFLIGHT_FAILURE_ATTEMPTS = 5;
 const DEFAULT_BACKEND_READINESS_TIMEOUT = Duration.minutes(1);
 const DEFAULT_BACKEND_READINESS_INTERVAL = Duration.millis(100);
 const DEFAULT_BACKEND_READINESS_REQUEST_TIMEOUT = Duration.seconds(1);
-// A killed backend leaves its agents running, and a busy one needs a few
-// seconds to stop every provider session.
-const DEFAULT_BACKEND_TERMINATE_GRACE = Duration.seconds(5);
+// Allow server recovery and provider cleanup before escalation. Scope closure
+// still waits for the captured child to exit after the grace expires.
+const DEFAULT_BACKEND_TERMINATE_GRACE = Duration.millis(SERVER_CHILD_SHUTDOWN_GRACE_MS);
 const DEFAULT_BACKEND_OUTPUT_DRAIN_TIMEOUT = Duration.seconds(5);
 const BACKEND_READINESS_PATH = "/.well-known/t3/environment";
 const { logWarning: logBackendProcessWarning } =

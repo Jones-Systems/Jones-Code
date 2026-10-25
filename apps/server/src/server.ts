@@ -1,3 +1,6 @@
+import * as HandoffLaunch from "./jones/linkedThreads/launchTransport.ts";
+import * as ThreadHandoff from "./jones/linkedThreads/handoff.ts";
+import * as LinkedThreads from "./jones/linkedThreads/LinkedThreads.ts";
 import { assertServerProcessPlacement } from "./jones/processPlacement/processPlacement.ts";
 import * as ProcessPlacementRuntime from "./jones/processPlacement/processPlacementRuntime.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
@@ -52,6 +55,7 @@ import {
 } from "./httpResponseErrorGuard.ts";
 import { fixPath } from "./os-jank.ts";
 import * as Ws from "./ws.ts";
+import * as ShellMaterialization from "./jones/orchestration/shellMaterialization.ts";
 import {
   workstreamOperationsLayerLive,
   workstreamGatewayLayerLive,
@@ -790,6 +794,7 @@ const layerMakeRoutes = Layer.mergeAll(
   ),
 )
   .pipe(
+    Layer.provide(ShellMaterialization.layer),
     Layer.provide(
       PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
     ),
@@ -811,6 +816,7 @@ const layerMakeRoutes = Layer.mergeAll(
     Layer.provide(workstreamRegistrationContextLayerLive),
     // Same layer identity as the gateway's, so the config descriptor reads the same authority.
     Layer.provide(workstreamNativeAuthorityLayerLive),
+    Layer.provide(ThreadHandoff.layer.pipe(Layer.provide(HandoffLaunch.layer))),
     // Links to other environments, shared by Settings (WebSocket) and agents (/mcp).
     Layer.provide(
       PeerForwarding.layer.pipe(
@@ -818,6 +824,7 @@ const layerMakeRoutes = Layer.mergeAll(
         Layer.provideMerge(PeerLinks.layer),
       ),
     ),
+    Layer.provide(LinkedThreads.layer),
     Layer.provide(PreviewAutomationBroker.layer),
     Layer.provide(layerServerSelfUpdate),
     // The same relation layer as the Jones updates routes, so both share one ancestry cache.

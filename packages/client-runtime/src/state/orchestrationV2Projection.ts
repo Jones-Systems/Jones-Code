@@ -180,6 +180,32 @@ function upsertVisibleTurnItem(
   ) {
     return rows;
   }
+  if (
+    previous !== undefined &&
+    item.type !== "run_interrupt_request" &&
+    previous.item.type !== "run_interrupt_request" &&
+    previous.visibility === "local" &&
+    previous.sourceThreadId === item.threadId &&
+    previous.item.id === item.id &&
+    previous.item.ordinal === item.ordinal &&
+    previous.position === index
+  ) {
+    let earlierIndex = index - 1;
+    while (earlierIndex >= 0 && rows[earlierIndex]!.visibility !== "local") {
+      earlierIndex -= 1;
+    }
+    const earlier = rows[earlierIndex];
+    const following = rows[index + 1];
+    if (
+      (earlier === undefined || earlier.item.ordinal < item.ordinal) &&
+      (following === undefined ||
+        (following.visibility === "local" && following.item.ordinal > item.ordinal))
+    ) {
+      const updated = [...rows];
+      updated[index] = { ...next, position: index };
+      return updated;
+    }
+  }
   // The item goes before the first later local row, as if its old row were
   // removed first. One pass builds and renumbers the result: this runs for
   // every streamed chunk of a thread that can hold thousands of rows.

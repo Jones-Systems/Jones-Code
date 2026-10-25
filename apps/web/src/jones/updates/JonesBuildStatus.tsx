@@ -14,7 +14,7 @@ import type {
   JonesUpdateState,
 } from "@t3tools/contracts/jones/jonesUpdates";
 import { ArrowRightIcon } from "lucide-react";
-import { useId, useState } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
@@ -130,6 +130,7 @@ export function JonesBuildStatus({
   pending = false,
   actionError = null,
   layout = "inline",
+  extraAction,
   onRequest,
 }: {
   readonly environmentId: EnvironmentId;
@@ -143,18 +144,48 @@ export function JonesBuildStatus({
   readonly pending?: boolean;
   readonly actionError?: string | null;
   readonly layout?: JonesBuildStatusLayout;
+  readonly extraAction?: ReactNode;
   readonly onRequest: (request: JonesBuildRequest) => void;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const detailsId = useId();
-  if (state === null)
-    return freshness === "stale" ? (
-      <p role="status" className="mt-1.5 text-xs text-muted-foreground">
-        {freshnessMessage}
-      </p>
-    ) : null;
-
   const styles = LAYOUTS[layout];
+  const freshnessReason =
+    freshness === "fresh"
+      ? undefined
+      : (freshnessMessage ??
+        {
+          loading: "Waiting for this host's update status.",
+          stale: "Update status is unavailable. Reconnect before downloading.",
+          unsupported: "This host does not support Jones build updates.",
+        }[freshness]);
+  if (state === null) {
+    const reason = freshnessReason ?? "No update status is available for this host.";
+    return (
+      <div className={styles.root}>
+        <div className={styles.header}>
+          <div className={styles.summary}>
+            {layout === "row" ? (
+              <h3 className="text-sm font-medium text-foreground">Jones builds</h3>
+            ) : null}
+            <p role="status" className="text-muted-foreground">
+              {reason}
+            </p>
+          </div>
+          <div className={styles.actions}>
+            {extraAction}
+            <DownloadAction
+              key="download"
+              size={styles.button}
+              reason={reason}
+              onDownload={() => undefined}
+            />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const presentation = jonesUpdatePresentation(state);
   const candidate = jonesCandidatePresentation(state);
   const busy = pending || presentation.busy || freshness !== "fresh";
@@ -184,6 +215,25 @@ export function JonesBuildStatus({
   // A host that follows its laptop takes only the laptop's build; the host refuses others too.
   const followerHold = jonesFollowerHold(state);
   const followerSummary = jonesFollowerSummary(state);
+  const downloadReason =
+    freshnessReason ??
+    (pending
+      ? "An update request is in progress. Wait for it to finish."
+      : presentation.busy
+        ? presentation.message
+        : (followerHold ??
+          (!state.capability.download
+            ? DOWNLOAD_CAPABILITY_REASONS[state.capability.reason ?? "blocked"]
+            : state.phase !== "available"
+              ? (state.message ??
+                (state.phase === "no-new"
+                  ? "No newer qualified build is available to download."
+                  : state.phase === "building"
+                    ? "The new build is still being prepared."
+                    : "Check for an available build before downloading."))
+              : provenance === undefined
+                ? "No qualified build is available to download."
+                : undefined)));
 
   const builds = hasBuilds ? (
     <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
@@ -267,6 +317,7 @@ export function JonesBuildStatus({
           {statusLine}
         </div>
         <div className={styles.actions}>
+          {extraAction}
           {presentation.canReconcile ? (
             <Button
               size={styles.button}
@@ -315,25 +366,20 @@ export function JonesBuildStatus({
             >
               Install
             </Button>
-          ) : provenance !== undefined ? (
-            <Button
+          ) : (
+            <DownloadAction
+              key="download"
               size={styles.button}
-              disabled={
-                busy ||
-                !state.capability.download ||
-                state.phase !== "available" ||
-                followerHold !== undefined
-              }
-              onClick={() =>
+              reason={downloadReason}
+              onDownload={() => {
+                if (downloadReason !== undefined || provenance === undefined) return;
                 onRequest({
                   action: "download",
                   input: { artifactId: provenance.artifactId, sourceSha: provenance.sourceSha },
-                })
-              }
-            >
-              Download
-            </Button>
-          ) : null}
+                });
+              }}
+            />
+          )}
         </div>
       </div>
       <div className={styles.after}>
@@ -510,6 +556,47 @@ function SourceBadge({
         {label}
       </TooltipTrigger>
       <TooltipPopup side="top">{detail}</TooltipPopup>
+    </Tooltip>
+  );
+}
+
+const DOWNLOAD_CAPABILITY_REASONS = {
+  "bootstrap-required": "This host needs a qualified launcher before downloading builds.",
+  "source-unqualified": "This host's source is not qualified for build downloads.",
+  "unsupported-platform": "Build downloads are not supported on this host's platform.",
+  "native-consent-required": "This host requires native consent before downloading builds.",
+  blocked: "Build downloads are not available on this host.",
+} as const;
+
+function DownloadAction({
+  size,
+  reason,
+  onDownload,
+}: {
+  readonly size: "xs" | "sm";
+  readonly reason: string | undefined;
+  readonly onDownload: () => void;
+}) {
+  const reasonId = useId();
+  const button = (
+    <Button
+      size={size}
+      aria-disabled={reason === undefined ? undefined : true}
+      aria-describedby={reason === undefined ? undefined : reasonId}
+      onClick={() => {
+        if (reason !== undefined) return;
+        onDownload();
+      }}
+    >
+      Download
+    </Button>
+  );
+  return (
+    <Tooltip disabled={reason === undefined}>
+      <TooltipTrigger render={button} />
+      <TooltipPopup side="top" role="tooltip" id={reasonId}>
+        {reason}
+      </TooltipPopup>
     </Tooltip>
   );
 }

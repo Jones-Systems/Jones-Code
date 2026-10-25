@@ -63,6 +63,62 @@ Known shared consumers:
   this map's journeys. Shared workspace header consumers are listed in
   [Settings](settings.md#shared-layout-and-consumers).
 
+### Sidebar build label
+
+The environment-filter footer in current and legacy sidebars, and the Settings
+sidebar, shares `SidebarEnvironmentFilters`. Keep its environment buttons at
+their normal size. The build label uses the remaining width with a 2px minimum
+gap, shrinks from its normal type size to 6px, then shortens timed labels to the
+last four digits. Widening restores the full label. Focus/hover retains the exact
+build identity; source/version fallbacks are not shortened to a fabricated time.
+
+The browser sizing regression beside the component covers the 6px boundary,
+shortening, expansion, containment and filter interaction. The existing browser
+test covers the source fallback. On October 25, 2026, isolated development
+readback at 1280 CSS pixels and device scale 2 exercised the current sidebar
+from 256–420px and back: the full label reached 6.05px at a 268.3px sidebar,
+then used four digits below that boundary with at least a 2px button gap.
+The fixture used a synthetic build timestamp and an empty task-owned project;
+it did not run a provider. Candidate: base `139eee2f067297f93813e1218b253f08705e9be1`,
+component SHA-256 `a743ea20a26e73bb08644156fa86f4140592d0b4ac82596d98042f9ccac4ba5f`.
+PR attachments show the actual component before/after at 280px in Chromium.
+Integrated Browser snapshots timed out; geometry and filter readback succeeded.
+Settings, legacy navigation and packaged native shells were not exercised.
+
+### Linked thread details
+
+[ThreadDetailsPanel](../../apps/web/src/components/chat/ThreadDetailsPanel.tsx)
+mounts [ThreadRelationshipsControl](../../apps/web/src/components/chat/ThreadRelationshipsControl.tsx).
+Its [Linked section](../../apps/web/src/jones/linkedThreads/LinkedThreadsSection.tsx)
+starts collapsed and resets closed when the selected thread changes. The header
+shows distinct related threads, a plus sign for incomplete results, the running
+agent count and a Continued shortcut when a successor exists. Expanding it
+exposes Continuations, Parents, Delegated tasks, Children, and Siblings & peers.
+The groups retain fork ancestry, context transfers, previous agents and their
+existing task controls. A related thread appears once, with additional
+relationships shown as secondary labels.
+
+[useLinkedThreads](../../apps/web/src/jones/linkedThreads/useLinkedThreads.ts)
+combines navigation links from connected capable environments with existing
+lineage. Remote rows retain environment identity and destination-aware
+navigation; offline destinations are disabled and incomplete coverage remains
+visible. Old servers retain the lineage view. Links grant no task control or
+connection access. The section menu offers Link thread and Copy handoff text;
+continuation recipients can accept an offered handoff from the row menu.
+
+For the source-discovered journey, open details on synthetic threads with a
+continuation, launch parent, sibling, fork and delegated task. Expand Linked,
+open its groups, navigate related threads, and use an existing task control.
+Create a manual link, accept a received handoff, copy its full origin/return
+address, unlink it and reload to verify persistence. Switch threads and confirm
+Linked starts closed again. Test unavailable environments and the lineage-only
+compatibility view separately.
+
+The [Linked browser regression](../../apps/web/src/jones/linkedThreads/LinkedThreads.browser.test.tsx)
+and [lineage browser regression](../../apps/web/src/jones/remoteAgentLineage/ThreadRelationships.browser.test.tsx)
+cover component interactions; integrated runtime captures and backend readback
+are separate evidence. This map does not claim the journey has been exercised.
+
 ### Queued-message batch steering
 
 The active thread composer exposes

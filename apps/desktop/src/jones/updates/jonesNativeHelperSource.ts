@@ -369,24 +369,83 @@ def restore_bundle(expected, incoming, previous):
     sync_parent(stable)
 
 def launch(active, descriptor=None):
-    env = os.environ.copy()
-    # Provider stores and credentials stay on this host. No copied auth is consulted.
-    env.pop('ELECTRON_RUN_AS_NODE', None)
-    env['T3CODE_HOME'] = active['home']
-    env['T3CODE_DESKTOP_USER_DATA_DIR'] = active['profile']
-    env['T3CODE_JONES_ACTIVE_MANIFEST'] = str(manifest_path)
-    env['T3CODE_JONES_ACTIVE_GENERATION'] = active['generation']
+    # LaunchServices makes Jones its own responsible process, as a Dock launch does.
+    # Direct exec inherited this helper's environment and its invoker's privacy
+    # attribution. One attempt, no fallback: an unproved outcome raises to the caller's hold.
+    env = {'T3CODE_HOME': active['home'], 'T3CODE_DESKTOP_USER_DATA_DIR': active['profile'],
+           'T3CODE_JONES_ACTIVE_MANIFEST': str(manifest_path), 'T3CODE_JONES_ACTIVE_GENERATION': active['generation']}
+    if 'T3CODE_NATIVE_AUTHORITY_STATE_DIR' in os.environ:
+        env['T3CODE_NATIVE_AUTHORITY_STATE_DIR'] = os.environ['T3CODE_NATIVE_AUTHORITY_STATE_DIR']
     if descriptor:
         env['T3CODE_JONES_TRIAL_DESCRIPTOR'] = str(descriptor)
         env['T3CODE_PORT'] = str(read(descriptor)['listener'].rsplit(':', 1)[1])
-    else:
-        for name in ('T3CODE_JONES_TRIAL_DESCRIPTOR', 'T3CODE_JONES_COLD_CHANNEL_FD', 'T3CODE_JONES_COLD_TRIAL_DESCRIPTOR'):
-            env.pop(name, None)
-    child = subprocess.Popen([active['executablePath']], env=env, stdin=subprocess.DEVNULL,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-    identity = process_identity(child.pid)
+    reply = launch_services({'appPath': active['appPath'], 'environment': env})
+    if reply.get('status') != 'launched':
+        raise RuntimeError('LaunchServices did not launch Jones Code (' + str(reply.get('status')) + ' ' + str(reply.get('domain', '')) + ' ' + str(reply.get('code', '')) + '); OS consent may be required.')
+    pid, bundle, executable = reply.get('pid'), reply.get('bundlePath'), reply.get('executablePath')
+    if type(pid) is not int or pid <= 0 or not (isinstance(bundle, str) and bundle and isinstance(executable, str) and executable) \
+            or os.path.realpath(bundle) != os.path.realpath(active['appPath']) or os.path.realpath(executable) != os.path.realpath(active['executablePath']):
+        raise RuntimeError('LaunchServices did not prove the launched Jones Code; launch effect is unknown.')
+    identity = process_identity(pid)
     if identity is None: raise RuntimeError('Native app exited before its identity was captured; OS consent may be required.')
-    return {'pid': child.pid, 'identity': identity}
+    if not any((' ' + path + ' ') in (' ' + identity + ' ') for path in (active['executablePath'], executable)):
+        raise RuntimeError('Launched process identity does not match Jones Code; launch effect is unknown.')
+    return {'pid': pid, 'identity': identity}
+
+LAUNCH_SERVICES_SCRIPT = r'''ObjC.import("AppKit");
+function reply(value) {
+  return JSON.stringify(value).replace(/[^\x20-\x7e]/g, function (c) {
+    return "\\u" + ("000" + c.charCodeAt(0).toString(16)).slice(-4);
+  });
+}
+function run(argv) {
+  var request = JSON.parse(argv[0]);
+  var workspace = $.NSWorkspace.sharedWorkspace;
+  var key = $.NSWorkspaceLaunchConfigurationEnvironment;
+  if (typeof workspace.launchApplicationAtURLOptionsConfigurationError !== "function" ||
+      key === undefined || key.isNil())
+    return reply({protocol: 1, status: "unavailable"});
+  if (request.probe === true)
+    return reply({protocol: 1, status: "available"});
+  var error = Ref();
+  var app = workspace.launchApplicationAtURLOptionsConfigurationError(
+    $.NSURL.fileURLWithPathIsDirectory(request.appPath, true),
+    0x80000 | 0x10000 | 0x100,
+    $.NSDictionary.dictionaryWithObjectForKey($(request.environment), key),
+    error);
+  if (app.isNil()) {
+    var cause = error[0];
+    return reply({
+      protocol: 1, status: "failed",
+      domain: cause.isNil() ? "" : cause.domain.js,
+      code: cause.isNil() ? 0 : cause.code
+    });
+  }
+  return reply({
+    protocol: 1, status: "launched", pid: app.processIdentifier,
+    bundlePath: app.bundleURL.isNil() ? "" : app.bundleURL.path.js,
+    executablePath: app.executableURL.isNil() ? "" : app.executableURL.path.js
+  });
+}
+'''
+
+def launch_services(request):
+    env = {'PATH': '/usr/bin:/bin:/usr/sbin:/sbin'}
+    env.update((name, os.environ[name]) for name in ('HOME', 'TMPDIR', 'USER', 'LOGNAME') if name in os.environ)
+    try:
+        result = subprocess.run(['/usr/bin/osascript', '-l', 'JavaScript', '-e', LAUNCH_SERVICES_SCRIPT, json.dumps(request, sort_keys=True)],
+                                env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30)
+        if result.returncode != 0 or len(result.stdout) > 16384: raise ValueError('reply')
+        reply = json.loads(result.stdout.decode('ascii'))
+    except Exception as error:
+        raise RuntimeError('LaunchServices request was not proved (' + type(error).__name__ + '); launch effect is unknown.') from None
+    if not isinstance(reply, dict) or type(reply.get('protocol')) is not int or reply['protocol'] != 1:
+        raise RuntimeError('LaunchServices reply is unknown; launch effect is unknown.')
+    return reply
+
+def launch_services_available():
+    try: return launch_services({'probe': True}) == {'protocol': 1, 'status': 'available'}
+    except Exception: return False
 
 class SelectionRefused(Exception):
     def __init__(self, reason): self.reason = reason
@@ -1124,6 +1183,7 @@ def selection_command(operation, active, handle, selection_path, expected_digest
                 raise SelectionRefused('unknown-state')
             if not isinstance(intent.get('listener'), str) or not intent['listener'].strip():
                 raise SelectionRefused('unknown-state')
+            if not launch_services_available(): raise SelectionRefused('launch-unavailable')
         elif operation == 'claim-preparation': verify_app(selection['app'], active)
         elif operation != 'discard-staged': raise SelectionRefused('unknown-state')
         _, current_raw, current = bounded_native_json(path, 131072)
@@ -1187,6 +1247,11 @@ def activate(intent_file):
     def record(phase, **fields):
         journal.update(fields, phase=phase)
         durable(journal_path, journal)
+    def relaunch_previous():
+        try: launch(expected)
+        except Exception as relaunch_failure:
+            try: record('rolled-back', relaunch='failed', message=journal.get('message', '') + ' Jones Code was not reopened automatically: ' + str(relaunch_failure))
+            except Exception: pass
     record('intent')
     candidate = None
     backend_process = None
@@ -1276,11 +1341,12 @@ def activate(intent_file):
                     prove_quiescence(expected)
                     release_recovery_reserve(recovery_reserves)
                     record('rolled-back', message='Snapshot preparation failed before any candidate launch; prior state was unchanged.')
-                    release_writer_exclusion(exclusive_writers)
-                    launch(expected)
-                    return
                 except Exception:
                     pass
+                else:
+                    release_writer_exclusion(exclusive_writers)
+                    relaunch_previous()
+                    return
             record('blocked', message='Update preparation refused: ' + str(failure) + '; previous binary and state retained.')
             return
         try:
@@ -1297,10 +1363,11 @@ def activate(intent_file):
             restore_pair(expected, tx / 'previous-pair', tx / 'advanced-state', staged)
             if incoming is not None and previous is not None: restore_bundle(expected, incoming, previous)
             record('rolled-back', message='Update rolled back: ' + str(failure))
-            release_writer_exclusion(exclusive_writers)
-            launch(expected)
         except Exception as recovery_failure:
             record('blocked', message='Paired recovery could not be proved; retained state requires reconciliation: ' + str(recovery_failure))
+        else:
+            release_writer_exclusion(exclusive_writers)
+            relaunch_previous()
     else:
         # Cleanup failure cannot undo durable activation success. Even a failed
         # cleanup-evidence write must preserve the resumed phase.
@@ -1310,10 +1377,12 @@ def activate(intent_file):
     finally:
         release_writer_exclusion(exclusive_writers)
 
-def manual_install_plan(plan_path, plan_sha256):
+def manual_install_plan(plan_path, plan_sha256, clone_required=False):
     plan, raw, _ = bounded_native_json(pathlib.Path(plan_path))
     if hashlib.sha256(raw).hexdigest() != plan_sha256 or plan.get('protocol') != 1 or plan.get('restart') != 'ordinary':
         raise RuntimeError('Manual installation plan changed or restart mode is unsupported.')
+    if ('stateRecovery' in plan) != clone_required or ('stateRecovery' in plan and plan['stateRecovery'] != 'clone-required'):
+        raise RuntimeError('Manual state recovery policy must match --require-clone.')
     expected, manifest_raw, _ = bounded_native_json(manifest_path)
     if hashlib.sha256(manifest_raw).hexdigest() != plan.get('expectedManifestSha256') or expected.get('owner') != 'desktop' or expected.get('protocol') != PROTOCOL:
         raise RuntimeError('Manual installation admission preimage changed.')
@@ -1359,16 +1428,26 @@ def manual_install_plan(plan_path, plan_sha256):
         if set(proof) != {'pid', 'identity'} or type(proof['pid']) is not int or proof['pid'] <= 0 or not isinstance(proof['identity'], str) or not proof['identity']:
             raise RuntimeError('Manual process identity is invalid.')
         alive(proof)
+    if not launch_services_available(): raise RuntimeError('LaunchServices is unavailable; manual installation was not started.')
+    if clone_required:
+        try: darwin_clonefile()
+        except (OSError, AttributeError) as error:
+            raise RuntimeError('Required clonefile capability is unavailable; installation was not started.') from error
+        if pathlib.Path(expected['databasePath']).parent.stat().st_dev != manifest_path.parent.stat().st_dev:
+            raise RuntimeError('Required state clones need same-volume recovery; installation was not started.')
     return plan, expected, manifest_raw
 
-def manual_install(plan_path, plan_sha256, apply=False):
+def manual_install(plan_path, plan_sha256, apply=False, clone_required=False):
     # This explicit operator route uses ordinary restart, never forged warm
     # preparation/continuation receipts. Legacy relaunchers must be stopped by
     # the operator; lsof and cooperative leases do not establish universal exclusion.
-    plan, expected, manifest_raw = manual_install_plan(plan_path, plan_sha256)
+    # Only explicit clone-required recovery omits state copy capacity and reserves
+    # headroom before shutdown; defaults retain conservative copy fallback.
+    plan, expected, manifest_raw = manual_install_plan(plan_path, plan_sha256, clone_required)
+    state_recovery = 'clone-required' if clone_required else 'clone-or-copy'
     if not apply:
         return {'protocol': 1, 'operation': 'manual-install', 'status': 'ready',
-                'automaticContinuationRequested': False, 'sourceSha': plan['candidate']['sourceSha']}
+                'automaticContinuationRequested': False, 'sourceSha': plan['candidate']['sourceSha'], 'stateRecovery': state_recovery}
     transaction_id = uuid.uuid4().hex + uuid.uuid4().hex
     directory = manifest_path.parent / 'jones-manual-installs' / transaction_id
     directory.mkdir(parents=True, mode=0o700)
@@ -1377,15 +1456,19 @@ def manual_install(plan_path, plan_sha256, apply=False):
     receipt = {'protocol': 1, 'operation': 'manual-install', 'transactionId': transaction_id,
                'planSha256': plan_sha256, 'originalManifest': manifest_raw.decode(),
                'installed': plan['installed'], 'candidate': plan['candidate'],
-               'automaticContinuationRequested': False, 'phase': 'preparing'}
+               'automaticContinuationRequested': False, 'phase': 'preparing', 'stateRecovery': state_recovery}
     def record(phase, **fields):
         receipt.update(fields, phase=phase)
         durable(receipt_path, receipt)
     record('preparing')
     writers = []
+    reserves = []
     try:
-        storage = storage_preflight(expected, plan['candidate'], directory)
+        storage = storage_preflight(expected, plan['candidate'], directory, clone_required)
         record('preparing', storage=storage)
+        if clone_required:
+            reserves = reserve_recovery_capacity(expected, directory, storage)
+            record('preparing', recoveryReserves=list(reserves))
         stop_exact(plan['processes'])
         prove_quiescence(expected)
         writers = acquire_writer_exclusion(expected)
@@ -1395,8 +1478,8 @@ def manual_install(plan_path, plan_sha256, apply=False):
             raise RuntimeError('The captured old writers have not stopped.')
         if manifest_path.read_bytes() != manifest_raw or app_digest(plan['installed']['appPath']) != plan['installed']['appDigest']:
             raise RuntimeError('Manual installation preimage changed after shutdown.')
-        pair_state(expected, directory / 'previous-pair')
-        record('paired', pairedState=str(directory / 'previous-pair'))
+        pair_state(expected, directory / 'previous-pair', clone_required)
+        record('paired', pairedState=str(directory / 'previous-pair'), recovery=read(directory / 'previous-pair' / 'pair.json')['recovery'])
         incoming, previous = prepare_bundle(expected, plan['candidate'], transaction_id)
         record('swap-intent', incomingBundle=str(incoming), previousBundle=str(previous))
         if manifest_path.read_bytes() != manifest_raw:
@@ -1419,16 +1502,23 @@ def manual_install(plan_path, plan_sha256, apply=False):
         writers = []
         process = launch(next_active)
         record('launched', process=process)
-        return {'protocol': 1, 'operation': 'manual-install', 'status': 'launched',
-                'sourceSha': next_active['sourceSha'], 'process': process, 'receiptPath': str(receipt_path),
-                'automaticContinuationRequested': False, 'readinessVerified': False}
     except Exception as failure:
         # An ordinary candidate may already have migrated state. Preserve both
         # generations; a failed response never authorizes replay or stale restore.
-        record('held', stoppedAt=receipt['phase'], message=str(failure))
+        message = str(failure)
+        try: release_recovery_reserve(reserves, 'journal')
+        except Exception: message += '; recovery reserve ownership uncertain'
+        record('held', stoppedAt=receipt['phase'], message=message)
         raise
     finally:
         release_writer_exclusion(writers)
+    try: release_recovery_reserve(reserves)
+    except Exception:
+        try: record('launched', recoveryReserveCleanup='held')
+        except Exception: pass
+    return {'protocol': 1, 'operation': 'manual-install', 'status': 'launched',
+            'sourceSha': next_active['sourceSha'], 'process': process, 'receiptPath': str(receipt_path),
+            'automaticContinuationRequested': False, 'readinessVerified': False, 'stateRecovery': state_recovery}
 
 
 parser = argparse.ArgumentParser()
@@ -1456,8 +1546,10 @@ parser.add_argument('--staged-handle')
 parser.add_argument('--selection')
 parser.add_argument('--selection-sha256')
 parser.add_argument('--plan-sha256')
+parser.add_argument('--require-clone', action='store_true')
 parser.add_argument('arguments', nargs=argparse.REMAINDER)
 args = parser.parse_args()
+if args.require_clone and not (args.inspect_manual_install or args.manual_install): parser.error('--require-clone requires a manual installation action')
 if args.arguments and args.arguments[0] == '--': args.arguments = args.arguments[1:]
 manifest_path = pathlib.Path(args.manifest).resolve(strict=True)
 if sys.platform != 'darwin': raise SystemExit('The Jones native helper requires macOS.')
@@ -1506,7 +1598,7 @@ with os.fdopen(descriptor, 'r+', encoding='utf8') as lock:
         raise SystemExit('Native launcher bootstrap is required.')
     manual_plan = args.inspect_manual_install or args.manual_install
     if manual_plan:
-        print(json.dumps(manual_install(manual_plan, args.plan_sha256, apply=args.manual_install is not None)))
+        print(json.dumps(manual_install(manual_plan, args.plan_sha256, apply=args.manual_install is not None, clone_required=args.require_clone)))
         raise SystemExit(0)
     bundle_identity(active)
     if args.withdraw_preparation:

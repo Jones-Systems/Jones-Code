@@ -3,9 +3,9 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./jones/packaging/pnpmProjectLockfile": {
-      "types": "./src/jones/packaging/pnpmProjectLockfile.ts",
-      "import": "./src/jones/packaging/pnpmProjectLockfile.ts"
+    "./jones/shutdownBudget": {
+      "types": "./src/jones/shutdownBudget.ts",
+      "import": "./src/jones/shutdownBudget.ts"
     },
     "./jones/workstreamsRegistryBinding": {
       "types": "./src/jones/workstreamsRegistryBinding.ts",
@@ -566,6 +566,14 @@
     "./jones/threadReferenceExcerpt": {
       "types": "./src/jones/threadReferenceExcerpt.ts",
       "import": "./src/jones/threadReferenceExcerpt.ts"
+    },
+    "./jones/linkedThreads/handoffText": {
+      "types": "./src/jones/linkedThreads/handoffText.ts",
+      "import": "./src/jones/linkedThreads/handoffText.ts"
+    },
+    "./jones/packaging/pnpmProjectLockfile": {
+      "types": "./src/jones/packaging/pnpmProjectLockfile.ts",
+      "import": "./src/jones/packaging/pnpmProjectLockfile.ts"
     }
   },
   "scripts": {

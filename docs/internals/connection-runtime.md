@@ -92,8 +92,7 @@ Opening a thread, loading its messages, sending, and stopping are the requests a
 user waits on. Background work runs in the same server: pull-request discovery
 and settlement sweeps, VCS status polling, source-control discovery, and storage
 cleanup. Client activity leases gate some of it, such as VCS status polling,
-but none of it yields to a foreground request. These resources are shared today,
-without foreground priority:
+but it has no general foreground priority. These resources are shared today:
 
 - One WebSocket per environment carries every RPC call and subscription in
   order. Cold thread snapshots and history pages normally use HTTP. The server
@@ -103,8 +102,14 @@ without foreground priority:
   the loop, socket frames included, while it executes, and a transaction holds
   the writer until it ends, so other writer work, reads included, queues behind
   it. Outside a write transaction, only work wrapped in `NodeSqliteClient.readOnly`
-  uses the single reader worker, which also runs one transaction at a time and
-  serves search and background sweeps.
+  uses the single reader worker, which also runs one transaction at a time.
+  File-backed server databases require that reader for marked reads: an
+  unavailable reader fails the read instead of running it on the serving loop.
+  A startup timeout retires the worker; later demand retries after termination
+  and a bounded cooldown. Other SQLite consumers retain their default writer
+  fallback, and reads inside an existing write transaction retain that writer.
+  Organization metadata listing marks its complete snapshot transaction, so
+  its rows and sequence watermark come from the same committed reader snapshot.
   [Foreground reads and the SQLite writer](./performance-regressions.md#foreground-reads-and-the-sqlite-writer)
   lists the foreground reads routed there.
 - Git subprocesses take permits from process-wide FIFO pools: one in
@@ -112,8 +117,16 @@ without foreground priority:
   manager, status, and pull-request work, and one in
   [VcsProcess](../../apps/server/src/vcs/VcsProcess.ts) for VCS driver work,
   including the checkpoint baseline a turn waits for before its provider starts.
-  Neither reserves capacity for foreground callers. Source-control discovery
-  probes use a separate, smaller VcsProcess pool.
+  Automatic PR discovery and its fresh confirmation take a Jones admission
+  permit before each eligible GitVcsDriverCore permit, limiting that discovery
+  work to four of the eight shared permits. Commands with a null timeout or a
+  timeout over 30 seconds retain their existing bypass of both limits. Other
+  callers can fill the remaining permits; no capacity is reserved for a specific
+  foreground request, and queue waits have no deadline. A foreground caller
+  joining the same cached lookup retains that lookup's original classification.
+  Settlement, status polling and cleanup retain their existing admission.
+  VcsProcess has no foreground reservation; source-control discovery probes use
+  its separate, smaller pool.
 - The orchestration [effect worker](../../apps/server/src/orchestration-v2/EffectWorker.ts)
   shares a few slots among turn start, steer, and checkpoint capture.
 - On the client, most thread commands, Send and Stop included, share one serial

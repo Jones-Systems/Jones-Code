@@ -11,6 +11,7 @@ import {
   type JonesUpdateReconcileInput,
   type JonesUpdateRecordRetiredInput,
   type JonesNativePrepareInput,
+  type JonesQuitPreparation,
   ServerSelfUpdateError,
 } from "@t3tools/contracts";
 
@@ -73,6 +74,7 @@ export class JonesUpdates extends Context.Service<
     readonly state: (after?: number) => Effect.Effect<JonesUpdateState | null>;
     readonly check: Effect.Effect<JonesUpdateState>;
     readonly prepareNative: (input: JonesNativePrepareInput) => Effect.Effect<JonesUpdateState>;
+    readonly prepareQuit: Effect.Effect<JonesQuitPreparation>;
     readonly download: (input: JonesUpdateDownloadInput) => Effect.Effect<JonesUpdateState>;
     readonly install: (input: JonesUpdateInstallInput) => Effect.Effect<JonesUpdateState>;
     readonly reconcile: (input: JonesUpdateReconcileInput) => Effect.Effect<JonesUpdateState>;
@@ -196,6 +198,20 @@ export const layer = Layer.effect(
           reason: "Caller-bound native updates are unavailable on this host.",
         }),
     };
+    const prepareQuit: Effect.Effect<JonesQuitPreparation> = Effect.gen(function* () {
+      const notPrepared = { prepared: false, threadCount: 0 };
+      if (config.mode !== "desktop") return notPrepared;
+      const ready = yield* startup.awaitCommandReady.pipe(Effect.timeoutOption("250 millis"));
+      if (Option.isNone(ready)) return notPrepared;
+      const ids = yield* startup.enqueueCommand(startup.markOptedInProviderSessionsForContinuation);
+      return { prepared: true, threadCount: ids.length };
+    }).pipe(
+      Effect.catch(() =>
+        Effect.logWarning("Could not prepare thread continuations before quit.").pipe(
+          Effect.as({ prepared: false, threadCount: 0 }),
+        ),
+      ),
+    );
     if (
       !isJonesRuntime({
         version,
@@ -206,6 +222,7 @@ export const layer = Layer.effect(
       const unavailable = Effect.succeed(blocked("This host uses Release updates."));
       return JonesUpdates.of({
         ...unsupportedOperations,
+        prepareQuit,
         state: () => Effect.succeed(null),
         check: unavailable,
         prepareNative: () => unavailable,
@@ -371,6 +388,7 @@ export const layer = Layer.effect(
       );
       return JonesUpdates.of({
         ...unsupportedOperations,
+        prepareQuit,
         prepareNative,
         state: (after) =>
           after !== revision
@@ -644,6 +662,8 @@ export const layer = Layer.effect(
           launcherManaged: launcher.managed,
           qualifiedStaging: launcher.qualifiedStaging === true,
           qualifiedUpdates: launcher.qualifiedUpdates === true,
+          qualifiedRetirement:
+            launcher.qualifiedRetirement === true && launcher.retireUpdate !== undefined,
           hasCurrentVersion: launcher.currentVersion !== undefined,
           hasStage: preparation !== undefined,
           hasInstall:
@@ -967,6 +987,7 @@ export const layer = Layer.effect(
       };
     });
     return JonesUpdates.of({
+      prepareQuit,
       reconcile: settleOperation,
       recordRetired: settleOperation,
       refreshPolicy,
@@ -1011,8 +1032,10 @@ export const layer = Layer.effect(
       check: Effect.promise(() => updater.check()),
       download: (input) => Effect.promise(() => updater.download(input)),
       downloadExact: (input) =>
-        updater.snapshot().capability.download
-          ? Effect.promise(() => updater.stageExact(input.targetSource))
+        updater.snapshot().capability.download &&
+        updater.snapshot().capability.exactSource === true &&
+        (input.replace === undefined || updater.snapshot().capability.replaceStaged === true)
+          ? Effect.promise(() => updater.stageExact(input.targetSource, input.replace))
           : Effect.succeed({
               ...updater.snapshot(),
               phase: "blocked" as const,

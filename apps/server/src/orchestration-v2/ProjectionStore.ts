@@ -101,6 +101,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
+import { readLocalHistoryPage } from "../jones/orchestration/historyPaging.ts";
 
 import { MCP_APP_OUTPUT_KEY } from "@t3tools/shared/mcpApp";
 import { threadHtmlRenderAttachmentIds } from "../attachmentStore.ts";
@@ -438,6 +439,10 @@ export interface ProjectionStoreV2Shape {
     throughEntryId?: string,
     conversationOnly?: boolean,
   ) => Effect.Effect<OrchestrationV2ThreadHistoryPage, ProjectionStoreV2Error>;
+  readonly getTimelinePages: (
+    threadId: ThreadId,
+    selections: ReadonlyArray<ProjectionTimelinePageOptions>,
+  ) => Effect.Effect<ReadonlyArray<ProjectionTimelinePage>, ProjectionStoreV2Error>;
   readonly getTimelinePage: (
     threadId: ThreadId,
     options: ProjectionTimelinePageOptions,
@@ -6083,8 +6088,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       sql
         .withTransaction(
           Effect.gen(function* () {
-            const index = yield* readTimelineIndex(threadId, new Set());
-            if (index.records.thread.deletedAt !== null)
+            const { thread } = yield* getThreadRecords(threadId, []);
+            if (thread.deletedAt !== null)
               return yield* new ProjectionStoreThreadNotFoundError({ threadId });
             const revisions = yield* sql<{
               sequence: number;
@@ -6092,25 +6097,39 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           FROM orchestration_events WHERE application_event_version = 2
           AND aggregate_kind = 'thread' AND stream_id = ${threadId}`;
             const snapshotSequence = revisions[0]?.sequence ?? 0;
-            const page = yield* Effect.try({
-              try: () =>
-                selectHistoryPageFromCursor({
-                  items: index.visible.map((row, position) => ({
-                    ...row,
-                    position,
-                    canonicalPosition: position,
-                  })),
-                  cursor,
-                  snapshotSequence,
-                  rowEncodedBytes: () => 0,
-                  throughEntryId,
-                }),
-              catch: (cause) => new ProjectionStoreReadError({ threadId, cause }),
-            });
-            const end = (page.items.at(-1)?.canonicalPosition ?? -1) + 1;
-            const hasUserTurns = index.visible
-              .slice(0, end)
-              .some((row) => isThreadHistoryUserTurn(row.item));
+            const local =
+              thread.forkedFrom === null && throughEntryId === undefined
+                ? yield* readLocalHistoryPage(threadId, cursor, snapshotSequence).pipe(
+                    Effect.provideService(SqlClient.SqlClient, sql),
+                  )
+                : null;
+            const { page, hasUserTurns } =
+              local ??
+              (yield* Effect.gen(function* () {
+                const index = yield* readTimelineIndex(threadId, new Set());
+                const page = yield* Effect.try({
+                  try: () =>
+                    selectHistoryPageFromCursor({
+                      items: index.visible.map((row, position) => ({
+                        ...row,
+                        position,
+                        canonicalPosition: position,
+                      })),
+                      cursor,
+                      snapshotSequence,
+                      rowEncodedBytes: () => 0,
+                      throughEntryId,
+                    }),
+                  catch: (cause) => new ProjectionStoreReadError({ threadId, cause }),
+                });
+                const end = (page.items.at(-1)?.canonicalPosition ?? -1) + 1;
+                return {
+                  page,
+                  hasUserTurns: index.visible
+                    .slice(0, end)
+                    .some((row) => isThreadHistoryUserTurn(row.item)),
+                };
+              }));
             const materialized =
               conversationOnly && hasUserTurns
                 ? page.items.filter((row) => isConversationHistoryItem(row.item))
@@ -6163,14 +6182,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         )
         .pipe(Effect.mapError(controlReadError(threadId)));
 
-    const getTimelinePage: ProjectionStoreV2Shape["getTimelinePage"] = (threadId, options) =>
+    const getTimelinePages: ProjectionStoreV2Shape["getTimelinePages"] = (threadId, selections) =>
       sql
         .withTransaction(
           Effect.gen(function* () {
             const index = yield* readTimelineIndex(threadId, new Set());
-            const matching = index.visible
-              .map((row, position) => ({ ...row, position }))
-              .filter((row) =>
+            const visible = index.visible.map((row, position) => ({ ...row, position }));
+            const pages = selections.map((options) => {
+              const matching = visible.filter((row) =>
                 options.itemId === undefined
                   ? row.position > (options.afterPosition ?? -1) &&
                     (options.view === "activity" ||
@@ -6179,62 +6198,71 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                       ))
                   : row.sourceItemId === options.itemId,
               );
-            const page = options.tail
-              ? matching.slice(Math.max(0, matching.length - options.limit))
-              : matching.slice(0, options.limit);
-            const revisions = options.tail
+              const page = options.tail
+                ? matching.slice(Math.max(0, matching.length - options.limit))
+                : matching.slice(0, options.limit);
+              return { options, matching, page };
+            });
+            const hasTail = selections.some((options) => options.tail);
+            const revisions = hasTail
               ? yield* sql<{
                   sequence: number | null;
                 }>`SELECT MAX(sequence) AS sequence FROM orchestration_events WHERE application_event_version = 2`
               : [];
-            if (options.tail && index.records.thread.deletedAt !== null)
+            if (hasTail && index.records.thread.deletedAt !== null)
               return yield* new ProjectionStoreThreadNotFoundError({ threadId });
-            const byIdentity = yield* readTimelinePayloads(page);
-            const items = yield* Effect.forEach(page, (row) =>
+            const byIdentity = yield* readTimelinePayloads(pages.flatMap(({ page }) => page));
+            return yield* Effect.forEach(pages, ({ options, matching, page }) =>
               Effect.gen(function* () {
-                if (row.synthetic !== undefined)
-                  return {
-                    position: row.position,
-                    sourceThreadId: row.sourceThreadId,
-                    sourceItemId: row.sourceItemId,
-                    visibility: row.visibility,
-                    item: row.synthetic,
-                  };
-                const payload = byIdentity.get(
-                  timelinePayloadIdentity(row.sourceThreadId, row.sourceItemId),
+                const items = yield* Effect.forEach(page, (row) =>
+                  Effect.gen(function* () {
+                    if (row.synthetic !== undefined)
+                      return {
+                        position: row.position,
+                        sourceThreadId: row.sourceThreadId,
+                        sourceItemId: row.sourceItemId,
+                        visibility: row.visibility,
+                        item: row.synthetic,
+                      };
+                    const payload = byIdentity.get(
+                      timelinePayloadIdentity(row.sourceThreadId, row.sourceItemId),
+                    );
+                    const decoded = yield* decodeRows(
+                      decodeTurnItemPayload,
+                      row.sourceThreadId,
+                    )(payload === undefined ? [] : [{ payload_json: payload }]);
+                    const item = decoded[0];
+                    if (item === undefined)
+                      return yield* new ProjectionStoreReadError({
+                        threadId,
+                        cause: "Timeline item disappeared during snapshot",
+                      });
+                    return {
+                      position: row.position,
+                      sourceThreadId: row.sourceThreadId,
+                      sourceItemId: row.sourceItemId,
+                      visibility: row.visibility,
+                      item,
+                    };
+                  }),
                 );
-                const decoded = yield* decodeRows(
-                  decodeTurnItemPayload,
-                  row.sourceThreadId,
-                )(payload === undefined ? [] : [{ payload_json: payload }]);
-                const item = decoded[0];
-                if (item === undefined)
-                  return yield* new ProjectionStoreReadError({
-                    threadId,
-                    cause: "Timeline item disappeared during snapshot",
-                  });
                 return {
-                  position: row.position,
-                  sourceThreadId: row.sourceThreadId,
-                  sourceItemId: row.sourceItemId,
-                  visibility: row.visibility,
-                  item,
+                  items,
+                  totalItems: index.visible.length,
+                  ...(!options.tail || revisions[0]?.sequence == null
+                    ? {}
+                    : { snapshotSequence: revisions[0].sequence }),
+                  ...(options.tail
+                    ? {
+                        inProgress: index.records.runs.some((run) =>
+                          activeRunStatuses.has(run.status),
+                        ),
+                      }
+                    : {}),
+                  hasMore: matching.length > page.length,
                 };
               }),
             );
-            return {
-              items,
-              totalItems: index.visible.length,
-              ...(revisions[0]?.sequence == null
-                ? {}
-                : { snapshotSequence: revisions[0].sequence }),
-              ...(options.tail
-                ? {
-                    inProgress: index.records.runs.some((run) => activeRunStatuses.has(run.status)),
-                  }
-                : {}),
-              hasMore: matching.length > page.length,
-            };
           }),
         )
         .pipe(
@@ -6244,6 +6272,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               : new ProjectionStoreReadError({ threadId, cause }),
           ),
         );
+
+    const getTimelinePage: ProjectionStoreV2Shape["getTimelinePage"] = (threadId, options) =>
+      getTimelinePages(threadId, [options]).pipe(Effect.map((pages) => pages[0]!));
 
     const getThreadSnapshotWindow: ProjectionStoreV2Shape["getThreadSnapshotWindow"] = (
       threadId,
@@ -7310,6 +7341,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getThreadSnapshot,
       getThreadSnapshotWindow,
       getTimelinePage,
+      getTimelinePages,
       getThreadHistoryPage,
       searchThread,
       searchThreadStream,
@@ -8196,29 +8228,35 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
           ),
         ),
       getTimelinePage: (threadId, options) =>
+        service.getTimelinePages(threadId, [options]).pipe(Effect.map((pages) => pages[0]!)),
+      getTimelinePages: (threadId, selections) =>
         service.getThreadSnapshot(threadId).pipe(
-          Effect.map(({ projection, snapshotSequence }) => {
-            const matching = projection.visibleTurnItems.filter((row) =>
-              options.itemId === undefined
-                ? row.position > (options.afterPosition ?? -1) &&
-                  (options.view === "activity" ||
-                    ["user_message", "assistant_message", "proposed_plan"].includes(row.item.type))
-                : row.sourceItemId === options.itemId,
-            );
-            return {
-              items: options.tail
-                ? matching.slice(Math.max(0, matching.length - options.limit))
-                : matching.slice(0, options.limit),
-              totalItems: projection.visibleTurnItems.length,
-              ...(options.tail
-                ? {
-                    snapshotSequence,
-                    inProgress: projection.runs.some((run) => activeRunStatuses.has(run.status)),
-                  }
-                : {}),
-              hasMore: matching.length > options.limit,
-            };
-          }),
+          Effect.map(({ projection, snapshotSequence }) =>
+            selections.map((options) => {
+              const matching = projection.visibleTurnItems.filter((row) =>
+                options.itemId === undefined
+                  ? row.position > (options.afterPosition ?? -1) &&
+                    (options.view === "activity" ||
+                      ["user_message", "assistant_message", "proposed_plan"].includes(
+                        row.item.type,
+                      ))
+                  : row.sourceItemId === options.itemId,
+              );
+              return {
+                items: options.tail
+                  ? matching.slice(Math.max(0, matching.length - options.limit))
+                  : matching.slice(0, options.limit),
+                totalItems: projection.visibleTurnItems.length,
+                ...(options.tail
+                  ? {
+                      snapshotSequence,
+                      inProgress: projection.runs.some((run) => activeRunStatuses.has(run.status)),
+                    }
+                  : {}),
+                hasMore: matching.length > options.limit,
+              };
+            }),
+          ),
         ),
       getThreadSnapshotWindow: (threadId, options) =>
         service.getThreadSnapshot(threadId).pipe(

@@ -207,6 +207,21 @@ it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
             launcherRefresh: supported ? "none" : "recommended",
           });
           if (!supported) expect((yield* updates.state())?.launcherVersion).toBeUndefined();
+          const beforeReplacement = yield* updates.state();
+          expect(
+            (yield* updates.downloadExact({
+              targetSource: binding.targetSource,
+              replace: {
+                stagedHandle: binding.stagedHandle,
+                sourceSha: binding.targetSource,
+                operationId,
+                environmentId: EnvironmentId.make(binding.environmentId),
+                currentVersion: version,
+                expectedInstalledSource: binding.expectedInstalledSource,
+              },
+            })).message,
+          ).toBe("Exact-source download is unavailable on this host.");
+          expect(yield* updates.state()).toEqual(beforeReplacement);
           expect((yield* updates.reconcile(input)).settlementRefusal).toBe(
             supported ? "restore-pending" : "capability-unsupported",
           );
@@ -388,6 +403,10 @@ function fixture(scopes: ReadonlyArray<AuthEnvironmentScope>) {
     download: (input) => record("download", input),
     downloadExact: (input) => record("downloadExact", input),
     prepareNative: (input) => record("prepareNative", input),
+    prepareQuit: Effect.sync(() => {
+      calls.push({ action: "prepareQuit", input: undefined });
+      return { prepared: true, threadCount: 2 };
+    }),
     install: (input) => record("install", input),
     reconcile: (input) => record("reconcile", input),
     recordRetired: (input) => record("recordRetired", input),
@@ -426,6 +445,26 @@ function fixture(scopes: ReadonlyArray<AuthEnvironmentScope>) {
 }
 
 describe("qualified update HTTP authority and decoding", () => {
+  test("requires operate scope for empty-body quit preparation and returns no-store", async () => {
+    for (const scopes of [[], ["orchestration:read"], ["orchestration:operate"]] as const) {
+      const app = fixture(scopes);
+      try {
+        const response = await app.handler(
+          new Request("http://fixture/api/jones-updates/prepare-quit", { method: "POST" }),
+        );
+        const permitted = scopes.some((scope) => scope === "orchestration:operate");
+        expect(response.status).toBe(permitted ? 200 : 403);
+        expect(app.calls).toEqual(permitted ? [{ action: "prepareQuit", input: undefined }] : []);
+        if (permitted) {
+          expect(response.headers.get("cache-control")).toBe("no-store");
+          expect(await response.json()).toEqual({ prepared: true, threadCount: 2 });
+        }
+      } finally {
+        await app.dispose();
+      }
+    }
+  });
+
   const reconciliation = {
     operationId: "11111111-1111-4111-8111-111111111111",
     requestId: "22222222-2222-4222-8222-222222222222",
@@ -497,6 +536,17 @@ describe("qualified update HTTP authority and decoding", () => {
     try {
       const download = { artifactId: 101, sourceSha: "a".repeat(40) };
       const downloadExact = { targetSource: "b".repeat(40) };
+      const replacement = {
+        ...downloadExact,
+        replace: {
+          stagedHandle: app.state.stagedHandle,
+          sourceSha: "c".repeat(40),
+          operationId: "11111111-1111-4111-8111-111111111111",
+          environmentId: app.state.environmentId,
+          currentVersion: app.state.currentVersion,
+          expectedInstalledSource: "a".repeat(40),
+        },
+      };
       const install = {
         stagedHandle: app.state.stagedHandle,
         environmentId: app.state.environmentId,
@@ -512,6 +562,7 @@ describe("qualified update HTTP authority and decoding", () => {
       for (const [action, input] of [
         ["download", download],
         ["download-exact", downloadExact],
+        ["download-exact", replacement],
         ["install", install],
         ["prepare-native", preparation],
       ] as const) {
@@ -529,6 +580,7 @@ describe("qualified update HTTP authority and decoding", () => {
       expect(app.calls).toEqual([
         { action: "download", input: download },
         { action: "downloadExact", input: downloadExact },
+        { action: "downloadExact", input: replacement },
         { action: "install", input: install },
         { action: "prepareNative", input: preparation },
       ]);

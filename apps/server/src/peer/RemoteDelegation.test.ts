@@ -57,6 +57,8 @@ import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -2076,6 +2078,25 @@ it.effect.each(["pass", "hold"] as const)(
         let receivingAuth: EnvironmentAuth.EnvironmentAuth["Service"] | undefined;
         let evaluations = 0;
         const admissionContext = yield* AdmissionIntake.layer.pipe(
+          Layer.provide(
+            Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+              getInstance: (id) =>
+                Effect.succeed(
+                  id === instanceId
+                    ? ({
+                        enabled: true,
+                        snapshot: {
+                          getSnapshot: Effect.succeed({
+                            enabled: true,
+                            supportsRemoteRequestEvaluation: true,
+                            models: [{ slug: modelSelection.model, capabilities: null }],
+                          }),
+                        },
+                      } as unknown as ProviderInstance)
+                    : undefined,
+                ),
+            }),
+          ),
           Layer.provide(
             RemoteAdmission.layerWithEvaluator(() =>
               Effect.sync(() => {

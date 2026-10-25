@@ -11,6 +11,7 @@ import {
 } from "../jones/orchestration/QueuedSteerBatch.ts";
 import { planQueuedSteerBatch } from "@t3tools/shared/jones/queuedSteerBatch";
 import * as CheckoutIntent from "../jones/ordinaryCheckout/CheckoutIntent.ts";
+import { commitCommand as commitWorkspaceLifecycleCommand } from "../jones/workspaceLifecycle/NativeBoundary.ts";
 import { makeJonesTablePresence } from "../jones/persistence/JonesTablePresence.ts";
 import {
   checkSettlementRestoreReplay,
@@ -479,6 +480,10 @@ export interface OrchestratorV2Shape extends RemoteObservationHooks.ObservationP
     throughEntryId?: string,
     conversationOnly?: boolean,
   ) => Effect.Effect<OrchestrationV2ThreadHistoryPage, OrchestratorV2Error>;
+  readonly getTimelinePages: (
+    threadId: ThreadId,
+    selections: ReadonlyArray<ProjectionTimelinePageOptions>,
+  ) => Effect.Effect<ReadonlyArray<ProjectionTimelinePage>, OrchestratorProjectionError>;
   readonly getTimelinePage: (
     threadId: ThreadId,
     options: ProjectionTimelinePageOptions,
@@ -14177,45 +14182,49 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       return { sequence: resultSequence, storedEvents: [] } satisfies OrchestratorV2DispatchResult;
     }
     const acceptedAt = plan.events.at(-1)?.occurredAt ?? (yield* DateTime.now);
-    const committed = yield* eventSink
-      .commitCommand({
-        commandId: command.commandId,
-        threadId: commandThreadId(command),
-        commandType: command.type,
-        acceptedAt,
-        ordinaryCheckoutCommand: command,
-        ...(command.type === "thread.settlement.restore"
-          ? { settlementRestore: { settleCommandId: command.settleCommandId } }
-          : {}),
-        events: plan.events,
-        effects:
-          nativeAcceptance === undefined
-            ? plan.effects
-            : plan.effects.map((effect) => ({
-                ...effect,
-                nativeCreationExecutionReference: {
-                  version: 2 as const,
-                  claimId: nativeAcceptance.claimId,
-                  stageCommandId: nativeAcceptance.command.commandId,
-                  effectId: effect.id,
-                  stage: "native_command" as const,
-                },
-              })),
-        ...(nativeAcceptance === undefined ? {} : { nativeCreation: nativeAcceptance }),
-        ...(plan.cancelUnsettledEffects === undefined
-          ? {}
-          : { cancelUnsettledEffects: plan.cancelUnsettledEffects }),
-      })
-      .pipe(
-        Effect.mapError(
-          (cause) =>
-            new OrchestratorDispatchError({
-              commandId: command.commandId,
-              commandType: command.type,
-              cause,
-            }),
+    const committed = yield* commitWorkspaceLifecycleCommand(
+      command,
+      plan.events,
+      eventSink
+        .commitCommand({
+          commandId: command.commandId,
+          threadId: commandThreadId(command),
+          commandType: command.type,
+          acceptedAt,
+          ordinaryCheckoutCommand: command,
+          ...(command.type === "thread.settlement.restore"
+            ? { settlementRestore: { settleCommandId: command.settleCommandId } }
+            : {}),
+          events: plan.events,
+          effects:
+            nativeAcceptance === undefined
+              ? plan.effects
+              : plan.effects.map((effect) => ({
+                  ...effect,
+                  nativeCreationExecutionReference: {
+                    version: 2 as const,
+                    claimId: nativeAcceptance.claimId,
+                    stageCommandId: nativeAcceptance.command.commandId,
+                    effectId: effect.id,
+                    stage: "native_command" as const,
+                  },
+                })),
+          ...(nativeAcceptance === undefined ? {} : { nativeCreation: nativeAcceptance }),
+          ...(plan.cancelUnsettledEffects === undefined
+            ? {}
+            : { cancelUnsettledEffects: plan.cancelUnsettledEffects }),
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new OrchestratorDispatchError({
+                commandId: command.commandId,
+                commandType: command.type,
+                cause,
+              }),
+          ),
         ),
-      );
+    ).pipe(mapDispatchError(command));
 
     if (committed.receipt.status === "rejected") {
       return yield* new OrchestratorCommandPreviouslyRejectedError({
@@ -15333,6 +15342,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
     dispatchLegacyGuardRejectionDelete: dispatchWithReceipt,
     dispatchLegacyFailureDelete: dispatchWithReceipt,
+    getTimelinePages: (threadId, selections) =>
+      projectionStore
+        .getTimelinePages(threadId, selections)
+        .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause }))),
     getTimelinePage: (threadId, options) =>
       projectionStore
         .getTimelinePage(threadId, options)
@@ -15487,6 +15500,7 @@ const layerUnavailable: Layer.Layer<OrchestratorV2> = Layer.succeed(
     searchThread: (input) =>
       Effect.fail(new OrchestratorProjectionError({ threadId: input.threadId })),
     getThreadHistoryPage: (threadId) => Effect.fail(new OrchestratorProjectionError({ threadId })),
+    getTimelinePages: (threadId) => Effect.fail(new OrchestratorProjectionError({ threadId })),
     getTimelinePage: (threadId) => Effect.fail(new OrchestratorProjectionError({ threadId })),
     getMessageCount: (threadId) => Effect.fail(new OrchestratorProjectionError({ threadId })),
     getTurnItem: ({ threadId }) => Effect.fail(new OrchestratorProjectionError({ threadId })),

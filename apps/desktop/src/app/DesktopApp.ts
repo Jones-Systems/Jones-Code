@@ -1,5 +1,4 @@
 import * as Cause from "effect/Cause";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -37,6 +36,7 @@ import * as DesktopSnapShot from "../snapShot/DesktopSnapShot.ts";
 import * as DesktopWslBackend from "../wsl/DesktopWslBackend.ts";
 import * as DesktopRendererHistory from "../telemetry/DesktopRendererHistory.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { prepareLocalBackendsForQuit } from "../jones/updates/jonesQuitPreparation.ts";
 
 const DEFAULT_DESKTOP_BACKEND_PORT = 3773;
 const MAX_TCP_PORT = 65_535;
@@ -152,13 +152,13 @@ export const stopAllPoolInstances = Effect.fn("desktop.app.stopAllPoolInstances"
   function* (): Effect.fn.Return<void, never, DesktopBackendPool.DesktopBackendPool> {
     const pool = yield* DesktopBackendPool.DesktopBackendPool;
     const instances = yield* pool.list;
-    yield* Effect.forEach(
-      instances,
-      (instance) => instance.stop({ timeout: Duration.seconds(5) }),
-      { concurrency: "unbounded" },
-    );
+    yield* Effect.forEach(instances, (instance) => instance.stop(), { concurrency: "unbounded" });
   },
 );
+
+export const prepareAndStopAllPoolInstances = Effect.fn(
+  "desktop.app.prepareAndStopAllPoolInstances",
+)(() => prepareLocalBackendsForQuit().pipe(Effect.ensuring(stopAllPoolInstances())));
 
 export const bootstrapWithIpcRegistration = Effect.fn("desktop.bootstrap")(function* <E, R>(
   registerIpc: Effect.Effect<void, E, R>,
@@ -361,7 +361,7 @@ const scopedProgram = Effect.scoped(
       // cascade, so leaving the WSL instance for its parent scope
       // finalizer means it gets hard-killed by the OS instead of
       // receiving SIGTERM + grace.
-      stopAllPoolInstances().pipe(
+      prepareAndStopAllPoolInstances().pipe(
         Effect.ensuring(rendererHistory.shutdown),
         Effect.ensuring(shutdown.markComplete),
       ),
