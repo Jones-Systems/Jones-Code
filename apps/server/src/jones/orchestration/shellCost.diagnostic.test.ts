@@ -44,10 +44,11 @@ const runId = (id: ThreadId, index: number) => RunId.make(`${id}:run:${index}`);
 import {
   measure,
   NativeTimeline,
+  queryEvidence,
   withNativeWatchdog,
-  type Query,
   type Measurement,
 } from "./shellCost.testFixtures.ts";
+import { fileBackedScenario } from "./shellCost.diagnosticFixtures.ts";
 
 function boundedService<T extends object>(methods: Partial<T>): T {
   return new Proxy(methods, {
@@ -57,28 +58,6 @@ function boundedService<T extends object>(methods: Partial<T>): T {
     },
   }) as T;
 }
-
-// These are diagnostic re-executions after timing, not row counts from the timed
-// driver. Only the exact SELECT text and captured bindings may be replayed.
-const queryEvidence = Effect.fn("shellCost.queryEvidence")(function* (
-  measurements: ReadonlyArray<Measurement>,
-) {
-  const sql = yield* SqlClient.SqlClient;
-  const distinct = new Map<string, Query>();
-  for (const { statements } of measurements) {
-    for (const query of statements) distinct.set(JSON.stringify(query), query);
-  }
-  return yield* Effect.forEach([...distinct.values()], (query) =>
-    Effect.gen(function* () {
-      if (!/^\s*SELECT\b/i.test(query.text) || query.parameters === undefined) {
-        return { ...query, observation: "not replayed: non-SELECT or bindings unavailable" };
-      }
-      const rows = yield* sql.unsafe(query.text, query.parameters);
-      const plan = yield* sql.unsafe(`EXPLAIN QUERY PLAN ${query.text}`, query.parameters);
-      return { ...query, observation: "post-timing replay", resultCardinality: rows.length, plan };
-    }),
-  );
-});
 
 const seed = Effect.fn("shellCost.seed")(function* (historyCount: number) {
   const store = yield* ProjectionStore.ProjectionStoreV2;
@@ -556,3 +535,12 @@ it.effect.skipIf(process.env.JONES_SHELL_COST_LARGE !== "1")(
   "large history: real V2 shell cost with a bounded fork source",
   () => scenario(1, "complete", 10_000),
 );
+
+// The caller selects a qualified host and an existing disk-backed scratch root.
+it.effect.skipIf(process.env.JONES_SHELL_COST_M1 !== "1")(
+  "M1 file-backed synthetic shell decomposition",
+  () => fileBackedScenario(false),
+);
+it.effect.skipIf(
+  process.env.JONES_SHELL_COST_M1 !== "1" || process.env.JONES_SHELL_COST_LARGE !== "1",
+)("M1 large file-backed synthetic shell decomposition", () => fileBackedScenario(true));

@@ -952,11 +952,9 @@ export const make = Effect.gen(function* () {
             instance.snapshot.pipe(Effect.map((snapshot) => snapshot.desiredRunning)),
           );
           yield* Ref.set(installRunningBackendsRef, runningInstances);
-          yield* Effect.forEach(
-            instances,
-            (instance) => instance.stop({ timeout: Duration.seconds(5) }),
-            { concurrency: "unbounded" },
-          );
+          yield* Effect.forEach(instances, (instance) => instance.stop(), {
+            concurrency: "unbounded",
+          });
           yield* electronUpdater.quitAndInstall({
             isSilent: true,
             isForceRunAfter: true,
