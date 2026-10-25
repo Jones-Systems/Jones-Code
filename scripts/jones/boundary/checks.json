@@ -3002,6 +3002,24 @@
         "vp run --filter @t3tools/contracts --filter @t3tools/shared --filter @t3tools/provider-core --filter @t3tools/client-runtime --filter t3 --filter @t3tools/web --concurrency-limit 1 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-coherent-reference-reads",
+      "tests": [
+        "apps/server/src/jones/orchestration/threadReferenceExcerpt.test.ts",
+        "apps/server/src/jones/orchestration/threadReferenceTail.test.ts",
+        "apps/server/src/jones/orchestration/threadReferenceCoherent.test.ts",
+        "apps/server/src/relay/AgentAwarenessRelay.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
+        "apps/server/src/orchestration-v2/ProjectionStore.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/orchestration/threadReferenceExcerpt.test.ts apps/server/src/jones/orchestration/threadReferenceTail.test.ts apps/server/src/jones/orchestration/threadReferenceCoherent.test.ts",
+        "vp test run apps/server/src/orchestration-v2/ProjectionStore.test.ts -t 'keeps fork visible items stable after a source run is rolled back'",
+        "vp lint apps/server/src/orchestration-v2/ProjectionStore.ts apps/server/src/orchestration-v2/Orchestrator.ts apps/server/src/orchestration-v2/ThreadManagementService.ts apps/server/src/jones/orchestration/threadReferenceExcerpt.ts apps/server/src/jones/orchestration/threadReferenceExcerpt.test.ts apps/server/src/jones/orchestration/threadReferenceTail.test.ts apps/server/src/jones/orchestration/threadReferenceCoherent.test.ts apps/server/src/relay/AgentAwarenessRelay.test.ts apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }
