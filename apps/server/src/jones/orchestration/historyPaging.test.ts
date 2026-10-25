@@ -11,6 +11,8 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
+import * as References from "effect/References";
 import * as Tracer from "effect/Tracer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Statement from "effect/sql/Statement";
@@ -39,10 +41,13 @@ type ObservedQuery = {
 
 const observeMetadata = () => {
   const queries: ObservedQuery[] = [];
-  const bindings = new WeakMap<Tracer.Span, {
-    query: string;
-    parameters: ReadonlyArray<unknown>;
-  }>();
+  const bindings = new WeakMap<
+    Tracer.Span,
+    {
+      query: string;
+      parameters: ReadonlyArray<unknown>;
+    }
+  >();
   const capture: Statement.Transformer = (statement, _sql, _fiber, span) => {
     const [query, parameters] = statement.compile();
     bindings.set(span, { query, parameters: [...parameters] });
@@ -68,10 +73,11 @@ const observeMetadata = () => {
       return span;
     },
   });
-  const observe = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(
-    Effect.provideService(Statement.CurrentTransformer, capture),
-    Effect.withTracer(tracer),
-  );
+  const observe = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    effect.pipe(
+      Effect.provideService(Statement.CurrentTransformer, capture),
+      Effect.withTracer(tracer),
+    );
   return { queries, observe };
 };
 
@@ -232,9 +238,7 @@ it.layer(layer)("direct history-page metadata selection", (it) => {
         const cursor = initial.historyCursor!;
         assert.isBelow(decodeThreadHistoryCursor(cursor).p, 76);
         const observation = observeMetadata();
-        const page = yield* store
-          .getThreadHistoryPage(threadId, cursor)
-          .pipe(observation.observe);
+        const page = yield* store.getThreadHistoryPage(threadId, cursor).pipe(observation.observe);
         // An absent through-entry keeps selection unchanged and forces the original full-index path.
         const fallback = yield* store.getThreadHistoryPage(threadId, cursor, "entry:absent");
         assert.strictEqual(JSON.stringify(page), JSON.stringify(fallback));
@@ -248,47 +252,88 @@ it.layer(layer)("direct history-page metadata selection", (it) => {
         );
         const chunks = metadata.filter(({ query }) => query.includes("ORDER BY ordinal DESC"));
         assert.isNotEmpty(chunks);
-        assert.isTrue(chunks.every(({ rows }) =>
-          rows !== null && rows <= THREAD_HISTORY_PAGE_POLICY.maxItems + 2));
-        const selects = observation.queries.filter(({ query }) => /^\s*(SELECT|WITH)\b/i.test(query));
-        assert.isTrue(selects.every(({ outcome, rows, parameters }) =>
-          outcome === "success" && rows !== null && parameters !== undefined));
+        assert.isTrue(
+          chunks.every(
+            ({ rows }) => rows !== null && rows <= THREAD_HISTORY_PAGE_POLICY.maxItems + 2,
+          ),
+        );
+        const selects = observation.queries.filter(({ query }) =>
+          /^\s*(SELECT|WITH)\b/i.test(query),
+        );
+        assert.isTrue(
+          selects.every(
+            ({ outcome, rows, parameters }) =>
+              outcome === "success" && rows !== null && parameters !== undefined,
+          ),
+        );
         const plans = yield* Effect.forEach(selects, (query) =>
-          sql.unsafe<{ detail: string }>(
-            `EXPLAIN QUERY PLAN ${query.query}`,
-            query.parameters,
-          ).pipe(Effect.map((plan) => ({ ...query, plan: plan.map(({ detail }) => detail) }))),
+          sql
+            .unsafe<{ detail: string }>(`EXPLAIN QUERY PLAN ${query.query}`, query.parameters)
+            .pipe(Effect.map((plan) => ({ ...query, plan: plan.map(({ detail }) => detail) }))),
+        );
+        yield* Effect.logInfo(
+          "history-page SQL work",
+          JSON.stringify({
+            domain: { items: 1040, runs: 260, attempts: 260 },
+            queries: plans,
+          }),
+        ).pipe(
+          Effect.provideService(References.MinimumLogLevel, "Info"),
+          Effect.withLogger(Logger.consoleLogFmt),
         );
         const chunkPlans = plans.filter(({ query }) => query.includes("ORDER BY ordinal DESC"));
-        assert.isTrue(chunkPlans.every(({ plan }) => plan.some((detail) =>
-          detail.includes("SEARCH") && detail.includes("thread_ordinal_idx") &&
-          detail.includes("thread_id=?") && detail.includes("ordinal<?"))));
-        assert.isTrue(chunkPlans.every(({ plan }) =>
-          !plan.some((detail) => detail.includes("TEMP B-TREE"))));
+        assert.isTrue(
+          chunkPlans.every(({ plan }) =>
+            plan.some(
+              (detail) =>
+                detail.includes("SEARCH") &&
+                detail.includes("thread_ordinal_idx") &&
+                detail.includes("thread_id=?") &&
+                detail.includes("(ordinal,turn_item_id)<(?,?)"),
+            ),
+          ),
+          JSON.stringify(chunkPlans),
+        );
+        assert.isTrue(
+          chunkPlans.every(({ plan }) => !plan.some((detail) => detail.includes("TEMP B-TREE"))),
+        );
         const prefix = plans.filter(({ query }) => query.includes("SELECT COUNT(*) AS count"));
         assert.lengthOf(prefix, 1);
-        assert.isTrue(prefix[0]!.plan.some((detail) =>
-          detail.includes("COVERING INDEX") && detail.includes("thread_ordinal_idx") &&
-          detail.includes("thread_id=?") && detail.includes("ordinal<?")));
+        assert.isTrue(
+          prefix[0]!.plan.some(
+            (detail) =>
+              detail.includes("COVERING INDEX") &&
+              detail.includes("thread_ordinal_idx") &&
+              detail.includes("thread_id=?") &&
+              detail.includes("(ordinal,turn_item_id)<(?,?)"),
+          ),
+        );
         const correction = plans.filter(({ query }) => query.includes("WITH hidden AS"));
         assert.lengthOf(correction, 1);
-        assert.isTrue(correction[0]!.plan.some((detail) =>
-          detail.includes("SEARCH attempt") && detail.includes("thread_id=?")));
+        assert.isTrue(
+          correction[0]!.plan.some(
+            (detail) => detail.includes("SEARCH attempt") && detail.includes("thread_id=?"),
+          ),
+        );
         const runFacts = plans.filter(({ query }) => query.includes("wanted.value AS run_id"));
         assert.isNotEmpty(runFacts);
-        assert.isTrue(runFacts.every(({ plan }) => plan.some((detail) =>
-          detail.includes("SEARCH run") && detail.includes("run_id=?"))));
-        const payloads = plans.filter(({ query }) =>
-          !query.includes("AS input_intent") && query.includes("payload_json") &&
-          query.includes("wanted") && !query.includes("wanted.value AS run_id"));
+        assert.isTrue(
+          runFacts.every(({ plan }) =>
+            plan.some((detail) => detail.includes("SEARCH run") && detail.includes("run_id=?")),
+          ),
+        );
+        const payloads = plans.filter(
+          ({ query }) =>
+            !query.includes("AS input_intent") &&
+            query.includes("payload_json") &&
+            query.includes("wanted") &&
+            !query.includes("wanted.value AS run_id"),
+        );
         assert.isNotEmpty(payloads);
         // Plans and returned rows expose each cost family, not SQLite row visits:
         // prefix counts remain O(N); hidden correction may inspect all 260 attempts;
         // user discovery and per-run fact scans can cross long spans.
-        console.info("history-page SQL work", {
-          domain: { items: 1040, runs: 260, attempts: 260 },
-          queries: plans,
-        });
+
         const decoded = decodeThreadHistoryCursor(cursor);
         assert.notEqual(decoded.si, itemId(1));
         const older = yield* store.getThreadHistoryPage(threadId, page.nextCursor!);
@@ -409,32 +454,51 @@ it.layer(layer)("direct history-page metadata selection", (it) => {
           assert.isTrue(page.items.some((row) => row.item.runId === runId(239)));
         }
         const observation = observeMetadata();
-        const page = yield* store
-          .getThreadHistoryPage(threadId, cursor)
-          .pipe(observation.observe);
+        const page = yield* store.getThreadHistoryPage(threadId, cursor).pipe(observation.observe);
         assert.isAtMost(
           selectionMetadata(observation.queries).reduce((sum, query) => sum + (query.rows ?? 0), 0),
           1 + 2 * 77,
         );
-        const selects = observation.queries.filter(({ query }) => /^\s*(SELECT|WITH)\b/i.test(query));
-        assert.isTrue(selects.every(({ outcome, rows, parameters }) =>
-          outcome === "success" && rows !== null && parameters !== undefined));
+        const selects = observation.queries.filter(({ query }) =>
+          /^\s*(SELECT|WITH)\b/i.test(query),
+        );
+        assert.isTrue(
+          selects.every(
+            ({ outcome, rows, parameters }) =>
+              outcome === "success" && rows !== null && parameters !== undefined,
+          ),
+        );
         const plans = yield* Effect.forEach(selects, (query) =>
-          sql.unsafe<{ detail: string }>(
-            `EXPLAIN QUERY PLAN ${query.query}`,
-            query.parameters,
-          ).pipe(Effect.map((plan) => ({ ...query, plan: plan.map(({ detail }) => detail) }))),
+          sql
+            .unsafe<{ detail: string }>(`EXPLAIN QUERY PLAN ${query.query}`, query.parameters)
+            .pipe(Effect.map((plan) => ({ ...query, plan: plan.map(({ detail }) => detail) }))),
         );
         const lazyAttempts = plans.filter(({ query }) =>
-          query.includes("SELECT run_id, root_node_id FROM orchestration_v2_projection_run_attempts"));
+          query.includes(
+            "SELECT run_id, root_node_id FROM orchestration_v2_projection_run_attempts",
+          ),
+        );
         assert.isNotEmpty(lazyAttempts);
-        assert.isTrue(lazyAttempts.every(({ plan }) => plan.some((detail) =>
-          detail.includes("SEARCH") && detail.includes("thread_id=?") &&
-          detail.includes("run_id=?"))));
-        console.info("history-page hidden and interrupt SQL work", {
-          domain: { items: 1040, runs: 260, attempts: 262 },
-          queries: plans,
-        });
+        assert.isTrue(
+          lazyAttempts.every(({ plan }) =>
+            plan.some(
+              (detail) =>
+                detail.includes("SEARCH") &&
+                detail.includes("thread_id=?") &&
+                detail.includes("run_id=?"),
+            ),
+          ),
+        );
+        yield* Effect.logInfo(
+          "history-page hidden and interrupt SQL work",
+          JSON.stringify({
+            domain: { items: 1040, runs: 260, attempts: 262 },
+            queries: plans,
+          }),
+        ).pipe(
+          Effect.provideService(References.MinimumLogLevel, "Info"),
+          Effect.withLogger(Logger.consoleLogFmt),
+        );
         assert.isTrue(page.items.some((row) => row.sourceItemId === itemId(1000)));
       }),
   );
@@ -458,21 +522,30 @@ it.layer(layer)("direct history-page metadata selection", (it) => {
         assert.isAbove(page.items.length, 0);
         assert.isBelow(page.items.length, THREAD_HISTORY_PAGE_POLICY.maxItems);
         const count = page.items.length;
-        assert.deepEqual(page.items.map((row) => row.sourceItemId),
-          Array.from({ length: count }, (_, index) => itemId(1000 - count + index)));
+        assert.deepEqual(
+          page.items.map((row) => row.sourceItemId),
+          Array.from({ length: count }, (_, index) => itemId(1000 - count + index)),
+        );
         assert.strictEqual(decodeThreadHistoryCursor(page.nextCursor!).p, 999 - count);
         const canonicalRows = page.items.map((row, index) => ({
-          ...row, position: 999 - count + index,
+          ...row,
+          position: 999 - count + index,
         }));
         const bytes = canonicalRows.reduce((sum, row) => sum + projectedRowEncodedBytes(row), 0);
         assert.isAtMost(bytes, THREAD_HISTORY_PAGE_POLICY.maxEncodedBytes);
         const projection = yield* store.getThreadProjection(threadId);
-        const preceding = projection.visibleTurnItems.find((row) =>
-          row.sourceItemId === itemId(999 - count));
+        const preceding = projection.visibleTurnItems.find(
+          (row) => row.sourceItemId === itemId(999 - count),
+        );
         assert.isDefined(preceding);
-        assert.isAbove(bytes + projectedRowEncodedBytes({
-          ...preceding!, item: projectTurnItemForWire(preceding!.item),
-        }), THREAD_HISTORY_PAGE_POLICY.maxEncodedBytes);
+        assert.isAbove(
+          bytes +
+            projectedRowEncodedBytes({
+              ...preceding!,
+              item: projectTurnItemForWire(preceding!.item),
+            }),
+          THREAD_HISTORY_PAGE_POLICY.maxEncodedBytes,
+        );
         assert.isTrue(page.hasMoreHistory);
         assert.isAbove(decodeThreadHistoryCursor(page.nextCursor!).p, 900);
         yield* sql`UPDATE orchestration_v2_projection_runs
@@ -523,7 +596,11 @@ it.layer(layer)("direct history-page metadata selection", (it) => {
             "entry:absent",
           );
           assert.strictEqual(JSON.stringify(actual), JSON.stringify(expected));
-          assert.isTrue(selectionMetadata(observation.queries).some(({ rows }) => rows !== null && rows >= 1000));
+          assert.isTrue(
+            selectionMetadata(observation.queries).some(
+              ({ rows }) => rows !== null && rows >= 1000,
+            ),
+          );
         }
         const invalid = yield* store.getThreadHistoryPage(threadId, "invalid").pipe(Effect.flip);
         assert.strictEqual(invalid._tag, "ProjectionStoreReadError");
