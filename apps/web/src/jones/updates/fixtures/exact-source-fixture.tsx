@@ -12,8 +12,10 @@ import { APP_SOURCE_SHA, APP_VERSION } from "../../../branding";
 import { ComposerBannerStack } from "../../../components/chat/ComposerBannerStack";
 import { requestConfirmDialog } from "../../../confirmDialog";
 import { useClientUpdateBanners } from "../clientUpdateBanner";
+import { JonesBuildStatus } from "../JonesBuildStatus";
 import {
   ExactSourceUpdateAction,
+  performConfirmedInstall,
   type ExactSourceHost,
   type ExactSourceTarget,
 } from "../ExactSourceUpdateAction";
@@ -27,6 +29,7 @@ const EXACT_SCENARIOS = [
   "legacy-match",
   "legacy-mismatch",
   "staged-other",
+  "legacy-staged",
   "stale",
   "unsupported",
 ] as const;
@@ -67,19 +70,22 @@ const installedSource = (sha: string) => ({
 });
 function initialState(scenario: ExactScenario): JonesUpdateState | null {
   if (scenario === "unsupported") return null;
-  const legacy = scenario === "legacy-match" || scenario === "legacy-mismatch";
+  const legacy =
+    scenario === "legacy-match" || scenario === "legacy-mismatch" || scenario === "legacy-staged";
   return {
     source: "jones-actions",
     channel: "jones-main",
-    phase: scenario === "staged-other" ? "staged" : "available",
+    phase: scenario === "staged-other" || scenario === "legacy-staged" ? "staged" : "available",
     revision: 1,
     capability: legacy
       ? { check: true, download: true, install: true }
-      : { check: true, download: true, install: true, exactSource: true },
+      : { check: true, download: true, install: true, exactSource: true, replaceStaged: true },
     currentVersion: HOST_VERSION,
     installedSource: installedSource(INSTALLED_SOURCE),
     provenance: scenario === "legacy-match" ? targetBuild() : offeredBuild(),
-    ...(scenario === "staged-other" ? { stagedHandle: "staged-other-handle" } : {}),
+    ...(scenario === "staged-other" || scenario === "legacy-staged"
+      ? { stagedHandle: "staged-other-handle" }
+      : {}),
     message: "A newer main build is available.",
   };
 }
@@ -133,6 +139,21 @@ function createSyntheticExactStore(initialScenario: ExactScenario = "exact") {
     if (request.action === "downloadExact" || request.action === "download") {
       if (request.action === "downloadExact" && state.capability.exactSource !== true)
         return AsyncResult.failure(Cause.fail(new Error("Synthetic 404: no exact selection.")));
+      if (request.action === "downloadExact" && request.input.replace !== undefined) {
+        const old = request.input.replace;
+        if (
+          state.capability.replaceStaged !== true ||
+          state.stagedHandle !== old.stagedHandle ||
+          state.provenance?.sourceSha !== old.sourceSha ||
+          state.currentVersion !== old.currentVersion ||
+          state.installedSource?.sha !== old.expectedInstalledSource
+        )
+          return AsyncResult.success({
+            ...state,
+            phase: "blocked",
+            message: "Synthetic replacement binding changed; nothing was replaced.",
+          });
+      }
       const outcome = snapshot.nextDownload;
       commit({ nextDownload: "accept" });
       if (outcome === "lost") return lost();
@@ -154,7 +175,7 @@ function createSyntheticExactStore(initialScenario: ExactScenario = "exact") {
         return succeed();
       }
       publish((current) => ({
-        ...current,
+        ...withoutStaged(current),
         phase: "downloading",
         provenance: targetBuild(),
         message: "Synthetic download is in progress.",
@@ -192,10 +213,10 @@ function createSyntheticExactStore(initialScenario: ExactScenario = "exact") {
    * caller that renders from a subscribed snapshot depends on it structurally; `readLatest` and
    * `run` stay live because a request or confirmation outlives the render that started it.
    */
-  const hostFor = (view: ExactStoreSnapshot): ExactSourceHost => {
+  const hostFor = (view: ExactStoreSnapshot, environmentId: EnvironmentId): ExactSourceHost => {
     const read = (from: ExactStoreSnapshot) => ({
       observation: {
-        state: from.state,
+        state: from.state === null ? null : { ...from.state, environmentId },
         freshness: from.freshness,
         ...(from.freshness === "stale"
           ? { message: "Update status is temporarily unavailable; retrying." }
@@ -286,7 +307,13 @@ function SyntheticExactSourceAction({
   ...target
 }: ExactSourceTarget & { readonly store: SyntheticExactSourceStore }) {
   const snapshot = useSyncExternalStore(store.subscribe, store.read, store.read);
-  return <ExactSourceUpdateAction {...target} host={store.hostFor(snapshot)} />;
+  return (
+    <ExactSourceUpdateAction
+      {...target}
+      allowReplace
+      host={store.hostFor(snapshot, target.environmentId)}
+    />
+  );
 }
 
 /** Subscribes the caller to the store and returns the renderer the notice hook accepts. */
@@ -443,6 +470,38 @@ export function ExactSourcePreview({ runId }: { readonly runId: string }) {
       <output className="block" data-testid="exact-notice-count">
         Exact-source notices: {banners.length}
       </output>
+      <div aria-label="Synthetic Connections update row" className="rounded-lg border p-4">
+        <p className="font-medium">Mac Mini</p>
+        <JonesBuildStatus
+          environmentId={environmentId}
+          state={state}
+          freshness={snapshot.freshness}
+          extraAction={
+            <ExactSourceUpdateAction
+              environmentId={environmentId}
+              label="Mac Mini"
+              targetSource={APP_SOURCE_SHA ?? ""}
+              subject="this laptop"
+              allowReplace
+              allowInstall={false}
+              buttonLabel="Match laptop"
+              compact
+              host={store.hostFor(snapshot, environmentId)}
+            />
+          }
+          onRequest={(request) => {
+            if (request.action !== "install") {
+              void store.hostFor(snapshot, environmentId).run(request);
+              return;
+            }
+            void performConfirmedInstall({
+              input: request.input,
+              label: "Mac Mini",
+              host: store.hostFor(snapshot, environmentId),
+            });
+          }}
+        />
+      </div>
       <div data-testid="exact-banners" className="pt-6">
         <ComposerBannerStack items={banners} />
         <div className="rounded-b-lg border p-4 text-muted-foreground">Synthetic composer</div>

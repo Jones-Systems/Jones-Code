@@ -36,6 +36,7 @@ function fixture(overrides: Partial<JonesUpdaterHost> = {}) {
   const effects: string[] = [];
   let available = candidate;
   let buildStartedAt: string | undefined;
+  let checkResult: JonesActionsCheckResult | undefined;
   const host: JonesUpdaterHost = {
     initialState: {
       source: "jones-actions",
@@ -63,16 +64,20 @@ function fixture(overrides: Partial<JonesUpdaterHost> = {}) {
   const updater = new JonesUpdater(
     { ...host, ...overrides },
     {
-      check: async () => ({
-        state: "available",
-        candidate: available,
-        ...(buildStartedAt === undefined ? {} : { buildStartedAt }),
-      }),
+      check: async () =>
+        checkResult ?? {
+          state: "available",
+          candidate: available,
+          ...(buildStartedAt === undefined ? {} : { buildStartedAt }),
+        },
     },
   );
   return {
     updater,
     effects,
+    setCheckResult: (value: JonesActionsCheckResult) => {
+      checkResult = value;
+    },
     setBuildStartedAt: (value: string | undefined) => {
       buildStartedAt = value;
     },
@@ -358,6 +363,286 @@ describe("exact unaccepted stage retirement", () => {
     });
     expect(result).toEqual({ retired: false, reason: "Native acceptance is unknown." });
     expect(f.updater.snapshot().stagedHandle).toBe("fixed-handle");
+  });
+});
+
+describe("caller-bound exact-source replacement", () => {
+  const target = "f".repeat(40);
+  const replace = {
+    stagedHandle: "fixed-handle",
+    sourceSha: candidate.source,
+    operationId: "11111111-1111-4111-8111-111111111111",
+    environmentId: EnvironmentId.make("fixture"),
+    currentVersion: "0.0.0-preview.20261002.1",
+    expectedInstalledSource: "a".repeat(40),
+  };
+  function replacement(overrides: Partial<JonesUpdaterHost> = {}) {
+    return fixture({
+      initialState: {
+        ...fixture().updater.snapshot(),
+        installedSource: {
+          repository: "Jones-Systems/Jones-Code",
+          sha: "a".repeat(40),
+          tree: "9".repeat(40),
+        },
+        capability: {
+          check: true,
+          download: true,
+          exactSource: true,
+          replaceStaged: true,
+          install: true,
+        },
+      },
+      retireStaged: async () => {},
+      ...overrides,
+    });
+  }
+  async function staged(overrides: Partial<JonesUpdaterHost> = {}) {
+    const f = replacement(overrides);
+    await f.updater.stageExact(candidate.source);
+    f.newer();
+    return f;
+  }
+  function gate() {
+    let release!: () => void;
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return { promise, release };
+  }
+
+  it("retires the exact old binding before staging the checked target, without Install", async () => {
+    const calls: unknown[] = [];
+    const states: JonesUpdateState[] = [];
+    const f = await staged({
+      retireStaged: async (input) => {
+        calls.push(input);
+      },
+      prepare: async (selected, { onVerifying }) => {
+        calls.push(selected.source);
+        onVerifying();
+        return {
+          stagedHandle: selected.source,
+          version: selected.version,
+          payloadSha256: "e".repeat(64),
+        };
+      },
+      stateChanged: (state) => {
+        states.push(state);
+      },
+      install: async () => {
+        throw new Error("Replacement must never install");
+      },
+    });
+    const original = { ...replace, stagedHandle: candidate.source };
+    f.updater.setPolicy({ role: "follower", leaderSource: target, leaderTree: candidate.tree });
+    expect(await f.updater.stageExact(target, original)).toMatchObject({
+      phase: "staged",
+      stagedHandle: target,
+      provenance: { sourceSha: target },
+    });
+    expect(calls).toEqual([
+      candidate.source,
+      {
+        operationId: original.operationId,
+        environmentId: original.environmentId,
+        currentVersion: original.currentVersion,
+        expectedInstalledSource: original.expectedInstalledSource,
+        stagedHandle: original.stagedHandle,
+        targetSource: original.sourceSha,
+      },
+      target,
+    ]);
+    for (const state of states
+      .filter((s) => ["downloading", "verifying"].includes(s.phase))
+      .slice(-2))
+      expect(state.provenance?.sourceSha).toBe(target);
+    const again = await f.updater.stageExact(target, original);
+    expect(again.phase).toBe("staged");
+    expect(calls).toHaveLength(3);
+  });
+
+  it("rejects stale bindings and unsupported replacement without changing the stage", async () => {
+    const retireStaged = vi.fn(async () => {});
+    const f = await staged({ retireStaged });
+    for (const patch of [
+      { stagedHandle: "stale" },
+      { sourceSha: "d".repeat(40) },
+      { environmentId: EnvironmentId.make("another") },
+      { currentVersion: "another" },
+      { expectedInstalledSource: "e".repeat(40) },
+    ]) {
+      const before = f.updater.snapshot();
+      expect((await f.updater.stageExact(target, { ...replace, ...patch })).phase).toBe("blocked");
+      expect(f.updater.snapshot()).toEqual(before);
+    }
+    const unsupported = fixture({
+      initialState: {
+        ...f.updater.snapshot(),
+        capability: { check: true, download: true, install: true, exactSource: true },
+      },
+      retireStaged,
+    });
+    expect((await unsupported.updater.stageExact(target, replace)).message).toContain(
+      "unavailable",
+    );
+    expect(retireStaged).not.toHaveBeenCalled();
+    expect(f.effects).toEqual(["stage"]);
+  });
+
+  it("checks target availability before retirement and retains the old selection on refusal", async () => {
+    const retireStaged = vi.fn(async () => {});
+    const f = replacement({ retireStaged });
+    await f.updater.stageExact(candidate.source);
+    expect((await f.updater.stageExact(target, replace)).message).toContain("not available");
+    expect(f.updater.snapshot()).toMatchObject({
+      phase: "staged",
+      stagedHandle: replace.stagedHandle,
+    });
+    expect(retireStaged).not.toHaveBeenCalled();
+    for (const result of [
+      { state: "building", retryAfterMs: 0 },
+      { state: "no-new" },
+      { state: "blocked", reason: "unqualified", retryAfterMs: 0 },
+    ] as const) {
+      f.setCheckResult(result);
+      expect((await f.updater.stageExact(target, replace)).message).toContain("not available");
+      expect(f.updater.snapshot().stagedHandle).toBe(replace.stagedHandle);
+    }
+    expect(retireStaged).not.toHaveBeenCalled();
+    const denied = await staged({
+      retireStaged: async () => {
+        throw new Error("Native acceptance is unknown.");
+      },
+    });
+    expect((await denied.updater.stageExact(target, replace)).message).toBe(
+      "Native acceptance is unknown.",
+    );
+    expect(denied.updater.snapshot()).toMatchObject({
+      phase: "staged",
+      stagedHandle: replace.stagedHandle,
+    });
+    expect(denied.effects).toEqual(["stage"]);
+  });
+
+  it("refuses empty-slot replacement after restart and allows fresh plain exact download", async () => {
+    const before = replacement();
+    const restarted = replacement({ initialState: before.updater.snapshot() });
+    expect((await restarted.updater.stageExact(target, replace)).message).toContain(
+      "without replacement",
+    );
+    expect(restarted.effects).toEqual([]);
+    restarted.newer();
+    expect((await restarted.updater.stageExact(target)).phase).toBe("staged");
+    expect(restarted.effects).toEqual(["stage"]);
+  });
+
+  it("rechecks the installed source before native retirement", async () => {
+    let installed = "a".repeat(40);
+    const retireStaged = vi.fn(async () => {});
+    const f = await staged({ installedSource: async () => installed, retireStaged });
+    installed = "d".repeat(40);
+    expect((await f.updater.stageExact(target, replace)).message).toContain(
+      "installed source changed",
+    );
+    expect(retireStaged).not.toHaveBeenCalled();
+    expect(f.updater.snapshot().stagedHandle).toBe(replace.stagedHandle);
+  });
+
+  it("preserves the old stage if follower policy changes while reading the installed source", async () => {
+    const hold = gate();
+    const entered = gate();
+    const retireStaged = vi.fn(async () => {});
+    const f = await staged({ retireStaged });
+    f.updater.setPolicy({ role: "follower", leaderSource: target, leaderTree: candidate.tree });
+    // The target check reads the installed source before retirement does.
+    let reads = 0;
+    const snapshot = f.updater.snapshot();
+    const updater = new JonesUpdater(
+      {
+        initialState: snapshot,
+        platform: "linux",
+        architecture: "x64",
+        installedSource: async () => {
+          if (++reads === 2) {
+            entered.release();
+            await hold.promise;
+          }
+          return "a".repeat(40);
+        },
+        retireStaged,
+        prepare: async () => {
+          throw new Error("A changed follower must not prepare");
+        },
+        install: async () => {
+          throw new Error("Replacement must not install");
+        },
+      },
+      { check: async () => ({ state: "available", candidate: { ...candidate, source: target } }) },
+    );
+    const replacing = updater.stageExact(target, replace);
+    await entered.promise;
+    updater.setPolicy({ role: "follower", leaderSource: target, leaderTree: "d".repeat(40) });
+    hold.release();
+    expect((await replacing).message).toContain("source tree");
+    expect(updater.snapshot().stagedHandle).toBe(replace.stagedHandle);
+    expect(retireStaged).not.toHaveBeenCalled();
+  });
+
+  it.each(["source", "tree"])(
+    "rechecks follower %s after retirement and refuses competing requests",
+    async (changed) => {
+      const hold = gate();
+      const entered = gate();
+      const retireStaged = vi.fn(async () => {
+        entered.release();
+        await hold.promise;
+      });
+      const f = await staged({ retireStaged });
+      f.updater.setPolicy({ role: "follower", leaderSource: target, leaderTree: candidate.tree });
+      const replacing = f.updater.stageExact(target, replace);
+      await entered.promise;
+      expect((await f.updater.stageExact(target, replace)).message).toContain("still active");
+      const busy = await f.updater.stageExact(target);
+      expect(busy.phase).toBe("blocked");
+      f.updater.setPolicy({
+        role: "follower",
+        leaderSource: changed === "source" ? "d".repeat(40) : target,
+        leaderTree: changed === "tree" ? "e".repeat(40) : candidate.tree,
+      });
+      hold.release();
+      expect((await replacing).message).toContain("was retired");
+      expect(f.updater.snapshot().stagedHandle).toBeUndefined();
+      expect(retireStaged).toHaveBeenCalledTimes(1);
+      expect(f.effects).toEqual(["stage"]);
+    },
+  );
+
+  it("explains preparation failure after retirement and requires fresh explicit recovery", async () => {
+    let fail = false;
+    const f = await staged({
+      prepare: async () => {
+        if (fail) throw new Error("Download failed.");
+        return {
+          stagedHandle: replace.stagedHandle,
+          version: candidate.version,
+          payloadSha256: "e".repeat(64),
+        };
+      },
+    });
+    fail = true;
+    expect(await f.updater.stageExact(target, replace)).toMatchObject({ phase: "blocked" });
+    expect(f.updater.snapshot().message).toContain("was retired");
+    expect(f.updater.snapshot().message).toContain("Download failed");
+    expect(f.updater.snapshot().stagedHandle).toBeUndefined();
+    expect((await f.updater.stageExact(target, replace)).message).toContain("without replacement");
+    const restarted = replacement({ initialState: f.updater.snapshot() });
+    expect((await restarted.updater.stageExact(target, replace)).message).toContain(
+      "without replacement",
+    );
+    expect(restarted.effects).toEqual([]);
+    fail = false;
+    expect((await f.updater.stageExact(target)).phase).toBe("staged");
   });
 });
 

@@ -45,6 +45,8 @@ export const JonesUpdateCapability = Schema.Struct({
    * older servers read; it is never advertised without `download`.
    */
   exactSource: Schema.optionalKey(Schema.Boolean),
+  /** Exact-source staging can retire a caller-bound selection; requires download and exactSource. */
+  replaceStaged: Schema.optionalKey(Schema.Boolean),
   reason: Schema.optionalKey(
     Schema.Literals([
       "bootstrap-required",
@@ -146,9 +148,23 @@ export const JonesUpdateDownloadInput = Schema.Struct({
 });
 export type JonesUpdateDownloadInput = typeof JonesUpdateDownloadInput.Type;
 
+const JonesUpdateOperationId = Schema.String.check(
+  Schema.isPattern(/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/),
+);
+
 /** Selects one build by its full source commit. A version string never identifies a source. */
 export const JonesUpdateExactInput = Schema.Struct({
   targetSource: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/)),
+  replace: Schema.optionalKey(
+    Schema.Struct({
+      stagedHandle: TrimmedNonEmptyString,
+      sourceSha: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/)),
+      operationId: JonesUpdateOperationId,
+      environmentId: EnvironmentId,
+      currentVersion: TrimmedNonEmptyString,
+      expectedInstalledSource: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/)),
+    }),
+  ),
 });
 export type JonesUpdateExactInput = typeof JonesUpdateExactInput.Type;
 
@@ -159,10 +175,6 @@ export const JonesUpdateInstallInput = Schema.Struct({
   continueRunningThreads: Schema.optionalKey(Schema.Boolean),
 });
 export type JonesUpdateInstallInput = typeof JonesUpdateInstallInput.Type;
-
-const JonesUpdateOperationId = Schema.String.check(
-  Schema.isPattern(/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/),
-);
 
 export const JonesUpdateReconcileInput = Schema.Struct({
   operationId: JonesUpdateOperationId,

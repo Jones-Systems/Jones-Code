@@ -5,6 +5,7 @@ import type {
   JonesUpdatePolicy,
   JonesUpdateState,
   JonesUpdateDownloadInput,
+  JonesUpdateExactInput,
   JonesUpdateInstallInput,
 } from "@t3tools/contracts/jones/jonesUpdates";
 import { JonesActionsClient, type JonesActionsCandidate } from "@t3tools/shared/jones/jonesActions";
@@ -118,6 +119,8 @@ export type JonesUpdaterInstallInput = JonesUpdateInstallInput & {
 };
 
 const FOLLOWER_WAITING = "Waiting for the laptop to report its installed build.";
+const RETIRED_WITHOUT_TARGET =
+  "The previous staged selection was retired, but the requested target was not staged. Start a fresh exact-source download without replacement.";
 
 /** A follower's laptop moved on; the unaccepted preparation of its earlier build is dropped. */
 class PreparationSuperseded extends Error {
@@ -440,13 +443,30 @@ export class JonesUpdater {
 
   /**
    * Stages the one qualified build of `targetSource`. The target is never widened to a newer build,
-   * a different staged source is never replaced, and the same staged source is returned unchanged.
+   * replacement requires the original immutable binding, and the same staged source is unchanged.
    */
-  async stageExact(targetSource: string): Promise<JonesUpdateState> {
-    const refusal = followerTargetRefusal(this.state.policy, targetSource);
+  async stageExact(
+    targetSource: string,
+    replace?: JonesUpdateExactInput["replace"],
+  ): Promise<JonesUpdateState> {
+    const refusal = followerTargetRefusal(
+      this.state.policy,
+      targetSource,
+      this.state.provenance?.sourceSha === targetSource
+        ? this.state.provenance.sourceTree
+        : undefined,
+    );
     if (refusal !== undefined) return { ...this.snapshot(), phase: "blocked", message: refusal };
     const settled = this.stagedOutcome(targetSource);
-    if (settled !== undefined) return settled;
+    if (
+      settled !== undefined &&
+      (replace === undefined || settled.provenance?.sourceSha === targetSource)
+    )
+      return settled;
+    if (replace !== undefined) {
+      const refusal = this.replacementRefusal(replace);
+      if (refusal !== undefined) return { ...this.snapshot(), phase: "blocked", message: refusal };
+    }
     // A superseded preparation releases the host as soon as it is stopped; the newer target
     // goes next. A running one is observed through the busy host, never awaited.
     const running = this.preparation;
@@ -455,16 +475,101 @@ export class JonesUpdater {
     // Download only the candidate this run returned for the target; a skipped run, or a build
     // offered by any other check, must not be staged.
     const candidate = run.candidate;
-    if (run.state.phase !== "available" || candidate?.source !== targetSource)
+    if (
+      candidate?.source !== targetSource ||
+      (replace === undefined && run.state.phase !== "available")
+    ) {
+      if (replace !== undefined)
+        return {
+          ...this.snapshot(),
+          phase: "blocked",
+          message:
+            "The requested source is not available from the current check. The staged selection was retained.",
+        };
       return run.state.phase === "available" || run.state.phase === "checking"
         ? {
             ...run.state,
             message: "The requested source is not available from the current check. Try again.",
           }
         : run.state;
+    }
     // Another request may have claimed the host while this one waited for its turn.
     while (this.inflight !== undefined) await this.inflight.promise.catch(() => undefined);
+    const latestRefusal = followerTargetRefusal(
+      this.state.policy,
+      candidate.source,
+      candidate.tree,
+    );
+    if (latestRefusal !== undefined)
+      return { ...this.snapshot(), phase: "blocked", message: latestRefusal };
+    if (replace !== undefined) {
+      const same = this.stagedOutcome(targetSource);
+      if (same?.provenance?.sourceSha === targetSource) return same;
+      const refusal = this.replacementRefusal(replace);
+      if (refusal !== undefined) return { ...this.snapshot(), phase: "blocked", message: refusal };
+      const retired = await this.retireStagedOperation(
+        {
+          operationId: replace.operationId,
+          environmentId: replace.environmentId,
+          currentVersion: replace.currentVersion,
+          expectedInstalledSource: replace.expectedInstalledSource,
+          targetSource: replace.sourceSha,
+          stagedHandle: replace.stagedHandle,
+        },
+        () => followerTargetRefusal(this.state.policy, candidate.source, candidate.tree),
+      );
+      if (!retired.retired)
+        return {
+          ...this.snapshot(),
+          phase: "blocked",
+          message: retired.reason ?? "The staged selection could not be retired safely.",
+        };
+      const afterRetirement = followerTargetRefusal(
+        this.state.policy,
+        candidate.source,
+        candidate.tree,
+      );
+      if (
+        afterRetirement !== undefined ||
+        this.busy ||
+        ["preparing", "installing"].includes(this.state.phase) ||
+        this.state.stagedHandle !== undefined ||
+        !this.state.capability.download
+      )
+        return {
+          ...this.snapshot(),
+          phase: "blocked",
+          message: `${RETIRED_WITHOUT_TARGET} ${afterRetirement ?? "The host's update state changed."}`,
+        };
+      return this.stageCandidate(candidate, run.buildStartedAt, true);
+    }
     return this.stagedOutcome(targetSource) ?? this.stageCandidate(candidate, run.buildStartedAt);
+  }
+
+  private replacementRefusal(
+    replace: NonNullable<JonesUpdateExactInput["replace"]>,
+  ): string | undefined {
+    if (
+      !this.state.capability.download ||
+      this.state.capability.exactSource !== true ||
+      this.state.capability.replaceStaged !== true ||
+      this.host.retireStaged === undefined
+    )
+      return "Replacing a staged selection is unavailable on this host.";
+    if (this.busy || ["preparing", "installing"].includes(this.state.phase))
+      return "An update operation is still active.";
+    // An empty slot cannot prove that this replacement completed in an earlier server lifetime.
+    if (this.state.stagedHandle === undefined)
+      return "No staged selection matches this replacement. Start a fresh exact-source download without replacement.";
+    if (
+      replace.stagedHandle !== this.state.stagedHandle ||
+      replace.sourceSha !== this.state.provenance?.sourceSha ||
+      replace.environmentId !== this.state.environmentId ||
+      replace.currentVersion !== this.state.currentVersion ||
+      replace.expectedInstalledSource !== this.state.installedSource?.sha
+    )
+      return "The retained stage belongs to another immutable binding.";
+    return undefined;
   }
 
   /** The result of asking for `targetSource` when a build is already staged, otherwise nothing. */
@@ -510,7 +615,11 @@ export class JonesUpdater {
   private stageCandidate(
     candidate: JonesActionsCandidate,
     buildStartedAt: string | undefined,
+    retiredSelection = false,
   ): Promise<JonesUpdateState> {
+    const refusal = followerTargetRefusal(this.state.policy, candidate.source, candidate.tree);
+    if (refusal !== undefined)
+      return Promise.resolve({ ...this.snapshot(), phase: "blocked", message: refusal });
     if (this.busy || !this.state.capability.download || this.state.stagedHandle !== undefined)
       return Promise.resolve(this.snapshot());
     this.busy = true;
@@ -518,13 +627,17 @@ export class JonesUpdater {
     let settle!: (state: JonesUpdateState) => void;
     const done = new Promise<JonesUpdateState>((resolve) => (settle = resolve));
     this.preparation = { source: candidate.source, controller, done };
-    this.publish({ phase: "downloading", message: "Downloading the selected main build…" });
+    this.publish({
+      phase: "downloading",
+      message: "Downloading the selected main build…",
+      provenance: candidateProvenance(candidate, buildStartedAt),
+    });
     const finish = (state: JonesUpdateState) => {
       this.preparation = undefined;
       this.busy = false;
       settle(state);
     };
-    void this.prepareCandidate(candidate, buildStartedAt, controller.signal).then(
+    void this.prepareCandidate(candidate, buildStartedAt, controller.signal, retiredSelection).then(
       finish,
       (cause: unknown) => finish(this.fail(cause)),
     );
@@ -536,8 +649,11 @@ export class JonesUpdater {
     candidate: JonesActionsCandidate,
     buildStartedAt: string | undefined,
     signal: AbortSignal,
+    retiredSelection: boolean,
   ): Promise<JonesUpdateState> {
     try {
+      const refusal = followerTargetRefusal(this.state.policy, candidate.source, candidate.tree);
+      if (refusal !== undefined) throw new Error(refusal);
       const staged = await this.host.prepare(candidate, {
         signal,
         onVerifying: () => {
@@ -570,15 +686,24 @@ export class JonesUpdater {
         if (this.candidate?.source === candidate.source) this.candidate = undefined;
         return this.publish({
           phase: "no-new",
-          message: "The laptop's installed build changed. Checking for it…",
+          message: retiredSelection
+            ? RETIRED_WITHOUT_TARGET
+            : "The laptop's installed build changed. Checking for it…",
         });
       }
-      return this.fail(error);
+      return this.fail(
+        retiredSelection
+          ? new Error(
+              `${RETIRED_WITHOUT_TARGET} ${error instanceof Error ? error.message : "Preparation failed."}`,
+            )
+          : error,
+      );
     }
   }
 
   async retireStagedOperation(
     input: JonesStagedRetirementInput,
+    admit?: () => string | undefined,
   ): Promise<{ retired: boolean; reason?: string }> {
     if (this.busy || ["preparing", "installing"].includes(this.state.phase))
       return { retired: false, reason: "An update operation is still active." };
@@ -596,6 +721,8 @@ export class JonesUpdater {
     try {
       if ((await this.host.installedSource()) !== input.expectedInstalledSource)
         return { retired: false, reason: "The installed source changed before staged retirement." };
+      const refusal = admit?.();
+      if (refusal !== undefined) return { retired: false, reason: refusal };
       // The host rechecks authoritative native absence before removing only the pointer.
       // Payload and operation evidence remain available for reconciliation.
       await this.host.retireStaged(input);

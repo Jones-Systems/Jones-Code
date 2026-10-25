@@ -41,5 +41,7 @@ export function ProductionExactSourceUpdateAction(target: ExactSourceTarget) {
     // Without a dialog host the restart is not confirmed, so it is not sent.
     confirm: async (message) => (await requestConfirmDialog(message)) ?? false,
   };
-  return <ExactSourceUpdateAction {...target} host={host} />;
+  return (
+    <ExactSourceUpdateAction {...target} allowReplace={target.allowReplace ?? true} host={host} />
+  );
 }

@@ -14,7 +14,7 @@ import type {
   JonesUpdateState,
 } from "@t3tools/contracts/jones/jonesUpdates";
 import { ArrowRightIcon } from "lucide-react";
-import { useId, useState } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
@@ -130,6 +130,7 @@ export function JonesBuildStatus({
   pending = false,
   actionError = null,
   layout = "inline",
+  extraAction,
   onRequest,
 }: {
   readonly environmentId: EnvironmentId;
@@ -143,6 +144,7 @@ export function JonesBuildStatus({
   readonly pending?: boolean;
   readonly actionError?: string | null;
   readonly layout?: JonesBuildStatusLayout;
+  readonly extraAction?: ReactNode;
   readonly onRequest: (request: JonesBuildRequest) => void;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -171,6 +173,7 @@ export function JonesBuildStatus({
             </p>
           </div>
           <div className={styles.actions}>
+            {extraAction}
             <DownloadAction
               key="download"
               size={styles.button}
@@ -314,6 +317,7 @@ export function JonesBuildStatus({
           {statusLine}
         </div>
         <div className={styles.actions}>
+          {extraAction}
           {presentation.canReconcile ? (
             <Button
               size={styles.button}

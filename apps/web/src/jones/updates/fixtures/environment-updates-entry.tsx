@@ -19,6 +19,7 @@ import {
 } from "../../fleetUpdates/FleetEnrollmentStatus";
 import { JonesBuildStatus, type JonesBuildRequest } from "../JonesBuildStatus";
 import { BuildVersion } from "../updateDisplay";
+import { ExactSourcePreview } from "./exact-source-fixture";
 import type { JonesInstalledComparison } from "../installedSourceComparison";
 import { describeFollower } from "../../fleetUpdates/followerStatus";
 
@@ -597,6 +598,7 @@ function FixtureScreen() {
                 ))}
               </SettingsGroup>
             </section>
+            <ExactSourcePreview runId="environment-match-laptop" />
             <section aria-label="Fixture receipts" className="border-t pt-4">
               <h2 className="text-sm font-medium">Requested actions</h2>
               <ol data-testid="fixture-receipts" className="mt-2 space-y-1 font-mono text-xs">
