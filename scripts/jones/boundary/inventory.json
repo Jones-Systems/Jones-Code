@@ -1937,7 +1937,11 @@
     "packages/client-runtime/src/state/projectGrouping.ts": "hook",
     "packages/client-runtime/src/jones/connection/routeAttemptBudget.ts": "jones-owned",
     "packages/client-runtime/src/jones/connection/routeAttemptBudget.test.ts": "jones-owned",
-    "packages/client-runtime/src/connection/driver.ts": "hook"
+    "packages/client-runtime/src/connection/driver.ts": "hook",
+    "apps/server/src/jones/workspace/contentSearchPages.ts": "jones-owned",
+    "apps/server/src/jones/workspace/contentSearchPages.test.ts": "jones-owned",
+    "apps/server/src/workspace/WorkspaceSearchIndex.ts": "hook",
+    "scripts/jones/boundary/fragments/workspace-content-search-slicing.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
