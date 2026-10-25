@@ -65,7 +65,11 @@ import { toastManager, ToastProvider } from "../../components/ui/toast";
 
 const env = EnvironmentId.make("settlement-test-environment");
 
-function thread(id: string, settledAtMs: number | null = null): OrchestrationV2ThreadShell {
+function thread(
+  id: string,
+  settledAtMs: number | null = null,
+  overrides: Partial<OrchestrationV2ThreadShell> = {},
+): OrchestrationV2ThreadShell {
   const threadId = ThreadId.make(id);
   const providerInstanceId = ProviderInstanceId.make("codex");
   return {
@@ -99,6 +103,7 @@ function thread(id: string, settledAtMs: number | null = null): OrchestrationV2T
     settledAt: settledAtMs === null ? null : DateTime.makeUnsafe(settledAtMs),
     lastVisitedAt: null,
     deletedAt: null,
+    ...overrides,
   };
 }
 
@@ -233,21 +238,118 @@ async function setupTest(): Promise<AsyncDisposable> {
 }
 
 describe("persistent settlement notification", () => {
+  it("hides cached children before hydration without acknowledging them when the parent is dismissed", async () => {
+    await using _fixture = await setupTest();
+    storage.clear();
+    const store = createLocalStorageSettlementStore(() => storage, events as unknown as Window);
+    const parent = thread("parent", 200);
+    const local = thread("local-child", 300, {
+      lineage: {
+        rootThreadId: parent.id,
+        parentThreadId: parent.id,
+        relationshipToParent: "subagent",
+      },
+    });
+    const remote = thread("remote-child", 400, {
+      delegatedFrom: {
+        environmentId: EnvironmentId.make("other-machine"),
+        threadId: parent.id,
+        title: parent.title,
+      },
+    });
+    const saved = [parent, local, remote].map((row) => ({
+      ...entry(row.id, env),
+      title: row.title,
+    }));
+    await store.saveInbox(inbox(saved));
+    state.controller = createSettlementNotificationController({ store });
+    state.environmentIds = [env];
+    const cached: EnvironmentShellState = {
+      ...shell(1, [parent, local, remote]),
+      status: "cached",
+    };
+    const shellAtom = Atom.make(cached);
+    state.shellAtom = shellAtom;
+    const publications: string[][] = [];
+    const unsubscribe = state.controller.subscribe(() => {
+      publications.push(state.controller!.getSnapshot().visible.map((row) => row.threadId));
+    });
+    try {
+      await render();
+      await act(async () => {
+        await state.controller!.flush();
+      });
+      expect(publications.length).toBeGreaterThan(0);
+      for (const visible of publications) {
+        expect(visible).not.toContain(local.id);
+        expect(visible).not.toContain(remote.id);
+        expect(visible).toContain(parent.id);
+      }
+      expect(state.controller.getSnapshot().visible.map((row) => row.threadId)).toEqual([
+        parent.id,
+      ]);
+      expect(document.body.textContent).not.toContain(local.title);
+      expect(document.body.textContent).not.toContain(remote.title);
+      expect(JSON.parse((await store.loadInbox())!).acknowledged).toEqual([]);
+      await act(async () => button("parent").click());
+      expect(state.navigate).toHaveBeenLastCalledWith({
+        to: "/$environmentId/$threadId",
+        params: { environmentId: env, threadId: parent.id },
+      });
+      expect(notices()).toHaveLength(1);
+      await act(async () => button("Dismiss notification").click());
+      await act(async () => {
+        await state.controller!.flush();
+      });
+      expect(state.controller.getSnapshot().visible).toEqual([]);
+      expect(JSON.parse((await store.loadInbox())!).acknowledged).toEqual([saved[0]!.id]);
+      await act(async () => {
+        registry.set(shellAtom, { ...cached, status: "live" });
+      });
+      await act(async () => {
+        await state.controller!.flush();
+      });
+      expect(JSON.parse((await store.loadInbox())!).acknowledged).toEqual(
+        saved.map((row) => row.id).sort(),
+      );
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it("removes saved child notices and only shows parent and fork settlements after reload", async () => {
     await using _fixture = await setupTest();
     storage.clear();
     const store = createLocalStorageSettlementStore(() => storage, events as unknown as Window);
     const parent = thread("parent", 200);
-    const children = ["mcp-child", "provider-child", "nested-child"].map((id, index) => ({
-      ...thread(id, 300 + index),
-      createdBy: "agent" as const,
-      creationSource: index === 1 ? ("provider" as const) : ("mcp" as const),
-      lineage: {
-        rootThreadId: parent.id,
-        parentThreadId: index === 2 ? ThreadId.make("mcp-child") : parent.id,
-        relationshipToParent: "subagent" as const,
-      },
-    }));
+    const children = [
+      ...["mcp-child", "provider-child", "nested-child"].map((id, index) =>
+        thread(id, 300 + index, {
+          createdBy: "agent",
+          creationSource: index === 1 ? "provider" : "mcp",
+          lineage: {
+            rootThreadId: parent.id,
+            parentThreadId: index === 2 ? ThreadId.make("mcp-child") : parent.id,
+            relationshipToParent: "subagent",
+          },
+        }),
+      ),
+      thread("remote-child", 303, {
+        delegatedFrom: {
+          environmentId: EnvironmentId.make("other-machine"),
+          threadId: parent.id,
+          title: parent.title,
+        },
+      }),
+      thread("linked-remote-child", 304, {
+        delegatedFrom: {
+          environmentId: EnvironmentId.make("other-machine"),
+          threadId: parent.id,
+          title: parent.title,
+        },
+        linkOrigin: { sessionId: "linked-session", label: "Linked machine" },
+      }),
+    ];
     const saved = [parent, ...children].map((row) => ({
       ...entry(row.id, env),
       title: row.title,
