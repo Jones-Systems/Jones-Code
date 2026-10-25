@@ -7,6 +7,8 @@ import {
   RemoteAdmissionRequest,
   RemoteAdmissionReceiverPolicy,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -14,6 +16,12 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
+import {
+  classifyEvaluationFailure,
+  evaluationDiagnostic,
+  REMOTE_ADMISSION_EVALUATION_TIMEOUT_MS,
+  type EvaluationFailureKind,
+} from "./evaluationDiagnostic.ts";
 
 export class RemoteAdmissionInvalidRequest extends Schema.TaggedError<RemoteAdmissionInvalidRequest>()(
   "RemoteAdmissionInvalidRequest",
@@ -226,53 +234,95 @@ const make = Effect.fn("RemoteAdmission.make")(function* <E>(
         },
         catch: (cause) => new RemoteAdmissionInvalidRequest({ cause }),
       });
-      const inserted = yield* database(
-        sql.withTransaction(
-          Effect.gen(function* () {
-            const existing = yield* sql<Row>`SELECT * FROM jones_remote_admissions
+      // Mask intent commit through finalizer installation and the terminal write;
+      // restore interruption only around provider work, including its cancellation.
+      return yield* Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          const inserted = yield* database(
+            sql.withTransaction(
+              Effect.gen(function* () {
+                const existing = yield* sql<Row>`SELECT * FROM jones_remote_admissions
         WHERE client_id = ${decoded.envelope.identity.clientId} AND idempotency_key = ${decoded.idempotencyKey}`;
-            if (existing[0]) {
-              const record = yield* decodeRow(existing[0]);
-              if (record.requestDigest !== snapshot.requestDigest)
-                return yield* new RemoteAdmissionKeyConflict({});
-              return { record, fresh: false };
-            }
-            const id = NodeCrypto.randomUUID();
-            const now = yield* nowIso;
-            const status = decoded.envelope.receiverPolicy.enabled ? "evaluating" : "passed";
-            yield* sql`INSERT INTO jones_remote_admissions
+                if (existing[0]) {
+                  const record = yield* decodeRow(existing[0]);
+                  if (record.requestDigest !== snapshot.requestDigest)
+                    return yield* new RemoteAdmissionKeyConflict({});
+                  return { record, fresh: false };
+                }
+                const id = NodeCrypto.randomUUID();
+                const now = yield* nowIso;
+                const status = decoded.envelope.receiverPolicy.enabled ? "evaluating" : "passed";
+                yield* sql`INSERT INTO jones_remote_admissions
         (id,client_id,idempotency_key,request_digest,binding_digest,envelope_json,status,created_at,updated_at)
         VALUES (${id},${decoded.envelope.identity.clientId},${decoded.idempotencyKey},${snapshot.requestDigest},
           ${snapshot.bindingDigest},${snapshot.envelopeJson},${status},${now},${now})`;
-            return { record: yield* required(id), fresh: true };
-          }),
-        ),
-      );
-      if (!inserted.fresh || inserted.record.status !== "evaluating") return inserted.record;
-      const evaluation = yield* Effect.suspend(() =>
-        inserted.record.envelope.receiverPolicy.modelSelection === null
-          ? Effect.succeed(null)
-          : evaluate(inserted.record.envelope),
-      ).pipe(
-        Effect.timeout(timeoutMs),
-        Effect.flatMap(Schema.decodeUnknownEffect(RemoteAdmissionEvaluation)),
-        Effect.map((result) => ({
-          status: result.verdict === "pass" ? "passed" : "held",
-          reason: result.reason,
-          category: result.category,
-        })),
-        Effect.catchCause(() =>
-          Effect.succeed({
-            status: "held",
-            reason: "Evaluation was unavailable; owner review is required.",
-            category: "evaluation_unavailable",
-          }),
-        ),
-      );
-      yield* database(sql`UPDATE jones_remote_admissions SET status = ${evaluation.status},
+                return { record: yield* required(id), fresh: true };
+              }),
+            ),
+          );
+          if (!inserted.fresh || inserted.record.status !== "evaluating") return inserted.record;
+          const selection = inserted.record.envelope.receiverPolicy.modelSelection;
+          const startedAt = yield* Clock.currentTimeMillis;
+          const warn = (failureKind: EvaluationFailureKind) => {
+            const diagnostic = evaluationDiagnostic(failureKind, selection);
+            return Clock.currentTimeMillis.pipe(
+              Effect.flatMap((now) =>
+                Effect.logWarning("Remote admission evaluation failed").pipe(
+                  Effect.annotateLogs({
+                    id: inserted.record.id,
+                    instanceId: diagnostic.instanceId,
+                    model: diagnostic.model,
+                    elapsedMs: Math.max(0, now - startedAt),
+                    failureKind,
+                  }),
+                ),
+              ),
+            );
+          };
+          const evaluation = yield* restore(
+            Effect.suspend(() =>
+              selection === null ? Effect.succeed(null) : evaluate(inserted.record.envelope),
+            ).pipe(
+              Effect.timeout(timeoutMs),
+              Effect.flatMap(Schema.decodeUnknownEffect(RemoteAdmissionEvaluation)),
+              Effect.map((result) => ({
+                status: result.verdict === "pass" ? "passed" : "held",
+                reason: result.reason,
+                category: result.category,
+              })),
+              Effect.catchCause((cause) => {
+                if (Cause.hasInterrupts(cause))
+                  return Effect.failCause(
+                    Cause.fromReasons(cause.reasons.filter(Cause.isInterruptReason)),
+                  );
+                const failureKind =
+                  selection === null ? "unsupported_selection" : classifyEvaluationFailure(cause);
+                return warn(failureKind).pipe(
+                  Effect.as({
+                    status: "held",
+                    reason: evaluationDiagnostic(failureKind, selection).reason,
+                    category: "evaluation_unavailable",
+                  }),
+                );
+              }),
+            ),
+          ).pipe(
+            Effect.onInterrupt(() =>
+              Effect.gen(function* () {
+                const diagnostic = evaluationDiagnostic("interrupted", selection);
+                yield* database(sql`UPDATE jones_remote_admissions SET status = 'held',
+              reason = ${diagnostic.reason}, category = 'evaluation_interrupted', updated_at = ${yield* nowIso}
+              WHERE id = ${inserted.record.id} AND status = 'evaluating'`);
+                yield* warn("interrupted");
+              }),
+            ),
+          );
+          yield* database(sql`UPDATE jones_remote_admissions SET status = ${evaluation.status},
       reason = ${evaluation.reason}, category = ${evaluation.category}, updated_at = ${yield* nowIso}
       WHERE id = ${inserted.record.id} AND status = 'evaluating'`);
-      return yield* required(inserted.record.id);
+          return yield* required(inserted.record.id);
+        }),
+      );
     },
   );
 
@@ -384,4 +434,8 @@ const make = Effect.fn("RemoteAdmission.make")(function* <E>(
 export const layerWithEvaluator = <E>(
   evaluate: RemoteAdmissionEvaluator<E>,
   options?: { readonly timeoutMs?: number },
-) => Layer.effect(RemoteAdmission, make(evaluate, options?.timeoutMs ?? 30_000));
+) =>
+  Layer.effect(
+    RemoteAdmission,
+    make(evaluate, options?.timeoutMs ?? REMOTE_ADMISSION_EVALUATION_TIMEOUT_MS),
+  );

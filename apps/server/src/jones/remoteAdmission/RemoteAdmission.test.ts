@@ -2,19 +2,26 @@ import { expect, it } from "@effect/vitest";
 import {
   ProviderInstanceId,
   publicRemoteAdmission,
+  TextGenerationError,
   type RemoteAdmissionEnvelope,
   type RemoteAdmissionRequest,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
+import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 import migrate from "../persistence/Migrations/116_JonesRemoteAdmission.ts";
 import * as Admission from "./RemoteAdmission.ts";
+import { REMOTE_ADMISSION_EVALUATION_TIMEOUT_MS } from "./evaluationDiagnostic.ts";
 
 class SyntheticEvaluationError extends Schema.TaggedError<SyntheticEvaluationError>()(
   "SyntheticEvaluationError",
@@ -148,6 +155,8 @@ it.effect(
       const service = yield* Admission.RemoteAdmission;
       const record = yield* service.request(request);
       expect(record.status).toBe("held");
+      expect(record.reason).toBe(hold.reason);
+      expect(record.category).toBe(hold.category);
       expect(publicRemoteAdmission(record)).not.toHaveProperty("reason");
       expect(publicRemoteAdmission(record)).not.toHaveProperty("envelope");
       expect(yield* service.listPending()).toEqual([record]);
@@ -210,6 +219,7 @@ it.effect(
           const record = yield* service.request({ ...request, idempotencyKey: `failure-${index}` });
           expect(record.status).toBe("held");
           expect(record.category).toBe("evaluation_unavailable");
+          expect(record.reason).toContain(index < 2 ? "internal_error" : "invalid_assessment");
         }).pipe(Effect.provide(Admission.layerWithEvaluator(() => result)));
       }
       yield* Effect.gen(function* () {
@@ -223,31 +233,154 @@ it.effect(
           },
         });
         expect(record.status).toBe("held");
+        expect(record.reason).toContain("unsupported_selection");
       }).pipe(Effect.provide(Admission.layerWithEvaluator(() => Effect.die("must not run"))));
     }).pipe(Effect.provide(memory)),
 );
 
-it.effect("evaluation times out into durable held state", () =>
+it.effect("the default budget cancels provider work and holds before the sender deadline", () =>
   Effect.gen(function* () {
     const entered = yield* Deferred.make<void>();
-    const layer = Admission.layerWithEvaluator(
-      () =>
-        Effect.gen(function* () {
-          yield* Deferred.succeed(entered, undefined);
-          return yield* Effect.never;
-        }),
-      { timeoutMs: 1000 },
+    const stopped = yield* Deferred.make<void>();
+    const senderDeadlineMs = 60_000;
+    const layer = Admission.layerWithEvaluator(() =>
+      Effect.gen(function* () {
+        yield* Deferred.succeed(entered, undefined);
+        return yield* Effect.never;
+      }).pipe(Effect.ensuring(Deferred.succeed(stopped, undefined))),
     );
     yield* Effect.gen(function* () {
       const service = yield* Admission.RemoteAdmission;
-      const fiber = yield* service.request(request).pipe(Effect.forkChild);
+      const startedAt = yield* Clock.currentTimeMillis;
+      const fiber = yield* service
+        .request(request)
+        .pipe(Effect.timeout(senderDeadlineMs), Effect.forkChild);
       yield* Deferred.await(entered);
-      yield* TestClock.adjust("2 seconds");
+      yield* TestClock.adjust(REMOTE_ADMISSION_EVALUATION_TIMEOUT_MS - 1);
+      expect((yield* service.request(request)).status).toBe("evaluating");
+      yield* TestClock.adjust(1);
       const record = yield* Fiber.join(fiber);
+      yield* Deferred.await(stopped);
       expect(record.status).toBe("held");
-      expect((yield* service.get(record.id))?.status).toBe("held");
+      expect(record.category).toBe("evaluation_unavailable");
+      expect(record.reason).toContain("timeout");
+      expect(yield* service.get(record.id)).toEqual(record);
+      const elapsed = (yield* Clock.currentTimeMillis) - startedAt;
+      expect(elapsed).toBe(45_000);
+      expect(senderDeadlineMs - elapsed).toBeGreaterThanOrEqual(15_000);
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.provide(memory)),
+);
+
+it.effect("provider failure diagnostics preserve binding and public privacy without logging error text", () => {
+  const privateText = "SYNTHETIC_PAYLOAD sk-SYNTHETIC_KEY https://example.test/?signature=PRIVATE";
+  const logs: Array<{
+    readonly message: unknown;
+    readonly level: string;
+    readonly cause: Cause.Cause<unknown>;
+    readonly annotations: Readonly<Record<string, unknown>>;
+  }> = [];
+  const logger = Logger.make(({ fiber, message, logLevel, cause }) => {
+    logs.push({
+      message,
+      level: logLevel,
+      cause,
+      annotations: fiber.getRef(References.CurrentLogAnnotations),
+    });
+  });
+  let calls = 0;
+  return Effect.gen(function* () {
+    const service = yield* Admission.RemoteAdmission;
+    const captured = { ...request, envelope: { ...envelope, payload: { message: privateText } } };
+    const record = yield* service.request(captured);
+    expect(record).toMatchObject({ status: "held", category: "evaluation_unavailable" });
+    expect(record.envelope).toEqual(captured.envelope);
+    expect(record.reason).toContain("auth_access");
+    expect(record.reason).toContain("instance=claude, model=synthetic");
+    expect(record.reason!.length).toBeLessThanOrEqual(600);
+    expect(record.bindingDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(yield* service.request(captured)).toEqual(record);
+    expect(calls).toBe(1);
+    const publicStatus = publicRemoteAdmission(record);
+    expect(publicStatus).toMatchObject({
+      id: record.id,
+      bindingDigest: record.bindingDigest,
+      status: "held",
+    });
+    expect(publicStatus).not.toHaveProperty("reason");
+    expect(publicStatus).not.toHaveProperty("category");
+    expect(publicStatus).not.toHaveProperty("envelope");
+    const warnings = logs.filter(({ level }) => level === "Warn");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]!.cause.reasons).toEqual([]);
+    expect(warnings[0]!.annotations).toEqual({
+      id: record.id,
+      instanceId: "claude",
+      model: "synthetic",
+      elapsedMs: 0,
+      failureKind: "auth_access",
+    });
+    const visible = JSON.stringify({ reason: record.reason, logs, publicStatus });
+    for (const secret of ["SYNTHETIC_PAYLOAD", "sk-SYNTHETIC_KEY", "https://", "signature=", "PRIVATE"])
+      expect(visible).not.toContain(secret);
+  }).pipe(
+    Effect.provide(
+      Admission.layerWithEvaluator(() => {
+        calls++;
+        return Effect.fail(
+          new TextGenerationError({
+            operation: "evaluateRemoteRequest",
+            detail: `Claude CLI command failed: Not logged in. ${privateText}`,
+            cause: new Error(privateText),
+          }),
+        );
+      }).pipe(Layer.provideMerge(memory)),
+    ),
+    Effect.provide(Logger.layer([logger], { mergeWithExisting: false })),
+  );
+});
+
+it.effect.each(["evaluating", "cancelled"] as const)(
+  "request interruption durably holds only an evaluating row and preserves %s state",
+  (state) =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const stopped = yield* Deferred.make<void>();
+      yield* Effect.gen(function* () {
+        const service = yield* Admission.RemoteAdmission;
+        const fiber = yield* service.request(request).pipe(Effect.forkChild);
+        yield* Deferred.await(entered);
+        const original = yield* service.request(request);
+        expect(original.status).toBe("evaluating");
+        if (state === "cancelled")
+          yield* service.withdraw({ ...bind(original), clientId: "client" });
+        yield* Fiber.interrupt(fiber);
+        const exit = yield* Fiber.await(fiber);
+        yield* Deferred.await(stopped);
+        expect(Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause)).toBe(true);
+        const record = yield* service.get(original.id);
+        expect(record?.bindingDigest).toBe(original.bindingDigest);
+        expect(record?.envelope).toEqual(original.envelope);
+        if (state === "evaluating") {
+          expect(record).toMatchObject({ status: "held", category: "evaluation_interrupted" });
+          expect(record?.reason).toContain("interrupted");
+        } else {
+          expect(record).toMatchObject({ status: "cancelled", category: null, reason: null });
+        }
+        expect(yield* service.request(request)).toEqual(record);
+        yield* TestClock.adjust("1 minute");
+        expect(yield* service.get(original.id)).toEqual(record);
+      }).pipe(
+        Effect.provide(
+          Admission.layerWithEvaluator(() =>
+            Effect.gen(function* () {
+              yield* Deferred.succeed(entered, undefined);
+              return yield* Effect.never;
+            }).pipe(Effect.ensuring(Deferred.succeed(stopped, undefined))),
+          ),
+        ),
+      );
+    }).pipe(Effect.provide(memory)),
 );
 
 it.effect("disabled receivers pass through without evaluator execution", () =>
@@ -392,11 +525,17 @@ it.effect(
         const sql = yield* SqlClient.SqlClient;
         // Simulate a process ending after intent commit and before evaluator completion.
         yield* sql`UPDATE jones_remote_admissions SET status = 'evaluating', reason = NULL, category = NULL WHERE id = ${evaluating.id}`;
-        return { held: held.id, dispatched, evaluating: evaluating.id };
+        const legacyReason = "Evaluation was unavailable; owner review is required.";
+        yield* sql`UPDATE jones_remote_admissions SET reason = ${legacyReason}, category = 'evaluation_unavailable' WHERE id = ${held.id}`;
+        return {
+          held: { ...held, reason: legacyReason, category: "evaluation_unavailable" },
+          dispatched,
+          evaluating: evaluating.id,
+        };
       }).pipe(Effect.provide(Admission.layerWithEvaluator(() => Effect.succeed(hold))));
       yield* Effect.gen(function* () {
         const service = yield* Admission.RemoteAdmission;
-        expect((yield* service.get(ids.held))?.status).toBe("held");
+        expect(yield* service.get(ids.held.id)).toEqual(ids.held);
         expect((yield* service.get(ids.evaluating))?.category).toBe("evaluation_interrupted");
         expect((yield* service.get(ids.dispatched.id))?.status).toBe("dispatching");
         expect(
