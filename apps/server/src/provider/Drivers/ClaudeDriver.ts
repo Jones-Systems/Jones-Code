@@ -161,13 +161,15 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         ? configDir
         : undefined,
     );
-    const stampIdentity = withInstanceIdentity({
+    const stamp = withInstanceIdentity({
       instanceId,
       driverKind: DRIVER_KIND,
       displayName,
       accentColor,
       continuationGroupKey,
     });
+    const stampIdentity: typeof stamp = (draft) =>
+      stamp({ ...draft, supportsRemoteRequestEvaluation: true });
 
     const scopedLimitNames = yield* makeClaudeScopedLimitNames;
     const orchestrationAdapter = yield* createClaudeAdapterV2(

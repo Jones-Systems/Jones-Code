@@ -21,6 +21,8 @@ import * as EnvironmentAuth from "../../auth/EnvironmentAuth.ts";
 import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import * as RemoteAdmission from "../remoteAdmission/RemoteAdmission.ts";
 import { isRemoteAdmissionOwner } from "./owner.ts";
+import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegistry.ts";
+import { resolveRemoteEvaluationModel } from "../../textGeneration/jones/remoteEvaluationModel.ts";
 
 export class RemoteAdmissionIntakeError extends Schema.TaggedError<RemoteAdmissionIntakeError>()(
   "RemoteAdmissionIntakeError",
@@ -126,6 +128,7 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const admissions = yield* RemoteAdmission.RemoteAdmission;
   const sessions = yield* EnvironmentAuth.EnvironmentAuth;
+  const providers = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
   const handlers = new Map<string, Handler>();
   const targets = new Map<string, Target>();
   const eligible = Effect.succeed(true);
@@ -297,7 +300,7 @@ const make = Effect.gen(function* () {
     attention: () =>
       sql<{
         count: number;
-      }>`SELECT COUNT(*) AS count FROM jones_remote_admissions WHERE status IN ('held','evaluating','approved','dispatching')`.pipe(
+      }>`SELECT COUNT(*) AS count FROM jones_remote_admissions WHERE status = 'held'`.pipe(
         Effect.map((rows) => ({ count: rows[0]?.count ?? 0 })),
         Effect.mapError(intakeError),
       ),
@@ -313,6 +316,10 @@ const make = Effect.gen(function* () {
             return yield* Effect.fail(intakeError("policy_changed"));
           if (input.enabled && input.modelSelection === null)
             return yield* Effect.fail(intakeError("model_required"));
+          if (input.enabled && input.modelSelection !== null)
+            yield* resolveRemoteEvaluationModel(input.modelSelection).pipe(
+              Effect.provideService(ProviderInstanceRegistry.ProviderInstanceRegistry, providers),
+            );
           const next = {
             enabled: input.enabled,
             modelSelection: input.modelSelection,
