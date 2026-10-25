@@ -8,6 +8,7 @@ import * as Guard from "./NativeCreationProviderGuard.ts";
 import { nativeCreationCanonicalJson } from "./NativeCreationPreparation.ts";
 import * as TurnStart from "../../orchestration-v2/ProviderTurnStartService.ts";
 import * as Adapters from "../../orchestration-v2/ProviderAdapterRegistry.ts";
+import { withOriginalTransition } from "../workspaceLifecycle/NativeBoundary.ts";
 
 export const layer = Layer.effect(
   Execution.NativeCreationProviderExecutor,
@@ -89,11 +90,19 @@ export const layer = Layer.effect(
               runId: effect.request.runId,
               providerInstanceId: original.history.intent.binding.providerModelSelection.instanceId,
             });
-            const evidence = yield* start.startNative({
-              threadId: effect.threadId,
-              runId: effect.request.runId,
-              guard,
-            });
+            const evidence = yield* withOriginalTransition(
+              `effect:${effect.id}`,
+              {
+                commandId: effect.commandId,
+                threadId: effect.threadId,
+                request: effect.request,
+              },
+              start.startNative({
+                threadId: effect.threadId,
+                runId: effect.request.runId,
+                guard,
+              }),
+            );
             const acknowledgement = Guard.readNativeProviderAcknowledgement(guard);
             if (
               !acknowledgement ||
