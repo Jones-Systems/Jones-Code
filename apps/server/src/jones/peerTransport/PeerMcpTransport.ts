@@ -1,4 +1,4 @@
-import { OrchestratorMcpFailure, type EnvironmentId, type PeerLinkError } from "@t3tools/contracts";
+import { OrchestratorMcpFailure, PeerLinkError, type EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
@@ -256,10 +256,27 @@ export const make = Effect.gen(function* () {
       code: "invalid_request",
       message: "The peer link changed; not dispatched. Resolve the current link before retrying.",
     });
-  const isCurrent = (environmentId: EnvironmentId, generation: string) =>
+  const checkGeneration = (
+    environmentId: EnvironmentId,
+    generation: string,
+    current: Option.Option<string>,
+  ) =>
+    Option.isNone(current)
+      ? Effect.fail(
+          fromLinkError(
+            new PeerLinkError({
+              reason: "unknown_link",
+              message: `This environment is not linked to ${environmentId}. t3_environment_links lists the linked ones.`,
+            }),
+          ),
+        )
+      : current.value === generation
+        ? Effect.void
+        : Effect.fail(changed());
+  const requireCurrent = (environmentId: EnvironmentId, generation: string) =>
     links.currentGeneration(environmentId).pipe(
       Effect.mapError(fromLinkError),
-      Effect.map((current) => Option.isSome(current) && current.value === generation),
+      Effect.flatMap((current) => checkGeneration(environmentId, generation, current)),
     );
   const retireObsolete = Effect.fn("PeerMcpTransport.retireObsolete")(function* (
     environmentId: EnvironmentId,
@@ -286,7 +303,7 @@ export const make = Effect.gen(function* () {
     limitHeader: Record<string, string>,
   ) {
     const current = yield* retireObsolete(environmentId);
-    if (Option.isNone(current) || current.value !== resolved.generation) return yield* changed();
+    yield* checkGeneration(environmentId, resolved.generation, current);
     const key = encodeSessionKey([
       environmentId,
       resolved.url,
@@ -306,12 +323,8 @@ export const make = Effect.gen(function* () {
         Effect.gen(function* () {
           if (own.session !== undefined) return own.session;
           const opened = yield* openSession(resolved.url, resolved.token, limitHeader);
-          if (
-            !(yield* isCurrent(environmentId, resolved.generation)) ||
-            sessions.get(key) !== own
-          ) {
-            return yield* changed();
-          }
+          yield* requireCurrent(environmentId, resolved.generation);
+          if (sessions.get(key) !== own) return yield* changed();
           own.session = opened;
           return opened;
         }).pipe(
@@ -343,7 +356,7 @@ export const make = Effect.gen(function* () {
           session,
         } = yield* sessionFor(input.environmentId, resolved, limitHeader);
         const id = yield* nextId;
-        if (!(yield* isCurrent(input.environmentId, resolved.generation))) return yield* changed();
+        yield* requireCurrent(input.environmentId, resolved.generation);
         const response = yield* post(
           resolved.url,
           resolved.token,

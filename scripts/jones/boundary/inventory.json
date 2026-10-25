@@ -1974,7 +1974,10 @@
     "scripts/jones/boundary/fragments/workspace-content-search-slicing.json": "jones-owned",
     "apps/server/src/jones/peerTransport/InFlight.ts": "jones-owned",
     "apps/server/src/jones/peerTransport/PeerLinkLifecycle.test.ts": "jones-owned",
-    "apps/server/src/jones/peerTransport/PeerSessionContext.test.ts": "jones-owned"
+    "apps/server/src/jones/peerTransport/PeerSessionContext.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/terminal-history-urgent-flush.json": "jones-owned",
+    "apps/server/src/jones/terminal/TerminalHistoryWorker.ts": "jones-owned",
+    "apps/server/src/jones/terminal/TerminalHistoryWorker.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -2686,6 +2689,10 @@
     {
       "from": "apps/web/src/routes/settings.jones-code.tsx",
       "to": "apps/web/src/jones/workstreams/WorkstreamsSetupStatus.tsx"
+    },
+    {
+      "from": "apps/server/src/terminal/Manager.ts",
+      "to": "apps/server/src/jones/terminal/TerminalHistoryWorker.ts"
     }
   ]
 }

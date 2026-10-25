@@ -339,6 +339,45 @@ it.effect("a link change after initialization is checked again immediately befor
   }),
 );
 
+it.effect.each([1, 2, 3])(
+  "unlink at generation check %s preserves the missing-link error without dispatch",
+  (missingAt) =>
+    Effect.gen(function* () {
+      let checks = 0;
+      let calls = 0;
+      const changingLinks = Layer.mock(PeerLinks.PeerLinks)({
+        resolve: () =>
+          Effect.succeed({
+            url: "https://peer.invalid",
+            token: "synthetic-token",
+            generation: "old",
+            link: {},
+          } as PeerLinks.ResolvedPeerLink),
+        currentGeneration: () =>
+          Effect.sync(() => (++checks >= missingAt ? Option.none() : Option.some("old"))),
+        recordOutcome: () => Effect.void,
+      });
+      const http = HttpClient.make((request) =>
+        Effect.sync(() => {
+          if (request.body._tag !== "Uint8Array") throw new Error("Expected JSON request");
+          const body = JSON.parse(new TextDecoder().decode(request.body.body));
+          if (body.method === "initialize")
+            return HttpClientResponse.fromWeb(request, initialization(body.id, "old-session"));
+          if (body.method === "notifications/initialized")
+            return HttpClientResponse.fromWeb(request, new Response(null, { status: 202 }));
+          calls++;
+          return HttpClientResponse.fromWeb(request, successfulCall(body.id));
+        }),
+      );
+      yield* Effect.gen(function* () {
+        const client = yield* PeerMcpClient.PeerMcpClient;
+        expect((yield* client.call(input).pipe(Effect.flip)).message).toContain("not linked to");
+        expect(calls).toBe(0);
+        expect(checks).toBe(missingAt);
+      }).pipe(Effect.provide(clientLayer(http, changingLinks)));
+    }),
+);
+
 it.effect("a resolution failure with no captured generation cannot write an outcome", () =>
   Effect.gen(function* () {
     let outcomes = 0;
