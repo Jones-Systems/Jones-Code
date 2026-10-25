@@ -348,11 +348,13 @@
       "id": "jones-environment-sidebar-filters",
       "tests": [
         "apps/web/src/jones/environmentFilters/environmentFilters.test.ts",
-        "apps/web/src/components/sidebar/SidebarDraftBlock.browser.test.tsx"
+        "apps/web/src/components/sidebar/SidebarDraftBlock.browser.test.tsx",
+        "apps/web/src/jones/environmentFilters/SidebarEnvironmentFilters.sizing.browser.test.tsx"
       ],
       "commands": [
         "vp test run apps/web/src/jones/environmentFilters/environmentFilters.test.ts",
-        "vp test run --root apps/web --config vite.config.ts --project browser src/components/sidebar/SidebarDraftBlock.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
+        "vp test run --root apps/web --config vite.config.ts --project browser src/components/sidebar/SidebarDraftBlock.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/web --config vite.config.ts --project browser src/jones/environmentFilters/SidebarEnvironmentFilters.browser.test.tsx src/jones/environmentFilters/SidebarEnvironmentFilters.sizing.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -1627,7 +1629,8 @@
         "packages/client-runtime/src/jones/rpcObservationCompatibility.test.ts",
         "packages/client-runtime/src/jones/commandPermissionCompatibility.test.ts",
         "apps/server/src/ws.test.ts",
-        "apps/server/src/relay/AgentAwarenessRelay.test.ts"
+        "apps/server/src/relay/AgentAwarenessRelay.test.ts",
+        "packages/client-runtime/src/jones/connection/routeAttemptBudget.test.ts"
       ],
       "commands": [
         "cd packages/client-runtime && vp test run src/rpc/session.test.ts src/rpc/client.test.ts src/connection/outdatedHostUpdate.test.ts src/connection/supervisor.test.ts --maxWorkers=1",
@@ -1638,7 +1641,9 @@
         "node scripts/jones/check-boundary.ts --strict",
         "vp test run packages/client-runtime/src/jones/commandPermissionCompatibility.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/server/src/ws.test.ts apps/server/src/relay/AgentAwarenessRelay.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run packages/client-runtime/src/jones/rpcObservationCompatibility.test.ts --maxWorkers=1 --no-file-parallelism"
+        "vp test run packages/client-runtime/src/jones/rpcObservationCompatibility.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run packages/client-runtime/src/jones/connection/routeAttemptBudget.test.ts packages/client-runtime/src/connection/supervisor.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint packages/client-runtime/src/connection/driver.ts packages/client-runtime/src/jones/connection/routeAttemptBudget.ts packages/client-runtime/src/jones/connection/routeAttemptBudget.test.ts"
       ]
     },
     {

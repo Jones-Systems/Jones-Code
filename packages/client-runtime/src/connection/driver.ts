@@ -23,6 +23,7 @@ import {
 } from "./routes.ts";
 import * as RpcSession from "../rpc/session.ts";
 import { fetchRemoteEnvironmentDescriptor } from "../environment/descriptor.ts";
+import { withRouteAttemptBudget } from "../jones/connection/routeAttemptBudget.ts";
 
 export type ConnectionDriverProgress =
   | {
@@ -65,6 +66,7 @@ export const connectOverRoutes = Effect.fn("ConnectionDriver.connectOverRoutes")
   checkRoute: (route: ConnectionRoute) => Effect.Effect<RouteCheck>,
   connectRoute: (
     route: ConnectionRoute,
+    hasFallback: boolean,
   ) => Effect.Effect<EnvironmentConnectionLease, ConnectionAttemptError, R | Scope.Scope>,
 ) {
   const routes = usableRoutes(entry);
@@ -76,9 +78,9 @@ export const connectOverRoutes = Effect.fn("ConnectionDriver.connectOverRoutes")
   let transient: ConnectionAttemptError | undefined;
   let blocked: ConnectionAttemptError | undefined;
   // Each route gets its own scope so a half-open session closes before the next try.
-  const attempt = Effect.fnUntraced(function* (route: ConnectionRoute) {
+  const attempt = Effect.fnUntraced(function* (route: ConnectionRoute, hasFallback: boolean) {
     const routeScope = yield* Scope.fork(attemptScope);
-    const result = yield* connectRoute(route).pipe(
+    const result = yield* connectRoute(route, hasFallback).pipe(
       Scope.provide(routeScope),
       Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : Scope.close(routeScope, exit))),
       Effect.result,
@@ -96,13 +98,13 @@ export const connectOverRoutes = Effect.fn("ConnectionDriver.connectOverRoutes")
       silent.push(route);
       continue;
     }
-    const result = yield* attempt(route);
+    const result = yield* attempt(route, index < routes.length - 1 || silent.length > 0);
     if (result._tag === "Success") return result.success;
     // An incompatible server is the same server on every route.
     if (result.failure.reason === "unsupported") return yield* result.failure;
   }
-  for (const route of silent) {
-    const result = yield* attempt(route);
+  for (const [index, route] of silent.entries()) {
+    const result = yield* attempt(route, index < silent.length - 1);
     if (result._tag === "Success") return result.success;
     if (result.failure.reason === "unsupported") return yield* result.failure;
   }
@@ -156,14 +158,22 @@ export const make = Effect.gen(function* () {
     return yield* connectOverRoutes(
       entry,
       (route) => checkRoute(entry, route),
-      Effect.fnUntraced(function* (route) {
-        const prepared = yield* resolver.prepare(routeEntry(entry, route));
-        yield* reportProgress({ stage: "opening", prepared });
-        const session = yield* sessions.connect(prepared);
-        yield* reportProgress({ stage: "synchronizing", prepared });
-        yield* session.ready;
-        return { prepared, session } satisfies EnvironmentConnectionLease;
-      }),
+      (route, hasFallback) =>
+        withRouteAttemptBudget(
+          hasFallback,
+          Effect.gen(function* () {
+            const prepared = yield* resolver.prepare(routeEntry(entry, route));
+            yield* reportProgress({ stage: "opening", prepared });
+            const session = yield* sessions.connect(prepared);
+            return { prepared, session } satisfies EnvironmentConnectionLease;
+          }),
+          (lease) =>
+            Effect.gen(function* () {
+              yield* reportProgress({ stage: "synchronizing", prepared: lease.prepared });
+              yield* lease.session.ready;
+              return lease;
+            }),
+        ),
     );
   });
 

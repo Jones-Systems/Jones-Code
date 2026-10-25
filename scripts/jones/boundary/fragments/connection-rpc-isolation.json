@@ -1,8 +1,16 @@
 {
   "schema": "jones.boundary-fragment/v1",
   "feature": "connection-rpc-isolation",
-  "jonesOwnedPaths": [],
-  "hookPaths": [],
+  "jonesOwnedPaths": [
+    "packages/client-runtime/src/jones/connection/routeAttemptBudget.ts",
+    "packages/client-runtime/src/jones/connection/routeAttemptBudget.test.ts"
+  ],
+  "hookPaths": ["packages/client-runtime/src/connection/driver.ts"],
   "tombstones": [],
-  "allowedImports": []
+  "allowedImports": [
+    {
+      "from": "packages/client-runtime/src/connection/driver.ts",
+      "to": "packages/client-runtime/src/jones/connection/routeAttemptBudget.ts"
+    }
+  ]
 }
