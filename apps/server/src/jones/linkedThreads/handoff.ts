@@ -245,7 +245,15 @@ const make = Effect.gen(function* () {
           : gate.continueWithin(destinationModes, orchestrator.sendToThread(scope, request))
       ).pipe(Effect.result);
       if (result._tag === "Failure") {
-        delivery = mirrorFailureState(result.failure) === "unavailable" ? "rejected" : "unknown";
+        delivery = [
+          "capability_denied",
+          "invalid_request",
+          "thread_not_found",
+          "target_required",
+          "thread_not_sendable",
+        ].includes(result.failure.code)
+          ? "rejected"
+          : "unknown";
         detail = "The receiver did not confirm message acceptance.";
       } else delivery = result.success.delivery === "queued" ? "queued" : "accepted";
       if (delivery === "rejected")
@@ -297,7 +305,7 @@ const make = Effect.gen(function* () {
     const mirror = yield* mirrorLink(
       scope,
       link,
-      { action: "link", kind: "continuation", from: link.from, to: link.to },
+      { action: "link", kind: "continuation", basis: "handoff", from: link.from, to: link.to },
       forwarding,
     );
     if (mirror.state !== "local")
