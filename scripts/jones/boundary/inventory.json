@@ -1570,7 +1570,11 @@
     "t3.json": "accepted-shared",
     "scripts/jones/boundary/fragments/worktree-setup.json": "jones-owned",
     "apps/server/src/jones/orchestration/threadReferenceTail.test.ts": "jones-owned",
-    "scripts/jones/boundary/fragments/timeline-payload-batching.json": "jones-owned"
+    "scripts/jones/boundary/fragments/timeline-payload-batching.json": "jones-owned",
+    "apps/server/src/jones/orchestration/threadReferenceExcerpt.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/threadReferenceExcerpt.test.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/threadReferenceCoherent.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/coherent-reference-reads.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

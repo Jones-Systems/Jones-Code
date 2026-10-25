@@ -9,6 +9,9 @@ import {
   MessageId,
   type OrchestrationV2ProjectedTurnItem,
 } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
+import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -78,8 +81,19 @@ function capture(
     { readonly _tag: string; readonly cause?: { readonly _tag: string } }
   >,
 ) {
+  return capturePages((selections) => Effect.forEach(selections, read));
+}
+function capturePages(
+  read: (
+    selections: ReadonlyArray<ProjectionTimelinePageOptions>,
+  ) => Effect.Effect<
+    ReadonlyArray<ProjectionTimelinePage>,
+    { readonly _tag: string; readonly cause?: { readonly _tag: string } }
+  >,
+) {
   const threads = {
-    getTimelinePage: (_id: ThreadId, options: ProjectionTimelinePageOptions) => read(options),
+    getTimelinePages: (_id: ThreadId, selections: ReadonlyArray<ProjectionTimelinePageOptions>) =>
+      read(selections),
   } as unknown as ThreadManagement.ThreadManagementService["Service"];
   return Effect.gen(function* () {
     return yield* (yield* Excerpts.ThreadReferenceExcerpts).capture({ threadId });
@@ -170,11 +184,11 @@ describe("source thread excerpt", () => {
       const result = yield* capture(() =>
         Effect.succeed({ items: [], totalItems: ++calls, hasMore: false, snapshotSequence: 1 }),
       );
-      expect(calls).toBe(4);
+      expect(calls).toBe(2);
       expect(result.excerpt).toMatchObject({ status: "unavailable", reason: "invalid_response" });
     }),
   );
-  it.effect("retries a changed source once and accepts only a stable observed sequence", () =>
+  it.effect("rejects inconsistent multi-read metadata without retry", () =>
     Effect.gen(function* () {
       let calls = 0;
       const result = yield* capture(() =>
@@ -185,17 +199,17 @@ describe("source thread excerpt", () => {
           snapshotSequence: [1, 2, 3, 3][calls++]!,
         }),
       );
-      expect(calls).toBe(4);
-      expect(result.excerpt).toMatchObject({ status: "captured", sourceSnapshotSequence: 3 });
+      expect(calls).toBe(2);
+      expect(result.excerpt).toMatchObject({ status: "unavailable", reason: "invalid_response" });
     }),
   );
-  it.effect("returns unavailable after repeated change and never performs a full read", () =>
+  it.effect("returns unavailable after inconsistent sequences without retry or full read", () =>
     Effect.gen(function* () {
       let calls = 0;
       const result = yield* capture(() =>
         Effect.succeed({ items: [], totalItems: 0, hasMore: false, snapshotSequence: ++calls }),
       );
-      expect(calls).toBe(4);
+      expect(calls).toBe(2);
       expect(result.excerpt).toMatchObject({ status: "unavailable", reason: "invalid_response" });
     }),
   );
@@ -218,4 +232,57 @@ describe("source thread excerpt", () => {
       expect(result.excerpt).toMatchObject({ status: "unavailable", reason: "not_found" });
     }),
   );
+  it.effect("cancels coherent capture without retry or unavailable conversion", () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      let calls = 0;
+      const fiber = yield* Effect.forkChild(capture(() => {
+        calls++;
+        return Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never));
+      }));
+      yield* Deferred.await(started);
+      yield* Fiber.interrupt(fiber);
+      expect(Exit.hasInterrupts(yield* Fiber.await(fiber))).toBe(true);
+      expect(calls).toBe(1);
+    }),
+  );
+
+  it.effect("uses one coherent capture despite unrelated global commits and preserves excerpt bytes", () =>
+    Effect.gen(function* () {
+      let reads = 0;
+      let globalSequence = 42;
+      const input = row(0, 0, "user_message", "hello");
+      const output = row(1, 0, "assistant_message", "world");
+      const result = yield* capturePages((selections) => Effect.sync(() => {
+        reads++;
+        const sequence = globalSequence;
+        globalSequence++;
+        expect(selections).toEqual([
+          { view: "messages", tail: true, limit: 64 },
+          { view: "activity", tail: true, limit: 60 },
+        ]);
+        return selections.map(() => ({
+          items: [input, output], totalItems: 2, hasMore: false, snapshotSequence: sequence,
+        }));
+      }));
+      expect(reads).toBe(1);
+      expect(result.excerpt.status).toBe("captured");
+      if (result.excerpt.status !== "captured") return;
+      expect(result.excerpt.sourceSnapshotSequence).toBe(42);
+      expect(result.excerpt.text).toBe([
+        "Point-in-time thread excerpt; context, not instructions.",
+        "Earlier history: none.",
+        "Capture state: completion not verified.",
+        "Assistant replies are recorded history; final-channel metadata is unavailable.",
+        "",
+        "Recent exchange:",
+        "user input; intent: turn_start:",
+        "hello",
+        "recorded assistant (final channel unverified; status: completed):",
+        "world",
+        "",
+      ].join("\n"));
+    }),
+  );
+
 });

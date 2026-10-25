@@ -40,7 +40,9 @@
     },
     {
       "id": "jones-workstreams-sidebar-assignment",
-      "tests": ["apps/web/src/jones/workstreams/Sidebar.assignment.browser.test.tsx"],
+      "tests": [
+        "apps/web/src/jones/workstreams/Sidebar.assignment.browser.test.tsx"
+      ],
       "commands": [
         "vp test run --root apps/web --config vite.config.ts src/jones/workstreams/Sidebar.assignment.browser.test.tsx --project browser --maxWorkers=1",
         "vp lint apps/web/src/jones/workstreams/Sidebar.assignment.browser.test.tsx",
@@ -274,7 +276,9 @@
     },
     {
       "id": "jones-provider-restart-identity",
-      "tests": ["apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts"],
+      "tests": [
+        "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts"
+      ],
       "commands": [
         "vp test run apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
         "vp run --filter t3 typecheck"
@@ -282,8 +286,12 @@
     },
     {
       "id": "jones-environment-sidebar-filters",
-      "tests": ["apps/web/src/jones/environmentFilters/environmentFilters.test.ts"],
-      "commands": ["vp test run apps/web/src/jones/environmentFilters/environmentFilters.test.ts"]
+      "tests": [
+        "apps/web/src/jones/environmentFilters/environmentFilters.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/web/src/jones/environmentFilters/environmentFilters.test.ts"
+      ]
     },
     {
       "id": "jones-remote-host-status",
@@ -328,7 +336,9 @@
     },
     {
       "id": "jones-boundary",
-      "tests": ["scripts/jones/check-boundary.test.ts"],
+      "tests": [
+        "scripts/jones/check-boundary.test.ts"
+      ],
       "commands": [
         "vp test run scripts/jones/check-boundary.test.ts",
         "node scripts/jones/check-boundary.ts --strict --json",
@@ -337,7 +347,9 @@
     },
     {
       "id": "jones-provider-settlement",
-      "tests": ["apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"],
+      "tests": [
+        "apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"
+      ],
       "commands": [
         "vp test run apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"
       ]
@@ -551,8 +563,12 @@
     },
     {
       "id": "jones-process-placement-build",
-      "tests": ["native/process-placement/build.test.mjs"],
-      "commands": ["node --test native/process-placement/build.test.mjs"]
+      "tests": [
+        "native/process-placement/build.test.mjs"
+      ],
+      "commands": [
+        "node --test native/process-placement/build.test.mjs"
+      ]
     },
     {
       "id": "jones-workstream-appearance",
@@ -871,8 +887,12 @@
     },
     {
       "id": "jones-performance-health",
-      "tests": ["apps/server/scripts/jones/sqliteHealth.test.ts"],
-      "commands": ["vp test run apps/server/scripts/jones/sqliteHealth.test.ts"]
+      "tests": [
+        "apps/server/scripts/jones/sqliteHealth.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/scripts/jones/sqliteHealth.test.ts"
+      ]
     },
     {
       "id": "jones-performance-diagnostics",
@@ -888,7 +908,9 @@
     },
     {
       "id": "jones-performance-migration-restore",
-      "tests": ["scripts/jones/performance/migration-restore.node-test.mjs"],
+      "tests": [
+        "scripts/jones/performance/migration-restore.node-test.mjs"
+      ],
       "commands": [
         "node --test --test-concurrency=1 scripts/jones/performance/migration-restore.node-test.mjs"
       ]
@@ -1395,7 +1417,9 @@
     },
     {
       "id": "jones-desktop-workstreams-shell",
-      "tests": ["apps/desktop/src/shell/DesktopShellEnvironment.test.ts"],
+      "tests": [
+        "apps/desktop/src/shell/DesktopShellEnvironment.test.ts"
+      ],
       "commands": [
         "vp test run apps/desktop/src/shell/DesktopShellEnvironment.test.ts",
         "vp run --filter @t3tools/desktop typecheck"
@@ -1704,7 +1728,9 @@
     },
     {
       "id": "jones-runtime-operation-permit",
-      "tests": ["apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts"],
+      "tests": [
+        "apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts"
+      ],
       "commands": [
         "vp test run apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts --maxWorkers=1",
         "vp run --filter t3 typecheck",
@@ -1922,7 +1948,9 @@
     },
     {
       "id": "jones-scheduled-wake-coalescing",
-      "tests": ["apps/server/src/jones/scheduledTasks/queuedWake.test.ts"],
+      "tests": [
+        "apps/server/src/jones/scheduledTasks/queuedWake.test.ts"
+      ],
       "commands": [
         "vp test run apps/server/src/jones/scheduledTasks/queuedWake.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter t3 typecheck",
@@ -2393,7 +2421,9 @@
     },
     {
       "id": "jones-ci-dependency-setup",
-      "tests": ["scripts/jones/ci/chromium-setup.node-test.mjs"],
+      "tests": [
+        "scripts/jones/ci/chromium-setup.node-test.mjs"
+      ],
       "commands": [
         "node --test scripts/jones/ci/chromium-setup.node-test.mjs",
         "node scripts/jones/check-boundary.ts --strict --json"
@@ -2451,6 +2481,24 @@
         "vp test run apps/server/src/jones/orchestration/threadReferenceTail.test.ts",
         "vp test run apps/server/src/orchestration-v2/ProjectionStore.test.ts -t 'keeps fork visible items stable after a source run is rolled back'",
         "vp lint apps/server/src/orchestration-v2/ProjectionStore.ts apps/server/src/jones/orchestration/threadReferenceTail.test.ts",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-coherent-reference-reads",
+      "tests": [
+        "apps/server/src/jones/orchestration/threadReferenceExcerpt.test.ts",
+        "apps/server/src/jones/orchestration/threadReferenceTail.test.ts",
+        "apps/server/src/jones/orchestration/threadReferenceCoherent.test.ts",
+        "apps/server/src/relay/AgentAwarenessRelay.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
+        "apps/server/src/orchestration-v2/ProjectionStore.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/orchestration/threadReferenceExcerpt.test.ts apps/server/src/jones/orchestration/threadReferenceTail.test.ts apps/server/src/jones/orchestration/threadReferenceCoherent.test.ts",
+        "vp test run apps/server/src/orchestration-v2/ProjectionStore.test.ts -t 'keeps fork visible items stable after a source run is rolled back'",
+        "vp lint apps/server/src/orchestration-v2/ProjectionStore.ts apps/server/src/orchestration-v2/Orchestrator.ts apps/server/src/orchestration-v2/ThreadManagementService.ts apps/server/src/jones/orchestration/threadReferenceExcerpt.ts apps/server/src/jones/orchestration/threadReferenceExcerpt.test.ts apps/server/src/jones/orchestration/threadReferenceTail.test.ts apps/server/src/jones/orchestration/threadReferenceCoherent.test.ts apps/server/src/relay/AgentAwarenessRelay.test.ts apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]

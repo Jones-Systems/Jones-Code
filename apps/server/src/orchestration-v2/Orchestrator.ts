@@ -455,6 +455,10 @@ export interface OrchestratorV2Shape {
     throughEntryId?: string,
     conversationOnly?: boolean,
   ) => Effect.Effect<OrchestrationV2ThreadHistoryPage, OrchestratorV2Error>;
+  readonly getTimelinePages: (
+    threadId: ThreadId,
+    selections: ReadonlyArray<ProjectionTimelinePageOptions>,
+  ) => Effect.Effect<ReadonlyArray<ProjectionTimelinePage>, OrchestratorProjectionError>;
   readonly getTimelinePage: (
     threadId: ThreadId,
     options: ProjectionTimelinePageOptions,
@@ -14601,6 +14605,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
     dispatchLegacyGuardRejectionDelete: dispatchWithReceipt,
     dispatchLegacyFailureDelete: dispatchWithReceipt,
+    getTimelinePages: (threadId, selections) =>
+      projectionStore
+        .getTimelinePages(threadId, selections)
+        .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause }))),
     getTimelinePage: (threadId, options) =>
       projectionStore
         .getTimelinePage(threadId, options)
@@ -14753,6 +14761,7 @@ const layerUnavailable: Layer.Layer<OrchestratorV2> = Layer.succeed(
     searchThread: (input) =>
       Effect.fail(new OrchestratorProjectionError({ threadId: input.threadId })),
     getThreadHistoryPage: (threadId) => Effect.fail(new OrchestratorProjectionError({ threadId })),
+    getTimelinePages: (threadId) => Effect.fail(new OrchestratorProjectionError({ threadId })),
     getTimelinePage: (threadId) => Effect.fail(new OrchestratorProjectionError({ threadId })),
     getMessageCount: (threadId) => Effect.fail(new OrchestratorProjectionError({ threadId })),
     getTurnItem: ({ threadId }) => Effect.fail(new OrchestratorProjectionError({ threadId })),
