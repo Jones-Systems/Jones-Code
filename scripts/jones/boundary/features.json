@@ -923,7 +923,14 @@
         "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
         "apps/server/src/jones/updates/desktopInstall.test.ts",
         "apps/server/src/jones/cloud/shutdownBudget.test.ts",
-        "apps/server/src/orchestration-v2/ProjectionRecovery.test.ts"
+        "apps/server/src/orchestration-v2/ProjectionRecovery.test.ts",
+        "apps/desktop/src/jones/updates/jonesQuitPreparation.test.ts",
+        "apps/desktop/src/jones/updates/jonesNativePreparation.test.ts",
+        "apps/desktop/src/backend/DesktopBackendManager.test.ts",
+        "apps/desktop/src/updates/DesktopUpdates.test.ts",
+        "apps/server/src/jones/updates/http.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts",
+        "apps/server/src/orchestration-v2/FoundationPersistence.test.ts"
       ]
     },
     {

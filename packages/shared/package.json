@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./jones/shutdownBudget": {
+      "types": "./src/jones/shutdownBudget.ts",
+      "import": "./src/jones/shutdownBudget.ts"
+    },
     "./jones/workstreamsRegistryBinding": {
       "types": "./src/jones/workstreamsRegistryBinding.ts",
       "import": "./src/jones/workstreamsRegistryBinding.ts"

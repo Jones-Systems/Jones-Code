@@ -9,6 +9,7 @@ import { EnvironmentAuthenticatedAuth, EnvironmentHttpApi } from "../environment
 import v2Conformance from "../../contracts/workstreams-registration-context/v2/fixtures/conformance.json" with { type: "json" };
 import {
   JonesNativePrepareInput,
+  JonesQuitPreparation,
   JonesUpdateCapability,
   JonesUpdateExactInput,
   JonesUpdateInstallInput,
@@ -103,6 +104,7 @@ describe("Jones environment HTTP registration", () => {
       ["reconcile", "POST", "/api/jones-updates/reconcile"],
       ["recordRetired", "POST", "/api/jones-updates/record-retired"],
       ["prepareNative", "POST", "/api/jones-updates/prepare-native"],
+      ["prepareQuit", "POST", "/api/jones-updates/prepare-quit"],
       ["state", "GET", "/api/jones-updates"],
       ["sourceRelation", "GET", "/api/jones-updates/source-relation"],
       ["check", "POST", "/api/jones-updates/check"],
@@ -128,6 +130,15 @@ describe("Jones environment HTTP registration", () => {
       expect(endpoint.headers?.ast).toEqual(bearerHeaders.ast);
     }
   });
+});
+
+it("requires a nonnegative integer count in quit preparation responses", () => {
+  const decode = Schema.decodeUnknownSync(JonesQuitPreparation);
+  expect(decode({ prepared: false, threadCount: 0 })).toEqual({ prepared: false, threadCount: 0 });
+  expect(decode({ prepared: true, threadCount: 2 })).toEqual({ prepared: true, threadCount: 2 });
+  for (const threadCount of [-1, 0.5, Infinity, NaN]) {
+    expect(() => decode({ prepared: true, threadCount })).toThrow();
+  }
 });
 
 it("requires an explicit native attempt without changing ordinary install requests", () => {

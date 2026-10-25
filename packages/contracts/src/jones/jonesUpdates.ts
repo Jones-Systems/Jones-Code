@@ -185,3 +185,9 @@ export const JonesNativePrepareInput = Schema.Struct({
   currentVersion: TrimmedNonEmptyString,
 });
 export type JonesNativePrepareInput = typeof JonesNativePrepareInput.Type;
+
+export const JonesQuitPreparation = Schema.Struct({
+  prepared: Schema.Boolean,
+  threadCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+});
+export type JonesQuitPreparation = typeof JonesQuitPreparation.Type;
