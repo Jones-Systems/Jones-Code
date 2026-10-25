@@ -304,6 +304,8 @@ it.each([
 
 function makeLocalCommandHarness(input: {
   readonly text: string;
+  readonly driver?: "codex" | "claudeAgent";
+  readonly goal?: OrchestrationV2ThreadProjection["providerThreads"][number]["goal"];
   readonly worktreePath?: string;
   readonly worktreesDir?: string;
   readonly fileSystem?: FileSystem.FileSystem;
@@ -375,7 +377,7 @@ function makeLocalCommandHarness(input: {
   };
   const providerThread: OrchestrationV2ThreadProjection["providerThreads"][number] = {
     id: providerThreadId,
-    driver: ProviderDriverKind.make("codex"),
+    driver: ProviderDriverKind.make(input.driver ?? "codex"),
     providerInstanceId: newInstanceId,
     providerSessionId,
     appThreadId: threadId,
@@ -390,6 +392,7 @@ function makeLocalCommandHarness(input: {
             strength: "strong",
           },
     nativeConversationHeadRef: null,
+    ...("goal" in input ? { goal: input.goal } : {}),
     ...(input.handoffRecovery === undefined
       ? {}
       : {
@@ -1587,10 +1590,118 @@ effectIt.effect(
     }),
 );
 
-effectIt.effect("ordinary chat retains fresh-conversation fallback after a resume failure", () =>
+effectIt.effect.each([undefined, null])(
+  "Codex continuation with unknown projected goal preserves its conversation: %s",
+  (goal) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Continue once",
+        ...(goal === undefined ? {} : { goal }),
+        historyReadFailureAfterFallback: new Error("must not reach fallback history"),
+      });
+      const original = harness.projection().providerThreads.at(-1);
+      yield* harness.start;
+      expect(harness.fallbackEnsure).not.toHaveBeenCalled();
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+      expect(harness.dispatched).toHaveLength(0);
+      expect(harness.projection().contextHandoffs).toHaveLength(0);
+      expect(harness.projection().providerThreads.at(-1)?.nativeThreadRef).toEqual(
+        original?.nativeThreadRef,
+      );
+      expect(harness.projection().providerThreads.at(-1)?.goal).toEqual(original?.goal);
+      expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+      expect(harness.projection().turnItems).toMatchObject([
+        { type: "error", title: "Existing provider conversation was preserved; continuation failed" },
+      ]);
+    }),
+);
+
+effectIt.effect.each(["/compact", " /COMPACT "])(
+  "compaction preserves its native conversation after a resume failure: %s",
+  (text) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text,
+        previousMessages: ["Existing conversation"],
+        historyReadFailureAfterFallback: new Error("must not reach fallback history"),
+      });
+      harness.tryHandlePromptCommand.mockReturnValue(Effect.succeed(false));
+      const originalRef = harness.projection().providerThreads.at(-1)?.nativeThreadRef;
+      yield* harness.start;
+      expect(harness.fallbackEnsure).not.toHaveBeenCalled();
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+      expect(harness.dispatched).toHaveLength(0);
+      expect(harness.projection().contextHandoffs).toHaveLength(0);
+      expect(harness.projection().providerThreads.at(-1)?.nativeThreadRef).toEqual(originalRef);
+      expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+    }),
+);
+
+effectIt.effect.each([
+  "active",
+  "paused",
+  "blocked",
+  "usage_limited",
+  "budget_limited",
+  "complete",
+] as const)("preserves a retained %s goal after resume failure", (status) =>
+  Effect.gen(function* () {
+    const goal = { objective: "Retained synthetic goal", status };
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      goal,
+      historyReadFailureAfterFallback: new Error("must not reach fallback history"),
+    });
+    const originalRef = harness.projection().providerThreads.at(-1)?.nativeThreadRef;
+    yield* harness.start;
+    expect(harness.fallbackEnsure).not.toHaveBeenCalled();
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+    expect(harness.projection().contextHandoffs).toHaveLength(0);
+    expect(harness.projection().providerThreads.at(-1)?.nativeThreadRef).toEqual(originalRef);
+    expect(harness.projection().providerThreads.at(-1)?.goal).toEqual(goal);
+    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+  }),
+);
+
+for (const text of ["Continue", "/compact"]) {
+  effectIt.effect.each(["same", "changed", "missing"] as const)(
+    `preserves original native identity before ${text}: %s`,
+    (nativeResume) =>
+      Effect.gen(function* () {
+        const harness = makeLocalCommandHarness({
+          text,
+          previousMessages: ["Existing conversation"],
+          goal: { objective: "Retained synthetic goal", status: "paused" },
+          nativeResume,
+        });
+        harness.tryHandlePromptCommand.mockReturnValue(Effect.succeed(false));
+        const originalRef = harness.projection().providerThreads.at(-1)?.nativeThreadRef;
+        yield* harness.start;
+        expect(harness.successEnsure).not.toHaveBeenCalled();
+        expect(harness.projection().providerThreads.at(-1)?.nativeThreadRef).toEqual(originalRef);
+        expect(harness.startRootRun).toHaveBeenCalledTimes(nativeResume === "same" ? 1 : 0);
+        expect(harness.projection().runs.at(-1)?.status).toBe(
+          nativeResume === "same" ? "running" : "failed",
+        );
+      }),
+  );
+}
+
+effectIt.effect("a new Codex conversation still creates its initial native thread", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({ text: "Start a conversation", nativeResume: "missing" });
+    yield* harness.start;
+    expect(harness.successEnsure).toHaveBeenCalledOnce();
+    expect(harness.startRootRun).toHaveBeenCalledOnce();
+    expect(harness.projection().runs.at(-1)?.status).toBe("running");
+  }),
+);
+
+effectIt.effect("non-Codex chat retains fresh-conversation fallback after a resume failure", () =>
   Effect.gen(function* () {
     const harness = makeLocalCommandHarness({
       text: "Continue once",
+      driver: "claudeAgent",
       historyReadFailureAfterFallback: new Error("stop after fallback"),
     });
     yield* harness.start.pipe(Effect.result);
