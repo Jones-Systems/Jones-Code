@@ -14,9 +14,9 @@ import {
   RouterProvider,
 } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
-import { act, useSyncExternalStore } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { useSyncExternalStore } from "react";
+import { describe, expect, it, vi } from "vite-plus/test";
+import { act, render } from "../../../test/render";
 import { page, userEvent } from "vite-plus/test/browser";
 import Sidebar from "../../components/Sidebar";
 import { Sidebar as SidebarFrame, SidebarProvider } from "../../components/ui/sidebar";
@@ -47,7 +47,7 @@ const fixture = vi.hoisted(() => ({
 
 vi.mock(import("../../state/entities"), async (original) => ({
   ...(await original()),
-  useThreadShells: () => useSyncExternalStore(subscribe, () => fixture.threads),
+  useQuietThreadShells: () => useSyncExternalStore(subscribe, () => fixture.threads),
   readThreadShell: (ref: { threadId: string }) =>
     fixture.threads.find((thread) => thread.id === ref.threadId) ?? null,
   useProjects: () => [],
@@ -91,8 +91,6 @@ vi.mock(import("../../hooks/useThreadActions"), async (original) => {
   };
 });
 
-let root: Root;
-let container: HTMLDivElement;
 const environmentId = EnvironmentId.make("env:a");
 const serverConfigs = new Map<EnvironmentId, EnvironmentServerConfig>([
   [
@@ -151,10 +149,12 @@ function publish(controller: WorkstreamListView) {
   for (const listener of fixture.listeners) listener();
 }
 
-beforeEach(async () => {
+async function setupFixture() {
+  using resources = new DisposableStack();
+  resources.defer(() => vi.useRealTimers());
+  resources.defer(() => vi.restoreAllMocks());
+  resources.defer(() => localStorage.clear());
   await page.viewport(1000, 1000);
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(now);
   localStorage.clear();
   fixture.mutation.mockReset();
@@ -230,19 +230,8 @@ beforeEach(async () => {
     loadReference: unexpected,
     runBindingOperation: unexpected,
   };
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
-
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  localStorage.clear();
-  vi.restoreAllMocks();
-  vi.useRealTimers();
-  vi.unstubAllGlobals();
-});
+  return resources.move();
+}
 
 async function renderSidebar() {
   const route = createRootRoute({
@@ -263,55 +252,91 @@ async function renderSidebar() {
     history: createMemoryHistory({ initialEntries: ["/"] }),
   });
   await router.load();
-  await act(async () => root.render(<RouterProvider router={router} />));
+  return render(<RouterProvider router={router} />, { router: false });
 }
 
-function row(id: string) {
-  const result = [...container.querySelectorAll<HTMLElement>("[data-thread-item]")].filter(
-    (element) =>
-      element.textContent?.includes(fixture.threads.find((thread) => thread.id === id)!.title),
-  );
-  expect(result, `one rendered production row for ${id}`).toHaveLength(1);
-  return result[0]!;
-}
-
-function expectGroup(id: string, destination: string | null) {
-  expect(row(id).closest("[data-native-workstream]")?.getAttribute("data-native-workstream")).toBe(
-    JSON.stringify(destination),
-  );
-}
-
-async function menu(id: string, selection: string | null = null) {
-  let offered: readonly ContextMenuItem[] = [];
-  // The shell returns a selected ID from the actual production menu. No ref or
-  // assignment callback is injected, including for pinned rows outside the groups.
-  const show = vi.spyOn(ensureLocalApi().contextMenu, "show").mockImplementation(async (items) => {
-    offered = items;
-    const item = items
-      .flatMap((item) => [item, ...(item.children ?? [])])
-      .find((item) => item.id === selection);
-    return item && !item.disabled ? selection : null;
-  });
-  await act(async () =>
-    row(id)
-      .querySelector('[role="button"]')!
-      .dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 20, clientY: 20 })),
-  );
-  expect(show).toHaveBeenCalledOnce();
-  show.mockRestore();
-  const items = offered.flatMap((item) => [item, ...(item.children ?? [])]);
-  if (selection !== null) {
-    const selected = items.find((item) => item.id === selection);
-    expect(selected, `offered ${selection}`).toBeDefined();
-    expect(selected!.disabled).not.toBe(true);
+function sidebarQueries(container: HTMLElement) {
+  function row(id: string) {
+    const result = [...container.querySelectorAll<HTMLElement>("[data-thread-item]")].filter(
+      (element) =>
+        element.textContent?.includes(fixture.threads.find((thread) => thread.id === id)!.title),
+    );
+    expect(result, `one rendered production row for ${id}`).toHaveLength(1);
+    return result[0]!;
   }
-  return items;
+
+  function expectGroup(id: string, destination: string | null) {
+    expect(
+      row(id).closest("[data-native-workstream]")?.getAttribute("data-native-workstream"),
+    ).toBe(JSON.stringify(destination));
+  }
+
+  async function menu(id: string, selection: string | null = null) {
+    let offered: readonly ContextMenuItem[] = [];
+    // The shell returns a selected ID from the actual production menu. No ref or
+    // assignment callback is injected, including for pinned rows outside the groups.
+    const show = vi
+      .spyOn(ensureLocalApi().contextMenu, "show")
+      .mockImplementation(async (items) => {
+        offered = items;
+        const item = items
+          .flatMap((item) => [item, ...(item.children ?? [])])
+          .find((item) => item.id === selection);
+        return item && !item.disabled ? selection : null;
+      });
+    await act(async () =>
+      row(id)
+        .querySelector('[role="button"]')!
+        .dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 20, clientY: 20 })),
+    );
+    expect(show).toHaveBeenCalledOnce();
+    show.mockRestore();
+    const items = offered.flatMap((item) => [item, ...(item.children ?? [])]);
+    if (selection !== null) {
+      const selected = items.find((item) => item.id === selection);
+      expect(selected, `offered ${selection}`).toBeDefined();
+      expect(selected!.disabled).not.toBe(true);
+    }
+    return items;
+  }
+
+  function group(destination: string | null) {
+    const element = [...container.querySelectorAll<HTMLElement>("[data-native-workstream]")].find(
+      (element) => element.dataset.nativeWorkstream === JSON.stringify(destination),
+    );
+    expect(element, `rendered Workstream ${destination}`).toBeDefined();
+    return element!;
+  }
+
+  async function dragToWorkstream(id: string, destination: string | null) {
+    const target = group(destination);
+    const previews: string[] = [];
+    // Observe the rendered highlight during the real browser gesture; do not inject hit tests.
+    const observer = new MutationObserver(() => {
+      if (target.dataset.dropTarget === "thread" && target.checkVisibility())
+        previews.push(getComputedStyle(target).boxShadow);
+    });
+    observer.observe(target, { attributes: true, attributeFilter: ["data-drop-target"] });
+    // Browser input must commit each move before release, rather than batch the whole drag in act.
+    try {
+      await userEvent.dragAndDrop(row(id).querySelector('[role="button"]')!, target, { steps: 12 });
+      expect(previews.some((shadow) => shadow !== "none")).toBe(true);
+      expect(container.querySelector('[data-drop-target="thread"]')).toBeNull();
+    } finally {
+      observer.disconnect();
+    }
+  }
+
+  return { row, expectGroup, menu, dragToWorkstream };
 }
 
 describe("production Sidebar Workstream assignment menus", () => {
   it("assigns, moves and unassigns an ordinary row through the production dispatcher", async () => {
+    using _fixture = await setupFixture();
     const before = structuredClone(fixture.threads);
-    await renderSidebar();
+    await using screen = await renderSidebar();
+    const { container } = screen;
+    const { expectGroup, menu } = sidebarQueries(container);
     expectGroup("ordinary", null);
     await menu("ordinary", "assign-workstream:group:alpha");
     expect(assign).toHaveBeenCalledOnce();
@@ -339,8 +364,11 @@ describe("production Sidebar Workstream assignment menus", () => {
   });
 
   it("uses the registered menu for a pinned row and retains its pin while assignment changes", async () => {
+    using _fixture = await setupFixture();
     const before = structuredClone(fixture.threads);
-    await renderSidebar();
+    await using screen = await renderSidebar();
+    const { container } = screen;
+    const { row, expectGroup, menu } = sidebarQueries(container);
     for (const destination of ["alpha", "beta", null]) {
       await menu(
         "pinned",
@@ -373,9 +401,12 @@ describe("production Sidebar Workstream assignment menus", () => {
   it.each(["denied", "unknown"] as const)(
     "preserves the pinned row and control state after a %s controller result",
     async (reason) => {
+      using _fixture = await setupFixture();
       const before = structuredClone(fixture.threads);
       assign.mockRejectedValueOnce(new WorkstreamActionError(reason));
-      await renderSidebar();
+      await using screen = await renderSidebar();
+      const { container } = screen;
+      const { row, expectGroup, menu } = sidebarQueries(container);
       await menu("pinned", "assign-workstream:group:alpha");
       expect(assign).toHaveBeenCalledOnce();
       expect(container.querySelector('[role="alert"]')?.textContent).toContain(
@@ -393,39 +424,13 @@ describe("production Sidebar Workstream assignment menus", () => {
   );
 });
 
-function group(destination: string | null) {
-  const element = [...container.querySelectorAll<HTMLElement>("[data-native-workstream]")].find(
-    (element) => element.dataset.nativeWorkstream === JSON.stringify(destination),
-  );
-  expect(element, `rendered Workstream ${destination}`).toBeDefined();
-  return element!;
-}
-
-async function dragToWorkstream(id: string, destination: string | null) {
-  const target = group(destination);
-  const previews: string[] = [];
-  // Observe the rendered highlight during the real browser gesture; do not inject hit tests.
-  const observer = new MutationObserver(() => {
-    if (target.dataset.dropTarget === "thread" && target.checkVisibility())
-      previews.push(getComputedStyle(target).boxShadow);
-  });
-  observer.observe(target, { attributes: true, attributeFilter: ["data-drop-target"] });
-  // Browser input must commit each move before release, rather than batch the whole drag in act.
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", false);
-  try {
-    await userEvent.dragAndDrop(row(id).querySelector('[role="button"]')!, target, { steps: 12 });
-    expect(previews.some((shadow) => shadow !== "none")).toBe(true);
-    expect(container.querySelector('[data-drop-target="thread"]')).toBeNull();
-  } finally {
-    observer.disconnect();
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  }
-}
-
 describe("production Sidebar Workstream pointer assignment", () => {
   it("drags an ordinary row into, between and out of Workstreams", async () => {
+    using _fixture = await setupFixture();
     const before = structuredClone(fixture.threads);
-    await renderSidebar();
+    await using screen = await renderSidebar();
+    const { container } = screen;
+    const { row, expectGroup, dragToWorkstream } = sidebarQueries(container);
     expectGroup("ordinary", null);
     for (const destination of ["alpha", "beta", null]) {
       await dragToWorkstream("ordinary", destination);
@@ -450,6 +455,7 @@ describe("production Sidebar Workstream pointer assignment", () => {
   });
 
   it("unpins a pointer-dropped pinned row only after the assignment is accepted", async () => {
+    using _fixture = await setupFixture();
     const before = structuredClone(fixture.threads);
     const events: string[] = [];
     let acceptAssignment!: () => void;
@@ -474,8 +480,10 @@ describe("production Sidebar Workstream pointer assignment", () => {
       publish({ ...fixture.controller! });
       return AsyncResult.success({ sequence: 1 });
     });
+    await using screen = await renderSidebar();
+    const { container } = screen;
+    const { row, expectGroup, dragToWorkstream } = sidebarQueries(container);
     try {
-      await renderSidebar();
       await dragToWorkstream("pinned", "alpha");
       expect(assign).toHaveBeenCalledOnce();
       expect(assign.mock.calls[0]!.slice(0, 2)).toEqual([before[1], "alpha"]);
@@ -519,6 +527,7 @@ describe("production Sidebar Workstream pointer assignment", () => {
   it.each(["denied", "unknown"] as const)(
     "keeps the pin and original membership after a %s drop, and refreshes without resubmitting",
     async (reason) => {
+      using _fixture = await setupFixture();
       const before = structuredClone(fixture.threads);
       const originalPlacements = [controlPlacement, { ...primary, native_thread_id: "pinned" }];
       const retry = vi.fn(async () => {});
@@ -528,7 +537,9 @@ describe("production Sidebar Workstream pointer assignment", () => {
         retry,
       };
       assign.mockRejectedValueOnce(new WorkstreamActionError(reason));
-      await renderSidebar();
+      await using screen = await renderSidebar();
+      const { container } = screen;
+      const { row, expectGroup, menu, dragToWorkstream } = sidebarQueries(container);
       await dragToWorkstream("pinned", "beta");
       expect(assign).toHaveBeenCalledOnce();
       expect(assign.mock.calls[0]!.slice(0, 2)).toEqual([before[1], "beta"]);
@@ -540,9 +551,7 @@ describe("production Sidebar Workstream pointer assignment", () => {
       expect(
         (await menu("pinned")).find((item) => item.id === "assign-workstream:group:alpha")?.label,
       ).toBe("alpha (primary)");
-      await act(async () =>
-        userEvent.click(page.getByRole("button", { name: "Refresh", exact: true })),
-      );
+      await userEvent.click(page.getByRole("button", { name: "Refresh", exact: true }));
       expect(retry).toHaveBeenCalledOnce();
       expect(container.querySelector('[role="alert"]')).toBeNull();
       expect(assign).toHaveBeenCalledOnce();

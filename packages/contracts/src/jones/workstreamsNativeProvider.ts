@@ -1,6 +1,9 @@
 import * as Schema from "effect/Schema";
 
 export const WORKSTREAMS_T3_PROVIDER_FAMILY = "workstreams-t3-provider";
+export const WORKSTREAMS_T3_PROVIDER_V2_PROTOCOL = "workstreams-t3-provider/2.0.0";
+export const WORKSTREAMS_T3_PROVIDER_V2_MANIFEST_SHA256 =
+  "5acf321e9a2c0584d0e3e74137e6bdd07b5ab90f35bc5cec47ba1ee96c08fed8";
 export const WORKSTREAMS_T3_PROVIDER_VERSION = "1.0.0";
 export const WORKSTREAMS_T3_PROVIDER_PROTOCOL = "workstreams-t3-provider/1.0.0";
 export const WORKSTREAMS_T3_PROVIDER_MANIFEST_SHA256 =
@@ -337,3 +340,136 @@ export const WorkstreamsNativeProviderResponse = Schema.Union([
   ),
 ]);
 export type WorkstreamsNativeProviderResponse = typeof WorkstreamsNativeProviderResponse.Type;
+
+const ProtocolV2 = Schema.Literal(WORKSTREAMS_T3_PROVIDER_V2_PROTOCOL);
+const RejectedV2 = closed(
+  Schema.Struct({
+    protocol: ProtocolV2,
+    state: Schema.Literal("rejected"),
+    reason: RejectionReason,
+  }),
+);
+export const WorkstreamsNativeContextResponseV2 = Schema.Union([
+  closed(
+    Schema.Struct({
+      protocol: ProtocolV2,
+      state: Schema.Literal("ready"),
+      enrollment: WorkstreamsNativeContext,
+      observed_build: WorkstreamsNativeBuild,
+    }),
+  ),
+  closed(
+    Schema.Struct({
+      protocol: ProtocolV2,
+      state: Schema.Literal("unavailable"),
+      reason: Schema.Literals([
+        "provider_unconfigured",
+        "authority_unavailable",
+        "build_unavailable",
+      ]),
+    }),
+  ),
+  RejectedV2,
+]);
+export type WorkstreamsNativeContextResponseV2 = typeof WorkstreamsNativeContextResponseV2.Type;
+
+export const WorkstreamsNativeAttestationResponseV2 = Schema.Union([
+  closed(
+    Schema.Struct({
+      protocol: ProtocolV2,
+      state: Schema.Literal("attested"),
+      request: WorkstreamsNativeAttestationRequest,
+      attestation: WorkstreamsNativeRegistrationAttestation,
+      attested_at: Timestamp,
+      expires_at: Timestamp,
+    }),
+  ),
+  closed(
+    Schema.Struct({
+      protocol: ProtocolV2,
+      state: Schema.Literal("unknown"),
+      reason: Schema.Literals([
+        "authority_changed",
+        "authority_unavailable",
+        "observation_unavailable",
+      ]),
+    }),
+  ),
+  RejectedV2,
+]);
+export type WorkstreamsNativeAttestationResponseV2 =
+  typeof WorkstreamsNativeAttestationResponseV2.Type;
+
+const settlementResponseBaseV2 = {
+  protocol: ProtocolV2,
+  request: WorkstreamsNativeSettlementRequest,
+};
+export const WorkstreamsNativeSettlementResponseV2 = Schema.Union([
+  closed(
+    Schema.Struct({
+      ...settlementResponseBaseV2,
+      state: Schema.Literal("terminal"),
+      result: CommittedResult,
+      native_receipt: WorkstreamsNativeAcceptedReceipt,
+      settlement_event: WorkstreamsNativeSettlementEvent,
+    }),
+  ),
+  closed(
+    Schema.Struct({
+      ...settlementResponseBaseV2,
+      state: Schema.Literal("terminal"),
+      result: NoncommittedResult,
+      native_receipt: Schema.NullOr(WorkstreamsNativeRejectedReceipt),
+      settlement_event: Schema.Null,
+    }),
+  ),
+  closed(
+    Schema.Struct({
+      ...settlementResponseBaseV2,
+      state: Schema.Literal("unknown"),
+      reason: Schema.Literals([
+        "attempt_not_found",
+        "dispatch_in_progress",
+        "receipt_missing",
+        "evidence_conflict",
+        "authority_changed",
+        "authority_unavailable",
+        "provider_unavailable",
+      ]),
+    }),
+  ),
+  RejectedV2,
+]);
+export type WorkstreamsNativeSettlementResponseV2 =
+  typeof WorkstreamsNativeSettlementResponseV2.Type;
+export const WorkstreamsNativeSettlementLookupResponseV2 = WorkstreamsNativeSettlementResponseV2;
+export type WorkstreamsNativeSettlementLookupResponseV2 =
+  typeof WorkstreamsNativeSettlementLookupResponseV2.Type;
+
+export const WorkstreamsNativeProviderResponseV2 = Schema.Union([
+  closed(
+    Schema.Struct({
+      operation: Schema.Literal("context"),
+      response: WorkstreamsNativeContextResponseV2,
+    }),
+  ),
+  closed(
+    Schema.Struct({
+      operation: Schema.Literal("attestations"),
+      response: WorkstreamsNativeAttestationResponseV2,
+    }),
+  ),
+  closed(
+    Schema.Struct({
+      operation: Schema.Literal("settlements"),
+      response: WorkstreamsNativeSettlementResponseV2,
+    }),
+  ),
+  closed(
+    Schema.Struct({
+      operation: Schema.Literal("settlements/lookup"),
+      response: WorkstreamsNativeSettlementLookupResponseV2,
+    }),
+  ),
+]);
+export type WorkstreamsNativeProviderResponseV2 = typeof WorkstreamsNativeProviderResponseV2.Type;

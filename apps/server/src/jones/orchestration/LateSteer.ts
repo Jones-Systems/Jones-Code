@@ -12,10 +12,8 @@ import * as ControlAdmission from "./ControlAdmission.ts";
 
 export const CODEX_STEER_TIMEOUT_MS = 30_000;
 
-export const verifyCodexProcessExit = (
-  handle: Pick<ChildProcessSpawner.ChildProcessHandle, "exitCode" | "isRunning">,
-) =>
-  Effect.gen(function* () {
+export const verifyCodexProcessExit = Effect.fn("LateSteer.verifyCodexProcessExit")(
+  function* (handle: Pick<ChildProcessSpawner.ChildProcessHandle, "exitCode" | "isRunning">) {
     // A signal exit rejects exitCode. The captured Node handle's isRunning reads
     // its native exit-event Deferred, independently of the protocol's scope.
     yield* handle.exitCode.pipe(Effect.catch(() => Effect.void));
@@ -26,16 +24,16 @@ export const verifyCodexProcessExit = (
           cause: "The captured child has no confirmed exit.",
         }),
       );
-  }).pipe(
-    Effect.timeout("3 seconds"),
-    Effect.mapError(
-      (cause) =>
-        new CodexErrors.CodexAppServerTransportError({
-          operation: "read-process-exit-status",
-          cause,
-        }),
-    ),
-  );
+  },
+  Effect.timeout("3 seconds"),
+  Effect.mapError(
+    (cause) =>
+      new CodexErrors.CodexAppServerTransportError({
+        operation: "read-process-exit-status",
+        cause,
+      }),
+  ),
+);
 
 export class SteerNotDispatched extends Schema.TaggedError<SteerNotDispatched>()(
   "SteerNotDispatched",
@@ -89,7 +87,7 @@ const isNonApplyingRejection = (error: CodexErrors.CodexAppServerError) =>
   error.method === "turn/steer" &&
   (error.code === -32600 || error.code === -32601 || error.code === -32602);
 
-export const boundedSteer = <E, R>(input: {
+export const boundedSteer = Effect.fn("LateSteer.boundedSteer")(function* <E, R>(input: {
   readonly instanceId: string;
   readonly prepare: Effect.Effect<
     {
@@ -100,70 +98,61 @@ export const boundedSteer = <E, R>(input: {
     E,
     R
   >;
-}) =>
-  Effect.gen(function* () {
-    const admission = yield* ControlAdmission.ControlAdmission;
-    let dispatch: ControlAdmission.ControlDispatch | undefined;
-    const unknown = (cause?: unknown) =>
-      new SteerOutcomeUnknown({
-        instanceId: input.instanceId,
-        nativeThreadId: dispatch!.binding.nativeThreadId,
-        nativeTurnId: dispatch!.binding.nativeTurnId,
-        ...(cause === undefined ? {} : { cause }),
-      });
-    return yield* Effect.gen(function* () {
-      yield* admission.assertOpen(input.instanceId);
-      const prepared = yield* input.prepare;
-      // Begin and fork cannot be interrupted between recording ownership and sending.
-      const pending = yield* Effect.uninterruptibleMask(() =>
-        Effect.gen(function* () {
-          const owned = yield* admission.begin(prepared.binding);
-          dispatch = owned;
-          return yield* prepared.send.pipe(
-            Effect.interruptible,
-            Effect.flatMap((response) =>
-              admission
-                .acknowledge(owned, {
-                  ...prepared.binding,
-                  nativeTurnId: response.turnId,
-                })
-                .pipe(
-                  Effect.flatMap((matched) => (matched ? Effect.void : Effect.fail(unknown()))),
-                ),
-            ),
-            Effect.catch(
-              (
-                error,
-              ): Effect.Effect<void, CodexErrors.CodexAppServerError | SteerOutcomeUnknown> => {
-                if (error._tag !== "SteerOutcomeUnknown" && isNonApplyingRejection(error))
-                  return admission
-                    .rejectNonApplying(owned)
-                    .pipe(Effect.andThen(Effect.fail(error)));
-                return admission
-                  .markUnknown(owned)
-                  .pipe(Effect.andThen(Effect.fail(unknown(error))));
-              },
-            ),
-            // Keep the original waiter alive after the caller times out or is cancelled.
-            Effect.forkIn(prepared.producerScope, { startImmediately: true }),
-          );
-        }),
-      );
-      yield* Fiber.join(pending);
-    }).pipe(
-      Effect.timeoutOrElse({
-        duration: CODEX_STEER_TIMEOUT_MS,
-        orElse: () =>
-          Effect.fail(
-            dispatch === undefined
-              ? new SteerNotDispatched({ instanceId: input.instanceId })
-              : unknown(),
+}) {
+  const admission = yield* ControlAdmission.ControlAdmission;
+  let dispatch: ControlAdmission.ControlDispatch | undefined;
+  const unknown = (cause?: unknown) =>
+    new SteerOutcomeUnknown({
+      instanceId: input.instanceId,
+      nativeThreadId: dispatch!.binding.nativeThreadId,
+      nativeTurnId: dispatch!.binding.nativeTurnId,
+      ...(cause === undefined ? {} : { cause }),
+    });
+  return yield* Effect.gen(function* () {
+    yield* admission.assertOpen(input.instanceId);
+    const prepared = yield* input.prepare;
+    // Begin and fork cannot be interrupted between recording ownership and sending.
+    const pending = yield* Effect.uninterruptibleMask(() =>
+      Effect.gen(function* () {
+        const owned = yield* admission.begin(prepared.binding);
+        dispatch = owned;
+        return yield* prepared.send.pipe(
+          Effect.interruptible,
+          Effect.flatMap((response) =>
+            admission
+              .acknowledge(owned, {
+                ...prepared.binding,
+                nativeTurnId: response.turnId,
+              })
+              .pipe(Effect.flatMap((matched) => (matched ? Effect.void : Effect.fail(unknown())))),
           ),
+          Effect.catch(
+            (error): Effect.Effect<void, CodexErrors.CodexAppServerError | SteerOutcomeUnknown> => {
+              if (error._tag !== "SteerOutcomeUnknown" && isNonApplyingRejection(error))
+                return admission.rejectNonApplying(owned).pipe(Effect.andThen(Effect.fail(error)));
+              return admission.markUnknown(owned).pipe(Effect.andThen(Effect.fail(unknown(error))));
+            },
+          ),
+          // Keep the original waiter alive after the caller times out or is cancelled.
+          Effect.forkIn(prepared.producerScope, { startImmediately: true }),
+        );
       }),
-      Effect.onExit((exit) =>
-        Exit.isFailure(exit) && dispatch !== undefined
-          ? admission.markUnknown(dispatch)
-          : Effect.void,
-      ),
     );
-  });
+    yield* Fiber.join(pending);
+  }).pipe(
+    Effect.timeoutOrElse({
+      duration: CODEX_STEER_TIMEOUT_MS,
+      orElse: () =>
+        Effect.fail(
+          dispatch === undefined
+            ? new SteerNotDispatched({ instanceId: input.instanceId })
+            : unknown(),
+        ),
+    }),
+    Effect.onExit((exit) =>
+      Exit.isFailure(exit) && dispatch !== undefined
+        ? admission.markUnknown(dispatch)
+        : Effect.void,
+    ),
+  );
+});

@@ -6,6 +6,7 @@
     "apps/server/src/jones/provider/codex/CodexCapacityContinuation.test.ts",
     "apps/server/src/jones/provider/codex/CodexLateStartRecovery.ts",
     "apps/server/src/jones/provider/codex/CodexLateStartRecovery.test.ts",
+    "apps/server/src/jones/provider/codex/CodexLateSubagentStart.test.ts",
     "apps/server/src/jones/provider/codex/CodexBackgroundCompletion.ts",
     "apps/server/src/jones/provider/codex/CodexBackgroundCompletion.test.ts"
   ],

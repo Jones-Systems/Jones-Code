@@ -39,6 +39,7 @@ const listen = async (server: NodeHttp.Server) => {
 };
 
 const fixture = async () => {
+  const now = 1_000_000;
   const requests: Array<{ url: string; headers: NodeHttp.IncomingHttpHeaders }> = [];
   const admissions: Array<Record<string, unknown>> = [];
   const upstreamClosed: Array<Promise<unknown[]>> = [];
@@ -113,7 +114,7 @@ const fixture = async () => {
               owner: admissionMismatch ? "wrong-owner" : "owner",
               generation: "generation",
               origin: "t3code://app",
-              expiresAt: Date.now() + (admissionExpired ? -1 : 300000),
+              expiresAt: now + (admissionExpired ? -1 : 300000),
               ...(admissionLarge ? { padding: "x".repeat(4096) } : {}),
             })
         : "{}",
@@ -142,6 +143,11 @@ const fixture = async () => {
     }),
     {
       require,
+      Date: class extends Date {
+        static override now() {
+          return now;
+        }
+      },
       Buffer,
       URL,
       URLSearchParams,

@@ -1,6 +1,6 @@
-// @effect-diagnostics nodeBuiltinImport:off globalTimers:off - Real worker fixtures own and clear their bounded shutdown timer.
+// @effect-diagnostics nodeBuiltinImport:off - Synthetic native fixtures use Node filesystem and process APIs.
 import { assert, it } from "@effect/vitest";
-import { vi } from "vite-plus/test";
+import { onTestFinished, vi } from "vite-plus/test";
 import type { JonesStagedArtifact } from "@t3tools/shared/jones/jonesActions";
 import * as NodeAssert from "node:assert/strict";
 import * as NodeFSP from "node:fs/promises";
@@ -640,11 +640,12 @@ it("reports null loop delay in a real worker and closes the worker after its dig
       },
     );
     let completed = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    onTestFinished(async () => {
+      if (!completed) await worker.terminate();
+    });
     try {
       const result = await new Promise<QualifiedDigestTiming>((resolve, reject) => {
         let observed: QualifiedDigestTiming | undefined;
-        timer = setTimeout(() => reject(new Error("Owned digest worker timed out")), 10_000);
         worker.on("message", (value: QualifiedDigestTiming) => {
           observed = value;
         });
@@ -659,7 +660,6 @@ it("reports null loop delay in a real worker and closes the worker after its dig
       assert.equal(result.files, 2);
       assert.equal(result.result, "match");
     } finally {
-      clearTimeout(timer);
       if (!completed) await worker.terminate();
     }
   });

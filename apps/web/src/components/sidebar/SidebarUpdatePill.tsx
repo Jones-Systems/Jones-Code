@@ -15,6 +15,7 @@ import {
   getDesktopUpdateActionError,
   getDesktopUpdateButtonTooltip,
   getDesktopUpdateDownloadedVersion,
+  getDesktopUpdateIdleTooltip,
   getDesktopUpdateInstallConfirmationMessage,
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
@@ -117,21 +118,21 @@ export function checkForSidebarUpdate(
     });
 }
 
-export function shouldUseSidebarUpdateReleaseNotesPopover(
+function shouldUseSidebarUpdateReleaseNotesPopover(
   showUpdateDetails: boolean,
   state: DesktopUpdateState | null,
 ): boolean {
   return showUpdateDetails && state?.channel === "nightly" && state.releaseNotes.length > 0;
 }
 
-export function handleSidebarUpdateReleaseNotesPopoverOpenChange(
+function handleSidebarUpdateReleaseNotesPopoverOpenChange(
   _open: boolean,
   details: Pick<SidebarUpdatePopoverChangeDetails, "reason" | "cancel">,
 ): void {
   if (details.reason === "trigger-press") details.cancel();
 }
 
-export function openSidebarUpdateReleaseNotesPopoverOnForwardTab(
+function openSidebarUpdateReleaseNotesPopoverOnForwardTab(
   event: { readonly key: string; readonly shiftKey: boolean },
   handle: Pick<SidebarUpdatePopoverHandle, "open">,
   triggerId: string,
@@ -308,6 +309,8 @@ function SidebarUpdateControl() {
     isDownloading,
     showCheckIcon,
   });
+  const idleTooltip =
+    !showUpdateDetails && !showCheckIcon ? getDesktopUpdateIdleTooltip(state) : null;
   const tooltip = runsEverything
     ? everything.summary
     : showUpdateDetails
@@ -316,7 +319,7 @@ function SidebarUpdateControl() {
         : "Update available"
       : showCheckIcon
         ? "Checking for updates…"
-        : "Check for updates";
+        : (idleTooltip?.title ?? "Check for updates");
   const disabled = showCheckIcon
     ? true
     : runsEverything
@@ -513,7 +516,7 @@ function SidebarUpdateControl() {
   const updateButton = (
     <button
       type="button"
-      aria-label={tooltip}
+      aria-label={idleTooltip?.detail ? `${tooltip}: ${idleTooltip.detail}` : tooltip}
       aria-disabled={isInteractionDisabled || undefined}
       className={cn(
         "inline-flex size-8 items-center justify-center rounded-full outline-hidden ring-ring transition-colors focus-visible:ring-2 focus-visible:ring-inset",
@@ -592,7 +595,14 @@ function SidebarUpdateControl() {
               side="top"
               variant={showUpdateDetails ? "glass" : "default"}
             >
-              <span className="whitespace-pre-line">{tooltip}</span>
+              {idleTooltip?.detail ? (
+                <div className="text-left">
+                  <div className="font-medium">{idleTooltip.title}</div>
+                  <div className="text-muted-foreground">{idleTooltip.detail}</div>
+                </div>
+              ) : (
+                <span className="whitespace-pre-line">{tooltip}</span>
+              )}
             </TooltipPopup>
           ) : null}
         </Tooltip>

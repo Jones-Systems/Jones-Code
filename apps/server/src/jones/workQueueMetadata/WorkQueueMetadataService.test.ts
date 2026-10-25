@@ -67,6 +67,45 @@ const fixture = <A, E, R>(
   );
 
 describe("configured queue metadata service", () => {
+  it.effect("reads the frozen v4 artifact with unchanged digest, source and age rules", () =>
+    fixture((path) =>
+      Effect.gen(function* () {
+        const bytes = yield* Effect.promise(() =>
+          NodeFSP.readFile(
+            new URL(
+              "../../../../../packages/contracts/src/jones/fixtures/work_queue_metadata_v4.json.fixture",
+              import.meta.url,
+            ),
+          ),
+        );
+        const snapshot = decodeMetadata(JSON.parse(bytes.toString("utf8")));
+        yield* Effect.promise(() => NodeFSP.writeFile(path, bytes, { mode: 0o600 }));
+        const config = {
+          status: "configured",
+          path,
+          source: snapshot.source,
+          maxAgeMs: 30_000,
+        } as const;
+        yield* TestClock.setTime(snapshot.observed_at_ms);
+        expect(yield* read(config)).toEqual({ status: "ready", snapshot, expires_at_ms: 30_100 });
+        yield* TestClock.setTime(30_100);
+        expect(yield* read(config)).toMatchObject({ status: "stale", snapshot });
+        expect(
+          yield* read({ ...config, source: { ...snapshot.source, host_id: "other" } }),
+        ).toEqual({
+          status: "unavailable",
+          reason: "source_mismatch",
+        });
+        yield* Effect.promise(() =>
+          NodeFSP.writeFile(
+            path,
+            bytes.toString("utf8").replace("assignment_pending", "assignment_conflict"),
+          ),
+        );
+        expect(yield* read(config)).toEqual({ status: "unavailable", reason: "invalid_artifact" });
+      }),
+    ),
+  );
   it.effect.each([
     [1_500, "ready"],
     [500, "stale"],

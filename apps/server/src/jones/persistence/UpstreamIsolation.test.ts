@@ -324,6 +324,7 @@ it.effect(
         [118, "RemoteAdmissionIntegration"],
         [119, "PeerEnvironmentLinks"],
         [120, "SettlementRestores"],
+        [121, "RemoteTaskObservations"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= 107 ORDER BY migration_id`,

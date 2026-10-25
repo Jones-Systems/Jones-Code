@@ -51,16 +51,15 @@ const make = Effect.gen(function* () {
   >();
   const inbound = new Map<string, Queue.Queue<string>>();
   let attachmentGeneration = 0;
-  const detach = (key: DesktopTabKey) =>
-    Effect.gen(function* () {
-      attached.delete(keyOf(key));
-      const queue = inbound.get(keyOf(key));
-      if (queue) {
-        inbound.delete(keyOf(key));
-        yield* Queue.shutdown(queue);
-      }
-      yield* PubSub.publish(changes, { key, attached: false });
-    });
+  const detach = Effect.fn("CompanionBrowserChannel.detach")(function* (key: DesktopTabKey) {
+    attached.delete(keyOf(key));
+    const queue = inbound.get(keyOf(key));
+    if (queue) {
+      inbound.delete(keyOf(key));
+      yield* Queue.shutdown(queue);
+    }
+    yield* PubSub.publish(changes, { key, attached: false });
+  });
   yield* registry.events.pipe(
     Stream.runForEach((message) =>
       Effect.gen(function* () {

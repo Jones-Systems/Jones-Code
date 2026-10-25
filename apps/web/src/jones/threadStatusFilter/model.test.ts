@@ -1,3 +1,4 @@
+import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { threadKey } from "@t3tools/client-runtime/state/entities";
@@ -9,6 +10,8 @@ import {
 import { filterSidebarEnvironmentThreads } from "../environmentFilters/model";
 import {
   classifyThreadStatus,
+  threadIsInActivityWindow,
+  threadActivityWindowMs,
   nextThreadStatusFilter,
   nextThreadStatusWakeAt,
   selectThreadStatus,
@@ -101,6 +104,43 @@ describe("sidebar status filter", () => {
     },
   );
 
+  it.each(["current", "legacy"] as const)(
+    "includes background Waiting in Working while preserving requests and order in %s",
+    (layout) => {
+      const waiting: StatusThread = {
+        ...base,
+        runtime: runtime("idle"),
+        latestRun,
+        lastVisitedAt: visited,
+        pendingBackgroundTasks: [{ taskId: "monitor", kind: "monitor" }],
+      };
+      const working = { ...base, runtime: runtime("running") };
+      const requests: StatusThread[] = [
+        { ...waiting, hasPendingUserInput: true },
+        { ...waiting, hasPendingApprovals: true },
+        { ...waiting, pendingSubagentRequest: "user_input" },
+        { ...waiting, pendingSubagentRequest: "approval" },
+      ];
+      const roster = [requests[0]!, waiting, base, working, ...requests.slice(1)];
+      const classify = (row: StatusThread) => classifyThreadStatus(row, layout);
+      expect(classify(waiting)).toBe("working");
+      for (const request of requests) expect(classify(request)).toBe("input");
+      const selected = selectThreadStatus(roster, nextThreadStatusFilter("all"), classify);
+      expect(selected).toEqual({
+        counts: { working: 2, input: 4, done: 0 },
+        threads: [waiting, working],
+      });
+      expect(selectThreadStatus(roster, "hide-working", classify).threads).toEqual([
+        requests[0],
+        base,
+        ...requests.slice(1),
+      ]);
+      expect(
+        selectThreadStatus(roster, nextThreadStatusFilter("hide-working"), classify).threads,
+      ).toBe(roster);
+    },
+  );
+
   it("cycles every state, including empty states, back to all", () => {
     let filter: ThreadStatusFilter = "all";
     const seen = [];
@@ -144,7 +184,14 @@ describe("sidebar status filter", () => {
   );
 
   it("keeps Waiting, failures, and acknowledged or never-visited completions out of Done", () => {
-    for (const status of ["idle", "failed"] as const) {
+    expect(classifyThreadStatus({ ...base, runtime: runtime("idle") }, "current")).toBe("working");
+    expect(
+      classifyThreadStatus(
+        { ...base, runtime: runtime("idle"), latestRun, lastVisitedAt: visited },
+        "current",
+      ),
+    ).toBe("working");
+    for (const status of ["failed"] as const) {
       expect(
         classifyThreadStatus(
           { ...base, runtime: runtime(status), latestRun, lastVisitedAt: visited },
@@ -239,5 +286,106 @@ describe("sidebar status filter", () => {
         classifyThreadStatus(thread, "current"),
       ),
     ).toEqual({ counts: { working: 0, input: 1, done: 0 }, threads: [] });
+  });
+});
+
+const window = {
+  threadActivityWindowEnabled: true,
+  threadActivityWindowAmount: 3,
+  threadActivityWindowUnit: "hours" as const,
+};
+const recent = {
+  ...base,
+  latestRun,
+  source: { latestRunCompletedAt: DateTime.makeUnsafe(completed) } as unknown as NonNullable<
+    StatusThread["source"]
+  >,
+};
+describe("thread activity window", () => {
+  it("converts every unit and includes the exact cutoff", () => {
+    for (const [unit, milliseconds] of [
+      ["minutes", 60_000],
+      ["hours", 3_600_000],
+      ["days", 86_400_000],
+      ["weeks", 604_800_000],
+    ] as const) {
+      const settings = { ...window, threadActivityWindowUnit: unit };
+      expect(threadActivityWindowMs(settings)).toBe(3 * milliseconds);
+      const cutoff = Date.parse(completed) + 3 * milliseconds;
+      expect(threadIsInActivityWindow(recent, settings, cutoff)).toBe(true);
+      expect(threadIsInActivityWindow(recent, settings, cutoff + 1)).toBe(false);
+    }
+  });
+  it.each(["current", "legacy"] as const)(
+    "includes read completions and preserves precedence in %s",
+    (layout) => {
+      const now = Date.parse(completed);
+      for (const lastVisitedAt of [undefined, null, visited, completed]) {
+        expect(classifyThreadStatus({ ...recent, lastVisitedAt }, layout, false, window, now)).toBe(
+          "done",
+        );
+      }
+      expect(
+        classifyThreadStatus(
+          { ...recent, runtime: runtime("running") },
+          layout,
+          false,
+          window,
+          now,
+        ),
+      ).toBe("working");
+      expect(
+        classifyThreadStatus({ ...recent, runtime: runtime("idle") }, layout, false, window, now),
+      ).toBe("working");
+      expect(
+        classifyThreadStatus({ ...recent, hasPendingUserInput: true }, layout, false, window, now),
+      ).toBe("input");
+      expect(
+        classifyThreadStatus({ ...recent, runtime: runtime("failed") }, layout, false, window, now),
+      ).toBeNull();
+      expect(
+        classifyThreadStatus(
+          { ...recent, latestRun: { ...latestRun, status: "failed" } },
+          layout,
+          false,
+          window,
+          now,
+        ),
+      ).toBeNull();
+      expect(
+        classifyThreadStatus({ ...recent, source: undefined }, layout, false, window, now),
+      ).toBeNull();
+    },
+  );
+  it("ignores metadata and synthetic completion dates, but accepts genuine user and run activity", () => {
+    const now = Date.parse(completed) + 4 * 3_600_000;
+    const old = { ...recent, lastVisitedAt: new Date(now).toISOString() };
+    expect(threadIsInActivityWindow(old, window, now)).toBe(false);
+    const synthetic = {
+      ...old,
+      source: undefined,
+      latestRun: { ...latestRun, completedAt: new Date(now).toISOString() },
+    };
+    expect(threadIsInActivityWindow(synthetic, window, now)).toBe(false);
+    expect(
+      threadIsInActivityWindow(
+        { ...synthetic, latestUserMessageAt: new Date(now).toISOString() },
+        window,
+        now,
+      ),
+    ).toBe(true);
+    expect(
+      threadIsInActivityWindow(
+        { ...synthetic, latestRun: { ...latestRun, requestedAt: new Date(now).toISOString() } },
+        window,
+        now,
+      ),
+    ).toBe(true);
+    expect(threadIsInActivityWindow({ ...base, latestUserMessageAt: "invalid" }, window, now)).toBe(
+      false,
+    );
+    expect(
+      threadIsInActivityWindow(base, { ...window, threadActivityWindowEnabled: false }, now),
+    ).toBe(true);
   });
 });

@@ -88,79 +88,79 @@ export function makeCodexHandoffCompaction() {
         if (matches(binding)) pending = undefined;
       });
     },
-    begin(binding: Binding & { readonly runId: string; readonly attemptId: string }) {
-      return Effect.gen(function* () {
-        const key = [
-          binding.runtimeGeneration,
-          binding.nativeThreadId,
-          binding.runId,
-          binding.attemptId,
-        ]
-          .map((part) => `${part.length}:${part}`)
-          .join("");
-        if (pending || consumed.has(key) || consumed.size >= 1_024)
-          return yield* new HandoffCompactionError({ reason: "ineligible" });
-        const request: Request = {
-          ...binding,
-          done: yield* Deferred.make<ThreadTokenUsageSnapshot, HandoffCompactionError>(),
-          dispatched: false,
-          acknowledged: false,
-          compacted: false,
-          completed: false,
-          failed: false,
-          ambiguous: false,
-          restorationPending: false,
-        };
-        consumed.add(key);
-        pending = request;
-        return {
-          cancel: cancelRequest(request, "cancelled"),
-          // Only an unsent reservation can be discarded without native evidence.
-          // Keep its consumed attempt so cancellation cannot replay the same input.
-          cancelIfUndispatched: Effect.suspend(() => {
-            if (
-              pending === request &&
-              !request.dispatched &&
-              !request.acknowledged &&
-              request.nativeTurnId === undefined &&
-              !request.restorationPending
-            )
-              pending = undefined;
-            return cancelRequest(request, "cancelled");
-          }),
-          beginDispatch: Effect.suspend(() => {
-            if (pending !== request || request.failed)
-              return Effect.fail(new HandoffCompactionError({ reason: "cancelled" }));
-            request.dispatched = true;
-            return Effect.void;
-          }),
-          assertActive: Effect.suspend(() =>
-            request.failed
-              ? Effect.fail(new HandoffCompactionError({ reason: "cancelled" }))
-              : Effect.void,
-          ),
-          wait: Deferred.await(request.done),
-          acknowledge: Effect.suspend(() => {
-            request.acknowledged = true;
-            return finish(request);
-          }),
-          beginRestoration: Effect.suspend(() => {
-            if (pending !== request || request.failed)
-              return Effect.fail(new HandoffCompactionError({ reason: "cancelled" }));
-            request.restorationPending = true;
-            return Effect.void;
-          }),
-          acknowledgeRestoration: Effect.sync(() => {
-            request.restorationPending = false;
-            reconcile(request);
-          }),
-          release: Effect.sync(() => {
-            if (pending === request && !request.failed && !request.restorationPending)
-              pending = undefined;
-          }),
-        };
-      });
-    },
+    begin: Effect.fn("CodexHandoffCompaction.begin")(function* (
+      binding: Binding & { readonly runId: string; readonly attemptId: string },
+    ) {
+      const key = [
+        binding.runtimeGeneration,
+        binding.nativeThreadId,
+        binding.runId,
+        binding.attemptId,
+      ]
+        .map((part) => `${part.length}:${part}`)
+        .join("");
+      if (pending || consumed.has(key) || consumed.size >= 1_024)
+        return yield* new HandoffCompactionError({ reason: "ineligible" });
+      const request: Request = {
+        ...binding,
+        done: yield* Deferred.make<ThreadTokenUsageSnapshot, HandoffCompactionError>(),
+        dispatched: false,
+        acknowledged: false,
+        compacted: false,
+        completed: false,
+        failed: false,
+        ambiguous: false,
+        restorationPending: false,
+      };
+      consumed.add(key);
+      pending = request;
+      return {
+        cancel: cancelRequest(request, "cancelled"),
+        // Only an unsent reservation can be discarded without native evidence.
+        // Keep its consumed attempt so cancellation cannot replay the same input.
+        cancelIfUndispatched: Effect.suspend(() => {
+          if (
+            pending === request &&
+            !request.dispatched &&
+            !request.acknowledged &&
+            request.nativeTurnId === undefined &&
+            !request.restorationPending
+          )
+            pending = undefined;
+          return cancelRequest(request, "cancelled");
+        }),
+        beginDispatch: Effect.suspend(() => {
+          if (pending !== request || request.failed)
+            return Effect.fail(new HandoffCompactionError({ reason: "cancelled" }));
+          request.dispatched = true;
+          return Effect.void;
+        }),
+        assertActive: Effect.suspend(() =>
+          request.failed
+            ? Effect.fail(new HandoffCompactionError({ reason: "cancelled" }))
+            : Effect.void,
+        ),
+        wait: Deferred.await(request.done),
+        acknowledge: Effect.suspend(() => {
+          request.acknowledged = true;
+          return finish(request);
+        }),
+        beginRestoration: Effect.suspend(() => {
+          if (pending !== request || request.failed)
+            return Effect.fail(new HandoffCompactionError({ reason: "cancelled" }));
+          request.restorationPending = true;
+          return Effect.void;
+        }),
+        acknowledgeRestoration: Effect.sync(() => {
+          request.restorationPending = false;
+          reconcile(request);
+        }),
+        release: Effect.sync(() => {
+          if (pending === request && !request.failed && !request.restorationPending)
+            pending = undefined;
+        }),
+      };
+    }),
     started(binding: Binding, nativeTurnId: string) {
       return Effect.suspend(() => {
         if (!matches(binding) || !pending) return Effect.void;

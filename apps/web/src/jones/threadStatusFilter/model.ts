@@ -1,3 +1,6 @@
+import * as DateTime from "effect/DateTime";
+import type { ClientSettings } from "@t3tools/contracts/settings";
+import type { SidebarThreadSummary } from "../../types";
 import {
   hasUnseenCompletion,
   resolveSidebarThreadStatus,
@@ -8,7 +11,45 @@ import {
 type ThreadStatus = "working" | "input" | "done";
 export type ThreadStatusFilter = "all" | ThreadStatus | "hide-working";
 export type ThreadStatusCounts = Record<ThreadStatus, number>;
-export type StatusThread = Parameters<typeof resolveThreadStatusPill>[0]["thread"];
+export type StatusThread = Parameters<typeof resolveThreadStatusPill>[0]["thread"] & {
+  latestUserMessageAt?: string | null | undefined;
+  source?: SidebarThreadSummary["source"] | undefined;
+};
+export type ThreadActivityWindow = Pick<
+  ClientSettings,
+  "threadActivityWindowEnabled" | "threadActivityWindowAmount" | "threadActivityWindowUnit"
+>;
+
+const unitMilliseconds = {
+  minutes: 60_000,
+  hours: 3_600_000,
+  days: 86_400_000,
+  weeks: 604_800_000,
+};
+
+export function threadActivityWindowMs(window: ThreadActivityWindow): number {
+  return window.threadActivityWindowAmount * unitMilliseconds[window.threadActivityWindowUnit];
+}
+
+export function threadIsInActivityWindow(
+  thread: StatusThread,
+  window: ThreadActivityWindow,
+  now: number,
+): boolean {
+  if (!window.threadActivityWindowEnabled) return true;
+  // Old servers synthesize completedAt from updatedAt, which also changes for metadata edits.
+  const completedAt = thread.source?.latestRunCompletedAt;
+  const completedMs = completedAt == null ? NaN : DateTime.toEpochMillis(completedAt);
+  const timestamps = [
+    thread.latestUserMessageAt,
+    thread.latestRun?.requestedAt,
+    thread.latestRun?.startedAt,
+  ]
+    .map((value) => Date.parse(value ?? ""))
+    .filter(Number.isFinite);
+  if (Number.isFinite(completedMs)) timestamps.push(completedMs);
+  return timestamps.length > 0 && Math.max(...timestamps) >= now - threadActivityWindowMs(window);
+}
 
 export function nextThreadStatusFilter(filter: ThreadStatusFilter): ThreadStatusFilter {
   switch (filter) {
@@ -28,11 +69,31 @@ export function classifyThreadStatus(
   thread: StatusThread,
   layout: "current" | "legacy",
   isWoke = false,
+  activityWindow?: ThreadActivityWindow,
+  now = Date.now(),
 ): ThreadStatus | null {
+  if (activityWindow?.threadActivityWindowEnabled) {
+    if (!threadIsInActivityWindow(thread, activityWindow, now)) return null;
+    const status = resolveSidebarThreadStatus(thread);
+    if (status === "approval" || status === "input") return "input";
+    if (status === "failed" || status === "limited") return null;
+    if (
+      status === "working" ||
+      status === "waiting" ||
+      (thread.pendingBackgroundTasks?.length ?? 0) > 0
+    )
+      return "working";
+    return thread.latestRun?.status === "completed" &&
+      thread.source?.latestRunCompletedAt != null &&
+      Number.isFinite(Date.parse(thread.latestRun.completedAt ?? ""))
+      ? "done"
+      : null;
+  }
   const pill = resolveThreadStatusPill({ thread });
   if (layout === "legacy") {
     switch (pill?.label) {
       case "Working":
+      case "Waiting":
       case "Connecting":
         return "working";
       case "Pending Approval":
@@ -50,7 +111,7 @@ export function classifyThreadStatus(
     isUnread: hasUnseenCompletion(thread),
     isWoke,
   });
-  if (topStatus === "working") return "working";
+  if (topStatus === "working" || topStatus === "waiting") return "working";
   if (topStatus === "approval" || topStatus === "input") return "input";
   return topStatus === "done" ? "done" : null;
 }
