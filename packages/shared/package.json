@@ -566,6 +566,10 @@
     "./jones/threadReferenceExcerpt": {
       "types": "./src/jones/threadReferenceExcerpt.ts",
       "import": "./src/jones/threadReferenceExcerpt.ts"
+    },
+    "./jones/linkedThreads/handoffText": {
+      "types": "./src/jones/linkedThreads/handoffText.ts",
+      "import": "./src/jones/linkedThreads/handoffText.ts"
     }
   },
   "scripts": {

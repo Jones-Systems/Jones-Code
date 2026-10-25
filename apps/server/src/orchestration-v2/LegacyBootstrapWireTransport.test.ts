@@ -10,6 +10,7 @@ import * as WsServerBrowser from "../preview/ServerBrowser.ts";
 import * as OrchestrationHttpApi from "./http.ts";
 import * as EnvironmentAuth from "../auth/http.ts";
 import * as WebSocketRpc from "../ws.ts";
+import * as ShellMaterialization from "../jones/orchestration/shellMaterialization.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import * as ProviderRegistryMock from "../provider/testUtils/providerRegistryMock.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -524,6 +525,7 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
   );
   // Unrelated owners are deliberately unavailable; rejection must precede any RPC layer construction.
   const deniedRpcOwners = Layer.mergeAll(
+    Layer.mock(ShellMaterialization.ShellMaterialization)({}),
     Layer.mock(WsDirectEndpoints.DirectEndpoints)({}),
     Layer.mock(WsPeerLinks.PeerLinks)({}),
     Layer.mock(WsMcpAppRequests.McpAppRequests)({}),
@@ -1243,6 +1245,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
         >[0][] = [];
         const order: string[] = [];
         const rpcOwners = Layer.mergeAll(
+          Layer.mock(ShellMaterialization.ShellMaterialization)({}),
           Layer.mock(WsDirectEndpoints.DirectEndpoints)({}),
           Layer.mock(WsPeerLinks.PeerLinks)({}),
           Layer.mock(WsMcpAppRequests.McpAppRequests)({}),

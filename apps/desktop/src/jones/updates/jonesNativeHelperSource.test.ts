@@ -100,6 +100,8 @@ intent = {'protocol': 1, 'transactionId': transaction_id, 'expected': expected, 
     'continuationReceipt': str(tx / 'continuation.json'), 'processes': [{'pid': 123, 'identity': 'owned-native-process'}],
     'listener': 'http://127.0.0.1:3777'}
 seed_record(tx / 'intent.json', intent, True)
+launch_services_available = lambda: True
+def launch_services(request): raise AssertionError('Unexpected real launch request')
 events = []
 authority_state = 'active'
 def persisted_transition(operation, guard=None):
@@ -200,12 +202,13 @@ if fault == 'old-quiescence':
 native_pair = pair_state
 def synthetic_pair(active, directory):
     events.append('pair')
-    if fault == 'snapshot-failed': raise RuntimeError('Profile snapshot did not complete.')
+    if fault in ('snapshot-failed', 'snapshot-restart-refused'): raise RuntimeError('Profile snapshot did not complete.')
     return native_pair(active, directory)
 pair_state = synthetic_pair
 def synthetic_launch(active, descriptor=None):
     if descriptor is None:
         events.append('restart-previous')
+        if fault in ('restart-refused', 'snapshot-restart-refused'): raise RuntimeError('Synthetic relaunch refusal')
         return {'pid': 789, 'identity': 'restored-native-app'}
     events.append('candidate-launch')
     assert (tx / 'previous-pair' / 'pair.json').exists()
@@ -227,7 +230,7 @@ def synthetic_launch(active, descriptor=None):
     if fault == 'listener-mismatch': receipt['listener'] = 'http://127.0.0.1:4777'
     if fault == 'invalid-backend': receipt['backendProcess'] = {'pid': True, 'identity': 'unqualified-process'}
     if fault.startswith('missing-'): receipt.pop(fault.removeprefix('missing-'))
-    if fault in ('trial-mismatch', 'candidate-stop', 'resume-dispatched', 'reserve-release-failed', 'recovery-space-missing', 'recovery-lease-busy'): receipt['sourceSha'] = 'wrong-source'
+    if fault in ('trial-mismatch', 'restart-refused', 'candidate-stop', 'resume-dispatched', 'reserve-release-failed', 'recovery-space-missing', 'recovery-lease-busy'): receipt['sourceSha'] = 'wrong-source'
     if fault.startswith('authority-'): receipt['sourceSha'] = 'wrong-source'
     if fault == 'resume-dispatched': durable(tx / 'resume-dispatched.json', {'uncertain': True}, True)
     durable(tx / 'trial-receipt.json', receipt, True)
@@ -322,11 +325,16 @@ else:
         assert (home / 'settings.json').read_text() == 'previous-settings'
         assert (profile / 'opaque').read_text() == ('advanced-profile' if 'candidate-launch' in events else 'same-host-profile')
         assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
-        if fault not in ('snapshot-failed', 'state-grew'):
+        if fault not in ('snapshot-failed', 'snapshot-restart-refused', 'state-grew'):
             with sqlite3.connect(tx / 'advanced-state' / 'state.sqlite') as db:
                 assert db.execute('SELECT value FROM identity').fetchone()[0] == ('previous-state' if fault.startswith('bundle-') else 'advanced-state')
         else:
             assert 'candidate-launch' not in events
+    if fault in ('restart-refused', 'snapshot-restart-refused'):
+        assert journal['phase'] == 'rolled-back', journal
+        assert events.count('restart-previous') == 1
+        assert journal['relaunch'] == 'failed'
+        assert 'Jones Code was not reopened automatically: Synthetic relaunch refusal' in journal['message']
     if journal['phase'] == 'blocked' and 'candidate-launch' in events:
         assert state == ('previous-state' if fault in ('authority-retention-sync', 'authority-advance-failed', 'authority-advance-lost') else 'advanced-state')
         assert (tx / 'previous-pair' / 'state.sqlite').exists() == (fault not in ('authority-retention-sync', 'authority-advance-failed', 'authority-advance-lost'))
@@ -353,6 +361,186 @@ else:
         else: assert events.index('authority-advance') < events.index('restart-previous')
     if journal['phase'] == 'rolled-back': assert not (tx / 'recovery-reserve.bin').exists()
     print(json.dumps({'phase': journal['phase'], 'events': events, 'state': state}))
+`;
+
+const manualInstallSetup = String.raw`
+manual_fault = sys.argv[3]
+launch_services_available = lambda: manual_fault != 'launch-unavailable'
+# A completed old transaction remains historical; manual adoption creates no warm transaction.
+durable(tx / 'journal.json', {'intent': intent, 'phase': 'resumed'}, True)
+installed = dict(expected, version='old-13', sourceSha='3' * 40, sourceTree='4' * 40,
+                 bundleIdentifier='com.jones.code')
+candidate = dict(staged, version='new-16', bundleIdentifier='com.jones.code')
+for value in (installed, candidate):
+    app = pathlib.Path(value['appPath'])
+    with open(app / 'Contents/Info.plist', 'wb') as stream:
+        plistlib.dump({'CFBundleIdentifier': value['bundleIdentifier'], 'CFBundleExecutable': 'Jones',
+                      'CFBundleShortVersionString': value['version']}, stream)
+    payload = json.dumps({'version': value['version'], 'jonesSource': {
+        'repository': 'Jones-Systems/Jones-Code', 'sha': value['sourceSha'], 'tree': value['sourceTree']}}).encode()
+    header = json.dumps({'files': {'package.json': {'offset': '0', 'size': len(payload)}}}).encode()
+    (app / 'Contents/Resources/app.asar').write_bytes(
+        struct.pack('<IIII', 4, len(header) + 8, len(header) + 4, len(header)) + header + payload)
+    value['appDigest'] = app_digest(app)
+plan = {'protocol': 1, 'restart': 'ordinary', 'expectedManifestSha256': digest(manifest_path),
+        'installed': installed, 'candidate': candidate,
+        'artifact': {'path': str(root / 'native.dmg'), 'sha256': digest(root / 'native.dmg')},
+        'processes': [{'pid': 123, 'identity': 'captured-old-process'}]}
+plan_path = root / 'manual-plan.json'
+`;
+
+const cloneRequiredManualScenario = String.raw`
+import ctypes, errno
+from types import SimpleNamespace
+for suffix in ('-wal', '-shm'): pathlib.Path(str(database) + suffix).write_bytes(('previous' + suffix).encode())
+originals = {path.name: path.read_bytes() for path in [database, pathlib.Path(str(database) + '-wal'), pathlib.Path(str(database) + '-shm'), home / 'settings.json']}
+plan['stateRecovery'] = 'clone-required'
+clone_required = manual_fault != 'plan-only'
+if manual_fault == 'flag-only': del plan['stateRecovery']
+if manual_fault == 'unknown-policy': plan['stateRecovery'] = 'copy-allowed'
+durable(plan_path, plan, True)
+plan_hash = digest(plan_path)
+original_manifest = manifest_path.read_bytes()
+events, clone_calls = [], []
+process_identity = lambda pid: None
+stop_exact = lambda proofs: events.append('stopped')
+prove_quiescence = lambda active: events.append('quiescent')
+native_run, native_copy2 = subprocess.run, shutil.copy2
+def no_fallback_run(command, *args, **kwargs):
+    assert command[:3] != ['/bin/cp', '-c', '-p'], 'Strict recovery used cp fallback'
+    return native_run(command, *args, **kwargs)
+def no_recovery_copy(source, target, *args, **kwargs):
+    assert 'previous-pair' not in pathlib.Path(target).parts, 'Strict recovery copied a file'
+    return native_copy2(source, target, *args, **kwargs)
+subprocess.run, shutil.copy2 = no_fallback_run, no_recovery_copy
+failures = {'enotsup': ('state.sqlite', errno.ENOTSUP), 'exdev': ('state.sqlite-wal', errno.EXDEV),
+            'enospc-shm': ('state.sqlite-shm', errno.ENOSPC), 'enospc-settings': ('settings.json', errno.ENOSPC)}
+def fake_clonefile(source, target, flags):
+    source, target = pathlib.Path(os.fsdecode(source)), pathlib.Path(os.fsdecode(target))
+    assert flags == 1
+    clone_calls.append(source.name)
+    if manual_fault in failures and source.name == failures[manual_fault][0]:
+        ctypes.set_errno(failures[manual_fault][1])
+        return -1
+    shutil.copyfile(source, target)
+    return 0
+darwin_clonefile = lambda: fake_clonefile
+if manual_fault == 'clonefile-unavailable':
+    def darwin_clonefile(): raise AttributeError('Synthetic absent clonefile')
+if manual_fault == 'cross-volume':
+    native_stat = pathlib.Path.stat
+    def cross_volume_stat(path, *args, **kwargs):
+        info = native_stat(path, *args, **kwargs)
+        if path == home:
+            values = list(info); values[2] += 1
+            return os.stat_result(values)
+        return info
+    pathlib.Path.stat = cross_volume_stat
+budget = RECOVERY_HEADROOM + tree_storage_size(candidate['appPath'])
+os.statvfs = lambda path: SimpleNamespace(f_bavail=budget - (1 if manual_fault == 'low-space' else 0), f_frsize=1)
+if manual_fault == 'success':
+    try: storage_preflight(expected, candidate, tx)
+    except RuntimeError: pass
+    else: raise AssertionError('Default recovery omitted its full-copy budget')
+native_reserve = reserve_recovery_capacity
+def observed_reserve(active, transaction, storage):
+    if manual_fault == 'reserve-denied': raise OSError(errno.ENOSPC, 'Synthetic reserve refused')
+    reserves = native_reserve(active, transaction, storage)
+    events.append('reserved')
+    return reserves
+reserve_recovery_capacity = observed_reserve
+native_release = release_recovery_reserve
+def observed_release(reserves, purpose=None):
+    if purpose is None and manual_fault in ('cleanup-held', 'cleanup-record-failed'):
+        raise OSError('Synthetic cleanup held')
+    return native_release(reserves, purpose)
+release_recovery_reserve = observed_release
+native_durable = durable
+def cleanup_record_failure(path, value, exclusive=False):
+    if manual_fault == 'cleanup-record-failed' and pathlib.Path(path).name == 'receipt.json' and value.get('recoveryReserveCleanup') == 'held':
+        raise OSError('Synthetic cleanup evidence write failed')
+    return native_durable(path, value, exclusive)
+durable = cleanup_record_failure
+manual_root = manifest_path.parent / 'jones-manual-installs'
+def manual_launch(active, descriptor=None):
+    receipt = read(next(manual_root.glob('*/receipt.json')))
+    assert receipt['phase'] == 'launch-intent'
+    assert all(pathlib.Path(reserve['path']).exists() for reserve in receipt['recoveryReserves'])
+    assert read(manifest_path) == receipt['nextActive'] == active
+    pair = pathlib.Path(receipt['pairedState'])
+    assert read(pair / 'pair.json')['recovery']['method'] == 'clone'
+    assert receipt['recovery']['method'] == 'clone'
+    for name, content in originals.items(): assert (pair / name).read_bytes() == content
+    events.append('launched')
+    if manual_fault == 'launch-unknown': raise RuntimeError('Synthetic unknown launch effect')
+    return {'pid': 456, 'identity': 'captured-new-process'}
+launch = manual_launch
+refused = ('flag-only', 'plan-only', 'unknown-policy', 'clonefile-unavailable', 'cross-volume')
+if manual_fault in refused:
+    for apply in (False, True):
+        try: manual_install(plan_path, plan_hash, apply=apply, clone_required=clone_required)
+        except RuntimeError: pass
+        else: raise AssertionError('Strict recovery policy or capability was ignored')
+    assert events == [] and clone_calls == [] and not manual_root.exists()
+    assert manifest_path.read_bytes() == original_manifest
+    assert (previous_app / 'Contents/MacOS/Jones').read_text() == 'previous-executable'
+else:
+    inspected = manual_install(plan_path, plan_hash, clone_required=True)
+    assert inspected['status'] == 'ready' and inspected['stateRecovery'] == 'clone-required'
+    assert not manual_root.exists() and not events
+    try: result = manual_install(plan_path, plan_hash, apply=True, clone_required=True)
+    except (RuntimeError, OSError) as error:
+        assert manual_fault in failures or manual_fault in ('reserve-denied', 'low-space', 'launch-unknown'), str(error)
+        if manual_fault in failures: assert error.errno == failures[manual_fault][1]
+    else:
+        assert manual_fault in ('success', 'cleanup-held', 'cleanup-record-failed')
+        assert result['status'] == 'launched' and result['stateRecovery'] == 'clone-required'
+    receipt_path = next(manual_root.glob('*/receipt.json'))
+    receipt = read(receipt_path)
+    directory = receipt_path.parent
+    assert receipt['stateRecovery'] == 'clone-required'
+    if manual_fault != 'low-space':
+        assert receipt['storage']['requiredBytes'] == budget
+        assert receipt['storage']['stateBytes'] == sum(map(len, originals.values()))
+        assert receipt['storage']['stateRecovery'] == 'clone-required'
+    if manual_fault in failures or manual_fault in ('reserve-denied', 'low-space'):
+        assert receipt['phase'] == 'held' and receipt['stoppedAt'] == 'preparing'
+        assert not (directory / 'previous-pair' / 'pair.json').exists()
+        assert not list(root.glob('previous.app.jones-*'))
+        assert manifest_path.read_bytes() == original_manifest
+        assert (previous_app / 'Contents/MacOS/Jones').read_text() == 'previous-executable'
+        if manual_fault in failures:
+            assert events == ['reserved', 'stopped', 'quiescent', 'quiescent']
+            assert not (directory / 'previous-pair' / failures[manual_fault][0]).exists()
+            assert not (directory / 'recovery-journal-reserve.bin').exists()
+            for reserve in receipt['recoveryReserves']:
+                if reserve['purpose'] == 'recovery':
+                    info = pathlib.Path(reserve['path']).stat()
+                    assert (str(info.st_dev), str(info.st_ino), info.st_size) == (reserve['device'], reserve['inode'], reserve['bytes'])
+        else:
+            assert events == [] and clone_calls == []
+            assert not list(directory.glob('*reserve.bin'))
+    else:
+        assert events.index('reserved') < events.index('stopped') < events.index('quiescent') < events.index('launched')
+        assert clone_calls == list(originals)
+        assert read(manifest_path) == receipt['nextActive']
+        assert (directory / 'previous-pair' / 'pair.json').exists()
+        if manual_fault == 'launch-unknown':
+            assert receipt['phase'] == 'held' and receipt['stoppedAt'] == 'launch-intent'
+            assert not (directory / 'recovery-journal-reserve.bin').exists()
+            assert (directory / 'recovery-reserve.bin').exists()
+        else:
+            assert receipt['phase'] == 'launched'
+            if manual_fault == 'success': assert not list(directory.glob('*reserve.bin'))
+            else:
+                assert (directory / 'recovery-reserve.bin').exists()
+                assert (receipt.get('recoveryReserveCleanup') == 'held') == (manual_fault == 'cleanup-held')
+    previous_events = list(events)
+    try: manual_install(plan_path, plan_hash, apply=True, clone_required=True)
+    except RuntimeError: pass
+    else: raise AssertionError('The same manual operation replayed')
+    assert events == previous_events
+print(json.dumps({'case': manual_fault, 'passed': True}))
 `;
 
 describe("Jones native helper", () => {
@@ -552,7 +740,7 @@ else:
       );
       await NodeFSP.writeFile(
         NodePath.join(f.directory, "withdraw-helper.py"),
-        `${definitions}\nsys.platform = 'darwin'\nbundle_identity = lambda active: None\nparser = argparse.ArgumentParser()${parser}`,
+        `${definitions}\nsys.platform = 'darwin'\nbundle_identity = lambda active: None\nlaunch_services_available = lambda: True\nparser = argparse.ArgumentParser()${parser}`,
       );
       const setup = activationScenario.split("\nevents = []")[0];
       const scenario = String.raw`
@@ -710,6 +898,7 @@ assert (profile / 'opaque').read_text() == 'same-host-profile'
         const barrier = String.raw`
 sys.platform = 'darwin'
 bundle_identity = lambda active: None
+launch_services_available = lambda: True
 original_durable = durable
 def durable(path, value, exclusive=False):
     root = pathlib.Path(__file__).parent
@@ -1135,32 +1324,250 @@ assert len(calls) == (0 if fault in ('wrong-source', 'wrong-version', 'digest-dr
     },
   );
 
-  it("clears inherited trial and cold selectors for an ordinary native launch", () => {
+  it("launches the exact bundle once through LaunchServices with an explicit environment", () => {
     const nativeFunctions = jonesNativeHelperSource.split(
       "\nparser = argparse.ArgumentParser()",
     )[0];
     const scenario = String.raw`
 manifest_path = pathlib.Path('/synthetic/jones-active-install.json')
 active = {'home': '/synthetic', 'profile': '/synthetic-profile', 'generation': 'new-generation',
-          'executablePath': '/synthetic/Jones.app/Contents/MacOS/Jones'}
-selectors = ('T3CODE_JONES_TRIAL_DESCRIPTOR', 'T3CODE_JONES_COLD_CHANNEL_FD', 'T3CODE_JONES_COLD_TRIAL_DESCRIPTOR')
-for name in selectors: os.environ[name] = 'stale'
-captured = {}
+          'appPath': '/synthetic/Jones.app', 'executablePath': '/synthetic/Jones.app/Contents/MacOS/Jones'}
+for name in ('JONES_AMBIENT_SENTINEL', 'ELECTRON_RUN_AS_NODE', 'T3CODE_JONES_TRIAL_DESCRIPTOR',
+             'T3CODE_JONES_COLD_CHANNEL_FD', 'T3CODE_JONES_COLD_TRIAL_DESCRIPTOR', 'T3CODE_OTLP_HEADERS',
+             'T3CODE_PORT', 'T3CODE_TAILSCALE_SERVE', 'T3CODE_HOST', 'T3CODE_DISABLE_AUTO_UPDATE'):
+    os.environ[name] = 'must-not-be-forwarded'
+os.environ['T3CODE_NATIVE_AUTHORITY_STATE_DIR'] = '/synthetic/authority'
+calls, direct = [], []
 def capture(command, **kwargs):
-    captured.update(kwargs['env'])
+    calls.append((command, kwargs))
+    return type('Result', (), {'returncode': 0, 'stdout': json.dumps({'protocol': 1, 'status': 'launched',
+        'pid': 456, 'bundlePath': active['appPath'], 'executablePath': active['executablePath']}).encode('ascii')})()
+def direct_launch(*args, **kwargs):
+    direct.append((args, kwargs))
     return type('Child', (), {'pid': 456})()
-subprocess.Popen = capture
-process_identity = lambda pid: 'captured-process'
-assert launch(active) == {'pid': 456, 'identity': 'captured-process'}
-assert all(name not in captured for name in selectors)
-assert captured['T3CODE_JONES_ACTIVE_GENERATION'] == 'new-generation'
-assert captured['T3CODE_HOME'] == '/synthetic'
+subprocess.run = capture
+subprocess.Popen = direct_launch
+process_identity = lambda pid: 'start ' + active['executablePath']
+read = lambda path: {'listener': 'http://127.0.0.1:3777'}
+for descriptor in (None, pathlib.Path('/synthetic/trial.json')):
+    calls.clear()
+    proof = launch(active, descriptor)
+    assert direct == [], 'Direct exec inherits the invoker privacy attribution and ambient environment'
+    assert len(calls) == 1
+    command, options = calls[0]
+    assert command[:4] == ['/usr/bin/osascript', '-l', 'JavaScript', '-e'] and len(command) == 6
+    wanted = {'T3CODE_HOME': active['home'], 'T3CODE_DESKTOP_USER_DATA_DIR': active['profile'],
+              'T3CODE_JONES_ACTIVE_MANIFEST': str(manifest_path), 'T3CODE_JONES_ACTIVE_GENERATION': active['generation'],
+              'T3CODE_NATIVE_AUTHORITY_STATE_DIR': '/synthetic/authority'}
+    if descriptor:
+        wanted.update(T3CODE_JONES_TRIAL_DESCRIPTOR=str(descriptor), T3CODE_PORT='3777')
+    assert json.loads(command[5]) == {'appPath': active['appPath'], 'environment': wanted}
+    assert options['env'] == dict({'PATH': '/usr/bin:/bin:/usr/sbin:/sbin'},
+        **{name: os.environ[name] for name in ('HOME', 'TMPDIR', 'USER', 'LOGNAME') if name in os.environ})
+    assert options['stdin'] == subprocess.DEVNULL and options['stdout'] == subprocess.PIPE
+    assert options['stderr'] == subprocess.DEVNULL and options['timeout'] == 30
+    assert proof == {'pid': 456, 'identity': 'start ' + active['executablePath']}
+del os.environ['T3CODE_NATIVE_AUTHORITY_STATE_DIR']
+launch(active)
+assert 'T3CODE_NATIVE_AUTHORITY_STATE_DIR' not in json.loads(calls[-1][0][5])['environment']
 `;
     runPython(nativeFunctions + "\n" + scenario, [], {
       encoding: "utf8",
       maxBuffer: 1024 * 1024,
       timeout: 10000,
     });
+  });
+
+  it("rejects unproved LaunchServices outcomes after one attempt without direct fallback", () => {
+    const nativeFunctions = jonesNativeHelperSource.split(
+      "\nparser = argparse.ArgumentParser()",
+    )[0];
+    const scenario = String.raw`
+manifest_path = pathlib.Path('/synthetic/jones-active-install.json')
+active = {'home': '/synthetic', 'profile': '/synthetic-profile', 'generation': 'previous',
+          'appPath': '/synthetic/Old Jones.app', 'executablePath': '/synthetic/Old Jones.app/Contents/MacOS/Jones'}
+good = {'protocol': 1, 'status': 'launched', 'pid': 456,
+        'bundlePath': active['appPath'], 'executablePath': active['executablePath']}
+cases = ['timeout', 'os-error', 'nonzero', 'oversized', 'non-ascii', 'malformed', 'list', 'protocol-missing',
+         'protocol-wrong', 'protocol-boolean', 'failed', 'unavailable', 'pid-zero', 'pid-negative', 'pid-boolean',
+         'pid-string', 'pid-missing', 'bundle-missing', 'bundle-wrong', 'executable-missing', 'executable-wrong',
+         'exited', 'identity-wrong', 'identity-prefix']
+for fault in cases:
+    calls, direct, observed = [], [], []
+    def capture(command, **kwargs):
+        calls.append(command)
+        if fault == 'timeout': raise subprocess.TimeoutExpired(command, 30)
+        if fault == 'os-error': raise OSError('must-not-leak-environment-or-command')
+        reply = dict(good)
+        if fault == 'protocol-missing': reply.pop('protocol')
+        if fault == 'protocol-wrong': reply['protocol'] = 2
+        if fault == 'protocol-boolean': reply['protocol'] = True
+        if fault in ('failed', 'unavailable'): reply = {'protocol': 1, 'status': fault, 'domain': 'NSOSStatusErrorDomain', 'code': -10810}
+        if fault.startswith('pid-'):
+            reply['pid'] = {'pid-zero': 0, 'pid-negative': -1, 'pid-boolean': True, 'pid-string': '456', 'pid-missing': None}[fault]
+        if fault == 'bundle-missing': reply.pop('bundlePath')
+        if fault == 'bundle-wrong': reply['bundlePath'] = '/substituted.app'
+        if fault == 'executable-missing': reply.pop('executablePath')
+        if fault == 'executable-wrong': reply['executablePath'] = '/substituted/Jones'
+        raw = json.dumps(reply).encode('ascii')
+        if fault == 'oversized': raw = b' ' * 16385
+        if fault == 'non-ascii': raw = b'\xff'
+        if fault == 'malformed': raw = b'{'
+        if fault == 'list': raw = b'[]'
+        return type('Result', (), {'returncode': 1 if fault == 'nonzero' else 0, 'stdout': raw})()
+    def direct_launch(*args, **kwargs):
+        direct.append(args)
+        raise AssertionError('Direct fallback attempted')
+    def identity(pid):
+        observed.append(pid)
+        if fault == 'exited': return None
+        if fault == 'identity-wrong': return 'start /some/other/app'
+        if fault == 'identity-prefix': return 'start ' + active['executablePath'] + '-substituted'
+        return 'start ' + active['executablePath']
+    subprocess.run, subprocess.Popen, process_identity = capture, direct_launch, identity
+    try: launch(active)
+    except RuntimeError as error:
+        assert 'must-not-leak' not in str(error) and '/usr/bin/osascript' not in str(error)
+    else: raise AssertionError('Unproved launch accepted: ' + fault)
+    assert len(calls) == 1 and direct == [], fault
+    assert observed == ([456] if fault in ('exited', 'identity-wrong', 'identity-prefix') else []), fault
+`;
+    runPython(nativeFunctions + "\n" + scenario, [], {
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 10000,
+    });
+  });
+
+  it("admits launch support only for the exact availability reply", () => {
+    const nativeFunctions = jonesNativeHelperSource.split(
+      "\nparser = argparse.ArgumentParser()",
+    )[0];
+    const scenario = String.raw`
+replies = [{'protocol': 1, 'status': 'available'}, {'protocol': True, 'status': 'available'},
+           {'protocol': 2, 'status': 'available'}, {'protocol': 1, 'status': 'available', 'extra': True},
+           {'protocol': 1, 'status': 'unavailable'}, {'protocol': 1, 'status': 'launched'}, {}, [], None]
+for reply in replies:
+    calls = []
+    def capture(command, **kwargs):
+        calls.append(command)
+        assert json.loads(command[5]) == {'probe': True}
+        return type('Result', (), {'returncode': 0, 'stdout': json.dumps(reply).encode('ascii')})()
+    subprocess.run = capture
+    assert launch_services_available() is (reply is replies[0]), reply
+    assert len(calls) == 1
+calls = []
+def unavailable(command, **kwargs):
+    calls.append(command)
+    raise OSError('Synthetic unavailable osascript')
+subprocess.run = unavailable
+assert launch_services_available() is False and len(calls) == 1
+`;
+    runPython(nativeFunctions + "\n" + scenario, [], {
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 10000,
+    });
+  });
+
+  it("keeps the validated LaunchServices script parseable through the raw materializer", () => {
+    const nativeFunctions = jonesNativeHelperSource.split(
+      "\nparser = argparse.ArgumentParser()",
+    )[0];
+    const script = JSON.parse(
+      runPython(nativeFunctions + "\nprint(json.dumps(LAUNCH_SERVICES_SCRIPT))", [], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      }),
+    ) as string;
+    expect(script).not.toContain("`");
+    expect(script).not.toContain("${");
+    expect(() => new Function(script)).not.toThrow();
+  });
+
+  it("rejects strict flags in older parsers and non-manual actions before any effect", async () => {
+    const f = await fixture();
+    try {
+      const flag = "parser.add_argument('--require-clone', action='store_true')\n";
+      const guard =
+        "if args.require_clone and not (args.inspect_manual_install or args.manual_install): parser.error('--require-clone requires a manual installation action')\n";
+      expect(jonesNativeHelperSource.split(flag)).toHaveLength(2);
+      expect(jonesNativeHelperSource.split(guard)).toHaveLength(2);
+      const older = jonesNativeHelperSource.replace(flag, "").replace(guard, "");
+      const manifest = NodePath.join(f.directory, "runtime", "absent.json");
+      for (const [source, arguments_, message] of [
+        [
+          older,
+          [
+            "--inspect-manual-install",
+            "plan.json",
+            "--plan-sha256",
+            "0".repeat(64),
+            "--require-clone",
+          ],
+          "unrecognized arguments: --require-clone",
+        ],
+        [
+          jonesNativeHelperSource,
+          ["--require-clone", "--launch"],
+          "--require-clone requires a manual installation action",
+        ],
+      ] as const) {
+        const result = NodeChildProcess.spawnSync(
+          "python3",
+          ["-I", "-", "--manifest", manifest, ...arguments_],
+          { input: source, encoding: "utf8", timeout: 10_000 },
+        );
+        expect(result.status).toBe(2);
+        expect(result.stderr).toContain(message);
+        expect(await NodeFSP.readdir(f.directory)).toEqual([]);
+      }
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it.each([
+    "success",
+    "flag-only",
+    "plan-only",
+    "unknown-policy",
+    "clonefile-unavailable",
+    "cross-volume",
+    "enotsup",
+    "exdev",
+    "enospc-shm",
+    "enospc-settings",
+    "reserve-denied",
+    "low-space",
+    "launch-unknown",
+    "cleanup-held",
+    "cleanup-record-failed",
+  ])("runs clone-required manual installation with %s", async (fault) => {
+    const f = await fixture();
+    try {
+      const nativeFunctions = jonesNativeHelperSource.split(
+        "\nparser = argparse.ArgumentParser()",
+      )[0];
+      const setup = activationScenario.split("\nevents = []")[0];
+      const result = JSON.parse(
+        runPython(
+          nativeFunctions +
+            "\n" +
+            setup +
+            "\n" +
+            manualInstallSetup +
+            "\n" +
+            cloneRequiredManualScenario,
+          [f.directory, "success", fault],
+          { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10_000 },
+        ),
+      ) as { passed: boolean };
+      expect(result.passed).toBe(true);
+    } finally {
+      await f.cleanup();
+    }
   });
 
   it.each([
@@ -1171,6 +1578,7 @@ assert captured['T3CODE_HOME'] == '/synthetic'
     "missing-bundle-identity",
     "cold-state",
     "launch-unknown",
+    "launch-unavailable",
   ])(
     "runs the controlled manual installation with %s and preserves the recovery pair",
     async (fault) => {
@@ -1181,28 +1589,7 @@ assert captured['T3CODE_HOME'] == '/synthetic'
         )[0];
         const setup = activationScenario.split("\nevents = []")[0];
         const scenario = String.raw`
-manual_fault = sys.argv[3]
-# A completed old transaction remains historical; manual adoption creates no warm transaction.
-durable(tx / 'journal.json', {'intent': intent, 'phase': 'resumed'}, True)
-installed = dict(expected, version='old-13', sourceSha='3' * 40, sourceTree='4' * 40,
-                 bundleIdentifier='com.jones.code')
-candidate = dict(staged, version='new-16', bundleIdentifier='com.jones.code')
-for value in (installed, candidate):
-    app = pathlib.Path(value['appPath'])
-    with open(app / 'Contents/Info.plist', 'wb') as stream:
-        plistlib.dump({'CFBundleIdentifier': value['bundleIdentifier'], 'CFBundleExecutable': 'Jones',
-                      'CFBundleShortVersionString': value['version']}, stream)
-    payload = json.dumps({'version': value['version'], 'jonesSource': {
-        'repository': 'Jones-Systems/Jones-Code', 'sha': value['sourceSha'], 'tree': value['sourceTree']}}).encode()
-    header = json.dumps({'files': {'package.json': {'offset': '0', 'size': len(payload)}}}).encode()
-    (app / 'Contents/Resources/app.asar').write_bytes(
-        struct.pack('<IIII', 4, len(header) + 8, len(header) + 4, len(header)) + header + payload)
-    value['appDigest'] = app_digest(app)
-plan = {'protocol': 1, 'restart': 'ordinary', 'expectedManifestSha256': digest(manifest_path),
-        'installed': installed, 'candidate': candidate,
-        'artifact': {'path': str(root / 'native.dmg'), 'sha256': digest(root / 'native.dmg')},
-        'processes': [{'pid': 123, 'identity': 'captured-old-process'}]}
-plan_path = root / 'manual-plan.json'
+${manualInstallSetup}
 if manual_fault == 'wrong-bundle': plan['installed']['sourceSha'] = '9' * 40
 if manual_fault == 'wrong-artifact': plan['artifact']['sha256'] = '0' * 64
 if manual_fault == 'missing-bundle-identity':
@@ -1233,10 +1620,11 @@ def manual_launch(active, descriptor=None):
     return {'pid': 456, 'identity': 'captured-new-process'}
 launch = manual_launch
 manual_root = manifest_path.parent / 'jones-manual-installs'
-if manual_fault in ('stale-admission', 'wrong-bundle', 'wrong-artifact', 'missing-bundle-identity', 'cold-state'):
+if manual_fault in ('stale-admission', 'wrong-bundle', 'wrong-artifact', 'missing-bundle-identity', 'cold-state', 'launch-unavailable'):
     try: manual_install(plan_path, plan_hash, apply=True)
-    except RuntimeError: pass
-    else: raise AssertionError('A changed manual plan or cold state was accepted')
+    except RuntimeError as error:
+        if manual_fault == 'launch-unavailable': assert 'LaunchServices is unavailable' in str(error)
+    else: raise AssertionError('A changed manual plan, cold state, or unavailable launcher was accepted')
     assert events == []
     assert not manual_root.exists()
     assert manifest_path.read_bytes() == original_manifest
@@ -1921,6 +2309,7 @@ assert old.exists()
     "unknown-journal",
     "discard-sync-failed",
     "claim-sync-failed",
+    "launch-unavailable",
   ])("serializes the %s selection outcome without deleting retained artifacts", async (fault) => {
     const f = await fixture();
     try {
@@ -1929,11 +2318,12 @@ assert old.exists()
       )[0];
       const setup = activationScenario.split("\nevents = []")[0];
       const scenario = String.raw`
+launch_services_available = lambda: fault != 'launch-unavailable'
 request = tx / 'activation-request.json'
 os.rename(tx / 'intent.json', request)
 def run(operation):
     return selection_command(operation, expected, staged['handle'], str(selection_path), selection_digest, str(request), transaction_id if operation != 'discard-staged' else None)
-claiming = fault in ('claim', 'discard-before-claim', 'wrong-request', 'wrong-candidate', 'wrong-continuation', 'claim-sync-failed')
+claiming = fault in ('claim', 'discard-before-claim', 'wrong-request', 'wrong-candidate', 'wrong-continuation', 'claim-sync-failed', 'launch-unavailable')
 if not claiming or fault == 'discard-before-claim':
     for name in ('prepare-intent.json', 'prepare-dispatched.json', 'continuation.json'): (tx / name).unlink()
 if fault == 'wrong-selection': selection_digest = '0' * 64
@@ -1974,6 +2364,7 @@ elif fault in ('discard-sync-failed', 'claim-sync-failed'):
     assert selection_path.exists() == (fault == 'claim-sync-failed')
 else:
     assert outcome['status'] == 'refused', outcome
+    if fault == 'launch-unavailable': assert outcome['reason'] == 'launch-unavailable', outcome
     assert not (tx / 'intent.json').exists()
     assert selection_path.exists() == (fault != 'discard-before-claim')
 assert (candidate_app / 'Contents/MacOS/Jones').read_text() == 'candidate-executable'
@@ -2288,6 +2679,8 @@ assert sorted(path.name for path in root.iterdir()) == ['jones-activation.lock',
   it.each([
     ["success", "resumed"],
     ["trial-mismatch", "rolled-back"],
+    ["restart-refused", "rolled-back"],
+    ["snapshot-restart-refused", "rolled-back"],
     ["authority-restore", "rolled-back"],
     ["authority-absent", "rolled-back"],
     ["authority-fence-lost", "blocked"],

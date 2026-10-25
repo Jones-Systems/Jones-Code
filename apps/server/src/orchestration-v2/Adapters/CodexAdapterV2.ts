@@ -14,6 +14,7 @@ import {
   makeCodexLateStartRecovery,
   type CodexStartDispatch,
 } from "../../jones/provider/codex/CodexLateStartRecovery.ts";
+import { makeCodexPendingStartNotifications } from "../../jones/provider/codex/CodexPendingStartNotifications.ts";
 import * as NativeProvider from "../../jones/nativeCreation/NativeCreationProviderGuard.ts";
 import * as BackgroundLiveness from "../../jones/provider/observations/ProviderSessionBackgroundLiveness.ts";
 import type * as RuntimeObservation from "../../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
@@ -2034,13 +2035,24 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           input.runtimePolicy,
         );
         const registrations: Array<(producer: CodexRuntimeProducer) => Effect.Effect<void>> = [];
+        const pendingStartNotifications =
+          makeCodexPendingStartNotifications<
+            Effect.Effect<void, CodexErrors.CodexAppServerError>
+          >();
         const handleServerNotification: CodexRuntimeProducer["client"]["handleServerNotification"] =
           (method, handler) => {
             const install = (producer: CodexRuntimeProducer) =>
               producer.client.handleServerNotification(method, (payload) =>
                 Effect.suspend(() =>
                   producer.active && producer === currentProducer
-                    ? handler(payload).pipe(Effect.provideService(CodexProducerContext, producer))
+                    ? deferPendingStartNotification(
+                        producer,
+                        method,
+                        payload,
+                        handler(payload).pipe(
+                          Effect.provideService(CodexProducerContext, producer),
+                        ),
+                      )
                     : Effect.void,
                 ),
               );
@@ -2345,6 +2357,18 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           request.state.binding.runtimeGeneration === currentProducer.generation;
 
         const releaseCapacityRequest = (request: CapacityRequest) => {
+          // A terminal replay can release capacity while buffered background
+          // output remains. Its start caller still owns that drain; failures
+          // and retired producers must discard it immediately.
+          if (
+            request.lateStartDispatch !== undefined &&
+            (!request.logicalTerminalEmitted ||
+              request.lateStartDispatch.unknown ||
+              capacityScopeClosed ||
+              !currentProducer.active ||
+              request.state.binding.runtimeGeneration !== currentProducer.generation)
+          )
+            pendingStartNotifications.clear(request.lateStartDispatch);
           if (capacityByThread.get(request.state.binding.nativeThreadId) === request) {
             capacityByThread.delete(request.state.binding.nativeThreadId);
           }
@@ -2352,6 +2376,48 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             if (owner === request) capacityByTurn.delete(nativeTurnId);
           }
         };
+
+        // This hook runs on the serialized reader; buffering must not wait for
+        // the start ACK that only this reader can deliver.
+        const deferPendingStartNotification = Effect.fnUntraced(function* (
+          producer: CodexRuntimeProducer,
+          method: string,
+          payload: unknown,
+          replay: Effect.Effect<void, CodexErrors.CodexAppServerError>,
+        ): Effect.fn.Return<void, CodexErrors.CodexAppServerError> {
+          if (method === "turn/completed") {
+            // The client has decoded this method's payload. Reconciliation facts
+            // must survive overflow or cancellation of the replayable effects.
+            const completion = payload as CodexSchema.V2TurnCompletedNotification;
+            const binding = {
+              runtimeGeneration: producer.generation,
+              nativeThreadId: completion.threadId,
+            };
+            const status = mapCodexTurnStatus(completion.turn.status);
+            if (
+              producer.active &&
+              producer === currentProducer &&
+              !handoffCompaction.owns(binding) &&
+              (status === "completed" || status === "failed" || status === "interrupted")
+            )
+              lateStarts.complete(binding, completion.turn.id);
+          }
+          const captured = pendingStartNotifications.capture(
+            producer.generation,
+            method,
+            payload,
+            replay,
+          );
+          if (captured === undefined) return yield* replay;
+          if (captured.status === "overflow") {
+            yield* Effect.logWarning("Codex pending-start notification buffer exceeded its limit.");
+            const request = capacityByThread.get(captured.dispatch.nativeThreadId);
+            if (request?.lateStartDispatch !== captured.dispatch) return;
+            yield* finishUnknownCapacityStart(request);
+            if (request.pendingStartCancelled !== undefined)
+              yield* Deferred.succeed(request.pendingStartCancelled, undefined);
+          }
+        });
 
         const turnWaiters = yield* Ref.make(new Map<string, Deferred.Deferred<void, never>>());
         const subagentThreads = yield* Ref.make(new Map<string, CodexSubagentThreadContext>());
@@ -3240,13 +3306,20 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             let ancestor: ActiveCodexTurnContext | undefined = subagent.parentContext;
             while (ancestor !== undefined) {
               if (terminalizedNativeTurns.has(ancestor.nativeTurnId)) {
+                const producer = (yield* CodexProducerContext) ?? currentProducer;
                 const nativeThreadId = yield* getNativeThreadId(subagent.providerThread);
-                const interrupted = yield* client
-                  .request("turn/interrupt", {
-                    threadId: nativeThreadId,
-                    turnId: turn.nativeTurnId,
-                  })
-                  .pipe(
+                const params = { threadId: nativeThreadId, turnId: turn.nativeTurnId };
+                // The notification reader must return to drain this RPC's reply.
+                // Keep the interrupt on its captured producer, including retirement.
+                yield* Effect.gen(function* () {
+                  const interrupted = yield* requestAdmission("turn/interrupt", params).pipe(
+                    Effect.andThen(
+                      Effect.suspend(() =>
+                        producer.active && producer === currentProducer
+                          ? producer.client.request("turn/interrupt", params)
+                          : Effect.void,
+                      ),
+                    ),
                     Effect.as(true),
                     Effect.catch((cause) =>
                       Effect.logWarning("orchestration-v2.codex-late-subagent-interrupt-failed", {
@@ -3257,15 +3330,16 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     ),
                     Effect.timeoutOption("10 seconds"),
                   );
-                if (Option.isNone(interrupted)) {
-                  yield* Effect.logWarning(
-                    "orchestration-v2.codex-late-subagent-interrupt-timeout",
-                    {
-                      nativeThreadId,
-                      nativeTurnId: turn.nativeTurnId,
-                    },
-                  );
-                }
+                  if (Option.isNone(interrupted)) {
+                    yield* Effect.logWarning(
+                      "orchestration-v2.codex-late-subagent-interrupt-timeout",
+                      {
+                        nativeThreadId,
+                        nativeTurnId: turn.nativeTurnId,
+                      },
+                    );
+                  }
+                }).pipe(Effect.forkIn(producer.scope, { startImmediately: true }));
                 return;
               }
               ancestor = ancestor.subagent?.parentContext;
@@ -7077,7 +7151,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
         const handleNativeCompletion = Effect.fn("CodexAdapterV2.handleNativeCompletion")(
           function* (payload: CodexSchema.V2TurnCompletedNotification): Effect.fn.Return<void> {
-            const producer = yield* CodexProducerContext;
             const binding = {
               runtimeGeneration: currentProducer.generation,
               nativeThreadId: payload.threadId,
@@ -7089,23 +7162,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 payload.turn.status === "completed",
               );
               return;
-            }
-            const terminalStatus = mapCodexTurnStatus(payload.turn.status);
-            if (
-              producer !== undefined &&
-              producer.active &&
-              producer === currentProducer &&
-              (terminalStatus === "completed" ||
-                terminalStatus === "failed" ||
-                terminalStatus === "interrupted")
-            ) {
-              lateStarts.complete(
-                {
-                  runtimeGeneration: producer.generation,
-                  nativeThreadId: payload.threadId,
-                },
-                payload.turn.id,
-              );
             }
             const request =
               capacityByTurn.get(payload.turn.id) ?? capacityByThread.get(payload.threadId);
@@ -7341,6 +7397,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             ...(yield* Ref.get(settledTurns)).keys(),
           ]);
           request.lateStartDispatch = dispatch;
+          pendingStartNotifications.begin(dispatch);
           // Keep the original RPC waiter in its producer's scope after the caller
           // times out. A replacement producer cannot acknowledge this dispatch.
           const startCancelled = yield* Deferred.make<void>();
@@ -7397,6 +7454,18 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           });
           if (!currentCapacityBinding(request))
             return yield* toProtocolError("Native physical binding changed after acknowledgement.");
+          const earlyStart = request.earlyStarts.get(started.turn.id);
+          const earlyError = request.earlyErrors.get(started.turn.id);
+          const earlyCompletion = request.earlyCompletions.get(started.turn.id);
+          pendingStartNotifications.acknowledge(
+            dispatch,
+            started.turn.id,
+            Effect.gen(function* () {
+              if (request.logicalTerminalEmitted) return;
+              if (earlyError !== undefined) yield* handleNativeError(earlyError);
+              if (earlyCompletion !== undefined) yield* handleNativeCompletion(earlyCompletion);
+            }),
+          );
           const context = yield* registerRootTurn({
             turnInput: {
               ...request.input,
@@ -7414,24 +7483,37 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             retryOrdinal,
             nativeTurnId: started.turn.id,
           });
-          const earlyStart = request.earlyStarts.get(started.turn.id);
-          const earlyError = request.earlyErrors.get(started.turn.id);
-          const earlyCompletion = request.earlyCompletions.get(started.turn.id);
-          request.earlyStarts.clear();
-          request.earlyErrors.clear();
-          request.earlyCompletions.clear();
-          if (earlyStart !== undefined && context.nativeStartReady !== undefined)
-            yield* Deferred.succeed(context.nativeStartReady, undefined);
-          if (earlyError !== undefined) yield* handleNativeError(earlyError);
-          if (earlyCompletion !== undefined) yield* handleNativeCompletion(earlyCompletion);
-          lateStarts.release(dispatch);
-          request.lateStartDispatch = undefined;
+          // The ACK has bound the original input. A native goal successor seen
+          // during replay must enter through goal bookkeeping, not adopt it again.
           yield* Ref.update(pendingRootTurns, (current) => {
             if (current.get(request.state.binding.nativeThreadId) !== request.input) return current;
             const updated = new Map(current);
             updated.delete(request.state.binding.nativeThreadId);
             return updated;
           });
+          request.earlyStarts.clear();
+          request.earlyErrors.clear();
+          request.earlyCompletions.clear();
+          if (earlyStart !== undefined && context.nativeStartReady !== undefined)
+            yield* Deferred.succeed(context.nativeStartReady, undefined);
+          const canReplayPendingStart = () =>
+            !capacityScopeClosed &&
+            producer.active &&
+            producer === currentProducer &&
+            !dispatch.unknown &&
+            (currentCapacityBinding(request) || request.logicalTerminalEmitted);
+          while (canReplayPendingStart()) {
+            const replay = pendingStartNotifications.take(dispatch);
+            if (replay === undefined) break;
+            yield* replay;
+          }
+          pendingStartNotifications.clear(dispatch);
+          if (!canReplayPendingStart())
+            return yield* toProtocolError(
+              "Native physical binding changed during notification replay.",
+            );
+          lateStarts.release(dispatch);
+          request.lateStartDispatch = undefined;
         });
         const scheduleCapacityRetry = Effect.fn("CodexAdapterV2.scheduleCapacityRetry")(function* (
           request: CapacityRequest,

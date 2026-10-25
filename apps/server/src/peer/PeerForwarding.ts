@@ -1,3 +1,7 @@
+import * as LinkedThreads from "../jones/linkedThreads/LinkedThreads.ts";
+import { actorFromCaller } from "../jones/linkedThreads/authorization.ts";
+import { ThreadId, LinkedThreadOriginLink } from "@t3tools/contracts";
+import * as Option from "effect/Option";
 import {
   type EnvironmentId,
   OrchestratorMcpFailure,
@@ -86,6 +90,7 @@ export const remoteTarget = (scope: Scope, environmentId: EnvironmentId | undefi
   environmentId === scope.environmentId ? undefined : environmentId;
 
 const make = Effect.gen(function* () {
+  const linkedThreads = yield* Effect.serviceOption(LinkedThreads.LinkedThreads);
   const peers = yield* PeerMcpClient.PeerMcpClient;
   const links = yield* PeerLinks.PeerLinks;
   const crypto = yield* Crypto.Crypto;
@@ -175,7 +180,20 @@ const make = Effect.gen(function* () {
             }),
       };
     }
-    return yield* peers.call({
+    if (toolName === "t3_thread_launch" || toolName === "t3_thread_link")
+      origin = {
+        schemaVersion: "t3.linked-message-origin/v1",
+        environmentId: scope.environmentId,
+        ...(caller.caller === undefined
+          ? {}
+          : {
+              thread: {
+                threadId: caller.caller.id,
+                title: (caller.caller.title ?? "").slice(0, 512),
+              },
+            }),
+      };
+    const result = yield* peers.call({
       environmentId,
       tool: toolName,
       arguments: args,
@@ -183,6 +201,32 @@ const make = Effect.gen(function* () {
       ...(origin === undefined ? {} : { origin }),
       success: success as Schema.Decoder<A>,
     });
+    if (
+      toolName === "t3_thread_launch" &&
+      caller.caller !== undefined &&
+      args.delegatedFrom === undefined &&
+      Option.isSome(linkedThreads) &&
+      result !== null &&
+      typeof result === "object" &&
+      "threadId" in result &&
+      typeof result.threadId === "string"
+    ) {
+      const peer = yield* links.get(environmentId).pipe(Effect.orElseSucceed(() => Option.none()));
+      const reported =
+        "originLink" in result && Schema.is(LinkedThreadOriginLink)(result.originLink)
+          ? result.originLink
+          : undefined;
+      const originLink = yield* linkedThreads.value.recordRemoteLaunch({
+        from: { environmentId: scope.environmentId, threadId: caller.caller.id },
+        to: { environmentId, threadId: ThreadId.make(result.threadId) },
+        actor: actorFromCaller(caller),
+        ...(reported === undefined ? {} : { reported }),
+        title: typeof args.title === "string" ? args.title : null,
+        environmentLabel: Option.isSome(peer) ? peer.value.label : null,
+      });
+      return { ...result, originLink } as A;
+    }
+    return result;
   });
 
   const readThread: PeerForwarding["Service"]["readThread"] = (scope, environmentId, input) =>

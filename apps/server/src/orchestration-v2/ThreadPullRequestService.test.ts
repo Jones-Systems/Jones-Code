@@ -26,9 +26,11 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 
 import * as GitManager from "../git/GitManager.ts";
+import { admitGitProcess, asBackgroundGitWork } from "../jones/git/backgroundGitAdmission.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
@@ -318,6 +320,172 @@ describe("ThreadPullRequestServiceV2 reads", () => {
           }).pipe(Effect.provide(dependencies));
         }),
       ),
+  );
+
+  it.effect("admits initial discovery and fresh confirmation as background Git independently", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = { ...threadShell("background-discovery"), branch: "feature/discovery" };
+        const project: OrchestrationProjectShell = {
+          id: thread.projectId,
+          title: "Project",
+          workspaceRoot: "/workspace/project",
+          defaultModelSelection: null,
+          scripts: [],
+          repositoryIdentity: null,
+          createdAt: "2026-08-01T00:00:00.000Z",
+          updatedAt: "2026-08-01T00:00:00.000Z",
+        };
+        const identity = {
+          canonicalKey: "github.com/acme/project",
+          locator: {
+            source: "git-remote" as const,
+            remoteName: "origin",
+            remoteUrl: "git@github.com:acme/project.git",
+          },
+          provider: "github" as const,
+          owner: "acme",
+          name: "project",
+        };
+        const pullRequest: GitManager.GitBranchPullRequest = {
+          number: 42,
+          title: "Discovery",
+          url: "https://github.com/acme/project/pull/42",
+          baseRef: "main",
+          headRef: thread.branch,
+          state: "open",
+          updatedAt: "2026-08-01T00:00:00.000Z",
+          closedAt: null,
+          mergedAt: null,
+          headSha: null,
+          repositoryKey: identity.canonicalKey,
+        };
+        const activation = yield* Deferred.make<void>();
+        const discoveryGate = yield* Deferred.make<void>();
+        const confirmationGate = yield* Deferred.make<void>();
+        const confirmationBarrier = yield* Deferred.make<void>();
+        const holderStarts = yield* Queue.unbounded<void>();
+        const requested = yield* Queue.unbounded<"discovery" | "confirmation">();
+        const started = yield* Queue.unbounded<"discovery" | "confirmation">();
+        const optionsSeen: Array<
+          Parameters<GitManager.GitManager["Service"]["branchPullRequest"]>[1]
+        > = [];
+        const commands: Array<OrchestrationV2ServerCommand> = [];
+        yield* Effect.addFinalizer(() =>
+          Effect.all([
+            Deferred.succeed(discoveryGate, undefined),
+            Deferred.succeed(confirmationGate, undefined),
+            Deferred.succeed(confirmationBarrier, undefined),
+            Deferred.succeed(activation, undefined),
+          ]),
+        );
+        const fillLane = (gate: Deferred.Deferred<void>) =>
+          Effect.gen(function* () {
+            yield* Effect.forEach(Array.from({ length: 4 }), () =>
+              Queue.offer(holderStarts, undefined).pipe(
+                Effect.andThen(Deferred.await(gate)),
+                admitGitProcess,
+                asBackgroundGitWork,
+                Effect.forkScoped,
+              ),
+            );
+            yield* Effect.forEach(Array.from({ length: 4 }), () => Queue.take(holderStarts));
+          });
+        const dependencies = Layer.mergeAll(
+          Layer.mock(Orchestrator.OrchestratorV2)({
+            streamDomainEvents: Stream.never,
+            getShellSnapshot: () =>
+              Effect.succeed({
+                schemaVersion: 2,
+                snapshotSequence: 1,
+                threads: [thread],
+                archivedThreads: [],
+              }),
+            dispatch: (command) =>
+              Effect.sync(() => {
+                commands.push(command);
+                return { sequence: 2, storedEvents: [] };
+              }),
+          }),
+          Layer.mock(ProjectStore.ProjectStoreV2)({
+            listShells: () => Effect.succeed([project]),
+            getShell: () => Effect.succeed(Option.some(project)),
+          }),
+          Layer.mock(GitManager.GitManager)({
+            branchPullRequest: (_input, options) =>
+              Effect.gen(function* () {
+                optionsSeen.push(options);
+                const stage = options?.freshGitState ? "confirmation" : "discovery";
+                // Hold confirmation before admission so its lane can be filled independently.
+                if (stage === "confirmation") yield* Deferred.await(confirmationBarrier);
+                yield* Queue.offer(requested, stage);
+                return yield* Queue.offer(started, stage).pipe(
+                  Effect.as(pullRequest),
+                  admitGitProcess,
+                );
+              }),
+          }),
+          Layer.mock(PullRequestService.PullRequestService)({}),
+          Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
+            resolve: () => Effect.succeed(identity),
+          }),
+          Layer.succeed(ServerActivation.ServerActivation, Deferred.await(activation)),
+          Layer.succeed(
+            Crypto.Crypto,
+            Crypto.make({
+              randomBytes: (size) => new Uint8Array(size).fill(1),
+              digest: (_algorithm, data) => Effect.succeed(data),
+            }),
+          ),
+          FileSystem.layerNoop({}),
+        );
+        yield* Effect.gen(function* () {
+          yield* fillLane(discoveryGate);
+          const service = yield* ThreadPullRequestService.make;
+          yield* service.start();
+          yield* Deferred.succeed(activation, undefined);
+          expect(yield* Queue.take(requested)).toBe("discovery");
+          yield* Effect.yieldNow;
+          expect(yield* Queue.size(started)).toBe(0);
+          expect(yield* admitGitProcess(Effect.succeed("foreground"))).toBe("foreground");
+          yield* Deferred.succeed(discoveryGate, undefined);
+          expect(yield* Queue.take(started)).toBe("discovery");
+
+          yield* fillLane(confirmationGate);
+          yield* Deferred.succeed(confirmationBarrier, undefined);
+          expect(yield* Queue.take(requested)).toBe("confirmation");
+          yield* Effect.yieldNow;
+          expect(yield* Queue.size(started)).toBe(0);
+          yield* Deferred.succeed(confirmationGate, undefined);
+          expect(yield* Queue.take(started)).toBe("confirmation");
+          yield* service.drain;
+          expect(optionsSeen).toEqual([
+            { refresh: false, confirmTerminal: false },
+            { freshGitState: true },
+          ]);
+          expect(commands).toHaveLength(1);
+          expect(commands[0]).toMatchObject({
+            type: "thread.pull-request.sync",
+            threadId: thread.id,
+            projectId: project.id,
+            snapshotSequence: 1,
+            expected: {
+              workspaceRoot: project.workspaceRoot,
+              branch: thread.branch,
+              worktreePath: null,
+              linkedPullRequest: null,
+              branchPullRequest: null,
+            },
+            branchPullRequest: {
+              projectId: project.id,
+              repository: "acme/project",
+              number: pullRequest.number,
+              url: pullRequest.url,
+            },
+          });
+        }).pipe(Effect.provide(dependencies));
+      }),
+    ),
   );
 
   it.effect("folds a thread's queued requests together but not one arriving mid-lookup", () =>

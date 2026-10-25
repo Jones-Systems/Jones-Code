@@ -26,6 +26,7 @@ import { Headers } from "effect/http";
 import { RpcGroup, RpcMessage, RpcServer } from "effect/rpc";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import * as ShellMaterialization from "./jones/orchestration/shellMaterialization.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as ServerBrowser from "./preview/ServerBrowser.ts";
 import * as AcpRegistryRuntimeCoordinator from "@t3tools/provider-acp-registry/server/AcpRegistryRuntimeCoordinator";
@@ -254,6 +255,7 @@ it.live.each(["thread", "shell"] as const)(
             }).pipe(Effect.flatMap(consume));
       });
       const items = yield* subscription.pipe(
+        Effect.provide(ShellMaterialization.layer),
         Effect.provideService(ThreadManagement.ThreadManagementService, {
           ensureLegacyTranscript: () => Effect.void,
           streamStoredEventsFrom: (
@@ -294,6 +296,7 @@ it.live.each(["thread", "shell"] as const)(
 
 // Build the production RPC layer; unrelated capabilities fail if this test calls them.
 const layerUnusedConfigRpcServices = Layer.mergeAll(
+  Layer.mock(ShellMaterialization.ShellMaterialization)({}),
   Layer.mock(PeerLinks.PeerLinks)({}),
   Layer.mock(QueueCompatibility.QueueCompatibility)({}),
   Layer.mock(SettlementOrigins.SettlementOrigins)({}),

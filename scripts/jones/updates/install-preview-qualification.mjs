@@ -1465,7 +1465,7 @@ export function rendererSteps(origin, sourceSha, runId) {
   const noExactButton = (label) =>
     check(
       label,
-      `!Array.from(document.querySelectorAll('${banners} button')).some(b => /^(Download|Install) [0-9a-f]{7}$/.test(b.textContent))`,
+      `!Array.from(document.querySelectorAll('${banners} button')).some(b => /^(Download|Install|Replace with) [0-9a-f]{7}$/.test(b.textContent))`,
     );
   const exactState = (text) => steps.push({ action: "wait", text });
   const exactReset = (scenario) => control(`exact-scenario-${scenario}`);
@@ -1553,7 +1553,7 @@ export function rendererSteps(origin, sourceSha, runId) {
   control("exact-next-download-wrong-source");
   click(exactButton(`Download ${shortSource}`));
   exactState("will not be installed from this notice");
-  noExactButton("A host that stages another source is refused");
+  exactState(`Replace with ${shortSource}`);
   capture("exact-source-wrong-source", ["will not be installed from this notice"]);
   noBridge();
 
@@ -1566,16 +1566,90 @@ export function rendererSteps(origin, sourceSha, runId) {
   noBridge();
 
   exactCase("staged-other", "staged-other");
-  exactState("It will not be installed from this notice.");
-  noExactButton("Another staged source offers no action");
+  exactState(`Replace with ${shortSource}`);
   capture("exact-source-staged-other", [
-    "This host has source",
-    "downloaded",
-    `this app needs ${shortSource}`,
-    "It will not be installed from this notice.",
-    "Settings → Connections",
-    "Installing it there will not match this app.",
+    "Downloaded",
+    `Replace with ${shortSource}`,
+    "Match laptop",
   ]);
+  click(exactButton(`Replace with ${shortSource}`));
+  steps.push({ action: "wait", text: "Nothing installs until you choose Install." });
+  capture("exact-source-replace-confirmation", ["Replace downloaded source", "Cancel", "Confirm"]);
+  click('role=alertdialog >> role=button[name="Cancel"]');
+  exactCallsAre("Cancelled replacement preserves the existing download", "c.action", []);
+  click(exactButton(`Replace with ${shortSource}`));
+  confirm();
+  exactState("Synthetic download is in progress.");
+  exactCallsAre(
+    "Notice replacement only downloads the exact target",
+    "[c.action, c.input.targetSource, c.input.replace.stagedHandle]",
+    [["downloadExact", sourceSha, "staged-other-handle"]],
+  );
+  noBridge();
+
+  const connections = '[aria-label="Synthetic Connections update row"]';
+  const matchButton = `${connections} >> role=button[name="Match laptop"]`;
+  exactCase("connections-match", "staged-other");
+  capture("connections-match-before", [
+    "Downloaded",
+    "Match laptop",
+    `Replace with ${shortSource}`,
+  ]);
+  click(matchButton);
+  steps.push({ action: "wait", text: "Nothing installs until you choose Install." });
+  confirm();
+  exactState("Synthetic download is in progress.");
+  exactCallsAre(
+    "Match laptop sends a bound replacement and never installs",
+    "[c.action, c.input.targetSource, c.input.replace.stagedHandle]",
+    [["downloadExact", sourceSha, "staged-other-handle"]],
+  );
+  check(
+    "Replacement carries the complete host binding and a UUID",
+    `(() => {
+    const input = JSON.parse(document.querySelector('[data-testid="exact-receipts"]').textContent)[0].input;
+    const old = input.replace;
+    return typeof old.environmentId === 'string' && typeof old.currentVersion === 'string' &&
+      /^[a-f0-9]{40}$/.test(old.expectedInstalledSource) && /^[a-f0-9]{40}$/.test(old.sourceSha) &&
+      /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(old.operationId);
+  })()`,
+  );
+  control("exact-complete-download");
+  exactState(`Install ${shortSource}`);
+  capture("connections-match-after", ["Downloaded", "Install"], ["Match laptop"]);
+  click(`${connections} >> role=button[name="Install"]`);
+  steps.push({ action: "wait", text: "Install the downloaded build on Mac Mini?" });
+  capture("connections-install-confirmation", ["Cancel", "Confirm", "disconnects briefly"]);
+  click('role=alertdialog >> role=button[name="Cancel"]');
+  exactCallsAre("Connections install cancellation sends nothing", "c.action", ["downloadExact"]);
+  click(`${connections} >> role=button[name="Install"]`);
+  confirm();
+  exactState("Installing — server restarting. Waiting for the launcher outcome.");
+  exactCallsAre(
+    "Connections installs only after separate confirmation",
+    "[c.action, c.input.stagedHandle ?? c.input.targetSource]",
+    [
+      ["downloadExact", sourceSha],
+      ["install", "staged-target-handle"],
+    ],
+  );
+  noBridge();
+
+  exactCase("legacy-staged", "legacy-staged");
+  exactState("cannot safely replace that download");
+  noExactButton("A legacy host cannot silently replace a download");
+  check(
+    "Legacy Match laptop is disabled and its click guard sends nothing",
+    `(() => {
+    const button = Array.from(document.querySelectorAll('${connections} button'))
+      .find(button => button.textContent === 'Match laptop');
+    if (button?.getAttribute('aria-disabled') !== 'true') return false;
+    button.click();
+    return JSON.parse(document.querySelector('[data-testid="exact-receipts"]').textContent).length === 0;
+  })()`,
+  );
+  exactCallsAre("Disabled Match laptop cannot dispatch a legacy replacement", "c.action", []);
+  capture("connections-match-legacy", ["Match laptop", "cannot safely replace that download"]);
   noBridge();
 
   exactCase("legacy-mismatch", "legacy-mismatch");

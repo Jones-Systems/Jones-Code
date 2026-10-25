@@ -207,6 +207,21 @@ it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
             launcherRefresh: supported ? "none" : "recommended",
           });
           if (!supported) expect((yield* updates.state())?.launcherVersion).toBeUndefined();
+          const beforeReplacement = yield* updates.state();
+          expect(
+            (yield* updates.downloadExact({
+              targetSource: binding.targetSource,
+              replace: {
+                stagedHandle: binding.stagedHandle,
+                sourceSha: binding.targetSource,
+                operationId,
+                environmentId: EnvironmentId.make(binding.environmentId),
+                currentVersion: version,
+                expectedInstalledSource: binding.expectedInstalledSource,
+              },
+            })).message,
+          ).toBe("Exact-source download is unavailable on this host.");
+          expect(yield* updates.state()).toEqual(beforeReplacement);
           expect((yield* updates.reconcile(input)).settlementRefusal).toBe(
             supported ? "restore-pending" : "capability-unsupported",
           );
@@ -521,6 +536,17 @@ describe("qualified update HTTP authority and decoding", () => {
     try {
       const download = { artifactId: 101, sourceSha: "a".repeat(40) };
       const downloadExact = { targetSource: "b".repeat(40) };
+      const replacement = {
+        ...downloadExact,
+        replace: {
+          stagedHandle: app.state.stagedHandle,
+          sourceSha: "c".repeat(40),
+          operationId: "11111111-1111-4111-8111-111111111111",
+          environmentId: app.state.environmentId,
+          currentVersion: app.state.currentVersion,
+          expectedInstalledSource: "a".repeat(40),
+        },
+      };
       const install = {
         stagedHandle: app.state.stagedHandle,
         environmentId: app.state.environmentId,
@@ -536,6 +562,7 @@ describe("qualified update HTTP authority and decoding", () => {
       for (const [action, input] of [
         ["download", download],
         ["download-exact", downloadExact],
+        ["download-exact", replacement],
         ["install", install],
         ["prepare-native", preparation],
       ] as const) {
@@ -553,6 +580,7 @@ describe("qualified update HTTP authority and decoding", () => {
       expect(app.calls).toEqual([
         { action: "download", input: download },
         { action: "downloadExact", input: downloadExact },
+        { action: "downloadExact", input: replacement },
         { action: "install", input: install },
         { action: "prepareNative", input: preparation },
       ]);

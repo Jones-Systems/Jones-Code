@@ -1,3 +1,4 @@
+import * as LinkedThreads from "../jones/linkedThreads/LinkedThreads.ts";
 import {
   CommandId,
   type RunId,
@@ -7,6 +8,7 @@ import {
   NodeId,
   TurnItemId,
   type OrchestrationV2Run,
+  OrchestrationV2DomainEvent,
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadShell,
@@ -136,6 +138,7 @@ import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
 const MAX_WAIT_TIMEOUT_MS = 60 * 60 * 1_000;
+const isTaskWakeDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 const TASK_WAKE_EVENTS = [
   { thread: "parent", eventType: "subagent.updated" },
   { thread: "child", eventType: "run.updated" },
@@ -961,6 +964,7 @@ function timelineItem(input: {
 }
 
 const make = Effect.gen(function* () {
+  const linkedThreads = yield* Effect.serviceOption(LinkedThreads.LinkedThreads);
   const crypto = yield* Crypto.Crypto;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
@@ -1025,6 +1029,23 @@ const make = Effect.gen(function* () {
         ],
         { turnItemTypes: [], messageRoles: ["user"] },
       )
+      .pipe(
+        Effect.mapError((error) =>
+          failure(
+            "orchestration_error",
+            `Unable to read thread ${threadId}: ${errorMessage(error)}`,
+          ),
+        ),
+      );
+
+  const loadTaskParent = (
+    threadId: ThreadId,
+  ): Effect.Effect<
+    Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "subagents" | "contextTransfers">,
+    OrchestratorMcpFailure
+  > =>
+    threadManagement
+      .getThreadRecords(threadId, ["runs", "subagents", "contextTransfers"])
       .pipe(
         Effect.mapError((error) =>
           failure(
@@ -1440,7 +1461,7 @@ const make = Effect.gen(function* () {
     refreshRemoteProgress = false,
   ): Effect.fn.Return<OrchestratorMcpDelegateTaskResult, OrchestratorMcpFailure> {
     yield* requireCapability(scope);
-    const parentProjection = yield* loadProjection(scope.thread.threadId);
+    const parentProjection = yield* loadTaskParent(scope.thread.threadId);
     const task = parentProjection.subagents.find(
       (candidate) =>
         candidate.id === taskId &&
@@ -1707,7 +1728,16 @@ const make = Effect.gen(function* () {
       task.completionDelivery?.state !== "acknowledged" &&
       task.completionDelivery?.state !== "disposed"
     ) {
-      const parentProjection = yield* loadProjection(scope.thread.threadId);
+      const parentProjection = yield* threadManagement
+        .getThreadRecords(scope.thread.threadId, ["runs"])
+        .pipe(
+          Effect.mapError((error) =>
+            failure(
+              "orchestration_error",
+              `Unable to read thread ${scope.thread.threadId}: ${errorMessage(error)}`,
+            ),
+          ),
+        );
       const observingRun = ThreadManagementService.latestActiveRun(parentProjection);
       yield* threadManagement
         .dispatch({
@@ -1792,12 +1822,24 @@ const make = Effect.gen(function* () {
           : TASK_WAKE_EVENTS;
       return yield* Stream.mergeAll(
         wakeEvents.map(({ thread, eventType }) =>
-          threadManagement.streamStoredEventsFrom({
-            threadId:
-              thread === "parent" || childThreadId === null ? scope.thread.threadId : childThreadId,
-            afterSequence,
-            eventType,
-          }),
+          threadManagement
+            .streamStoredEventsFrom({
+              threadId:
+                thread === "parent" || childThreadId === null
+                  ? scope.thread.threadId
+                  : childThreadId,
+              afterSequence,
+              eventType,
+            })
+            .pipe(
+              Stream.filter(
+                (stored) =>
+                  thread !== "parent" ||
+                  !isTaskWakeDomainEvent(stored.event) ||
+                  stored.event.type !== "subagent.updated" ||
+                  stored.event.payload.id === initial.childNodeId,
+              ),
+            ),
         ),
         { concurrency: "unbounded" },
       ).pipe(
@@ -2760,6 +2802,19 @@ const make = Effect.gen(function* () {
                 title: request.title,
                 index,
               });
+              if (Option.isSome(linkedThreads))
+                yield* linkedThreads.value
+                  .claimLaunch({
+                    from: { environmentId: scope.environmentId, threadId: scope.thread.threadId },
+                    toThreadId: threadId,
+                    launchCommandId: commandId,
+                    actor: { type: "thread", threadId: scope.thread.threadId },
+                  })
+                  .pipe(
+                    Effect.mapError(() =>
+                      failure("orchestration_error", "Unable to record the launch link."),
+                    ),
+                  );
               yield* threadManagement
                 .dispatch({
                   type: "thread.create",
@@ -3069,12 +3124,14 @@ const make = Effect.gen(function* () {
         .pipe(
           Effect.provideService(IncomingLinkedMessage, scope.client?.linked === true),
           Effect.mapError((error) =>
-            isThreadManagementError(error)
-              ? threadManagementFailure(error)
-              : failure(
-                  "orchestration_error",
-                  `Unable to send to thread ${input.threadId}: ${userFacingDispatchErrorMessage(error) ?? errorMessage(error)}`,
-                ),
+            error._tag === "OrchestratorThreadMessagesBlockedError"
+              ? failure("thread_not_sendable", error.message)
+              : isThreadManagementError(error)
+                ? threadManagementFailure(error)
+                : failure(
+                    "orchestration_error",
+                    `Unable to send to thread ${input.threadId}: ${userFacingDispatchErrorMessage(error) ?? errorMessage(error)}`,
+                  ),
           ),
         );
       return {

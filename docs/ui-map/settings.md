@@ -12,23 +12,23 @@ access is also accepted. It supplies the breadcrumb, scope boundary and content
 outlet. The sibling routes below are the discovered section boundary, not proof
 that each setting or external integration works.
 
-| Route under `/settings/` | Section/source                                                                      | Prerequisites or distinct states                                                                       |
-| ------------------------ | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `general`                | [General](../../apps/web/src/routes/settings.general.tsx)                           | Device and scoped settings; **Restore device defaults** is shown here, not a server-state reset.       |
-| `appearance`             | [Appearance](../../apps/web/src/routes/settings.appearance.tsx)                     | Device-only theme/typography controls; verify persistence on the isolated client.                      |
-| `projects`               | [Projects](../../apps/web/src/routes/settings.projects.tsx)                         | Synthetic project/checkout targets; navigation visibility depends on scope.                            |
-| `keybindings`            | [Keybindings](../../apps/web/src/routes/settings.keybindings.tsx)                   | Current bindings and overrides; retain the original value before edits.                                |
-| `snap-shot`              | [SnapShots](../../apps/web/src/routes/settings.snap-shot.tsx)                       | Native capture bridge/setup states; browser display does not qualify native capture.                   |
-| `providers`              | [Providers](../../apps/web/src/routes/settings.providers.tsx)                       | Single selected environment and provider readiness/configuration; credentials are outside this recipe. |
-| `integrations`           | [Integrations](../../apps/web/src/routes/settings.integrations.tsx)                 | Selected environment and available integration capabilities; external services need separate fixtures. |
-| `scheduled-tasks`        | [Scheduled Tasks](../../apps/web/src/routes/settings.scheduled-tasks.tsx)           | Scope-derived target; execution and scheduler effects need separate authorization/fixtures.            |
-| `source-control`         | [Source Control](../../apps/web/src/routes/settings.source-control.tsx)             | Host/provider settings and repository context; do not run external Git effects to prove navigation.    |
-| `storage`                | [Storage](../../apps/web/src/routes/settings.storage.tsx)                           | Environment state; destructive cleanup is outside a navigation check.                                  |
-| `connections`            | [Connections](../../apps/web/src/routes/settings.connections.tsx)                   | Device-only route; administration requires suitable scopes and isolated endpoints.                     |
-| `archived`               | [Archive](../../apps/web/src/routes/settings.archived.tsx)                          | Synthetic archived threads for restore checks.                                                         |
-| `jones-code`             | [Jones Code](../../apps/web/src/routes/settings.jones-code.tsx)                     | Device-only prompt defaults, sidebar activity windows, and project/environment order.                  |
-| `diagnostics`            | [Diagnostics](../../apps/web/src/routes/settings.diagnostics.tsx)                   | Environment-specific view; reachable from General/search, excluded from ordinary section navigation.   |
-| `open-source-licenses`   | [Open source licenses](../../apps/web/src/routes/settings.open-source-licenses.tsx) | General's link; distinct breadcrumb but General remains the selected sidebar section.                  |
+| Route under `/settings/` | Section/source                                                                      | Prerequisites or distinct states                                                                                                            |
+| ------------------------ | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `general`                | [General](../../apps/web/src/routes/settings.general.tsx)                           | Device and scoped settings; **Restore device defaults** is shown here, not a server-state reset.                                            |
+| `appearance`             | [Appearance](../../apps/web/src/routes/settings.appearance.tsx)                     | Device-only theme/typography controls; verify persistence on the isolated client.                                                           |
+| `projects`               | [Projects](../../apps/web/src/routes/settings.projects.tsx)                         | Synthetic project/checkout targets; navigation visibility depends on scope.                                                                 |
+| `keybindings`            | [Keybindings](../../apps/web/src/routes/settings.keybindings.tsx)                   | Current bindings and overrides; retain the original value before edits.                                                                     |
+| `snap-shot`              | [SnapShots](../../apps/web/src/routes/settings.snap-shot.tsx)                       | Native capture bridge/setup states; browser display does not qualify native capture.                                                        |
+| `providers`              | [Providers](../../apps/web/src/routes/settings.providers.tsx)                       | Single selected environment and provider readiness/configuration; credentials are outside this recipe.                                      |
+| `integrations`           | [Integrations](../../apps/web/src/routes/settings.integrations.tsx)                 | Selected environment and available integration capabilities; external services need separate fixtures.                                      |
+| `scheduled-tasks`        | [Scheduled Tasks](../../apps/web/src/routes/settings.scheduled-tasks.tsx)           | Scope-derived target; execution and scheduler effects need separate authorization/fixtures.                                                 |
+| `source-control`         | [Source Control](../../apps/web/src/routes/settings.source-control.tsx)             | Host/provider settings and repository context; do not run external Git effects to prove navigation.                                         |
+| `storage`                | [Storage](../../apps/web/src/routes/settings.storage.tsx)                           | Environment state; destructive cleanup is outside a navigation check.                                                                       |
+| `connections`            | [Connections](../../apps/web/src/routes/settings.connections.tsx)                   | Device-only connection management; background evaluation configuration targets each receiving environment and requires owner authorization. |
+| `archived`               | [Archive](../../apps/web/src/routes/settings.archived.tsx)                          | Synthetic archived threads for restore checks.                                                                                              |
+| `jones-code`             | [Jones Code](../../apps/web/src/routes/settings.jones-code.tsx)                     | Device-only prompt defaults, sidebar activity windows, and project/environment order.                                                       |
+| `diagnostics`            | [Diagnostics](../../apps/web/src/routes/settings.diagnostics.tsx)                   | Environment-specific view; reachable from General/search, excluded from ordinary section navigation.                                        |
+| `open-source-licenses`   | [Open source licenses](../../apps/web/src/routes/settings.open-source-licenses.tsx) | General's link; distinct breadcrumb but General remains the selected sidebar section.                                                       |
 
 [SettingsScopeContext](../../apps/web/src/components/settings/SettingsScopeContext.tsx)
 and [scope navigation](../../apps/web/src/components/settings/settingsScopeNavigation.ts)
@@ -156,3 +156,103 @@ Keyboard move/cancel and arrow behavior have focused browser-test coverage.
 Draft-picker and Run-on integration are source/typecheck covered; full live
 multi-checkout Run-on and disconnected/reconnected journeys remain unverified.
 Native mobile uses separate preferences and is outside this renderer feature.
+
+### Jones build downloads
+
+Affected shared renderer: [JonesBuildStatus](../../apps/web/src/jones/updates/JonesBuildStatus.tsx),
+through [JonesUpdateControls](../../apps/web/src/jones/updates/JonesUpdateControls.tsx).
+Reach the inline saved-host rows and This machine row layout through Settings
+→ Connections. ServerUpdateAction also consumes the inline layout when its
+existing host-update entry is shown. Disabled saved environments retain their
+parent rule and omit the entire update section. The same renderer is used in desktop;
+this journey does not qualify the desktop shell, installation or remote hosts.
+The loopback-only [environment updates fixture](../../apps/web/src/jones/updates/fixtures/environment-updates.html)
+provides synthetic host states and an action receipt list without host requests.
+Its entry module names the owning fixtures; the primary verification owner owns
+its launch, captures and cleanup under the common recipe.
+
+Begin with a host waiting for its laptop's installed build and no offered build.
+Download remains visible and disabled. Hover it, then focus Check and press Tab
+to focus Download: both paths must explain the laptop hold. Click Download and
+press Enter and Space while it is focused; no download request or fixture receipt
+should result. Repeat with loading, stale, unsupported, pending, building,
+checking/downloading, missing provenance, capability refusal and failed states;
+the explanation must describe the current blocker. A stale host's earlier build
+must not become downloadable. When a fresh qualified build becomes available,
+Download sends its exact artifact and source identity. A staged build replaces
+Download with Install and retains its existing installation gates. Do not use
+installation as a verification fixture. Reset by remounting only the synthetic
+fixture; do not modify a saved environment's enabled state to bypass its parent.
+
+Source check: **2026-10-24**, candidate based on
+`6472e98b0c0cf6d3b566a2dc2cf64d7a737fe622`; canonical Frontend guidance read at
+`b3ef4fb3ee399562483d430c9d8bbfe34860cb71`. The focused
+[JonesBuildStatus browser regressions](../../apps/web/src/jones/updates/JonesBuildStatus.browser.test.tsx)
+cover these states, explanations, blocked activation and exact enabled routing.
+Execution is **blocked** locally: dependencies are absent, installed Node differs
+from the required version, and available storage is below the documented install
+admission. These tests have no passing result recorded here. Manual runtime
+verification is **blocked** because T3 Browser Preview tools are unavailable;
+[test-t3-app](../../.agents/skills/test-t3-app/SKILL.md) forbids an automation
+fallback. Build, viewport/text-size evidence, before/after captures and exercised
+live entry points: **none**. Connections, ServerUpdateAction, hosted/direct/relay/tunnel
+variants and packaged desktop remain `unverified` for this change.
+
+### Match laptop
+
+Electron Connections rows for remote hosts offer **Match laptop** beside Check
+and Download or Install. The target comes from the fresh installed source on
+the verified desktop-managed laptop connection. The choice stays visible with
+an explanation when the laptop source, remote observation, permission or host
+capability is unavailable; it disappears once that source is installed or staged.
+Hosted web and mobile have no verified laptop observation and omit this choice.
+
+With a different download already staged, confirm replacement of that exact
+handle/source. The host checks target availability before retiring the old
+selection. Matching only downloads; Install has its own confirmation and fresh
+binding check. A stale selection refuses without replacement. A partial failure
+or lost response requires reading current host status and explicitly downloading
+again if the old selection is gone.
+
+The existing environment updates fixture now includes a synthetic Connections
+row and the mismatch notice backed by the same exact-source controller.
+Exercise ordinary matching, confirmed replacement, cancellation, legacy refusal,
+waiting/unsupported states and the separate Install dialog. Inspect the action
+receipts for the full target, old handle/source and original host binding; no
+fixture request may reach a real host or desktop updater. The focused
+[exact-source browser regressions](../../apps/web/src/jones/updates/ExactSourceUpdateAction.browser.test.tsx)
+and [Preview qualification](../../scripts/jones/updates/install-preview-qualification.mjs)
+cover these interactions. The PR records current execution evidence and its
+limits; source inspection alone does not qualify installed desktop behavior.
+
+### Background remote evaluation
+
+[Connections](../../apps/web/src/components/settings/ConnectionsSettings.tsx)
+mounts [evaluator configuration](../../apps/web/src/jones/remoteAdmission/RemoteAdmissionSettings.tsx)
+for each registered environment. Request review lives in the separate
+[Requests inbox and global notifications](requests.md); Connections does not
+contain the inbox. The route's device scope does not make evaluator policy a
+device preference: each card names its receiving environment.
+
+Using only a synthetic owner-authorized endpoint, follow Requests → Configure
+background evaluation, then verify the receiving-environment label, exact
+provider account/instance, model and supported options. Only providers advertising
+remote evaluation support enter the picker. Choose a different account/model:
+options are cleared on that change; same-selection options remain. Save model
+and inspect policy readback, then restore the fixture's original policy. The
+background service uses this selection independently of a chat's model or modes.
+Disabling evaluation must leave existing held requests in Requests.
+
+Exercise loading, save-in-progress, inaccessible/non-owner session, missing
+capability, unavailable saved account/model and unsupported options separately.
+Blocked controls explain their reason; an unavailable saved selection stays
+visible rather than silently saving a fallback. An enabled policy can still be
+disabled when its model becomes unavailable. Provider capability and exact
+model/option validation also apply on the server; picker visibility alone is
+not evidence of successful provider execution.
+
+Source inspected at `2af74a87e5db90ca5cf7d3e2421d9a7f444fe6b2`.
+The [settings browser regressions](../../apps/web/src/jones/remoteAdmission/RemoteAdmissionSettings.browser.test.tsx)
+name the focused checks; this documentation lane did not run them. Synthetic UI
+proof belongs to the primary verification owner. Runtime, live account acceptance,
+mobile and packaged notification delivery remain **unverified** here.

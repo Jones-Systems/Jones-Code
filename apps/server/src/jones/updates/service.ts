@@ -662,6 +662,8 @@ export const layer = Layer.effect(
           launcherManaged: launcher.managed,
           qualifiedStaging: launcher.qualifiedStaging === true,
           qualifiedUpdates: launcher.qualifiedUpdates === true,
+          qualifiedRetirement:
+            launcher.qualifiedRetirement === true && launcher.retireUpdate !== undefined,
           hasCurrentVersion: launcher.currentVersion !== undefined,
           hasStage: preparation !== undefined,
           hasInstall:
@@ -1030,8 +1032,10 @@ export const layer = Layer.effect(
       check: Effect.promise(() => updater.check()),
       download: (input) => Effect.promise(() => updater.download(input)),
       downloadExact: (input) =>
-        updater.snapshot().capability.download
-          ? Effect.promise(() => updater.stageExact(input.targetSource))
+        updater.snapshot().capability.download &&
+        updater.snapshot().capability.exactSource === true &&
+        (input.replace === undefined || updater.snapshot().capability.replaceStaged === true)
+          ? Effect.promise(() => updater.stageExact(input.targetSource, input.replace))
           : Effect.succeed({
               ...updater.snapshot(),
               phase: "blocked" as const,

@@ -56,7 +56,8 @@ terminal commands. Saved threads, settings, and project files remain.
 **Settings → General → Continue threads after restarts** is on by default.
 It resumes supported active threads after an update, crash, machine restart,
 or after you quit and reopen the desktop app. Changes are saved to connected
-environments that support this setting; update older servers first. If a supported environment was offline or has a
+environments that support this setting; update older servers first. If a supported
+environment was offline or has a
 different value, use **Apply to all** in Settings after it connects.
 T3 Code must start again on that machine;
 the setting does not enable automatic startup. Terminal commands may still be
@@ -88,11 +89,19 @@ were built from different source revisions. Its update action targets the build
 running in your app, even if a newer desktop update has already downloaded.
 Mac and Linux build version numbers can differ while their source matches.
 Download the matching server build, then confirm installation when you are ready
-for that server to restart. If another source is already downloaded, this notice
-will not replace or install it. Open **Settings → Connections** to review that
-host's downloaded update: the separate host control can offer a different build
-because it follows the host's update channel, not this app's source. Installing
-that different build there does not make the server match this app.
+for that server to restart. If another source is already downloaded, supported
+hosts offer **Replace with** and ask you to confirm replacement of that download.
+Replacement downloads the matching source; it does not restart the server.
+Install remains a separate confirmed action.
+
+In the desktop app, **Settings → Connections → Match laptop** targets this
+laptop's verified installed source. It can also replace a different download
+after confirmation on supported hosts. The host's ordinary Download action
+follows its update channel and may offer a different source. Match laptop stays
+visible with an explanation when it cannot run, and disappears once the matching
+source is installed or downloaded. Older hosts may need an update before they
+can replace a download. If replacement is interrupted, check the host's current
+status and explicitly download again if the earlier download is gone.
 Offline, unsupported, or newer servers show why the action is unavailable; the
 notice does not substitute the latest build.
 

@@ -6,6 +6,7 @@ import { EnvironmentId, type EnvironmentMachineKind } from "@t3tools/contracts";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import { AUTH_SCOPE_OPTIONS } from "@t3tools/shared/authScopeOptions";
 import "../../../index.css";
+import { ConfirmDialogHost } from "../../../components/ConfirmDialogHost";
 import { EnvironmentRow } from "../../../components/settings/EnvironmentRow";
 import { SettingsGroup } from "../../../components/settings/SettingsGroup";
 import { Button } from "../../../components/ui/button";
@@ -19,6 +20,7 @@ import {
 } from "../../fleetUpdates/FleetEnrollmentStatus";
 import { JonesBuildStatus, type JonesBuildRequest } from "../JonesBuildStatus";
 import { BuildVersion } from "../updateDisplay";
+import { ExactSourcePreview } from "./exact-source-fixture";
 import type { JonesInstalledComparison } from "../installedSourceComparison";
 import { describeFollower } from "../../fleetUpdates/followerStatus";
 
@@ -548,6 +550,7 @@ function FixtureScreen() {
     <ToastProvider>
       <AnchoredToastProvider>
         <TooltipProvider>
+          <ConfirmDialogHost />
           <main className="mx-auto max-w-4xl space-y-6 p-6 text-foreground">
             <header className="space-y-1">
               <h1 className="text-xl font-semibold">Jones environment updates fixture</h1>
@@ -597,6 +600,7 @@ function FixtureScreen() {
                 ))}
               </SettingsGroup>
             </section>
+            <ExactSourcePreview runId="environment-match-laptop" />
             <section aria-label="Fixture receipts" className="border-t pt-4">
               <h2 className="text-sm font-medium">Requested actions</h2>
               <ol data-testid="fixture-receipts" className="mt-2 space-y-1 font-mono text-xs">

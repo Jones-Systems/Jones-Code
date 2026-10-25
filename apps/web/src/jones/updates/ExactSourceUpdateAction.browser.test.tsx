@@ -12,7 +12,9 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import {
   ExactSourceUpdateAction,
   performExactSourceStep,
+  performConfirmedInstall,
   type ExactSourceHost,
+  type ExactSourceTarget,
 } from "./ExactSourceUpdateAction";
 
 const environmentId = EnvironmentId.make("exact-source-host");
@@ -120,7 +122,7 @@ async function setupFixture1() {
   }
 }
 
-async function mount(world: ReturnType<typeof createHost>) {
+async function mount(world: ReturnType<typeof createHost>, props: Partial<ExactSourceTarget> = {}) {
   const draw = () =>
     root.rerender(
       <ExactSourceUpdateAction
@@ -128,6 +130,7 @@ async function mount(world: ReturnType<typeof createHost>) {
         label="Mac Mini"
         targetSource={target}
         host={world.host}
+        {...props}
       />,
     );
   world.onChange(draw);
@@ -311,6 +314,115 @@ describe("exact-source action", () => {
     ]);
   });
 
+  it("confirms replacement, reuses its ID after a lost response and never installs", async () => {
+    await using _fixture = await setupFixture1();
+    const staged = hostState({
+      environmentId,
+      phase: "staged",
+      stagedHandle: "old-handle",
+      capability: {
+        check: true,
+        download: true,
+        install: true,
+        exactSource: true,
+        replaceStaged: true,
+      },
+    });
+    const world = createHost(staged);
+    await mount(world, { allowReplace: true, allowInstall: false, buttonLabel: "Match laptop" });
+    world.handlers.dialog = async () => false;
+    await click("Match laptop");
+    expect(world.requests).toEqual([]);
+    world.handlers.dialog = async () => true;
+    world.handlers.run = async () => AsyncResult.failure(Cause.fail(new Error("response lost")));
+    await click("Match laptop");
+    expect(status()).toContain("effect is unknown");
+    expect(world.requests).toHaveLength(1);
+    expect(world.dialogs.at(-1)).toContain("Nothing installs until you choose Install");
+    await click("Match laptop");
+    expect(world.requests).toHaveLength(2);
+    expect(world.requests[1]).toEqual(world.requests[0]);
+    expect(world.requests[0]).toMatchObject({
+      action: "downloadExact",
+      input: {
+        targetSource: target,
+        replace: {
+          environmentId,
+          currentVersion,
+          expectedInstalledSource: staged.installedSource!.sha,
+          stagedHandle: "old-handle",
+          sourceSha: other,
+          operationId: expect.any(String),
+        },
+      },
+    });
+    const replacement = world.requests[0];
+    if (replacement?.action !== "downloadExact") throw new Error("Expected exact download");
+    expect(replacement.input.replace?.operationId).toMatch(
+      /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/,
+    );
+    await world.set({ ...staged, stagedHandle: "new-handle" });
+    await click("Match laptop");
+    expect(world.requests[2]).not.toEqual(world.requests[0]);
+    expect(world.requests.every((request) => request.action === "downloadExact")).toBe(true);
+  });
+
+  it("refuses replacement if the laptop target or selected host binding changes during confirmation", async () => {
+    await using _fixture = await setupFixture1();
+    const staged = hostState({
+      environmentId,
+      phase: "staged",
+      stagedHandle: "old-handle",
+      capability: {
+        check: true,
+        download: true,
+        install: true,
+        exactSource: true,
+        replaceStaged: true,
+      },
+    });
+    const world = createHost(staged);
+    let laptopSource: string | undefined = target;
+    await mount(world, {
+      allowReplace: true,
+      readTargetSource: () => laptopSource,
+      buttonLabel: "Match laptop",
+    });
+    world.handlers.dialog = async () => {
+      laptopSource = undefined;
+      return true;
+    };
+    await click("Match laptop");
+    expect(status()).toContain("laptop's verified installed build changed");
+    expect(world.requests).toEqual([]);
+    laptopSource = target;
+    world.handlers.dialog = async () => {
+      await world.set({ ...staged, currentVersion: "changed" });
+      return true;
+    };
+    await click("Match laptop");
+    expect(status()).toContain("changed while this was pending");
+    expect(world.requests).toEqual([]);
+  });
+
+  it("keeps Match laptop visible and guards activation when state or replacement capability is unavailable", async () => {
+    await using _fixture = await setupFixture1();
+    const world = createHost(null);
+    await mount(world, {
+      allowReplace: true,
+      allowInstall: false,
+      buttonLabel: "Match laptop",
+      compact: true,
+    });
+    expect(buttons()).toEqual(["Match laptop"]);
+    expect(container.querySelector("button")?.getAttribute("aria-disabled")).toBe("true");
+    await click("Match laptop");
+    await world.set(hostState({ environmentId, phase: "staged", stagedHandle: "old-handle" }));
+    await click("Match laptop");
+    expect(container.querySelector("button")?.getAttribute("aria-disabled")).toBe("true");
+    expect(world.requests).toEqual([]);
+  });
+
   it("offers nothing while the host observation is stale or the host has no updater", async () => {
     await using _fixture = await setupFixture1();
     const world = createHost(hostState());
@@ -360,5 +472,33 @@ describe("performExactSourceStep", () => {
       kind: "unknown",
       unresolvedInstall: { stagedHandle: "handle-1", revision: 6 },
     });
+  });
+});
+
+describe("Connections install confirmation", () => {
+  it("cancels without sending and rechecks the selection and permission after confirmation", async () => {
+    const staged = { ...stagedTarget(), environmentId };
+    const world = createHost(staged);
+    const input = { environmentId, currentVersion, stagedHandle: "handle-1" };
+    world.handlers.dialog = async () => false;
+    expect(
+      await performConfirmedInstall({ input, host: world.host, label: "Mac Mini" }),
+    ).toBeNull();
+    expect(world.requests).toEqual([]);
+    world.handlers.dialog = async () => {
+      await world.set({ ...staged, stagedHandle: "changed" });
+      return true;
+    };
+    expect(await performConfirmedInstall({ input, host: world.host, label: "Mac Mini" })).toContain(
+      "Nothing was sent",
+    );
+    expect(world.requests).toEqual([]);
+    await world.set(staged);
+    world.handlers.dialog = async () => true;
+    world.handlers.run = async () => AsyncResult.success({ ...staged, phase: "installing" });
+    expect(
+      await performConfirmedInstall({ input, host: world.host, label: "Mac Mini" }),
+    ).toBeNull();
+    expect(world.requests).toEqual([{ action: "install", input }]);
   });
 });
