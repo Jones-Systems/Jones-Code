@@ -24,7 +24,9 @@ it.effect("coherent reference hydrates on writer before entering reader transact
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const directory = yield* fs.makeTempDirectoryScoped({ prefix: "jones-reference-hydration-" });
-    const persistence = SqlitePersistence.layerFromPath(path.join(directory, "userdata", "state.sqlite"));
+    const persistence = SqlitePersistence.layerFromPath(
+      path.join(directory, "userdata", "state.sqlite"),
+    );
     yield* Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`CREATE TABLE jones_test_hydration (value TEXT NOT NULL)`;
@@ -52,44 +54,68 @@ it.effect("coherent reference hydrates on writer before entering reader transact
       });
       const serviceLayer = ThreadManagement.layerWithLegacyImporter.pipe(
         Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
-        Layer.provide(Layer.mock(Orchestrator.OrchestratorV2)({
-          getTimelinePages: (threadId, selections) => sql.withTransaction(
-            Effect.gen(function* () {
-              reads++;
-              const rows = yield* sql<{ value: string }>`SELECT value FROM jones_test_hydration`;
-              assert.deepEqual(rows, [{ value: "hydrated" }]);
-              return selections.map(() => ({ items: [], totalItems: 0, hasMore: false, snapshotSequence: 1 }));
-            }),
-          ).pipe(
-            Effect.mapError((cause) => new Orchestrator.OrchestratorProjectionError({ threadId, cause })),
-          ),
-        })),
-        Layer.provide(Layer.mock(LegacyV1ThreadImporter.LegacyV1ThreadImporter)({
-          ensureTranscript: (threadId) => Effect.gen(function* () {
-            yield* Deferred.succeed(started, undefined);
-            yield* Deferred.await(release);
-            yield* sql`INSERT INTO jones_test_hydration VALUES ('hydrated')`;
-            return { importedThreadCount: 1, importedMessageCount: 1 };
-          }).pipe(
-            Effect.mapError((cause) => new LegacyV1ThreadImporter.LegacyV1ThreadImportError({
-              operation: "hydrate transcript for",
-              threadId,
-              cause,
-            })),
-          ),
-        })),
+        Layer.provide(
+          Layer.mock(Orchestrator.OrchestratorV2)({
+            getTimelinePages: (threadId, selections) =>
+              sql
+                .withTransaction(
+                  Effect.gen(function* () {
+                    reads++;
+                    const rows = yield* sql<{
+                      value: string;
+                    }>`SELECT value FROM jones_test_hydration`;
+                    assert.deepEqual(rows, [{ value: "hydrated" }]);
+                    return selections.map(() => ({
+                      items: [],
+                      totalItems: 0,
+                      hasMore: false,
+                      snapshotSequence: 1,
+                    }));
+                  }),
+                )
+                .pipe(
+                  Effect.mapError(
+                    (cause) => new Orchestrator.OrchestratorProjectionError({ threadId, cause }),
+                  ),
+                ),
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(LegacyV1ThreadImporter.LegacyV1ThreadImporter)({
+            ensureTranscript: (threadId) =>
+              Effect.gen(function* () {
+                yield* Deferred.succeed(started, undefined);
+                yield* Deferred.await(release);
+                yield* sql`INSERT INTO jones_test_hydration VALUES ('hydrated')`;
+                return { importedThreadCount: 1, importedMessageCount: 1 };
+              }).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new LegacyV1ThreadImporter.LegacyV1ThreadImportError({
+                      operation: "hydrate transcript for",
+                      threadId,
+                      cause,
+                    }),
+                ),
+              ),
+          }),
+        ),
         Layer.provide(ServerSettings.layerTest()),
         Layer.provide(CommandReceiptStore.layer),
       );
       yield* Effect.gen(function* () {
         const threads = yield* ThreadManagement.ThreadManagementService;
-        const pending = yield* Effect.forkChild(threads.getTimelinePages(ThreadId.make("hydrated"), [
-          { view: "messages", tail: true, limit: 64 },
-          { view: "activity", tail: true, limit: 60 },
-        ]).pipe(
-          Effect.provideService(Statement.SpanPropagationEnabled, true),
-          Effect.withTracer(tracer),
-        ));
+        const pending = yield* Effect.forkChild(
+          threads
+            .getTimelinePages(ThreadId.make("hydrated"), [
+              { view: "messages", tail: true, limit: 64 },
+              { view: "activity", tail: true, limit: 60 },
+            ])
+            .pipe(
+              Effect.provideService(Statement.SpanPropagationEnabled, true),
+              Effect.withTracer(tracer),
+            ),
+        );
         yield* Deferred.await(started);
         assert.equal(reads, 0);
         yield* Deferred.succeed(release, undefined);
@@ -105,48 +131,57 @@ it.effect("coherent reference hydrates on writer before entering reader transact
 
 it.effect.each(["hydration", "projection"] as const)(
   "coherent reference preserves the exact %s domain error",
-  (stage) => Effect.gen(function* () {
-    const threadId = ThreadId.make("failed-reference");
-    const hydrationError = new LegacyV1ThreadImporter.LegacyV1ThreadImportError({
-      operation: "hydrate transcript for",
-      threadId,
-    });
-    const projectionError = new Orchestrator.OrchestratorProjectionError({
-      threadId,
-      cause: new ProjectionStore.ProjectionStoreThreadNotFoundError({ threadId }),
-    });
-    let reads = 0;
-    const serviceLayer = ThreadManagement.layerWithLegacyImporter.pipe(
-      Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
-      Layer.provide(Layer.mock(Orchestrator.OrchestratorV2)({
-        getTimelinePages: () => Effect.suspend(() => {
-          reads++;
-          return Effect.fail(projectionError);
-        }),
-      })),
-      Layer.provide(Layer.mock(LegacyV1ThreadImporter.LegacyV1ThreadImporter)({
-        ensureTranscript: () => stage === "hydration"
-          ? Effect.fail(hydrationError)
-          : Effect.succeed({ importedThreadCount: 0, importedMessageCount: 0 }),
-      })),
-      Layer.provide(Layer.mock(ServerSettings.ServerSettingsService)({})),
-      Layer.provide(Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({})),
-    );
-    yield* Effect.gen(function* () {
-      const threads = yield* ThreadManagement.ThreadManagementService;
-      const error = yield* Effect.flip(threads.getTimelinePages(threadId, [
-        { view: "messages", tail: true, limit: 64 },
-        { view: "activity", tail: true, limit: 60 },
-      ]));
-      assert.instanceOf(error, Orchestrator.OrchestratorProjectionError);
-      assert.equal(error.threadId, threadId);
-      if (stage === "hydration") {
-        assert.equal(error.cause, hydrationError);
-        assert.equal(reads, 0);
-      } else {
-        assert.equal(error, projectionError);
-        assert.equal(reads, 1);
-      }
-    }).pipe(Effect.provide(serviceLayer));
-  }),
+  (stage) =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("failed-reference");
+      const hydrationError = new LegacyV1ThreadImporter.LegacyV1ThreadImportError({
+        operation: "hydrate transcript for",
+        threadId,
+      });
+      const projectionError = new Orchestrator.OrchestratorProjectionError({
+        threadId,
+        cause: new ProjectionStore.ProjectionStoreThreadNotFoundError({ threadId }),
+      });
+      let reads = 0;
+      const serviceLayer = ThreadManagement.layerWithLegacyImporter.pipe(
+        Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+        Layer.provide(
+          Layer.mock(Orchestrator.OrchestratorV2)({
+            getTimelinePages: () =>
+              Effect.suspend(() => {
+                reads++;
+                return Effect.fail(projectionError);
+              }),
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(LegacyV1ThreadImporter.LegacyV1ThreadImporter)({
+            ensureTranscript: () =>
+              stage === "hydration"
+                ? Effect.fail(hydrationError)
+                : Effect.succeed({ importedThreadCount: 0, importedMessageCount: 0 }),
+          }),
+        ),
+        Layer.provide(Layer.mock(ServerSettings.ServerSettingsService)({})),
+        Layer.provide(Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({})),
+      );
+      yield* Effect.gen(function* () {
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const error = yield* Effect.flip(
+          threads.getTimelinePages(threadId, [
+            { view: "messages", tail: true, limit: 64 },
+            { view: "activity", tail: true, limit: 60 },
+          ]),
+        );
+        assert.instanceOf(error, Orchestrator.OrchestratorProjectionError);
+        assert.equal(error.threadId, threadId);
+        if (stage === "hydration") {
+          assert.equal(error.cause, hydrationError);
+          assert.equal(reads, 0);
+        } else {
+          assert.equal(error, projectionError);
+          assert.equal(reads, 1);
+        }
+      }).pipe(Effect.provide(serviceLayer));
+    }),
 );

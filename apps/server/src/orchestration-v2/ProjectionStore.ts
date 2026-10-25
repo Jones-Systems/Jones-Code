@@ -6178,7 +6178,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 options.itemId === undefined
                   ? row.position > (options.afterPosition ?? -1) &&
                     (options.view === "activity" ||
-                      ["user_message", "assistant_message", "proposed_plan"].includes(row.item.type))
+                      ["user_message", "assistant_message", "proposed_plan"].includes(
+                        row.item.type,
+                      ))
                   : row.sourceItemId === options.itemId,
               );
               const page = options.tail
@@ -6237,7 +6239,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     : { snapshotSequence: revisions[0].sequence }),
                   ...(options.tail
                     ? {
-                        inProgress: index.records.runs.some((run) => activeRunStatuses.has(run.status)),
+                        inProgress: index.records.runs.some((run) =>
+                          activeRunStatuses.has(run.status),
+                        ),
                       }
                     : {}),
                   hasMore: matching.length > page.length,
@@ -8218,7 +8222,9 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
                 options.itemId === undefined
                   ? row.position > (options.afterPosition ?? -1) &&
                     (options.view === "activity" ||
-                      ["user_message", "assistant_message", "proposed_plan"].includes(row.item.type))
+                      ["user_message", "assistant_message", "proposed_plan"].includes(
+                        row.item.type,
+                      ))
                   : row.sourceItemId === options.itemId,
               );
               return {

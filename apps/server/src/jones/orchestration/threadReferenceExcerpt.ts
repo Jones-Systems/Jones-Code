@@ -147,9 +147,7 @@ const make = Effect.gen(function* () {
             : legacyPositions.some(
                 (start) =>
                   row.position >= start &&
-                  !groups.some(
-                    (group) => group.position > start && group.position <= row.position,
-                  ),
+                  !groups.some((group) => group.position > start && group.position <= row.position),
               )
         )
           merged.set(row.sourceItemId, row);

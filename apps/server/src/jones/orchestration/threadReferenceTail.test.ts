@@ -417,30 +417,43 @@ it.effect("tail excludes superseded interrupt activity", () =>
   }).pipe(Effect.provide(testLayer)),
 );
 
-
 it.effect("excerpt capture shares one SQL index, payload union and transaction", () =>
   Effect.gen(function* () {
     const { store } = yield* seed;
     const timeline = {
-      getTimelinePage: (threadId: ThreadId, options: ProjectionStore.ProjectionTimelinePageOptions) =>
-        store.getTimelinePage(threadId, options).pipe(
-          Effect.mapError((cause) => new Orchestrator.OrchestratorProjectionError({ threadId, cause })),
-        ),
+      getTimelinePage: (
+        threadId: ThreadId,
+        options: ProjectionStore.ProjectionTimelinePageOptions,
+      ) =>
+        store
+          .getTimelinePage(threadId, options)
+          .pipe(
+            Effect.mapError(
+              (cause) => new Orchestrator.OrchestratorProjectionError({ threadId, cause }),
+            ),
+          ),
       getTimelinePages: (
         threadId: ThreadId,
         selections: ReadonlyArray<ProjectionStore.ProjectionTimelinePageOptions>,
-      ) => store.getTimelinePages(threadId, selections).pipe(
-        Effect.mapError((cause) => new Orchestrator.OrchestratorProjectionError({ threadId, cause })),
-      ),
+      ) =>
+        store
+          .getTimelinePages(threadId, selections)
+          .pipe(
+            Effect.mapError(
+              (cause) => new Orchestrator.OrchestratorProjectionError({ threadId, cause }),
+            ),
+          ),
     };
     const trace = tracePayloadStatements();
     const result = yield* Effect.gen(function* () {
       const excerpts = yield* Excerpts.ThreadReferenceExcerpts;
       return yield* excerpts.capture({ threadId: source });
     }).pipe(
-      Effect.provide(Excerpts.layer.pipe(
-        Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)(timeline)),
-      )),
+      Effect.provide(
+        Excerpts.layer.pipe(
+          Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)(timeline)),
+        ),
+      ),
       Effect.withTracer(trace.tracer),
     );
     assert.equal(result.excerpt.status, "captured");
@@ -454,128 +467,187 @@ it.effect("excerpt capture shares one SQL index, payload union and transaction",
   }).pipe(Effect.provide(testLayer)),
 );
 
-it.effect("coherent timeline pages share one index and union payload read with identical page shapes", () =>
-  Effect.gen(function* () {
-    const { store } = yield* seed;
-    const selections: ReadonlyArray<ProjectionStore.ProjectionTimelinePageOptions> = [
-      { view: "messages", tail: true, limit: 64 },
-      { view: "activity", tail: true, limit: 60 },
-      { view: "activity", limit: 2 },
-      { view: "activity", itemId: TurnItemId.make("tail-item-8"), limit: 1 },
-      { view: "activity", afterPosition: 8, limit: 2 },
-      { view: "activity", tail: true, limit: 0 },
-    ];
-    const expected = yield* Effect.forEach(selections, (options) => store.getTimelinePage(source, options));
-    const trace = tracePayloadStatements();
-    const actual = yield* store.getTimelinePages(source, selections).pipe(Effect.withTracer(trace.tracer));
-    assert.deepEqual(actual, expected);
-    assert.equal(trace.statements.length, 1);
-    assert.equal(trace.metadataStatements.length, 1);
-    assert.equal(trace.transactions.length, 1);
-    assert.equal(actual[2]?.snapshotSequence, undefined);
-  }).pipe(Effect.provide(testLayer)),
+it.effect(
+  "coherent timeline pages share one index and union payload read with identical page shapes",
+  () =>
+    Effect.gen(function* () {
+      const { store } = yield* seed;
+      const selections: ReadonlyArray<ProjectionStore.ProjectionTimelinePageOptions> = [
+        { view: "messages", tail: true, limit: 64 },
+        { view: "activity", tail: true, limit: 60 },
+        { view: "activity", limit: 2 },
+        { view: "activity", itemId: TurnItemId.make("tail-item-8"), limit: 1 },
+        { view: "activity", afterPosition: 8, limit: 2 },
+        { view: "activity", tail: true, limit: 0 },
+      ];
+      const expected = yield* Effect.forEach(selections, (options) =>
+        store.getTimelinePage(source, options),
+      );
+      const trace = tracePayloadStatements();
+      const actual = yield* store
+        .getTimelinePages(source, selections)
+        .pipe(Effect.withTracer(trace.tracer));
+      assert.deepEqual(actual, expected);
+      assert.equal(trace.statements.length, 1);
+      assert.equal(trace.metadataStatements.length, 1);
+      assert.equal(trace.transactions.length, 1);
+      assert.equal(actual[2]?.snapshotSequence, undefined);
+    }).pipe(Effect.provide(testLayer)),
 );
 
-it.effect.each(["missing", "deleted"] as const)(
-  "coherent timeline rejects %s source",
-  (state) => Effect.gen(function* () {
+it.effect.each(["missing", "deleted"] as const)("coherent timeline rejects %s source", (state) =>
+  Effect.gen(function* () {
     const { store, apply, app } = yield* seed;
-    if (state === "deleted") yield* apply({
-      id: EventId.make("coherent-delete"), type: "thread.deleted", threadId: source,
-      occurredAt: now, payload: { ...app, deletedAt: now },
-    });
-    const error = yield* Effect.flip(store.getTimelinePages(
-      state === "missing" ? ThreadId.make("missing") : source,
-      [{ view: "messages", tail: true, limit: 64 }, { view: "activity", tail: true, limit: 60 }],
-    ));
+    if (state === "deleted")
+      yield* apply({
+        id: EventId.make("coherent-delete"),
+        type: "thread.deleted",
+        threadId: source,
+        occurredAt: now,
+        payload: { ...app, deletedAt: now },
+      });
+    const error = yield* Effect.flip(
+      store.getTimelinePages(state === "missing" ? ThreadId.make("missing") : source, [
+        { view: "messages", tail: true, limit: 64 },
+        { view: "activity", tail: true, limit: 60 },
+      ]),
+    );
     assert.instanceOf(error, ProjectionStore.ProjectionStoreThreadNotFoundError);
   }).pipe(Effect.provide(testLayer)),
 );
 
 it.effect.each(["unrelated", "source", "ancestor", "cancellation"] as const)(
   "coherent timeline retains global snapshot across gated %s commit",
-  (change) => Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "jones-coherent-reference-" });
-    const persistence = SqlitePersistence.layerFromPath(path.join(directory, "userdata", "state.sqlite"));
-    yield* Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      const entered = yield* Deferred.make<void>();
-      const release = yield* Deferred.make<void>();
-      let gated = false;
-      let transactions = 0;
-      const withTransaction: typeof sql.withTransaction = (effect) => sql.withTransaction(
-        Effect.gen(function* () {
-          if (gated) {
-            transactions++;
-            yield* sql`SELECT MAX(sequence) FROM orchestration_events`;
-            yield* Deferred.succeed(entered, undefined);
-            yield* Deferred.await(release);
-          }
-          return yield* effect;
-        }),
-      );
-      const observedSql = new Proxy(sql, {
-        get(target, property, receiver) {
-          return property === "withTransaction" ? withTransaction : Reflect.get(target, property, receiver);
-        },
-      });
-      const stores = Layer.merge(ProjectionStore.layer, EventStore.layer).pipe(
-        Layer.provide(Layer.succeed(SqlClient.SqlClient, observedSql)),
+  (change) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "jones-coherent-reference-" });
+      const persistence = SqlitePersistence.layerFromPath(
+        path.join(directory, "userdata", "state.sqlite"),
       );
       yield* Effect.gen(function* () {
-        const { store, apply, app } = yield* seed;
-        const child = ThreadId.make("coherent-child");
-        if (change === "ancestor") yield* apply({
-          id: EventId.make("coherent-fork"), type: "thread.created", threadId: child, occurredAt: now,
-          payload: { ...app, id: child,
-            lineage: { parentThreadId: source, relationshipToParent: "fork", rootThreadId: source },
-            forkedFrom: { type: "run", threadId: source, runId },
+        const sql = yield* SqlClient.SqlClient;
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        let gated = false;
+        let transactions = 0;
+        const withTransaction: typeof sql.withTransaction = (effect) =>
+          sql.withTransaction(
+            Effect.gen(function* () {
+              if (gated) {
+                transactions++;
+                yield* sql`SELECT MAX(sequence) FROM orchestration_events`;
+                yield* Deferred.succeed(entered, undefined);
+                yield* Deferred.await(release);
+              }
+              return yield* effect;
+            }),
+          );
+        const observedSql = new Proxy(sql, {
+          get(target, property, receiver) {
+            return property === "withTransaction"
+              ? withTransaction
+              : Reflect.get(target, property, receiver);
           },
         });
-        const target = change === "ancestor" ? child : source;
-        const selections = [
-          { view: "messages" as const, tail: true, limit: 64 },
-          { view: "activity" as const, tail: true, limit: 60 },
-        ];
-        const expected = yield* store.getTimelinePages(target, selections).pipe(NodeSqliteClient.readOnly);
-        const original = expected[1]!.items.find((row) => row.sourceItemId === "tail-item-9")!.item;
-        gated = true;
-        const pending = yield* Effect.forkChild(store.getTimelinePages(target, selections).pipe(NodeSqliteClient.readOnly));
-        yield* Deferred.await(entered);
-        gated = false;
-        if (change === "cancellation") {
-          yield* Fiber.interrupt(pending);
-          assert.isTrue(Exit.hasInterrupts(yield* Fiber.await(pending)));
-          assert.deepEqual(
-            yield* store.getTimelinePages(target, selections).pipe(NodeSqliteClient.readOnly),
-            expected,
+        const stores = Layer.merge(ProjectionStore.layer, EventStore.layer).pipe(
+          Layer.provide(Layer.succeed(SqlClient.SqlClient, observedSql)),
+        );
+        yield* Effect.gen(function* () {
+          const { store, apply, app } = yield* seed;
+          const child = ThreadId.make("coherent-child");
+          if (change === "ancestor")
+            yield* apply({
+              id: EventId.make("coherent-fork"),
+              type: "thread.created",
+              threadId: child,
+              occurredAt: now,
+              payload: {
+                ...app,
+                id: child,
+                lineage: {
+                  parentThreadId: source,
+                  relationshipToParent: "fork",
+                  rootThreadId: source,
+                },
+                forkedFrom: { type: "run", threadId: source, runId },
+              },
+            });
+          const target = change === "ancestor" ? child : source;
+          const selections = [
+            { view: "messages" as const, tail: true, limit: 64 },
+            { view: "activity" as const, tail: true, limit: 60 },
+          ];
+          const expected = yield* store
+            .getTimelinePages(target, selections)
+            .pipe(NodeSqliteClient.readOnly);
+          const original = expected[1]!.items.find(
+            (row) => row.sourceItemId === "tail-item-9",
+          )!.item;
+          gated = true;
+          const pending = yield* Effect.forkChild(
+            store.getTimelinePages(target, selections).pipe(NodeSqliteClient.readOnly),
           );
-          return;
-        }
-        if (change === "unrelated") {
-          const unrelated = ThreadId.make("coherent-unrelated");
-          yield* sql.withTransaction(apply({
-            id: EventId.make("coherent-other"), type: "thread.created", threadId: unrelated, occurredAt: now,
-            payload: { ...app, id: unrelated, lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: unrelated } },
-          }));
-        } else {
-          yield* sql.withTransaction(apply({
-            id: EventId.make("coherent-update"), type: "turn-item.updated", threadId: source, runId, occurredAt: now,
-            payload: decodeItem({ ...original, output: "committed-after-snapshot" }),
-          }));
-        }
-        yield* Deferred.succeed(release, undefined);
-        assert.deepEqual(yield* Fiber.join(pending), expected);
-        assert.equal(transactions, 1);
-        const fresh = yield* store.getTimelinePages(target, selections).pipe(NodeSqliteClient.readOnly);
-        assert.equal(fresh[0]!.snapshotSequence, expected[0]!.snapshotSequence! + 1);
-        assert.equal(fresh[1]!.snapshotSequence, fresh[0]!.snapshotSequence);
-        if (change !== "unrelated") assert.isTrue(fresh[1]!.items.some(
-          (row) => row.item.type === "command_execution" && row.item.output === "committed-after-snapshot",
-        ));
-      }).pipe(Effect.provide(stores));
-    }).pipe(Effect.provide(persistence));
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+          yield* Deferred.await(entered);
+          gated = false;
+          if (change === "cancellation") {
+            yield* Fiber.interrupt(pending);
+            assert.isTrue(Exit.hasInterrupts(yield* Fiber.await(pending)));
+            assert.deepEqual(
+              yield* store.getTimelinePages(target, selections).pipe(NodeSqliteClient.readOnly),
+              expected,
+            );
+            return;
+          }
+          if (change === "unrelated") {
+            const unrelated = ThreadId.make("coherent-unrelated");
+            yield* sql.withTransaction(
+              apply({
+                id: EventId.make("coherent-other"),
+                type: "thread.created",
+                threadId: unrelated,
+                occurredAt: now,
+                payload: {
+                  ...app,
+                  id: unrelated,
+                  lineage: {
+                    parentThreadId: null,
+                    relationshipToParent: null,
+                    rootThreadId: unrelated,
+                  },
+                },
+              }),
+            );
+          } else {
+            yield* sql.withTransaction(
+              apply({
+                id: EventId.make("coherent-update"),
+                type: "turn-item.updated",
+                threadId: source,
+                runId,
+                occurredAt: now,
+                payload: decodeItem({ ...original, output: "committed-after-snapshot" }),
+              }),
+            );
+          }
+          yield* Deferred.succeed(release, undefined);
+          assert.deepEqual(yield* Fiber.join(pending), expected);
+          assert.equal(transactions, 1);
+          const fresh = yield* store
+            .getTimelinePages(target, selections)
+            .pipe(NodeSqliteClient.readOnly);
+          assert.equal(fresh[0]!.snapshotSequence, expected[0]!.snapshotSequence! + 1);
+          assert.equal(fresh[1]!.snapshotSequence, fresh[0]!.snapshotSequence);
+          if (change !== "unrelated")
+            assert.isTrue(
+              fresh[1]!.items.some(
+                (row) =>
+                  row.item.type === "command_execution" &&
+                  row.item.output === "committed-after-snapshot",
+              ),
+            );
+        }).pipe(Effect.provide(stores));
+      }).pipe(Effect.provide(persistence));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
