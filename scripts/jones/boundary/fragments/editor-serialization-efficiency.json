@@ -1,0 +1,13 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "editor-serialization-efficiency",
+  "jonesOwnedPaths": [],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/ComposerPromptEditorTiptap.tsx",
+      "to": "apps/web/src/jones/composer/editorSerializationCache.ts"
+    }
+  ]
+}

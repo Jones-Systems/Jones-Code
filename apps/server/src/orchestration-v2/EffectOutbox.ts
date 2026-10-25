@@ -127,8 +127,11 @@ export interface EffectOutboxV2Shape {
     readonly workerId: string;
     readonly leaseDurationMs: number;
     readonly excludeRestartContinuations?: boolean;
+    readonly excludeTitleGeneration?: boolean;
   }) => Effect.Effect<Option.Option<OrchestrationEffectV2>, EffectOutboxError>;
-  readonly nextClaimableAt: Effect.Effect<Option.Option<DateTime.Utc>, EffectOutboxError>;
+  readonly nextClaimableAt: (input?: {
+    readonly excludeTitleGeneration?: boolean;
+  }) => Effect.Effect<Option.Option<DateTime.Utc>, EffectOutboxError>;
   readonly succeed: (input: {
     readonly effectId: string;
     readonly workerId: string;
@@ -242,8 +245,9 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
     const claimableCandidatePredicate = (
       availableBefore?: string,
       excludeRestartContinuations = false,
-    ) =>
-      sql`
+      excludeTitleGeneration = false,
+    ) => {
+      const predicate = sql`
         ${
           availableBefore === undefined
             ? sql`1 = 1`
@@ -324,6 +328,10 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             )
         )
       `;
+      return excludeTitleGeneration
+        ? sql`${predicate} AND candidate.effect_type != 'thread-title.generate'`
+        : predicate;
+    };
 
     const cancellationSignal = (effectId: string) => {
       const existing = cancellationSignals.get(effectId);
@@ -515,7 +523,12 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
       ),
       // The worker polls for the next effect even when there is no work to claim.
       claimNext: Effect.fnUntraced(
-        function* ({ workerId, leaseDurationMs, excludeRestartContinuations = false }) {
+        function* ({
+          workerId,
+          leaseDurationMs,
+          excludeRestartContinuations = false,
+          excludeTitleGeneration = false,
+        }) {
           const now = yield* DateTime.now;
           const nowIso = DateTime.formatIso(now);
           const leaseExpiresAt = DateTime.formatIso(
@@ -536,7 +549,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             WHERE effect_id = (
               SELECT candidate.effect_id
               FROM orchestration_v2_effect_outbox AS candidate
-              WHERE ${claimableCandidatePredicate(nowIso, excludeRestartContinuations)}
+              WHERE ${claimableCandidatePredicate(nowIso, excludeRestartContinuations, excludeTitleGeneration)}
                 AND ${excludeRestartContinuations ? sql`candidate.effect_type != 'provider-runtime.continue'` : sql`1 = 1`}
               ORDER BY candidate.available_at ASC, candidate.created_at ASC, candidate.effect_id ASC
               LIMIT 1
@@ -551,23 +564,24 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         },
         Effect.mapError((cause) => new EffectOutboxError({ operation: "claim", cause })),
       ),
-      nextClaimableAt: Effect.gen(function* () {
-        const rows = yield* sql<{ readonly available_at: string | null }>`
-          SELECT MIN(candidate.available_at) AS available_at
-          FROM orchestration_v2_effect_outbox AS candidate
-          WHERE ${claimableCandidatePredicate()}
-        `.pipe(Effect.withTracerEnabled(false));
-        const availableAt = rows[0]?.available_at;
-        if (availableAt === undefined || availableAt === null) return Option.none();
-        const parsed = DateTime.make(availableAt);
-        if (Option.isNone(parsed)) {
-          return yield* new EffectOutboxError({
-            operation: "next-claimable",
-            cause: `Invalid available_at timestamp: ${availableAt}`,
-          });
-        }
-        return parsed;
-      }).pipe(
+      nextClaimableAt: Effect.fnUntraced(
+        function* (input?: { readonly excludeTitleGeneration?: boolean }) {
+          const rows = yield* sql<{ readonly available_at: string | null }>`
+            SELECT MIN(candidate.available_at) AS available_at
+            FROM orchestration_v2_effect_outbox AS candidate
+            WHERE ${claimableCandidatePredicate(undefined, false, input?.excludeTitleGeneration)}
+          `.pipe(Effect.withTracerEnabled(false));
+          const availableAt = rows[0]?.available_at;
+          if (availableAt === undefined || availableAt === null) return Option.none();
+          const parsed = DateTime.make(availableAt);
+          if (Option.isNone(parsed)) {
+            return yield* new EffectOutboxError({
+              operation: "next-claimable",
+              cause: `Invalid available_at timestamp: ${availableAt}`,
+            });
+          }
+          return parsed;
+        },
         Effect.mapError((cause) =>
           isEffectOutboxError(cause)
             ? cause

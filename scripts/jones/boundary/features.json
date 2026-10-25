@@ -677,7 +677,7 @@
         "scripts/jones/performance/current-qualification.node-test.mjs",
         "scripts/jones/performance/migration-restore.node-test.mjs"
       ],
-      "scope": "Qualification discovery includes receiving100–104 owners and exact bootstrap/historical-wire/lookup oracles. Actual055 birth lookup, missing-index refusal and rollback are synthetically tested; foreign007 remains foreign and installed-runtime qualification stays opt-in/unverified."
+      "scope": "Qualification discovery includes receiving100\u2013104 owners and exact bootstrap/historical-wire/lookup oracles. Actual055 birth lookup, missing-index refusal and rollback are synthetically tested; foreign007 remains foreign and installed-runtime qualification stays opt-in/unverified."
     },
     {
       "id": "preview-runtime-identity",
@@ -1416,7 +1416,7 @@
         "apps/server/src/jones/updates/migrationPlan.test.ts",
         "apps/server/src/persistence/reconcileV2PreviewMigration.test.ts"
       ],
-      "scope": "Jones migrations 116–119 register admission, delegation intents, admission integration and peer-link storage in the independent Jones loader. Imported unreleased upstream-ledger migrations 64/65 are removed from this task branch; their files are tombstoned without changing the boundary baseline. PeerLinks retains its existing service and uses the Jones-owned table identifier. Its existing database harness and upstream migration fixtures stay in place to prove integration while Jones isolation, retained-history and migration-plan tests cover the complete manifest. No released Jones migration identity or upstream schema is reassigned. Migration 121 adds only sparse Jones-owned remote-question observation and notice-intent rows, without upstream foreign keys or ledger changes; retained-history and complete-manifest checks include the added identity."
+      "scope": "Jones migrations 116\u2013119 register admission, delegation intents, admission integration and peer-link storage in the independent Jones loader. Imported unreleased upstream-ledger migrations 64/65 are removed from this task branch; their files are tombstoned without changing the boundary baseline. PeerLinks retains its existing service and uses the Jones-owned table identifier. Its existing database harness and upstream migration fixtures stay in place to prove integration while Jones isolation, retained-history and migration-plan tests cover the complete manifest. No released Jones migration identity or upstream schema is reassigned. Migration 121 adds only sparse Jones-owned remote-question observation and notice-intent rows, without upstream foreign keys or ledger changes; retained-history and complete-manifest checks include the added identity."
     },
     {
       "id": "remote-request-evaluation",
@@ -1524,7 +1524,7 @@
         "apps/web/src/components/Sidebar.logic.test.ts",
         "apps/web/src/hooks/useHandleNewThread.test.ts"
       ],
-      "scope": "Device-local project and environment ordering across connected environments. Jones owns ranking, migration-compatible keys, absent-item retention and sortable Settings → Jones Code controls. Shared hooks route sidebar, palette, draft and Run on lists through the same order without changing target environment defaults. uiStateStore persistence and restore-default wiring remain accepted shared edits; store tests require the upstream persistence harness."
+      "scope": "Device-local project and environment ordering across connected environments. Jones owns ranking, migration-compatible keys, absent-item retention and sortable Settings \u2192 Jones Code controls. Shared hooks route sidebar, palette, draft and Run on lists through the same order without changing target environment defaults. uiStateStore persistence and restore-default wiring remain accepted shared edits; store tests require the upstream persistence harness."
     },
     {
       "id": "pr-lookup-git-state",
@@ -1963,6 +1963,89 @@
       "id": "pr-watch-efficiency",
       "tests": ["apps/server/src/orchestration-v2/runtimeLayer.test.ts"],
       "scope": "Process ready watch fingerprints independently while retaining the full fingerprint cohort for host batching and four detail permits. Small shared scheduler edit and existing persisted-runtime test harness preserve grouping, rate pauses, watermarks, generation, settlement and cancellation."
+    },
+    {
+      "id": "bounded-history-paging-efficiency",
+      "tests": [
+        "apps/server/src/jones/orchestration/historyPaging.test.ts",
+        "apps/server/src/orchestration-v2/threadHistoryPaging.test.ts",
+        "apps/server/src/orchestration-v2/ProjectionStore.test.ts"
+      ],
+      "scope": "Select eligible local older history with bounded keyset metadata chunks and lazy run facts; preserve exact pages and cursors, hidden-row anchor correction, human-turn and 150 raw-turn limits, and the original fallback for forks, filters, missing anchors or foreign cursors. One covering-index prefix count remains O(N); hidden correction may scan thread attempts, and user discovery and lazy run facts may cross long spans. Captured SQL bindings, outcomes, returned-row counts and query plans separate these costs from bounded chunk materialization without claiming measured row visits or constant total work. Shared paging-budget extraction keeps the existing full path equivalent. Direct SQL work and query-plan tests qualify source behavior, not installed latency."
+    },
+    {
+      "id": "shell-materialization-efficiency",
+      "tests": [
+        "apps/server/src/jones/orchestration/shellMaterialization.test.ts",
+        "apps/server/src/jones/orchestration/shellMaterialization.snapshot.test.ts",
+        "apps/server/src/jones/orchestration/shellFanout.test.ts",
+        "apps/server/src/jones/orchestration/shellCost.diagnostic.test.ts",
+        "apps/server/src/ws.test.ts",
+        "apps/server/src/jones/requestEconomy/foregroundReads.test.ts",
+        "apps/server/src/orchestration-v2/ShellStream.test.ts",
+        "apps/server/integration/transferBudgetV2.integration.test.ts",
+        "apps/server/src/orchestration-v2/LegacyBootstrapWireTransport.test.ts"
+      ],
+      "scope": "Environment-owned shared shell materialization uses committed snapshot versions, per-subscription monotonic floors, bounded newest-success retention and cancellation isolation. Narrow WS/server hooks and existing harness adaptations preserve replay, resend, freshness and reader routing; dedicated Jones tests cover fanout and file-backed snapshot interleaving."
+    },
+    {
+      "id": "action-worker-efficiency",
+      "tests": [
+        "apps/server/src/orchestration-v2/EffectWorker.test.ts",
+        "apps/server/src/orchestration-v2/FoundationPersistence.test.ts",
+        "apps/server/src/jones/orchestration/actionWorkerAdmission.test.ts",
+        "apps/server/src/jones/orchestration/FoundationPersistence.jones.test.ts",
+        "apps/server/src/serverRuntimeStartup.autoPull.test.ts"
+      ],
+      "scope": "Reserve one existing worker for actions at concurrency at least two while preserving all action capacity and serial mixed operation. Shared claim/deadline predicates and scoped wake relay retain leases, recovery and ordering. Jones policy/tests use narrow worker hooks; existing outbox/worker harness edits and typed mock adaptations retain private core machinery."
+    },
+    {
+      "id": "workspace-refresh-efficiency",
+      "tests": [
+        "apps/server/src/workspace/WorkspaceEntries.test.ts",
+        "apps/server/src/workspace/WorkspaceFileSystem.test.ts",
+        "apps/server/src/workspace/WorkspaceSearchIndex.test.ts"
+      ],
+      "scope": "Refresh the two existing resident finder variants concurrently with independent failure invalidation and the existing write freshness barrier. Small shared scheduling edit and colocated service/native-index harness tests preserve lazy absence, cancellation and scan semantics; no scan-count reduction is implied."
+    },
+    {
+      "id": "mcp-task-read-efficiency",
+      "tests": [
+        "apps/server/src/mcp/OrchestratorMcpService.test.ts",
+        "apps/server/src/jones/mcp/taskReads.test.ts"
+      ],
+      "scope": "Task reads select parent runs, subagents and context transfers, acknowledge with fresh runs only, and ignore unrelated decoded sibling events. Small shared service edits retain closure/lifecycle ownership and existing acknowledgement tests; Jones tests cover selected-parent and child wakeups without status caching or wire changes."
+    },
+    {
+      "id": "client-vcs-denial-efficiency",
+      "tests": ["packages/client-runtime/src/state/vcs.test.ts"],
+      "scope": "Suspend only the current connection's typed terminal authorization denial before transient retry, retaining cached/loading display and connection/invalidation/revision recovery. One-line shared catch and existing atom integration harness avoid disproportionate extraction; no new visible error-state contract or transport retry owner."
+    },
+    {
+      "id": "client-projection-efficiency",
+      "tests": ["packages/client-runtime/src/state/orchestrationV2Projection.test.ts"],
+      "scope": "Stable local-item replacement uses guarded reverse lookup and one array copy, retaining the structural fallback, ordering and inherited rows. Small shared reducer edit and colocated differential/identity regression tests keep private reducer machinery intact; array copying remains linear."
+    },
+    {
+      "id": "editor-serialization-efficiency",
+      "tests": [
+        "apps/web/src/jones/composer/editorSerializationCache.test.ts",
+        "apps/web/src/jones/composer/editorSerializationCache.browser.test.tsx",
+        "apps/web/src/components/ComposerPromptEditorTiptap.input.browser.test.tsx",
+        "apps/web/src/components/ComposerPromptEditorTiptap.citationDraft.browser.test.tsx",
+        "apps/web/src/composer-rich-text-doc.test.ts"
+      ],
+      "scope": "One editor-lifetime cache reuses readonly rich-document serialization by immutable document identity while selection coordinates recompute. Jones helper and compiler-enabled browser tests use a narrow component hook; shared readonly signatures avoid duplicate conversion machinery and retain controlled values, trigger and mode semantics."
+    },
+    {
+      "id": "mobile-feed-cache-acceptance",
+      "tests": ["apps/mobile/src/lib/threadActivity.test.ts"],
+      "scope": "Focused acceptance of the existing mobile feed and presentation caches at 30, 300 and 3000 projected rows: cached and fresh displayed-value equivalence through streaming, append and prepend; bounded historical regrouping/presentation property reads with retained full-array scans; independent consumers and thread/cache switching. The existing upstream fixture is shared to preserve its projection identity and turn-boundary harness. These source tests do not qualify device lifecycle or elapsed-time performance."
+    },
+    {
+      "id": "pele-lifecycle-acceptance",
+      "tests": ["apps/web/src/jones/markdown/MermaidDiagram.browser.test.tsx"],
+      "scope": "Focused browser acceptance of existing Pele integration: commit-only mounting, balanced cleanup through source changes, navigation and source toggle, unchanged rerenders, chunk-load retry, invalid-source recovery, and real SVG/MathML sanitization. The real components and DOMPurify run against a controlled Pele engine; navigation uses content replacement and native core-import rejection, parsing/layout, device behavior and live performance remain unqualified. No production behavior is changed."
     }
   ]
 }
