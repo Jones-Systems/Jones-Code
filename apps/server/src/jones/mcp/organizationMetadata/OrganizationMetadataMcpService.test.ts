@@ -459,11 +459,14 @@ it.effect("reads real WAL metadata at one committed watermark while the writer i
           }),
           Layer.mock(ThreadManagement.ThreadManagementService)({
             getShellSnapshot: (input) =>
-              store.getShellSnapshot(input).pipe(
-                Effect.mapError(
-                  (cause) => new OrchestratorProjectionError({ threadId: caller.threadId, cause }),
+              store
+                .getShellSnapshot(input)
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestratorProjectionError({ threadId: caller.threadId, cause }),
+                  ),
                 ),
-              ),
           }),
         );
         yield* Effect.gen(function* () {
@@ -536,6 +539,10 @@ it.effect("reads real WAL metadata at one committed watermark while the writer i
           });
         }).pipe(Effect.provide(Metadata.layer.pipe(Layer.provide(dependencies))));
       }).pipe(Effect.provide(ProjectionStore.layer));
-    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename, readerWorker: true, readerFailureMode: "fail" })));
+    }).pipe(
+      Effect.provide(
+        NodeSqliteClient.layer({ filename, readerWorker: true, readerFailureMode: "fail" }),
+      ),
+    );
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

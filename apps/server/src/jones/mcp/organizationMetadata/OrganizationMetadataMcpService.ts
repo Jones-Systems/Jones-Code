@@ -118,14 +118,12 @@ const make = Effect.gen(function* () {
       function* (environmentId, input) {
         // One unfiltered read covers active and archived threads in a single
         // projection transaction, so both halves share one snapshotSequence.
-        const snapshot = yield* snapshots
-          .getShellSnapshot()
-          .pipe(
-            NodeSqliteClient.readOnly,
-            Effect.mapError(
-              () => new OrganizationMetadataError({ reason: "local-operation-failed" }),
-            ),
-          );
+        const snapshot = yield* snapshots.getShellSnapshot().pipe(
+          NodeSqliteClient.readOnly,
+          Effect.mapError(
+            () => new OrganizationMetadataError({ reason: "local-operation-failed" }),
+          ),
+        );
         const requested = input.threadIds === undefined ? undefined : new Set(input.threadIds);
         const selected =
           requested === undefined && input.pinned !== true
