@@ -1,10 +1,7 @@
 {
   "schema": "jones.boundary-fragment/v1",
   "feature": "bounded-history-paging-efficiency",
-  "jonesOwnedPaths": [
-    "apps/server/src/jones/orchestration/historyPaging.ts",
-    "apps/server/src/jones/orchestration/historyPaging.test.ts"
-  ],
+  "jonesOwnedPaths": [],
   "hookPaths": [],
   "tombstones": [],
   "allowedImports": [
