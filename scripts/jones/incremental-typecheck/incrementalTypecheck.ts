@@ -57,7 +57,7 @@ const BUILD_VERSION = "7.1.0-dev+effect-tsgo.0.51.1";
 const UPSTREAM_VERSION = "7.1.0-dev.20261008.1";
 const EXPO_MANIFEST_HASH = "b64e612beee02fbbf0aa883e9d3d767a2213abb5093d5bd04a2aef87868fd2ba";
 const EXPO_STORE_PATH =
-  "node_modules/.pnpm/expo@58.0.14_1106b1d11fc0fad6d0556b6a93329d99/node_modules/expo";
+  "node_modules/.pnpm/expo@58.0.14_f758e93be082e96fe84cde9538c0a615/node_modules/expo";
 
 export const HELP = `Usage: pnpm typecheck:incremental <workspace-name-or-relative-path>... | --all
 Options: --fresh (no retained reads or publication), --help
