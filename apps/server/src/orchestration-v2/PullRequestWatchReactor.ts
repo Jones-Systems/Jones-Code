@@ -25,6 +25,7 @@ import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 
 import {
   type ProviderChangeRequestWatchFingerprint,
@@ -611,22 +612,21 @@ export const make = Effect.gen(function* () {
         ),
       { discard: true },
     );
-    const fingerprints = yield* Effect.forEach(groups, fingerprintOf, {
-      concurrency: "unbounded",
-    });
+    const reads = yield* Semaphore.make(4);
     yield* Effect.forEach(
       groups,
-      (group, index) => {
-        const fingerprint = fingerprints[index]!;
-        return fingerprint === "paused"
-          ? Effect.void
-          : readGroup(group, fingerprint).pipe(
-              Effect.catchCause(
-                logFailure("pull request watch check failed", { pullRequest: group.key }),
-              ),
-            );
-      },
-      { concurrency: 4, discard: true },
+      (group) =>
+        Effect.gen(function* () {
+          const fingerprint = yield* fingerprintOf(group);
+          if (fingerprint === "paused") return;
+          yield* readGroup(group, fingerprint).pipe(
+            reads.withPermits(1),
+            Effect.catchCause(
+              logFailure("pull request watch check failed", { pullRequest: group.key }),
+            ),
+          );
+        }),
+      { concurrency: "unbounded", discard: true },
     );
   }).pipe(
     Effect.catchCause(logFailure("pull request watch sweep failed", {})),
