@@ -108,75 +108,68 @@ const make = Effect.gen(function* () {
         threadId: input.threadId,
         excerpt: { status: "unavailable" as const, capturedAt, reason },
       });
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const messages = yield* threads.getTimelinePage(input.threadId, {
-          view: "messages",
-          tail: true,
-          limit: 64,
-        });
-        const activity = yield* threads.getTimelinePage(input.threadId, {
-          view: "activity",
-          tail: true,
-          limit: 60,
-        });
-        if (messages.snapshotSequence === undefined || activity.snapshotSequence === undefined)
-          return unavailable("invalid_response");
-        if (
-          messages.snapshotSequence !== activity.snapshotSequence ||
-          messages.totalItems !== activity.totalItems
-        )
-          continue;
-        const groups: Array<{ runId: string | null; position: number }> = [];
-        const seenRuns = new Set<string>();
-        for (const row of messages.items) {
-          if (row.item.type !== "user_message") continue;
-          if (row.item.runId && seenRuns.has(row.item.runId)) continue;
-          if (row.item.runId) seenRuns.add(row.item.runId);
-          groups.push({ runId: row.item.runId, position: row.position });
-        }
-        const recent = new Set(
-          groups.slice(-3).flatMap((group) => (group.runId ? [group.runId] : [])),
-        );
-        const legacyPositions = groups
-          .slice(-3)
-          .filter((group) => !group.runId)
-          .map((group) => group.position);
-        const merged = new Map(messages.items.map((row) => [row.sourceItemId, row]));
-        for (const row of activity.items) {
-          if (row.item.type === "reasoning") continue;
-          if (
-            row.item.runId
-              ? recent.has(row.item.runId)
-              : legacyPositions.some(
-                  (start) =>
-                    row.position >= start &&
-                    !groups.some(
-                      (group) => group.position > start && group.position <= row.position,
-                    ),
-                )
-          )
-            merged.set(row.sourceItemId, row);
-        }
-        const rows = [...merged.values()].sort((a, b) => a.position - b.position);
-        const excerpt = buildThreadReferenceExcerpt({
-          items: rows.map((row) => excerptItem(row.item)),
-          capturedAt,
-          sourceSnapshotSequence: messages.snapshotSequence,
-          earlierHistory: messages.hasMore ? "omitted" : "none",
-          inProgress:
-            messages.inProgress ||
-            activity.inProgress ||
-            rows.some(
-              ({ item }) =>
-                ("streaming" in item && item.streaming) ||
-                ["running", "pending", "waiting"].includes(item.status),
-            ),
-          leadingPartial: messages.hasMore,
-          toolActivityOmitted: activity.hasMore,
-        });
-        return { threadId: input.threadId, excerpt };
+      const pages = yield* threads.getTimelinePages(input.threadId, [
+        { view: "messages", tail: true, limit: 64 },
+        { view: "activity", tail: true, limit: 60 },
+      ]);
+      const [messages, activity] = pages;
+      if (
+        pages.length !== 2 ||
+        messages === undefined ||
+        activity === undefined ||
+        messages.snapshotSequence === undefined ||
+        activity.snapshotSequence === undefined ||
+        messages.snapshotSequence !== activity.snapshotSequence ||
+        messages.totalItems !== activity.totalItems
+      )
+        return unavailable("invalid_response");
+      const groups: Array<{ runId: string | null; position: number }> = [];
+      const seenRuns = new Set<string>();
+      for (const row of messages.items) {
+        if (row.item.type !== "user_message") continue;
+        if (row.item.runId && seenRuns.has(row.item.runId)) continue;
+        if (row.item.runId) seenRuns.add(row.item.runId);
+        groups.push({ runId: row.item.runId, position: row.position });
       }
-      return unavailable("invalid_response");
+      const recent = new Set(
+        groups.slice(-3).flatMap((group) => (group.runId ? [group.runId] : [])),
+      );
+      const legacyPositions = groups
+        .slice(-3)
+        .filter((group) => !group.runId)
+        .map((group) => group.position);
+      const merged = new Map(messages.items.map((row) => [row.sourceItemId, row]));
+      for (const row of activity.items) {
+        if (row.item.type === "reasoning") continue;
+        if (
+          row.item.runId
+            ? recent.has(row.item.runId)
+            : legacyPositions.some(
+                (start) =>
+                  row.position >= start &&
+                  !groups.some((group) => group.position > start && group.position <= row.position),
+              )
+        )
+          merged.set(row.sourceItemId, row);
+      }
+      const rows = [...merged.values()].sort((a, b) => a.position - b.position);
+      const excerpt = buildThreadReferenceExcerpt({
+        items: rows.map((row) => excerptItem(row.item)),
+        capturedAt,
+        sourceSnapshotSequence: messages.snapshotSequence,
+        earlierHistory: messages.hasMore ? "omitted" : "none",
+        inProgress:
+          messages.inProgress ||
+          activity.inProgress ||
+          rows.some(
+            ({ item }) =>
+              ("streaming" in item && item.streaming) ||
+              ["running", "pending", "waiting"].includes(item.status),
+          ),
+        leadingPartial: messages.hasMore,
+        toolActivityOmitted: activity.hasMore,
+      });
+      return { threadId: input.threadId, excerpt };
     },
     (effect, input) =>
       effect.pipe(
