@@ -308,13 +308,21 @@ it.each([true, false])(
     // Selection decorations have their own serializer; measure the warmed imperative reads separately.
     counts.boundary.mockClear();
     expect(editorRef.current?.readSelectionRange()).toEqual({ start: 2, end: 5 });
-    expect(editorRef.current?.readSnapshot()).toMatchObject({ value: "hello world", cursor: 2, expandedCursor: 2 });
+    expect(editorRef.current?.readSnapshot()).toMatchObject({
+      value: "hello world",
+      cursor: 2,
+      expandedCursor: 2,
+    });
     expect(editorRef.current?.readSelectionRange()).toEqual({ start: 2, end: 5 });
     expect(counts.boundary).not.toHaveBeenCalled();
     await act(async () => editorRef.current?.focusAt(5));
     counts.boundary.mockClear();
     expect(editorRef.current?.readSelectionRange()).toEqual({ start: 5, end: 5 });
-    expect(editorRef.current?.readSnapshot()).toMatchObject({ value: "hello world", cursor: 5, expandedCursor: 5 });
+    expect(editorRef.current?.readSnapshot()).toMatchObject({
+      value: "hello world",
+      cursor: 5,
+      expandedCursor: 5,
+    });
     expect(editor.state.doc).toBe(document);
     expect(counts.boundary).not.toHaveBeenCalled();
   },
