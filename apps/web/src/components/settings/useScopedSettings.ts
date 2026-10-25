@@ -16,9 +16,15 @@ import {
 
 import {
   persistClientSettingsPatch,
+  mergeEnvironmentSettings,
   useMergedSettings,
   useMigrateModelPreferences,
 } from "../../hooks/useSettings";
+import {
+  createModelSelectionResolver,
+  modelSelectionsAreMixed,
+} from "../../jones/settings/modelSelectionCorrespondence";
+import { useEnvironmentProviders } from "../../state/environments";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { toastManager } from "../ui/toast";
@@ -28,7 +34,6 @@ import {
   planProjectOverridesClear,
   planScopedSettingsClear,
   planScopedSettingsPatch,
-  scopedSettingsAreMixed,
   scopedSettingsSource,
   type ProjectOverrideEntry,
   type ScopedSettingsPatch,
@@ -43,8 +48,16 @@ export function useScopedSettings<T = UnifiedSettings>(
 }
 
 export function useScopedSettingsMixed(keys: readonly (keyof ServerSettings)[]): boolean {
-  const { targets } = useSettingsScope();
-  return scopedSettingsAreMixed(targets, keys);
+  const context = useOptionalSettingsScope();
+  const providersByEnvironment = useEnvironmentProviders();
+  return (
+    context !== null &&
+    modelSelectionsAreMixed(
+      { representative: context.target, providersByEnvironment },
+      context.targets,
+      keys,
+    )
+  );
 }
 
 export function useScopedSettingSource(keys: readonly (keyof ServerSettings)[]) {
@@ -101,9 +114,28 @@ function useRunScopedPlan() {
 }
 
 export function useUpdateScopedSettings() {
-  const { scope, environments } = useSettingsScope();
+  const { scope, environments, target, targets } = useSettingsScope();
+  const providersByEnvironment = useEnvironmentProviders();
+  const settings = useMergedSettings(target?.settings ?? DEFAULT_SERVER_SETTINGS);
   const run = useRunScopedPlan();
-  return (patch: ScopedSettingsPatch) => run(planScopedSettingsPatch(scope, environments, patch));
+  return (patch: ScopedSettingsPatch, options?: { literalModelSelections?: boolean }) =>
+    run(
+      planScopedSettingsPatch(
+        scope,
+        environments,
+        patch,
+        createModelSelectionResolver(
+          {
+            representative: target,
+            targets,
+            providersByEnvironment,
+            settingsForDestination: (destination) =>
+              mergeEnvironmentSettings(destination.settings, settings),
+          },
+          options,
+        ),
+      ),
+    );
 }
 
 export function useClearScopedSettings() {
