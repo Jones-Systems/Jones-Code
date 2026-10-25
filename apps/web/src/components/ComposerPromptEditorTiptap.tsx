@@ -38,7 +38,6 @@ import {
 import {
   createContext,
   use,
-  useCallback,
   useEffect,
   useEffectEvent,
   useImperativeHandle,
@@ -1074,12 +1073,12 @@ function ComposerPromptEditorTiptapInner(
     editor: TiptapEditor;
     read: ReturnType<typeof createEditorSerializationCache>;
   } | null>(null);
-  const readEditorDoc = useCallback((current: TiptapEditor) => {
+  const readEditorDoc = (current: TiptapEditor) => {
     if (serializationRef.current?.editor !== current) {
       serializationRef.current = { editor: current, read: createEditorSerializationCache() };
     }
     return serializationRef.current.read(current.state.doc);
-  }, []);
+  };
 
   const handleEditorChange = (updated: TiptapEditor) => {
     const map = readEditorDoc(updated);
