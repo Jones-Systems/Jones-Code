@@ -1,7 +1,9 @@
 import { useAtom } from "@effect/atom-react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { APP_BUILD_STARTED_AT, APP_SOURCE_SHA, APP_VERSION } from "../../branding";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
 import { isElectron } from "../../env";
+import { observeResize } from "../../lib/observeResize";
 import { cn } from "../../lib/utils";
 import { jonesBuildLabel } from "../updates/buildVersion";
 import { SIDEBAR_ENVIRONMENT_FILTERS, toggleSidebarEnvironmentFilter } from "./model";
@@ -20,8 +22,44 @@ const BUILD_DETAIL = `${BUILD_LABEL.detail} · ${isElectron ? "Desktop app" : "W
 
 export function SidebarEnvironmentFilters() {
   const [filters, setFilters] = useAtom(sidebarEnvironmentFiltersAtom);
+  const slotRef = useRef<HTMLDivElement>(null);
+  const measureRef = useRef<HTMLSpanElement>(null);
+  const compactMeasureRef = useRef<HTMLSpanElement>(null);
+  const compactLabel = BUILD_LABEL.timed ? BUILD_LABEL.text.slice(-4) : BUILD_LABEL.text;
+  const [label, setLabel] = useState({
+    text: BUILD_LABEL.text,
+    fontSize: undefined as number | undefined,
+  });
+
+  useLayoutEffect(() => {
+    const slot = slotRef.current;
+    const measure = measureRef.current;
+    const compactMeasure = compactMeasureRef.current;
+    if (!slot || !measure || !compactMeasure) return;
+    const fit = () => {
+      const available = slot.getBoundingClientRect().width;
+      const maximum = Number.parseFloat(getComputedStyle(measure).fontSize);
+      const fullSize = Math.min(
+        maximum,
+        (maximum * available) / measure.getBoundingClientRect().width,
+      );
+      const text = fullSize >= 6 ? BUILD_LABEL.text : compactLabel;
+      const fontSize = Math.max(
+        6,
+        text === BUILD_LABEL.text
+          ? fullSize
+          : Math.min(maximum, (maximum * available) / compactMeasure.getBoundingClientRect().width),
+      );
+      setLabel((previous) =>
+        previous.text === text && previous.fontSize === fontSize ? previous : { text, fontSize },
+      );
+    };
+    fit();
+    return observeResize([slot, measure, compactMeasure], fit);
+  }, [compactLabel]);
+
   return (
-    <div className="@container/env-filters flex items-center gap-2 px-2 py-1">
+    <div className="flex items-center gap-0.5 px-2 py-1">
       <div
         role="group"
         aria-label="Thread environments"
@@ -45,21 +83,38 @@ export function SidebarEnvironmentFilters() {
           </button>
         ))}
       </div>
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <span
-              role="note"
-              tabIndex={0}
-              aria-label={BUILD_DETAIL}
-              className="ms-auto min-w-0 select-none truncate rounded-sm text-2xs tabular-nums text-muted-foreground/60 outline-hidden ring-ring focus-visible:ring-2 focus-visible:ring-inset @max-[20rem]/env-filters:hidden [-webkit-app-region:no-drag]"
-            >
-              {BUILD_LABEL.text}
-            </span>
-          }
-        />
-        <TooltipPopup side="bottom">{BUILD_DETAIL}</TooltipPopup>
-      </Tooltip>
+      <div ref={slotRef} className="relative min-w-0 flex-1 overflow-hidden">
+        <span
+          ref={measureRef}
+          aria-hidden="true"
+          className="pointer-events-none invisible absolute whitespace-nowrap text-2xs tabular-nums"
+        >
+          {BUILD_LABEL.text}
+        </span>
+        <span
+          ref={compactMeasureRef}
+          aria-hidden="true"
+          className="pointer-events-none invisible absolute whitespace-nowrap text-2xs tabular-nums"
+        >
+          {compactLabel}
+        </span>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <span
+                role="note"
+                tabIndex={0}
+                aria-label={BUILD_DETAIL}
+                className="ms-auto block w-fit max-w-full select-none whitespace-nowrap rounded-sm text-2xs tabular-nums text-muted-foreground/60 outline-hidden ring-ring focus-visible:ring-2 focus-visible:ring-inset [-webkit-app-region:no-drag]"
+                style={{ fontSize: label.fontSize }}
+              >
+                {label.text}
+              </span>
+            }
+          />
+          <TooltipPopup side="bottom">{BUILD_DETAIL}</TooltipPopup>
+        </Tooltip>
+      </div>
     </div>
   );
 }
