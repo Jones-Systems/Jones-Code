@@ -23,6 +23,7 @@ export interface NativeTransition {
 export interface NativeSource {
   readonly binding: Omit<Binding, "source_generation">;
   readonly ownership: string;
+  readonly identity?: string | undefined;
 }
 
 // Only a native owner may supply this service. Registry strings and persisted Jones metadata cannot issue it.
@@ -66,7 +67,11 @@ const decodeSource = Schema.decodeEffect(
         requestDigest: Schema.String,
         boundary: Schema.String,
       }),
-      captured: Schema.Struct({ binding: NativeBinding, ownership: Schema.String }),
+      captured: Schema.Struct({
+        binding: NativeBinding,
+        ownership: Schema.String,
+        identity: Schema.optional(Schema.String),
+      }),
     }),
   ),
 );
@@ -76,16 +81,49 @@ const make = Effect.gen(function* () {
   const store = yield* Store.TransitionStore;
   const resume = Effect.fn("WorkspaceLifecycle.resume")(function* (input: NativeTransition) {
     yield* store.outsideTransaction;
+    let transition = yield* store.read(input.transitionId);
+    const recorded =
+      transition === null
+        ? null
+        : yield* decodeSource(transition.source).pipe(
+            Effect.mapError((cause) => new LifecycleError({ reason: "storage", cause })),
+          );
+    if (recorded !== null && !same(recorded.input, input))
+      return yield* new LifecycleError({ reason: "identity" });
+    // Reconcile the original durable write before asking for a new operation capability. Reconciliation authorizes no execution.
+    if (transition?.state === "invoking") {
+      const reconciled = yield* registry.show(transition.binding.worktree);
+      if (
+        !same(reconciled.binding, transition.binding) ||
+        !invalidated(reconciled) ||
+        reconciled.generation === null ||
+        reconciled.generation === transition.expectedGeneration ||
+        reconciled.assessment_status === "current"
+      )
+        return yield* new LifecycleError({ reason: "unknown" });
+      transition = yield* store.confirm(transition, reconciled.generation);
+    }
     const captured = yield* source.capture(input);
     const sourceJson = canonical({ input, captured });
-    const binding = yield* decodeBinding({
-      ...captured.binding,
-      source_generation: `jones-transition:${digest({ input, captured })}`,
-    }).pipe(Effect.mapError((cause) => new LifecycleError({ reason: "identity", cause })));
-    let transition = yield* store.read(input.transitionId);
+    const sourceIdentity = {
+      binding: captured.binding,
+      ownership: captured.identity ?? captured.ownership,
+    };
+    const binding =
+      transition?.binding ??
+      (yield* decodeBinding({
+        ...captured.binding,
+        source_generation: `jones-transition:${digest({ input, captured: sourceIdentity })}`,
+      }).pipe(Effect.mapError((cause) => new LifecycleError({ reason: "identity", cause }))));
     if (
-      transition !== null &&
-      (transition.source !== sourceJson || !same(transition.binding, binding))
+      recorded !== null &&
+      !same(
+        {
+          binding: recorded.captured.binding,
+          ownership: recorded.captured.identity ?? recorded.captured.ownership,
+        },
+        sourceIdentity,
+      )
     )
       return yield* new LifecycleError({ reason: "stale" });
     if (transition === null) {

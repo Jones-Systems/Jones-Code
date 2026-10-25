@@ -1,3 +1,4 @@
+import { beforeCleanupPath } from "../workspaceLifecycle/NativeBoundary.ts";
 import { assert, it } from "@effect/vitest";
 import { ProjectId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -285,7 +286,10 @@ it.effect(
       let qualified = false;
       const owner = deletionOwner({
         readDeletionWorktreeRemovalStart: () => Effect.succeed({ start, ordinal: 3 }),
-        revalidateDeletionWorktreeRemovalStart: () => Effect.void,
+        revalidateDeletionWorktreeRemovalStart: () =>
+          beforeCleanupPath(start.target.path).pipe(
+            Effect.mapError((cause) => new EventSink.EventSinkWriteError({ eventCount: 0, cause })),
+          ),
         qualifyDeletionWorktreeRemovalObservation: () =>
           Effect.sync(() => {
             qualified = true;

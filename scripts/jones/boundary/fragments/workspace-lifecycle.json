@@ -14,7 +14,13 @@
     "apps/server/src/jones/workspaceLifecycle/WorkspaceLifecycle.ts",
     "apps/server/src/jones/workspaceLifecycle/Configuration.ts",
     "apps/server/src/jones/workspaceLifecycle/RuntimeIntegration.ts",
-    "apps/server/src/jones/workspaceLifecycle/RuntimeIntegration.test.ts"
+    "apps/server/src/jones/workspaceLifecycle/RuntimeIntegration.test.ts",
+    "apps/server/src/jones/workspaceLifecycle/NativeOperation.ts",
+    "apps/server/src/jones/workspaceLifecycle/ManagedConsumers.test.ts",
+    "apps/server/src/jones/workspaceLifecycle/ManagedCleanup.test.ts",
+    "apps/server/src/jones/workspaceLifecycle/ManagedConsumer.testkit.ts",
+    "apps/server/src/jones/workspaceLifecycle/NativeStart.test.ts",
+    "apps/server/src/jones/workspaceLifecycle/NativeStart.testkit.ts"
   ],
   "hookPaths": [],
   "tombstones": [],
@@ -62,6 +68,42 @@
     {
       "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
       "to": "apps/server/src/jones/workspaceLifecycle/RuntimeIntegration.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/NativeOperation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/NativeOperation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/NativeOperation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadSettlementService.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/NativeOperation.ts"
+    },
+    {
+      "from": "apps/server/src/storageCleanup.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/NativeOperation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/WorkspaceLifecycle.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/WorkspaceLifecycle.ts"
+    },
+    {
+      "from": "apps/server/src/storageCleanup.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/Protocol.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadSettlementService.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/Protocol.ts"
     }
   ]
 }

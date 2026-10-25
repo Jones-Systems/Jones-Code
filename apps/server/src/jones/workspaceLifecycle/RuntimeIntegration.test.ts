@@ -1,4 +1,9 @@
-import { EnvironmentId } from "@t3tools/contracts";
+import {
+  CommandId,
+  ThreadId,
+  EnvironmentId,
+  type OrchestrationV2DomainEvent,
+} from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -16,7 +21,6 @@ import * as Runner from "../../processRunner.ts";
 import { canonical } from "../ordinaryCheckout/CheckoutProtocol.ts";
 import { jonesMigrationEntries } from "../persistence/JonesMigrations.ts";
 import * as Boundary from "./NativeBoundary.ts";
-import * as Native from "./NativeSource.ts";
 import * as Lifecycle from "./WorkspaceLifecycle.ts";
 import { type Binding, type InventoryEntry } from "./Protocol.ts";
 import * as Runtime from "./RuntimeIntegration.ts";
@@ -166,21 +170,31 @@ const fixture = Effect.gen(function* () {
 });
 
 it.effect(
-  "composes the production source and CLI with the registered durable transition, preserving restart identity",
+  "composes the production command issuer, source and CLI with SQL-only commit validation and restart identity",
   () =>
     Effect.scoped(
       Effect.gen(function* () {
         const f = yield* fixture;
-        const owner = Layer.succeed(Native.NativeCheckoutOwner, {
-          verify: () => Effect.succeed({ id: "synthetic-qualified-owner", generation: "owner:1" }),
-          validate: () => Effect.void,
-        });
-        const composed = () => f.configured().pipe(Layer.provide(owner));
-        yield* beforeStart.pipe(Effect.provide(composed()));
+        const composed = () => f.configured();
+        const command = {
+          type: "thread.unsettle" as const,
+          commandId: CommandId.make("original-command"),
+          threadId: ThreadId.make("thread"),
+          reason: "user" as const,
+        };
+        const events = [
+          { type: "thread.unsettled", threadId: command.threadId },
+        ] as unknown as readonly OrchestrationV2DomainEvent[];
+        const beforeCommit = Boundary.commitCommand(
+          command,
+          events,
+          f.sql.withTransaction(Boundary.validateCommand(command, events)),
+        );
+        yield* beforeCommit.pipe(Effect.provide(composed()));
         const first = f.readView().binding!;
         expect(first.git_common_dir).not.toBe(first.git_dir);
         expect(first.source_generation).not.toBe(f.readView().generation);
-        yield* beforeStart.pipe(Effect.provide(composed()));
+        yield* beforeCommit.pipe(Effect.provide(composed()));
         expect(f.calls.filter((call) => call.args.includes("resume"))).toHaveLength(1);
         expect(f.readView().binding).toEqual(first);
         expect(yield* f.sql`SELECT state FROM jones_workspace_lifecycle_transitions`).toEqual([
@@ -202,7 +216,7 @@ it.effect(
         ).toBe(true);
         yield* f.sql`UPDATE orchestration_v2_projection_threads SET payload_json=json_set(payload_json,'$.projectId','unmanaged','$.worktreePath',NULL)`;
         expect(
-          Exit.isFailure(yield* Effect.exit(beforeStart.pipe(Effect.provide(composed())))),
+          Exit.isFailure(yield* Effect.exit(beforeCommit.pipe(Effect.provide(composed())))),
         ).toBe(true);
         expect(
           Exit.isFailure(

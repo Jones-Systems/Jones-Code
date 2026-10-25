@@ -23,6 +23,7 @@ import {
 export interface NativeOwnerEvidence {
   readonly id: string;
   readonly generation: string;
+  readonly provenance?: readonly { readonly id: string; readonly kind: string }[];
 }
 export class NativeCheckoutOwner extends Context.Service<
   NativeCheckoutOwner,
@@ -111,7 +112,7 @@ const make = Effect.gen(function* () {
     function* (input: NativeTransition) {
       if (Option.isSome(yield* Effect.serviceOption(sql.transactionService)))
         return yield* new LifecycleError({ reason: "transaction" });
-      // A projection assignment is not executor authority. No decoder, configuration or default issuer can fill this port.
+      // A projection assignment is not executor authority. Stored rows and configuration cannot issue a live operation attestation.
       if (Option.isNone(nativeOwner)) return yield* new LifecycleError({ reason: "unavailable" });
       const rows = yield* sql<{
         payload_json: string;
@@ -175,16 +176,18 @@ const make = Effect.gen(function* () {
       const missing = !(yield* fs.exists(thread.worktreePath));
       const observed = yield* missing
         ? Effect.gen(function* () {
-            if (input.boundary !== "recreate")
+            if (!["recreate", "unsettle", "restore"].includes(input.boundary))
               return yield* new LifecycleError({ reason: "unavailable" });
             const prior = yield* store.prior(path.normalize(thread.worktreePath!));
-            if (
-              prior === null ||
-              prior.binding.thread_id !== thread.id ||
-              prior.binding.branch !==
-                (thread.branch?.startsWith("refs/") ? thread.branch : `refs/heads/${thread.branch}`)
-            )
+            if (prior === null) return yield* new LifecycleError({ reason: "prior-lineage" });
+            if (prior.binding.thread_id !== thread.id)
               return yield* new LifecycleError({ reason: "identity" });
+            if (
+              !thread.branch ||
+              prior.binding.branch !==
+                (thread.branch.startsWith("refs/") ? thread.branch : `refs/heads/${thread.branch}`)
+            )
+              return yield* new LifecycleError({ reason: "prior-branch" });
             const recorded = yield* decodePriorSource(prior.source);
             const ownership = yield* decodePriorOwnership(recorded.captured.ownership);
             if (canonical(ownership.birth) !== canonical(birth))
@@ -198,6 +201,7 @@ const make = Effect.gen(function* () {
               return yield* new LifecycleError({ reason: "stale" });
             const revision = yield* git.execute({
               operation: "WorkspaceLifecycle.recreationSource",
+              allowNonZeroExit: true,
               cwd: project.workspace_root,
               args: ["rev-parse", "--verify", `${prior.binding.branch}^{commit}`],
               maxOutputBytes: 4096,
@@ -209,7 +213,7 @@ const make = Effect.gen(function* () {
               revision.exitCode !== 0 ||
               revision.stdout.trim() !== prior.binding.head
             )
-              return yield* new LifecycleError({ reason: "stale" });
+              return yield* new LifecycleError({ reason: "prior-head" });
             if (yield* fs.exists(thread.worktreePath!))
               return yield* new LifecycleError({ reason: "stale" });
             return { target: { ...ownership.target, ...targetInput }, head: prior.binding.head };
@@ -248,9 +252,15 @@ const make = Effect.gen(function* () {
           git_dir: target.gitDirectory,
           branch: target.branch,
           head: observed.head,
-          source_id: `jones-git:${digest({ physical, head: observed.head, owner })}`,
+          source_id: `jones-git:${digest({ physical, head: observed.head, owner: { id: owner.id, generation: owner.generation } })}`,
         },
         ownership: canonical({ birth, target, missing, owner }),
+        identity: canonical({
+          birth,
+          target: { ...target, projectRevision: undefined, threadRevision: undefined },
+          missing,
+          owner: { id: owner.id, generation: owner.generation },
+        }),
       } satisfies NativeSource;
     },
     Effect.mapError((cause) =>
@@ -299,7 +309,11 @@ const make = Effect.gen(function* () {
       ),
     ),
     revalidate: Effect.fn("NativeLifecycleSource.revalidate")(function* (input, source) {
-      if (canonical(yield* capture(input)) !== canonical(source))
+      const current = yield* capture(input);
+      if (
+        canonical(current.binding) !== canonical(source.binding) ||
+        (current.identity ?? current.ownership) !== (source.identity ?? source.ownership)
+      )
         return yield* new LifecycleError({ reason: "stale" });
     }),
   });

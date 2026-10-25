@@ -9,6 +9,7 @@ import { digest } from "../ordinaryCheckout/CheckoutProtocol.ts";
 import { LifecycleConfiguration } from "./NativeSource.ts";
 import { LifecycleError } from "./Protocol.ts";
 import { WorkspaceLifecycle, type NativeTransition } from "./WorkspaceLifecycle.ts";
+import { withOperation } from "./NativeOperation.ts";
 
 const decodeScope = Schema.decodeEffect(
   Schema.fromJsonString(
@@ -242,3 +243,47 @@ export const validateCommand = Effect.fn("WorkspaceLifecycle.validateCommand")(f
   }
   for (const transition of transitions) yield* service.value.validate(transition);
 });
+
+// Called by the serialized native command owner only after its decider/command validation has succeeded.
+export const commitCommand = <A, E, R>(
+  command: IntentCommand,
+  events: readonly OrchestrationV2DomainEvent[],
+  effect: Effect.Effect<A, E, R>,
+) =>
+  Effect.gen(function* () {
+    const transitions = commandTransitions(command, events);
+    if (
+      transitions.length === 0 ||
+      Option.isNone(yield* Effect.serviceOption(LifecycleConfiguration))
+    )
+      return yield* beforeCommand(command, events).pipe(Effect.andThen(effect));
+    const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
+    if (Option.isNone(sql)) return yield* new LifecycleError({ reason: "unavailable" });
+    const snapshots = yield* Effect.forEach(transitions, (transition) =>
+      sql.value<{
+        payload_json: string;
+      }>`SELECT payload_json FROM orchestration_v2_projection_threads WHERE thread_id=${transition.threadId}`.pipe(
+        Effect.map((rows) => ({ threadId: transition.threadId, payload: rows[0]?.payload_json })),
+      ),
+    );
+    const check = Effect.gen(function* () {
+      for (const snapshot of snapshots) {
+        const rows = yield* sql.value<{
+          payload_json: string;
+        }>`SELECT payload_json FROM orchestration_v2_projection_threads WHERE thread_id=${snapshot.threadId}`;
+        if (snapshot.payload === undefined || rows[0]?.payload_json !== snapshot.payload)
+          return yield* new LifecycleError({ reason: "stale" });
+      }
+    });
+    return yield* withOperation(
+      {
+        id: `command:${command.commandId}`,
+        kind: "command",
+        boundaries: ["unsettle", "restore"],
+        check,
+        sqlOnly: true,
+        inherit: false,
+      },
+      beforeCommand(command, events).pipe(Effect.andThen(effect)),
+    );
+  });

@@ -1,3 +1,4 @@
+import { LifecycleError } from "../jones/workspaceLifecycle/Protocol.ts";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
@@ -20,6 +21,7 @@ import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import * as GitManager from "../git/GitManager.ts";
+import { withOperation } from "../jones/workspaceLifecycle/NativeOperation.ts";
 import { beforeCleanup } from "../jones/workspaceLifecycle/NativeBoundary.ts";
 import { workModeSettlementActivity } from "../jones/workMode/Settlement.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
@@ -565,11 +567,32 @@ export const make = Effect.gen(function* () {
       if (thread.settledOverride !== "settled") return;
       const settledAtMs = toMillis(thread.settledAt);
       if (settledAtMs === null || settleActionRunAt.get(threadId) === settledAtMs) return;
-      yield* beforeCleanup({
-        threadId,
-        boundary: "settle-script",
-        id: `settle:${threadId}:${settledAtMs}`,
-      });
+      yield* withOperation(
+        {
+          id: `settle:${threadId}:${settledAtMs}`,
+          kind: "preservation",
+          threadId,
+          boundaries: ["settle-script"],
+          inherit: false,
+          check: Effect.gen(function* () {
+            const current = yield* projections.getThread(threadId);
+            if (
+              current.settledOverride !== "settled" ||
+              toMillis(current.settledAt) !== settledAtMs ||
+              current.projectId !== thread.projectId ||
+              current.worktreePath !== worktreePath ||
+              current.branch !== thread.branch ||
+              toMillis(current.updatedAt) !== toMillis(thread.updatedAt)
+            )
+              return yield* new LifecycleError({ reason: "stale" });
+          }),
+        },
+        beforeCleanup({
+          threadId,
+          boundary: "settle-script",
+          id: `settle:${threadId}:${settledAtMs}`,
+        }),
+      );
       const run = yield* projectScripts.runForThread({
         threadId,
         projectId: thread.projectId,

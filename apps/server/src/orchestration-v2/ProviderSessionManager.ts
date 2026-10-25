@@ -1,3 +1,5 @@
+import { WorkspaceLifecycle as WorkspaceLifecycleService } from "../jones/workspaceLifecycle/WorkspaceLifecycle.ts";
+import { withOperation } from "../jones/workspaceLifecycle/NativeOperation.ts";
 import * as WorkspaceLifecycle from "../jones/workspaceLifecycle/NativeBoundary.ts";
 import * as RuntimeOperation from "../jones/runtime/RuntimeOperationPermit.ts";
 import * as PhysicalRuntimeEvidence from "../jones/runtime/PhysicalRuntimeEvidence.ts";
@@ -450,7 +452,17 @@ export const layerWithOptions = (
               const reservation = reservations.get(runtimeGeneration);
               if (reservation === undefined)
                 return yield* protocolError("The launch reservation was lost.");
-              yield* WorkspaceLifecycle.beforeUse({ threadId, boundary: "resume" });
+              yield* beforeSessionUse(
+                threadId,
+                providerSessionId,
+                Effect.gen(function* () {
+                  if (reservations.get(runtimeGeneration) !== reservation)
+                    return yield* protocolError("The launch reservation changed.");
+                  yield* NativeProvider.revalidateNativeProviderGuard(nativeCreationGuard, {
+                    threadId,
+                  });
+                }),
+              );
               const rows = yield* projectionStore.getThreadRecords(threadId, ["providerThreads"]);
               for (const thread of rows.providerThreads) {
                 if (
@@ -2202,12 +2214,87 @@ export const layerWithOptions = (
           ),
       );
 
+      const beforeSessionUse = Effect.fn("ProviderSessionManager.beforeWorkspaceUse")(function* <C>(
+        threadId: ThreadId,
+        providerSessionId: ProviderSessionId,
+        check: Effect.Effect<unknown, C>,
+      ) {
+        if (Option.isNone(yield* Effect.serviceOption(WorkspaceLifecycleService)))
+          return yield* WorkspaceLifecycle.beforeUse({ threadId, boundary: "resume" });
+        const invocation = yield* idAllocator.allocate.event({ threadId, providerSessionId });
+        yield* withOperation(
+          {
+            id: `provider-session:${providerSessionId}:${invocation}`,
+            kind: "provider-session",
+            threadId,
+            boundaries: ["resume"],
+            check: check.pipe(Effect.asVoid),
+          },
+          WorkspaceLifecycle.inheritOriginalTransition(
+            `provider-session:${invocation}`,
+            { threadId, providerSessionId },
+            WorkspaceLifecycle.beforeUse({ threadId, boundary: "resume" }),
+          ),
+        );
+      });
+
+      const withSessionInvocation = <A, E, R, C>(
+        threadId: ThreadId,
+        providerSessionId: ProviderSessionId,
+        effect: Effect.Effect<A, E, R>,
+        allocationError: (cause: unknown) => C,
+      ) =>
+        Effect.gen(function* () {
+          if (
+            Option.isNone(yield* Effect.serviceOption(WorkspaceLifecycleService)) ||
+            Option.isSome(yield* Effect.serviceOption(WorkspaceLifecycle.OriginalNativeTransition))
+          )
+            return yield* effect;
+          const invocation = yield* idAllocator.allocate
+            .event({ threadId, providerSessionId })
+            .pipe(Effect.mapError(allocationError));
+          return yield* WorkspaceLifecycle.withOriginalTransition(
+            `provider-session:${invocation}`,
+            { threadId, providerSessionId },
+            effect,
+          );
+        });
+
       const decorateRuntime = (
         runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime,
         eventSubscribers: Ref.Ref<ReadonlyMap<number, ProviderSessionEventSubscriber>>,
         requestEventPermit: Semaphore.Semaphore,
       ): ProviderAdapter.ProviderAdapterV2SessionRuntime => {
         const providerSessionId = runtime.providerSessionId;
+        const withRuntimeInvocation = <A, E, R>(
+          threadId: ThreadId,
+          effect: Effect.Effect<A, E, R>,
+        ) =>
+          withSessionInvocation(
+            threadId,
+            providerSessionId,
+            effect,
+            (cause) =>
+              new ProviderAdapter.ProviderAdapterProtocolError({
+                driver: runtime.driver,
+                detail: "Cannot identify the native session operation.",
+                cause,
+              }),
+          );
+        const beforeRuntimeUse = (threadId: ThreadId) =>
+          beforeSessionUse(
+            threadId,
+            providerSessionId,
+            Effect.gen(function* () {
+              const entry = (yield* Ref.get(sessions)).get(sessionKey(providerSessionId));
+              if (entry?.runtime !== runtime || !entry.attachedThreadIds.has(threadId))
+                return yield* new ProviderSessionOpenError({
+                  instanceId: runtime.instanceId,
+                  providerSessionId,
+                  cause: "The native runtime attachment changed before workspace use.",
+                });
+            }),
+          );
         const subscribeEvents = makeEventSubscription(
           runtime,
           eventSubscribers,
@@ -2241,7 +2328,7 @@ export const layerWithOptions = (
               }),
             ).pipe(
               Effect.andThen(
-                WorkspaceLifecycle.beforeUse({ threadId: input.threadId, boundary: "resume" }).pipe(
+                beforeRuntimeUse(input.threadId).pipe(
                   Effect.mapError(
                     (cause) =>
                       new ProviderAdapter.ProviderAdapterEnsureThreadError({
@@ -2264,6 +2351,7 @@ export const layerWithOptions = (
                   }),
                 }),
               ),
+              (effect) => withRuntimeInvocation(input.threadId, effect),
             ),
           resumeThread: (input) => {
             const threadId = input.threadId ?? input.providerThread.appThreadId;
@@ -2296,7 +2384,7 @@ export const layerWithOptions = (
                 isProviderThreadLoaded({ providerSessionId, threadId, providerThreadKey }),
               ),
               Effect.flatMap((loaded) =>
-                WorkspaceLifecycle.beforeUse({ threadId, boundary: "resume" }).pipe(
+                beforeRuntimeUse(threadId).pipe(
                   Effect.mapError(
                     (cause) =>
                       new ProviderAdapter.ProviderAdapterResumeThreadError({
@@ -2326,6 +2414,7 @@ export const layerWithOptions = (
                   }),
                 }),
               ),
+              (effect) => withRuntimeInvocation(threadId, effect),
             );
           },
           forkThread: (input) =>
@@ -2337,6 +2426,18 @@ export const layerWithOptions = (
                 providerInstanceId: runtime.instanceId,
               }),
             ).pipe(
+              Effect.andThen(
+                beforeRuntimeUse(input.targetThreadId).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderAdapter.ProviderAdapterForkThreadError({
+                        driver: runtime.driver,
+                        providerThreadId: input.sourceProviderThread.id,
+                        cause,
+                      }),
+                  ),
+                ),
+              ),
               Effect.andThen(runtime.forkThread(input)),
               Effect.tap((providerThread) =>
                 markProviderThreadLoaded({
@@ -2353,44 +2454,60 @@ export const layerWithOptions = (
                   }),
                 }),
               ),
+              (effect) => withRuntimeInvocation(input.targetThreadId, effect),
             ),
           ...(runtime.compactForContextHandoff === undefined
             ? {}
             : {
                 compactForContextHandoff: Effect.fn(
                   "ProviderSessionManager.compactForContextHandoff",
-                )(function* (input: ProviderAdapter.ProviderAdapterV2TurnInput) {
-                  const activityKey = `${busyTurnKey(input.providerThread.id, input.runOrdinal)}:handoff:${input.attemptId}`;
-                  yield* observeActivity(
-                    providerSessionId,
-                    ensureThreadAttached({
+                )(
+                  function* (input: ProviderAdapter.ProviderAdapterV2TurnInput) {
+                    const activityKey = `${busyTurnKey(input.providerThread.id, input.runOrdinal)}:handoff:${input.attemptId}`;
+                    yield* observeActivity(
+                      providerSessionId,
+                      ensureThreadAttached({
+                        providerSessionId,
+                        threadId: input.threadId,
+                        providerInstanceId: runtime.instanceId,
+                      }),
+                    );
+                    yield* holdThreadLoaded({
                       providerSessionId,
                       threadId: input.threadId,
-                      providerInstanceId: runtime.instanceId,
-                    }),
-                  );
-                  yield* holdThreadLoaded({
-                    providerSessionId,
-                    threadId: input.threadId,
-                    providerThread: input.providerThread,
-                  });
-                  // The caller's delivery scope spans compaction, injection and prompt dispatch.
-                  // A separate key must not clear the original turn's lease on success.
-                  yield* Effect.acquireRelease(
-                    observeActivity(providerSessionId, markBusy(providerSessionId, activityKey)),
-                    () =>
-                      observeActivity(
-                        providerSessionId,
-                        markIdle(
+                      providerThread: input.providerThread,
+                    });
+                    // The caller's delivery scope spans compaction, injection and prompt dispatch.
+                    // A separate key must not clear the original turn's lease on success.
+                    yield* Effect.acquireRelease(
+                      observeActivity(providerSessionId, markBusy(providerSessionId, activityKey)),
+                      () =>
+                        observeActivity(
                           providerSessionId,
-                          input.providerThread.id,
-                          input.runOrdinal,
-                          activityKey,
+                          markIdle(
+                            providerSessionId,
+                            input.providerThread.id,
+                            input.runOrdinal,
+                            activityKey,
+                          ),
                         ),
+                    );
+                    yield* beforeRuntimeUse(input.threadId).pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new ProviderAdapter.ProviderAdapterTurnStartError({
+                            driver: runtime.driver,
+                            threadId: input.threadId,
+                            providerThreadId: input.providerThread.id,
+                            runId: input.runId,
+                            cause,
+                          }),
                       ),
-                  );
-                  return yield* runtime.compactForContextHandoff!(input);
-                }),
+                    );
+                    return yield* runtime.compactForContextHandoff!(input);
+                  },
+                  (effect, input) => withRuntimeInvocation(input.threadId, effect),
+                ),
               }),
           startTurn: (input) =>
             observeActivity(
@@ -2420,7 +2537,23 @@ export const layerWithOptions = (
                     ),
                   ),
                   () =>
-                    runtime.startTurn(input).pipe(turnMetrics("send", input.modelSelection.model)),
+                    beforeRuntimeUse(input.threadId).pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new ProviderAdapter.ProviderAdapterTurnStartError({
+                            driver: runtime.driver,
+                            threadId: input.threadId,
+                            providerThreadId: input.providerThread.id,
+                            runId: input.runId,
+                            cause,
+                          }),
+                      ),
+                      Effect.andThen(
+                        runtime
+                          .startTurn(input)
+                          .pipe(turnMetrics("send", input.modelSelection.model)),
+                      ),
+                    ),
                   (_, exit) =>
                     Exit.isFailure(exit)
                       ? observeActivity(
@@ -2430,6 +2563,7 @@ export const layerWithOptions = (
                       : Effect.void,
                 ),
               ),
+              (effect) => withRuntimeInvocation(input.threadId, effect),
             ),
           steerTurn: (input) =>
             observeActivity(providerSessionId, touchActivity(providerSessionId)).pipe(
@@ -2944,10 +3078,41 @@ export const layerWithOptions = (
                     }),
                 ),
               );
-              yield* WorkspaceLifecycle.beforeUse({
-                threadId: input.threadId,
-                boundary: "resume",
-              }).pipe(
+              const originalEntry = (yield* Ref.get(sessions)).get(
+                sessionKey(input.providerSessionId),
+              );
+              const checkOpen = Effect.gen(function* () {
+                if (
+                  (yield* Ref.get(sessions)).get(sessionKey(input.providerSessionId))?.runtime !==
+                  originalEntry?.runtime
+                )
+                  return yield* new ProviderSessionOpenError({
+                    instanceId: input.modelSelection.instanceId,
+                    providerSessionId: input.providerSessionId,
+                    cause: "The native session changed before opening.",
+                  });
+                const thread = yield* projectionStore.getThreadShell(input.threadId);
+                if (
+                  thread === null ||
+                  thread.deletedAt !== null ||
+                  thread.worktreePath !== input.runtimePolicy.cwd
+                )
+                  return yield* new ProviderSessionOpenError({
+                    instanceId: input.modelSelection.instanceId,
+                    providerSessionId: input.providerSessionId,
+                    cause: "The native checkout assignment changed before opening.",
+                  });
+                yield* NativeProvider.revalidateNativeProviderGuard(input.nativeCreationGuard, {
+                  threadId: input.threadId,
+                  cwd: input.runtimePolicy.cwd,
+                });
+              });
+              const beforeOpen = beforeSessionUse(
+                input.threadId,
+                input.providerSessionId,
+                checkOpen,
+              );
+              yield* beforeOpen.pipe(
                 Effect.mapError(
                   (cause) =>
                     new ProviderSessionOpenError({
@@ -3073,6 +3238,18 @@ export const layerWithOptions = (
                       }),
                 })
                 .pipe(
+                  (effect) =>
+                    beforeOpen.pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new ProviderSessionOpenError({
+                            instanceId: input.modelSelection.instanceId,
+                            providerSessionId: input.providerSessionId,
+                            cause,
+                          }),
+                      ),
+                      Effect.andThen(effect),
+                    ),
                   Effect.provideService(Scope.Scope, sessionScope),
                   // The session cleanup runs first, and the close is
                   // time-boxed: this runs under the session's open lock, so an
@@ -3170,7 +3347,18 @@ export const layerWithOptions = (
               yield* startEventPump(entry);
               yield* scheduleIdleRelease(input.providerSessionId);
               return exposedRuntime;
-            }),
+            }).pipe((effect) =>
+              withSessionInvocation(
+                input.threadId,
+                input.providerSessionId,
+                effect,
+                (cause) =>
+                  new ProviderSessionActivityError({
+                    providerSessionId: input.providerSessionId,
+                    cause,
+                  }),
+              ),
+            ),
           ),
         isLive: (providerSessionId) =>
           Ref.get(sessions).pipe(

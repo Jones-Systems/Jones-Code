@@ -2084,14 +2084,9 @@ const layerBase: Layer.Layer<
           .readTarget(threadId, target)
           .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
       startDeletionWorktreeRemoval: (input) =>
-        WorkspaceLifecycle.beforeCleanup({
-          threadId: input.threadId,
-          boundary: "cleanup",
-          id: `deletion:${input.threadId}`,
-        }).pipe(
-          Effect.andThen(deletionAdmission.start(input)),
-          Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause })),
-        ),
+        deletionAdmission
+          .start(input)
+          .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
       readDeletionWorktreeRemovalStart: (effectId) =>
         deletionAdmission
           .read(effectId)

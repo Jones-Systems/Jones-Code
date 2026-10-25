@@ -13,6 +13,7 @@ import { LifecycleError } from "./Protocol.ts";
 import * as Registry from "./RegistryCli.ts";
 import * as Store from "./TransitionStore.ts";
 import * as Lifecycle from "./WorkspaceLifecycle.ts";
+import * as NativeOperation from "./NativeOperation.ts";
 
 const decode = Schema.decodeUnknownEffect(Configuration, { onExcessProperty: "error" });
 const observations = Sources.layer.pipe(
@@ -38,7 +39,7 @@ export const layer = Layer.unwrap(
       projects: new Map(selected.projects.map(({ projectId, ...project }) => [projectId, project])),
     });
     return Lifecycle.layer.pipe(
-      Layer.provide(source),
+      Layer.provide(source.pipe(Layer.provide(NativeOperation.layer))),
       Layer.provide(Registry.layer(selected.registry)),
       Layer.provideMerge(configuration),
     );

@@ -1909,9 +1909,17 @@
         "apps/server/src/jones/persistence/Migrations.test.ts",
         "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
         "apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts",
-        "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts"
+        "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts",
+        "apps/server/src/jones/workspaceLifecycle/ManagedConsumers.test.ts",
+        "apps/server/src/jones/workspaceLifecycle/ManagedCleanup.test.ts",
+        "apps/server/src/jones/workspaceLifecycle/NativeStart.test.ts",
+        "apps/server/src/jones/persistence/Migrations/115_JonesScheduledWebhookPendingRuns.test.ts",
+        "apps/server/scripts/jones/currentFixtures.test.ts",
+        "apps/server/src/jones/updates/migrationPlan.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationAuthority.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationExecutionSqlite.test.ts"
       ],
-      "scope": "Source-only W1 lifecycle core and native consumer fences. The canonical V3 registry retains semantic assessments and its separate CAS generation. Jones stores sparse original-transition identities, observes physical checkout/Git identities, native thread birth and fresh HEAD, fences uncertain writes and reconciles without replay. Optional native hooks preserve unconfigured runtimes and hold explicitly configured integrations on unavailable registry/source evidence. Registry I/O precedes command commit; EventSink revalidates only SQL ownership inside its transaction. Cleanup assessments only veto existing native cleanup/deletion authorities. The native ownership evidence port has no default issuer. Explicit server configuration and the production composition are registered, including Jones migration 123. The existing server environment identity must match configuration. Only selected projects' linked worktrees are managed; root checkouts and unselected projects retain their existing behavior. Native-owner issuance/qualification and full positive managed consumer acceptance remain open; this partial source candidate installs no external executable, registry or runtime. Shared provider-start tests retain their existing consumer harness to prove pre-effect refusal."
+      "scope": "Source-only W1 lifecycle composition with operation-scoped attestation issued by the native effect, run/start, session, validated-command and preservation owners. Stable checkout lineage and physical generation are separate from ephemeral native operation provenance in existing transition metadata. The V3 registry retains semantic assessments and a separate CAS generation. Invoking transitions reconcile their original stored binding before fresh execution authorization, without a second CAS or reconstructed native-start capability. Explicit/implicit unsettle and restore invalidate present or absent recorded incarnations; recreation requires prior lineage/branch/HEAD and records a replacement physical incarnation before provider use. Registry I/O stays outside native command transactions; EventSink checks SQL ownership inside commit. Matching assessments can pass settle scripts, ordinary cleanup and qualified deletion without resume or a live-provider requirement, while independent native policy remains authoritative. Production composition remains opt-in and preserves unconfigured behavior and the unavailable native-creation authority gate. Real native consumers and the production issuer use synthetic SQL/Git targets and external effect fixtures; no external store, API, executable, installation or runtime activation is introduced."
     }
   ]
 }
