@@ -92,20 +92,22 @@ const makeRefreshBarrierFixture = Effect.gen(function* () {
     };
   });
   const gates = { paths: yield* makeGate, content: yield* makeGate };
-  const indexes = yield* LayerMap.make((key: string) => {
-    const gate =
-      key === WorkspaceSearchIndex.workspaceSearchIndexKey(normalizedCwd, "paths")
-        ? gates.paths
-        : gates.content;
-    return Layer.mock(WorkspaceSearchIndex.WorkspaceSearchIndex)({
-      refresh: () =>
-        Effect.gen(function* () {
-          yield* Deferred.succeed(gate.started, undefined);
-          yield* Deferred.await(gate.release);
-          yield* Deferred.succeed(gate.finished, undefined);
-        }).pipe(Effect.onInterrupt(() => Deferred.succeed(gate.interrupted, undefined))),
-    });
-  });
+  const indexes = yield* LayerMap.make(
+    (key: string): ReturnType<typeof WorkspaceSearchIndex.layer> => {
+      const gate =
+        key === WorkspaceSearchIndex.workspaceSearchIndexKey(normalizedCwd, "paths")
+          ? gates.paths
+          : gates.content;
+      return Layer.mock(WorkspaceSearchIndex.WorkspaceSearchIndex)({
+        refresh: () =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(gate.started, undefined);
+            yield* Deferred.await(gate.release);
+            yield* Deferred.succeed(gate.finished, undefined);
+          }).pipe(Effect.onInterrupt(() => Deferred.succeed(gate.interrupted, undefined))),
+      });
+    },
+  );
   for (const variant of WorkspaceSearchIndex.WORKSPACE_SEARCH_INDEX_VARIANTS) {
     yield* indexes.contextEffect(
       WorkspaceSearchIndex.workspaceSearchIndexKey(normalizedCwd, variant),
@@ -417,36 +419,34 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceFileSystemLive", (i
   });
 
   describe("writeFile", () => {
-    for (const first of WorkspaceSearchIndex.WORKSPACE_SEARCH_INDEX_VARIANTS) {
-      it.effect(
-        `starts both resident refreshes and waits for both when ${first} finishes first`,
-        () =>
-          Effect.gen(function* () {
-            const { cwd, gates, files } = yield* makeRefreshBarrierFixture;
-            const second = first === "paths" ? "content" : "paths";
-            const writing = yield* files
-              .writeFile({
-                cwd,
-                relativePath: "new.txt",
-                contents: "written before refresh",
-              })
-              .pipe(Effect.forkChild);
+    it.effect.each(WorkspaceSearchIndex.WORKSPACE_SEARCH_INDEX_VARIANTS)(
+      "starts both resident refreshes and waits for both when %s finishes first",
+      (first) =>
+        Effect.gen(function* () {
+          const { cwd, gates, files } = yield* makeRefreshBarrierFixture;
+          const second = first === "paths" ? "content" : "paths";
+          const writing = yield* files
+            .writeFile({
+              cwd,
+              relativePath: "new.txt",
+              contents: "written before refresh",
+            })
+            .pipe(Effect.forkChild);
 
-            yield* Deferred.await(gates.paths.started);
-            yield* Deferred.await(gates.content.started);
-            expect(yield* Deferred.isDone(gates.paths.finished)).toBe(false);
-            expect(yield* Deferred.isDone(gates.content.finished)).toBe(false);
-            expect(writing.pollUnsafe()).toBeUndefined();
-            yield* Deferred.succeed(gates[first].release, undefined);
-            yield* Deferred.await(gates[first].finished);
-            expect(writing.pollUnsafe()).toBeUndefined();
-            expect(yield* Deferred.isDone(gates[second].finished)).toBe(false);
-            yield* Deferred.succeed(gates[second].release, undefined);
-            expect(yield* Fiber.join(writing)).toEqual({ relativePath: "new.txt" });
-            expect(yield* Deferred.isDone(gates[second].finished)).toBe(true);
-          }),
-      );
-    }
+          yield* Deferred.await(gates.paths.started);
+          yield* Deferred.await(gates.content.started);
+          expect(yield* Deferred.isDone(gates.paths.finished)).toBe(false);
+          expect(yield* Deferred.isDone(gates.content.finished)).toBe(false);
+          expect(writing.pollUnsafe()).toBeUndefined();
+          yield* Deferred.succeed(gates[first].release, undefined);
+          yield* Deferred.await(gates[first].finished);
+          expect(writing.pollUnsafe()).toBeUndefined();
+          expect(yield* Deferred.isDone(gates[second].finished)).toBe(false);
+          yield* Deferred.succeed(gates[second].release, undefined);
+          expect(yield* Fiber.join(writing)).toEqual({ relativePath: "new.txt" });
+          expect(yield* Deferred.isDone(gates[second].finished)).toBe(true);
+        }),
+    );
 
     it.effect("cancels both resident refresh waits without rolling back the written file", () =>
       Effect.gen(function* () {

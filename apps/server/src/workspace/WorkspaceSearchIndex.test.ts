@@ -141,8 +141,9 @@ it.effect("continues whole-word searches after a filtered grep page", () =>
   ),
 );
 
-for (const variant of WorkspaceSearchIndex.WORKSPACE_SEARCH_INDEX_VARIANTS) {
-  it.effect(`waits for ${variant} index readiness after refresh scans`, () =>
+it.effect.each(WorkspaceSearchIndex.WORKSPACE_SEARCH_INDEX_VARIANTS)(
+  "waits for %s index readiness after refresh scans",
+  (variant) =>
     Effect.scoped(
       Effect.gen(function* () {
         const started = Promise.withResolvers<void>();
@@ -173,5 +174,4 @@ for (const variant of WorkspaceSearchIndex.WORKSPACE_SEARCH_INDEX_VARIANTS) {
         yield* Fiber.join(refreshing);
       }),
     ),
-  );
-}
+);

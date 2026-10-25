@@ -105,7 +105,7 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
         const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
         const normalizedCwd = yield* workspacePaths.normalizeWorkspaceRoot(cwd);
         const refreshed: string[] = [];
-        const lookup = vi.fn((key: string) =>
+        const lookup = vi.fn((key: string): ReturnType<typeof WorkspaceSearchIndex.layer> =>
           Layer.mock(WorkspaceSearchIndex.WorkspaceSearchIndex)({
             refresh: () =>
               Effect.sync(() => {
@@ -131,81 +131,81 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
       }),
     );
 
-    for (const failingVariant of WorkspaceSearchIndex.WORKSPACE_SEARCH_INDEX_VARIANTS) {
-      for (const failure of ["create", "timeout", "refresh"] as const) {
-        it.effect(
-          `invalidates only ${failingVariant} after ${failure} failure and refreshes its sibling`,
-          () =>
-            Effect.gen(function* () {
-              const cwd = yield* makeTempDir();
-              const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
-              const normalizedCwd = yield* workspacePaths.normalizeWorkspaceRoot(cwd);
-              const failedKey = WorkspaceSearchIndex.workspaceSearchIndexKey(
-                normalizedCwd,
-                failingVariant,
-              );
-              const siblingKey = WorkspaceSearchIndex.workspaceSearchIndexKey(
-                normalizedCwd,
-                failingVariant === "paths" ? "content" : "paths",
-              );
-              const error =
-                failure === "timeout"
-                  ? new WorkspaceSearchIndex.WorkspaceSearchIndexScanTimedOut({
-                      cwd,
-                      timeout: "15 seconds",
-                    })
-                  : new WorkspaceSearchIndex.WorkspaceSearchIndexRefreshFailed({
-                      cwd,
-                      reason: "test failure",
-                    });
-              const refreshed: string[] = [];
-              const lookup = vi.fn((key: string) =>
-                Layer.mock(WorkspaceSearchIndex.WorkspaceSearchIndex)({
-                  refresh: () =>
-                    Effect.gen(function* () {
-                      refreshed.push(key);
-                      if (key === failedKey) return yield* error;
-                    }),
+    it.effect.each(
+      WorkspaceSearchIndex.WORKSPACE_SEARCH_INDEX_VARIANTS.flatMap((failingVariant) =>
+        (["create", "timeout", "refresh"] as const).map((failure) => ({ failingVariant, failure })),
+      ),
+    )(
+      "invalidates only $failingVariant after $failure failure and refreshes its sibling",
+      ({ failingVariant, failure }) =>
+        Effect.gen(function* () {
+          const cwd = yield* makeTempDir();
+          const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
+          const normalizedCwd = yield* workspacePaths.normalizeWorkspaceRoot(cwd);
+          const failedKey = WorkspaceSearchIndex.workspaceSearchIndexKey(
+            normalizedCwd,
+            failingVariant,
+          );
+          const siblingKey = WorkspaceSearchIndex.workspaceSearchIndexKey(
+            normalizedCwd,
+            failingVariant === "paths" ? "content" : "paths",
+          );
+          const error =
+            failure === "timeout"
+              ? new WorkspaceSearchIndex.WorkspaceSearchIndexScanTimedOut({
+                  cwd,
+                  timeout: "15 seconds",
+                })
+              : new WorkspaceSearchIndex.WorkspaceSearchIndexRefreshFailed({
+                  cwd,
+                  reason: "test failure",
+                });
+          const refreshed: string[] = [];
+          const lookup = vi.fn((key: string): ReturnType<typeof WorkspaceSearchIndex.layer> =>
+            Layer.mock(WorkspaceSearchIndex.WorkspaceSearchIndex)({
+              refresh: () =>
+                Effect.gen(function* () {
+                  refreshed.push(key);
+                  if (key === failedKey) return yield* error;
                 }),
-              );
-              const indexes = yield* LayerMap.make(lookup);
-              yield* indexes.contextEffect(failedKey);
-              yield* indexes.contextEffect(siblingKey);
-              const entries = yield* WorkspaceEntries.make.pipe(
-                Effect.provideService(WorkspaceSearchIndex.WorkspaceSearchIndexMap, {
-                  ...indexes,
-                  get: (key) =>
-                    failure === "create" && key === failedKey
-                      ? Layer.effect(
-                          WorkspaceSearchIndex.WorkspaceSearchIndex,
-                          Effect.fail(
-                            new WorkspaceSearchIndex.WorkspaceSearchIndexCreateFailed({
-                              cwd,
-                              reason: "test acquisition failure",
-                            }),
-                          ),
-                        )
-                      : indexes.get(key),
-                }),
-              );
-
-              yield* entries.refresh(cwd);
-
-              expect(refreshed.toSorted()).toEqual(
-                (failure === "create" ? [siblingKey] : [failedKey, siblingKey]).toSorted(),
-              );
-              expect(yield* RcMap.has(indexes.rcMap, failedKey)).toBe(false);
-              expect(yield* RcMap.has(indexes.rcMap, siblingKey)).toBe(true);
-              yield* indexes.contextEffect(failedKey);
-              expect(lookup.mock.calls.map(([key]) => key)).toEqual([
-                failedKey,
-                siblingKey,
-                failedKey,
-              ]);
             }),
-        );
-      }
-    }
+          );
+          const indexes = yield* LayerMap.make(lookup);
+          yield* indexes.contextEffect(failedKey);
+          yield* indexes.contextEffect(siblingKey);
+          const entries = yield* WorkspaceEntries.make.pipe(
+            Effect.provideService(WorkspaceSearchIndex.WorkspaceSearchIndexMap, {
+              ...indexes,
+              get: (key) =>
+                failure === "create" && key === failedKey
+                  ? Layer.effect(
+                      WorkspaceSearchIndex.WorkspaceSearchIndex,
+                      Effect.fail(
+                        new WorkspaceSearchIndex.WorkspaceSearchIndexCreateFailed({
+                          cwd,
+                          reason: "test acquisition failure",
+                        }),
+                      ),
+                    )
+                  : indexes.get(key),
+            }),
+          );
+
+          yield* entries.refresh(cwd);
+
+          expect(refreshed.toSorted()).toEqual(
+            (failure === "create" ? [siblingKey] : [failedKey, siblingKey]).toSorted(),
+          );
+          expect(yield* RcMap.has(indexes.rcMap, failedKey)).toBe(false);
+          expect(yield* RcMap.has(indexes.rcMap, siblingKey)).toBe(true);
+          yield* indexes.contextEffect(failedKey);
+          expect(lookup.mock.calls.map(([key]) => key)).toEqual([
+            failedKey,
+            siblingKey,
+            failedKey,
+          ]);
+        }),
+    );
   });
 
   describe("list", () => {
