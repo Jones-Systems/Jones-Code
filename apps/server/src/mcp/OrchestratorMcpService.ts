@@ -1042,11 +1042,16 @@ const make = Effect.gen(function* () {
     Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "subagents" | "contextTransfers">,
     OrchestratorMcpFailure
   > =>
-    threadManagement.getThreadRecords(threadId, ["runs", "subagents", "contextTransfers"]).pipe(
-      Effect.mapError((error) =>
-        failure("orchestration_error", `Unable to read thread ${threadId}: ${errorMessage(error)}`),
-      ),
-    );
+    threadManagement
+      .getThreadRecords(threadId, ["runs", "subagents", "contextTransfers"])
+      .pipe(
+        Effect.mapError((error) =>
+          failure(
+            "orchestration_error",
+            `Unable to read thread ${threadId}: ${errorMessage(error)}`,
+          ),
+        ),
+      );
 
   const loadProjectThread = (
     projectId: OrchestrationV2ThreadProjection["thread"]["projectId"],
@@ -1818,7 +1823,9 @@ const make = Effect.gen(function* () {
           threadManagement
             .streamStoredEventsFrom({
               threadId:
-                thread === "parent" || childThreadId === null ? scope.thread.threadId : childThreadId,
+                thread === "parent" || childThreadId === null
+                  ? scope.thread.threadId
+                  : childThreadId,
               afterSequence,
               eventType,
             })

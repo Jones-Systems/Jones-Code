@@ -88,274 +88,404 @@ const storedUpdate = (id: NodeId, sequence = 42): OrchestrationV2StoredEvent => 
     payload: { ...task, id },
   },
 });
-const serviceLayer = (management: Partial<ThreadManagementService.ThreadManagementService["Service"]>) =>
+const serviceLayer = (
+  management: Partial<ThreadManagementService.ThreadManagementService["Service"]>,
+) =>
   OrchestratorMcpService.layer.pipe(
-    Layer.provide(Layer.mergeAll(
-      NodeServices.layer,
-      Layer.mock(ThreadManagementService.ThreadManagementService)({
-        readRemoteTaskObservation: () => Effect.succeed(undefined),
-        ...management,
-      }),
-      Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
-      Layer.mock(GitVcsDriver.GitVcsDriver)({}),
-      ServerSettings.layerTest(),
-      Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
-      Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({ list: () => Effect.succeed([]) }),
-      Layer.mock(ProjectService.ProjectService)({}),
-      Layer.mock(SecretRequests.SecretRequests)({}),
-      Layer.mock(RemoteDelegation.RemoteDelegation)({
-        delegate: () => Effect.succeed({ taskId }),
-        observe: (_scope, observedTask) => Effect.succeed({
-          observation: {
-            schemaVersion: "t3.remote-task-observation/v1",
-            environmentId: remoteChild.environmentId,
-            threadId: remoteChild.threadId,
-            originalRunId: remoteChild.runId,
-            blockingQuestions: { resumeToken: "task-reads", requests: [] },
-            childProgress: {
-              hasPendingChildRuns: false,
-              latestTerminalRunId: remoteChild.runId,
-              latestTerminalStatus: "completed",
-            },
-          } satisfies RemoteTaskObservation,
-          latestTerminalSummary: observedTask.result,
+    Layer.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRemoteTaskObservation: () => Effect.succeed(undefined),
+          ...management,
         }),
-      }),
-      Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
-    )),
+        Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+        Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+        ServerSettings.layerTest(),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
+        Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+          list: () => Effect.succeed([]),
+        }),
+        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({
+          delegate: () => Effect.succeed({ taskId }),
+          observe: (_scope, observedTask) =>
+            Effect.succeed({
+              observation: {
+                schemaVersion: "t3.remote-task-observation/v1",
+                environmentId: remoteChild.environmentId,
+                threadId: remoteChild.threadId,
+                originalRunId: remoteChild.runId,
+                blockingQuestions: { resumeToken: "task-reads", requests: [] },
+                childProgress: {
+                  hasPendingChildRuns: false,
+                  latestTerminalRunId: remoteChild.runId,
+                  latestTerminalStatus: "completed",
+                },
+              } satisfies RemoteTaskObservation,
+              latestTerminalSummary: observedTask.result,
+            }),
+        }),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+      ),
+    ),
   );
 
 const parent = idleThreadProjection(liveThreadShell(parentId));
 
 describe("MCP task read selection", () => {
   for (const scenario of ["siblings", "completion", "question", "undecodable"] as const) {
-    it.effect(`filters parent wake events: ${scenario}`, () => Effect.gen(function* () {
-      let reads = 0;
-      const parentFields: Array<ReadonlyArray<string>> = [];
-      let cursorCaptured = false;
-      let streamClosed = false;
-      const sibling = storedUpdate(NodeId.make("unrelated-task"));
-      assert.isTrue(Schema.is(OrchestrationV2DomainEvent)(sibling.event));
-      const events = scenario === "siblings"
-        ? Array.from({ length: 128 }, (_, index) => ({ ...sibling, sequence: 42 + index }))
-        : [scenario === "undecodable"
-          ? { ...sibling, event: { ...sibling.event, payload: null } } as unknown as OrchestrationV2StoredEvent
-          : storedUpdate(taskId)];
-      const layer = serviceLayer({
-        getThreadEventSequence: () => Effect.sync(() => {
-          assert.equal(reads, 0);
-          cursorCaptured = true;
-          return 41;
-        }),
-        getThreadRecords: (threadId, fields) => Effect.sync(() => {
-          assert.equal(threadId, parentId);
-          assert.isTrue(cursorCaptured);
-          parentFields.push(fields);
-          reads += 1;
-          const selected: OrchestrationV2Subagent = reads === 1 || scenario === "siblings"
-            ? task
-            : scenario === "question"
-              ? { ...task, status: "waiting", progress: "Which option?" }
-              : { ...task, status: "completed", result: "Done", completionDelivery: { state: "acknowledged", observedByRunId: null } };
-          return { ...parent, subagents: [selected, ...Array.from({ length: 128 }, (_, index) => ({
-            ...task, id: NodeId.make(`sibling-${index}`),
-          }))] };
-        }),
-        streamStoredEventsFrom: (input) => {
-          assert.deepEqual(input, { threadId: parentId, afterSequence: 41, eventType: "subagent.updated" });
-          return Stream.fromIterable(events).pipe(Stream.ensuring(Effect.sync(() => { streamClosed = true; })));
-        },
-        dispatch: () => Effect.succeed({} as never),
-      });
-      const result = yield* Effect.gen(function* () {
-        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-        return yield* service.delegateTask(scope, {
-          prompt: "Synthetic task", mode: "wait", timeoutMs: 1_000,
-          target: { environmentId: remoteChild.environmentId },
+    it.effect(`filters parent wake events: ${scenario}`, () =>
+      Effect.gen(function* () {
+        let reads = 0;
+        const parentFields: Array<ReadonlyArray<string>> = [];
+        let cursorCaptured = false;
+        let streamClosed = false;
+        const sibling = storedUpdate(NodeId.make("unrelated-task"));
+        assert.isTrue(Schema.is(OrchestrationV2DomainEvent)(sibling.event));
+        const events =
+          scenario === "siblings"
+            ? Array.from({ length: 128 }, (_, index) => ({ ...sibling, sequence: 42 + index }))
+            : [
+                scenario === "undecodable"
+                  ? ({
+                      ...sibling,
+                      event: { ...sibling.event, payload: null },
+                    } as unknown as OrchestrationV2StoredEvent)
+                  : storedUpdate(taskId),
+              ];
+        const layer = serviceLayer({
+          getThreadEventSequence: () =>
+            Effect.sync(() => {
+              assert.equal(reads, 0);
+              cursorCaptured = true;
+              return 41;
+            }),
+          getThreadRecords: (threadId, fields) =>
+            Effect.sync(() => {
+              assert.equal(threadId, parentId);
+              assert.isTrue(cursorCaptured);
+              parentFields.push(fields);
+              reads += 1;
+              const selected: OrchestrationV2Subagent =
+                reads === 1 || scenario === "siblings"
+                  ? task
+                  : scenario === "question"
+                    ? { ...task, status: "waiting", progress: "Which option?" }
+                    : {
+                        ...task,
+                        status: "completed",
+                        result: "Done",
+                        completionDelivery: { state: "acknowledged", observedByRunId: null },
+                      };
+              return {
+                ...parent,
+                subagents: [
+                  selected,
+                  ...Array.from({ length: 128 }, (_, index) => ({
+                    ...task,
+                    id: NodeId.make(`sibling-${index}`),
+                  })),
+                ],
+              };
+            }),
+          streamStoredEventsFrom: (input) => {
+            assert.deepEqual(input, {
+              threadId: parentId,
+              afterSequence: 41,
+              eventType: "subagent.updated",
+            });
+            return Stream.fromIterable(events).pipe(
+              Stream.ensuring(
+                Effect.sync(() => {
+                  streamClosed = true;
+                }),
+              ),
+            );
+          },
+          dispatch: () => Effect.succeed({} as never),
         });
-      }).pipe(Effect.provide(layer));
-      assert.equal(reads, 2);
-      for (const fields of parentFields) {
-        assert.deepEqual(fields, ["runs", "subagents", "contextTransfers"]);
-      }
-      assert.isTrue(streamClosed);
-      assert.equal(result.waitTimedOut, scenario === "siblings");
-      assert.equal(result.hasPendingQuestion, scenario === "question");
-      assert.equal(result.status, scenario === "completion" || scenario === "undecodable" ? "completed" : "running");
-    }));
+        const result = yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          return yield* service.delegateTask(scope, {
+            prompt: "Synthetic task",
+            mode: "wait",
+            timeoutMs: 1_000,
+            target: { environmentId: remoteChild.environmentId },
+          });
+        }).pipe(Effect.provide(layer));
+        assert.equal(reads, 2);
+        for (const fields of parentFields) {
+          assert.deepEqual(fields, ["runs", "subagents", "contextTransfers"]);
+        }
+        assert.isTrue(streamClosed);
+        assert.equal(result.waitTimedOut, scenario === "siblings");
+        assert.equal(result.hasPendingQuestion, scenario === "question");
+        assert.equal(
+          result.status,
+          scenario === "completion" || scenario === "undecodable" ? "completed" : "running",
+        );
+      }),
+    );
   }
 
   for (const scenario of [
-    "run.updated", "subagent.updated", "provider-thread.updated", "runtime-request.updated", "approval",
+    "run.updated",
+    "subagent.updated",
+    "provider-thread.updated",
+    "runtime-request.updated",
+    "approval",
   ] as const) {
-    it.effect(`keeps child activity wakeups: ${scenario}`, () => Effect.gen(function* () {
-      const eventType = scenario === "approval" ? "runtime-request.updated" : scenario;
-      const pendingQuestion = scenario === "runtime-request.updated";
-      const pendingApproval = scenario === "approval";
-      const childId = ThreadId.make("thread:task-reads-local-child");
-      const childRunId = RunId.make("run:task-reads-local");
-      const approvalNodeId = NodeId.make("node:task-reads-approval");
-      const approvalRequestId = RuntimeRequestId.make("request:task-reads-approval");
-      const child = idleThreadProjection(liveThreadShell(childId));
-      let parentReads = 0;
-      let controlReads = 0;
-      let resultReads = 0;
-      const layer = serviceLayer({
-        getThreadEventSequence: () => Effect.succeed(41),
-        getThreadRecords: (threadId, fields, options) => Effect.sync(() => {
-          if (threadId === parentId) {
-            parentReads += 1;
-            assert.deepEqual(fields, ["runs", "subagents", "contextTransfers"]);
-            return { ...parent, subagents: [{
-              ...task, childThreadId: childId,
-              completionDelivery: {
-                state: pendingApproval ? "acknowledged" as const : "disposed" as const,
-                observedByRunId: null,
-              },
-            }] };
-          }
-          assert.equal(threadId, childId);
-          if (fields.some((field) => field === "runs")) {
-            assert.deepEqual(fields, [
-              "runs", "messages", "contextTransfers", "subagents", "providerThreads", "runtimeRequests", "nodes",
-            ]);
-            assert.deepEqual(options, { messageRoles: ["user"], omitSettledLeafNodes: true });
-            controlReads += 1;
-          } else {
-            assert.deepEqual(fields, ["messages", "turnItems"]);
-            resultReads += 1;
-          }
-          const finished = controlReads > 1;
-          return {
-            ...child,
-            runs: [{
-              id: childRunId,
-              delegatedTaskId: taskId, ordinal: 1,
-              status: finished && eventType !== "runtime-request.updated" ? "completed" : "running",
-              startedAt: now,
-              completedAt: finished && eventType !== "runtime-request.updated" ? now : null,
-            } as OrchestrationV2Run],
-            nodes: finished && pendingApproval
-              ? [{ id: approvalNodeId, runId: childRunId } as OrchestrationV2ThreadProjection["nodes"][number]]
-              : [],
-            runtimeRequests: finished && (pendingQuestion || pendingApproval)
-              ? [{
-                  id: approvalRequestId,
-                  nodeId: approvalNodeId,
-                  kind: pendingApproval ? "command" : "user_input",
-                  status: "pending", responseCapability: { type: "live" }, createdAt: now,
-                } as OrchestrationV2RuntimeRequest]
-              : [],
-          };
-        }),
-        delegatedTaskResultPending: () => Effect.succeed(false),
-        streamStoredEventsFrom: (input) => {
-          assert.equal(input?.afterSequence, 41);
-          if (input?.threadId !== childId || input.eventType !== eventType) return Stream.empty;
-          const event = storedUpdate(NodeId.make("nested-child-task"));
-          return Stream.succeed({
-            ...event, event: { ...event.event, threadId: childId, type: eventType },
-          } as OrchestrationV2StoredEvent);
-        },
-      });
-      const result = yield* Effect.gen(function* () {
-        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-        return yield* service.delegateTask(scope, {
-          prompt: "Synthetic task", mode: "wait", timeoutMs: 1_000,
-          target: { environmentId: remoteChild.environmentId },
+    it.effect(`keeps child activity wakeups: ${scenario}`, () =>
+      Effect.gen(function* () {
+        const eventType = scenario === "approval" ? "runtime-request.updated" : scenario;
+        const pendingQuestion = scenario === "runtime-request.updated";
+        const pendingApproval = scenario === "approval";
+        const childId = ThreadId.make("thread:task-reads-local-child");
+        const childRunId = RunId.make("run:task-reads-local");
+        const approvalNodeId = NodeId.make("node:task-reads-approval");
+        const approvalRequestId = RuntimeRequestId.make("request:task-reads-approval");
+        const child = idleThreadProjection(liveThreadShell(childId));
+        let parentReads = 0;
+        let controlReads = 0;
+        let resultReads = 0;
+        const layer = serviceLayer({
+          getThreadEventSequence: () => Effect.succeed(41),
+          getThreadRecords: (threadId, fields, options) =>
+            Effect.sync(() => {
+              if (threadId === parentId) {
+                parentReads += 1;
+                assert.deepEqual(fields, ["runs", "subagents", "contextTransfers"]);
+                return {
+                  ...parent,
+                  subagents: [
+                    {
+                      ...task,
+                      childThreadId: childId,
+                      completionDelivery: {
+                        state: pendingApproval ? ("acknowledged" as const) : ("disposed" as const),
+                        observedByRunId: null,
+                      },
+                    },
+                  ],
+                };
+              }
+              assert.equal(threadId, childId);
+              if (fields.some((field) => field === "runs")) {
+                assert.deepEqual(fields, [
+                  "runs",
+                  "messages",
+                  "contextTransfers",
+                  "subagents",
+                  "providerThreads",
+                  "runtimeRequests",
+                  "nodes",
+                ]);
+                assert.deepEqual(options, { messageRoles: ["user"], omitSettledLeafNodes: true });
+                controlReads += 1;
+              } else {
+                assert.deepEqual(fields, ["messages", "turnItems"]);
+                resultReads += 1;
+              }
+              const finished = controlReads > 1;
+              return {
+                ...child,
+                runs: [
+                  {
+                    id: childRunId,
+                    delegatedTaskId: taskId,
+                    ordinal: 1,
+                    status:
+                      finished && eventType !== "runtime-request.updated" ? "completed" : "running",
+                    startedAt: now,
+                    completedAt: finished && eventType !== "runtime-request.updated" ? now : null,
+                  } as OrchestrationV2Run,
+                ],
+                nodes:
+                  finished && pendingApproval
+                    ? [
+                        {
+                          id: approvalNodeId,
+                          runId: childRunId,
+                        } as OrchestrationV2ThreadProjection["nodes"][number],
+                      ]
+                    : [],
+                runtimeRequests:
+                  finished && (pendingQuestion || pendingApproval)
+                    ? [
+                        {
+                          id: approvalRequestId,
+                          nodeId: approvalNodeId,
+                          kind: pendingApproval ? "command" : "user_input",
+                          status: "pending",
+                          responseCapability: { type: "live" },
+                          createdAt: now,
+                        } as OrchestrationV2RuntimeRequest,
+                      ]
+                    : [],
+              };
+            }),
+          delegatedTaskResultPending: () => Effect.succeed(false),
+          streamStoredEventsFrom: (input) => {
+            assert.equal(input?.afterSequence, 41);
+            if (input?.threadId !== childId || input.eventType !== eventType) return Stream.empty;
+            const event = storedUpdate(NodeId.make("nested-child-task"));
+            return Stream.succeed({
+              ...event,
+              event: { ...event.event, threadId: childId, type: eventType },
+            } as OrchestrationV2StoredEvent);
+          },
         });
-      }).pipe(Effect.provide(layer));
-      assert.equal(result.status, eventType === "runtime-request.updated" ? "running" : "completed");
-      assert.equal(result.hasPendingQuestion, pendingQuestion);
-      assert.deepEqual(result.pendingApproval, pendingApproval
-        ? { requestId: approvalRequestId, kind: "command", runId: childRunId }
-        : null);
-      assert.isFalse(result.waitTimedOut);
-      assert.equal(parentReads, 2);
-      assert.equal(controlReads, 2);
-      assert.equal(resultReads, 2);
-    }));
+        const result = yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          return yield* service.delegateTask(scope, {
+            prompt: "Synthetic task",
+            mode: "wait",
+            timeoutMs: 1_000,
+            target: { environmentId: remoteChild.environmentId },
+          });
+        }).pipe(Effect.provide(layer));
+        assert.equal(
+          result.status,
+          eventType === "runtime-request.updated" ? "running" : "completed",
+        );
+        assert.equal(result.hasPendingQuestion, pendingQuestion);
+        assert.deepEqual(
+          result.pendingApproval,
+          pendingApproval
+            ? { requestId: approvalRequestId, kind: "command", runId: childRunId }
+            : null,
+        );
+        assert.isFalse(result.waitTimedOut);
+        assert.equal(parentReads, 2);
+        assert.equal(controlReads, 2);
+        assert.equal(resultReads, 2);
+      }),
+    );
   }
 
   for (const followupStatus of ["running", "completed"] as const) {
-    it.effect(`reads local original and followup results: ${followupStatus}`, () => Effect.gen(function* () {
-      const childId = ThreadId.make("thread:task-reads-followup");
-      const originalId = RunId.make("run:task-reads-original");
-      const followupId = RunId.make("run:task-reads-followup");
-      const child = idleThreadProjection(liveThreadShell(childId));
-      const calls: Array<ReadonlyArray<string>> = [];
-      const layer = serviceLayer({
-        getThreadRecords: (threadId, fields) => Effect.sync(() => {
-          if (threadId === parentId) {
-            calls.push(fields);
-            return { ...parent, subagents: [{
-              ...task, childThreadId: childId,
-              completionDelivery: { state: "disposed" as const, observedByRunId: null },
-            }] };
-          }
-          assert.equal(threadId, childId);
-          return {
-            ...child,
-            runs: [
-              { id: originalId, delegatedTaskId: taskId, ordinal: 1, status: "completed",
-                startedAt: now, completedAt: now },
-              { id: followupId, delegatedTaskId: taskId, ordinal: 2, status: followupStatus,
-                startedAt: now, completedAt: followupStatus === "completed" ? now : null },
-            ] as Array<OrchestrationV2Run>,
-          };
-        }),
-        delegatedTaskResultPending: () => Effect.succeed(false),
-      });
-      const result = yield* Effect.gen(function* () {
-        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-        return yield* service.taskStatus(scope, taskId);
-      }).pipe(Effect.provide(layer));
-      assert.deepEqual(calls, [["runs", "subagents", "contextTransfers"]]);
-      assert.equal(result.childRunId, originalId);
-      assert.equal(result.status, followupStatus);
-      assert.equal(result.latestTerminalRunId, followupStatus === "completed" ? followupId : originalId);
-      assert.equal(result.hasPendingChildRuns, followupStatus === "running");
-    }));
+    it.effect(`reads local original and followup results: ${followupStatus}`, () =>
+      Effect.gen(function* () {
+        const childId = ThreadId.make("thread:task-reads-followup");
+        const originalId = RunId.make("run:task-reads-original");
+        const followupId = RunId.make("run:task-reads-followup");
+        const child = idleThreadProjection(liveThreadShell(childId));
+        const calls: Array<ReadonlyArray<string>> = [];
+        const layer = serviceLayer({
+          getThreadRecords: (threadId, fields) =>
+            Effect.sync(() => {
+              if (threadId === parentId) {
+                calls.push(fields);
+                return {
+                  ...parent,
+                  subagents: [
+                    {
+                      ...task,
+                      childThreadId: childId,
+                      completionDelivery: { state: "disposed" as const, observedByRunId: null },
+                    },
+                  ],
+                };
+              }
+              assert.equal(threadId, childId);
+              return {
+                ...child,
+                runs: [
+                  {
+                    id: originalId,
+                    delegatedTaskId: taskId,
+                    ordinal: 1,
+                    status: "completed",
+                    startedAt: now,
+                    completedAt: now,
+                  },
+                  {
+                    id: followupId,
+                    delegatedTaskId: taskId,
+                    ordinal: 2,
+                    status: followupStatus,
+                    startedAt: now,
+                    completedAt: followupStatus === "completed" ? now : null,
+                  },
+                ] as Array<OrchestrationV2Run>,
+              };
+            }),
+          delegatedTaskResultPending: () => Effect.succeed(false),
+        });
+        const result = yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          return yield* service.taskStatus(scope, taskId);
+        }).pipe(Effect.provide(layer));
+        assert.deepEqual(calls, [["runs", "subagents", "contextTransfers"]]);
+        assert.equal(result.childRunId, originalId);
+        assert.equal(result.status, followupStatus);
+        assert.equal(
+          result.latestTerminalRunId,
+          followupStatus === "completed" ? followupId : originalId,
+        );
+        assert.equal(result.hasPendingChildRuns, followupStatus === "running");
+      }),
+    );
   }
 
-  it.effect("remote acknowledgement reads fresh runs only and retries with a fresh command id", () => Effect.gen(function* () {
-    const calls: Array<ReadonlyArray<string>> = [];
-    const commands: Array<string> = [];
-    const observingRunId = RunId.make("run:fresh-observer");
-    const layer = serviceLayer({
-      getThreadRecords: (threadId, fields) => Effect.sync(() => {
-        assert.equal(threadId, parentId);
-        calls.push(fields);
-        return {
-          ...parent,
-          subagents: [{ ...task, status: "completed" as const, result: "Remote result" }],
-          runs: fields.length === 1 ? [{
-            id: observingRunId, status: "running", ordinal: 2, providerInstanceId,
-          } as OrchestrationV2Run] : [],
-        };
+  it.effect(
+    "remote acknowledgement reads fresh runs only and retries with a fresh command id",
+    () =>
+      Effect.gen(function* () {
+        const calls: Array<ReadonlyArray<string>> = [];
+        const commands: Array<string> = [];
+        const observingRunId = RunId.make("run:fresh-observer");
+        const layer = serviceLayer({
+          getThreadRecords: (threadId, fields) =>
+            Effect.sync(() => {
+              assert.equal(threadId, parentId);
+              calls.push(fields);
+              return {
+                ...parent,
+                subagents: [{ ...task, status: "completed" as const, result: "Remote result" }],
+                runs:
+                  fields.length === 1
+                    ? [
+                        {
+                          id: observingRunId,
+                          status: "running",
+                          ordinal: 2,
+                          providerInstanceId,
+                        } as OrchestrationV2Run,
+                      ]
+                    : [],
+              };
+            }),
+          dispatch: (command) =>
+            Effect.gen(function* () {
+              assert.equal(command.type, "delegated_task.completion-delivery.acknowledge");
+              if (command.type !== "delegated_task.completion-delivery.acknowledge")
+                return {} as never;
+              assert.equal(command.observedByRunId, observingRunId);
+              commands.push(command.commandId);
+              if (commands.length === 1)
+                return yield* Effect.fail(new Error("Synthetic failure") as never);
+              return {} as never;
+            }),
+        });
+        yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          const error = yield* service.taskStatus(scope, taskId).pipe(Effect.flip);
+          assert.equal(error.code, "orchestration_error");
+          const result = yield* service.taskStatus(scope, taskId);
+          assert.equal(result.summary, "Remote result");
+          assert.equal(result.status, "completed");
+        }).pipe(Effect.provide(layer));
+        assert.deepEqual(calls, [
+          ["runs", "subagents", "contextTransfers"],
+          ["runs"],
+          ["runs", "subagents", "contextTransfers"],
+          ["runs"],
+        ]);
+        assert.lengthOf(commands, 2);
+        assert.notEqual(commands[0], commands[1]);
       }),
-      dispatch: (command) => Effect.gen(function* () {
-        assert.equal(command.type, "delegated_task.completion-delivery.acknowledge");
-        if (command.type !== "delegated_task.completion-delivery.acknowledge") return {} as never;
-        assert.equal(command.observedByRunId, observingRunId);
-        commands.push(command.commandId);
-        if (commands.length === 1) return yield* Effect.fail(new Error("Synthetic failure") as never);
-        return {} as never;
-      }),
-    });
-    yield* Effect.gen(function* () {
-      const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-      const error = yield* service.taskStatus(scope, taskId).pipe(Effect.flip);
-      assert.equal(error.code, "orchestration_error");
-      const result = yield* service.taskStatus(scope, taskId);
-      assert.equal(result.summary, "Remote result");
-      assert.equal(result.status, "completed");
-    }).pipe(Effect.provide(layer));
-    assert.deepEqual(calls, [
-      ["runs", "subagents", "contextTransfers"], ["runs"],
-      ["runs", "subagents", "contextTransfers"], ["runs"],
-    ]);
-    assert.lengthOf(commands, 2);
-    assert.notEqual(commands[0], commands[1]);
-  }));
+  );
 });
