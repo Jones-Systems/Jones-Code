@@ -9,7 +9,6 @@ import {
 } from "./workstreamsNative.ts";
 
 const Id = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9._:-]{1,512}$/));
-export const WORKSTREAMS_ROLLUP_EVIDENCE_CONTRACT = "workstreams-rollup-evidence/1.0.0";
 export const WorkstreamsRollupFreshness = Schema.Literals([
   "current",
   "stale",

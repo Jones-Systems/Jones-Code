@@ -10,8 +10,8 @@ import {
   WorkstreamsNativeOrigin,
 } from "./workstreamsNative.ts";
 
-export const WORKSTREAMS_SNAPSHOT_CONTRACT = "workstreams-snapshot/1.0.0";
-export const WORKSTREAMS_SNAPSHOT_CLASSES = [
+const WORKSTREAMS_SNAPSHOT_CONTRACT = "workstreams-snapshot/1.0.0";
+const WORKSTREAMS_SNAPSHOT_CLASSES = [
   "workstream_registry_context",
   "workstream_owner_grants",
   "workstream_source_bindings",
