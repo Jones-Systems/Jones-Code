@@ -52,6 +52,7 @@ import {
   parseRemoteRefWithRemoteNames,
 } from "../git/remoteRefs.ts";
 import * as ServerConfig from "../config.ts";
+import { admitGitProcess } from "../jones/git/backgroundGitAdmission.ts";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const gitProcesses = Semaphore.makeUnsafe(8);
@@ -1106,7 +1107,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       (execution) =>
         input.timeoutMs === null || (input.timeoutMs ?? DEFAULT_TIMEOUT_MS) > DEFAULT_TIMEOUT_MS
           ? execution
-          : gitProcesses.withPermits(1)(execution),
+          // Background work waits before taking any of the shared Git permits.
+          : admitGitProcess(gitProcesses.withPermits(1)(execution)),
       Effect.withSpan(input.operation, {
         kind: "client",
         attributes: {
