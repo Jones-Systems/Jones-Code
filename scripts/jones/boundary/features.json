@@ -4,6 +4,11 @@
   "baseline": "05b697f6a2012497ae790425e197fbd1fcef7de7",
   "features": [
     {
+      "id": "queue-removal",
+      "tests": ["apps/web/src/jones/queue/QueuedRunRemoval.browser.test.tsx"],
+      "scope": "Web and desktop queue header Clear All cancels the saved click snapshot through existing per-run commands. Independent removals reserve only their own IDs; failures retain authoritative rows and report unconfirmed removals. Send, steer, edit, reorder and imported-history review remain fenced during cancellation and until accepted cancellations leave the projection. Active queued drafts and unsaved optimistic rows disable Clear All. No server, wire, provider, mobile, MCP or scheduled-task behavior changes. QueuedRunsControl retains narrow presentation and safety hooks into Jones-owned removal logic."
+    },
+    {
       "id": "project-group-title",
       "tests": ["packages/client-runtime/src/jones/projectGroupTitle.test.ts"],
       "scope": "Shared saved project names take precedence over repository labels when every checkout agrees, including names equal to the repository short name. Mixed titles retain the repository fallback; group identity, environment membership and persistence stay unchanged. One shared-client hook covers web, desktop and mobile."
