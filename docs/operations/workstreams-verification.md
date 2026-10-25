@@ -19,17 +19,27 @@ as unverified. The HTTP fixture injects the authenticated principal, stamped
 build and native authority. It does not test browser pairing, native database
 ownership or whether a launcher trusts an installed build.
 
-The fixture also injects an HTTPS registry identity into the gateway while its
-signed transport uses loopback HTTP. Activation accepts that loopback origin,
-but the current client binding schema requires HTTPS; without this seam the
-real list response fails serialization. This suite does not qualify production
-loopback activation. Track that compatibility defect separately from test
-coverage and installed enrollment.
+The loopback fixture now uses the configured registry-binding token and the
+production transport-derived canonical identity. The unchanged list decoder
+receives that HTTPS identity through real Jones HTTP. The fixture independently
+implements the signed envelope over the existing synthetic registry; it is not
+the producer's Fastify listener or PostgreSQL authorization implementation.
+Golden request/response vectors and exact contract digests qualify the wire
+encoding against the pinned producer source.
+
+The joined hook test uses the real EnvironmentHttpApi client, Jones HTTP,
+transport and unchanged command ledger. It exercises a grant change after
+capabilities but before POST, authenticated refusal and HTTP 409, then a fresh
+command without replay. Missing, invalid and replayed proof retain the original
+fence, including when the fixture knows it refused before dispatch. Lost replies
+after commit recover only through receipt GET. Synthetic authority restoration
+is a test action, not an operational recovery procedure. This source evidence
+still requires independent review and does not establish installed acceptance.
 
 Run the focused HTTP group from the repository root:
 
 ```sh
-vp test run apps/server/src/jones/workstreams/runtimeIntegration/multiEnvironment.test.ts apps/server/src/workstreams/http.test.ts apps/server/src/jones/workstreams/registrationContext/service.test.ts apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts --maxWorkers=1
+vp test run apps/server/src/jones/workstreams/runtimeIntegration/loopbackBinding.test.ts apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx apps/server/src/jones/workstreams/runtimeIntegration/multiEnvironment.test.ts apps/server/src/workstreams/http.test.ts apps/server/src/jones/workstreams/registrationContext/service.test.ts apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts --maxWorkers=1
 ```
 
 ## Verify the application paths

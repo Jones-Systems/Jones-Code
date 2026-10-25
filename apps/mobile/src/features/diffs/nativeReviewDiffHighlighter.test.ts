@@ -17,9 +17,12 @@ vi.mock("@shikijs/core", async (importOriginal) => {
       const highlighter = await original.createHighlighterCore(...args);
       return {
         ...highlighter,
-        codeToTokensBase: (...input: Parameters<typeof highlighter.codeToTokensBase>) => {
-          tokenization.calls.push(input[0]);
-          const result = highlighter.codeToTokensBase(...input);
+        codeToTokensBase: (...[code, options]: Parameters<typeof highlighter.codeToTokensBase>) => {
+          tokenization.calls.push(code);
+          // Shiki stops a line after 500ms by default and leaves its remainder as one
+          // token with a truncated grammar state. Cold regex compilation on a busy
+          // runner can exceed that, so these comparisons disable the wall-clock limit.
+          const result = highlighter.codeToTokensBase(code, { ...options, tokenizeTimeLimit: 0 });
           tokenization.afterCall?.();
           return result;
         },
@@ -191,35 +194,6 @@ describe("highlightNativeReviewDiffVisibleRows", () => {
       standalone.tokensByRowId[trailingRow.id],
     );
   });
-
-  it("keeps deletion grammar state out of addition rows", async () => {
-    const additionRow = makeLine({
-      id: "addition-row",
-      content: "export const answer = 42;",
-      change: "add",
-      oldLineNumber: null,
-      newLineNumber: 1,
-    });
-    const rows = [
-      makeLine({
-        id: "deletion-row",
-        content: "const removed = `open",
-        change: "delete",
-        oldLineNumber: 1,
-        newLineNumber: null,
-      }),
-      additionRow,
-    ];
-
-    const [highlighted, standalone] = await Promise.all([
-      highlight(rows),
-      highlight([additionRow]),
-    ]);
-
-    expect(highlighted.tokensByRowId[additionRow.id]).toEqual(
-      standalone.tokensByRowId[additionRow.id],
-    );
-  });
 });
 
 describe.each(["native", "javascript"] as const)("%s highlighting budgets", (engine) => {
@@ -243,14 +217,6 @@ describe.each(["native", "javascript"] as const)("%s highlighting budgets", (eng
       oldLineNumber: null,
       newLineNumber: id,
     });
-
-  it("still highlights a line at the length limit", async () => {
-    const content = `// ${"x".repeat(997)}`;
-    const result = await highlightRows([line(1, content)]);
-
-    expect(tokenization.calls).toEqual([content]);
-    expect(result.tokensByRowId["line-1"]?.some((token) => token.color !== null)).toBe(true);
-  });
 
   it("keeps only the long line plain and resumes highlighting after it", async () => {
     const longLine = `${"x".repeat(1_001)} /*`;

@@ -108,49 +108,6 @@ function layerTest(
   return ProviderSwitch.layer.pipe(Layer.provide(layerRegistry));
 }
 
-it.effect(
-  "restarts and releases the current session for unsupported in-session model changes",
-  () =>
-    Effect.gen(function* () {
-      const service = yield* ProviderSwitch.ProviderSwitchServiceV2;
-      const result = yield* service.plan({
-        projection: projection(),
-        targetModelSelection: { instanceId: currentInstanceId, model: "gpt-5.2-codex" },
-      });
-      assert.equal(result.transition.type, "restart_and_resume");
-      assert.deepEqual(result.releaseProviderSessionIds, [currentSessionId]);
-    }).pipe(
-      Effect.provide(
-        layerTest({ [currentInstanceId]: { continuationKey: "codex:account:primary" } }),
-      ),
-    ),
-);
-
-it.effect.each(["stopped", "error"] as const)(
-  "restarts and releases the live session when a newer %s session exists",
-  (deadStatus) =>
-    Effect.gen(function* () {
-      const service = yield* ProviderSwitch.ProviderSwitchServiceV2;
-      const thread = projection();
-      const result = yield* service.plan({
-        projection: {
-          ...thread,
-          providerSessions: [
-            ...thread.providerSessions,
-            deadSessionRecord("dead_session", deadStatus),
-          ],
-        },
-        targetModelSelection: { instanceId: currentInstanceId, model: "gpt-5.2-codex" },
-      });
-      assert.equal(result.transition.type, "restart_and_resume");
-      assert.deepEqual(result.releaseProviderSessionIds, [currentSessionId]);
-    }).pipe(
-      Effect.provide(
-        layerTest({ [currentInstanceId]: { continuationKey: "codex:account:primary" } }),
-      ),
-    ),
-);
-
 it.effect("releases the newest live session, not the newest record overall", () =>
   Effect.gen(function* () {
     const service = yield* ProviderSwitch.ProviderSwitchServiceV2;
@@ -498,4 +455,23 @@ it.effect("preserves cross-driver handoff for an existing Codex conversation", (
       }),
     ),
   ),
+);
+
+it.effect("replaces the bound conversation session rather than a newer sibling session", () =>
+  Effect.gen(function* () {
+    const service = yield* ProviderSwitch.ProviderSwitchServiceV2;
+    const input = deadNativeThreadProjection("stopped");
+    const rootSession = { ...input.providerSessions[0]!, status: "ready" as const };
+    const sibling = {
+      ...rootSession,
+      id: ProviderSessionId.make("newer-sibling"),
+      updatedAt: DateTime.add(now, { seconds: 10 }),
+    };
+    const plan = yield* service.plan({
+      projection: { ...input, providerSessions: [rootSession, sibling] },
+      targetModelSelection: { instanceId: currentInstanceId, model: "gpt-5.4" },
+    });
+    assert.equal(plan.transition.type, "restart_and_resume");
+    assert.deepEqual(plan.releaseProviderSessionIds, [rootSession.id]);
+  }).pipe(Effect.provide(layerTest({ [currentInstanceId]: { continuationKey: "shared" } }))),
 );

@@ -5,12 +5,15 @@ import {
   EventId,
   NodeId,
   OrchestrationV2DomainEvent,
+  type RemoteTaskObservation,
   type OrchestrationV2StoredEvent,
   type OrchestrationV2Subagent,
   type OrchestrationV2Run,
   type OrchestrationV2RuntimeRequest,
+  type OrchestrationV2ThreadProjection,
   ProviderInstanceId,
   RunId,
+  RuntimeRequestId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -48,6 +51,7 @@ const scope: McpThreadInvocationScope = {
 const remoteChild = {
   environmentId: EnvironmentId.make("environment:task-reads-remote"),
   threadId: ThreadId.make("thread:task-reads-remote-child"),
+  runId: RunId.make("run:task-reads-remote-original"),
   label: "Remote child",
 };
 const task: OrchestrationV2Subagent = {
@@ -88,7 +92,10 @@ const serviceLayer = (management: Partial<ThreadManagementService.ThreadManageme
   OrchestratorMcpService.layer.pipe(
     Layer.provide(Layer.mergeAll(
       NodeServices.layer,
-      Layer.mock(ThreadManagementService.ThreadManagementService)(management),
+      Layer.mock(ThreadManagementService.ThreadManagementService)({
+        readRemoteTaskObservation: () => Effect.succeed(undefined),
+        ...management,
+      }),
       Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
       Layer.mock(GitVcsDriver.GitVcsDriver)({}),
       ServerSettings.layerTest(),
@@ -98,6 +105,21 @@ const serviceLayer = (management: Partial<ThreadManagementService.ThreadManageme
       Layer.mock(SecretRequests.SecretRequests)({}),
       Layer.mock(RemoteDelegation.RemoteDelegation)({
         delegate: () => Effect.succeed({ taskId }),
+        observe: (_scope, observedTask) => Effect.succeed({
+          observation: {
+            schemaVersion: "t3.remote-task-observation/v1",
+            environmentId: remoteChild.environmentId,
+            threadId: remoteChild.threadId,
+            originalRunId: remoteChild.runId,
+            blockingQuestions: { resumeToken: "task-reads", requests: [] },
+            childProgress: {
+              hasPendingChildRuns: false,
+              latestTerminalRunId: remoteChild.runId,
+              latestTerminalStatus: "completed",
+            },
+          } satisfies RemoteTaskObservation,
+          latestTerminalSummary: observedTask.result,
+        }),
       }),
       Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
     )),
@@ -109,6 +131,7 @@ describe("MCP task read selection", () => {
   for (const scenario of ["siblings", "completion", "question", "undecodable"] as const) {
     it.effect(`filters parent wake events: ${scenario}`, () => Effect.gen(function* () {
       let reads = 0;
+      const parentFields: Array<ReadonlyArray<string>> = [];
       let cursorCaptured = false;
       let streamClosed = false;
       const sibling = storedUpdate(NodeId.make("unrelated-task"));
@@ -127,7 +150,7 @@ describe("MCP task read selection", () => {
         getThreadRecords: (threadId, fields) => Effect.sync(() => {
           assert.equal(threadId, parentId);
           assert.isTrue(cursorCaptured);
-          assert.deepEqual(fields, ["runs", "subagents", "contextTransfers"]);
+          parentFields.push(fields);
           reads += 1;
           const selected: OrchestrationV2Subagent = reads === 1 || scenario === "siblings"
             ? task
@@ -152,6 +175,9 @@ describe("MCP task read selection", () => {
         });
       }).pipe(Effect.provide(layer));
       assert.equal(reads, 2);
+      for (const fields of parentFields) {
+        assert.deepEqual(fields, ["runs", "subagents", "contextTransfers"]);
+      }
       assert.isTrue(streamClosed);
       assert.equal(result.waitTimedOut, scenario === "siblings");
       assert.equal(result.hasPendingQuestion, scenario === "question");
@@ -159,40 +185,66 @@ describe("MCP task read selection", () => {
     }));
   }
 
-  for (const eventType of [
-    "run.updated", "subagent.updated", "provider-thread.updated", "runtime-request.updated",
+  for (const scenario of [
+    "run.updated", "subagent.updated", "provider-thread.updated", "runtime-request.updated", "approval",
   ] as const) {
-    it.effect(`keeps child activity wakeups: ${eventType}`, () => Effect.gen(function* () {
+    it.effect(`keeps child activity wakeups: ${scenario}`, () => Effect.gen(function* () {
+      const eventType = scenario === "approval" ? "runtime-request.updated" : scenario;
+      const pendingQuestion = scenario === "runtime-request.updated";
+      const pendingApproval = scenario === "approval";
       const childId = ThreadId.make("thread:task-reads-local-child");
+      const childRunId = RunId.make("run:task-reads-local");
+      const approvalNodeId = NodeId.make("node:task-reads-approval");
+      const approvalRequestId = RuntimeRequestId.make("request:task-reads-approval");
       const child = idleThreadProjection(liveThreadShell(childId));
       let parentReads = 0;
       let controlReads = 0;
       let resultReads = 0;
       const layer = serviceLayer({
         getThreadEventSequence: () => Effect.succeed(41),
-        getThreadRecords: (threadId, fields) => Effect.sync(() => {
+        getThreadRecords: (threadId, fields, options) => Effect.sync(() => {
           if (threadId === parentId) {
             parentReads += 1;
             assert.deepEqual(fields, ["runs", "subagents", "contextTransfers"]);
             return { ...parent, subagents: [{
               ...task, childThreadId: childId,
-              completionDelivery: { state: "disposed" as const, observedByRunId: null },
+              completionDelivery: {
+                state: pendingApproval ? "acknowledged" as const : "disposed" as const,
+                observedByRunId: null,
+              },
             }] };
           }
           assert.equal(threadId, childId);
-          if (fields.some((field) => field === "runs")) controlReads += 1;
-          else resultReads += 1;
+          if (fields.some((field) => field === "runs")) {
+            assert.deepEqual(fields, [
+              "runs", "messages", "contextTransfers", "subagents", "providerThreads", "runtimeRequests", "nodes",
+            ]);
+            assert.deepEqual(options, { messageRoles: ["user"], omitSettledLeafNodes: true });
+            controlReads += 1;
+          } else {
+            assert.deepEqual(fields, ["messages", "turnItems"]);
+            resultReads += 1;
+          }
           const finished = controlReads > 1;
           return {
             ...child,
             runs: [{
-              id: RunId.make("run:task-reads-local"),
+              id: childRunId,
               delegatedTaskId: taskId, ordinal: 1,
               status: finished && eventType !== "runtime-request.updated" ? "completed" : "running",
-              startedAt: now, completedAt: finished ? now : null,
+              startedAt: now,
+              completedAt: finished && eventType !== "runtime-request.updated" ? now : null,
             } as OrchestrationV2Run],
-            runtimeRequests: finished && eventType === "runtime-request.updated"
-              ? [{ kind: "user_input", status: "pending", responseCapability: { type: "live" } } as OrchestrationV2RuntimeRequest]
+            nodes: finished && pendingApproval
+              ? [{ id: approvalNodeId, runId: childRunId } as OrchestrationV2ThreadProjection["nodes"][number]]
+              : [],
+            runtimeRequests: finished && (pendingQuestion || pendingApproval)
+              ? [{
+                  id: approvalRequestId,
+                  nodeId: approvalNodeId,
+                  kind: pendingApproval ? "command" : "user_input",
+                  status: "pending", responseCapability: { type: "live" }, createdAt: now,
+                } as OrchestrationV2RuntimeRequest]
               : [],
           };
         }),
@@ -214,7 +266,10 @@ describe("MCP task read selection", () => {
         });
       }).pipe(Effect.provide(layer));
       assert.equal(result.status, eventType === "runtime-request.updated" ? "running" : "completed");
-      assert.equal(result.hasPendingQuestion, eventType === "runtime-request.updated");
+      assert.equal(result.hasPendingQuestion, pendingQuestion);
+      assert.deepEqual(result.pendingApproval, pendingApproval
+        ? { requestId: approvalRequestId, kind: "command", runId: childRunId }
+        : null);
       assert.isFalse(result.waitTimedOut);
       assert.equal(parentReads, 2);
       assert.equal(controlReads, 2);

@@ -45,12 +45,8 @@ export function deriveQueuedSteerBatch(input: {
         !specialCommand(message.text) &&
         run.sourcePlanRef === undefined &&
         run.restartContinuationOfRunId === undefined &&
-        run.providerThreadId === active.providerThreadId &&
-        run.providerInstanceId === active.providerInstanceId &&
         projection.nodes.some((node) => node.id === run.rootNodeId) &&
-        projection.attempts.some((attempt) => attempt.id === run.activeAttemptId) &&
-        modelSelectionsEqual(run.modelSelection, active.modelSelection) &&
-        modelSelectionsEqual(run.modelSelection, projection.thread.modelSelection),
+        projection.attempts.some((attempt) => attempt.id === run.activeAttemptId),
     };
   });
   const plan = planQueuedSteerBatch(

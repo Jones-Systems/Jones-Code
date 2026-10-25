@@ -6,6 +6,9 @@ const makeRelay = (restricted = true) => {
   const send = vi.fn<CdpRelayTarget["send"]>(async () => ({}));
   const setDownloadDirectory = vi.fn();
   const replies: Array<Record<string, unknown>> = [];
+  let requested = 0;
+  let completed = 0;
+  const receipts = new Set<{ count: number; resolve: () => void }>();
   const relay = createCdpRelayConnection(
     {
       send,
@@ -15,12 +18,37 @@ const makeRelay = (restricted = true) => {
       title: () => "Fixture",
       userAgent: () => "Electron",
     },
-    (raw) => replies.push(JSON.parse(raw)),
+    (raw) => {
+      const reply = JSON.parse(raw);
+      replies.push(reply);
+      if (reply.id === undefined) return;
+      completed++;
+      for (const receipt of receipts) {
+        if (completed >= receipt.count) {
+          receipts.delete(receipt);
+          receipt.resolve();
+        }
+      }
+    },
     restricted ? companionCdpPolicy : undefined,
   );
-  return { relay, send, setDownloadDirectory, replies };
+  return {
+    relay: {
+      ...relay,
+      receive: (message: string) => {
+        requested++;
+        relay.receive(message);
+      },
+    },
+    settle: () =>
+      completed >= requested
+        ? Promise.resolve()
+        : new Promise<void>((resolve) => receipts.add({ count: requested, resolve })),
+    send,
+    setDownloadDirectory,
+    replies,
+  };
 };
-const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 describe("companion CDP policy", () => {
   it.each([
@@ -43,7 +71,7 @@ describe("companion CDP policy", () => {
     ["FileSystem.getDirectory", {}],
     ["Unknown.method", {}],
   ])("blocks %s before every debugger route", async (method, params) => {
-    const { relay, send, replies } = makeRelay();
+    const { relay, settle, send, replies } = makeRelay();
     for (const sessionId of [undefined, "t3-preview-page", "child-session"]) {
       relay.receive(JSON.stringify({ id: 1, method, params, sessionId }));
     }
@@ -67,7 +95,7 @@ describe("companion CDP policy", () => {
     "relative/path",
     "",
   ])("blocks navigation to %s", async (url) => {
-    const { relay, send, replies } = makeRelay();
+    const { relay, settle, send, replies } = makeRelay();
     relay.receive(
       JSON.stringify({ id: 1, method: "Page.navigate", params: { url }, sessionId: "child" }),
     );
@@ -80,7 +108,7 @@ describe("companion CDP policy", () => {
   it.each(["http://localhost:3000", "https://example.test", "about:blank"])(
     "forwards permitted navigation to %s",
     async (url) => {
-      const { relay, send } = makeRelay();
+      const { relay, settle, send } = makeRelay();
       relay.receive(
         JSON.stringify({ id: 1, method: "Page.navigate", params: { url }, sessionId: "child" }),
       );
@@ -90,7 +118,7 @@ describe("companion CDP policy", () => {
   );
 
   it("rewrites downloads on root, page and child routes without a local directory", async () => {
-    const { relay, send, setDownloadDirectory } = makeRelay();
+    const { relay, settle, send, setDownloadDirectory } = makeRelay();
     for (const sessionId of [undefined, "t3-preview-page", "child"])
       relay.receive(
         JSON.stringify({
@@ -114,7 +142,7 @@ describe("companion CDP policy", () => {
   });
 
   it("does not let a page route tunnel a browser-wide query or permission grant", async () => {
-    const { relay, send, replies } = makeRelay();
+    const { relay, settle, send, replies } = makeRelay();
     for (const method of ["Target.getTargets", "Target.attachToTarget", "Browser.grantPermissions"])
       relay.receive(JSON.stringify({ id: 1, method, sessionId: "child" }));
     await settle();
@@ -127,7 +155,7 @@ describe("companion CDP policy", () => {
     "Fetch.continueRequest",
     "Network.continueInterceptedRequest",
   ])("does not let %s fetch a host-local file", async (method) => {
-    const { relay, send, replies } = makeRelay();
+    const { relay, settle, send, replies } = makeRelay();
     relay.receive(
       JSON.stringify({
         id: 1,
@@ -150,7 +178,7 @@ describe("companion CDP policy", () => {
   });
 
   it("creates Playwright's isolated world without universal origin access", async () => {
-    const { relay, send } = makeRelay();
+    const { relay, settle, send } = makeRelay();
     relay.receive(
       JSON.stringify({
         id: 1,
@@ -177,7 +205,7 @@ describe("companion CDP policy", () => {
   });
 
   it("allows relay handshake and only the owned page attachment", async () => {
-    const { relay, replies } = makeRelay();
+    const { relay, settle, replies } = makeRelay();
     relay.receive(JSON.stringify({ id: 1, method: "Target.setAutoAttach" }));
     relay.receive(
       JSON.stringify({ id: 2, method: "Target.attachToTarget", params: { targetId: "guest" } }),
@@ -192,7 +220,7 @@ describe("companion CDP policy", () => {
   });
 
   it("allows page automation and child auto-attach required by the server", async () => {
-    const { relay, send } = makeRelay();
+    const { relay, settle, send } = makeRelay();
     const methods = [
       "Page.enable",
       "Page.captureScreenshot",
@@ -248,7 +276,7 @@ describe("companion CDP policy", () => {
         sessionId: "t3-preview-page",
       }),
     );
-    await settle();
+    await Promise.all([restricted.settle(), ordinary.settle()]);
     expect(restricted.send).toHaveBeenCalledTimes(1);
     expect(ordinary.send).toHaveBeenCalledWith(
       "DOM.setFileInputFiles",

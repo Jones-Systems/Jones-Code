@@ -766,6 +766,7 @@ describe("delegate_task workspaceStrategy through the orchestrator", () => {
         yield* threads.streamStoredEventsFrom({ threadId: delegated.childThreadId }).pipe(
           Stream.filter(
             (stored) =>
+              stored.commandId?.endsWith(":cancel-workspace") === true &&
               stored.event.type === "thread.metadata-updated" &&
               stored.event.payload.worktreePath === null,
           ),

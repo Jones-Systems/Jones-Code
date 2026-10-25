@@ -24,6 +24,7 @@ import { readCaller, unavailable } from "../mcp/threadAccess.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
+import type { LinkedMessageOrigin } from "../jones/peerTransport/LinkedMessageOrigin.ts";
 
 /**
  * A peer's `/mcp` holds a wait open for its whole timeout without sending
@@ -97,10 +98,9 @@ const make = Effect.gen(function* () {
    * this environment's own links: the peer would see this environment's
    * session, not the link the work came from, so its fence could not hold.
    */
-  const callerLimits = (scope: Scope) =>
+  const forwardingCaller = (scope: Scope) =>
     readCaller().pipe(
       Effect.tap((caller) => assertNotLinked(caller, "use this environment's links")),
-      Effect.map((caller) => caller.limits),
       Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
       Effect.provideService(ThreadManagement.ThreadManagementService, threads),
     );
@@ -117,38 +117,73 @@ const make = Effect.gen(function* () {
     );
 
   /** Tool and contract schemas are plain data: they encode and decode without services. */
-  const forward = <A>(
+  const forward = Effect.fn("PeerForwarding.forward")(function* <A>(
     scope: Scope,
     toolName: string,
     parameters: Schema.Top,
     success: Schema.Top,
     environmentId: EnvironmentId,
     params: unknown,
-  ) =>
-    Effect.gen(function* () {
-      const limits = yield* callerLimits(scope);
-      const encoded = (yield* Schema.encodeUnknownEffect(parameters as Schema.Encoder<unknown>)(
-        params,
-      ).pipe(Effect.mapError(unavailable))) as Record<string, unknown>;
-      const { environmentId: _target, ...args } = encoded;
-      // A pending upload lives here, so it cannot go with the call.
-      if (Array.isArray(args.attachments) && args.attachments.length > 0) {
+  ) {
+    const caller = yield* forwardingCaller(scope);
+    const limits = caller.limits;
+    const encoded = (yield* Schema.encodeUnknownEffect(parameters as Schema.Encoder<unknown>)(
+      params,
+    ).pipe(Effect.mapError(unavailable))) as Record<string, unknown>;
+    const { environmentId: _target, ...args } = encoded;
+    // A pending upload lives here, so it cannot go with the call.
+    if (Array.isArray(args.attachments) && args.attachments.length > 0) {
+      return yield* new OrchestratorMcpFailure({
+        code: "invalid_request",
+        message: "A launch in a linked environment cannot carry attachments yet.",
+      });
+    }
+    if (typeof args.clientRequestId === "string") {
+      args.clientRequestId = yield* scopedRequestId(scope.requestNamespace, args.clientRequestId);
+    }
+    let origin: LinkedMessageOrigin | undefined;
+    if (toolName === "t3_thread_send") {
+      const observed = yield* peers.call({
+        environmentId,
+        tool: "t3_thread_read",
+        arguments: { threadId: args.threadId, limit: 1, maxCharsPerItem: 1 },
+        limits,
+        success: OrchestratorMcpThreadReadResult,
+      });
+      const policy = observed.remoteMessagePolicy;
+      if (
+        policy?.schemaVersion !== "t3.linked-message-policy/v1" ||
+        policy.authenticatedOrigin !== true ||
+        policy.incomingAcceptance !== true
+      ) {
         return yield* new OrchestratorMcpFailure({
-          code: "invalid_request",
-          message: "A launch in a linked environment cannot carry attachments yet.",
+          code: "capability_denied",
+          message:
+            "This linked environment does not support authenticated incoming messages. Update it before sending; reading and Stop remain available.",
         });
       }
-      if (typeof args.clientRequestId === "string") {
-        args.clientRequestId = yield* scopedRequestId(scope.requestNamespace, args.clientRequestId);
-      }
-      return yield* peers.call({
-        environmentId,
-        tool: toolName,
-        arguments: args,
-        limits,
-        success: success as Schema.Decoder<A>,
-      });
+      origin = {
+        schemaVersion: "t3.linked-message-origin/v1",
+        environmentId: scope.environmentId,
+        ...(caller.caller === undefined
+          ? {}
+          : {
+              thread: {
+                threadId: caller.caller.id,
+                title: (caller.caller.title ?? "").slice(0, 512),
+              },
+            }),
+      };
+    }
+    return yield* peers.call({
+      environmentId,
+      tool: toolName,
+      arguments: args,
+      limits,
+      ...(origin === undefined ? {} : { origin }),
+      success: success as Schema.Decoder<A>,
     });
+  });
 
   const readThread: PeerForwarding["Service"]["readThread"] = (scope, environmentId, input) =>
     forward<OrchestratorMcpThreadReadResult>(
@@ -174,36 +209,38 @@ const make = Effect.gen(function* () {
       input,
     );
 
-  const waitForThread: PeerForwarding["Service"]["waitForThread"] = (scope, environmentId, input) =>
-    Effect.gen(function* () {
-      let remaining = Math.min(
-        MAX_WAIT_TIMEOUT_MS,
-        Math.max(1, input.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS),
+  const waitForThread: PeerForwarding["Service"]["waitForThread"] = Effect.fn(
+    "PeerForwarding.waitForThread",
+  )(function* (scope, environmentId, input) {
+    let remaining = Math.min(
+      MAX_WAIT_TIMEOUT_MS,
+      Math.max(1, input.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS),
+    );
+    let runId = input.runId;
+    while (true) {
+      const chunk = Math.min(remaining, FORWARDED_WAIT_CHUNK_MS);
+      const result = yield* forward<OrchestratorMcpThreadWaitResult>(
+        scope,
+        "t3_thread_wait",
+        OrchestratorMcpThreadWaitInput,
+        OrchestratorMcpThreadWaitResult,
+        environmentId,
+        {
+          ...input,
+          threadId: input.threadId,
+          ...(runId === undefined ? {} : { runId }),
+          timeoutMs: chunk,
+          ...(input.untilDelegatedWorkSettled === undefined
+            ? {}
+            : { untilDelegatedWorkSettled: input.untilDelegatedWorkSettled }),
+        },
       );
-      let runId = input.runId;
-      while (true) {
-        const chunk = Math.min(remaining, FORWARDED_WAIT_CHUNK_MS);
-        const result = yield* forward<OrchestratorMcpThreadWaitResult>(
-          scope,
-          "t3_thread_wait",
-          OrchestratorMcpThreadWaitInput,
-          OrchestratorMcpThreadWaitResult,
-          environmentId,
-          {
-            threadId: input.threadId,
-            ...(runId === undefined ? {} : { runId }),
-            timeoutMs: chunk,
-            ...(input.untilDelegatedWorkSettled === undefined
-              ? {}
-              : { untilDelegatedWorkSettled: input.untilDelegatedWorkSettled }),
-          },
-        );
-        remaining -= chunk;
-        if (!result.timedOut || remaining <= 0) return result;
-        // Later pieces wait for the run the first one picked, not a newer one.
-        runId = result.runId ?? undefined;
-      }
-    });
+      remaining -= chunk;
+      if (!result.timedOut || remaining <= 0) return result;
+      // Later pieces wait for the run the first one picked, not a newer one.
+      runId = result.runId ?? undefined;
+    }
+  });
 
   const call: PeerForwarding["Service"]["call"] = (scope, tool, environmentId, params) =>
     tool.name === "t3_thread_wait"
@@ -214,9 +251,9 @@ const make = Effect.gen(function* () {
         ) as Effect.Effect<Tool.Success<typeof tool>, OrchestratorMcpFailure>)
       : forward(scope, tool.name, tool.parametersSchema, tool.successSchema, environmentId, params);
 
-  const listLinks: PeerForwarding["Service"]["links"] = (scope) =>
-    Effect.gen(function* () {
-      yield* callerLimits(scope);
+  const listLinks: PeerForwarding["Service"]["links"] = Effect.fn("PeerForwarding.listLinks")(
+    function* (scope) {
+      yield* forwardingCaller(scope);
       const listed = yield* links.list.pipe(
         Effect.mapError(
           (error) =>
@@ -234,7 +271,8 @@ const make = Effect.gen(function* () {
           lastError: link.lastError,
         })),
       };
-    });
+    },
+  );
 
   return PeerForwarding.of({
     call,

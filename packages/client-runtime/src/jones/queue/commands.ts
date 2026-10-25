@@ -26,3 +26,16 @@ export const promoteQueuedBatch = Effect.fn("JonesQueue.promoteQueuedBatch")(fun
     type: "queued-message.promote-batch-to-steer",
   });
 });
+
+class QueuedRunStartUnavailableError extends Data.TaggedError("QueuedRunStartUnavailableError")<{
+  readonly message: string;
+}> {}
+
+export const requireQueuedRunStart = Effect.fn("JonesQueue.requireQueuedRunStart")(function* () {
+  const config = yield* getInitialServerConfig();
+  if (config.environment.capabilities.queuedRunStart !== true) {
+    return yield* new QueuedRunStartUnavailableError({
+      message: "This server does not support starting a selected queued message.",
+    });
+  }
+});

@@ -1,8 +1,8 @@
+import { act, render as renderTest, type Screen } from "../../../test/render";
 import "~/index.css";
 import { page, userEvent } from "vite-plus/test/browser";
-import { act, StrictMode } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { StrictMode } from "react";
+import { describe, expect, it, vi } from "vite-plus/test";
 import {
   EnvironmentId,
   ProjectId,
@@ -65,7 +65,11 @@ import { toastManager, ToastProvider } from "../../components/ui/toast";
 
 const env = EnvironmentId.make("settlement-test-environment");
 
-function thread(id: string, settledAtMs: number | null = null): OrchestrationV2ThreadShell {
+function thread(
+  id: string,
+  settledAtMs: number | null = null,
+  overrides: Partial<OrchestrationV2ThreadShell> = {},
+): OrchestrationV2ThreadShell {
   const threadId = ThreadId.make(id);
   const providerInstanceId = ProviderInstanceId.make("codex");
   return {
@@ -99,6 +103,7 @@ function thread(id: string, settledAtMs: number | null = null): OrchestrationV2T
     settledAt: settledAtMs === null ? null : DateTime.makeUnsafe(settledAtMs),
     lastVisitedAt: null,
     deletedAt: null,
+    ...overrides,
   };
 }
 
@@ -153,14 +158,14 @@ const inbox = (entries: SettlementEntry[], acknowledged: string[] = []) =>
   JSON.stringify({ version: 1, entries, acknowledged });
 let storage: MemoryStorage;
 let events: EventTarget;
-let root: Root;
+let root: Screen;
 let container: HTMLDivElement;
 let mounted: boolean;
 let registry: AtomRegistry.AtomRegistry;
 
 async function render() {
   await act(async () => {
-    root.render(
+    await root.rerender(
       <StrictMode>
         <RegistryContext.Provider value={registry}>
           <ToastProvider>
@@ -190,46 +195,161 @@ function button(label: string) {
 }
 const notices = () => document.querySelectorAll('[data-slot="toast-close"]');
 
-beforeEach(async () => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  registry = AtomRegistry.make();
-  storage = new MemoryStorage();
-  events = new EventTarget();
-  state.navigate.mockReset();
-  state.environmentIds = [];
-  state.shellAtom = null;
-  state.resolveOrigins.mockReset();
-  const store = createLocalStorageSettlementStore(() => storage, events as unknown as Window);
-  await store.saveInbox(inbox([entry("a")]));
-  state.controller = createSettlementNotificationController({ store });
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-  mounted = false;
-});
-afterEach(async () => {
-  if (mounted) await act(async () => root.unmount());
-  registry.dispose();
-  container.remove();
-  vi.restoreAllMocks();
-  vi.unstubAllGlobals();
-});
+async function setupTest(): Promise<AsyncDisposable> {
+  let initialized = false;
+  let ownedContainer: HTMLDivElement | undefined;
+  async function cleanup() {
+    const screen = initialized ? root : undefined;
+    try {
+      if (mounted) await act(async () => screen?.unmount());
+      registry.dispose();
+    } finally {
+      try {
+        await screen?.[Symbol.asyncDispose]();
+      } finally {
+        ownedContainer?.remove();
+        vi.restoreAllMocks();
+        vi.unstubAllGlobals();
+      }
+    }
+  }
+  try {
+    registry = AtomRegistry.make();
+    storage = new MemoryStorage();
+    events = new EventTarget();
+    state.navigate.mockReset();
+    state.environmentIds = [];
+    state.shellAtom = null;
+    state.resolveOrigins.mockReset();
+    const store = createLocalStorageSettlementStore(() => storage, events as unknown as Window);
+    await store.saveInbox(inbox([entry("a")]));
+    state.controller = createSettlementNotificationController({ store });
+    ownedContainer = container = document.createElement("div");
+    document.body.append(container);
+    root = await renderTest(null, { container: container, router: false });
+    initialized = true;
+    mounted = false;
+
+    return { [Symbol.asyncDispose]: cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
 
 describe("persistent settlement notification", () => {
-  it("removes saved child notices and only shows parent and fork settlements after reload", async () => {
+  it("hides cached children before hydration without acknowledging them when the parent is dismissed", async () => {
+    await using _fixture = await setupTest();
     storage.clear();
     const store = createLocalStorageSettlementStore(() => storage, events as unknown as Window);
     const parent = thread("parent", 200);
-    const children = ["mcp-child", "provider-child", "nested-child"].map((id, index) => ({
-      ...thread(id, 300 + index),
-      createdBy: "agent" as const,
-      creationSource: index === 1 ? ("provider" as const) : ("mcp" as const),
+    const local = thread("local-child", 300, {
       lineage: {
         rootThreadId: parent.id,
-        parentThreadId: index === 2 ? ThreadId.make("mcp-child") : parent.id,
-        relationshipToParent: "subagent" as const,
+        parentThreadId: parent.id,
+        relationshipToParent: "subagent",
       },
+    });
+    const remote = thread("remote-child", 400, {
+      delegatedFrom: {
+        environmentId: EnvironmentId.make("other-machine"),
+        threadId: parent.id,
+        title: parent.title,
+      },
+    });
+    const saved = [parent, local, remote].map((row) => ({
+      ...entry(row.id, env),
+      title: row.title,
     }));
+    await store.saveInbox(inbox(saved));
+    state.controller = createSettlementNotificationController({ store });
+    state.environmentIds = [env];
+    const cached: EnvironmentShellState = {
+      ...shell(1, [parent, local, remote]),
+      status: "cached",
+    };
+    const shellAtom = Atom.make(cached);
+    state.shellAtom = shellAtom;
+    const publications: string[][] = [];
+    const unsubscribe = state.controller.subscribe(() => {
+      publications.push(state.controller!.getSnapshot().visible.map((row) => row.threadId));
+    });
+    try {
+      await render();
+      await act(async () => {
+        await state.controller!.flush();
+      });
+      expect(publications.length).toBeGreaterThan(0);
+      for (const visible of publications) {
+        expect(visible).not.toContain(local.id);
+        expect(visible).not.toContain(remote.id);
+        expect(visible).toContain(parent.id);
+      }
+      expect(state.controller.getSnapshot().visible.map((row) => row.threadId)).toEqual([
+        parent.id,
+      ]);
+      expect(document.body.textContent).not.toContain(local.title);
+      expect(document.body.textContent).not.toContain(remote.title);
+      expect(JSON.parse((await store.loadInbox())!).acknowledged).toEqual([]);
+      await act(async () => button("parent").click());
+      expect(state.navigate).toHaveBeenLastCalledWith({
+        to: "/$environmentId/$threadId",
+        params: { environmentId: env, threadId: parent.id },
+      });
+      expect(notices()).toHaveLength(1);
+      await act(async () => button("Dismiss notification").click());
+      await act(async () => {
+        await state.controller!.flush();
+      });
+      expect(state.controller.getSnapshot().visible).toEqual([]);
+      expect(JSON.parse((await store.loadInbox())!).acknowledged).toEqual([saved[0]!.id]);
+      await act(async () => {
+        registry.set(shellAtom, { ...cached, status: "live" });
+      });
+      await act(async () => {
+        await state.controller!.flush();
+      });
+      expect(JSON.parse((await store.loadInbox())!).acknowledged.sort()).toEqual(
+        saved.map((row) => row.id).sort(),
+      );
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("removes saved child notices and only shows parent and fork settlements after reload", async () => {
+    await using _fixture = await setupTest();
+    storage.clear();
+    const store = createLocalStorageSettlementStore(() => storage, events as unknown as Window);
+    const parent = thread("parent", 200);
+    const children = [
+      ...["mcp-child", "provider-child", "nested-child"].map((id, index) =>
+        thread(id, 300 + index, {
+          createdBy: "agent",
+          creationSource: index === 1 ? "provider" : "mcp",
+          lineage: {
+            rootThreadId: parent.id,
+            parentThreadId: index === 2 ? ThreadId.make("mcp-child") : parent.id,
+            relationshipToParent: "subagent",
+          },
+        }),
+      ),
+      thread("remote-child", 303, {
+        delegatedFrom: {
+          environmentId: EnvironmentId.make("other-machine"),
+          threadId: parent.id,
+          title: parent.title,
+        },
+      }),
+      thread("linked-remote-child", 304, {
+        delegatedFrom: {
+          environmentId: EnvironmentId.make("other-machine"),
+          threadId: parent.id,
+          title: parent.title,
+        },
+        linkOrigin: { sessionId: "linked-session", label: "Linked machine" },
+      }),
+    ];
     const saved = [parent, ...children].map((row) => ({
       ...entry(row.id, env),
       title: row.title,
@@ -264,7 +384,7 @@ describe("persistent settlement notification", () => {
     await act(async () => root.unmount());
     mounted = false;
     state.controller = createSettlementNotificationController({ store });
-    root = createRoot(container);
+    root = await renderTest(null, { container: container, router: false });
     await render();
     await act(async () => {
       await state.controller!.flush();
@@ -291,6 +411,7 @@ describe("persistent settlement notification", () => {
   });
 
   it.each([375, 1280])("keeps 45 settled threads in one scroll area at %ipx", async (width) => {
+    await using _fixture = await setupTest();
     await page.viewport(width, 800);
     const entries = Array.from({ length: 45 }, (_, index) => ({
       ...entry(`thread-${index}`),
@@ -334,6 +455,7 @@ describe("persistent settlement notification", () => {
   });
 
   it.each([375, 1280])("wraps a single unbroken settled title at %ipx", async (width) => {
+    await using _fixture = await setupTest();
     await page.viewport(width, 800);
     const longEntry = {
       ...entry("long"),
@@ -359,6 +481,7 @@ describe("persistent settlement notification", () => {
   });
 
   it("keeps row collapse through navigation, aggregate updates and panel reopening", async () => {
+    await using _fixture = await setupTest();
     storage.clear();
     await publish([{ ...entry("a"), projectRemaining: ["First task"] }]);
     await render();
@@ -395,6 +518,7 @@ describe("persistent settlement notification", () => {
   });
 
   it("retains a row collapsed in the aggregate when reopened without an inbox update", async () => {
+    await using _fixture = await setupTest();
     storage.clear();
     await publish([
       { ...entry("a"), projectRemaining: ["First task"] },
@@ -416,6 +540,7 @@ describe("persistent settlement notification", () => {
   it.each([375, 1280])(
     "fits aggregate width and truncates full remaining text at %ipx",
     async (width) => {
+      await using _fixture = await setupTest();
       await page.viewport(width, 800);
       storage.clear();
       await publish([entry("a"), entry("b")]);
@@ -438,11 +563,11 @@ describe("persistent settlement notification", () => {
       await publish([{ ...entry("long"), title: "x".repeat(200), projectRemaining: [note] }]);
       const span = document.querySelector<HTMLElement>('[data-slot="settlement-remaining-item"]')!;
       expect(span.textContent).toBe(note);
-      await act(async () => userEvent.hover(span));
+      await userEvent.hover(span);
       await expect
         .poll(() => document.querySelector('[data-slot="tooltip-popup"]')?.textContent)
         .toBe(note);
-      await act(async () => userEvent.unhover(span));
+      await userEvent.unhover(span);
       expect(span.scrollWidth).toBeGreaterThan(span.clientWidth);
       expect(span.getBoundingClientRect().height).toBeCloseTo(
         Number.parseFloat(getComputedStyle(span).lineHeight),
@@ -455,6 +580,7 @@ describe("persistent settlement notification", () => {
   );
 
   it("keeps one toast through StrictMode, title navigation and an expanded aggregate update", async () => {
+    await using _fixture = await setupTest();
     const add = vi.spyOn(toastManager, "add");
     await render();
     expect(notices()).toHaveLength(1);
@@ -481,6 +607,7 @@ describe("persistent settlement notification", () => {
   });
 
   it("keeps the notification after Escape inside it and focus changes", async () => {
+    await using _fixture = await setupTest();
     await render();
     await act(async () => {
       const title = button("Thread a");
@@ -496,6 +623,7 @@ describe("persistent settlement notification", () => {
   });
 
   it("dismisses only shown entries, persists the acknowledgement, and retains an unseen arrival", async () => {
+    await using _fixture = await setupTest();
     await render();
     const other = createLocalStorageSettlementStore(() => storage, events as unknown as Window);
     await other.saveInbox(inbox([entry("b")]));
@@ -506,13 +634,14 @@ describe("persistent settlement notification", () => {
     await act(async () => root.unmount());
     mounted = false;
     state.controller = createSettlementNotificationController({ store: other });
-    root = createRoot(container);
+    root = await renderTest(null, { container: container, router: false });
     await render();
     await expect.poll(() => document.body.textContent).toContain("Thread b");
     expect(document.body.textContent).not.toContain("Thread a");
   });
 
   it("recreates externally removed toasts without acknowledging entries", async () => {
+    await using _fixture = await setupTest();
     const add = vi.spyOn(toastManager, "add");
     await render();
     const id = add.mock.results[0]!.value as string;
@@ -523,10 +652,11 @@ describe("persistent settlement notification", () => {
   });
 
   it("mirrors another tab's acknowledgement and restores undismissed entries after remount", async () => {
+    await using _fixture = await setupTest();
     await render();
     await act(async () => root.unmount());
     mounted = false;
-    root = createRoot(container);
+    root = await renderTest(null, { container: container, router: false });
     await render();
     expect(button("Thread a")).toBeTruthy();
     await publish([], [entry("a").id]);
@@ -535,6 +665,7 @@ describe("persistent settlement notification", () => {
   });
 
   it("filters manual UI settlement while retaining an agent notice through navigation, remount and explicit X", async () => {
+    await using _fixture = await setupTest();
     storage.clear();
     const store = createLocalStorageSettlementStore(() => storage, events as unknown as Window);
     state.controller = createSettlementNotificationController({ store });
@@ -579,7 +710,7 @@ describe("persistent settlement notification", () => {
     await act(async () => root.unmount());
     mounted = false;
     state.controller = createSettlementNotificationController({ store });
-    root = createRoot(container);
+    root = await renderTest(null, { container: container, router: false });
     await render();
     await expect.poll(() => notices().length).toBe(1);
     expect(button("agent")).toBeTruthy();

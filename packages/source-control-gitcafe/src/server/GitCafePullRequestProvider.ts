@@ -53,6 +53,7 @@ const DIFF_FILES_BATCH = 64;
  */
 const LINE_STATS_MAX_FILES = DIFF_FILES_BATCH * 4;
 const MAX_CHANGE_PAGES = 20;
+const LINE_STATS_CACHE_SIZE = 256;
 
 const chunk = <A>(items: ReadonlyArray<A>, size: number): Array<ReadonlyArray<A>> =>
   Array.from({ length: Math.ceil(items.length / size) }, (_, index) =>
@@ -230,31 +231,22 @@ export const make = Effect.gen(function* () {
       Effect.flatMap((path) => read(operation, input, { path }, Json.GitCafePullDetail)),
     );
 
-  const readPages = <S extends Schema.Codec<Paged<unknown>, unknown, never, never>>(
-    operation: string,
-    input: Pick<ProviderRepositoryRef, "host">,
-    path: string,
-    schema: S,
-  ) =>
-    Effect.gen(function* () {
-      const items: Array<S["Type"]["items"][number]> = [];
-      let next: string | null = null;
-      for (let page = 0; page < MAX_PAGES; page++) {
-        const query = new URLSearchParams({ limit: String(PAGE_SIZE) });
-        if (next !== null) query.set("after", next);
-        const batch: S["Type"] = yield* read(
-          operation,
-          input,
-          { path: `${path}?${query}` },
-          schema,
-        );
-        items.push(...batch.items);
-        const previous: string | null = next;
-        next = batch.next;
-        if (next === null || next === previous || batch.items.length === 0) break;
-      }
-      return { items, next };
-    });
+  const readPages = Effect.fn("GitCafePullRequestProvider.readPages")(function* <
+    S extends Schema.Codec<Paged<unknown>, unknown, never, never>,
+  >(operation: string, input: Pick<ProviderRepositoryRef, "host">, path: string, schema: S) {
+    const items: Array<S["Type"]["items"][number]> = [];
+    let next: string | null = null;
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const query = new URLSearchParams({ limit: String(PAGE_SIZE) });
+      if (next !== null) query.set("after", next);
+      const batch: S["Type"] = yield* read(operation, input, { path: `${path}?${query}` }, schema);
+      items.push(...batch.items);
+      const previous: string | null = next;
+      next = batch.next;
+      if (next === null || next === previous || batch.items.length === 0) break;
+    }
+    return { items, next };
+  });
 
   const readComments = (operation: string, input: PullRef) =>
     pullPath(operation, input).pipe(
@@ -363,6 +355,11 @@ export const make = Effect.gen(function* () {
       return yield* failure(operation, `GitCafe's stack operation ${outcome.state}.`);
   });
 
+  // GitCafe's pulls carry no line totals, and linked pull requests are summarized every minute,
+  // so hunk totals are held per compared pair of commits. The file list that names the pair is
+  // cheap; a retarget or a landed parent layer moves the base without moving the head.
+  const lineTotals = new Map<string, { readonly additions: number; readonly deletions: number }>();
+
   const readLineStats = Effect.fn("GitCafePullRequestProvider.readLineStats")(function* (
     input: PullRef,
     version: number,
@@ -390,21 +387,33 @@ export const make = Effect.gen(function* () {
       after = batch.next;
       if (after === null || after === previous || batch.items.length === 0) break;
     }
-    const counted =
-      files.some((file) => file.additions !== undefined) ||
-      files.length > LINE_STATS_MAX_FILES ||
-      revision === undefined
-        ? files
-        : (yield* Effect.forEach(
+    if (revision === undefined) return { changedFiles: 0, additions: 0, deletions: 0 };
+    const key = `${input.host} ${input.repository.toLowerCase()} ${input.number} ${revision.baseOid} ${revision.headOid}`;
+    const held = lineTotals.get(key);
+    if (held !== undefined) return { changedFiles: files.length, ...held };
+    const details = files.some((file) => file.additions !== undefined)
+      ? Option.some(files)
+      : files.length > LINE_STATS_MAX_FILES
+        ? Option.none()
+        : yield* Effect.forEach(
             chunk(detailablePaths(files), DIFF_FILES_BATCH),
             (paths) => readDiffFiles(input, revision, paths),
             { concurrency: 4 },
-          ).pipe(Effect.orElseSucceed(() => [[]]))).flat();
-    return {
-      changedFiles: files.length,
+          ).pipe(
+            Effect.map((batches) => batches.flat()),
+            Effect.option,
+          );
+    // Unread hunks leave the lines unknown rather than zero; the file count still stands.
+    if (Option.isNone(details)) return { changedFiles: files.length };
+    const counted = details.value;
+    const totals = {
       additions: counted.reduce((total, file) => total + (file.additions ?? 0), 0),
       deletions: counted.reduce((total, file) => total + (file.deletions ?? 0), 0),
     };
+    if (lineTotals.size >= LINE_STATS_CACHE_SIZE)
+      lineTotals.delete(lineTotals.keys().next().value!);
+    lineTotals.set(key, totals);
+    return { changedFiles: files.length, ...totals };
   });
 
   const merge = Effect.fn("GitCafePullRequestProvider.merge")(function* (
@@ -534,14 +543,27 @@ export const make = Effect.gen(function* () {
         };
       },
     ),
-    getChangeRequestSummary: (input) =>
-      readPull("getChangeRequestSummary", input).pipe(
-        Effect.map((pull) => ({
-          ...Json.toChangeRequest(pull, input),
+    getChangeRequestSummary: Effect.fn("GitCafePullRequestProvider.getChangeRequestSummary")(
+      function* (input) {
+        const pull = yield* readPull("getChangeRequestSummary", input);
+        const changes =
+          pull.headOid === null
+            ? null
+            : yield* readLineStats(input, pull.version).pipe(Effect.orElseSucceed(() => null));
+        // A count that could not be read is absent rather than zero.
+        const {
+          additions: _additions,
+          deletions: _deletions,
+          ...summary
+        } = Json.toChangeRequest(pull, input);
+        return {
+          ...summary,
+          ...(changes === null ? {} : changes),
           closedAt: pull.closedAt,
           mergedAt: pull.mergedAt,
-        })),
-      ),
+        };
+      },
+    ),
     getChangeRequest: Effect.fn("GitCafePullRequestProvider.getChangeRequest")(function* (input) {
       const pull = yield* readPull("getChangeRequest", input);
       const path = yield* pullPath("getChangeRequest", input);
