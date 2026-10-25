@@ -7,6 +7,8 @@ import { groupAdmissions } from "./presentation";
 import { RequestReviewRow } from "./RequestReviewRow";
 import { actionableAdmissions, admissionBindingKey, requestBlockedReason } from "./store";
 import { useAdmission } from "./useAdmission";
+import { ownerLoadMessage } from "./availability";
+import { UnavailableControl } from "./UnavailableControl";
 
 export function RequestsPage() {
   const { environments, isReady } = useEnvironments();
@@ -48,7 +50,8 @@ export function EnvironmentRequests({
   readonly label: string;
 }) {
   const state = useAdmission(environmentId);
-  const { snapshot, store, loadFailed, error } = state;
+  const { snapshot, store, loadFailed, loadFailure, loading, error } = state;
+  const terminal = loadFailure === "unauthorized" || loadFailure === "unsupported";
   const groups = groupAdmissions(snapshot?.pending ?? []);
   const held = actionableAdmissions(state).length;
   return (
@@ -58,48 +61,65 @@ export function EnvironmentRequests({
           {label}{" "}
           <span className="text-muted-foreground">
             ·{" "}
-            {snapshot
-              ? `${held} need review${loadFailed ? " (last known)" : ""}`
-              : loadFailed
-                ? "inaccessible"
-                : "loading"}
+            {terminal
+              ? loadFailure === "unauthorized"
+                ? "owner access required"
+                : "unsupported"
+              : snapshot
+                ? `${held} need review${loadFailed || loading ? " (last known)" : ""}`
+                : loadFailed
+                  ? "inaccessible"
+                  : "loading"}
           </span>
         </h2>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => {
-            void store.refresh();
-          }}
+        <UnavailableControl
+          label="Refresh"
+          reason={
+            state.busy
+              ? "A decision or settings change is in progress."
+              : loading ? "Loading requests…" : null
+          }
         >
-          Refresh
-        </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={loading || state.busy}
+            onClick={() => {
+              void store.refresh();
+            }}
+          >
+            Refresh
+          </Button>
+        </UnavailableControl>
       </div>
       {loadFailed ? (
         <p role="alert" className="text-sm text-muted-foreground">
-          Requests are inaccessible or could not be loaded for this session. Owner review requires
-          authorization on {label}; this connection may not support it. Retrying automatically.
-          {snapshot ? " Showing last known state; actions are disabled." : ""}
+          {ownerLoadMessage(loadFailure ?? "other", label)}
+          {terminal
+            ? " Current requests are unknown for this session."
+            : snapshot
+              ? " Showing last known state; actions are disabled."
+              : ""}
         </p>
-      ) : !snapshot ? (
+      ) : !snapshot || loading ? (
         <p role="status" className="text-sm text-muted-foreground">
           Loading requests…
         </p>
       ) : snapshot.pending.length === 0 ? (
         <p className="text-sm text-muted-foreground">No pending requests on this environment.</p>
       ) : null}
-      {error ? (
+      {!terminal && error ? (
         <p role="alert" className="text-sm text-destructive">
           {error}
         </p>
       ) : null}
-      {state.atLimit ? (
+      {!terminal && state.atLimit ? (
         <p role="status" className="text-xs text-muted-foreground">
           Showing at most 200 pending requests, oldest first. More may be waiting; resolve these and
           refresh to load later requests.
         </p>
       ) : null}
-      {groups.map((group) => (
+      {(terminal ? [] : groups).map((group) => (
         <div key={group.key} className="min-w-0 space-y-2">
           <h3 className="text-xs font-medium text-muted-foreground wrap-anywhere">
             {group.source} · {group.category} · {group.records.length}

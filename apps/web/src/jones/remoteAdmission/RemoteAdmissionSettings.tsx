@@ -7,7 +7,7 @@ import { Switch } from "../../components/ui/switch";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
 import { ProviderModelPicker } from "../../components/chat/ProviderModelPicker";
 import { TraitsPicker } from "../../components/chat/TraitsPicker";
-import { useEnvironment, useEnvironmentProviders, useEnvironments } from "../../state/environments";
+import { useEnvironment, useEnvironments } from "../../state/environments";
 import { EMPTY_SERVER_PROVIDERS } from "../../state/server";
 import { useEnvironmentSettings } from "../../hooks/useSettings";
 import { getCustomModelOptionsByInstance } from "../../modelSelection";
@@ -19,6 +19,8 @@ import {
 } from "../../providerInstances";
 import { useAdmission } from "./useAdmission";
 import { UnavailableControl } from "./UnavailableControl";
+import { ownerLoadMessage } from "./availability";
+import { useEvaluatorProviders } from "./useEvaluatorProviders";
 
 export function RemoteAdmissionConfigurations() {
   const { environments } = useEnvironments();
@@ -39,11 +41,16 @@ export function RemoteAdmissionSettings({
 }
 
 function EvaluatorConfiguration({ environmentId }: { readonly environmentId: EnvironmentId }) {
-  const { snapshot, loadFailed, error, busy, store } = useAdmission(environmentId);
+  const { snapshot, loadFailed, loadFailure, loading, error, busy, store } =
+    useAdmission(environmentId);
   const [draft, setDraft] = useState<ModelSelection | null>(null);
   const environment = useEnvironment(environmentId);
   const settings = useEnvironmentSettings(environmentId);
-  const providers = (useEnvironmentProviders().get(environmentId) ?? EMPTY_SERVER_PROVIDERS).filter(
+  const receiver = environment?.label ?? environmentId;
+  const providerData = useEvaluatorProviders(environmentId);
+  const providersKnown = providerData !== null && environment?.connection.phase === "connected";
+  const policyKnown = Boolean(snapshot && !loadFailed && !loading);
+  const providers = (providerData ?? EMPTY_SERVER_PROVIDERS).filter(
     (provider) =>
       "supportsRemoteRequestEvaluation" in provider &&
       provider.supportsRemoteRequestEvaluation === true,
@@ -66,29 +73,62 @@ function EvaluatorConfiguration({ environmentId }: { readonly environmentId: Env
     ? modelOptions.get(selected.instanceId)?.find((model) => model.slug === selected.model)
     : undefined;
   const available = Boolean(
-    activeEntry?.enabled &&
-    activeEntry.isAvailable &&
-    activeEntry.status === "ready" &&
-    selectedModel &&
-    !selectedModel.isUnavailable,
+    providersKnown &&
+      activeEntry?.enabled &&
+      activeEntry.isAvailable &&
+      activeEntry.status === "ready" &&
+      selectedModel &&
+      !selectedModel.isUnavailable,
   );
   const blocked = busy
     ? "Saving evaluator settings…"
     : loadFailed
-      ? "Owner review is unavailable for this session. Retrying automatically."
-      : !snapshot
+      ? ownerLoadMessage(loadFailure ?? "other", receiver)
+      : !snapshot || loading
         ? "Loading evaluator settings…"
-        : !available
-          ? "Choose an available evaluator provider and model before saving or enabling."
-          : null;
+        : !providersKnown
+          ? "Evaluator provider availability is unknown. Wait for current provider data from the receiving environment."
+          : !available
+            ? "Choose an available evaluator provider and model before saving or enabling."
+            : null;
   const save = async (enabled: boolean) => {
-    if (!snapshot || busy || loadFailed || (enabled && !available)) return;
+    if (!snapshot || !policyKnown || busy || (enabled && !available)) return;
     await store.savePolicy({
       enabled,
       expectedRevision: snapshot.policy.revision,
       modelSelection: selected,
     });
   };
+  if (loadFailure === "unauthorized" || loadFailure === "unsupported") {
+    return (
+      <section
+        className="space-y-3 rounded-lg border p-4"
+        aria-label={`Remote evaluator on ${receiver}`}
+      >
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h3 className="text-sm font-medium">Background remote evaluation · {receiver}</h3>
+          <UnavailableControl label="Refresh" reason={loading ? "Checking owner access…" : null}>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={loading}
+              onClick={() => {
+                void store.refresh();
+              }}
+            >
+              Refresh
+            </Button>
+          </UnavailableControl>
+        </div>
+        <p role="status" className="text-xs text-muted-foreground wrap-anywhere">
+          {ownerLoadMessage(loadFailure, receiver)}
+        </p>
+        <p className="text-xs text-muted-foreground">
+          Evaluator policy is unknown. Evaluator provider availability is unknown for this session.
+        </p>
+      </section>
+    );
+  }
   return (
     <section
       className="space-y-3 rounded-lg border p-4"
@@ -105,16 +145,15 @@ function EvaluatorConfiguration({ environmentId }: { readonly environmentId: Env
         <UnavailableControl
           label="Evaluate remote requests"
           reason={
-            busy || loadFailed || !snapshot || (!snapshot.policy.enabled && !available)
-              ? blocked
-              : null
+            busy || !policyKnown || (!snapshot?.policy.enabled && !available) ? blocked : null
           }
         >
           <Switch
             aria-label="Evaluate remote requests"
             aria-describedby={`evaluator-status-${environmentId}`}
             checked={snapshot?.policy.enabled ?? false}
-            disabled={busy || loadFailed || !snapshot || (!snapshot.policy.enabled && !available)}
+            mixed={!policyKnown}
+            disabled={busy || !policyKnown || (!snapshot?.policy.enabled && !available)}
             onCheckedChange={(enabled) => {
               void save(enabled);
             }}
@@ -125,7 +164,7 @@ function EvaluatorConfiguration({ environmentId }: { readonly environmentId: Env
         {selected ? (
           <UnavailableControl
             label="Evaluator model"
-            reason={busy || loadFailed || !snapshot ? blocked : null}
+            reason={busy || !policyKnown || !providersKnown ? blocked : null}
           >
             <ProviderModelPicker
               environmentId={environmentId}
@@ -134,9 +173,13 @@ function EvaluatorConfiguration({ environmentId }: { readonly environmentId: Env
               lockedProvider={null}
               instanceEntries={entries}
               modelOptionsByInstance={modelOptions}
-              disabled={busy || loadFailed || !snapshot}
+              disabled={busy || !policyKnown || !providersKnown}
               triggerAriaLabel="Evaluator model"
-              {...(!available ? { triggerLabel: `${selected.model} (Unavailable)` } : {})}
+              {...(!providersKnown
+                ? { triggerLabel: `${selected.model} (Availability unknown)` }
+                : !available
+                  ? { triggerLabel: `${selected.model} (Unavailable)` }
+                  : {})}
               onInstanceModelChange={(instanceId, model) =>
                 setDraft(
                   selected.instanceId === instanceId && selected.model === model
@@ -147,14 +190,25 @@ function EvaluatorConfiguration({ environmentId }: { readonly environmentId: Env
             />
           </UnavailableControl>
         ) : (
-          <p className="text-sm text-muted-foreground">
-            No providers advertise remote evaluation support.
-          </p>
+          <>
+            {!policyKnown || !providersKnown ? (
+              <UnavailableControl label="Evaluator model" reason={blocked}>
+                <Button variant="outline" size="sm" aria-label="Evaluator model" disabled>
+                  Evaluator model
+                </Button>
+              </UnavailableControl>
+            ) : null}
+            <p className="text-sm text-muted-foreground">
+              {policyKnown && providersKnown
+                ? "No providers advertise remote evaluation support."
+                : "Evaluator provider availability is unknown."}
+            </p>
+          </>
         )}
         {selected && activeEntry ? (
           <UnavailableControl
             label="Evaluator options"
-            reason={busy || loadFailed || !snapshot ? blocked : null}
+            reason={busy || !policyKnown || !providersKnown ? blocked : null}
           >
             <TraitsPicker
               provider={activeEntry.driverKind}
@@ -163,7 +217,7 @@ function EvaluatorConfiguration({ environmentId }: { readonly environmentId: Env
               modelOptions={selected.options ?? []}
               allowPromptInjectedEffort={false}
               planModeEnabled={false}
-              disabled={busy || loadFailed || !snapshot}
+              disabled={busy || !policyKnown || !providersKnown}
               onModelOptionsChange={(options) =>
                 setDraft(createModelSelection(selected.instanceId, selected.model, options))
               }
@@ -188,21 +242,42 @@ function EvaluatorConfiguration({ environmentId }: { readonly environmentId: Env
           />
           {blocked ? <TooltipPopup>{blocked}</TooltipPopup> : null}
         </Tooltip>
+        <UnavailableControl
+          label="Refresh"
+          reason={busy ? "Saving evaluator settings…" : loading ? "Loading evaluator settings…" : null}
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={loading || busy}
+            onClick={() => {
+              void store.refresh();
+            }}
+          >
+            Refresh
+          </Button>
+        </UnavailableControl>
       </div>
       <p
         id={`evaluator-status-${environmentId}`}
         role={loadFailed ? "alert" : "status"}
         className="text-xs text-muted-foreground wrap-anywhere"
       >
+        {!policyKnown
+          ? snapshot
+            ? `Current evaluator policy is unknown. Last known: ${snapshot.policy.enabled ? "enabled" : "disabled"}. `
+            : "Evaluator policy is unknown. "
+          : `Evaluator policy is ${snapshot?.policy.enabled ? "enabled" : "disabled"}. `}
         {blocked ??
           "Runs as a background service using this exact provider account, model and options."}
-        {selected && !available
+        {selected && !available && providersKnown
           ? ` Saved selection: ${selected.instanceId} / ${selected.model}. No fallback will be saved.`
           : ""}
       </p>
       {selected ? (
         <p className="text-xs text-muted-foreground wrap-anywhere">
-          Account: {activeEntry?.displayName ?? "Unavailable"} · {selected.instanceId}
+          Account: {activeEntry?.displayName ?? (providersKnown ? "Unavailable" : "Unknown")} ·{" "}
+          {selected.instanceId}
         </p>
       ) : null}
       {error ? (
@@ -211,6 +286,12 @@ function EvaluatorConfiguration({ environmentId }: { readonly environmentId: Env
         </p>
       ) : null}
       <p className="text-xs text-muted-foreground">
+        {providerData?.some((provider) => provider.driver === "codex") ? (
+          <>
+            This Codex CLI integration cannot disable all task tools. Managed Codex (ChatGPT
+            authorization) and qualified Claude integrations support remote evaluation.{" "}
+          </>
+        ) : null}
         Held requests stay in the{" "}
         <Link to="/requests" className="underline underline-offset-2">
           Requests inbox
