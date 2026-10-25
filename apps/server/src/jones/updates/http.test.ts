@@ -297,8 +297,14 @@ it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
             settlement: "legacy-reconciled",
             updateId: operationId,
             outcome: { status: "blocked" },
-            message: "Update did not start: backup refused. Nothing changed.",
+            message: restoreStage
+              ? "Downloaded and verified. Install is a separate action."
+              : "Update did not start: backup refused. Nothing changed.",
           });
+          if (restoreStage) {
+            expect(settled.phase).toBe("staged");
+            expect(settled.migrationPlan).toBeUndefined();
+          }
           expect(settled.settlementRefusal).toBeUndefined();
           expect((yield* updates.reconcileOperation(operationId)).state).toBe("blocked");
           expect(
