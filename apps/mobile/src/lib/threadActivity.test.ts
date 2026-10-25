@@ -1599,7 +1599,10 @@ describe("streamed feed updates", () => {
   const row = (entry: OrchestrationV2TurnItem, position: number) => {
     const byPosition = rowsByItem.get(entry) ?? new Map<number, OrchestrationV2ProjectedTurnItem>();
     rowsByItem.set(entry, byPosition);
-    const cached = byPosition.get(position) ?? projected(entry, position);
+    const cached = byPosition.get(position) ?? {
+      ...projected(entry, position),
+      sourceThreadId: entry.threadId,
+    };
     byPosition.set(position, cached);
     return cached;
   };
@@ -1618,6 +1621,175 @@ describe("streamed feed updates", () => {
       cache,
     );
 
+  // Shared-test exception: reuse the streaming fixture and projection identity harness
+  // here rather than duplicating them in a Jones test module.
+  // Closures on activities are not part of what a row shows.
+  const values = (rows: ReadonlyArray<ThreadFeedEntry>) => JSON.parse(JSON.stringify(rows));
+  const sizedHistory = (size: number, namespace: string) =>
+    Array.from({ length: size / 3 }, (_, turn) => {
+      const run = RunId.make(`${namespace}-run-${turn}`);
+      return [
+        user(`${namespace}-u-${turn}`, 1, run),
+        shell(`${namespace}-s-${turn}`, 2, run),
+        reply(`${namespace}-a-${turn}`, 3, run),
+      ];
+    }).flat();
+  const observeRead = <T extends object>(value: T, property: keyof T, read: () => void): T =>
+    new Proxy(value, {
+      get(target, key, receiver) {
+        if (key === property) read();
+        return Reflect.get(target, key, receiver);
+      },
+    });
+
+  it.each([30, 300, 3000])(
+    "matches fresh presentation across tail updates and prepended history at %i rows",
+    (size) => {
+      const items = sizedHistory(size, `equivalence-${size}`);
+      const last = items.at(-1)!;
+      const latestRun = { ...running, runId: last.runId! };
+      const streamed = { ...last, text: "Working", streaming: true } as OrchestrationV2TurnItem;
+      const updates = [
+        { items: [...items.slice(0, -1), streamed], latestRun },
+        {
+          items: [...items.slice(0, -1), { ...streamed, text: "Working on it" }],
+          latestRun,
+        },
+        {
+          items: [...items, shell(`append-${size}`, 4, last.runId!)],
+          latestRun,
+        },
+        {
+          items: [...sizedHistory(3, `older-${size}`), ...items],
+          latestRun,
+        },
+      ];
+      for (const expandedRunIds of [
+        new Set<RunId>(),
+        new Set(items.map((entry) => entry.runId!)),
+      ]) {
+        const cache = createThreadFeedCache();
+        for (const [index, step] of updates.entries()) {
+          const actual = present(step, expandedRunIds, cache);
+          expect(values(actual), `update ${index}`).toEqual(
+            values(present(step, expandedRunIds)),
+          );
+        }
+        const messages = present(updates.at(-1)!, expandedRunIds, cache).flatMap((entry) =>
+          entry.type === "message" ? [entry.message.text] : [],
+        );
+        expect(messages[0]).toBe(`Prompt older-${size}-u-0`);
+        expect(messages).toHaveLength((size / 3 + 1) * 2);
+      }
+    },
+  );
+
+  it.each([30, 300, 3000])(
+    "avoids historical rebuild and presentation work while retaining row scans at %i rows",
+    (size) => {
+      const items = sizedHistory(size, `operations-${size}`);
+      const prefixRows = size - 3;
+      let prefixItemReads = 0;
+      let prefixNodeReads = 0;
+      const rows = items.map((entry, index) => {
+        if (index >= prefixRows) return row(entry, index);
+        const observedItem = observeRead(entry, "nodeId", () => prefixNodeReads++);
+        return observeRead(projected(observedItem, index), "item", () => prefixItemReads++);
+      });
+      const cache = createThreadFeedCache();
+      const initialFeed = buildThreadFeed(rows, { cache });
+      let prefixActivityReads = 0;
+      let tailActivityReads = 0;
+      const observedEntries = new WeakMap<ThreadFeedEntry, ThreadFeedEntry>();
+      const observeFeed = (feed: ReadonlyArray<ThreadFeedEntry>) =>
+        feed.map((entry) => {
+          if (entry.type !== "activity-group") return entry;
+          let observed = observedEntries.get(entry);
+          if (!observed) {
+            observed = observeRead(entry, "activities", () => {
+              if (entry.runId === items.at(-1)!.runId) tailActivityReads++;
+              else prefixActivityReads++;
+            });
+            observedEntries.set(entry, observed);
+          }
+          return observed;
+        });
+      const expandedRunIds = new Set<RunId>();
+      const render = (feed: ReadonlyArray<ThreadFeedEntry>, feedCache?: ThreadFeedCache) =>
+        deriveThreadFeedPresentation(feed, null, expandedRunIds, new Set(), null, false, feedCache);
+      render(observeFeed(initialFeed), cache);
+      const otherCache = createThreadFeedCache();
+      render(
+        buildThreadFeed(sizedHistory(3, `other-consumer-${size}`).map(row), { cache: otherCache }),
+        otherCache,
+      );
+      const nextRows = [
+        ...rows.slice(0, -1),
+        row(
+          { ...items.at(-1)!, text: "A streamed update", streaming: true } as OrchestrationV2TurnItem,
+          size - 1,
+        ),
+      ];
+      prefixItemReads = prefixNodeReads = 0;
+      const cachedFeed = buildThreadFeed(nextRows, { cache });
+      const cachedBuildReads = { items: prefixItemReads, nodes: prefixNodeReads };
+      prefixItemReads = prefixNodeReads = 0;
+      const freshFeed = buildThreadFeed(nextRows);
+      const freshBuildReads = { items: prefixItemReads, nodes: prefixNodeReads };
+      // The thread-wide fact scan remains linear; prefix translation/grouping is avoided.
+      expect(cachedBuildReads.items).toBe(prefixRows);
+      expect(cachedBuildReads.nodes).toBe(0);
+      expect(freshBuildReads.items).toBeGreaterThan(cachedBuildReads.items);
+      expect(freshBuildReads.nodes).toBeGreaterThanOrEqual(prefixRows);
+
+      const observedCachedFeed = observeFeed(cachedFeed);
+      const observedFreshFeed = observeFeed(freshFeed);
+      prefixActivityReads = tailActivityReads = 0;
+      const cachedRows = render(observedCachedFeed, cache);
+      const cachedPresentationReads = { prefix: prefixActivityReads, tail: tailActivityReads };
+      prefixActivityReads = tailActivityReads = 0;
+      const freshRows = render(observedFreshFeed);
+      const freshPresentationReads = { prefix: prefixActivityReads, tail: tailActivityReads };
+      expect(cachedPresentationReads.prefix).toBe(0);
+      expect(cachedPresentationReads.tail).toBeGreaterThan(0);
+      expect(freshPresentationReads.prefix).toBeGreaterThan(0);
+      expect(cachedPresentationReads.tail).toBeLessThan(
+        freshPresentationReads.prefix + freshPresentationReads.tail,
+      );
+      expect(values(cachedRows)).toEqual(values(freshRows));
+    },
+  );
+
+  it("keeps consumer caches independent when threads interleave and a cache changes thread", () => {
+    const firstItems = sizedHistory(30, "first-thread");
+    const secondItems = sizedHistory(30, "second-thread").map((entry) => ({
+      ...entry,
+      threadId: sourceThreadId,
+    }));
+    const firstCache = createThreadFeedCache();
+    const secondCache = createThreadFeedCache();
+    const expandedRunIds = new Set<RunId>();
+    const step = (items: OrchestrationV2TurnItem[]) => ({
+      items,
+      latestRun: { ...settled, runId: items.at(-1)!.runId! },
+    });
+    const first = step(firstItems);
+    const second = step(secondItems);
+    const before = present(first, expandedRunIds, firstCache);
+    present(second, expandedRunIds, secondCache);
+    const after = present(first, expandedRunIds, firstCache);
+    expect(values(after)).toEqual(values(present(first, expandedRunIds)));
+    expect(after[0]).toBe(before[0]);
+    for (const next of [second, first, second]) {
+      expect(values(present(next, expandedRunIds, firstCache))).toEqual(
+        values(present(next, expandedRunIds)),
+      );
+    }
+    expect(values(present(second, expandedRunIds, secondCache))).toEqual(
+      values(present(second, expandedRunIds)),
+    );
+  });
+
   it.each([
     { folds: "collapsed", expandedRunIds: new Set<RunId>() },
     { folds: "expanded", expandedRunIds: new Set<RunId>(runs) },
@@ -1625,8 +1797,6 @@ describe("streamed feed updates", () => {
     const cache = createThreadFeedCache();
     const streamed = steps.map((step) => present(step, expandedRunIds, cache));
     const fresh = steps.map((step) => present(step, expandedRunIds));
-    // Closures on activities are not part of what a row shows.
-    const values = (rows: ReadonlyArray<ThreadFeedEntry>) => JSON.parse(JSON.stringify(rows));
     for (const [index, rows] of streamed.entries()) {
       expect(values(rows), `step ${index}`).toEqual(values(fresh[index]!));
     }
