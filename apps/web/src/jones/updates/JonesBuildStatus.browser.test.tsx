@@ -1,5 +1,6 @@
 import { act, render } from "../../../test/render";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { userEvent } from "vite-plus/test/browser";
 import { EnvironmentId } from "@t3tools/contracts";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import { JonesBuildStatus } from "./JonesBuildStatus";
@@ -266,6 +267,7 @@ describe("Jones build status", () => {
       comparison: "different",
     });
     const { container, onRequest } = screen;
+    expect(buttonNamed(container, "Download")).toBeUndefined();
     expect(badges(container).map((badge) => badge.textContent)).toEqual([
       "Installed compared with this laptop: Newer",
       "Downloaded compared with this laptop: Different source",
@@ -311,22 +313,187 @@ describe("Jones build status", () => {
       "Rolled back: 0.0.45-preview.20261011.38178738344.1 → 0.0.45-preview.20261013.38343490676.1 · health check failed",
     );
     expect(text).toContain("Update status is temporarily unavailable; retrying.");
-    expect(buttonNamed(container, "Download").disabled).toBe(true);
+    expect(buttonNamed(container, "Download").getAttribute("aria-disabled")).toBe("true");
     expect(buttonNamed(container, "Check").disabled).toBe(true);
   });
 
-  it("renders nothing for an unsupported host and only the status while a host is unreachable", async () => {
-    await using screen = await renderStatus({ state: null, freshness: "unsupported" });
-    const { container } = screen;
-    expect(container.textContent).toBe("");
-    await screen.rerender(
-      statusUi({
-        state: null,
-        freshness: "stale",
-        freshnessMessage: "Update status is waiting for a connection.",
+  const noProvenance = {
+    ...available,
+    provenance: undefined,
+  } as unknown as JonesUpdateState;
+
+  it("keeps Download visible while waiting for the laptop, explains on hover and keyboard focus, and blocks activation", async () => {
+    const reason =
+      "This host follows its laptop and waits for the laptop to report its installed build.";
+    await using screen = await renderStatus({
+      state: {
+        ...noProvenance,
+        phase: "no-new",
+        policy: { role: "follower", leaderSource: null },
+      },
+    });
+    const { container, onRequest } = screen;
+    const download = buttonNamed(container, "Download");
+    expect(download.getAttribute("aria-disabled")).toBe("true");
+    expect(download.disabled).toBe(false);
+    const tooltip = () => document.querySelector('[role="tooltip"]');
+    await userEvent.hover(download);
+    await vi.waitFor(() => expect(tooltip()?.textContent).toBe(reason));
+    await userEvent.unhover(download);
+    await vi.waitFor(() => expect(tooltip()).toBeNull());
+    await act(async () => buttonNamed(container, "Check").focus());
+    await userEvent.keyboard("{Tab}");
+    expect(document.activeElement).toBe(download);
+    await vi.waitFor(() => expect(tooltip()?.textContent).toBe(reason));
+    expect(download.getAttribute("aria-describedby")).toBe(tooltip()?.id);
+    await userEvent.keyboard("{Enter} ");
+    await act(async () => download.click());
+    expect(onRequest).not.toHaveBeenCalled();
+  });
+
+  const blockedCases: readonly {
+    name: string;
+    props: Partial<Parameters<typeof JonesBuildStatus>[0]>;
+    reason: string;
+  }[] = [
+    {
+      name: "loading without state",
+      props: { state: null, freshness: "loading" },
+      reason: "Waiting for this host's update status.",
+    },
+    {
+      name: "unsupported without state",
+      props: { state: null, freshness: "unsupported" },
+      reason: "This host does not support Jones build updates.",
+    },
+    {
+      name: "unreachable without state",
+      props: { state: null, freshness: "stale", freshnessMessage: "Waiting for a connection." },
+      reason: "Waiting for a connection.",
+    },
+    {
+      name: "fresh without state",
+      props: { state: null },
+      reason: "No update status is available for this host.",
+    },
+    {
+      name: "stale with a previously offered build",
+      props: { freshness: "stale", freshnessMessage: "Refreshing this host's update status." },
+      reason: "Refreshing this host's update status.",
+    },
+    {
+      name: "pending request before follower or capability reasons",
+      props: {
+        pending: true,
+        state: { ...available, policy: { role: "follower", leaderSource: null } },
+      },
+      reason: "An update request is in progress. Wait for it to finish.",
+    },
+    ...(["checking", "downloading", "verifying", "preparing", "installing"] as const).map(
+      (phase) => ({
+        name: phase,
+        props: { state: { ...available, phase, message: `${phase} this build` } },
+        reason:
+          phase === "installing"
+            ? "Installing — server restarting. Waiting for the launcher outcome."
+            : `${phase} this build`,
       }),
+    ),
+    {
+      name: "current build without provenance",
+      props: { state: { ...noProvenance, phase: "no-new", message: "Already up to date." } },
+      reason: "Already up to date.",
+    },
+    {
+      name: "building without provenance",
+      props: { state: { ...noProvenance, phase: "building", message: "Build is still running." } },
+      reason: "Build is still running.",
+    },
+    {
+      name: "missing qualified provenance",
+      props: { state: noProvenance },
+      reason: "No qualified build is available to download.",
+    },
+    {
+      name: "unavailable capability with its reason",
+      props: {
+        state: {
+          ...available,
+          capability: { ...available.capability, download: false, reason: "unsupported-platform" },
+        },
+      },
+      reason: "Build downloads are not supported on this host's platform.",
+    },
+    {
+      name: "unavailable capability without a reason",
+      props: { state: { ...available, capability: { ...available.capability, download: false } } },
+      reason: "Build downloads are not available on this host.",
+    },
+    {
+      name: "different follower source before capability or phase",
+      props: {
+        state: {
+          ...available,
+          phase: "blocked",
+          capability: { ...available.capability, download: false },
+          policy: { role: "follower", leaderSource: installedSha },
+        },
+      },
+      reason:
+        "This host follows its laptop and installs only the laptop's installed source d994dd4.",
+    },
+    {
+      name: "failed update",
+      props: { state: failed, actionError: "The request failed." },
+      reason: "Previous attempt needs reconciliation",
+    },
+  ];
+
+  it.each(blockedCases)(
+    "keeps Download disabled with the current reason: $name",
+    async ({ props, reason }) => {
+      await using screen = await renderStatus(props);
+      const { container, onRequest } = screen;
+      const download = buttonNamed(container, "Download");
+      expect(download).toBeDefined();
+      expect(download.getAttribute("aria-disabled")).toBe("true");
+      await act(async () => download.focus());
+      await vi.waitFor(() =>
+        expect(document.querySelector('[role="tooltip"]')?.textContent).toBe(reason),
+      );
+      await userEvent.keyboard("{Enter} ");
+      await act(async () => download.click());
+      expect(onRequest).not.toHaveBeenCalled();
+    },
+  );
+
+  it("enables the exact offered download after freshness returns even if installation has a capability reason or previous action error", async () => {
+    const state = {
+      ...available,
+      capability: { ...available.capability, install: false, reason: "bootstrap-required" },
+    } as JonesUpdateState;
+    await using screen = await renderStatus({ state, freshness: "stale" });
+    const { container, onRequest } = screen;
+    const blocked = buttonNamed(container, "Download");
+    expect(blocked.getAttribute("aria-disabled")).toBe("true");
+    await act(async () => blocked.focus());
+    await vi.waitFor(() =>
+      expect(document.querySelector('[role="tooltip"]')?.id).toBe(
+        blocked.getAttribute("aria-describedby"),
+      ),
     );
-    expect(container.textContent).toBe("Update status is waiting for a connection.");
+    await screen.rerender(statusUi({ state, actionError: "Previous request failed." }, onRequest));
+    const download = buttonNamed(container, "Download");
+    expect(download).toBe(blocked);
+    expect(document.activeElement).toBe(download);
+    await vi.waitFor(() => expect(download.getAttribute("aria-describedby")).toBeNull());
+    expect(download.getAttribute("aria-disabled")).toBeNull();
+    expect(download.disabled).toBe(false);
+    await act(async () => download.click());
+    expect(onRequest).toHaveBeenCalledExactlyOnceWith({
+      action: "download",
+      input: { artifactId: 1, sourceSha: offeredSha },
+    });
   });
 });
 

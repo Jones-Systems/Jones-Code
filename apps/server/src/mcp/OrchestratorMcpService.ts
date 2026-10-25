@@ -1,3 +1,4 @@
+import * as LinkedThreads from "../jones/linkedThreads/LinkedThreads.ts";
 import {
   CommandId,
   type RunId,
@@ -961,6 +962,7 @@ function timelineItem(input: {
 }
 
 const make = Effect.gen(function* () {
+  const linkedThreads = yield* Effect.serviceOption(LinkedThreads.LinkedThreads);
   const crypto = yield* Crypto.Crypto;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
@@ -2760,6 +2762,19 @@ const make = Effect.gen(function* () {
                 title: request.title,
                 index,
               });
+              if (Option.isSome(linkedThreads))
+                yield* linkedThreads.value
+                  .claimLaunch({
+                    from: { environmentId: scope.environmentId, threadId: scope.thread.threadId },
+                    toThreadId: threadId,
+                    launchCommandId: commandId,
+                    actor: { type: "thread", threadId: scope.thread.threadId },
+                  })
+                  .pipe(
+                    Effect.mapError(() =>
+                      failure("orchestration_error", "Unable to record the launch link."),
+                    ),
+                  );
               yield* threadManagement
                 .dispatch({
                   type: "thread.create",
@@ -3069,12 +3084,14 @@ const make = Effect.gen(function* () {
         .pipe(
           Effect.provideService(IncomingLinkedMessage, scope.client?.linked === true),
           Effect.mapError((error) =>
-            isThreadManagementError(error)
-              ? threadManagementFailure(error)
-              : failure(
-                  "orchestration_error",
-                  `Unable to send to thread ${input.threadId}: ${userFacingDispatchErrorMessage(error) ?? errorMessage(error)}`,
-                ),
+            error._tag === "OrchestratorThreadMessagesBlockedError"
+              ? failure("thread_not_sendable", error.message)
+              : isThreadManagementError(error)
+                ? threadManagementFailure(error)
+                : failure(
+                    "orchestration_error",
+                    `Unable to send to thread ${input.threadId}: ${userFacingDispatchErrorMessage(error) ?? errorMessage(error)}`,
+                  ),
           ),
         );
       return {

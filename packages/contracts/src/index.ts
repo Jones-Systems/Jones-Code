@@ -118,3 +118,6 @@ export * from "./jones/remoteAdmissionHttp.ts";
 
 export * from "./jones/threadSelfConfiguration.ts";
 export * from "./jones/remoteTaskObservation.ts";
+
+export * from "./jones/linkedThreadsCapability.ts";
+export * from "./jones/linkedThreads.ts";

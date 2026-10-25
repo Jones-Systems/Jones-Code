@@ -3379,6 +3379,10 @@ export type OrchestrationV2ServerCommand =
   | OrchestrationV2InternalCommand;
 
 export const ORCHESTRATION_V2_WS_METHODS = {
+  listLinkedThreads: "orchestration.listLinkedThreads",
+  linkThreads: "orchestration.linkThreads",
+  unlinkThreads: "orchestration.unlinkThreads",
+  acceptThreadHandoff: "orchestration.acceptThreadHandoff",
   dispatchCommand: "orchestration.dispatchCommand",
   stopCurrentThreadRuntime: "orchestration.stopCurrentThreadRuntime",
   previewProviderConversationReselection: "orchestration.previewProviderConversationReselection",
