@@ -35,10 +35,13 @@ import { jonesUpdatesHttpApiLayer } from "./http.ts";
 import * as JonesUpdates from "./service.ts";
 import * as UpdateAdmissionFence from "./UpdateAdmissionFence.ts";
 import * as SourceRelation from "./sourceRelation.ts";
+import { retainStagedSelection } from "./stagedSelection.ts";
 import {
   QUALIFIED_RUNTIME_RECEIPT,
   qualifiedPayloadDigest,
   readQualifiedRuntimeReceipt,
+  stageQualifiedRuntime,
+  currentQualifiedRuntimeBinding,
 } from "../cloud/qualifiedRuntime.ts";
 import {
   reserveUpdateOperation,
@@ -51,9 +54,14 @@ class JonesUpdatesTestApi extends HttpApi.make("environment").add(
 ) {}
 
 it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
-  it.effect.each([false, true])(
-    "gates launcher IPC and preserves failed ledger identity (capability %s)",
-    (supported) =>
+  it.effect.each([
+    { supported: false, restoreStage: false },
+    { supported: true, restoreStage: false },
+    { supported: false, restoreStage: true },
+    { supported: true, restoreStage: true },
+  ])(
+    "preserves settlement and plan ownership (capability $supported, restored $restoreStage)",
+    ({ supported, restoreStage }) =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "jones-settlement-http-" });
@@ -97,9 +105,40 @@ it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
             payloadSha256: yield* Effect.promise(() => qualifiedPayloadDigest(active)),
           }),
         );
-        yield* Effect.promise(() =>
-          readQualifiedRuntimeReceipt(baseDir, version, { platform: "linux", architecture: "x64" }),
+        const installedReceipt = yield* Effect.promise(() =>
+          readQualifiedRuntimeReceipt(
+            baseDir,
+            version,
+            { platform: "linux", architecture: "x64" },
+            { retainVerification: true },
+          ),
         );
+        const previousMigrationPlan = { pendingUpstream: [901], pendingJones: [902] };
+        if (restoreStage) {
+          const payloadDirectory = `${baseDir}/candidate`;
+          yield* fs.makeDirectory(payloadDirectory);
+          yield* fs.writeFileString(`${payloadDirectory}/t3`, "#!/bin/sh\nexit 0\n");
+          yield* fs.chmod(`${payloadDirectory}/t3`, 0o700);
+          yield* Effect.promise(async () => {
+            const { protocol: _protocol, payloadSha256: _digest, ...metadata } = installedReceipt;
+            const staged = await stageQualifiedRuntime({
+              artifact: {
+                ...metadata,
+                version: targetVersion,
+                sourceSha: "f".repeat(40),
+                installedSourceSha: installedReceipt.sourceSha,
+                payloadDirectory,
+              },
+              binding: await currentQualifiedRuntimeBinding(baseDir, version, {
+                platform: "linux",
+                architecture: "x64",
+              }),
+              host: { platform: "linux", architecture: "x64" },
+              validate: async () => {},
+            });
+            await retainStagedSelection(staged);
+          });
+        }
         const operationId = "11111111-1111-4111-8111-111111111111";
         const input = { operationId, requestId: "22222222-2222-4222-8222-222222222222" };
         const binding = {
@@ -158,6 +197,7 @@ it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
           Layer.succeed(Launcher.ServiceLauncherClient, {
             managed: true,
             currentVersion: version,
+            qualifiedUpdateMigrationPlan: previousMigrationPlan,
             requiresQualifiedTrialGate: false,
             prepareTrial: Effect.undefined,
             prepareQualifiedTrial: () => Effect.die("No trial in settlement test"),
@@ -206,6 +246,10 @@ it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
         );
         yield* Effect.gen(function* () {
           const updates = yield* JonesUpdates.JonesUpdates;
+          expect((yield* updates.state())?.migrationPlan).toEqual(
+            restoreStage ? undefined : previousMigrationPlan,
+          );
+          if (restoreStage) expect((yield* updates.state())?.phase).toBe("staged");
           expect(yield* updates.state()).toMatchObject({
             settlement: "none",
             cause: "backup refused",

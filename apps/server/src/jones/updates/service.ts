@@ -655,7 +655,7 @@ export const layer = Layer.effect(
         currentVersion: version,
         ...(currentBuildStartedAt === undefined ? {} : { currentBuildStartedAt }),
         ...(installedSource === undefined ? {} : { installedSource }),
-        ...(launcher.qualifiedUpdateMigrationPlan === undefined
+        ...(restored !== undefined || launcher.qualifiedUpdateMigrationPlan === undefined
           ? {}
           : { migrationPlan: launcher.qualifiedUpdateMigrationPlan }),
         ...(recovery === undefined
