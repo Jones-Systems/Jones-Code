@@ -29,7 +29,7 @@ describe("orchestrator MCP tool guidance", () => {
     assert.notInclude(delegateSchema, '"root"');
     const delegate = DelegateTaskTool.description ?? "";
     assert.include(delegate, "its own provider session");
-    assert.include(delegate, "Lineage");
+    assert.include(delegate, "Delegated tasks");
     assert.include(delegate, "Do not use t3_thread_launch or create_threads for delegated work");
     assert.include(delegateSchema, '"projectId"');
     assert.include(delegate, "also set projectId; that requires workspaceStrategy");

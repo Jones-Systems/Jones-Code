@@ -60,6 +60,43 @@ it("routes separate-session delegation through delegate_task with valid workspac
   assert.include(instructions, "Another project requires `workspaceStrategy`");
 });
 
+it("keeps ordinary thread navigation separate from delegated task ownership", () => {
+  const instructions = T3_CODE_ORCHESTRATION_INSTRUCTIONS;
+  assert.include(
+    instructions,
+    "it appears under Delegated tasks in this thread's Linked section and is managed with `task_status` and `task_cancel`",
+  );
+  assert.include(
+    instructions,
+    "create ordinary top-level T3 conversations with no parent link: they are not subagents, `task_status`/`task_cancel` cannot manage them, and this thread gains only a navigation-only Linked entry.",
+  );
+  assert.include(
+    instructions,
+    "Use them only when the user explicitly asks for standalone separate/new/top-level threads or conversations.",
+  );
+  assert.notInclude(instructions, "they never appear in this thread's Lineage");
+});
+
+it("carries handoff provenance and requires receiver acceptance before taking ownership", () => {
+  const instructions = T3_CODE_ORCHESTRATION_INSTRUCTIONS;
+  assert.include(
+    instructions,
+    "To continue or hand off work in another thread, use `t3_thread_handoff`",
+  );
+  assert.include(
+    instructions,
+    "origin title, full thread ID, environment name and ID, return route, goal, scope, status and sources",
+  );
+  assert.include(
+    instructions,
+    "Ownership stays offered until the receiving thread accepts with `t3_thread_link` action=accept",
+  );
+  assert.include(
+    instructions,
+    "when you receive one, accept it when you take the work on and report back by its return route",
+  );
+});
+
 it("retains Jones identity and whole upstream-sized instruction segments", () => {
   const injected = t3AcpPromptWithInstructions({
     prompt: "Inspect the repository.",
