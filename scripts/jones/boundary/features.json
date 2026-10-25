@@ -829,6 +829,14 @@
       ]
     },
     {
+      "id": "codex-pending-start-notifications",
+      "tests": [
+        "apps/server/src/jones/provider/codex/CodexPendingStartNotifications.test.ts",
+        "apps/server/src/jones/provider/codex/CodexPendingStartReplay.test.ts"
+      ],
+      "scope": "A bounded Jones-owned buffer retains context-dependent notifications only for an outstanding original start dispatch. Narrow adapter hooks capture events on the serialized reader, select only the accepted original ACK turn after existing producer and admission guards, and drain in order before deferred terminal handling. Historical exclusions, cancellation, failure and producer retirement discard retained events. Overflow fails through the existing unknown-start path without prompt replay. Real replay-client coverage proves command output exactly once before terminal, unrelated-turn exclusion and cancelled-start discard without clock advancement. Upstream tests and late-child interrupt behavior are unchanged."
+    },
+    {
       "id": "codex-late-subagent-reader",
       "tests": ["apps/server/src/jones/provider/codex/CodexLateSubagentStart.test.ts"],
       "scope": "A late child turn after ancestor terminalization schedules only its interrupt RPC in the captured producer scope, retaining mutation admission, stale-producer fencing, cancellation, the ten-second timeout and warnings. The small accepted shared adapter edit reuses private producer ownership rather than duplicating it in a Jones service. The Jones regression reuses the real replay client and protocol reader with inert filesystem dependencies: interrupt ACK and unrelated model-list response must drain without clock advancement, descendants stay terminal, and terminal ordering is preserved. No protocol-reader rewrite or global timeout change. Existing upstream tests are unchanged."
@@ -1688,7 +1696,7 @@
         "apps/web/src/jones/remoteAgentLineage/ThreadRelationships.browser.test.tsx",
         "apps/web/src/jones/remoteAgentLineage/MachineIdentity.browser.test.tsx"
       ],
-      "scope": "Jones-owned scoped parent resolution and bounded machine presentation shared by header, timeline and Lineage. The shared relationship panel combines local and remote rows before its existing group/window rendering. BranchToolbar changes only its panel presentation; project icons and toolbar controls remain owned by their existing components. Existing browser harness exceptions exercise mixed history pagination, status transitions, remote navigation and unavailable parents. No server, schema, authentication or lifecycle changes."
+      "scope": "Jones-owned scoped parent resolution and bounded machine presentation shared by header, timeline and Linked. The shared relationship panel combines local and remote rows before its existing group/window rendering; Jones-owned wrappers fold ancestry and delegated tasks into one default-closed Linked section that resets on thread selection. BranchToolbar changes only its panel presentation; project icons and toolbar controls remain owned by their existing components. Existing browser harness exceptions exercise mixed history pagination, status transitions, remote navigation, unavailable parents, collapse and task controls. No server, schema, authentication or lifecycle changes in this UI fold."
     },
     {
       "id": "vcs-cache-efficiency",
@@ -1852,6 +1860,28 @@
         "scripts/jones/e2e/acp-stub/agent.node-test.mjs"
       ],
       "scope": "Five advisory Linux Electron journeys run nightly, manually or on the native-e2e PR label: pin/unpin and rename through reload and full process restart with unchanged backend control; synthetic-provider self-configuration and follow-up continuity; queue edit/cancel with unchanged-draft and exactly-once delivery oracles; ordinarily paired read-only Node observer updates and reconnect; independent-server endpoint/credential isolation and encrypted catalog disable/re-enable persistence. The observer sends zero commands; its cache guards do not prove production-client cache behavior. Source tests preserve lifecycle, process identity, sibling isolation, unknown cleanup, endpoint trace truth and synthetic ACP protocol checks. Native checks bind the observed Electron version to the candidate manifest, build once and preserve first failures. Source checks do not qualify native execution, live provider inference, physical hosts or timing. The inherited two-server trace timeout remains an unresolved native qualification gap."
+    },
+    {
+      "id": "linked-threads",
+      "tests": [
+        "packages/contracts/src/jones/linkedThreads.test.ts",
+        "packages/shared/src/jones/linkedThreads/handoffText.test.ts",
+        "packages/client-runtime/src/jones/linkedThreads/model.test.ts",
+        "apps/server/src/jones/linkedThreads/LinkedThreads.test.ts",
+        "apps/server/src/jones/linkedThreads/forwarding.test.ts",
+        "apps/server/src/jones/linkedThreads/handoff.test.ts",
+        "apps/server/src/jones/linkedThreads/launch.test.ts",
+        "apps/server/src/jones/linkedThreads/mirror.test.ts",
+        "apps/server/src/jones/linkedThreads/registration.test.ts",
+        "apps/server/src/jones/persistence/Migrations/122_JonesThreadLinks.test.ts",
+        "apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts",
+        "packages/shared/src/t3McpToolPresentation.test.ts",
+        "packages/provider-core/src/jones/orchestrationInstructions.test.ts",
+        "apps/web/src/jones/linkedThreads/LinkedThreads.browser.test.tsx",
+        "apps/web/src/jones/remoteAgentLineage/ThreadRelationships.browser.test.tsx",
+        "apps/web/src/jones/remoteAgentLineage/MachineIdentity.browser.test.tsx"
+      ],
+      "scope": "Sparse Jones-owned navigation links join ordinary launch parent/child relationships, offered and receiver-accepted continuations, and manual peers. Existing fork and delegated-task lineage folds into one default-collapsed Linked section with scoped deduplication, connected-environment discovery, truthful incomplete/offline coverage, existing task controls and portable origin/return-address text. Automatic launch claims preserve creation receipts, retry fences and first-message rejection semantics. Authenticated remote origins retain current endpoint and access checks; link copies grant no connection or task authority. Soft removal prevents automatic retry resurrection. Existing toolkit embeddings without the application layers retain lineage-only behavior. Tests cover storage, migration, launch hooks, forwarding, handoff delivery, RPC/MCP registration, presentation and UI interactions; component tests do not establish installed cross-machine runtime availability."
     },
     {
       "id": "action-worker-efficiency",
