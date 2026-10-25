@@ -1,3 +1,4 @@
+import { goalResumeNeedsNativeThread } from "../jones/goals/preserveGoalConversation.ts";
 import * as ProviderSwitchService from "./ProviderSwitchService.ts";
 import { prepareExecutionSession } from "../jones/threadConfiguration/prepareExecutionSession.ts";
 import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
@@ -837,6 +838,7 @@ export const layer: Layer.Layer<
         });
         return undefined;
       });
+      const preserveNativeGoal = goalResumeNeedsNativeThread(providerThread.driver, message);
       let effectiveHandoffs = handoffs;
       const loadedProviderThread = yield* Effect.gen(function* () {
         if (nativeForkTransfer !== undefined) {
@@ -875,6 +877,19 @@ export const layer: Layer.Layer<
                 ? {}
                 : { providerTurnId: sourceProviderTurn.id }),
             }),
+          );
+        }
+        if (preserveNativeGoal && providerThread.nativeThreadRef === null) {
+          return yield* loadFromProvider(
+            Effect.fail(
+              new ProviderAdapter.ProviderAdapterTurnStartError({
+                driver: session.driver,
+                threadId: projection.thread.id,
+                providerThreadId: providerThread.id,
+                runId,
+                cause: "Goal resume requires its existing native conversation.",
+              }),
+            ),
           );
         }
         if (providerThread.nativeThreadRef === null) {
@@ -926,6 +941,7 @@ export const layer: Layer.Layer<
 
         if (
           keepWarm ||
+          preserveNativeGoal ||
           findSteerFailure(resumed.failure) !== undefined ||
           hasUnknownRuntimeBinding(resumed.failure)
         ) {
@@ -1022,18 +1038,23 @@ export const layer: Layer.Layer<
       });
       if (loadedProviderThread === undefined) return;
       if (
-        plannedWorkResume &&
+        (plannedWorkResume || preserveNativeGoal) &&
         (loadedProviderThread.nativeThreadRef?.nativeId !==
           providerThread.nativeThreadRef?.nativeId ||
           loadedProviderThread.nativeThreadRef?.driver !== providerThread.nativeThreadRef?.driver)
       ) {
         yield* settleStartFailure({
-          signal: "planned-work-native-identity-changed",
-          title: "Work Mode could not resume its existing provider conversation",
+          signal: preserveNativeGoal
+            ? "goal-native-identity-changed"
+            : "planned-work-native-identity-changed",
+          title: preserveNativeGoal
+            ? "Goal could not resume its existing provider conversation"
+            : "Work Mode could not resume its existing provider conversation",
           error: new ProviderTurnStartError({
             runId,
-            cause:
-              "The provider returned a different native conversation after the planned update.",
+            cause: preserveNativeGoal
+              ? "The provider returned a different native conversation while resuming the goal."
+              : "The provider returned a different native conversation after the planned update.",
           }),
         });
         return;
