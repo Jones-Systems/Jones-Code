@@ -36,3 +36,60 @@ export function admissionPresentation(request: RemoteAdmissionRecord) {
       "This environment",
   };
 }
+
+export function admissionCategory(request: RemoteAdmissionRecord) {
+  if (request.status !== "held") return "In progress";
+  return request.category === "evaluation_unavailable" ||
+    request.category === "evaluation_interrupted"
+    ? "Evaluator service failure"
+    : "Request review";
+}
+
+export function admissionStatus(request: RemoteAdmissionRecord) {
+  switch (request.status) {
+    case "held":
+      return admissionCategory(request);
+    case "evaluating":
+      return "Evaluating";
+    case "approved":
+      return "Approved · awaiting dispatch";
+    case "dispatching":
+      return "Dispatch outcome unknown · awaiting confirmation";
+    case "dispatched":
+      return "Dispatched";
+    case "passed":
+      return "Evaluation passed · awaiting dispatch";
+    case "denied":
+      return "Denied";
+    case "cancelled":
+      return "Cancelled";
+  }
+}
+
+export function groupAdmissions(records: readonly RemoteAdmissionRecord[]) {
+  const groups = new Map<
+    string,
+    {
+      key: string;
+      source: string;
+      category: string;
+      records: RemoteAdmissionRecord[];
+    }
+  >();
+  for (const record of records) {
+    const category = admissionCategory(record);
+    const source = admissionPresentation(record).source;
+    const key = JSON.stringify([
+      record.envelope.identity.clientId,
+      record.envelope.identity.linkId,
+      category,
+    ]);
+    let group = groups.get(key);
+    if (!group) {
+      group = { key, source, category, records: [] };
+      groups.set(key, group);
+    }
+    group.records.push(record);
+  }
+  return [...groups.values()];
+}

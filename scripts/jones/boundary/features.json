@@ -95,7 +95,7 @@
         "apps/server/src/jones/workstreams/enrollment/bearerRoute.test.ts",
         "packages/shared/src/jones/checkpointContention.test.ts"
       ],
-      "scope": "Bounded startup lock contention in the private upstream SQLite checkpoint worker and fail-fast test barriers on worker errors, exits and interruption. A small generic shared repair avoids duplicating the client; real-worker regressions remain in its existing mock harness. Preserves WAL setup order, checkpoint thresholds, fallback warnings and shutdown ownership. No schema, wire, migration or runtime activation changes; historical CI timeout causality remains unproved."
+      "scope": "Bounded startup lock contention in the private upstream SQLite checkpoint worker and fail-fast test barriers on worker errors, exits and interruption. Timed-out reader workers recover on later demand after termination and a capped cooldown; the file-backed server opts into read failure rather than synchronous fallback while its reader is unavailable. Other consumers retain fallback compatibility. A small generic shared repair avoids duplicating the client's private lifecycle machinery; real-worker recovery, retirement and serving-loop progress regressions remain in its existing mock harness. Preserves WAL setup order, transaction affinity, checkpoint thresholds and shutdown ownership. No schema, wire, migration or runtime activation changes; historical CI timeout causality remains unproved."
     },
     {
       "id": "usage",
@@ -437,7 +437,7 @@
         "apps/server/src/jones/mcp/organizationMetadata/handlers.test.ts",
         "packages/contracts/src/jones/organizationMetadata.test.ts"
       ],
-      "scope": "Native authenticated MCP invocation context and bounded organization thread metadata service, toolkit handlers, and Jones contract schemas; registration is provided by McpHttpServer."
+      "scope": "Native authenticated MCP invocation context and bounded organization thread metadata service, toolkit handlers, and Jones contract schemas; registration is provided by McpHttpServer. Metadata listing uses the reader for its complete transaction, retaining committed rows and sequence watermark while the writer is occupied; its real WAL regression exercises the existing projection and migration harness."
     },
     {
       "id": "settlement-restore",
@@ -1345,6 +1345,7 @@
     {
       "id": "remote-admission",
       "tests": [
+        "apps/web/src/reactCompilerCoverage.test.ts",
         "apps/server/src/jones/remoteAdmission/RemoteAdmission.test.ts",
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
         "apps/server/src/jones/remoteAdmissionIntegration/RemoteAdmissionIntake.test.ts",
@@ -1353,9 +1354,14 @@
         "apps/web/src/jones/remoteAdmission/presentation.test.ts",
         "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts",
         "apps/server/src/jones/remoteAdmissionIntegration/owner.test.ts",
-        "apps/web/src/jones/remoteAdmission/RemoteAdmissionSettings.browser.test.tsx"
+        "apps/web/src/jones/remoteAdmission/RemoteAdmissionSettings.browser.test.tsx",
+        "apps/server/src/textGeneration/jones/CodexRemoteRequestEvaluation.test.ts",
+        "apps/server/src/textGeneration/jones/remoteEvaluationModel.test.ts",
+        "apps/web/src/jones/remoteAdmission/store.test.ts",
+        "apps/web/src/jones/remoteAdmission/RequestsPage.browser.test.tsx",
+        "apps/web/src/jones/remoteAdmission/RemoteAdmissionNotifications.browser.test.tsx"
       ],
-      "scope": "Jones-owned durable remote-request admission and owner-only HTTP/MCP integration, with canonical bindings, duplicate handling, screening, owner decisions, cancellation, dispatch claims and resume. Contracts, server policy/invocations, client settings and attention live in Jones modules. Server and environment HTTP composition retain small registration hooks; MCP tool access and cancellation use typed Jones wrappers. The shared contracts barrel and orchestrator MCP schema expose compatible status fields. Shared sidebar and connection settings only mount Jones views. Existing HTTP group tests cover registration using the consumed upstream API harness. The evaluator screens requests before normal task dispatch; it does not constrain tools of accepted tasks. Owner progress is presented through the Jones sidebar attention link and Connections view using stored sender, task and target information. Jones HTTP tests cover all four owner routes for administrative cookies and the exact desktop-bootstrap bearer, with scope and non-owner exclusions; the owner test verifies server-established bootstrap identity and rejects request-asserted identity. The Settings browser test covers safe visible load failure, polling recovery and policy/model preservation. Jones HTTP tests cover owner-only decisions, target tests cover authoritative target binding, and presentation tests cover stored request context. The existing worktree toolkit registration harness supplies the intake service required by the new MCP wrapper; this test-only upstream import avoids duplicating the real toolkit registration harness."
+      "scope": "Jones-owned durable remote-request admission and owner-only HTTP/MCP integration, with canonical bindings, duplicate handling, screening, owner decisions, cancellation, dispatch claims and resume. Contracts, server policy/invocations, client configuration, Requests inbox and global attention live in Jones modules. Connections configures background evaluation only; Requests and expandable grouped notifications provide review outside Settings for each receiving environment. Owner authorization, loading, stale state, policy revisions and unconfirmed decisions gate actions. Approval authorizes dispatch, not execution; dispatching retains an explicit unknown outcome without resend. Provider selection uses the exact account instance, model and options and requires advertised tool-free evaluation capability, with explicit unavailable/unsupported states and no saved fallback. The evaluator screens requests before normal task dispatch; it does not constrain tools of accepted tasks. Existing HTTP group tests cover registration using the consumed upstream API harness. Jones HTTP tests cover all four owner routes for administrative cookies and the exact desktop-bootstrap bearer, with scope and non-owner exclusions; the owner test rejects request-asserted identity. Settings, store, inbox and notification tests cover configuration preservation, shared state, grouped review and failure presentation. Provider tests cover exact model/option capability validation and the managed Codex tool-free assessment protocol. The remote-request-inbox fragment owns the Requests route and root notification import; remote-evaluation-provider owns the evaluator paths and provider hooks. Server/environment HTTP composition and shared sidebar/connection settings retain small registration/mount hooks. The shared contracts barrel and orchestrator MCP schema expose compatible status fields. MCP access/cancellation use typed Jones wrappers; the existing worktree toolkit registration harness supplies the intake service without duplicating its real harness."
     },
     {
       "id": "remote-delegation",
@@ -1882,6 +1888,17 @@
         "apps/web/src/jones/remoteAgentLineage/MachineIdentity.browser.test.tsx"
       ],
       "scope": "Sparse Jones-owned navigation links join ordinary launch parent/child relationships, offered and receiver-accepted continuations, and manual peers. Existing fork and delegated-task lineage folds into one default-collapsed Linked section with scoped deduplication, connected-environment discovery, truthful incomplete/offline coverage, existing task controls and portable origin/return-address text. Automatic launch claims preserve creation receipts, retry fences and first-message rejection semantics. Authenticated remote origins retain current endpoint and access checks; link copies grant no connection or task authority. Soft removal prevents automatic retry resurrection. Existing toolkit embeddings without the application layers retain lineage-only behavior. Tests cover storage, migration, launch hooks, forwarding, handoff delivery, RPC/MCP registration, presentation and UI interactions; component tests do not establish installed cross-machine runtime availability."
+    },
+    {
+      "id": "coherent-reference-reads",
+      "tests": [
+        "apps/server/src/jones/orchestration/threadReferenceExcerpt.test.ts",
+        "apps/server/src/jones/orchestration/threadReferenceTail.test.ts",
+        "apps/server/src/jones/orchestration/threadReferenceCoherent.test.ts",
+        "apps/server/src/relay/AgentAwarenessRelay.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts"
+      ],
+      "scope": "Read ordered reference message/activity selections from one canonical index and union payload transaction after writer-side transcript hydration. Preserve global snapshot provenance, source/ancestor visibility, cancellation, missing/deleted errors, exact excerpts and existing wire/history contracts. Existing relay/control test doubles implement the internal read service API."
     },
     {
       "id": "mobile-feed-cache-acceptance",
