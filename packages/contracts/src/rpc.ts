@@ -1,4 +1,10 @@
 import {
+  ListLinkedThreadsRpc,
+  LinkThreadsRpc,
+  UnlinkThreadsRpc,
+  AcceptThreadHandoffRpc,
+} from "./jones/linkedThreadsRpc.ts";
+import {
   ThreadReferenceExcerptInput,
   ThreadReferenceExcerptResult,
 } from "./jones/threadReferenceExcerptRpc.ts";
@@ -2199,6 +2205,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsStopCurrentThreadRuntimeRpc,
   WsPreviewProviderConversationReselectionRpc,
   WsThreadReferenceExcerptRpc,
+  ListLinkedThreadsRpc,
+  LinkThreadsRpc,
+  UnlinkThreadsRpc,
+  AcceptThreadHandoffRpc,
   WsReselectProviderConversationRpc,
   WsObserveCurrentThreadRuntimeStopRpc,
   WsReadCurrentRuntimeStopTargetRpc,

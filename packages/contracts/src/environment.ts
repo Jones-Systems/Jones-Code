@@ -1,3 +1,4 @@
+import { LinkedThreadsCapability } from "./jones/linkedThreadsCapability.ts";
 import { WORKSTREAM_OPERATIONS_CONTRACT } from "./jones/workstreamOperations.ts";
 import { QueuedSteerBatchCapability } from "./jones/queuedSteerBatch.ts";
 import { ThreadAttentionCapability } from "./jones/threadAttention.ts";
@@ -113,6 +114,7 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   queueDispatch: Schema.optionalKey(QueueDispatchCapability),
   threadCorpus: Schema.optionalKey(ThreadCorpusCapability),
   threadAttention: Schema.optionalKey(ThreadAttentionCapability),
+  linkedThreads: Schema.optionalKey(LinkedThreadsCapability),
   nativeBootstrapCreation: Schema.optionalKey(NativeBootstrapCreationCapability),
   currentRuntimeStop: Schema.optionalKey(
     Schema.Struct({

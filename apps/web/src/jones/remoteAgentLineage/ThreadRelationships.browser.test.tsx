@@ -21,6 +21,31 @@ const state = vi.hoisted(() => ({
   toast: vi.fn(),
 }));
 
+vi.mock(import("../linkedThreads/useLinkedThreads"), () => ({
+  useLinkedThreads: () => ({
+    links: [],
+    relations: [],
+    snapshots: new Map(),
+    environments: [],
+    errors: [],
+    offline: [],
+    answering: new Set(),
+    shells: [],
+    loading: false,
+    incomplete: false,
+    truncated: false,
+    visible: false,
+    canLink: false,
+    canCopy: false,
+    hasSuccessor: false,
+    canAccept: () => false,
+    canUnlink: () => false,
+    onExpand: () => {},
+    link: async () => false,
+    unlink: async () => false,
+    accept: async () => false,
+  }),
+}));
 vi.mock(import("@tanstack/react-router"), async (original) => ({
   ...(await original()),
   useNavigate: (() => state.navigate) as never,
@@ -119,6 +144,7 @@ function sectionToggle(expanded: boolean) {
   return toggle;
 }
 const heading = () => container.querySelector("h3")?.textContent;
+const linkedToggle = () => byLabel("Linked threads");
 // Joins rendered text nodes; `visibleOnly` drops screen-reader-only text.
 function textNodes(separator: string, visibleOnly = false) {
   const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
@@ -152,6 +178,8 @@ it("shows the matching child agent details and refreshes them when the agent set
   await using _screen = await setup();
   const agent = {
     id: "agent-1",
+    threadId: "parent",
+    origin: "app_owned",
     driver: "codex",
     providerInstanceId: "codex",
     childThreadId: "child-1",
@@ -190,8 +218,13 @@ it("shows the matching child agent details and refreshes them when the agent set
   );
   await render(panel);
   const text = () => textNodes(" ").replace(/\s+/g, " ");
+  expect(linkedToggle().getAttribute("aria-expanded")).toBe("false");
+  expect(text()).toContain("Linked · 3 running");
+  expect(text()).not.toContain("Checker");
+  expect(allByLabel("Stop subagent Checker")).toHaveLength(0);
+  await click(linkedToggle());
   expect(text()).toContain("Checker");
-  expect(text()).toContain("Lineage · 3 running");
+  expect(text()).toContain("Linked · 3 running");
   expect(text()).toContain("running");
   expect(text()).not.toContain("gpt-5.4");
   expect(text()).not.toContain("gpt-5.3");
@@ -199,6 +232,16 @@ it("shows the matching child agent details and refreshes them when the agent set
   expect(text()).not.toContain("Unlinked agent");
   expect(text()).not.toContain("Active agents");
   expect(sectionToggles(true)).toHaveLength(0);
+  await click(byLabel("Stop subagent Checker"));
+  expect(state.command).toHaveBeenLastCalledWith({
+    environmentId: "test",
+    input: { threadId: "parent", subagentId: "agent-1" },
+  });
+  await click(linkedToggle());
+  expect(text()).not.toContain("Checker");
+  expect(text()).toContain("Linked · 3 running");
+  await click(linkedToggle());
+  expect(text()).toContain("Checker");
 
   state.projection = {
     ...projection,
@@ -213,13 +256,20 @@ it("shows the matching child agent details and refreshes them when the agent set
     ],
   };
   await update();
-  expect(heading()).toBe("Lineage");
+  expect(heading()).toBe("Linked (1)");
   expect(text()).toContain("Previous agents (1)");
   expect(text()).not.toContain("Checker");
   await click(sectionToggle(false));
   expect(text()).toContain("Checker");
-  expect(text()).toContain("Checker on VPS · Done");
-  expect(text()).not.toContain("(1)");
+  const previousGroup = container.querySelector('[data-linked-group="previous"]')!;
+  const previousRow = previousGroup.querySelector("li")!;
+  expect(previousRow.textContent).toContain("Checker");
+  expect(
+    [...previousRow.querySelectorAll("span")].some((span) => span.textContent === "Delegated task"),
+  ).toBe(true);
+  expect(previousRow.textContent).toContain("on VPS · Done");
+  expect(previousGroup.querySelector("button")?.textContent?.trim()).toBe("Previous agents");
+  expect(heading()).toBe("Linked (1)");
   expect(text()).toContain("Done");
   expect(text()).not.toContain("running");
   expect(text()).not.toContain("Worker");
@@ -238,7 +288,7 @@ it("shows the matching child agent details and refreshes them when the agent set
     })),
   };
   await update();
-  expect(text()).toContain("Lineage · 8 running");
+  expect(text()).toContain("Linked · 8 running");
 
   state.projection = {
     ...projection,
@@ -263,7 +313,82 @@ it("shows the matching child agent details and refreshes them when the agent set
     subagents: [{ ...agent, childThreadId: null }],
   };
   await update();
-  expect(text()).toContain("Lineage · 1 running");
+  expect(text()).toContain("Linked · 1 running");
+});
+
+it("keeps fork ancestry navigable inside Linked and closes Linked when the selected thread changes", async () => {
+  await using _screen = await setup();
+  const source = {
+    id: "source",
+    title: "Source conversation",
+    status: "idle",
+    lineage: { parentThreadId: null, relationshipToParent: null },
+  };
+  const selected = {
+    ...source,
+    id: "selected",
+    title: "Selected fork",
+    forkedFrom: { type: "run", threadId: "source", runId: "source-run" },
+    lineage: { parentThreadId: "source", relationshipToParent: "fork" },
+  };
+  const child = {
+    ...source,
+    id: "child",
+    title: "Child fork",
+    forkedFrom: { type: "run", threadId: "selected", runId: "selected-run" },
+    lineage: { parentThreadId: "selected", relationshipToParent: "fork" },
+  };
+  state.shells = [source, selected, child].map((shell) => ({
+    environmentId: "test",
+    source: shell,
+  }));
+  state.projection = {
+    thread: selected,
+    runs: [],
+    providerThreads: [],
+    providerSessions: [],
+    contextTransfers: [],
+    subagents: [],
+  };
+  await render(
+    <ThreadRelationshipsPanel
+      environmentId={EnvironmentId.make("test")}
+      threadId={ThreadId.make("selected")}
+    />,
+  );
+  expect(container.querySelectorAll("li")).toHaveLength(0);
+  await click(linkedToggle());
+  expect(textNodes(" ")).toContain("Forked from");
+  expect(
+    container
+      .querySelector('[data-linked-group="children"] button')
+      ?.textContent?.replace(/\s+/g, " ")
+      .trim(),
+  ).toBe("Children (1)");
+  await click(buttons().find((button) => button.textContent?.includes("Children"))!);
+  expect(textNodes(" ")).not.toContain("Delegated tasks");
+  const sourceButton = buttons().find((button) =>
+    button.textContent?.includes("Source conversation"),
+  )!;
+  await click(sourceButton);
+  expect(state.navigate).toHaveBeenLastCalledWith({
+    to: "/$environmentId/$threadId",
+    params: { environmentId: "test", threadId: "source" },
+  });
+  await click(buttons().find((button) => button.textContent?.includes("Child fork"))!);
+  expect(state.navigate).toHaveBeenLastCalledWith({
+    to: "/$environmentId/$threadId",
+    params: { environmentId: "test", threadId: "child" },
+  });
+  state.projection = { ...(state.projection as object), thread: child };
+  await render(
+    <ThreadRelationshipsPanel
+      environmentId={EnvironmentId.make("test")}
+      threadId={ThreadId.make("child")}
+    />,
+  );
+  expect(linkedToggle().getAttribute("aria-expanded")).toBe("false");
+  expect(container.querySelectorAll("li")).toHaveLength(0);
 });
 
 it("combines remote and local history before collapse and pagination, then restores resumed tasks", async () => {
@@ -314,6 +439,7 @@ it("combines remote and local history before collapse and pagination, then resto
       threadId={ThreadId.make("parent")}
     />,
   );
+  await click(linkedToggle());
   expect(textNodes(" ").replace(/\s+/g, " ")).toContain("Previous agents (7)");
   expect(textNodes(" ").replace(/\s+/g, " ")).not.toContain("Remote task");
   await click(sectionToggle(false));
@@ -339,7 +465,7 @@ it("combines remote and local history before collapse and pagination, then resto
     ],
   };
   await update();
-  expect(heading()).toBe("Lineage · 1 running");
+  expect(heading()).toBe("Linked · 1 running (7)");
   await click(sectionToggle(true));
   expect(textNodes(" ").replace(/\s+/g, " ")).toContain("Previous agents (6)");
   expect(container.querySelectorAll("li")).toHaveLength(1);
@@ -376,6 +502,7 @@ it("opens a scoped remote parent, retains its cached title offline, and preserve
       threadId={ThreadId.make("child")}
     />,
   );
+  await click(linkedToggle());
   expect(byLabel("Parent agent: Delegation title").disabled).toBe(true);
   expect(textNodes(" ").replace(/\s+/g, " ")).toContain("Connect to it to open the parent");
   expect(textNodes(" ").replace(/\s+/g, " ")).not.toContain("Wrong local title");
@@ -445,6 +572,7 @@ it("keeps a long remote title ellipsized and full on hover beside unknown enviro
       threadId={ThreadId.make("parent")}
     />,
   );
+  await click(linkedToggle());
   const label = container.querySelector<HTMLElement>("span.truncate")!;
   expect(label.closest("button")?.getAttribute("aria-label")).toContain(title);
   state.showTooltips = true;
