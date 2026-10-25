@@ -2095,6 +2095,11 @@
         "scripts/jones/packaging/cliArchiveLockfile.test.ts"
       ],
       "scope": "CLI archive and merged macOS/Linux desktop staging pin only patched external roots to the committed apps/server lock importer, preserving applicable patch mappings and all unpatched root specifications. Missing, stale, ambiguous or unsupported patch resolutions fail before installation. Thin builder hooks retain existing external selection, merge precedence, native platform packages, workspace policies and signing; Windows staging retains its existing projector. Pure planning fixtures and real-input desktop manifest regressions run in the existing scripts test route; platform installs, unsigned DMG completion and artifact smoke checks remain hosted qualification. Accepts the single workspace lock or the pnpm environment/workspace pair without merging bindings or falling back across malformed, ambiguous or stale documents."
+    },
+    {
+      "id": "workspace-content-search-slicing",
+      "tests": ["apps/server/src/jones/workspace/contentSearchPages.test.ts"],
+      "scope": "Enforced small native grep pages yield a cancellable Node macrotask between continuations, preserving zero-hit discovery, the original deadline after native hits, cursor/limit/truncation/fallback semantics and finder ownership. The Jones integration test imports the upstream service to prove its real mapping and typed error hook."
     }
   ]
 }
