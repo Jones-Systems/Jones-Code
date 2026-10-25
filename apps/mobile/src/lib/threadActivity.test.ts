@@ -1671,9 +1671,7 @@ describe("streamed feed updates", () => {
         const cache = createThreadFeedCache();
         for (const [index, step] of updates.entries()) {
           const actual = present(step, expandedRunIds, cache);
-          expect(values(actual), `update ${index}`).toEqual(
-            values(present(step, expandedRunIds)),
-          );
+          expect(values(actual), `update ${index}`).toEqual(values(present(step, expandedRunIds)));
         }
         const messages = present(updates.at(-1)!, expandedRunIds, cache).flatMap((entry) =>
           entry.type === "message" ? [entry.message.text] : [],
@@ -1726,7 +1724,11 @@ describe("streamed feed updates", () => {
       const nextRows = [
         ...rows.slice(0, -1),
         row(
-          { ...items.at(-1)!, text: "A streamed update", streaming: true } as OrchestrationV2TurnItem,
+          {
+            ...items.at(-1)!,
+            text: "A streamed update",
+            streaming: true,
+          } as OrchestrationV2TurnItem,
           size - 1,
         ),
       ];
