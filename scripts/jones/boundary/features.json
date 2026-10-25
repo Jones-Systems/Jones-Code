@@ -829,6 +829,14 @@
       ]
     },
     {
+      "id": "codex-pending-start-notifications",
+      "tests": [
+        "apps/server/src/jones/provider/codex/CodexPendingStartNotifications.test.ts",
+        "apps/server/src/jones/provider/codex/CodexPendingStartReplay.test.ts"
+      ],
+      "scope": "A bounded Jones-owned buffer retains context-dependent notifications only for an outstanding original start dispatch. Narrow adapter hooks capture events on the serialized reader, select only the accepted original ACK turn after existing producer and admission guards, and drain in order before deferred terminal handling. Historical exclusions, cancellation, failure and producer retirement discard retained events. Overflow fails through the existing unknown-start path without prompt replay. Real replay-client coverage proves command output exactly once before terminal, unrelated-turn exclusion and cancelled-start discard without clock advancement. Upstream tests and late-child interrupt behavior are unchanged."
+    },
+    {
       "id": "codex-late-subagent-reader",
       "tests": ["apps/server/src/jones/provider/codex/CodexLateSubagentStart.test.ts"],
       "scope": "A late child turn after ancestor terminalization schedules only its interrupt RPC in the captured producer scope, retaining mutation admission, stale-producer fencing, cancellation, the ten-second timeout and warnings. The small accepted shared adapter edit reuses private producer ownership rather than duplicating it in a Jones service. The Jones regression reuses the real replay client and protocol reader with inert filesystem dependencies: interrupt ACK and unrelated model-list response must drain without clock advancement, descendants stay terminal, and terminal ordering is preserved. No protocol-reader rewrite or global timeout change. Existing upstream tests are unchanged."
