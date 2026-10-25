@@ -53,6 +53,12 @@ vi.mock("../../components/chat/ProviderModelPicker", () => ({
   ),
 }));
 vi.mock("../../components/chat/TraitsPicker", () => ({
+  TraitsMenuContent: () => null,
+  getReasoningTraitStep: () => undefined,
+  shouldRenderTraitsControls: () => false,
+  readPromptUltrathink: () => "none",
+  buildTraitsOptionSelections: () => undefined,
+  useTraitsSelection: () => null,
   TraitsPicker: ({
     onModelOptionsChange,
   }: {
