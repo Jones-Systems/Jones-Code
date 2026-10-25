@@ -4,6 +4,11 @@ import {
   isGoalNotificationNotDelivered,
 } from "../jones/goals/GoalNotificationDelivery.ts";
 import * as RuntimeStopStore from "../jones/runtime/RuntimeStopSqlite.ts";
+import {
+  withOperation,
+  sameOperationRequest,
+} from "../jones/workspaceLifecycle/NativeOperation.ts";
+import { withOriginalTransition } from "../jones/workspaceLifecycle/NativeBoundary.ts";
 import * as RuntimeStop from "../jones/runtime/RuntimeStop.ts";
 import { executeNativeProviderEffect } from "../jones/nativeCreation/NativeCreationProviderExecution.ts";
 import { CommandId } from "@t3tools/contracts";
@@ -879,7 +884,48 @@ export const layerWithOptions = (
 
           const execution = executor
             .execute(effect, { willRetry: effect.attemptCount < maxAttempts })
-            .pipe(Effect.as("executed" as const));
+            .pipe(
+              (execution) =>
+                withOriginalTransition(
+                  `effect:${effect.id}`,
+                  {
+                    commandId: effect.commandId,
+                    threadId: effect.threadId,
+                    request: effect.request,
+                  },
+                  execution,
+                ),
+              (execution) =>
+                withOperation(
+                  {
+                    id: `effect:${effect.id}`,
+                    kind: "effect",
+                    threadId: effect.threadId,
+                    boundaries: ["start", "resume", "recreate"],
+                    sqlOnly: true,
+                    check: Effect.gen(function* () {
+                      const current = yield* outbox.get(effect.id);
+                      if (
+                        Option.isNone(current) ||
+                        current.value.status !== "running" ||
+                        current.value.leaseOwner !== workerId ||
+                        current.value.attemptCount !== effect.attemptCount ||
+                        current.value.commandId !== effect.commandId ||
+                        !sameOperationRequest(current.value.request, effect.request) ||
+                        current.value.leaseExpiresAt === null ||
+                        DateTime.toEpochMillis(DateTime.makeUnsafe(current.value.leaseExpiresAt)) <=
+                          DateTime.toEpochMillis(yield* DateTime.now)
+                      )
+                        return yield* new OrchestrationEffectWorkerError({
+                          operation: "workspace-custody",
+                          effectId: effect.id,
+                        });
+                    }),
+                  },
+                  execution,
+                ),
+              Effect.as("executed" as const),
+            );
           const exit = yield* Effect.exit(Effect.raceFirst(execution, cancellation)).pipe(
             Effect.ensuring(outbox.clearCancellation(effect.id)),
           );

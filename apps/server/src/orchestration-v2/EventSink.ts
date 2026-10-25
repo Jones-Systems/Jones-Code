@@ -2,6 +2,7 @@ import type { ThreadSelfConfigurationCommitContext } from "../jones/threadConfig
 import * as HistoricalTerminalHistory from "../jones/orchestration/HistoricalTerminalHistory.ts";
 import type { ProviderConversationReselectionCommitContext } from "../jones/runtime/ProviderConversationReselection.ts";
 import * as CheckoutIntent from "../jones/ordinaryCheckout/CheckoutIntent.ts";
+import * as WorkspaceLifecycle from "../jones/workspaceLifecycle/NativeBoundary.ts";
 import * as UpdateAdmissionFence from "../jones/updates/UpdateAdmissionFence.ts";
 import {
   makeDeletionAdmission,
@@ -1287,6 +1288,7 @@ const layerBase: Layer.Layer<
           }
           if (ordinary !== undefined && Option.isSome(checkoutIntent))
             yield* checkoutIntent.value.validate(ordinary);
+          yield* WorkspaceLifecycle.validateCommand(input.ordinaryCheckoutCommand, input.events);
           const normalized = yield* normalizeEvents(input.events);
           const storedEvents = yield* eventStore
             .append({
