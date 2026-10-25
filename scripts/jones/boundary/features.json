@@ -2060,6 +2060,17 @@
       "id": "pele-lifecycle-acceptance",
       "tests": ["apps/web/src/jones/markdown/MermaidDiagram.browser.test.tsx"],
       "scope": "Focused browser acceptance of existing Pele integration: commit-only mounting, balanced cleanup through source changes, navigation and source toggle, unchanged rerenders, chunk-load retry, invalid-source recovery, and real SVG/MathML sanitization. The real components and DOMPurify run against a controlled Pele engine; navigation uses content replacement and native core-import rejection, parsing/layout, device behavior and live performance remain unqualified. No production behavior is changed."
+    },
+    {
+      "id": "workstreams-native-authority",
+      "tests": [
+        "packages/contracts/src/jones/workstreamsNative.test.ts",
+        "packages/contracts/src/jones/workstreamsNativeRead.test.ts",
+        "packages/contracts/src/jones/workstreamsNativePlacement.test.ts",
+        "packages/contracts/src/jones/workstreamsSnapshot.test.ts",
+        "packages/contracts/src/jones/workstreamsRollups.test.ts"
+      ],
+      "scope": "Versioned native registry-home, closed forwarding and receipt lookup contracts; coherent read provenance; native placement proofs alongside historical v1; encrypted snapshot framing; rollup source authorization and result preservation. Optional environment capability and explicit package exports are the shared hooks. Contracts only; no runtime authority, migration, client activation, provider configuration or fleet adoption is claimed."
     }
   ]
 }

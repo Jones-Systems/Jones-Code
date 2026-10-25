@@ -1,0 +1,130 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "schema": "WorkstreamsNativeCapability",
+      "value": {
+        "contract": "workstreams-native/1.0.0",
+        "mode": "native-home",
+        "registry": {
+          "registry_instance_id": "12345678-1234-4234-8234-123456789abc",
+          "owner_id": "owner-1",
+          "canonical_origin": "https://registry.workstreams.invalid",
+          "home_environment_id": "home-1",
+          "server_generation": 1
+        },
+        "reads": ["workstreams-read/1.0.0"],
+        "placement_proofs": ["workstreams-t3-placement/1.0.0", "workstreams-t3-placement/2.0.0"]
+      }
+    },
+    {
+      "schema": "WorkstreamsNativeReadEnvelope",
+      "value": {
+        "contract": "workstreams-read/1.0.0",
+        "registry": {
+          "registry_instance_id": "12345678-1234-4234-8234-123456789abc",
+          "owner_id": "owner-1",
+          "canonical_origin": "https://registry.workstreams.invalid",
+          "server_generation": 1,
+          "registry_version": 0
+        },
+        "provenance": {
+          "authority": "native-home",
+          "home_environment_id": "home-1",
+          "served_by_environment_id": "home-1",
+          "source": "live",
+          "observed_at": "2026-10-25T12:00:00Z",
+          "stale": false
+        },
+        "coverage": {
+          "registry": "complete",
+          "sources": []
+        }
+      }
+    },
+    {
+      "schema": "WorkstreamsNativePlacementPage",
+      "value": {
+        "inventory_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "context": {
+          "owner_id": "owner-1",
+          "principal_id": "principal-1",
+          "authorization_revision": 1,
+          "server_generation": 1,
+          "registry_version": 0
+        },
+        "provenance": {
+          "authority": "native-home",
+          "registry_instance_id": "12345678-1234-4234-8234-123456789abc",
+          "home_environment_id": "home-1",
+          "home_generation": 1,
+          "served_by_environment_id": "home-1",
+          "observed_at": "2026-10-25T12:00:00Z"
+        },
+        "items": [],
+        "next_cursor": null
+      }
+    },
+    {
+      "schema": "WorkstreamsSnapshotHeader",
+      "value": {
+        "contract": "workstreams-snapshot/1.0.0",
+        "snapshot_id": "12345678-1234-4234-8234-123456789abc",
+        "producer": {
+          "system": "jones-native",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "schema_version": 124
+        },
+        "registry": {
+          "registry_instance_id": "12345678-1234-4234-8234-123456789abc",
+          "canonical_origin": "https://registry.workstreams.invalid"
+        },
+        "owners": [
+          {
+            "owner_id": "owner-1",
+            "server_generation": 1,
+            "registry_version": 0,
+            "audit_high_water": 0
+          }
+        ],
+        "fence": {
+          "epoch": 1,
+          "fenced_at": "2026-10-25T12:00:00Z"
+        },
+        "exported_at": "2026-10-25T12:01:00Z",
+        "open_effects": 0,
+        "encryption": {
+          "mode": "stream",
+          "key_id": null
+        }
+      }
+    },
+    {
+      "schema": "WorkstreamsRollupSummary",
+      "value": {
+        "workstream_id": "ws-1",
+        "rollup_version": 1,
+        "manifest_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "generated_at": "2026-10-25T12:00:00Z",
+        "output_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "result": {
+          "outcome": {
+            "text": "Synthetic outcome",
+            "sources": [
+              {
+                "source_set_id": "source-set-1",
+                "member_ordinal": 0
+              }
+            ]
+          },
+          "semantic_status": "active",
+          "blockers": [],
+          "decisions": [],
+          "next_steps": [],
+          "follow_up_candidates": [],
+          "confidence": 0.75
+        }
+      }
+    }
+  ]
+}
