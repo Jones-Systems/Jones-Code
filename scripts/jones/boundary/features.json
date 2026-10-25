@@ -677,7 +677,7 @@
         "scripts/jones/performance/current-qualification.node-test.mjs",
         "scripts/jones/performance/migration-restore.node-test.mjs"
       ],
-      "scope": "Qualification discovery includes receiving100\u2013104 owners and exact bootstrap/historical-wire/lookup oracles. Actual055 birth lookup, missing-index refusal and rollback are synthetically tested; foreign007 remains foreign and installed-runtime qualification stays opt-in/unverified."
+      "scope": "Qualification discovery includes receiving100–104 owners and exact bootstrap/historical-wire/lookup oracles. Actual055 birth lookup, missing-index refusal and rollback are synthetically tested; foreign007 remains foreign and installed-runtime qualification stays opt-in/unverified."
     },
     {
       "id": "preview-runtime-identity",
@@ -1416,7 +1416,7 @@
         "apps/server/src/jones/updates/migrationPlan.test.ts",
         "apps/server/src/persistence/reconcileV2PreviewMigration.test.ts"
       ],
-      "scope": "Jones migrations 116\u2013119 register admission, delegation intents, admission integration and peer-link storage in the independent Jones loader. Imported unreleased upstream-ledger migrations 64/65 are removed from this task branch; their files are tombstoned without changing the boundary baseline. PeerLinks retains its existing service and uses the Jones-owned table identifier. Its existing database harness and upstream migration fixtures stay in place to prove integration while Jones isolation, retained-history and migration-plan tests cover the complete manifest. No released Jones migration identity or upstream schema is reassigned. Migration 121 adds only sparse Jones-owned remote-question observation and notice-intent rows, without upstream foreign keys or ledger changes; retained-history and complete-manifest checks include the added identity."
+      "scope": "Jones migrations 116–119 register admission, delegation intents, admission integration and peer-link storage in the independent Jones loader. Imported unreleased upstream-ledger migrations 64/65 are removed from this task branch; their files are tombstoned without changing the boundary baseline. PeerLinks retains its existing service and uses the Jones-owned table identifier. Its existing database harness and upstream migration fixtures stay in place to prove integration while Jones isolation, retained-history and migration-plan tests cover the complete manifest. No released Jones migration identity or upstream schema is reassigned. Migration 121 adds only sparse Jones-owned remote-question observation and notice-intent rows, without upstream foreign keys or ledger changes; retained-history and complete-manifest checks include the added identity."
     },
     {
       "id": "remote-request-evaluation",
@@ -1524,7 +1524,7 @@
         "apps/web/src/components/Sidebar.logic.test.ts",
         "apps/web/src/hooks/useHandleNewThread.test.ts"
       ],
-      "scope": "Device-local project and environment ordering across connected environments. Jones owns ranking, migration-compatible keys, absent-item retention and sortable Settings \u2192 Jones Code controls. Shared hooks route sidebar, palette, draft and Run on lists through the same order without changing target environment defaults. uiStateStore persistence and restore-default wiring remain accepted shared edits; store tests require the upstream persistence harness."
+      "scope": "Device-local project and environment ordering across connected environments. Jones owns ranking, migration-compatible keys, absent-item retention and sortable Settings → Jones Code controls. Shared hooks route sidebar, palette, draft and Run on lists through the same order without changing target environment defaults. uiStateStore persistence and restore-default wiring remain accepted shared edits; store tests require the upstream persistence harness."
     },
     {
       "id": "pr-lookup-git-state",
@@ -1958,6 +1958,11 @@
         "apps/server/src/jones/nativeCreation/NativeCreationExecutionSqlite.test.ts"
       ],
       "scope": "Source-only W1 lifecycle composition with operation-scoped attestation issued by the native effect, run/start, session, validated-command and preservation owners. Stable checkout lineage and physical generation are separate from ephemeral native operation provenance in existing transition metadata. The V3 registry retains semantic assessments and a separate CAS generation. Invoking transitions reconcile their original stored binding before fresh execution authorization, without a second CAS or reconstructed native-start capability. Explicit/implicit unsettle and restore invalidate present or absent recorded incarnations; recreation requires prior lineage/branch/HEAD and records a replacement physical incarnation before provider use. Registry I/O stays outside native command transactions; EventSink checks SQL ownership inside commit. Matching assessments can pass settle scripts, ordinary cleanup and qualified deletion without resume or a live-provider requirement, while independent native policy remains authoritative. Production composition remains opt-in and preserves unconfigured behavior and the unavailable native-creation authority gate. Real native consumers and the production issuer use synthetic SQL/Git targets and external effect fixtures; no external store, API, executable, installation or runtime activation is introduced."
+    },
+    {
+      "id": "pr-watch-efficiency",
+      "tests": ["apps/server/src/orchestration-v2/runtimeLayer.test.ts"],
+      "scope": "Process ready watch fingerprints independently while retaining the full fingerprint cohort for host batching and four detail permits. Small shared scheduler edit and existing persisted-runtime test harness preserve grouping, rate pauses, watermarks, generation, settlement and cancellation."
     }
   ]
 }

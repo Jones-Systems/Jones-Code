@@ -1894,7 +1894,9 @@
     "apps/server/src/jones/orchestration/threadReferenceExcerpt.test.ts": "jones-owned",
     "apps/server/src/jones/orchestration/threadReferenceCoherent.test.ts": "jones-owned",
     "scripts/jones/boundary/fragments/coherent-reference-reads.json": "jones-owned",
-    "apps/server/src/jones/goals/preserveGoalConversation.ts": "jones-owned"
+    "apps/server/src/jones/goals/preserveGoalConversation.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/PullRequestWatchReactor.ts": "accepted-shared",
+    "scripts/jones/boundary/fragments/pr-watch-efficiency.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
