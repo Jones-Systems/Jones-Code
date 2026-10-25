@@ -1902,9 +1902,7 @@
     },
     {
       "id": "client-vcs-denial-efficiency",
-      "tests": [
-        "packages/client-runtime/src/state/vcs.test.ts"
-      ],
+      "tests": ["packages/client-runtime/src/state/vcs.test.ts"],
       "scope": "Suspend only the current connection's typed terminal authorization denial before transient retry, retaining cached/loading display and connection/invalidation/revision recovery. One-line shared catch and existing atom integration harness avoid disproportionate extraction; no new visible error-state contract or transport retry owner."
     }
   ]

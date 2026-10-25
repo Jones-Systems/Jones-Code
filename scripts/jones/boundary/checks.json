@@ -3030,9 +3030,7 @@
     },
     {
       "id": "jones-client-vcs-denial-efficiency",
-      "tests": [
-        "packages/client-runtime/src/state/vcs.test.ts"
-      ],
+      "tests": ["packages/client-runtime/src/state/vcs.test.ts"],
       "commands": [
         "vp test run packages/client-runtime/src/state/vcs.test.ts",
         "vp lint packages/client-runtime/src/state/vcs.ts packages/client-runtime/src/state/vcs.test.ts",
