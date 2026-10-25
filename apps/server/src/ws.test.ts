@@ -25,6 +25,7 @@ import * as Stream from "effect/Stream";
 import { Headers } from "effect/http";
 import { RpcGroup, RpcMessage, RpcServer } from "effect/rpc";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as ShellMaterialization from "./jones/orchestration/shellMaterialization.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
@@ -379,6 +380,180 @@ const layerConfigSources = Layer.mergeAll(
     ),
   ),
   Layer.provideMerge(NodeServices.layer),
+);
+
+const makeConfigDiscoveryRpc = Effect.fn(function* (discoveries: {
+  readonly editors: ReturnType<
+    ExternalLauncher.ExternalLauncher["Service"]["resolveAvailableEditors"]
+  >;
+  readonly targets: ReturnType<RemoteOpenTargets.RemoteOpenTargets["Service"]["resolveTargets"]>;
+  readonly endpoints: ReturnType<DirectEndpoints.DirectEndpoints["Service"]["resolve"]>;
+}) {
+  const responses = yield* Queue.unbounded<ServerConfigStreamEvent>();
+  const services = Layer.mergeAll(
+    layerUnusedConfigRpcServices,
+    Layer.mock(ExternalLauncher.ExternalLauncher)({
+      resolveAvailableEditors: () => discoveries.editors,
+      resolveFileManagerRevealKind: () => Effect.succeed("file-explorer"),
+    }),
+    Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({ resolveTargets: () => discoveries.targets }),
+    Layer.mock(DirectEndpoints.DirectEndpoints)({ resolve: () => discoveries.endpoints }),
+    Layer.mock(ProviderRegistry.ProviderRegistry)({
+      getProviders: Effect.succeed([]),
+      streamChanges: Stream.never,
+    }),
+    Layer.mock(UsageLimitSources.UsageLimitSources)({ streamChanges: Stream.make([]) }),
+    Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+      scratchRoot: Effect.succeedNone,
+      namedProjectsRoot: process.cwd(),
+    }),
+    Layer.mock(ServerEnvironment.ServerEnvironment)({
+      getDescriptor: Effect.succeed({
+        environmentId: EnvironmentId.make("discovery-test"),
+        label: "Discovery test",
+        platform: { os: "linux", arch: "x64" },
+        serverVersion: "0.0.0",
+        capabilities: { repositoryIdentity: false },
+      }),
+    }),
+    Layer.mock(EnvironmentAuth.EnvironmentAuth)({
+      getDescriptor: () =>
+        Effect.succeed({
+          policy: "loopback-browser",
+          bootstrapMethods: [],
+          sessionMethods: ["browser-session-cookie"],
+          sessionCookieName: "discovery-test-session",
+        }),
+    }),
+  );
+  const server = yield* RpcServer.makeNoSerialization(RpcGroup.make(WsSubscribeServerConfigRpc), {
+    ...WS_RPC_SERVER_OPTIONS,
+    onFromServer: (response) =>
+      response._tag === "Chunk"
+        ? Effect.forEach(response.values, (event) => Queue.offer(responses, event), {
+            discard: true,
+          })
+        : Effect.void,
+  }).pipe(
+    Effect.provide(
+      layerWsRpc(
+        {
+          sessionId: AuthSessionId.make("discovery-test"),
+          subject: "discovery-test",
+          method: "browser-session-cookie",
+          scopes: [],
+        },
+        {},
+        {},
+        yield* PreviewAutomationBroker.PreviewAutomationBroker,
+        yield* ServerBrowser.ServerBrowser,
+        () => Effect.succeed({}),
+      ).pipe(Layer.provide(services)),
+    ),
+  );
+  const requestId = RpcMessage.RequestId("discovery");
+  yield* server.write(0, {
+    _tag: "Request",
+    id: requestId,
+    tag: WS_METHODS.subscribeServerConfig,
+    payload: {},
+    headers: Headers.empty,
+  });
+  return {
+    responses,
+    interrupt: server.write(0, { _tag: "Interrupt", requestId, interruptors: [] }),
+  };
+});
+
+const layerConfigDiscoveryTest = Layer.mergeAll(
+  Layer.fresh(layerConfigSources),
+  Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
+  Layer.mock(ServerBrowser.ServerBrowser)({}),
+);
+
+const discoveryTargets = [{ kind: "mdns", host: "discovery.local", username: "test" }] as const;
+const discoveryEndpoints = [{ kind: "lan", httpBaseUrl: "http://192.168.1.2:3773/" }] as const;
+const discoveryNames = ["editors", "targets", "endpoints"] as const;
+
+it.effect.each(["none", ...discoveryNames, "all"] as const)(
+  "starts all config discoveries before release and preserves fields with %s timing out",
+  (timeout) =>
+    Effect.gen(function* () {
+      const gates = yield* Effect.forEach(discoveryNames, () =>
+        Effect.all({ started: Deferred.make<void>(), release: Deferred.make<void>() }),
+      );
+      const discover = <A>(index: number, value: A) =>
+        Deferred.succeed(gates[index]!.started, undefined).pipe(
+          Effect.andThen(Deferred.await(gates[index]!.release)),
+          Effect.as(value),
+        );
+      const rpc = yield* makeConfigDiscoveryRpc({
+        editors: discover(0, ["file-manager"] as const),
+        targets: discover(1, discoveryTargets),
+        endpoints: discover(2, discoveryEndpoints),
+      });
+      yield* Deferred.await(gates[0]!.started);
+      yield* TestClock.adjust("0 millis");
+      for (const gate of gates) assert.isTrue(yield* Deferred.isDone(gate.started));
+
+      yield* TestClock.adjust("4 seconds");
+      for (const index of [2, 0, 1]) {
+        if (timeout !== "all" && timeout !== discoveryNames[index]) {
+          yield* Deferred.succeed(gates[index]!.release, undefined);
+        }
+      }
+      if (timeout !== "none") {
+        yield* TestClock.adjust("999 millis");
+        assert.equal(yield* Queue.size(rpc.responses), 0);
+        yield* TestClock.adjust("1 millis");
+      }
+      const snapshot = yield* Queue.take(rpc.responses);
+      assert.equal(snapshot.type, "snapshot");
+      if (snapshot.type !== "snapshot") return yield* Effect.die("Expected config snapshot");
+      const editorsTimedOut = timeout === "editors" || timeout === "all";
+      assert.deepEqual(snapshot.config.availableEditors, editorsTimedOut ? [] : ["file-manager"]);
+      assert.equal(snapshot.config.shellRevealInFileManager, editorsTimedOut ? undefined : true);
+      assert.equal(
+        snapshot.config.shellRevealInFileManagerKind,
+        editorsTimedOut ? undefined : "file-explorer",
+      );
+      assert.deepEqual(
+        snapshot.config.remoteOpenTargets,
+        timeout === "targets" || timeout === "all" ? [] : discoveryTargets,
+      );
+      assert.deepEqual(
+        snapshot.config.directEndpoints,
+        timeout === "endpoints" || timeout === "all" ? [] : discoveryEndpoints,
+      );
+      yield* rpc.interrupt;
+    }).pipe(Effect.provide(layerConfigDiscoveryTest), Effect.scoped),
+);
+
+it.effect(
+  "interrupting config discovery cancels all three probes without publishing a snapshot",
+  () =>
+    Effect.gen(function* () {
+      const probes = yield* Effect.forEach(discoveryNames, () =>
+        Effect.all({ started: Deferred.make<void>(), interrupted: Deferred.make<void>() }),
+      );
+      const discover = (index: number) =>
+        Deferred.succeed(probes[index]!.started, undefined).pipe(
+          Effect.andThen(Effect.never),
+          Effect.onInterrupt(() => Deferred.succeed(probes[index]!.interrupted, undefined)),
+        );
+      const rpc = yield* makeConfigDiscoveryRpc({
+        editors: discover(0),
+        targets: discover(1),
+        endpoints: discover(2),
+      });
+      yield* Deferred.await(probes[0]!.started);
+      yield* TestClock.adjust("0 millis");
+      for (const probe of probes) assert.isTrue(yield* Deferred.isDone(probe.started));
+      yield* rpc.interrupt;
+      yield* TestClock.adjust("0 millis");
+      for (const probe of probes) assert.isTrue(yield* Deferred.isDone(probe.interrupted));
+      assert.equal(yield* Queue.size(rpc.responses), 0);
+    }).pipe(Effect.provide(layerConfigDiscoveryTest), Effect.scoped),
 );
 
 it.effect(
