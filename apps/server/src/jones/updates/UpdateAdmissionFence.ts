@@ -179,42 +179,41 @@ export const make = Effect.gen(function* () {
       yield* Deferred.await(signal);
     }
   });
-  const raise = (mode: AdmissionFenceMode) =>
-    Effect.gen(function* () {
-      const ticket = ++tickets;
-      const raised = yield* Ref.modify(state, (current) =>
-        current.phase === "open"
-          ? ([true, { phase: "raised", ticket, mode, tripped: false, refused: false }] as const)
-          : ([false, current] as const),
-      );
-      if (!raised) return yield* new UpdateAdmissionBusy();
-      const holds = (current: FenceState) => current.phase !== "open" && current.ticket === ticket;
-      return {
-        handOff: Ref.modify(state, (current): readonly [boolean, FenceState] =>
-          !holds(current) || current.phase !== "raised"
-            ? [holds(current), current]
-            : current.tripped
-              ? [false, current]
-              : [true, { phase: "handing-off", ticket, refused: current.refused }],
+  const raise = Effect.fn("UpdateAdmissionFence.raise")(function* (mode: AdmissionFenceMode) {
+    const ticket = ++tickets;
+    const raised = yield* Ref.modify(state, (current) =>
+      current.phase === "open"
+        ? ([true, { phase: "raised", ticket, mode, tripped: false, refused: false }] as const)
+        : ([false, current] as const),
+    );
+    if (!raised) return yield* new UpdateAdmissionBusy();
+    const holds = (current: FenceState) => current.phase !== "open" && current.ticket === ticket;
+    return {
+      handOff: Ref.modify(state, (current): readonly [boolean, FenceState] =>
+        !holds(current) || current.phase !== "raised"
+          ? [holds(current), current]
+          : current.tripped
+            ? [false, current]
+            : [true, { phase: "handing-off", ticket, refused: current.refused }],
+      ),
+      accept: Ref.update(state, (current): FenceState =>
+        holds(current) ? { phase: "accepted", ticket } : current,
+      ),
+      release: Ref.modify(state, (current): readonly [Option.Option<boolean>, FenceState] =>
+        holds(current) && (current.phase === "raised" || current.phase === "handing-off")
+          ? [Option.some(current.refused), { phase: "open" }]
+          : [Option.none(), current],
+      ).pipe(
+        Effect.flatMap(
+          Option.match({
+            onNone: () => Effect.succeed(false),
+            onSome: (refusedWork) => signalReopened.pipe(Effect.as(refusedWork)),
+          }),
         ),
-        accept: Ref.update(state, (current): FenceState =>
-          holds(current) ? { phase: "accepted", ticket } : current,
-        ),
-        release: Ref.modify(state, (current): readonly [Option.Option<boolean>, FenceState] =>
-          holds(current) && (current.phase === "raised" || current.phase === "handing-off")
-            ? [Option.some(current.refused), { phase: "open" }]
-            : [Option.none(), current],
-        ).pipe(
-          Effect.flatMap(
-            Option.match({
-              onNone: () => Effect.succeed(false),
-              onSome: (refusedWork) => signalReopened.pipe(Effect.as(refusedWork)),
-            }),
-          ),
-        ),
-        settle: (decide) => Effect.forkIn(decide, scope).pipe(Effect.asVoid),
-      } satisfies AdmissionTicket;
-    });
+      ),
+      settle: (decide) => Effect.forkIn(decide, scope).pipe(Effect.asVoid),
+    } satisfies AdmissionTicket;
+  });
   return UpdateAdmissionFence.of({
     admit,
     awaitAdmission,
@@ -294,22 +293,23 @@ export const fencedInstall = <A>(options: {
     let ticket: AdmissionTicket | undefined;
     let handedOff = false;
     let accepted = false;
-    const onPrepared = (capture: Effect.Effect<void, ServerSelfUpdateError>) =>
-      Effect.gen(function* () {
-        if (options.mode === "automatic" && !(yield* options.fence.attached))
-          return yield* withdrawn("work admission is not fenced on this host.");
-        ticket = yield* options.fence
-          .raise(options.mode)
-          .pipe(
-            Effect.mapError((cause) => new ServerSelfUpdateError({ reason: cause.message, cause })),
-          );
-        const reason = options.finalCheck === undefined ? undefined : yield* options.finalCheck;
-        if (reason !== undefined) return yield* withdrawn(reason);
-        yield* capture;
-        if (!(yield* ticket.handOff))
-          return yield* withdrawn("New work started on this host after its final check.");
-        handedOff = true;
-      });
+    const onPrepared = Effect.fn("UpdateAdmissionFence.onPrepared")(function* (
+      capture: Effect.Effect<void, ServerSelfUpdateError>,
+    ) {
+      if (options.mode === "automatic" && !(yield* options.fence.attached))
+        return yield* withdrawn("work admission is not fenced on this host.");
+      ticket = yield* options.fence
+        .raise(options.mode)
+        .pipe(
+          Effect.mapError((cause) => new ServerSelfUpdateError({ reason: cause.message, cause })),
+        );
+      const reason = options.finalCheck === undefined ? undefined : yield* options.finalCheck;
+      if (reason !== undefined) return yield* withdrawn(reason);
+      yield* capture;
+      if (!(yield* ticket.handOff))
+        return yield* withdrawn("New work started on this host after its final check.");
+      handedOff = true;
+    });
     const onAccepted = Effect.suspend(() => {
       accepted = true;
       return ticket?.accept ?? Effect.void;

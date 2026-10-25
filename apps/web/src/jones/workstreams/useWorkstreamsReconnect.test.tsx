@@ -1,4 +1,8 @@
+vi.mock("./useWorkstreamOperations", () => ({
+  useWorkstreamOperations: () => ({ entries: [], error: null, supports: () => false }),
+}));
 // @effect-diagnostics globalFetch:off -- Joined tests use captured, task-owned loopback listeners.
+import { act } from "../testing/nodeRenderer";
 import {
   startWireFixture,
   type WireFixture,
@@ -18,7 +22,7 @@ import {
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
-import { act, useLayoutEffect } from "react";
+import { useLayoutEffect } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 
@@ -99,7 +103,6 @@ function MountedWorkstreams({
 }
 
 beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   http.run.mockReset();
   registry = AtomRegistry.make();
   registry.set(connection, AsyncResult.success(connected));

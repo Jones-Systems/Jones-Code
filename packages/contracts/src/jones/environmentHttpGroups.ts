@@ -68,6 +68,15 @@ import {
   WorkstreamAppearance,
 } from "./workstreamAppearance.ts";
 
+import {
+  EnvironmentWorkstreamOperationConflictError as WorkstreamOperationConflictError,
+  WorkstreamOperationSubmitRequest,
+  WorkstreamOperationSubmitResponse,
+  WorkstreamOperationReadRequest,
+  WorkstreamOperationReadResponse,
+  WorkstreamSetupStatus,
+} from "./workstreamOperations.ts";
+
 import { WorkstreamsRegistrationContextAcceptedResponse } from "./workstreamsRegistrationContext.ts";
 import {
   WorkstreamsNativeContextResponse,
@@ -146,6 +155,12 @@ export type EnvironmentConversationLibraryError =
   typeof EnvironmentConversationLibraryErrorSchema.Type;
 
 export const EnvironmentConversationLibraryErrorCode = LibraryErrorCodeSchema;
+
+export const EnvironmentWorkstreamOperationConflictError = WorkstreamOperationConflictError.pipe(
+  HttpApiSchema.status(409),
+);
+export type EnvironmentWorkstreamOperationConflictError =
+  typeof EnvironmentWorkstreamOperationConflictError.Type;
 
 export const makeJonesHttpGroups = ({
   OptionalBearerHeaders,
@@ -366,6 +381,38 @@ export const makeJonesHttpGroups = ({
           EnvironmentInternalError,
           EnvironmentHttpBadRequestError,
         ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("operationSubmit", "/api/workstreams/operations/submit", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamOperationSubmitRequest,
+        success: WorkstreamOperationSubmitResponse,
+        error: [
+          EnvironmentHttpBadRequestError,
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentWorkstreamOperationConflictError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("operationRead", "/api/workstreams/operations/read", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamOperationReadRequest,
+        success: WorkstreamOperationReadResponse,
+        error: [
+          EnvironmentHttpBadRequestError,
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.get("setupStatus", "/api/workstreams/setup-status", {
+        headers: OptionalBearerHeaders,
+        success: WorkstreamSetupStatus,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
       }).middleware(EnvironmentAuthenticatedAuth),
     ) {}
 

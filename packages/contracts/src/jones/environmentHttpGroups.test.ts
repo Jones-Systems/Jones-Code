@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
+import * as SchemaAST from "effect/SchemaAST";
+import { EnvironmentWorkstreamOperationConflictError } from "./environmentHttpGroups.ts";
 import { EnvironmentId, TrimmedNonEmptyString } from "../baseSchemas.ts";
 import { JonesBuildStartedAt } from "./fleetUpdates/source.ts";
 
@@ -84,6 +86,9 @@ describe("Jones environment HTTP registration", () => {
       ["appearanceRead", "POST", "/api/workstreams/appearance/read"],
       ["appearanceSave", "POST", "/api/workstreams/appearance/write"],
       ["registrationContext", "GET", "/api/workstreams/registration-context"],
+      ["operationSubmit", "POST", "/api/workstreams/operations/submit"],
+      ["operationRead", "POST", "/api/workstreams/operations/read"],
+      ["setupStatus", "GET", "/api/workstreams/setup-status"],
       ["threadPlacements", "POST", "/api/workstreams/thread-placements"],
       ["list", "GET", "/api/workstreams"],
       ["references", "GET", "/api/workstreams/references"],
@@ -164,6 +169,31 @@ it("accepts both explicitly versioned registration responses on the local HTTP b
   expect(accepts(v2)).toBe(true);
   expect(accepts({ ...v2, protocol: "workstreams-registration-context/1.0.0" })).toBe(true);
   expect(accepts({ ...v2, protocol: "workstreams-registration-context/3.0.0" })).toBe(false);
+});
+
+it("keeps operation conflicts on HTTP 409 with the closed operation error shape", () => {
+  const endpoint = EnvironmentHttpApi.groups.workstreams.endpoints.operationSubmit;
+  const conflict = EnvironmentWorkstreamOperationConflictError;
+  expect(
+    [...endpoint.error].some(
+      (schema) => SchemaAST.resolveAt<number>("httpApiStatus")(schema.ast) === 409,
+    ),
+  ).toBe(true);
+  expect(SchemaAST.resolveAt<number>("httpApiStatus")(conflict.ast)).toBe(409);
+  const decode = Schema.decodeUnknownSync(conflict);
+  for (const value of [
+    { code: "operation_id_conflict" },
+    { code: "thread_operation_in_progress", open_operation_id: "operation-00000001" },
+  ]) {
+    expect(decode(value)).toEqual(value);
+  }
+  for (const value of [
+    { code: "conflict" },
+    { code: "operation_id_conflict", message: "unexpected envelope" },
+    { code: "thread_operation_in_progress", open_operation_id: "" },
+  ]) {
+    expect(() => decode(value)).toThrow();
+  }
 });
 
 // Frozen wire decoder from 25b131a0af87b4ef868b6336fcf759a4c5a2acd8.

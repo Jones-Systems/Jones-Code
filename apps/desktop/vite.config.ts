@@ -1,7 +1,7 @@
 import "vite-plus/test/config";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Vite resolves the fixed custody artifact synchronously outside an Effect runtime.
 import * as NodePath from "node:path";
-import { defineConfig } from "vite-plus";
+import { defaultInclude, defineConfig } from "vite-plus";
 
 import { isDesktopRuntimeExternalDependency } from "../../scripts/lib/desktop-external-packages.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
@@ -64,6 +64,11 @@ export default defineConfig({
         command: "node scripts/dev-electron.mjs",
         dependsOn: ["t3#build"],
         cache: false,
+      },
+      // tsc-rs rewrites the tsbuildinfo it reads, which keeps a task out of the cache.
+      typecheck: {
+        command: "tsc-rs --noEmit",
+        cache: { input: [{ auto: true }, "!*.tsbuildinfo"] },
       },
     },
   },
@@ -178,9 +183,13 @@ export default defineConfig({
     },
   ],
   test: {
+    include: [...defaultInclude, "../../native/kde-snap-shot/src/*.test.ts"],
     // The Windows lane runs workspace suites concurrently; filesystem-heavy
     // desktop integration tests can exceed Vitest's 5 second default there.
     testTimeout: 15_000,
-    setupFiles: ["../../packages/shared/src/testing/longTempDir.ts"],
+    setupFiles: [
+      "../../packages/shared/src/testing/longTempDir.ts",
+      "../../packages/shared/src/testing/providerEnv.ts",
+    ],
   },
 });

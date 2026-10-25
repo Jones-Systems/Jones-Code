@@ -113,6 +113,7 @@ function zip(entries: ReadonlyArray<ZipFixtureEntry>): Buffer {
 function fixture(
   options: {
     desktop?: "legacy" | "production";
+    platform?: "linux" | "darwin";
     run?: Record<string, unknown>;
     ci?: Record<string, unknown>;
     artifact?: Record<string, unknown>;
@@ -125,21 +126,20 @@ function fixture(
   } = {},
 ) {
   const version = "0.0.0-preview.20261002.101.2";
+  const desktop = options.desktop ?? (options.platform === "darwin" ? "legacy" : undefined);
   const workflow =
-    options.desktop === "production"
+    desktop === "production"
       ? ".github/workflows/jones-desktop-signing.yml"
-      : options.desktop === "legacy"
+      : desktop === "legacy"
         ? ".github/workflows/artifact-desktop-mac.yml"
         : ".github/workflows/artifact-cli-linux.yml";
   const artifactPrefix =
-    options.desktop === "production"
+    desktop === "production"
       ? "desktop-mac-production-arm64"
-      : options.desktop === "legacy"
+      : desktop === "legacy"
         ? "desktop-mac-arm64"
         : "jones-code-cli-linux-x64";
-  const payloadName = options.desktop
-      ? `T3-Code-${version}-arm64.dmg`
-      : `t3-${version}-linux-x64.tar.gz`,
+  const payloadName = desktop ? `T3-Code-${version}-arm64.dmg` : `t3-${version}-linux-x64.tar.gz`,
     payload = "verified archive fixture";
   const receipt = {
     schema: 1,
@@ -152,9 +152,9 @@ function fixture(
     runId: "101",
     runAttempt: "2",
     version,
-    platform: options.desktop ? "darwin" : "linux",
-    architecture: options.desktop ? "arm64" : "x64",
-    ...(options.desktop === "production"
+    platform: desktop ? "darwin" : "linux",
+    architecture: desktop ? "arm64" : "x64",
+    ...(desktop === "production"
       ? {
           signed: true,
           notarized: true,
@@ -170,7 +170,7 @@ function fixture(
     { name: "ARTIFACT.json", content: JSON.stringify(receipt) },
     { name: "SOURCE_COMMIT", content: CURRENT },
     {
-      name: options.desktop ? `${payloadName}.sha256` : "SHA256SUMS",
+      name: desktop ? `${payloadName}.sha256` : "SHA256SUMS",
       content: `${sha256(payload)}  ${payloadName}\n`,
     },
     { name: payloadName, content: payload },
@@ -242,10 +242,17 @@ function fixture(
     envelope,
   };
 }
-const check = (client: JonesActionsClient) =>
-  client.check({ installedSource: OLD, platform: "linux", architecture: "x64" });
-async function available(client: JonesActionsClient): Promise<JonesActionsCandidate> {
-  const result = await check(client);
+const check = (client: JonesActionsClient, platform: "linux" | "darwin" = "linux") =>
+  client.check({
+    installedSource: OLD,
+    platform,
+    architecture: platform === "darwin" ? "arm64" : "x64",
+  });
+async function available(
+  client: JonesActionsClient,
+  platform: "linux" | "darwin" = "linux",
+): Promise<JonesActionsCandidate> {
+  const result = await check(client, platform);
   expect(result.state).toBe("available");
   if (result.state !== "available") throw new Error("Fixture candidate unavailable");
   return result.candidate;
@@ -584,6 +591,145 @@ describe("Jones Actions ancestry memo", () => {
   });
 });
 
+describe("Jones desktop producer events", () => {
+  it.each(["push", "schedule"])(
+    "discovers, stages and reuses an authenticated %s desktop build",
+    async (event) => {
+      const f = fixture({ platform: "darwin", run: { event }, receipt: { event } });
+      const candidate = await available(f.client, "darwin");
+      const root = await cache();
+      const staged = await f.client.stage(candidate, root);
+      expect(staged.receipt.event).toBe(event);
+      expect(await f.client.stage(candidate, root)).toEqual(staged);
+      expect(
+        await validateJonesStagedArtifact(NodePath.dirname(staged.payloadPath), candidate),
+      ).toEqual(staged);
+      expect(f.calls.find((call) => call.includes("artifact-desktop-mac.yml/runs?"))).not.toContain(
+        "event=",
+      );
+      expect(f.calls.find((call) => call.includes("ci.yml/runs?"))).toContain(
+        `event=push&head_sha=${CURRENT}`,
+      );
+    },
+  );
+  it.each([
+    ["darwin", "workflow_dispatch"],
+    ["darwin", "pull_request"],
+    ["linux", "schedule"],
+    ["linux", "workflow_dispatch"],
+  ] as const)(
+    "rejects %s producer event %s in listings and refetched runs",
+    async (platform, event) => {
+      const f = fixture({ platform, run: { event, status: "in_progress" } });
+      expect(await check(f.client, platform)).toMatchObject({
+        state: "blocked",
+        reason: "unavailable",
+      });
+      const accepted = fixture({ platform });
+      const client = new JonesActionsClient({
+        now: () => NOW,
+        transport: {
+          ...accepted.transport,
+          async api(endpoint) {
+            const result = await accepted.transport.api(endpoint);
+            return endpoint === `${ROOT}/actions/runs/101`
+              ? { ...(result as object), event }
+              : result;
+          },
+        },
+      });
+      expect(await check(client, platform)).toMatchObject({
+        state: "blocked",
+        reason: "unavailable",
+      });
+      await expect(
+        client.stage(await available(accepted.client, platform), await cache()),
+      ).rejects.toMatchObject({ reason: "unqualified" });
+      if (platform === "linux")
+        expect(f.calls.find((call) => call.includes("artifact-cli-linux.yml/runs?"))).toContain(
+          "event=push",
+        );
+    },
+  );
+  it.each(["linux", "darwin"] as const)(
+    "requires push CI for %s discovery and staging",
+    async (platform) => {
+      const accepted = fixture({ platform });
+      const candidate = await available(accepted.client, platform);
+      for (const event of ["schedule", "workflow_dispatch"]) {
+        const f = fixture({ platform, ci: { event } });
+        expect((await check(f.client, platform)).state).not.toBe("available");
+        await expect(f.client.stage(candidate, await cache())).rejects.toMatchObject({
+          reason: "unqualified",
+        });
+      }
+    },
+  );
+  it.each(["push", "schedule"])(
+    "rejects a live producer event differing from authenticated %s metadata, including reuse",
+    async (event) => {
+      const f = fixture({ platform: "darwin", run: { event }, receipt: { event } });
+      const candidate = await available(f.client, "darwin");
+      const root = await cache();
+      await f.client.stage(candidate, root);
+      const changed = fixture({
+        platform: "darwin",
+        run: { event: event === "push" ? "schedule" : "push" },
+        receipt: { event },
+      });
+      await expect(changed.client.stage(candidate, await cache())).rejects.toMatchObject({
+        reason: "unqualified",
+      });
+      await expect(changed.client.stage(candidate, root)).rejects.toMatchObject({
+        reason: "unqualified",
+      });
+    },
+  );
+  it("rejects a stored event changed independently of the authenticated ZIP", async () => {
+    const f = fixture({
+      platform: "darwin",
+      run: { event: "schedule" },
+      receipt: { event: "schedule" },
+    });
+    const candidate = await available(f.client, "darwin");
+    const root = await cache();
+    const staged = await f.client.stage(candidate, root);
+    const directory = NodePath.dirname(staged.payloadPath);
+    await NodeFSP.writeFile(
+      NodePath.join(directory, JONES_ACTIONS_RECEIPT_FILE),
+      JSON.stringify({ ...staged, receipt: { ...staged.receipt, event: "push" } }),
+    );
+    await expect(validateJonesStagedArtifact(directory, candidate)).rejects.toMatchObject({
+      reason: "integrity",
+    });
+    await expect(f.client.stage(candidate, root)).rejects.toMatchObject({ reason: "integrity" });
+  });
+  it("rejects a concurrent winner whose stored event differs from its authenticated ZIP", async () => {
+    const f = fixture({
+      platform: "darwin",
+      run: { event: "schedule" },
+      receipt: { event: "schedule" },
+    });
+    const candidate = await available(f.client, "darwin");
+    const root = await cache();
+    const client = new JonesActionsClient({
+      now: () => NOW,
+      transport: {
+        ...f.transport,
+        async download(id, destination) {
+          await f.transport.download(id, destination);
+          const winner = await f.client.stage(candidate, root);
+          await NodeFSP.writeFile(
+            NodePath.join(NodePath.dirname(winner.payloadPath), JONES_ACTIONS_RECEIPT_FILE),
+            JSON.stringify({ ...winner, receipt: { ...winner.receipt, event: "push" } }),
+          );
+        },
+      },
+    });
+    await expect(client.stage(candidate, root)).rejects.toMatchObject({ reason: "integrity" });
+  });
+});
+
 describe("Jones Actions staging", () => {
   it("stages without extraction/activation, retains exact receipt and reuses verified cache", async () => {
     const { client } = fixture();
@@ -613,6 +759,7 @@ describe("Jones Actions staging", () => {
   });
   it.each([
     { platform: "darwin" },
+    { event: "schedule" },
     { architecture: "arm64" },
     { source: OLD },
     { tree: OLD },
@@ -987,6 +1134,7 @@ describe("production desktop workflow selection", () => {
   it.each([
     { event: "pull_request" },
     { event: "workflow_dispatch" },
+    { event: "schedule" },
     { head_branch: "topic" },
     { path: ".github/workflows/artifact-desktop-mac.yml" },
     { head_repository: { full_name: "other/fork" } },
@@ -998,6 +1146,7 @@ describe("production desktop workflow selection", () => {
   it.each([
     { signed: false },
     { notarized: false },
+    { event: "schedule" },
     { teamId: "WRONGTEAM1" },
     { bundleIdentifier: "com.t3tools.t3code" },
   ])("refuses a production receipt downgrade %j", async (receipt) => {

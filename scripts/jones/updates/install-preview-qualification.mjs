@@ -752,7 +752,7 @@ export async function serveRendererFixture(directory) {
 }
 
 // Serialized into native preview_evaluate; no application cache hooks or browser substitutes.
-export async function indexedDbBrowserProof(phase) {
+export async function indexedDbBrowserProof(phase, syntheticOrigin) {
   const slot = "__jonesLegacyIndexedDbProof";
   const runtimeName = "t3code:connection-runtime";
   const hintName = "t3code:connection-compatibility-hints";
@@ -919,6 +919,52 @@ export async function indexedDbBrowserProof(phase) {
   const state = window[slot];
   require(state && !state.disposed, "Legacy IndexedDB proof is not active");
   try {
+    if (phase === "seed-off") {
+      // Incompatibility pauses a connection without changing its saved user preference.
+      // Seed only this isolated loopback fixture, then reload before taking the baseline.
+      const origin = new URL(syntheticOrigin);
+      require(origin.protocol === "http:" &&
+        origin.hostname === "127.0.0.1" &&
+        origin.origin === syntheticOrigin, "Saved Off seeding requires the exact synthetic origin");
+      await new Promise((resolve, reject) => {
+        const transaction = state.database.transaction("catalog", "readwrite");
+        const store = transaction.objectStore("catalog");
+        const request = store.get("document");
+        let failure;
+        request.onsuccess = () => {
+          try {
+            const catalog = JSON.parse(request.result);
+            const target = catalog.targets?.[0];
+            const profile = catalog.profiles?.[0];
+            require(catalog.schemaVersion === 1 &&
+              catalog.targets?.length === 1 &&
+              target?._tag === "BearerConnectionTarget" &&
+              target.label === "Synthetic incompatible Jones host" &&
+              typeof target.environmentId === "string" &&
+              target.environmentId.length > 0 &&
+              catalog.profiles?.length === 1 &&
+              profile?._tag === "BearerConnectionProfile" &&
+              profile.environmentId === target.environmentId &&
+              profile.connectionId === target.connectionId &&
+              (profile.httpBaseUrl === syntheticOrigin || profile.httpBaseUrl === origin.href) &&
+              Array.isArray(catalog.disabledEnvironmentIds) &&
+              catalog.disabledEnvironmentIds.length ===
+                0, "Saved Off seeding requires exactly one newly paired synthetic target");
+            store.put(
+              JSON.stringify({ ...catalog, disabledEnvironmentIds: [target.environmentId] }),
+              "document",
+            );
+          } catch (error) {
+            failure = error;
+            transaction.abort();
+          }
+        };
+        transaction.oncomplete = () => resolve();
+        transaction.onabort = () => reject(failure ?? new Error("Synthetic Off seed aborted"));
+        transaction.onerror = () => reject(new Error("Synthetic Off seed failed"));
+      });
+      return { savedOffFixtureSeeded: true };
+    }
     if (phase === "checkpoint") {
       const raw = await state.read(state.database, "catalog");
       let catalog;
@@ -986,11 +1032,11 @@ export async function indexedDbBrowserProof(phase) {
   }
 }
 
-function indexedDbStep(phase, label, expected) {
+function indexedDbStep(phase, label, expected, syntheticOrigin) {
   return {
     action: "assert-evaluate",
     label,
-    expression: `(${indexedDbBrowserProof.toString()})(${JSON.stringify(phase)})`,
+    expression: `(${indexedDbBrowserProof.toString()})(${JSON.stringify(phase)}, ${JSON.stringify(syntheticOrigin)})`,
     expected,
   };
 }
@@ -1026,7 +1072,24 @@ export function scenarioSteps(remotePairing) {
       contains: ["Source matches this app.", "Synthetic host needs qualified launcher setup."],
       excludes: ["A newer Jones source is available."],
     },
+    indexedDbStep(
+      "seed-off",
+      "Save Off for the exact isolated synthetic target",
+      { savedOffFixtureSeeded: true },
+      new URL(remotePairing).origin,
+    ),
+    indexedDbStep(
+      "close",
+      "Release the initial legacy handle before loading the saved Off fixture",
+      { legacyProofReleased: true },
+    ),
+    { action: "navigate", path: "/settings/connections" },
+    { action: "wait", text: "Synthetic incompatible Jones host" },
+    { action: "wait", text: "Source matches this app." },
     disabledPreference,
+    indexedDbStep("hold", "Hold the saved Off version-4 catalog connection", {
+      legacyV4Held: true,
+    }),
     indexedDbStep("checkpoint", "Capture the saved Off catalog before the authenticated check", {
       savedOffCatalogCaptured: true,
       legacyConnectionUnchanged: true,
@@ -1505,7 +1568,14 @@ export function rendererSteps(origin, sourceSha, runId) {
   exactCase("staged-other", "staged-other");
   exactState("It will not be installed from this notice.");
   noExactButton("Another staged source offers no action");
-  capture("exact-source-staged-other", ["This host has source", "downloaded"]);
+  capture("exact-source-staged-other", [
+    "This host has source",
+    "downloaded",
+    `this app needs ${shortSource}`,
+    "It will not be installed from this notice.",
+    "Settings → Connections",
+    "Installing it there will not match this app.",
+  ]);
   noBridge();
 
   exactCase("legacy-mismatch", "legacy-mismatch");

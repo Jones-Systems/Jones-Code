@@ -14,7 +14,13 @@ import {
 import type { T3WorkstreamMetadata, WorkstreamLifecycle } from "@t3tools/contracts";
 import type { MobileWorkstreams } from "./types";
 import type { MobileWorkstreamSnapshot } from "./projection";
-import { canEditWorkstreams, mobileMembershipBlock, planNativeMembership } from "./actions";
+import {
+  canEditWorkstreams,
+  mobileMembershipBlock,
+  mobilePrimaryMembershipBlock,
+  type MobileOperationActions,
+  planNativeMembership,
+} from "./actions";
 
 function WorkstreamAction({
   label,
@@ -40,8 +46,12 @@ function WorkstreamAction({
         onPendingChange(true);
         onMessage(null);
         void run()
-          .catch(() =>
-            onMessage("Could not complete this change. Refresh Workstreams before retrying."),
+          .catch((cause: unknown) =>
+            onMessage(
+              cause instanceof Error
+                ? cause.message
+                : "Could not complete this change. Refresh Workstreams before retrying.",
+            ),
           )
           .finally(() => onPendingChange(false));
       }}
@@ -58,7 +68,7 @@ export function MobileWorkstreamControls({
   onSelect,
   onClose,
 }: {
-  api: MobileWorkstreams;
+  api: MobileWorkstreams & MobileOperationActions;
   selection: { thread?: WorkstreamThreadLike; groupKey?: string } | null;
   onSelect: (selection: { thread?: WorkstreamThreadLike; groupKey?: string }) => void;
   onClose: () => void;
@@ -72,9 +82,11 @@ export function MobileWorkstreamControls({
   const [name, setName] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [lastDestination, setLastDestination] = useState<string | null | undefined>(undefined);
   const [history, setHistory] = useState<readonly string[]>([]);
   useEffect(() => {
     setMessage(null);
+    setLastDestination(undefined);
     setBusy(false);
     setHistory([]);
     setName("");
@@ -103,6 +115,17 @@ export function MobileWorkstreamControls({
           ? null
           : "This thread is outside the verified placement inventory."))
       : "Unavailable";
+  const capable = !!snapshot && api.supportsOperations?.(snapshot.prepared.environmentId) === true;
+  const primaryBlock = !capable
+    ? membershipBlock
+    : snapshot && threadKey !== null
+      ? mobilePrimaryMembershipBlock({
+          snapshot,
+          threadKey,
+          conflictingThreadKeys: api.conflictingThreadKeys,
+          capable,
+        })
+      : "Unavailable";
   const actionProps = { busy, onPendingChange: setBusy, onMessage: setMessage };
   const update = (
     bound: MobileWorkstreamSnapshot,
@@ -119,7 +142,13 @@ export function MobileWorkstreamControls({
       sort_order: patch.sortOrder ?? item.sortOrder,
     });
   const membership = async (destination: string | null, secondary = false) => {
-    if (!snapshot || !snapshot.placements || !selection?.thread) throw new Error("Unavailable");
+    if (!snapshot || !selection?.thread) throw new Error("Unavailable");
+    if (capable && !secondary && api.assignOperation) {
+      setLastDestination(destination);
+      if (primaryBlock) throw new Error(primaryBlock);
+      return api.assignOperation(snapshot, selection.thread, destination);
+    }
+    if (!snapshot.placements) throw new Error("Unavailable");
     if (membershipBlock !== null) throw new Error(membershipBlock);
     const references = await api.pages(
       snapshot,
@@ -256,6 +285,17 @@ export function MobileWorkstreamControls({
             {group?.name ?? (selection?.thread ? "Thread Workstreams" : "Workstreams")}
           </Text>
           {message ? <Text accessibilityRole="alert">{message}</Text> : null}
+          {api.operationStatus ? (
+            <Text accessibilityLiveRegion="polite">{api.operationStatus}</Text>
+          ) : null}
+          {capable && message && lastDestination !== undefined ? (
+            <WorkstreamAction
+              {...actionProps}
+              label="Retry assignment"
+              disabled={primaryBlock !== null}
+              run={() => membership(lastDestination)}
+            />
+          ) : null}
           {api.error ? <Text>{api.error}</Text> : null}
           {!snapshot ? (
             <Text>Workstreams are unavailable. Connect to an enrolled environment.</Text>
@@ -268,7 +308,7 @@ export function MobileWorkstreamControls({
               re-verified.
             </Text>
           ) : null}
-          {snapshot?.placements?.readiness !== "ready" ? (
+          {!capable && snapshot?.placements?.readiness !== "ready" ? (
             <Text>Thread assignment requires current verified enrollment.</Text>
           ) : null}
           <Pressable accessibilityRole="button" onPress={api.toggleEnabled}>
@@ -292,15 +332,21 @@ export function MobileWorkstreamControls({
                 run={() =>
                   group
                     ? update(snapshot, group.workstream, { name: name.trim() })
-                    : api.submit(snapshot, {
-                        operation: "create_workstream",
-                        name: name.trim(),
-                        lifecycle: "active",
-                        progress: { state: "unknown" },
-                        sort_order: snapshot.data.items.length,
-                      })
+                    : capable && api.createOperation
+                      ? api.createOperation(snapshot, name.trim())
+                      : api.submit(snapshot, {
+                          operation: "create_workstream",
+                          name: name.trim(),
+                          lifecycle: "active",
+                          progress: { state: "unknown" },
+                          sort_order: snapshot.data.items.length,
+                        })
                 }
-                disabled={!editable || !name.trim()}
+                disabled={
+                  !(capable && !group
+                    ? !!snapshot && !snapshot.stale && canEditWorkstreams(snapshot.data)
+                    : editable) || !name.trim()
+                }
               />
             </>
           ) : null}
@@ -381,7 +427,7 @@ export function MobileWorkstreamControls({
                 {...actionProps}
                 label={"Move to Unassigned"}
                 run={() => membership(null)}
-                disabled={membershipBlock !== null}
+                disabled={primaryBlock !== null}
               />
               {snapshot.data.items.map((item) => (
                 <View key={item.workstreamId}>
@@ -390,7 +436,7 @@ export function MobileWorkstreamControls({
                     {...actionProps}
                     label={`Assign to ${item.name}`}
                     run={() => membership(item.workstreamId)}
-                    disabled={membershipBlock !== null}
+                    disabled={primaryBlock !== null}
                   />
                   <WorkstreamAction
                     {...actionProps}

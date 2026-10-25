@@ -45,6 +45,9 @@ NodeTest.test(
         NodePath.join(project, ".env"),
       );
       NodeAssert.equal(NodeFS.existsSync(NodePath.join(worktree, "node_modules")), false);
+      NodeAssert.equal(NodeFS.existsSync(NodePath.join(worktree, ".t3/setup-done")), true);
+      NodeAssert.equal(NodeFS.existsSync(NodePath.join(worktree, ".t3/setup-running")), false);
+      NodeAssert.equal(NodeFS.existsSync(NodePath.join(worktree, ".t3/setup-failed")), false);
     } finally {
       NodeFS.rmSync(root, { recursive: true, force: true });
     }

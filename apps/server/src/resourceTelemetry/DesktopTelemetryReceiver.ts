@@ -207,7 +207,7 @@ const isProtocolMismatch = Schema.is(DesktopTelemetryProtocolMismatch);
 const isDecodeFailed = Schema.is(DesktopTelemetryDecodeFailed);
 const isStreamFailed = Schema.is(DesktopTelemetryStreamFailed);
 
-export function isDesktopTelemetryContactStale(
+function isDesktopTelemetryContactStale(
   lastContactAtMs: Option.Option<number>,
   nowMs: number,
 ): boolean {
@@ -217,7 +217,7 @@ export function isDesktopTelemetryContactStale(
   );
 }
 
-export function resolveDesktopTelemetrySnapshotStaleAfterMs(
+function resolveDesktopTelemetrySnapshotStaleAfterMs(
   activeIntervalMs: number,
   idleIntervalMs: number,
 ): number {
@@ -227,14 +227,14 @@ export function resolveDesktopTelemetrySnapshotStaleAfterMs(
   );
 }
 
-export function initialDesktopTelemetryContactAt(
+function initialDesktopTelemetryContactAt(
   desktopTelemetryFd: number | undefined,
   nowMs: number,
 ): Option.Option<number> {
   return desktopTelemetryFd === undefined ? Option.none() : Option.some(nowMs);
 }
 
-export const recordDesktopTelemetrySampleHealth = Effect.fn(
+const recordDesktopTelemetrySampleHealth = Effect.fn(
   "resourceTelemetry.desktopTelemetryReceiver.recordSampleHealth",
 )(function* (
   health: Ref.Ref<DesktopTelemetryReceiverHealth>,

@@ -308,8 +308,8 @@ export const layer = Layer.effect(
             Effect.succeed(blocked("The desktop host could not accept this request.")),
           ),
         );
-      const prepareNative = (input: JonesNativePrepareInput) =>
-        Effect.gen(function* () {
+      const prepareNative = Effect.fn("JonesUpdates.prepareNative")(
+        function* (input: JonesNativePrepareInput) {
           const mismatch =
             !/^[a-f0-9]{64}$/.test(input.stagedHandle) ||
             !/^[a-f0-9]{64}$/.test(input.transactionId)
@@ -358,17 +358,17 @@ export const layer = Layer.effect(
               }),
           });
           return snapshot();
-        }).pipe(
-          Effect.catch((error) =>
-            Effect.succeed(
-              blocked(
-                error.cause instanceof NativePreparationRefusal
-                  ? `Native preparation was refused: ${error.cause.message}`
-                  : "Native preparation was dispatched but did not complete; its effects need reconciliation.",
-              ),
+        },
+        Effect.catch((error) =>
+          Effect.succeed(
+            blocked(
+              error.cause instanceof NativePreparationRefusal
+                ? `Native preparation was refused: ${error.cause.message}`
+                : "Native preparation was dispatched but did not complete; its effects need reconciliation.",
             ),
           ),
-        );
+        ),
+      );
       return JonesUpdates.of({
         ...unsupportedOperations,
         prepareNative,
@@ -866,104 +866,106 @@ export const layer = Layer.effect(
       Effect.forever,
       Effect.forkScoped,
     );
-    const installForOperation: JonesUpdates["Service"]["installForOperation"] = (input) =>
-      Effect.gen(function* () {
-        const prior = yield* reconcileOperation(input.operationId);
-        if (prior.state === "rejected")
-          return blocked("The launcher refused this exact operation before accepting it.");
-        if (prior.state !== "absent") {
-          const binding = prior.binding;
-          if (
-            prior.state === "blocked" ||
-            binding === undefined ||
-            binding.environmentId !== input.environmentId ||
-            binding.currentVersion !== input.currentVersion ||
-            binding.expectedInstalledSource !== input.expectedInstalledSource ||
-            binding.targetSource !== input.targetSource ||
-            binding.stagedHandle !== input.stagedHandle
-          )
-            return blocked(
-              "The operation is ambiguous or its immutable installation binding changed.",
-            );
-          const { outcome: _outcome, updateId: _updateId, ...current } = updater.snapshot();
-          return {
-            ...current,
-            updateId: input.operationId,
-            phase: prior.state === "pending" ? "installing" : prior.state,
-            message: "The native launcher retained this exact installation operation.",
-          };
-        }
+    const installForOperation: JonesUpdates["Service"]["installForOperation"] = Effect.fn(
+      "JonesUpdates.installForOperation",
+    )(function* (input: Parameters<JonesUpdates["Service"]["installForOperation"]>[0]) {
+      const prior = yield* reconcileOperation(input.operationId);
+      if (prior.state === "rejected")
+        return blocked("The launcher refused this exact operation before accepting it.");
+      if (prior.state !== "absent") {
+        const binding = prior.binding;
         if (
-          launcher.qualifiedOperations !== true ||
-          launcher.qualifiedRetirement !== true ||
-          runtimeReceipt?.sourceSha !== input.expectedInstalledSource ||
-          updater.snapshot().provenance?.sourceSha !== input.targetSource
+          prior.state === "blocked" ||
+          binding === undefined ||
+          binding.environmentId !== input.environmentId ||
+          binding.currentVersion !== input.currentVersion ||
+          binding.expectedInstalledSource !== input.expectedInstalledSource ||
+          binding.targetSource !== input.targetSource ||
+          binding.stagedHandle !== input.stagedHandle
         )
           return blocked(
-            "The installed source, staged source, or operation-capable launcher changed.",
+            "The operation is ambiguous or its immutable installation binding changed.",
           );
-        return yield* Effect.promise(() => updater.install({ ...input, origin: "fleet" }));
-      });
-    const settleOperation = (input: JonesUpdateReconcileInput | JonesUpdateRecordRetiredInput) =>
-      Effect.gen(function* () {
-        if (!launcher.managed || launcher.qualifiedSettlement !== true)
-          return yield* unsupportedSettlement(input);
-        const request =
-          "retiredLocation" in input
-            ? launcher.recordRetiredOperation?.(input)
-            : launcher.reconcileFailedUpdate?.(input);
-        if (request === undefined) return yield* unsupportedSettlement(input);
-        const result = yield* request.pipe(
-          Effect.match({
-            onFailure: () => undefined,
-            onSuccess: (value) => value,
-          }),
+        const { outcome: _outcome, updateId: _updateId, ...current } = updater.snapshot();
+        return {
+          ...current,
+          updateId: input.operationId,
+          phase: prior.state === "pending" ? "installing" : prior.state,
+          message: "The native launcher retained this exact installation operation.",
+        };
+      }
+      if (
+        launcher.qualifiedOperations !== true ||
+        launcher.qualifiedRetirement !== true ||
+        runtimeReceipt?.sourceSha !== input.expectedInstalledSource ||
+        updater.snapshot().provenance?.sourceSha !== input.targetSource
+      )
+        return blocked(
+          "The installed source, staged source, or operation-capable launcher changed.",
         );
-        if (result === undefined)
-          return {
-            ...blocked(
-              "The reconciliation request was sent but its outcome is unknown. Check status before trying again.",
-            ),
-            ...launcherStatus,
-            updateId: input.operationId,
-          };
-        const settlement = yield* readSettlement(input.operationId);
-        const refusal = result.result === "refused" ? result.reason : undefined;
-        const latest = launcher.qualifiedStartupOutcome;
-        if (latest?.status === "failed" && latest.id === input.operationId) {
-          settlementOperationId = input.operationId;
-          terminalSettlement = {
-            ...settlement,
-            ...(refusal === undefined ? {} : { settlementRefusal: refusal }),
-          };
-          updater.refreshStartupOutcome();
-        }
-        if (refusal !== undefined)
-          return {
-            ...blocked(`Reconciliation refused: ${refusal}.`),
-            ...launcherStatus,
-            ...settlement,
-            updateId: input.operationId,
-            settlementRefusal: refusal,
-          };
-        if ("retiredLocation" in input)
-          return {
-            ...blocked("Retired operation recorded. Its attempt ID remains reserved."),
-            ...launcherStatus,
-            updateId: input.operationId,
-          };
-        if (latest?.id === input.operationId) return updater.snapshot();
+      return yield* Effect.promise(() => updater.install({ ...input, origin: "fleet" }));
+    });
+    const settleOperation = Effect.fn("JonesUpdates.settleOperation")(function* (
+      input: JonesUpdateReconcileInput | JonesUpdateRecordRetiredInput,
+    ) {
+      if (!launcher.managed || launcher.qualifiedSettlement !== true)
+        return yield* unsupportedSettlement(input);
+      const request =
+        "retiredLocation" in input
+          ? launcher.recordRetiredOperation?.(input)
+          : launcher.reconcileFailedUpdate?.(input);
+      if (request === undefined) return yield* unsupportedSettlement(input);
+      const result = yield* request.pipe(
+        Effect.match({
+          onFailure: () => undefined,
+          onSuccess: (value) => value,
+        }),
+      );
+      if (result === undefined)
         return {
           ...blocked(
-            settlement.settlement === "none"
-              ? "Previous attempt needs reconciliation"
-              : `Update did not start: ${settlement.cause ?? "cause unavailable"}. Nothing changed.`,
+            "The reconciliation request was sent but its outcome is unknown. Check status before trying again.",
           ),
+          ...launcherStatus,
+          updateId: input.operationId,
+        };
+      const settlement = yield* readSettlement(input.operationId);
+      const refusal = result.result === "refused" ? result.reason : undefined;
+      const latest = launcher.qualifiedStartupOutcome;
+      if (latest?.status === "failed" && latest.id === input.operationId) {
+        settlementOperationId = input.operationId;
+        terminalSettlement = {
+          ...settlement,
+          ...(refusal === undefined ? {} : { settlementRefusal: refusal }),
+        };
+        updater.refreshStartupOutcome();
+      }
+      if (refusal !== undefined)
+        return {
+          ...blocked(`Reconciliation refused: ${refusal}.`),
           ...launcherStatus,
           ...settlement,
           updateId: input.operationId,
+          settlementRefusal: refusal,
         };
-      });
+      if ("retiredLocation" in input)
+        return {
+          ...blocked("Retired operation recorded. Its attempt ID remains reserved."),
+          ...launcherStatus,
+          updateId: input.operationId,
+        };
+      if (latest?.id === input.operationId) return updater.snapshot();
+      return {
+        ...blocked(
+          settlement.settlement === "none"
+            ? "Previous attempt needs reconciliation"
+            : `Update did not start: ${settlement.cause ?? "cause unavailable"}. Nothing changed.`,
+        ),
+        ...launcherStatus,
+        ...settlement,
+        updateId: input.operationId,
+      };
+    });
     return JonesUpdates.of({
       reconcile: settleOperation,
       recordRetired: settleOperation,

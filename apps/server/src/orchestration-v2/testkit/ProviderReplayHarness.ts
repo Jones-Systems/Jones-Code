@@ -452,6 +452,7 @@ export function layerWithRegistryAndServices<Error>(
         IdAllocator.layer,
         layerProviderEventIngestorProvided,
         layerServerSettings,
+        layerStores,
       ),
     ),
   );

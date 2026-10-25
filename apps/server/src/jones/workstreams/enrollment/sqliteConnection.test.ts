@@ -193,6 +193,7 @@ it("accepts only source-qualified exact Node/SQLite pairs", () => {
     ["24.19.0", "3.53.3"],
     ["24.21.0", "3.53.4"],
     ["24.22.0", "3.53.4"],
+    ["24.22.1", "3.53.4"],
     ["26.8.2", "3.53.4"],
     ["26.12.1", "3.54.0"],
   ])
@@ -208,7 +209,10 @@ it("accepts only source-qualified exact Node/SQLite pairs", () => {
     ["24.21.1", "3.53.4"],
     ["24.21.0", "3.53.5"],
     ["24.22.0", "3.53.3"],
-    ["24.22.1", "3.53.4"],
+    ["24.22.1", "3.53.3"],
+    ["24.22.1", "3.53.5"],
+    ["24.22.1", undefined],
+    ["24.22.2", "3.53.4"],
     ["26.8.1", "3.53.4"],
     ["26.8.3", "3.53.4"],
     ["26.9.0", "3.53.4"],
@@ -248,10 +252,14 @@ it("accepts only source-qualified exact Node/SQLite pairs", () => {
 it.effect("records the actual parent and child runtime used for qualification", () =>
   Effect.gen(function* () {
     const requiredNode = process.env.JONES_NATIVE_ENROLLMENT_QUALIFICATION_NODE;
-    if (requiredNode !== undefined) {
-      assert.strictEqual(requiredNode, "26.8.2");
+    const requiredSqlite = process.env.JONES_NATIVE_ENROLLMENT_QUALIFICATION_SQLITE;
+    if (requiredNode !== undefined || requiredSqlite !== undefined) {
+      assert.strictEqual(
+        isQualifiedNativeEnrollmentSqliteRuntime(requiredNode, requiredSqlite),
+        true,
+      );
       assert.strictEqual(process.versions.node, requiredNode);
-      assert.strictEqual(process.versions.sqlite, "3.53.4");
+      assert.strictEqual(process.versions.sqlite, requiredSqlite);
     }
     const f = yield* fixture;
     const observed = yield* runFixtureProcess(f.dbPath, "runtime");

@@ -1,9 +1,10 @@
-import { act, createRef, type ComponentProps, type ReactElement } from "react";
+import { createRef, type ComponentProps, type ReactElement } from "react";
 import { RegistryContext } from "@effect/atom-react";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
+import { act, render as renderScreen } from "../../../test/render";
 import { EnvironmentId, MessageId, ThreadId } from "@t3tools/contracts";
+import "../../index.css";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { DestinationEnvironment, ShellDestination } from "./model";
 import { ShellRunController } from "./controller";
@@ -122,30 +123,41 @@ import ChatMarkdown from "../../components/ChatMarkdown";
 import { MessagesTimeline } from "../../components/chat/MessagesTimeline";
 import { getSyntaxHighlighterPromise } from "../../lib/syntaxHighlighting";
 
-const roots: Root[] = [];
+const fixtureNow = Date.parse("2026-10-23T12:00:00Z");
 let fixture = 0;
-let registry: AtomRegistry.AtomRegistry;
-let savedRuns: string | null;
-function publishMetadata() {
-  registry.set(
-    state.metadata!,
-    state.queryHasSnapshot
-      ? AsyncResult.success(state.sessions, {
-          waiting: state.queryWaiting,
-          timestamp: state.queryTime,
-        })
-      : AsyncResult.initial(true),
-  );
-}
-beforeEach(() => {
-  savedRuns = localStorage.getItem(SHELL_RUN_STORAGE_KEY);
+
+function setupFixture() {
+  using resources = new DisposableStack();
+  resources.defer(() => vi.useRealTimers());
+  // Freeze Date before the singleton store and controller capture their clocks; keep timers real.
+  vi.setSystemTime(fixtureNow);
+  const previousStorage = localStorage.getItem(SHELL_RUN_STORAGE_KEY);
+  resources.defer(() => {
+    if (previousStorage === null) localStorage.removeItem(SHELL_RUN_STORAGE_KEY);
+    else localStorage.setItem(SHELL_RUN_STORAGE_KEY, previousStorage);
+    shellRunStore().observe();
+  });
   localStorage.removeItem(SHELL_RUN_STORAGE_KEY);
   shellRunStore().observe();
-  registry = AtomRegistry.make();
+  const registry = AtomRegistry.make();
+  resources.defer(() => {
+    registry.dispose();
+    state.metadata = null;
+  });
   state.metadata = Atom.make<AsyncResult.AsyncResult<readonly TestTerminal[], never>>(
     AsyncResult.initial(),
   );
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  function publishMetadata() {
+    registry.set(
+      state.metadata!,
+      state.queryHasSnapshot
+        ? AsyncResult.success(state.sessions, {
+            waiting: state.queryWaiting,
+            timestamp: state.queryTime,
+          })
+        : AsyncResult.initial(true),
+    );
+  }
   state.environments = [
     {
       environmentId: "mini",
@@ -174,35 +186,27 @@ beforeEach(() => {
   });
   state.write.mockReset().mockResolvedValue({ _tag: "Success" });
   state.close.mockReset().mockResolvedValue({ _tag: "Success" });
-});
-afterEach(async () => {
-  for (const root of roots.splice(0)) await act(async () => root.unmount());
-  document.body.replaceChildren();
-  if (savedRuns === null) localStorage.removeItem(SHELL_RUN_STORAGE_KEY);
-  else localStorage.setItem(SHELL_RUN_STORAGE_KEY, savedRuns);
-  shellRunStore().observe();
-  registry.dispose();
-  vi.unstubAllGlobals();
-});
-async function render(element: ReactElement) {
-  await getSyntaxHighlighterPromise("bash");
-  const container = document.body.appendChild(document.createElement("div"));
-  const root = createRoot(container);
-  roots.push(root);
-  await act(async () => {
-    publishMetadata();
-    root.render(<RegistryContext.Provider value={registry}>{element}</RegistryContext.Provider>);
-  });
+  const owned = resources.move();
   return {
-    container,
-    rerender: (element: ReactElement) =>
-      act(async () => {
-        publishMetadata();
-        root.render(
-          <RegistryContext.Provider value={registry}>{element}</RegistryContext.Provider>,
-        );
-      }),
-    unmount: () => act(async () => root.unmount()),
+    [Symbol.dispose]: () => owned.dispose(),
+    async render(element: ReactElement) {
+      await getSyntaxHighlighterPromise("bash");
+      publishMetadata();
+      const screen = await renderScreen(
+        <RegistryContext.Provider value={registry}>{element}</RegistryContext.Provider>,
+        { router: false },
+      );
+      return {
+        ...screen,
+        rerender: (element: ReactElement) =>
+          act(async () => {
+            publishMetadata();
+            await screen.rerender(
+              <RegistryContext.Provider value={registry}>{element}</RegistryContext.Provider>,
+            );
+          }),
+      };
+    },
   };
 }
 function message(
@@ -276,6 +280,7 @@ function timeline(threadId: string) {
     onAnchorReady: () => {},
     onAnchorSizeChanged: () => {},
     contentInsetEndAdjustment: 0,
+    emptyPlaceholderInset: 0,
     liveFollowEnabled: true,
     onIsAtEndChange: () => {},
     onManualNavigation: () => {},
@@ -304,8 +309,10 @@ function timeline(threadId: string) {
 
 describe("destination shell Markdown UI", () => {
   it("propagates native message identity through the production timeline and keeps Close independent", async () => {
+    using harness = setupFixture();
+    const { render } = harness;
     const threadId = `production-${++fixture}`;
-    const view = await render(timeline(threadId));
+    await using view = await render(timeline(threadId));
     const blocks = () => [
       ...view.container.querySelectorAll<HTMLElement>("[data-shell-destination]"),
     ];
@@ -338,7 +345,7 @@ describe("destination shell Markdown UI", () => {
     expect(blocks()[1]!.querySelector("textarea")).not.toBeNull();
     await view.unmount();
     shellRunStore().observe();
-    const remount = await render(
+    await using remount = await render(
       <>
         {message(fence(), { threadId, messageId: "native-a" })}
         {message(fence(), { threadId, messageId: "native-b" })}
@@ -349,7 +356,10 @@ describe("destination shell Markdown UI", () => {
     expect(state.close.mock.calls[0]?.[0].input.terminalId).toBe(runs[0]!.terminalId);
   });
   it("keeps repeated blocks within one message separate", async () => {
-    const { container } = await render(message(`${fence()}\n\n${fence()}`));
+    using harness = setupFixture();
+    const { render } = harness;
+    await using view = await render(message(`${fence()}\n\n${fence()}`));
+    const { container } = view;
     const blocks = [...container.querySelectorAll<HTMLElement>("[data-shell-destination]")];
     expect(blocks).toHaveLength(2);
     await act(async () => play(blocks[0]!).click());
@@ -362,8 +372,11 @@ describe("destination shell Markdown UI", () => {
   it.each(["source", "mini"])(
     "visibly refuses a missing message identity on %s",
     async (source) => {
+      using harness = setupFixture();
+      const { render } = harness;
       const callback = vi.fn();
-      const { container } = await render(message(fence(), { source, messageId: null, callback }));
+      await using view = await render(message(fence(), { source, messageId: null, callback }));
+      const { container } = view;
       expect(play(container).disabled).toBe(true);
       expect(container.textContent).toContain("no stable identity");
       expect(callback).not.toHaveBeenCalled();
@@ -373,6 +386,8 @@ describe("destination shell Markdown UI", () => {
   it.each(["opening", "writing", "writeUnknown"] as const)(
     "shows ambiguous legacy %s without attaching or replaying it",
     async (phase) => {
+      using harness = setupFixture();
+      const { render } = harness;
       const threadId = `legacy-${++fixture}`;
       const legacy = {
         key: legacyShellRunKey(shellRunKey("source", threadId, 0, "mini", "pwd\n", "message"))!,
@@ -380,16 +395,17 @@ describe("destination shell Markdown UI", () => {
         terminalId: `run-${randomUUID()}`,
         cwd: "/destination-only",
         phase,
-        updatedAt: Date.now(),
+        updatedAt: fixtureNow,
       };
       localStorage.setItem(SHELL_RUN_STORAGE_KEY, JSON.stringify([legacy]));
       shellRunStore().observe();
-      const { container } = await render(
+      await using view = await render(
         <>
           {message(fence(), { threadId, messageId: "message-a" })}
           {message(fence(), { threadId, messageId: "message-b" })}
         </>,
       );
+      const { container } = view;
       const blocks = [...container.querySelectorAll<HTMLElement>("[data-shell-destination]")];
       for (const block of blocks) {
         expect(play(block).disabled).toBe(true);
@@ -412,8 +428,10 @@ describe("destination shell Markdown UI", () => {
     },
   );
   it("uses a successful waiting metadata stream to mount, focus, and preserve the native terminal", async () => {
+    using harness = setupFixture();
+    const { render } = harness;
     const element = message(fence());
-    const view = await render(element);
+    await using view = await render(element);
     expect(view.container.textContent).toContain("Mini · ready");
     expect(
       view.container.querySelector('[aria-label="Destination computer: mini"]'),
@@ -441,7 +459,7 @@ describe("destination shell Markdown UI", () => {
     expect(state.write).toHaveBeenCalledTimes(1);
     await view.unmount();
     expect(state.close).not.toHaveBeenCalled();
-    const remount = await render(element);
+    await using remount = await render(element);
     expect(remount.container.querySelector("textarea")).not.toBeNull();
     expect(state.write).toHaveBeenCalledTimes(1);
     await act(async () =>
@@ -454,26 +472,35 @@ describe("destination shell Markdown UI", () => {
     expect(remount.container.querySelector("textarea")).toBeNull();
   });
   it("uses the existing callback for the source computer without opening a second terminal", async () => {
+    using harness = setupFixture();
+    const { render } = harness;
     const callback = vi.fn();
-    const { container } = await render(message(fence(), { source: "mini", callback }));
+    await using view = await render(message(fence(), { source: "mini", callback }));
+    const { container } = view;
     expect(container.textContent).toContain("Mini · self");
     await act(async () => play(container).click());
     expect(callback).toHaveBeenCalledExactlyOnceWith("pwd");
     expect(state.open).not.toHaveBeenCalled();
   });
   it("checks a restored session and reports a server restart without recreating or replaying it", async () => {
+    using harness = setupFixture();
+    const { render } = harness;
     const element = message(fence());
-    const view = await render(element);
+    await using view = await render(element);
     await act(async () => play(view.container).click());
     await waitForRun("running");
     await view.unmount();
     state.sessions = [];
-    const checking = await render(element);
+    await using checking = await render(element);
     expect(checking.container.textContent).toContain("checking previous terminal");
     expect(checking.container.querySelector("textarea")).toBeNull();
     await checking.unmount();
-    state.queryTime = Date.now() + 1;
-    const missing = await render(element);
+    const terminalId = state.open.mock.lastCall?.[0].input.terminalId;
+    const recordedRuns: ShellRun[] = JSON.parse(
+      localStorage.getItem(SHELL_RUN_STORAGE_KEY) ?? "[]",
+    );
+    state.queryTime = recordedRuns.find((run) => run.terminalId === terminalId)!.updatedAt + 1;
+    await using missing = await render(element);
     await waitForRun("unavailable");
     expect(missing.container.textContent).toContain("The previous terminal is unavailable");
     expect(missing.container.querySelector("textarea")).toBeNull();
@@ -482,16 +509,18 @@ describe("destination shell Markdown UI", () => {
     expect(state.close).not.toHaveBeenCalled();
   });
   it("waits for the first metadata snapshot without mounting or recreating a terminal", async () => {
+    using harness = setupFixture();
+    const { render } = harness;
     state.queryHasSnapshot = false;
     const element = message(fence());
-    const view = await render(element);
+    await using view = await render(element);
     await act(async () => play(view.container).click());
     await waitForRun("running");
     expect(view.container.textContent).toContain("checking previous terminal");
     expect(view.container.querySelector("textarea")).toBeNull();
     await view.unmount();
     state.queryHasSnapshot = true;
-    const confirmed = await render(element);
+    await using confirmed = await render(element);
     expect(confirmed.container.querySelector("textarea")).not.toBeNull();
     expect(state.open).toHaveBeenCalledTimes(1);
     expect(state.write).toHaveBeenCalledTimes(1);
@@ -499,14 +528,17 @@ describe("destination shell Markdown UI", () => {
   it.each(["offline", "connecting", "no-permission", "unknown", "label-mismatch"])(
     "shows the disabled reason for %s",
     async (status) => {
+      using harness = setupFixture();
+      const { render } = harness;
       if (status === "unknown") state.environments = [];
       else if (status === "no-permission")
         state.environments = state.environments.map((entry) => ({ ...entry, canOperate: false }));
       else if (status === "offline" || status === "connecting")
         state.environments = state.environments.map((entry) => ({ ...entry, phase: status }));
-      const { container } = await render(
+      await using view = await render(
         message(fence(status === "label-mismatch" ? "environment=mini label=Laptop" : undefined)),
       );
+      const { container } = view;
       expect(container.querySelector(`[data-shell-destination="${status}"]`)).not.toBeNull();
       expect(
         container.querySelector<HTMLButtonElement>('button[aria-label^="Run on"]')!.disabled,
@@ -518,8 +550,11 @@ describe("destination shell Markdown UI", () => {
     },
   );
   it("keeps a failed write visible and Run again requires a fresh terminal", async () => {
+    using harness = setupFixture();
+    const { render } = harness;
     state.write.mockResolvedValue({ _tag: "Failure" });
-    const { container } = await render(message(fence()));
+    await using view = await render(message(fence()));
+    const { container } = view;
     await act(async () => play(container).click());
     await waitForRun("writeUnknown");
     expect(container.textContent).toContain("Command delivery is unknown");
@@ -542,13 +577,19 @@ describe("destination shell Markdown UI", () => {
     [fence(undefined, "echo \\"), {}],
     [fence(), { backed: false }],
   ])("does not run incomplete, unsafe, or non-project blocks", async (text, options) => {
-    const { container } = await render(message(text, options));
+    using harness = setupFixture();
+    const { render } = harness;
+    await using view = await render(message(text, options));
+    const { container } = view;
     expect(play(container).disabled).toBe(true);
     expect(state.open).not.toHaveBeenCalled();
   });
   it("keeps legacy Run in terminal and blocks destination metadata on plain shell fences", async () => {
+    using harness = setupFixture();
+    const { render } = harness;
     const callback = vi.fn();
-    const { container, rerender } = await render(message("```bash\npwd\n```", { callback }));
+    await using view = await render(message("```bash\npwd\n```", { callback }));
+    const { container, rerender } = view;
     const button = container.querySelector<HTMLButtonElement>(
       'button[aria-label="Run in terminal"]',
     )!;
@@ -562,7 +603,9 @@ describe("destination shell Markdown UI", () => {
 
 describe("browser cross-context run coordination", () => {
   it("uses native Web Locks across browsing contexts and observes shared storage updates", async () => {
-    const frame = document.body.appendChild(document.createElement("iframe"));
+    using _harness = setupFixture();
+    await using screen = await renderScreen(<iframe />, { router: false });
+    const frame = screen.container.querySelector("iframe")!;
     const otherWindow = frame.contentWindow!;
     const locks = otherWindow.navigator.locks;
     expect(locks).toBeDefined();

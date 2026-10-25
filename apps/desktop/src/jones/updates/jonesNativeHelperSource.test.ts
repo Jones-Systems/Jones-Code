@@ -14,6 +14,14 @@ const jonesNativeHelperSource = productionNativeHelperSource.replace(
   "\nverify_signing_transition = lambda expected, candidate: None\nverify_rollback_signature = lambda expected, retained: None\nparser = argparse.ArgumentParser()",
 );
 
+function runPython(
+  source: string,
+  args: ReadonlyArray<string>,
+  options: Omit<NodeChildProcess.ExecFileSyncOptionsWithStringEncoding, "input">,
+): string {
+  return NodeChildProcess.execFileSync("python3", ["-", ...args], { ...options, input: source });
+}
+
 const fixtures = new Set<string>();
 async function cleanupFixture(root: string): Promise<void> {
   await NodeFSP.rm(root, { recursive: true, force: true });
@@ -33,6 +41,14 @@ async function fixture() {
 
 const activationScenario = String.raw`
 root, fault = pathlib.Path(sys.argv[1]), sys.argv[2]
+def seed_record(path, value, exclusive=False):
+    # These isolated input records have no observer until synchronous setup ends.
+    # Restore real fsync before every tested transition and durability fault.
+    fsync = os.fsync
+    try:
+        os.fsync = lambda descriptor: None
+        durable(path, value, exclusive)
+    finally: os.fsync = fsync
 # Exercise the real allocation/release protocol with small fixture-only capacity.
 RECOVERY_HEADROOM = 16384
 home, profile = root / 'userdata', root / 'profile'
@@ -54,7 +70,7 @@ expected = {'protocol': 1, 'owner': 'desktop', 'generation': 'previous', 'transa
     'appPath': str(previous_app), 'executablePath': str(previous_app / 'Contents/MacOS/Jones'),
     'version': 'same-preview-version', 'sourceSha': 'a' * 40, 'sourceTree': 'b' * 40, 'appDigest': app_digest(previous_app)}
 manifest_path = root / 'runtime' / 'jones-active-install.json'
-durable(manifest_path, expected, True)
+seed_record(manifest_path, expected, True)
 transaction_id = 'e' * 64
 tx = root / 'runtime' / 'jones-updates' / 'transactions' / transaction_id
 tx.mkdir(parents=True)
@@ -70,27 +86,27 @@ staged = {'handle': 'f' * 64, 'receiptPath': str(root / 'mac-app-receipt.json'),
 if fault == 'candidate-gate-missing': staged.pop('startupGateProtocol')
 if fault == 'candidate-gate-wrong': staged['startupGateProtocol'] = 2
 if fault == 'candidate-gate-boolean': staged['startupGateProtocol'] = True
-durable(staged['receiptPath'], {'app': staged, 'candidate': candidate,
+seed_record(staged['receiptPath'], {'app': staged, 'candidate': candidate,
     'artifact': {'candidate': candidate, 'payloadPath': str(payload), 'receipt': {'sha256': digest(payload)}}}, True)
 staging = manifest_path.parent / 'jones-updates' / 'staging'; staging.mkdir()
 selection_path = staging / (expected['sourceSha'] + '-' + 'e' * 64 + '.json')
 selection = {'schema': 1, 'source': 'jones-actions', 'home': expected['home'], 'profile': expected['profile'],
              'currentVersion': expected['version'], 'installedSource': expected['sourceSha'], 'active': expected,
              'artifactDirectory': str(root / 'artifact'), 'app': staged}
-durable(selection_path, selection, True)
+seed_record(selection_path, selection, True)
 selection_digest = digest(selection_path)
 claim = preparation_claim(expected, staged['handle'], transaction_id, selection_path, selection_digest)
 attempt_key = hashlib.sha256((str(selection_path) + '\n' + selection_digest).encode()).hexdigest()
 attempt_path = manifest_path.parent / 'jones-updates' / 'attempt-selections' / (attempt_key + '.json')
-durable(attempt_path, {'protocol': 1, 'transactionId': transaction_id, 'stagedHandle': staged['handle'], 'selectionPath': str(selection_path), 'selectionSha256': selection_digest, 'expected': expected}, True)
-durable(tx / 'prepare-intent.json', claim, True)
-durable(tx / 'prepare-dispatched.json', claim, True)
+seed_record(attempt_path, {'protocol': 1, 'transactionId': transaction_id, 'stagedHandle': staged['handle'], 'selectionPath': str(selection_path), 'selectionSha256': selection_digest, 'expected': expected}, True)
+seed_record(tx / 'prepare-intent.json', claim, True)
+seed_record(tx / 'prepare-dispatched.json', claim, True)
 continuation = dict(claim, prepared=True)
-durable(tx / 'continuation.json', continuation, True)
+seed_record(tx / 'continuation.json', continuation, True)
 intent = {'protocol': 1, 'transactionId': transaction_id, 'expected': expected, 'staged': staged,
     'continuationReceipt': str(tx / 'continuation.json'), 'processes': [{'pid': 123, 'identity': 'owned-native-process'}],
     'listener': 'http://127.0.0.1:3777'}
-durable(tx / 'intent.json', intent, True)
+seed_record(tx / 'intent.json', intent, True)
 events = []
 authority_state = 'active'
 def persisted_transition(operation, guard=None):
@@ -347,6 +363,50 @@ else:
 `;
 
 describe("Jones native helper", () => {
+  it("seeds equivalent private records and restores real durability before activation", async () => {
+    const f = await fixture();
+    try {
+      const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const setup = activationScenario.split("\nevents = []")[0];
+      const observe = String.raw`
+fsync_calls = []
+real_fsync = os.fsync
+def observed_fsync(descriptor):
+    fsync_calls.append(descriptor)
+    return real_fsync(descriptor)
+os.fsync = observed_fsync
+`;
+      const scenario = String.raw`
+assert fsync_calls == [], 'Unobserved fixture records repeated durable disk flushes'
+assert os.fsync is observed_fsync, 'Fixture seeding did not restore real durability'
+records = [manifest_path, pathlib.Path(staged['receiptPath']), selection_path, attempt_path,
+           tx / 'prepare-intent.json', tx / 'prepare-dispatched.json', tx / 'continuation.json', tx / 'intent.json']
+for index, path in enumerate(records):
+    reference = root / 'reference' / str(index) / path.name
+    durable(reference, read(path), True)
+    assert path.read_bytes() == reference.read_bytes()
+    assert stat.S_IMODE(path.stat().st_mode) == stat.S_IMODE(reference.stat().st_mode) == 0o600
+    assert path.stat().st_nlink == reference.stat().st_nlink == 1
+assert len(fsync_calls) == 2 * len(records), 'Real durable publication lost its file or parent flush'
+before = manifest_path.read_bytes()
+try: seed_record(manifest_path, {'must': 'not overwrite'}, True)
+except FileExistsError: pass
+else: raise AssertionError('Fixture seeding replaced an exclusive record')
+assert manifest_path.read_bytes() == before
+assert os.fsync is observed_fsync, 'Failed fixture seeding did not restore real durability'
+assert len(fsync_calls) == 2 * len(records)
+assert not list(manifest_path.parent.glob(manifest_path.name + '.*'))
+`;
+      runPython(`${definitions}\n${observe}\n${setup}\n${scenario}`, [f.directory, "success"], {
+        encoding: "utf8",
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+    } finally {
+      await f.cleanup();
+    }
+  });
+
   it("releases reserves across successful generations while protecting the current recovery pair", async () => {
     const f = await fixture();
     try {
@@ -400,11 +460,11 @@ assert retired['status'] == 'retired', retired
 assert not (oldest / 'previous-pair' / 'state.sqlite').exists()
 assert all((generation / 'previous-pair' / 'state.sqlite').exists() for generation in generations[1:])
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${definitions}\n${runtime}\n${scenario}`, f.directory, "success"],
-        { encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024 },
-      );
+      runPython(`${definitions}\n${runtime}\n${scenario}`, [f.directory, "success"], {
+        encoding: "utf8",
+        timeout: 10_000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
@@ -480,11 +540,11 @@ else:
             assert 'cleanup' in journal['message']
         else: assert 'recoveryReserveCleanup' not in journal
 `;
-        NodeChildProcess.execFileSync(
-          "python3",
-          ["-c", `${definitions}\n${runtime}\n${scenario}`, f.directory, "success", boundary],
-          { encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024 },
-        );
+        runPython(`${definitions}\n${runtime}\n${scenario}`, [f.directory, "success", boundary], {
+          encoding: "utf8",
+          timeout: 10_000,
+          maxBuffer: 1024 * 1024,
+        });
       } finally {
         await f.cleanup();
       }
@@ -541,11 +601,11 @@ assert run('--claim-preparation', staged['handle'], '--transaction', transaction
 assert run('--claim-activation', str(request))['reason'] == 'preparation-withdrawn'
 assert read(pathlib.Path(retired['retiredPath']) / 'preparation-withdrawal.json') == proof
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${definitions}\n${setup}\n${scenario}`, f.directory, "withdraw"],
-        { encoding: "utf8", timeout: 15_000, maxBuffer: 1024 * 1024 },
-      );
+      runPython(`${definitions}\n${setup}\n${scenario}`, [f.directory, "withdraw"], {
+        encoding: "utf8",
+        timeout: 15_000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
@@ -636,11 +696,11 @@ else:
 assert selection_path.exists() and attempt_path.exists()
 assert (profile / 'opaque').read_text() == 'same-host-profile'
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${definitions}\n${setup}\n${scenario}`, f.directory, fault],
-        { encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024 },
-      );
+      runPython(`${definitions}\n${setup}\n${scenario}`, [f.directory, fault], {
+        encoding: "utf8",
+        timeout: 10_000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
@@ -714,16 +774,143 @@ finally:
     if child.poll() is None: child.kill()
     child.wait(timeout=5)
 `;
-        NodeChildProcess.execFileSync(
-          "python3",
-          ["-c", `${definitions}\n${setup}\n${scenario}`, f.directory, order],
-          { encoding: "utf8", timeout: 20_000, maxBuffer: 1024 * 1024 },
-        );
+        runPython(`${definitions}\n${setup}\n${scenario}`, [f.directory, order], {
+          encoding: "utf8",
+          timeout: 20_000,
+          maxBuffer: 1024 * 1024,
+        });
       } finally {
         await f.cleanup();
       }
     },
   );
+
+  it.each([
+    "success",
+    "default",
+    "journal-hash",
+    "intent-hash",
+    "live",
+    "identity-unknown",
+    "previous",
+    "previous-pair",
+    "trial-descriptor.json",
+    "trial-receipt.json",
+    "commit-grant.json",
+    "resume-dispatched.json",
+    "advanced-state",
+    "advanced-state-authority-guard.json",
+    "retirement-intent.json",
+    "extra",
+    "journal-extra",
+    "incoming",
+    "old-app",
+    "unknown-transaction",
+    "unknown-path",
+    "claim",
+    "lease-busy",
+    "revalidate",
+    "durability",
+    "durability-lost",
+    "reserve-drift",
+  ])("requires exact pre-swap recovery evidence for %s", async (mode) => {
+    const f = await fixture();
+    try {
+      const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const setup = activationScenario.split("\nevents = []")[0];
+      const scenario = String.raw`
+mode = sys.argv[3]
+(home / 'environment-id').write_text(expected['environmentId'])
+for path, scope in native_writer_lease_paths(expected): initialize_native_lease(path, scope)
+incoming, previous = prepare_bundle(expected, staged, transaction_id)
+seed_record(tx / 'activation-request.json', intent, True)
+seed_record(tx / 'prepare-request.json', {'protocol': 1, 'transactionId': transaction_id, 'stagedHandle': staged['handle'], 'claimSha256': digest(tx / 'prepare-intent.json'), 'processes': intent['processes']}, True)
+seed_record(tx / 'prepare-failure.json', {'protocol': 1, 'reason': 'TIMEOUT'}, True)
+reserve_path = tx / 'recovery-reserve.bin'
+reserve_path.write_bytes(bytes(4096))
+reserve_info = reserve_path.stat()
+reserves = [{'path': str(reserve_path), 'bytes': reserve_info.st_size, 'device': str(reserve_info.st_dev), 'inode': str(reserve_info.st_ino), 'purpose': 'recovery'}, {'path': str(tx / 'recovery-journal-reserve.bin'), 'bytes': 4096, 'device': '0', 'inode': '0', 'purpose': 'journal'}]
+seed_record(tx / 'journal.json', {'intent': intent, 'phase': 'blocked', 'message': 'Untrusted diagnostic text', 'incomingBundle': str(incoming), 'previousBundle': str(previous), 'recoveryReserves': reserves}, True)
+bound = {'transactionId': transaction_id, 'journalSha256': digest(tx / 'journal.json'), 'intentSha256': digest(tx / 'intent.json')}
+if mode in ('journal-hash', 'intent-hash'): bound['journalSha256' if mode == 'journal-hash' else 'intentSha256'] = '0' * 64
+if mode == 'unknown-transaction': bound['transactionId'] = '0' * 64
+if mode == 'unknown-path': bound['transactionId'] = '../' + transaction_id
+if mode == 'previous': previous.mkdir()
+if mode == 'reserve-drift': reserve_path.write_bytes(bytes(8192))
+if mode == 'incoming': (incoming / 'Contents/MacOS/Jones').write_text('changed')
+if mode == 'old-app': (previous_app / 'Contents/MacOS/Jones').write_text('changed')
+if mode == 'claim': durable(tx / 'prepare-dispatched.json', dict(claim, stagedHandle='0' * 64))
+if mode == 'journal-extra':
+    durable(tx / 'journal.json', dict(read(tx / 'journal.json'), candidateWriter={'pid': 321, 'identity': 'unknown'}))
+    bound['journalSha256'] = digest(tx / 'journal.json')
+if mode in ('previous-pair', 'advanced-state'): (tx / mode).mkdir()
+elif mode in ('trial-descriptor.json', 'trial-receipt.json', 'commit-grant.json', 'resume-dispatched.json', 'advanced-state-authority-guard.json', 'retirement-intent.json', 'extra'):
+    seed_record(tx / mode, {'unknown': True}, True)
+request = manifest_path.parent / 'pre-swap-request.json'
+seed_record(request, dict({'manifestSha256': digest(manifest_path), 'observed': expected}, **({} if mode == 'default' else {'preSwapPreparationRecovery': bound})), True)
+before_manifest, before_state, before_journal = manifest_path.read_bytes(), database.read_bytes(), (tx / 'journal.json').read_bytes()
+bundle_identity = lambda active, stable=True: None
+process_identity = lambda pid: 'owned-native-process' if mode == 'live' else None
+if mode == 'identity-unknown':
+    def process_identity(pid): raise RuntimeError('Uncertain process inspection')
+quiescence = []
+prove_quiescence = lambda active: quiescence.append('checked')
+native_acquire = acquire_writer_exclusion
+leases = []
+def acquire_writer_exclusion(active, initialize=True):
+    assert initialize is False, 'Recovery must not initialize lease databases'
+    if mode == 'lease-busy': raise RuntimeError('Busy writer lease')
+    held = native_acquire(active, initialize)
+    leases.extend(held)
+    if mode == 'revalidate': native_durable(tx / 'intent.json', dict(intent, listener='changed'))
+    return held
+native_durable = durable
+writes = []
+def durable(path, value, exclusive=False):
+    assert pathlib.Path(path) == tx / 'journal.json', 'Recovery wrote outside the journal'
+    assert leases and all(connection.in_transaction for connection in leases)
+    assert len(quiescence) >= 2
+    writes.append(str(path))
+    if mode == 'durability': raise OSError('Synthetic journal publication failure')
+    result = native_durable(path, value, exclusive)
+    if mode == 'durability-lost': raise OSError('Synthetic lost durable acknowledgment')
+    return result
+result = reconcile_running(request, digest(request))
+assert manifest_path.read_bytes() == before_manifest
+assert database.read_bytes() == before_state
+for connection in leases:
+    try: connection.execute('SELECT 1')
+    except sqlite3.ProgrammingError: pass
+    else: raise AssertionError('Writer exclusion leaked')
+if mode == 'success':
+    assert result['status'] == 'reconciled', result
+    journal = read(tx / 'journal.json')
+    assert journal['phase'] == 'rolled-back' and journal['intent'] == intent
+    assert journal['preSwapPreparationRecovery'] == bound
+    assert writes == [str(tx / 'journal.json')]
+    assert incoming.exists() and not previous.exists()
+    assert not (tx / 'previous-pair').exists()
+    assert reconcile_running(request, digest(request))['status'] == 'reconciled'
+elif mode in ('durability', 'durability-lost'):
+    assert result == {'protocol': 1, 'status': 'uncertain', 'reason': 'journal-publication-unknown'}, result
+    assert writes == [str(tx / 'journal.json')]
+    if mode == 'durability': assert (tx / 'journal.json').read_bytes() == before_journal
+    else:
+        assert read(tx / 'journal.json')['phase'] == 'rolled-back'
+        assert reconcile_running(request, digest(request))['status'] == 'reconciled'
+else:
+    assert result['status'] == 'refused', result
+    assert (tx / 'journal.json').read_bytes() == before_journal
+    assert writes == []
+`;
+      runPython(definitions + "\n" + setup + "\n" + scenario, [f.directory, "success", mode], {
+        encoding: "utf8",
+        timeout: 10000,
+      });
+    } finally {
+      await f.cleanup();
+    }
+  });
 
   it("re-adopts a stale manifest from independently observed bundle metadata and preserves one preimage", async () => {
     const f = await fixture();
@@ -759,7 +946,7 @@ assert read(manifest_path.with_name(manifest_path.name + '.superseded')) == stal
 assert (state / 'statev2.sqlite').read_bytes() == b'synthetic state'
 assert reconcile_running(request, digest(request)) == {'protocol': 1, 'status': 'refused', 'reason': 'running-changed'}
 `;
-      NodeChildProcess.execFileSync("python3", ["-c", definitions + "\n" + scenario, f.directory], {
+      runPython(definitions + "\n" + scenario, [f.directory], {
         encoding: "utf8",
         timeout: 10000,
       });
@@ -944,15 +1131,11 @@ else:
     assert result == ({'kind': 'absent'} if fault == 'absent' else guard) if operation == 'fence' else result['state'] in ('advanced', 'absent')
 assert len(calls) == (0 if fault in ('wrong-source', 'wrong-version', 'digest-drift', 'binary-link', 'binary-mode') else 1)
 `;
-        NodeChildProcess.execFileSync(
-          "python3",
-          ["-c", nativeFunctions + "\n" + scenario, f.directory, fault],
-          {
-            encoding: "utf8",
-            maxBuffer: 1024 * 1024,
-            timeout: 10000,
-          },
-        );
+        runPython(nativeFunctions + "\n" + scenario, [f.directory, fault], {
+          encoding: "utf8",
+          maxBuffer: 1024 * 1024,
+          timeout: 10000,
+        });
       } finally {
         await f.cleanup();
       }
@@ -980,7 +1163,7 @@ assert all(name not in captured for name in selectors)
 assert captured['T3CODE_JONES_ACTIVE_GENERATION'] == 'new-generation'
 assert captured['T3CODE_HOME'] == '/synthetic'
 `;
-    NodeChildProcess.execFileSync("python3", ["-c", nativeFunctions + "\n" + scenario], {
+    runPython(nativeFunctions + "\n" + scenario, [], {
       encoding: "utf8",
       maxBuffer: 1024 * 1024,
       timeout: 10000,
@@ -1101,9 +1284,9 @@ else:
 print(json.dumps({'case': manual_fault, 'passed': True}))
 `;
         const result = JSON.parse(
-          NodeChildProcess.execFileSync(
-            "python3",
-            ["-c", nativeFunctions + "\n" + setup + "\n" + scenario, f.directory, "success", fault],
+          runPython(
+            nativeFunctions + "\n" + setup + "\n" + scenario,
+            [f.directory, "success", fault],
             { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
           ),
         ) as { passed: boolean };
@@ -1227,12 +1410,15 @@ if boundary_fault.startswith('mount-'):
     assert {str(path): path.read_bytes() for path in tx.rglob('*') if path.is_file()} == before
 assert database.exists() and (profile / 'opaque').read_text() == 'advanced-profile'
 `;
-        NodeChildProcess.execFileSync("python3", ["-", f.directory, "trial-mismatch", fault], {
-          input: `${nativeFunctions}\n${runtime}\n${scenario}`,
-          encoding: "utf8",
-          timeout: 10000,
-          maxBuffer: 1024 * 1024,
-        });
+        runPython(
+          `${nativeFunctions}\n${runtime}\n${scenario}`,
+          [f.directory, "trial-mismatch", fault],
+          {
+            encoding: "utf8",
+            timeout: 10000,
+            maxBuffer: 1024 * 1024,
+          },
+        );
       } finally {
         await f.cleanup();
       }
@@ -1392,8 +1578,10 @@ assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-ex
 assert read(staged['receiptPath'])['app'] == staged and candidate_app.exists()
 if retirement_fault == 'internal-symlink': assert (root / 'unrelated-payload').read_text() == 'must survive'
 `;
-      NodeChildProcess.execFileSync("python3", ["-", f.directory, "trial-mismatch", fault], {
-        input: `${nativeFunctions}\n${runtime}\n${scenario}`,
+      // Keep generated programs out of argv: Linux limits each argument to 128 KiB.
+      const script = NodePath.join(f.directory, "retirement-scenario.py");
+      await NodeFSP.writeFile(script, `${nativeFunctions}\n${runtime}\n${scenario}`);
+      NodeChildProcess.execFileSync("python3", [script, f.directory, "trial-mismatch", fault], {
         encoding: "utf8",
         timeout: 10000,
         maxBuffer: 1024 * 1024,
@@ -1446,15 +1634,11 @@ assert (profile / 'opaque').read_text() == 'advanced-profile'
 assert {str(path): digest(path) for path in first.rglob('*') if path.is_file()} == retained
 assert read(staged['receiptPath'])['app'] == staged
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${runtime}\n${scenario}`, f.directory, "trial-mismatch"],
-        {
-          encoding: "utf8",
-          timeout: 10000,
-          maxBuffer: 1024 * 1024,
-        },
-      );
+      runPython(`${nativeFunctions}\n${runtime}\n${scenario}`, [f.directory, "trial-mismatch"], {
+        encoding: "utf8",
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
@@ -1498,15 +1682,11 @@ assert read(tx / 'journal.json') == prior_journal
 assert (tx / 'retained-evidence').read_text() == 'previous attempt retained'
 assert read(staged['receiptPath'])['app']['handle'] == staged['handle']
 `;
-        NodeChildProcess.execFileSync(
-          "python3",
-          ["-c", `${nativeFunctions}\n${setup}\n${scenario}`, f.directory, fault],
-          {
-            encoding: "utf8",
-            timeout: 10000,
-            maxBuffer: 1024 * 1024,
-          },
-        );
+        runPython(`${nativeFunctions}\n${setup}\n${scenario}`, [f.directory, fault], {
+          encoding: "utf8",
+          timeout: 10000,
+          maxBuffer: 1024 * 1024,
+        });
       } finally {
         await f.cleanup();
       }
@@ -1553,15 +1733,11 @@ finally:
     sys.platform = original_platform
 assert not path.exists() and sibling.read_text() == 'keep'
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
-        {
-          encoding: "utf8",
-          timeout: 10000,
-          maxBuffer: 1024 * 1024,
-        },
-      );
+      runPython(`${nativeFunctions}\n${scenario}`, [f.directory], {
+        encoding: "utf8",
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
@@ -1613,15 +1789,11 @@ else:
         assert not (tx / 'journal.json').exists()
 assert (profile / 'opaque').read_text() == 'same-host-profile'
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${setup}\n${scenario}`, f.directory, fault],
-        {
-          encoding: "utf8",
-          timeout: 10000,
-          maxBuffer: 1024 * 1024,
-        },
-      );
+      runPython(`${nativeFunctions}\n${setup}\n${scenario}`, [f.directory, fault], {
+        encoding: "utf8",
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
@@ -1678,15 +1850,11 @@ finally:
     if child.poll() is None: child.kill()
     child.wait(timeout=5)
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${setup}\n${scenario}`, f.directory, "interleaved"],
-        {
-          encoding: "utf8",
-          timeout: 15000,
-          maxBuffer: 1024 * 1024,
-        },
-      );
+      runPython(`${nativeFunctions}\n${setup}\n${scenario}`, [f.directory, "interleaved"], {
+        encoding: "utf8",
+        timeout: 15000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
@@ -1736,15 +1904,11 @@ except RuntimeError as error: assert 'inode changed' in str(error)
 else: raise AssertionError('Replaced lease inode was accepted')
 assert old.exists()
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
-        {
-          encoding: "utf8",
-          timeout: 10000,
-          maxBuffer: 1024 * 1024,
-        },
-      );
+      runPython(`${nativeFunctions}\n${scenario}`, [f.directory], {
+        encoding: "utf8",
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
@@ -1825,11 +1989,11 @@ assert payload.read_text() == 'synthetic-qualified-dmg'
 assert (profile / 'opaque').read_text() == 'same-host-profile'
 with sqlite3.connect(database) as db: assert db.execute('SELECT value FROM identity').fetchone()[0] == 'previous-state'
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${setup}\n${scenario}`, f.directory, fault],
-        { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
-      );
+      runPython(`${nativeFunctions}\n${setup}\n${scenario}`, [f.directory, fault], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      });
     } finally {
       await f.cleanup();
     }
@@ -2007,14 +2171,9 @@ else:
 assert (profile / 'opaque').read_text() == 'same-host-profile'
 with sqlite3.connect(database) as db: assert db.execute('SELECT value FROM identity').fetchone()[0] == 'previous-state'
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        [
-          "-c",
-          `${nativeFunctions}\n${setup}\n${preparationOnlyScenario}\n${scenario}`,
-          f.directory,
-          fault,
-        ],
+      runPython(
+        `${nativeFunctions}\n${setup}\n${preparationOnlyScenario}\n${scenario}`,
+        [f.directory, fault],
         { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
       );
     } finally {
@@ -2052,14 +2211,9 @@ held()
 recovered(run('--retire-preparation', transaction_id, '--plan-sha256', inspected['planSha256'], '--quiescent'), 'writers-quiescent')
 assert run('--discard-staged', staged['handle'], '--selection', str(selection_path), '--selection-sha256', selection_digest)['reason'] == 'activation-pending'
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        [
-          "-c",
-          `${nativeFunctions}\n${setup}\n${preparationOnlyScenario}\n${scenario}`,
-          f.directory,
-          "operator",
-        ],
+      runPython(
+        `${nativeFunctions}\n${setup}\n${preparationOnlyScenario}\n${scenario}`,
+        [f.directory, "operator"],
         { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 20000 },
       );
     } finally {
@@ -2096,15 +2250,11 @@ with open(lock_path, 'r+') as lock:
         assert json.loads(result.stdout) == {'protocol': 1, 'operation': operation, 'transactionId': 'e' * 64, 'status': 'refused', 'reason': 'busy'}
 assert sorted(path.name for path in root.iterdir()) == ['jones-activation.lock', 'manifest.json', 'synthetic-helper.py']
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
-        {
-          encoding: "utf8",
-          maxBuffer: 1024 * 1024,
-          timeout: 10000,
-        },
-      );
+      runPython(`${nativeFunctions}\n${scenario}`, [f.directory], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      });
     } finally {
       await f.cleanup();
     }
@@ -2284,11 +2434,11 @@ restore_pair(expected, root / 'pair', root / 'advanced', expected)
 with sqlite3.connect(database) as db:
     assert db.execute('SELECT value FROM identity').fetchone()[0] == 'previous'
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
-        { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
-      );
+      runPython(`${nativeFunctions}\n${scenario}`, [f.directory], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      });
     } finally {
       await f.cleanup();
     }
@@ -2350,15 +2500,11 @@ try: storage_preflight(expected, staged, recursive)
 except RuntimeError as error: assert 'own destination' in str(error)
 else: raise AssertionError('Recursive database snapshot was accepted')
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
-        {
-          encoding: "utf8",
-          maxBuffer: 1024 * 1024,
-          timeout: 10000,
-        },
-      );
+      runPython(`${nativeFunctions}\n${scenario}`, [f.directory], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      });
     } finally {
       await f.cleanup();
     }
@@ -2403,15 +2549,11 @@ for suffix in ('', '-wal', '-shm'):
     assert pathlib.Path(str(database) + suffix).read_bytes() == ('old' + suffix).encode()
     assert (tx / 'advanced' / (database.name + suffix)).read_bytes() == ('advanced' + suffix).encode()
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
-        {
-          encoding: "utf8",
-          maxBuffer: 1024 * 1024,
-          timeout: 10000,
-        },
-      );
+      runPython(`${nativeFunctions}\n${scenario}`, [f.directory], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      });
     } finally {
       await f.cleanup();
     }
@@ -2453,11 +2595,11 @@ for suffix, content in contents.items():
     assert pathlib.Path(str(database) + suffix).read_bytes() == content
     assert (root / 'copy-advanced' / ('state.sqlite' + suffix)).read_bytes() == b'advanced state'
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
-        { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
-      );
+      runPython(`${nativeFunctions}\n${scenario}`, [f.directory], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      });
     } finally {
       await f.cleanup();
     }
@@ -2499,7 +2641,7 @@ finally:
     if child.returncode is None: child.kill()
     child.wait(timeout=2)
 `;
-    NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`], {
+    runPython(`${nativeFunctions}\n${scenario}`, [], {
       encoding: "utf8",
       maxBuffer: 1024 * 1024,
       timeout: 10000,
@@ -2581,7 +2723,7 @@ for birth in ('Sa 10 Okt 08:20:14 2026', '2026年10月10日 08:20:14'):
     blocked([result(birth + ' /different/process'), result(birth + ' S')], 'Process identity changed; signal withheld.')
     blocked([zombie, result(birth.replace('08:20:14', '08:20:15') + ' Z')], 'Process identity changed; signal withheld.')
 `;
-    NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`], {
+    runPython(`${nativeFunctions}\n${scenario}`, [], {
       encoding: "utf8",
       maxBuffer: 1024 * 1024,
       timeout: 10000,
@@ -2616,7 +2758,7 @@ try: inspect('', 1, "lsof: WARNING: can't stat() /synthetic/profile/Local Storag
 except RuntimeError: pass
 else: raise AssertionError('An incomplete profile inspection was accepted')
 `;
-    NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`], {
+    runPython(`${nativeFunctions}\n${scenario}`, [], {
       encoding: "utf8",
       maxBuffer: 1024 * 1024,
       timeout: 10000,
@@ -2653,11 +2795,11 @@ for key, bad in (('sourceSha', 'c' * 40), ('sourceTree', 'd' * 40), ('version', 
     except RuntimeError: pass
     else: raise AssertionError('A changed bundle identity was accepted')
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
-        { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
-      );
+      runPython(`${nativeFunctions}\n${scenario}`, [f.directory], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      });
     } finally {
       await f.cleanup();
     }
@@ -2727,11 +2869,11 @@ assert (root / 'advanced-state' / 'profile').exists() == legacy
 if legacy: assert (root / 'advanced-state' / 'profile' / 'opaque-profile').read_text() == 'advanced-profile'
 assert (pair / 'state.sqlite').exists() == legacy
 `;
-        NodeChildProcess.execFileSync(
-          "python3",
-          ["-c", `${nativeFunctions}\n${scenario}`, f.directory, String(legacy)],
-          { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
-        );
+        runPython(`${nativeFunctions}\n${scenario}`, [f.directory, String(legacy)], {
+          encoding: "utf8",
+          maxBuffer: 1024 * 1024,
+          timeout: 10000,
+        });
       } finally {
         await f.cleanup();
       }
@@ -2799,11 +2941,10 @@ else:
     assert (profile / 'opaque').read_bytes() == b'profile'
     assert not (advanced / 'profile').exists()
 `;
-        NodeChildProcess.execFileSync(
-          "python3",
-          ["-c", definitions + "\n" + scenario, f.directory, fault],
-          { encoding: "utf8", timeout: 10000 },
-        );
+        runPython(definitions + "\n" + scenario, [f.directory, fault], {
+          encoding: "utf8",
+          timeout: 10000,
+        });
       } finally {
         await f.cleanup();
       }
@@ -2823,11 +2964,11 @@ else:
       const nativeFunctions = jonesNativeHelperSource.split(
         "\nparser = argparse.ArgumentParser()",
       )[0];
-      const digest = NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\nprint(app_digest(sys.argv[1]))`, app],
-        { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
-      ).trim();
+      const digest = runPython(`${nativeFunctions}\nprint(app_digest(sys.argv[1]))`, [app], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      }).trim();
       expect(await hashMacApp(app)).toBe(digest);
       await NodeFSP.symlink(f.directory, NodePath.join(app, "escape"));
       await expect(hashMacApp(app)).rejects.toThrow("escapes");

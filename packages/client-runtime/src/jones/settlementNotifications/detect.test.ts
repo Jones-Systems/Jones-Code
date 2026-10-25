@@ -3,7 +3,7 @@ import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 
 import { observeEnvironment } from "./detect.ts";
-import { baseline, env, shell, thread } from "./testFixtures.ts";
+import { baseline, env, otherEnv, shell, thread } from "./testFixtures.ts";
 
 const input = (
   state: ReturnType<typeof shell>,
@@ -103,13 +103,15 @@ describe("settlement detection", () => {
     }
   });
 
-  it("suppresses direct, nested, archived and deleted subagents without losing baseline history", () => {
+  it("suppresses local and remote children without losing baseline history or linked-only arrivals", () => {
     const parent = thread("parent").id;
     const childLineage = {
       rootThreadId: parent,
       parentThreadId: parent,
       relationshipToParent: "subagent" as const,
     };
+    const delegatedFrom = { environmentId: otherEnv, threadId: parent, title: "Remote parent" };
+    const linkOrigin = { sessionId: "linked-session", label: "Linked machine" };
     const rows = [
       thread("parent", 200),
       thread("fork", 200, { lineage: { ...childLineage, relationshipToParent: "fork" } }),
@@ -119,6 +121,9 @@ describe("settlement detection", () => {
         lineage: { ...childLineage, parentThreadId: thread("mcp-child").id },
       }),
       thread("deleted-child", 600, { lineage: childLineage, deletedAt: DateTime.makeUnsafe(700) }),
+      thread("remote-child", 900, { delegatedFrom }),
+      thread("linked-remote-child", 1_000, { delegatedFrom, linkOrigin }),
+      thread("linked-only", 1_100, { linkOrigin }),
     ];
     const archived = thread("archived-child", 800, {
       lineage: childLineage,
@@ -127,7 +132,11 @@ describe("settlement detection", () => {
     const result = observeEnvironment(baseline(), input(shell(2, rows, [archived])));
     expect(result.kind).toBe("compare");
     if (result.kind === "compare") {
-      expect(result.arrivals.map((arrival) => arrival.threadId)).toEqual(["parent", "fork"]);
+      expect(result.arrivals.map((arrival) => arrival.threadId)).toEqual([
+        "parent",
+        "fork",
+        "linked-only",
+      ]);
       expect(result.baseline.threads).toEqual({
         parent: 200,
         fork: 200,
@@ -135,9 +144,12 @@ describe("settlement detection", () => {
         "provider-child": 400,
         nested: 500,
         "deleted-child": 600,
+        "remote-child": 900,
+        "linked-remote-child": 1_000,
+        "linked-only": 1_100,
         "archived-child": 800,
       });
-      expect(result.baseline.watermarkMs).toBe(800);
+      expect(result.baseline.watermarkMs).toBe(1_100);
       expect(result.threadTitles.get(thread("nested").id)).toBe("nested");
       expect(result.goneThreadIds.has(thread("deleted-child").id)).toBe(true);
     }

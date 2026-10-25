@@ -1,7 +1,6 @@
 import "../../index.css";
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, expect, it, vi } from "vite-plus/test";
+import { render } from "../../../test/render";
+import { expect, it, vi } from "vite-plus/test";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type { ImportedHistoryCorrelation } from "@t3tools/client-runtime/jones/imported-history/continuation";
 const h = vi.hoisted(() => ({
@@ -35,47 +34,37 @@ vi.mock("../../composerDraftStore", () => ({
   }),
 }));
 import { ContinuationChoiceBanner } from "./ContinuationChoiceBanner";
-let root: Root;
-let container: HTMLDivElement;
-afterEach(async () => {
-  await act(async () => root?.unmount());
-  container?.remove();
-  vi.unstubAllGlobals();
-});
 it.each([320, 768])(
   "keeps the real attached banner readable and actions inside a %spx composer",
   async (width) => {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     h.saved = null;
-    container = document.createElement("div");
-    container.style.cssText = `width:${width}px; --chat-composer-drawer-inset:8px; --glass-opacity:100%; --glass-blur:0px; --glass-saturation:100%;`;
-    document.body.append(container);
-    root = createRoot(container);
-    await act(async () =>
-      root.render(
-        <>
-          <ContinuationChoiceBanner
-            environmentId={EnvironmentId.make("environment:test")}
-            threadId={ThreadId.make("thread:test")}
-            prepared={{
-              delivery: {
-                type: "queued_run",
-                runId: "run:test" as never,
-                messageId: "message:test" as never,
-              },
-              reviewedBasis: "a".repeat(64),
-              draftIdentity: "draft:test",
-              unchanged: () => true,
-            }}
-            onDismiss={() => undefined}
-          />
-          <div
-            data-testid="composer"
-            style={{ position: "relative", height: 80, background: "white" }}
-          />
-        </>,
-      ),
+    const sizedContainer = document.createElement("div");
+    sizedContainer.style.cssText = `width:${width}px; --chat-composer-drawer-inset:8px; --glass-opacity:100%; --glass-blur:0px; --glass-saturation:100%;`;
+    await using screen = await render(
+      <>
+        <ContinuationChoiceBanner
+          environmentId={EnvironmentId.make("environment:test")}
+          threadId={ThreadId.make("thread:test")}
+          prepared={{
+            delivery: {
+              type: "queued_run",
+              runId: "run:test" as never,
+              messageId: "message:test" as never,
+            },
+            reviewedBasis: "a".repeat(64),
+            draftIdentity: "draft:test",
+            unchanged: () => true,
+          }}
+          onDismiss={() => undefined}
+        />
+        <div
+          data-testid="composer"
+          style={{ position: "relative", height: 80, background: "white" }}
+        />
+      </>,
+      { container: sizedContainer, router: false },
     );
+    const container = screen.container;
     const attachment = container.querySelector('[data-slot="composer-banner-attachment"]')!;
     const attachmentRect = attachment.getBoundingClientRect();
     const composerRect = container

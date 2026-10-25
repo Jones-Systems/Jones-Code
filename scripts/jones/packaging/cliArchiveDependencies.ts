@@ -1,5 +1,5 @@
 import * as Schema from "effect/Schema";
-import { fromYaml } from "@t3tools/shared/schemaYaml";
+import { readPnpmProjectLockfile } from "@t3tools/shared/jones/packaging/pnpmProjectLockfile";
 
 const Lockfile = Schema.Struct({
   lockfileVersion: Schema.Literals(["9.0"]),
@@ -15,16 +15,17 @@ const Lockfile = Schema.Struct({
     }),
   ),
   patchedDependencies: Schema.Record(Schema.String, Schema.String),
+  overrides: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   snapshots: Schema.Record(Schema.String, Schema.Unknown),
 });
-const decodeLockfile = Schema.decodeUnknownSync(fromYaml(Lockfile));
+const decodeLockfile = Schema.decodeUnknownSync(Lockfile);
 
 export function planCliArchiveDependencies(input: {
   readonly dependencies: Readonly<Record<string, string>>;
   readonly patchedDependencies: Readonly<Record<string, string>>;
   readonly lockfile: string;
 }) {
-  const lockfile = decodeLockfile(input.lockfile);
+  const lockfile = decodeLockfile(readPnpmProjectLockfile(input.lockfile));
   const importer = lockfile.importers["apps/server"]?.dependencies;
   if (!importer) throw new Error("CLI archive requires the committed apps/server lock importer.");
 
@@ -39,7 +40,10 @@ export function planCliArchiveDependencies(input: {
     patchedRoots.add(name);
 
     const locked = importer[name];
-    if (!locked || locked.specifier !== input.dependencies[name]) {
+    // pnpm records a direct override as the importer specifier. Keep the
+    // manifest's baseline bound to that same exact patched version below.
+    const override = lockfile.overrides?.[name];
+    if (!locked || locked.specifier !== (override ?? input.dependencies[name])) {
       throw new Error(`Missing or stale CLI archive lock importer entry for ${name}.`);
     }
     // This reduced manifest has no lock seed: an exact patch must have an exact
@@ -53,6 +57,9 @@ export function planCliArchiveDependencies(input: {
     if (
       !version ||
       !patchHash ||
+      (override !== undefined &&
+        (override !== version ||
+          ![version, `^${version}`, `~${version}`].includes(input.dependencies[name]!))) ||
       patchKey !== `${name}@${version}` ||
       lockfile.patchedDependencies[patchKey] !== patchHash ||
       !Object.hasOwn(lockfile.snapshots, `${name}@${locked.version}`) ||
