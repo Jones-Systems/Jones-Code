@@ -3005,9 +3005,7 @@
     },
     {
       "id": "jones-pr-watch-efficiency",
-      "tests": [
-        "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
-      ],
+      "tests": ["apps/server/src/orchestration-v2/runtimeLayer.test.ts"],
       "commands": [
         "vp test run apps/server/src/orchestration-v2/runtimeLayer.test.ts",
         "vp lint apps/server/src/orchestration-v2/PullRequestWatchReactor.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts",

@@ -1885,9 +1885,7 @@
     },
     {
       "id": "pr-watch-efficiency",
-      "tests": [
-        "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
-      ],
+      "tests": ["apps/server/src/orchestration-v2/runtimeLayer.test.ts"],
       "scope": "Process ready watch fingerprints independently while retaining the full fingerprint cohort for host batching and four detail permits. Small shared scheduler edit and existing persisted-runtime test harness preserve grouping, rate pauses, watermarks, generation, settlement and cancellation."
     }
   ]
