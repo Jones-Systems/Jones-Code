@@ -1,0 +1,16 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "workstreams-durable-native-profile",
+  "jonesOwnedPaths": [
+    "packages/contracts/contracts/workstreams-t3-provider/v2/README.md",
+    "packages/contracts/contracts/workstreams-t3-provider/v2/fixtures/conformance.json",
+    "packages/contracts/contracts/workstreams-t3-provider/v2/fixtures/golden-vectors.json",
+    "packages/contracts/contracts/workstreams-t3-provider/v2/fixtures/negative-cases.json",
+    "packages/contracts/contracts/workstreams-t3-provider/v2/fixtures/semantic-cases.json",
+    "packages/contracts/contracts/workstreams-t3-provider/v2/manifest.json",
+    "packages/contracts/contracts/workstreams-t3-provider/v2/schemas/provider.schema.json"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": []
+}

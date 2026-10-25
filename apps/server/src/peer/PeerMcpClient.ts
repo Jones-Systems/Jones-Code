@@ -10,6 +10,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import * as PeerMcpTransport from "../jones/peerTransport/PeerMcpTransport.ts";
+import type { LinkedMessageOrigin } from "../jones/peerTransport/LinkedMessageOrigin.ts";
 
 /** The limits a call carries to the peer: the calling agent's modes here. */
 export interface PeerCallLimits {
@@ -31,6 +32,7 @@ export class PeerMcpClient extends Context.Service<
       readonly tool: string;
       readonly arguments: Record<string, unknown>;
       readonly limits: PeerCallLimits;
+      readonly origin?: LinkedMessageOrigin;
       readonly success: S;
     }) => Effect.Effect<S["Type"], OrchestratorMcpFailure>;
   }

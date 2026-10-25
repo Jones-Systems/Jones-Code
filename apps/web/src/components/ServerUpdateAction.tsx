@@ -300,7 +300,13 @@ export function ServerUpdateAction({
           >
             <CircleArrowUpIcon className="size-3.5" />
           </TooltipTrigger>
-          <TooltipPopup>Download and Install separately in Connections.</TooltipPopup>
+          <TooltipPopup>
+            {jones.launcherRefresh === "recommended" || jones.launcherSettlement === "unsupported"
+              ? "Launcher refresh recommended. Review this host in Connections."
+              : jones.settlement === "none"
+                ? "Previous attempt needs reconciliation. Review this host in Connections."
+                : "Download and Install separately in Connections."}
+          </TooltipPopup>
         </Tooltip>
       );
     }

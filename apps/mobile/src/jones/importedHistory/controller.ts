@@ -107,7 +107,7 @@ export function createMobileImportedHistoryChoice(ports: MobileImportedHistoryPo
             notice:
               saved === null
                 ? null
-                : "A saved choice awaits observation; execution is unconfirmed.",
+                : "Your continuation request is saved. Check its status; execution is not confirmed.",
           });
         });
       } catch {
@@ -134,7 +134,7 @@ export function createMobileImportedHistoryChoice(ports: MobileImportedHistoryPo
           if (saved !== null) {
             update({
               pending: true,
-              notice: "Observe the saved choice before another submission.",
+              notice: "Check continuation status before another submission.",
             });
             return;
           }
@@ -152,7 +152,9 @@ export function createMobileImportedHistoryChoice(ports: MobileImportedHistoryPo
           update({
             pending: false,
             canStart: prepared !== null,
-            notice: review.reason ?? "Use the reviewed imported history for a new conversation?",
+            notice:
+              review.reason ??
+              "Start a fresh provider conversation using the old history and your message?",
           });
         });
       } catch {

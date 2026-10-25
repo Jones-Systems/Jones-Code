@@ -11,6 +11,10 @@
   "tombstones": [],
   "allowedImports": [
     {
+      "from": "apps/web/src/components/chat/QueuedRunsControl.browser.test.tsx",
+      "to": "apps/web/src/jones/importedHistory/ContinuationChoiceBanner.tsx"
+    },
+    {
       "from": "apps/web/src/components/ChatView.tsx",
       "to": "apps/web/src/jones/importedHistory/ContinuationChoiceBanner.tsx"
     },

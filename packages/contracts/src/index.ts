@@ -61,6 +61,7 @@ export * from "./device.ts";
 export * from "./preview.ts";
 export * from "./previewAutomation.ts";
 export * from "./jones/previewCompanion.ts";
+export * from "./previewCapture.ts";
 export * from "./resourceTelemetry.ts";
 export * from "./usage.ts";
 export * from "./tokenAccounting.ts";
@@ -114,3 +115,6 @@ export * from "./jones/clientLaunch.ts";
 export * from "./jones/remoteAdmission.ts";
 
 export * from "./jones/remoteAdmissionHttp.ts";
+
+export * from "./jones/threadSelfConfiguration.ts";
+export * from "./jones/remoteTaskObservation.ts";

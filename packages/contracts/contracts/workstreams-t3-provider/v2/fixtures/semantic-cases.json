@@ -1,0 +1,334 @@
+{
+  "contract_family": "workstreams-t3-provider",
+  "contract_version": "2.0.0",
+  "cases": [
+    {
+      "name": "mismatched enrollment owner_id",
+      "schema": "#/$defs/ContextResponse",
+      "expected_enrollment": {
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "source_instance_id": "source-synthetic",
+        "authority_namespace": "authority-synthetic",
+        "store_generation": 7,
+        "enrollment_id": "enrollment-synthetic",
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      },
+      "value": {
+        "protocol": "workstreams-t3-provider/2.0.0",
+        "state": "ready",
+        "enrollment": {
+          "owner_id": "different-synthetic",
+          "principal_id": "principal-synthetic",
+          "source_instance_id": "source-synthetic",
+          "authority_namespace": "authority-synthetic",
+          "store_generation": 7,
+          "enrollment_id": "enrollment-synthetic",
+          "protocol": "workstreams-t3-provider/1.0.0",
+          "build": {
+            "repository": "Jones-Systems/Jones-Code",
+            "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        },
+        "observed_build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "cccccccccccccccccccccccccccccccccccccccc",
+          "tree": "dddddddddddddddddddddddddddddddddddddddd"
+        }
+      }
+    },
+    {
+      "name": "mismatched enrollment principal_id",
+      "schema": "#/$defs/ContextResponse",
+      "expected_enrollment": {
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "source_instance_id": "source-synthetic",
+        "authority_namespace": "authority-synthetic",
+        "store_generation": 7,
+        "enrollment_id": "enrollment-synthetic",
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      },
+      "value": {
+        "protocol": "workstreams-t3-provider/2.0.0",
+        "state": "ready",
+        "enrollment": {
+          "owner_id": "owner-synthetic",
+          "principal_id": "different-synthetic",
+          "source_instance_id": "source-synthetic",
+          "authority_namespace": "authority-synthetic",
+          "store_generation": 7,
+          "enrollment_id": "enrollment-synthetic",
+          "protocol": "workstreams-t3-provider/1.0.0",
+          "build": {
+            "repository": "Jones-Systems/Jones-Code",
+            "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        },
+        "observed_build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "cccccccccccccccccccccccccccccccccccccccc",
+          "tree": "dddddddddddddddddddddddddddddddddddddddd"
+        }
+      }
+    },
+    {
+      "name": "mismatched enrollment source_instance_id",
+      "schema": "#/$defs/ContextResponse",
+      "expected_enrollment": {
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "source_instance_id": "source-synthetic",
+        "authority_namespace": "authority-synthetic",
+        "store_generation": 7,
+        "enrollment_id": "enrollment-synthetic",
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      },
+      "value": {
+        "protocol": "workstreams-t3-provider/2.0.0",
+        "state": "ready",
+        "enrollment": {
+          "owner_id": "owner-synthetic",
+          "principal_id": "principal-synthetic",
+          "source_instance_id": "different-synthetic",
+          "authority_namespace": "authority-synthetic",
+          "store_generation": 7,
+          "enrollment_id": "enrollment-synthetic",
+          "protocol": "workstreams-t3-provider/1.0.0",
+          "build": {
+            "repository": "Jones-Systems/Jones-Code",
+            "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        },
+        "observed_build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "cccccccccccccccccccccccccccccccccccccccc",
+          "tree": "dddddddddddddddddddddddddddddddddddddddd"
+        }
+      }
+    },
+    {
+      "name": "mismatched enrollment authority_namespace",
+      "schema": "#/$defs/ContextResponse",
+      "expected_enrollment": {
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "source_instance_id": "source-synthetic",
+        "authority_namespace": "authority-synthetic",
+        "store_generation": 7,
+        "enrollment_id": "enrollment-synthetic",
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      },
+      "value": {
+        "protocol": "workstreams-t3-provider/2.0.0",
+        "state": "ready",
+        "enrollment": {
+          "owner_id": "owner-synthetic",
+          "principal_id": "principal-synthetic",
+          "source_instance_id": "source-synthetic",
+          "authority_namespace": "different-synthetic",
+          "store_generation": 7,
+          "enrollment_id": "enrollment-synthetic",
+          "protocol": "workstreams-t3-provider/1.0.0",
+          "build": {
+            "repository": "Jones-Systems/Jones-Code",
+            "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        },
+        "observed_build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "cccccccccccccccccccccccccccccccccccccccc",
+          "tree": "dddddddddddddddddddddddddddddddddddddddd"
+        }
+      }
+    },
+    {
+      "name": "mismatched enrollment store_generation",
+      "schema": "#/$defs/ContextResponse",
+      "expected_enrollment": {
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "source_instance_id": "source-synthetic",
+        "authority_namespace": "authority-synthetic",
+        "store_generation": 7,
+        "enrollment_id": "enrollment-synthetic",
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      },
+      "value": {
+        "protocol": "workstreams-t3-provider/2.0.0",
+        "state": "ready",
+        "enrollment": {
+          "owner_id": "owner-synthetic",
+          "principal_id": "principal-synthetic",
+          "source_instance_id": "source-synthetic",
+          "authority_namespace": "authority-synthetic",
+          "store_generation": 8,
+          "enrollment_id": "enrollment-synthetic",
+          "protocol": "workstreams-t3-provider/1.0.0",
+          "build": {
+            "repository": "Jones-Systems/Jones-Code",
+            "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        },
+        "observed_build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "cccccccccccccccccccccccccccccccccccccccc",
+          "tree": "dddddddddddddddddddddddddddddddddddddddd"
+        }
+      }
+    },
+    {
+      "name": "mismatched enrollment enrollment_id",
+      "schema": "#/$defs/ContextResponse",
+      "expected_enrollment": {
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "source_instance_id": "source-synthetic",
+        "authority_namespace": "authority-synthetic",
+        "store_generation": 7,
+        "enrollment_id": "enrollment-synthetic",
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      },
+      "value": {
+        "protocol": "workstreams-t3-provider/2.0.0",
+        "state": "ready",
+        "enrollment": {
+          "owner_id": "owner-synthetic",
+          "principal_id": "principal-synthetic",
+          "source_instance_id": "source-synthetic",
+          "authority_namespace": "authority-synthetic",
+          "store_generation": 7,
+          "enrollment_id": "different-synthetic",
+          "protocol": "workstreams-t3-provider/1.0.0",
+          "build": {
+            "repository": "Jones-Systems/Jones-Code",
+            "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        },
+        "observed_build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "cccccccccccccccccccccccccccccccccccccccc",
+          "tree": "dddddddddddddddddddddddddddddddddddddddd"
+        }
+      }
+    },
+    {
+      "name": "mismatched enrollment build sha",
+      "schema": "#/$defs/ContextResponse",
+      "expected_enrollment": {
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "source_instance_id": "source-synthetic",
+        "authority_namespace": "authority-synthetic",
+        "store_generation": 7,
+        "enrollment_id": "enrollment-synthetic",
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      },
+      "value": {
+        "protocol": "workstreams-t3-provider/2.0.0",
+        "state": "ready",
+        "enrollment": {
+          "owner_id": "owner-synthetic",
+          "principal_id": "principal-synthetic",
+          "source_instance_id": "source-synthetic",
+          "authority_namespace": "authority-synthetic",
+          "store_generation": 7,
+          "enrollment_id": "enrollment-synthetic",
+          "protocol": "workstreams-t3-provider/1.0.0",
+          "build": {
+            "repository": "Jones-Systems/Jones-Code",
+            "sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        },
+        "observed_build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "cccccccccccccccccccccccccccccccccccccccc",
+          "tree": "dddddddddddddddddddddddddddddddddddddddd"
+        }
+      }
+    },
+    {
+      "name": "mismatched enrollment build tree",
+      "schema": "#/$defs/ContextResponse",
+      "expected_enrollment": {
+        "owner_id": "owner-synthetic",
+        "principal_id": "principal-synthetic",
+        "source_instance_id": "source-synthetic",
+        "authority_namespace": "authority-synthetic",
+        "store_generation": 7,
+        "enrollment_id": "enrollment-synthetic",
+        "protocol": "workstreams-t3-provider/1.0.0",
+        "build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      },
+      "value": {
+        "protocol": "workstreams-t3-provider/2.0.0",
+        "state": "ready",
+        "enrollment": {
+          "owner_id": "owner-synthetic",
+          "principal_id": "principal-synthetic",
+          "source_instance_id": "source-synthetic",
+          "authority_namespace": "authority-synthetic",
+          "store_generation": 7,
+          "enrollment_id": "enrollment-synthetic",
+          "protocol": "workstreams-t3-provider/1.0.0",
+          "build": {
+            "repository": "Jones-Systems/Jones-Code",
+            "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tree": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          }
+        },
+        "observed_build": {
+          "repository": "Jones-Systems/Jones-Code",
+          "sha": "cccccccccccccccccccccccccccccccccccccccc",
+          "tree": "dddddddddddddddddddddddddddddddddddddddd"
+        }
+      }
+    }
+  ]
+}
