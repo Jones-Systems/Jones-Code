@@ -1,12 +1,13 @@
-import { useEffect, useState } from "react";
-import {
-  type EnvironmentId,
-  type RemoteAdmissionSnapshot,
-  type ModelSelection,
-} from "@t3tools/contracts";
+import { useState } from "react";
+import { Link } from "@tanstack/react-router";
+import type { EnvironmentId, ModelSelection } from "@t3tools/contracts";
+import { createModelSelection } from "@t3tools/shared/model";
 import { Button } from "../../components/ui/button";
+import { Switch } from "../../components/ui/switch";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
 import { ProviderModelPicker } from "../../components/chat/ProviderModelPicker";
-import { useEnvironmentProviders } from "../../state/environments";
+import { TraitsPicker } from "../../components/chat/TraitsPicker";
+import { useEnvironment, useEnvironmentProviders, useEnvironments } from "../../state/environments";
 import { EMPTY_SERVER_PROVIDERS } from "../../state/server";
 import { useEnvironmentSettings } from "../../hooks/useSettings";
 import { getCustomModelOptionsByInstance } from "../../modelSelection";
@@ -16,238 +17,206 @@ import {
   resolveDefaultProviderModelSelection,
   sortProviderInstanceEntries,
 } from "../../providerInstances";
-import { admissionPresentation } from "./presentation";
-import { Switch } from "../../components/ui/switch";
-import { remoteAdmissionRequest } from "./runtime";
+import { useAdmission } from "./useAdmission";
+import { UnavailableControl } from "./UnavailableControl";
+
+export function RemoteAdmissionConfigurations() {
+  const { environments } = useEnvironments();
+  return environments.map((environment) => (
+    <RemoteAdmissionSettings
+      key={environment.environmentId}
+      environmentId={environment.environmentId}
+    />
+  ));
+}
 
 export function RemoteAdmissionSettings({
   environmentId,
 }: {
   readonly environmentId: EnvironmentId;
 }) {
-  const [snapshot, setSnapshot] = useState<RemoteAdmissionSnapshot | null>(null);
-  const [loadFailed, setLoadFailed] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [selection, setSelection] = useState<ModelSelection | null>(null);
+  return <EvaluatorConfiguration key={environmentId} environmentId={environmentId} />;
+}
+
+function EvaluatorConfiguration({ environmentId }: { readonly environmentId: EnvironmentId }) {
+  const { snapshot, loadFailed, error, busy, store } = useAdmission(environmentId);
+  const [draft, setDraft] = useState<ModelSelection | null>(null);
+  const environment = useEnvironment(environmentId);
   const settings = useEnvironmentSettings(environmentId);
   const providers = (useEnvironmentProviders().get(environmentId) ?? EMPTY_SERVER_PROVIDERS).filter(
-    (provider) => provider.driver === "claudeAgent",
+    (provider) =>
+      "supportsRemoteRequestEvaluation" in provider &&
+      provider.supportsRemoteRequestEvaluation === true,
   );
   const entries = sortProviderInstanceEntries(
     applyProviderInstanceSettings(deriveProviderInstanceEntries(providers), settings, null),
   );
   const selected =
-    selection ??
-    resolveDefaultProviderModelSelection(providers, snapshot?.policy.modelSelection ?? null);
+    draft ??
+    snapshot?.policy.modelSelection ??
+    resolveDefaultProviderModelSelection(providers, null);
   const modelOptions = getCustomModelOptionsByInstance(
     settings,
     providers,
     selected?.instanceId,
     selected?.model,
   );
-  const refresh = async () => {
-    const result = await remoteAdmissionRequest(environmentId, { action: "snapshot" });
-    if ("pending" in result) setSnapshot(result);
+  const activeEntry = entries.find((entry) => entry.instanceId === selected?.instanceId);
+  const selectedModel = selected
+    ? modelOptions.get(selected.instanceId)?.find((model) => model.slug === selected.model)
+    : undefined;
+  const available = Boolean(
+    activeEntry?.enabled &&
+    activeEntry.isAvailable &&
+    activeEntry.status === "ready" &&
+    selectedModel &&
+    !selectedModel.isUnavailable,
+  );
+  const blocked = busy
+    ? "Saving evaluator settings…"
+    : loadFailed
+      ? "Owner review is unavailable for this session. Retrying automatically."
+      : !snapshot
+        ? "Loading evaluator settings…"
+        : !available
+          ? "Choose an available evaluator provider and model before saving or enabling."
+          : null;
+  const save = async (enabled: boolean) => {
+    if (!snapshot || busy || loadFailed || (enabled && !available)) return;
+    await store.savePolicy({
+      enabled,
+      expectedRevision: snapshot.policy.revision,
+      modelSelection: selected,
+    });
   };
-  useEffect(() => {
-    let active = true;
-    let initialized = false;
-    let inFlight = false;
-    const read = async () => {
-      if (inFlight || document.visibilityState === "hidden") return;
-      inFlight = true;
-      try {
-        const result = await remoteAdmissionRequest(environmentId, { action: "snapshot" });
-        if (active && "pending" in result) {
-          setSnapshot(result);
-          setLoadFailed(false);
-          setError(null);
-          if (!initialized && result.policy.modelSelection) {
-            setSelection(result.policy.modelSelection);
-            initialized = true;
-          }
-        }
-      } catch {
-        if (active) setLoadFailed(true);
-      }
-      inFlight = false;
-    };
-    void read();
-    const interval = window.setInterval(() => {
-      void read();
-    }, 10_000);
-    return () => {
-      active = false;
-      window.clearInterval(interval);
-    };
-  }, [environmentId]);
-  const act = async (work: () => Promise<unknown>) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await work();
-      await refresh();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Request could not be completed.");
-    }
-    setBusy(false);
-  };
-  const disabled = busy || loadFailed;
   return (
-    <section className="space-y-3 rounded-lg border p-4" aria-label="Remote request review">
-      <div className="flex items-center justify-between gap-4">
-        <div>
-          <h3 className="text-sm font-medium">Review remote requests on this laptop</h3>
-          <p className="text-xs text-muted-foreground">
-            Evaluate incoming tasks before they start. Requests that need your input wait here.
+    <section
+      className="space-y-3 rounded-lg border p-4"
+      aria-label={`Remote evaluator on ${environment?.label ?? environmentId}`}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="text-sm font-medium">Background remote evaluation</h3>
+          <p className="text-xs text-muted-foreground wrap-anywhere">
+            Receiving environment: {environment?.label ?? environmentId}. Evaluates incoming tasks
+            before they start.
           </p>
         </div>
-        {snapshot ? (
+        <UnavailableControl
+          label="Evaluate remote requests"
+          reason={
+            busy || loadFailed || !snapshot || (!snapshot.policy.enabled && !available)
+              ? blocked
+              : null
+          }
+        >
           <Switch
             aria-label="Evaluate remote requests"
-            checked={snapshot.policy.enabled}
-            disabled={disabled || selected === null}
+            aria-describedby={`evaluator-status-${environmentId}`}
+            checked={snapshot?.policy.enabled ?? false}
+            disabled={busy || loadFailed || !snapshot || (!snapshot.policy.enabled && !available)}
             onCheckedChange={(enabled) => {
-              void act(() =>
-                remoteAdmissionRequest(environmentId, {
-                  action: "policy",
-                  input: {
-                    enabled,
-                    expectedRevision: snapshot.policy.revision,
-                    modelSelection: selected,
-                  },
-                }),
-              );
+              void save(enabled);
             }}
           />
-        ) : null}
+        </UnavailableControl>
       </div>
-      {loadFailed ? (
+      <div className="flex flex-wrap items-center gap-2">
+        {selected ? (
+          <UnavailableControl
+            label="Evaluator model"
+            reason={busy || loadFailed || !snapshot ? blocked : null}
+          >
+            <ProviderModelPicker
+              environmentId={environmentId}
+              activeInstanceId={selected.instanceId}
+              model={selected.model}
+              lockedProvider={null}
+              instanceEntries={entries}
+              modelOptionsByInstance={modelOptions}
+              disabled={busy || loadFailed || !snapshot}
+              triggerAriaLabel="Evaluator model"
+              {...(!available ? { triggerLabel: `${selected.model} (Unavailable)` } : {})}
+              onInstanceModelChange={(instanceId, model) =>
+                setDraft(
+                  selected.instanceId === instanceId && selected.model === model
+                    ? selected
+                    : { instanceId, model },
+                )
+              }
+            />
+          </UnavailableControl>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            No providers advertise remote evaluation support.
+          </p>
+        )}
+        {selected && activeEntry ? (
+          <UnavailableControl
+            label="Evaluator options"
+            reason={busy || loadFailed || !snapshot ? blocked : null}
+          >
+            <TraitsPicker
+              provider={activeEntry.driverKind}
+              models={activeEntry.models}
+              model={selected.model}
+              modelOptions={selected.options ?? []}
+              allowPromptInjectedEffort={false}
+              planModeEnabled={false}
+              disabled={busy || loadFailed || !snapshot}
+              onModelOptionsChange={(options) =>
+                setDraft(createModelSelection(selected.instanceId, selected.model, options))
+              }
+            />
+          </UnavailableControl>
+        ) : null}
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                variant="outline"
+                size="sm"
+                aria-disabled={Boolean(blocked)}
+                aria-describedby={`evaluator-status-${environmentId}`}
+                onClick={() => {
+                  if (!blocked && snapshot) void save(snapshot.policy.enabled);
+                }}
+              >
+                Save model
+              </Button>
+            }
+          />
+          {blocked ? <TooltipPopup>{blocked}</TooltipPopup> : null}
+        </Tooltip>
+      </div>
+      <p
+        id={`evaluator-status-${environmentId}`}
+        role={loadFailed ? "alert" : "status"}
+        className="text-xs text-muted-foreground wrap-anywhere"
+      >
+        {blocked ??
+          "Runs as a background service using this exact provider account, model and options."}
+        {selected && !available
+          ? ` Saved selection: ${selected.instanceId} / ${selected.model}. No fallback will be saved.`
+          : ""}
+      </p>
+      {selected ? (
+        <p className="text-xs text-muted-foreground wrap-anywhere">
+          Account: {activeEntry?.displayName ?? "Unavailable"} · {selected.instanceId}
+        </p>
+      ) : null}
+      {error ? (
         <p role="alert" className="text-sm text-destructive">
-          Remote request review could not be loaded. Retrying automatically.
-        </p>
-      ) : !snapshot ? (
-        <p role="status" className="text-sm text-muted-foreground">
-          Loading remote request review…
+          {error}
         </p>
       ) : null}
-      {snapshot ? (
-        <>
-          <div className="flex items-center gap-2">
-            {selected ? (
-              <ProviderModelPicker
-                environmentId={environmentId}
-                activeInstanceId={selected.instanceId}
-                model={selected.model}
-                lockedProvider={null}
-                instanceEntries={entries}
-                modelOptionsByInstance={modelOptions}
-                disabled={disabled}
-                triggerAriaLabel="Evaluator model"
-                onInstanceModelChange={(instanceId, model) => setSelection({ instanceId, model })}
-              />
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                Set up a Claude Code provider in Providers to choose an evaluator model.
-              </p>
-            )}
-            <Button
-              variant="outline"
-              disabled={disabled || selected === null}
-              onClick={() => {
-                void act(() =>
-                  remoteAdmissionRequest(environmentId, {
-                    action: "policy",
-                    input: {
-                      enabled: snapshot.policy.enabled,
-                      expectedRevision: snapshot.policy.revision,
-                      modelSelection: selected,
-                    },
-                  }),
-                );
-              }}
-            >
-              Save model
-            </Button>
-          </div>
-          {error ? (
-            <p role="alert" className="text-sm text-destructive">
-              {error}
-            </p>
-          ) : null}
-          {snapshot.pending.map((request) => {
-            const view = admissionPresentation(request);
-            return (
-              <article className="space-y-2 rounded-md border p-3" key={request.id}>
-                <div className="text-sm font-medium">
-                  {request.status === "held"
-                    ? "Needs input"
-                    : request.status === "dispatching"
-                      ? "Dispatch awaiting confirmation"
-                      : "Request pending"}{" "}
-                  · {view.title}
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  From {view.source} · {view.target}
-                </p>
-                <p className="whitespace-pre-wrap text-sm">{view.message}</p>
-                {request.reason ? (
-                  <p className="text-sm text-muted-foreground">{request.reason}</p>
-                ) : null}
-
-                {request.status === "held" ? (
-                  <div className="flex gap-2">
-                    <Button
-                      disabled={
-                        disabled ||
-                        request.envelope.receiverPolicy.revision !== snapshot.policy.revision
-                      }
-                      onClick={() => {
-                        void act(() =>
-                          remoteAdmissionRequest(environmentId, {
-                            action: "decide",
-                            input: {
-                              id: request.id,
-                              bindingDigest: request.bindingDigest,
-                              decision: "approve",
-                            },
-                          }),
-                        );
-                      }}
-                    >
-                      Approve
-                    </Button>
-                    <Button
-                      variant="outline"
-                      disabled={disabled}
-                      onClick={() => {
-                        void act(() =>
-                          remoteAdmissionRequest(environmentId, {
-                            action: "decide",
-                            input: {
-                              id: request.id,
-                              bindingDigest: request.bindingDigest,
-                              decision: "deny",
-                            },
-                          }),
-                        );
-                      }}
-                    >
-                      Deny
-                    </Button>
-                  </div>
-                ) : null}
-                {request.envelope.receiverPolicy.revision !== snapshot.policy.revision ? (
-                  <p className="text-xs text-muted-foreground">
-                    Settings changed. Deny this request and ask the sender to submit a new request.
-                  </p>
-                ) : null}
-              </article>
-            );
-          })}
-        </>
-      ) : null}
+      <p className="text-xs text-muted-foreground">
+        Held requests stay in the{" "}
+        <Link to="/requests" className="underline underline-offset-2">
+          Requests inbox
+        </Link>
+        . Disabling evaluation does not resolve them.
+      </p>
     </section>
   );
 }
