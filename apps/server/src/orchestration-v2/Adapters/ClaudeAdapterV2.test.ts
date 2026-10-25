@@ -2769,7 +2769,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 nativeThreadRef:
                   destination === "missing"
                     ? null
-                    : { driver: ClaudeAdapterV2.CLAUDE_PROVIDER, nativeId: "wrong-native-session" },
+                    : {
+                        driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+                        nativeId: "wrong-native-session",
+                        strength: "strong",
+                      },
               },
             }).pipe(Effect.flip);
             assert.equal(identityError(rejected).reason, "destination_mismatch");

@@ -1,4 +1,4 @@
-import { RunAttemptId, RunId } from "@t3tools/contracts";
+import { ProviderDriverKind, RunAttemptId, RunId } from "@t3tools/contracts";
 import { assert, describe, it } from "@effect/vitest";
 import { ProviderAdapterProtocolError } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Deferred from "effect/Deferred";
@@ -88,7 +88,7 @@ describe("Claude native session proof", () => {
     Effect.gen(function* () {
       let writes = 0;
       const unavailable = new ProviderAdapterProtocolError({
-        driver: "claudeAgent",
+        driver: ProviderDriverKind.make("claudeAgent"),
         detail: "Continuation verification storage is unavailable",
       });
       const expected = requirement(() =>

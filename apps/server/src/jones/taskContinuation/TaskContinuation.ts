@@ -216,8 +216,8 @@ const make = Effect.gen(function* () {
         });
         const inserted = yield* Ref.make(false);
         const context: TaskContinuationCommitContext = {
-          accept: (envelope) =>
-            Effect.gen(function* () {
+          accept: Effect.fn("TaskContinuation.accept")(
+            function* (envelope: Parameters<TaskContinuationCommitContext["accept"]>[0]) {
               const existing = yield* reconcile();
               if (existing !== null) return;
               const fresh = yield* eligible();
@@ -285,13 +285,13 @@ const make = Effect.gen(function* () {
                 acceptedAt: DateTime.formatIso(yield* DateTime.now),
               });
               yield* Ref.set(inserted, true);
-            }).pipe(
-              Effect.mapError((cause) =>
-                Schema.is(TaskContinuationError)(cause)
-                  ? cause
-                  : new TaskContinuationError({ reason: "acceptance_unknown", cause }),
-              ),
+            },
+            Effect.mapError((cause) =>
+              Schema.is(TaskContinuationError)(cause)
+                ? cause
+                : new TaskContinuationError({ reason: "acceptance_unknown", cause }),
             ),
+          ),
         };
         const dispatched = yield* Effect.result(
           threads

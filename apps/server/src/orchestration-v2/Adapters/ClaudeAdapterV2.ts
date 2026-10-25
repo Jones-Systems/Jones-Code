@@ -9572,7 +9572,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 (yield* Ref.get(activeTurn)) !== null ||
                   (yield* liveProcessRunsBackgroundWork(existing)),
               );
-              if (Schema.is(NativeSessionIdentityRejected)(action)) {
+              if (typeof action !== "string") {
                 if (action.reason !== "unobserved_live_query") {
                   yield* rejectNativeSessionQuery(existing, Cause.fail(action));
                 }

@@ -36,7 +36,7 @@ interface Scenario {
   readonly dispatchCount: () => number;
   readonly hooks: {
     beforeDispatch?: () => Effect.Effect<void>;
-    insideCommit?: () => Effect.Effect<void, unknown>;
+    insideCommit?: () => Effect.Effect<void, Projections.ProjectionStoreV2Error>;
     failAfterAccept?: boolean;
     loseResponse?: boolean;
   };
@@ -52,9 +52,9 @@ type ScenarioServices =
 
 // Real command planning, receipt reservation, projections, outbox and Jones storage share one
 // in-memory database. Only the provider process and unrelated MCP status presentation are absent.
-const scenario = (
+const scenario = <E>(
   name: string,
-  body: (context: Scenario) => Effect.Effect<void, unknown, ScenarioServices>,
+  body: (context: Scenario) => Effect.Effect<void, E, ScenarioServices>,
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -340,60 +340,58 @@ it.effect(
     ),
 );
 
-for (const race of ["held-queue", "pending-request", "background-work"] as const) {
-  it.effect(
-    `rechecks ${race} inside the acceptance transaction without poisoning the request key`,
-    () =>
-      scenario(race, ({ f, input, hooks }) =>
-        Effect.gen(function* () {
-          const projections = yield* Projections.ProjectionStoreV2;
-          const service = yield* Continuation.TaskContinuation;
-          const receipts = yield* Receipts.CommandReceiptStoreV2;
-          const store = yield* Store.TaskContinuationStore;
-          const pendingRequest: OrchestrationV2RuntimeRequest = {
-            id: RuntimeRequestId.make("raced-request"),
-            nodeId: f.attempt.rootNodeId,
-            providerTurnId: f.attempt.providerTurnId,
-            nativeRequestRef: null,
-            kind: "user_input",
-            status: "pending",
-            responseCapability: { type: "message" },
-            createdAt: f.now,
-            resolvedAt: null,
-          };
-          // Inject at the actual EventSink commit seam, after command planning and receipt reservation.
-          // These synthetic projection writes share the transaction and disappear when admission refuses.
-          hooks.insideCommit = () =>
-            projections.apply(
-              race === "held-queue"
-                ? f.event("run.created", f.child.thread.id, {
-                    ...f.run,
-                    id: RunId.make("raced-held-run"),
-                    ordinal: 3,
-                    status: "queued",
-                    queueHeld: true,
-                  })
-                : race === "pending-request"
-                  ? f.event("runtime-request.updated", f.child.thread.id, pendingRequest)
-                  : f.event("provider-thread.updated", f.child.thread.id, {
-                      ...f.provider,
-                      pendingBackgroundTasks: [
-                        { kind: "background_task", taskId: "raced-background" },
-                      ],
-                    }),
-            );
-          const refused = yield* Effect.result(service.continue(f.scope, input));
-          assert.equal(refused._tag, "Failure");
-          if (refused._tag === "Failure") assert.include(refused.failure.message, "child_busy");
-          const identity = Continuation.requestIdentity(f.parent.thread.id, input);
-          assert.isTrue(Option.isNone(yield* receipts.getByCommandId(identity.commandId)));
-          assert.isNull(yield* store.get(identity.messageId));
-          delete hooks.insideCommit;
-          assert.isFalse((yield* service.continue(f.scope, input)).replayed);
-        }),
-      ),
-  );
-}
+it.effect.each(["held-queue", "pending-request", "background-work"] as const)(
+  "rechecks %s inside the acceptance transaction without poisoning the request key",
+  (race) =>
+    scenario(race, ({ f, input, hooks }) =>
+      Effect.gen(function* () {
+        const projections = yield* Projections.ProjectionStoreV2;
+        const service = yield* Continuation.TaskContinuation;
+        const receipts = yield* Receipts.CommandReceiptStoreV2;
+        const store = yield* Store.TaskContinuationStore;
+        const pendingRequest: OrchestrationV2RuntimeRequest = {
+          id: RuntimeRequestId.make("raced-request"),
+          nodeId: f.attempt.rootNodeId,
+          providerTurnId: f.attempt.providerTurnId,
+          nativeRequestRef: null,
+          kind: "user_input",
+          status: "pending",
+          responseCapability: { type: "message" },
+          createdAt: f.now,
+          resolvedAt: null,
+        };
+        // Inject at the actual EventSink commit seam, after command planning and receipt reservation.
+        // These synthetic projection writes share the transaction and disappear when admission refuses.
+        hooks.insideCommit = () =>
+          projections.apply(
+            race === "held-queue"
+              ? f.event("run.created", f.child.thread.id, {
+                  ...f.run,
+                  id: RunId.make("raced-held-run"),
+                  ordinal: 3,
+                  status: "queued",
+                  queueHeld: true,
+                })
+              : race === "pending-request"
+                ? f.event("runtime-request.updated", f.child.thread.id, pendingRequest)
+                : f.event("provider-thread.updated", f.child.thread.id, {
+                    ...f.provider,
+                    pendingBackgroundTasks: [
+                      { kind: "background_task", taskId: "raced-background" },
+                    ],
+                  }),
+          );
+        const refused = yield* Effect.result(service.continue(f.scope, input));
+        assert.equal(refused._tag, "Failure");
+        if (refused._tag === "Failure") assert.include(refused.failure.message, "child_busy");
+        const identity = Continuation.requestIdentity(f.parent.thread.id, input);
+        assert.isTrue(Option.isNone(yield* receipts.getByCommandId(identity.commandId)));
+        assert.isNull(yield* store.get(identity.messageId));
+        delete hooks.insideCommit;
+        assert.isFalse((yield* service.continue(f.scope, input)).replayed);
+      }),
+    ),
+);
 
 it.effect("admits only one body when concurrent calls share a request key", () =>
   scenario("concurrent-conflict", ({ f, input, hooks }) =>
