@@ -7454,7 +7454,18 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           });
           if (!currentCapacityBinding(request))
             return yield* toProtocolError("Native physical binding changed after acknowledgement.");
-          pendingStartNotifications.acknowledge(dispatch, started.turn.id);
+          const earlyStart = request.earlyStarts.get(started.turn.id);
+          const earlyError = request.earlyErrors.get(started.turn.id);
+          const earlyCompletion = request.earlyCompletions.get(started.turn.id);
+          pendingStartNotifications.acknowledge(
+            dispatch,
+            started.turn.id,
+            Effect.gen(function* () {
+              if (request.logicalTerminalEmitted) return;
+              if (earlyError !== undefined) yield* handleNativeError(earlyError);
+              if (earlyCompletion !== undefined) yield* handleNativeCompletion(earlyCompletion);
+            }),
+          );
           const context = yield* registerRootTurn({
             turnInput: {
               ...request.input,
@@ -7480,9 +7491,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             updated.delete(request.state.binding.nativeThreadId);
             return updated;
           });
-          const earlyStart = request.earlyStarts.get(started.turn.id);
-          const earlyError = request.earlyErrors.get(started.turn.id);
-          const earlyCompletion = request.earlyCompletions.get(started.turn.id);
           request.earlyStarts.clear();
           request.earlyErrors.clear();
           request.earlyCompletions.clear();
@@ -7504,10 +7512,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             return yield* toProtocolError(
               "Native physical binding changed during notification replay.",
             );
-          if (!request.logicalTerminalEmitted) {
-            if (earlyError !== undefined) yield* handleNativeError(earlyError);
-            if (earlyCompletion !== undefined) yield* handleNativeCompletion(earlyCompletion);
-          }
           lateStarts.release(dispatch);
           request.lateStartDispatch = undefined;
         });

@@ -73,15 +73,15 @@ describe("Codex pending-start notifications", () => {
     expect(buffer.take(next)).toBeUndefined();
   });
 
-  it("orders same-thread goal successors behind the queued terminal during replay", () => {
+  it.each(["before-ack", "during-replay"] as const)("orders a goal successor after its %s terminal", (terminalTiming) => {
     const buffer = makeCodexPendingStartNotifications<string>();
     const dispatch = makeCodexLateStartRecovery().begin(binding, ["historical"]);
     buffer.begin(dispatch);
     buffer.capture("producer", "item/started", payload("successor"), "unrelated-before-ack");
     buffer.capture("producer", "item/started", payload(), "replay-in-progress");
-    buffer.acknowledge(dispatch, "turn");
+    buffer.acknowledge(dispatch, "turn", terminalTiming === "before-ack" ? "terminal" : undefined);
     expect(buffer.take(dispatch)).toBe("replay-in-progress");
-    buffer.capture(
+    if (terminalTiming === "during-replay") buffer.capture(
       "producer",
       "turn/completed",
       { threadId: "thread", turn: { id: "turn" } },
@@ -96,7 +96,12 @@ describe("Codex pending-start notifications", () => {
       )?.status,
     ).toBe("buffered");
     buffer.capture("producer", "item/started", payload("successor"), "successor-item");
-    buffer.capture("producer", "thread/tokenUsage/updated", payload("successor"), "successor-usage");
+    buffer.capture(
+      "producer",
+      "thread/tokenUsage/updated",
+      payload("successor"),
+      "successor-usage",
+    );
     buffer.capture(
       "producer",
       "thread/goal/updated",

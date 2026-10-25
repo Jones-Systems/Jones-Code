@@ -56,11 +56,16 @@ const turn = (id: string, status: "inProgress" | "completed") => ({
   completedAt: status === "inProgress" ? null : 1782622450,
   durationMs: null,
 });
-const outbound = (frame: unknown): CodexReplay.CodexAppServerReplayEntry => ({
+const outbound = (
+  frame: unknown,
+): Extract<CodexReplay.CodexAppServerReplayEntry, { type: "expect_outbound" }> => ({
   type: "expect_outbound",
   frame,
 });
-const inbound = (frame: unknown, label?: string): CodexReplay.CodexAppServerReplayEntry => ({
+const inbound = (
+  frame: unknown,
+  label?: string,
+): Extract<CodexReplay.CodexAppServerReplayEntry, { type: "emit_inbound" }> => ({
   type: "emit_inbound",
   frame,
   ...(label === undefined ? {} : { label }),
@@ -128,7 +133,11 @@ const usageBreakdown = (inputTokens: number, cachedInputTokens: number, outputTo
 const usageUpdate = (turnId: string, total: ReturnType<typeof usageBreakdown>, last = total) =>
   inbound({
     method: "thread/tokenUsage/updated",
-    params: { threadId: rootThread, turnId, tokenUsage: { total, last, modelContextWindow: 10000 } },
+    params: {
+      threadId: rootThread,
+      turnId,
+      tokenUsage: { total, last, modelContextWindow: 10000 },
+    },
   });
 type Outcome =
   | "acknowledged"
@@ -136,8 +145,12 @@ type Outcome =
   | "terminal-after-ack"
   | "overflow-during-replay"
   | "cancelled-during-replay"
-  | "goal-successor-during-replay";
+  | "goal-successor-during-replay"
+  | "goal-successor-after-early-terminal-during-replay";
 const gatedReplay = (outcome: Outcome) => outcome.endsWith("during-replay");
+const goalSuccessor = (outcome: Outcome) =>
+  outcome === "goal-successor-during-replay" ||
+  outcome === "goal-successor-after-early-terminal-during-replay";
 const reconcilesAdmission = (outcome: Outcome) =>
   outcome === "overflow-during-replay" || outcome === "cancelled-during-replay";
 const goalUpdate = (status: "active" | "complete") =>
@@ -258,7 +271,7 @@ const makeTranscript = (outcome: Outcome) =>
         ...(outcome === "terminal-after-ack"
           ? [usageUpdate("unrelated-turn", usageBreakdown(1000, 400, 200))]
           : []),
-        ...(outcome === "goal-successor-during-replay" ? [goalUpdate("active")] : []),
+        ...(goalSuccessor(outcome) ? [goalUpdate("active")] : []),
         ...(gatedReplay(outcome)
           ? [
               inbound({
@@ -288,7 +301,11 @@ const makeTranscript = (outcome: Outcome) =>
               }),
             )
           : []),
-        ...(outcome === "acknowledged" || outcome === "cancelled" ? [rootCompletion] : []),
+        ...(outcome === "acknowledged" ||
+        outcome === "cancelled" ||
+        outcome === "goal-successor-after-early-terminal-during-replay"
+          ? [rootCompletion]
+          : []),
         inbound({ id: 3, result: { turn: turn(rootTurn, "inProgress") } }, "original-ack"),
         ...(outcome === "terminal-after-ack"
           ? [
@@ -296,13 +313,18 @@ const makeTranscript = (outcome: Outcome) =>
               rootCompletion,
             ]
           : []),
-        ...(gatedReplay(outcome) ? [{ ...rootCompletion, label: "during-replay" }] : []),
-        ...(outcome === "goal-successor-during-replay"
+        ...(gatedReplay(outcome) && outcome !== "goal-successor-after-early-terminal-during-replay"
+          ? [{ ...rootCompletion, label: "during-replay" }]
+          : []),
+        ...(goalSuccessor(outcome)
           ? [
-              inbound({
-                method: "turn/started",
-                params: { threadId: rootThread, turn: turn(successorTurn, "inProgress") },
-              }),
+              inbound(
+                {
+                  method: "turn/started",
+                  params: { threadId: rootThread, turn: turn(successorTurn, "inProgress") },
+                },
+                "during-replay",
+              ),
               { ...goalUpdate("complete"), label: "finish-successor" },
               inbound({
                 method: "turn/completed",
@@ -337,12 +359,14 @@ describe("Codex pre-ACK item reader progress", () => {
     "overflow-during-replay",
     "cancelled-during-replay",
     "goal-successor-during-replay",
+    "goal-successor-after-early-terminal-during-replay",
   ] as const)(
     "retains item output only for the original %s start",
     (outcome) =>
       Effect.gen(function* () {
         const transcript = makeTranscript(outcome);
         const preAckHandled = yield* Deferred.make<void>();
+        const preAckTerminalHandled = yield* Deferred.make<void>();
         const releaseAck = yield* Deferred.make<void>();
         const rootTerminal = yield* Deferred.make<void>();
         const replayEntered = yield* Deferred.make<void>();
@@ -352,6 +376,7 @@ describe("Codex pre-ACK item reader progress", () => {
         const releaseSuccessor = yield* Deferred.make<void>();
         const reconciledTerminal = yield* Deferred.make<void>();
         const clientReady = yield* Deferred.make<CodexClient.CodexAppServerClient["Service"]>();
+        const requestedMethods: Array<string> = [];
         const driver = yield* CodexReplay.makeReplayDriver(transcript, {
           beforeEmitInbound: (entry) =>
             entry.label === "original-ack"
@@ -399,6 +424,10 @@ describe("Codex pre-ACK item reader progress", () => {
                 Effect.tap((client) => Deferred.succeed(clientReady, client)),
                 Effect.map((client): CodexClient.CodexAppServerClient["Service"] => ({
                   ...client,
+                  request: (method, payload) => {
+                    requestedMethods.push(method);
+                    return client.request(method, payload);
+                  },
                   handleServerNotification: (method, handler) =>
                     client.handleServerNotification(method, (payload) =>
                       handler(payload).pipe(
@@ -414,11 +443,21 @@ describe("Codex pre-ACK item reader progress", () => {
                         Effect.tap(() => {
                           if (typeof payload !== "object" || payload === null) return Effect.void;
                           if (
+                            outcome === "goal-successor-after-early-terminal-during-replay" &&
+                            method === "turn/completed" &&
                             "turn" in payload &&
                             typeof payload.turn === "object" &&
                             payload.turn !== null &&
                             "id" in payload.turn &&
-                            ((outcome === "goal-successor-during-replay" &&
+                            payload.turn.id === rootTurn
+                          )
+                            return Deferred.succeed(preAckTerminalHandled, undefined);
+                          if (
+                            "turn" in payload &&
+                            typeof payload.turn === "object" &&
+                            payload.turn !== null &&
+                            "id" in payload.turn &&
+                            ((goalSuccessor(outcome) &&
                               method === "turn/started" &&
                               payload.turn.id === successorTurn) ||
                               (reconcilesAdmission(outcome) &&
@@ -520,6 +559,8 @@ describe("Codex pre-ACK item reader progress", () => {
         // Wait for real notification handlers to finish, not just for the replay
         // transport to enqueue their frames. The original RPC is still withheld.
         yield* Deferred.await(preAckHandled);
+        if (outcome === "goal-successor-after-early-terminal-during-replay")
+          yield* Deferred.await(preAckTerminalHandled);
         assert.isUndefined(start.pollUnsafe());
         assert.isFalse(events.some((event) => event.type === "turn_item.updated"));
         if (outcome === "cancelled") yield* Fiber.interrupt(start);
@@ -529,7 +570,7 @@ describe("Codex pre-ACK item reader progress", () => {
           yield* Deferred.await(duringReplayHandled);
           assert.isUndefined(start.pollUnsafe());
           assert.isFalse(events.some((event) => event.type === "plan.updated"));
-          if (outcome === "goal-successor-during-replay")
+          if (goalSuccessor(outcome))
             assert.isFalse(
               events.some(
                 (event) =>
@@ -558,7 +599,7 @@ describe("Codex pre-ACK item reader progress", () => {
           yield* Deferred.await(reconciledTerminal);
         } else if (outcome !== "cancelled") {
           assert.equal((yield* Fiber.join(start))._tag, "Success");
-          if (outcome === "goal-successor-during-replay") {
+          if (goalSuccessor(outcome)) {
             yield* Deferred.await(successorStarted);
             const successor = events.flatMap((event) =>
               event.type === "provider_turn.updated" &&
@@ -589,7 +630,7 @@ describe("Codex pre-ACK item reader progress", () => {
         // successor case advances the clock, after replay, to check hold consumption.
         assert.equal(
           DateTime.toEpochMillis(yield* DateTime.now) - DateTime.toEpochMillis(now),
-          outcome === "goal-successor-during-replay" ? 5_000 : 0,
+          goalSuccessor(outcome) ? 5_000 : 0,
         );
         assert.isFalse(
           events.some(
@@ -635,7 +676,9 @@ describe("Codex pre-ACK item reader progress", () => {
           );
           return;
         }
-        if (outcome === "goal-successor-during-replay") {
+        if (goalSuccessor(outcome)) {
+          assert.notInclude(requestedMethods, "thread/goal/set");
+          assert.notInclude(requestedMethods, "turn/interrupt");
           const terminal = events.find((event) => event.type === "turn.terminal");
           assert.equal(
             terminal?.providerTurnId,
@@ -690,6 +733,23 @@ describe("Codex pre-ACK item reader progress", () => {
         );
         assert.isAbove(events.indexOf(completed[0]!), deltaIndex);
         assert.isAbove(terminalIndex, events.indexOf(completed[0]!));
+        if (goalSuccessor(outcome)) {
+          const predecessorCompletedIndex = events.findIndex(
+            (event) =>
+              event.type === "provider_turn.updated" &&
+              event.providerTurn.nativeTurnRef?.nativeId === rootTurn &&
+              event.providerTurn.status === "completed",
+          );
+          assert.isAbove(predecessorCompletedIndex, events.indexOf(completed[0]!));
+          assert.isAbove(
+            events.findIndex(
+              (event) =>
+                event.type === "provider_turn.updated" &&
+                event.providerTurn.nativeTurnRef?.nativeId === successorTurn,
+            ),
+            predecessorCompletedIndex,
+          );
+        }
       }).pipe(
         Effect.scoped,
         Effect.provide(

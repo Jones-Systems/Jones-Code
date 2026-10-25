@@ -103,7 +103,7 @@ export function makeCodexPendingStartNotifications<A>() {
     },
     // Only the adapter's accepted original ACK may call this. Notifications do
     // not bind a dispatch, revive a cancelled attempt, or authorize prompt replay.
-    acknowledge(dispatch: CodexStartDispatch, nativeTurnId: string) {
+    acknowledge(dispatch: CodexStartDispatch, nativeTurnId: string, afterPreAck?: A) {
       const entry = byDispatch.get(dispatch);
       if (entry === undefined || dispatch.excludedTurnIds.has(nativeTurnId)) return;
       // Only pre-ACK notifications need selection. Later arrivals are already
@@ -113,6 +113,11 @@ export function makeCodexPendingStartNotifications<A>() {
       entry.events = entry.events.filter(
         (event) => event.nativeTurnId === nativeTurnId || event.threadWideUsage,
       );
+      // One ACK-owned barrier orders early lifecycle effects after selected
+      // pre-ACK items and before any later arrivals. It is not a captured payload
+      // and does not consume or reset the cumulative notification budget.
+      if (afterPreAck !== undefined)
+        entry.events.push({ nativeTurnId, threadWideUsage: false, replay: afterPreAck });
       entry.acknowledgedTurnId = nativeTurnId;
     },
     take(dispatch: CodexStartDispatch): A | undefined {
