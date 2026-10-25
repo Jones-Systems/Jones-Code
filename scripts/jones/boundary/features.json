@@ -1902,9 +1902,7 @@
     },
     {
       "id": "client-projection-efficiency",
-      "tests": [
-        "packages/client-runtime/src/state/orchestrationV2Projection.test.ts"
-      ],
+      "tests": ["packages/client-runtime/src/state/orchestrationV2Projection.test.ts"],
       "scope": "Stable local-item replacement uses guarded reverse lookup and one array copy, retaining the structural fallback, ordering and inherited rows. Small shared reducer edit and colocated differential/identity regression tests keep private reducer machinery intact; array copying remains linear."
     }
   ]
