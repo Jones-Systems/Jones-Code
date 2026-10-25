@@ -12,6 +12,7 @@ import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
 import { makeClaudeTextGeneration } from "../../textGeneration/ClaudeTextGeneration.ts";
+import { classifyClaudeEvaluatorLaunchArgs } from "../../textGeneration/jones/claudeEvaluatorLaunch.ts";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import * as ServerConfig from "../../config.ts";
@@ -169,7 +170,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       continuationGroupKey,
     });
     const stampIdentity: typeof stamp = (draft) =>
-      stamp({ ...draft, supportsRemoteRequestEvaluation: true });
+      stamp({
+        ...draft,
+        supportsRemoteRequestEvaluation: classifyClaudeEvaluatorLaunchArgs(
+          effectiveConfig.launchArgs,
+        ).qualified,
+      });
 
     const scopedLimitNames = yield* makeClaudeScopedLimitNames;
     const orchestrationAdapter = yield* createClaudeAdapterV2(
