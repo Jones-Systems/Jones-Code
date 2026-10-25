@@ -459,9 +459,13 @@ it.effect(
     }).pipe(Effect.provide(testLayer)),
 );
 
-it.effect.each(["settle", "unsettle", "settle-companion"] as const)(
-  "lost %s reply reconciles after superseding metadata and real event compaction",
-  (scenario) =>
+it.effect.each(
+  ["settle", "unsettle", "settle-companion"].flatMap((scenario) =>
+    [false, true].map((upgrade) => ({ scenario, upgrade })),
+  ),
+)(
+  "lost $scenario reply reconciles after real compaction (upgrade=$upgrade)",
+  ({ scenario, upgrade }) =>
     Effect.gen(function* () {
       const action = scenario === "unsettle" ? "unsettle" : "settle";
       const f = yield* fixture;
@@ -561,6 +565,21 @@ it.effect.each(["settle", "unsettle", "settle-companion"] as const)(
           event.event_type === (action === "settle" ? "thread.settled" : "thread.unsettled"),
       )!;
       assert.strictEqual(original.length, scenario === "settle-companion" ? 2 : 1);
+      const reopened = upgrade
+        ? makeWorkstreamsNativeProvider(
+            {
+              ...ports,
+              build: Effect.succeed(
+                Option.some({ ...binding.build, sha: "c".repeat(40), tree: "d".repeat(40) }),
+              ),
+            },
+            "v2",
+          )
+        : makeWorkstreamsNativeProvider(ports);
+      const beforeCompaction = yield* reopened.lookup(binding, input, digest);
+      assert.strictEqual(beforeCompaction.state, "terminal");
+      if (beforeCompaction.state === "terminal")
+        assert.strictEqual(beforeCompaction.native_receipt?.commandId, attempt.nativeCommandId);
       yield* f.orchestrator.dispatch({
         type: "thread.pin",
         commandId: CommandId.make("newer-metadata"),
@@ -572,7 +591,6 @@ it.effect.each(["settle", "unsettle", "settle-companion"] as const)(
         yield* f.sql`SELECT event_id FROM orchestration_events WHERE command_id = ${attempt.nativeCommandId}`,
         [],
       );
-      const reopened = makeWorkstreamsNativeProvider(ports);
       const recovered = yield* reopened.lookup(binding, input, digest);
       assert.strictEqual(recovered.state, "terminal");
       if (recovered.state !== "terminal") throw new Error("Expected compacted durable proof.");
@@ -580,6 +598,24 @@ it.effect.each(["settle", "unsettle", "settle-companion"] as const)(
       assert.strictEqual(recovered.settlement_event?.eventId, settlement.event_id);
       assert.strictEqual(recovered.native_receipt?.resultSequence, original.at(-1)!.sequence);
       assert.deepEqual(yield* reopened.settle(binding, input, digest), recovered);
+      assert.deepEqual(recovered, beforeCompaction);
+      assert.deepEqual(yield* reopened.lookup(binding, input, "f".repeat(64)), {
+        protocol: upgrade ? "workstreams-t3-provider/2.0.0" : binding.protocol,
+        state: "rejected",
+        reason: "idempotency_conflict",
+      });
+      const countBefore = (yield* f.sql`SELECT command_id FROM workstreams_native_attempts`).length;
+      const missing = yield* reopened.lookup(
+        binding,
+        { ...input, command_id: "unknown-command-0001" },
+        digest,
+      );
+      assert.strictEqual(missing.state, "unknown");
+      if (missing.state === "unknown") assert.strictEqual(missing.reason, "attempt_not_found");
+      assert.strictEqual(
+        (yield* f.sql`SELECT command_id FROM workstreams_native_attempts`).length,
+        countBefore,
+      );
       assert.strictEqual(dispatches, 1);
     }).pipe(Effect.provide(testLayer)),
 );

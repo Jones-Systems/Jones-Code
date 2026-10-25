@@ -27,7 +27,7 @@ import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
-import { validateQueuedSteerBatch } from "./QueuedSteerBatch.ts";
+import { queuedSteerBatchCandidates, validateQueuedSteerBatch } from "./QueuedSteerBatch.ts";
 import * as EffectWorker from "../../orchestration-v2/EffectWorker.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as ProviderAdapterRegistry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -35,11 +35,12 @@ import * as ProviderReplayHarness from "../../orchestration-v2/testkit/ProviderR
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
-it.effect.each(["manual", "automatic", "completed"] as const)(
-  "22 originals use one batch effect and preserve delivery on %s",
+it.effect.each(["manual", "automatic", "completed", "switched"] as const)(
+  "originals use one batch effect and preserve delivery on %s",
   (mode) =>
     Effect.scoped(
       Effect.gen(function* () {
+        const count = mode === "switched" ? 4 : 22;
         const driver = ProviderDriverKind.make("codex");
         const instanceId = ProviderInstanceId.make("codex");
         const modelSelection = { instanceId, model: "test-model" };
@@ -177,7 +178,7 @@ it.effect.each(["manual", "automatic", "completed"] as const)(
               ),
             ),
           );
-          for (let i = 0; i < 22; i++) {
+          for (let i = 0; i < count; i++) {
             const input = {
               commandId: CommandId.make(`queue:${i}`),
               projectId: ProjectId.make("project:batch"),
@@ -196,6 +197,32 @@ it.effect.each(["manual", "automatic", "completed"] as const)(
                 type: "message.dispatch",
                 dispatchMode: { type: "queue_after_active" },
               });
+          }
+          if (mode === "switched") {
+            const projection = yield* orchestrator.getThreadProjection(threadId);
+            const sink = yield* EventSink.EventSinkV2;
+            const now = yield* DateTime.now;
+            yield* sink.write({
+              events: projection.runs
+                .filter((run) => run.status === "queued")
+                .map((run, i) => ({
+                  id: EventId.make(`historical-config:${i}`),
+                  type: "run.updated" as const,
+                  threadId,
+                  runId: run.id,
+                  occurredAt: now,
+                  payload: {
+                    ...run,
+                    providerInstanceId: ProviderInstanceId.make("previous-account"),
+                    providerThreadId: ProviderThreadId.make("previous-thread"),
+                    modelSelection: {
+                      instanceId: ProviderInstanceId.make("previous-account"),
+                      model: "previous-model",
+                      options: [{ id: "reasoningEffort", value: "low" }],
+                    },
+                  },
+                })),
+            });
           }
           const before = yield* orchestrator.getThreadProjection(threadId);
           const command: Extract<
@@ -216,6 +243,42 @@ it.effect.each(["manual", "automatic", "completed"] as const)(
                 ),
               })),
           };
+          for (const index of [0, 1]) {
+            for (const field of ["instance", "thread", "model", "options"] as const) {
+              const changed = {
+                ...before,
+                runs: before.runs.map((run) =>
+                  run.id !== command.items[index]!.queuedRunId
+                    ? run
+                    : {
+                        ...run,
+                        ...(field === "instance"
+                          ? { providerInstanceId: ProviderInstanceId.make("old-account") }
+                          : {}),
+                        ...(field === "thread"
+                          ? { providerThreadId: ProviderThreadId.make("old-thread") }
+                          : {}),
+                        ...(field === "model"
+                          ? { modelSelection: { ...run.modelSelection, model: "old-model" } }
+                          : {}),
+                        ...(field === "options"
+                          ? {
+                              modelSelection: {
+                                ...run.modelSelection,
+                                options: [{ id: "reasoningEffort", value: "low" }],
+                              },
+                            }
+                          : {}),
+                      },
+                ),
+              };
+              assert.isFalse("error" in validateQueuedSteerBatch(changed, command));
+              assert.isTrue("error" in validateQueuedSteerBatch(changed, command, true));
+              assert.isFalse(
+                queuedSteerBatchCandidates(changed, command.targetRunId, true)[index]!.eligible,
+              );
+            }
+          }
           const firstMessage = before.messages.find(
             (message) => message.id === command.items[0]!.messageId,
           )!;
@@ -309,7 +372,7 @@ it.effect.each(["manual", "automatic", "completed"] as const)(
             (yield* orchestrator.getThreadProjection(threadId)).runs.filter(
               (run) => run.status === "queued",
             ).length,
-            22,
+            count,
           );
           const sink = yield* EventSink.EventSinkV2;
           if (mode === "automatic") {
@@ -410,7 +473,7 @@ it.effect.each(["manual", "automatic", "completed"] as const)(
           }
           yield* worker.drain();
           assert.equal(steered.length, 1);
-          for (let i = 0; i < 22; i++)
+          for (let i = 0; i < count; i++)
             assert.include(steered[0]!.text, `sender: thread sender:${i}`);
           const after = yield* orchestrator.getThreadProjection(threadId);
           assert.equal(
@@ -426,8 +489,8 @@ it.effect.each(["manual", "automatic", "completed"] as const)(
             (item) =>
               item.type === "user_message" && item.inputIntent === "promoted_queued_to_steer",
           );
-          assert.equal(promoted.length, 22);
-          assert.equal(new Set(promoted.map((item) => item.ordinal)).size, 22);
+          assert.equal(promoted.length, count);
+          assert.equal(new Set(promoted.map((item) => item.ordinal)).size, count);
           for (const item of command.items)
             assert.equal(
               after.messages.find((message) => message.id === item.messageId)?.runId,
@@ -447,5 +510,4 @@ it.effect.each(["manual", "automatic", "completed"] as const)(
         );
       }),
     ),
-  30_000,
 );

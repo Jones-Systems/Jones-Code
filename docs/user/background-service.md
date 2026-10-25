@@ -122,6 +122,37 @@ Confirm the old executable, port, version and environment. Keep the adoption
 receipt and enrolled runtimes for reconciliation. Any earlier state-file repair
 has its own compare-and-swap recovery; restoring the plist does not undo it.
 
+## Uninstall downloaded runtimes
+
+`t3 uninstall` removes the background service, the `t3` launcher, and the
+downloaded versions after showing you the list and asking once. Your projects,
+threads, and settings under `~/.t3/userdata` are kept, along with `service.env`
+under T3 home. Pass `--yes` from a script.
+
+## Configure the service environment
+
+Put custom environment variables in `service.env` under the service's T3 home
+directory, normally `~/.t3/service.env`. This file survives service installation
+and updates. For example:
+
+```dotenv
+T3CODE_PORT=3773
+T3CODE_HOST=127.0.0.1
+```
+
+Use `KEY=VALUE` entries, quoting values that contain spaces or `#`. Values are
+literal: shell commands and variable expansion are not evaluated. Entries
+override the inherited service environment, except for `PATH`, `T3CODE_HOME`,
+`T3_BOOT_SERVICE_UNIT`, and `T3_SERVICE_LAUNCHER_CONTEXT` (including case variants).
+
+Run `t3 service restart` after changing the file. Changes apply when the service
+starts again; switching the server version alone keeps the current values.
+For a service installed before env-file support, run `t3 service install` once
+with an up-to-date CLI.
+A missing file is ignored; other read failures stop service startup.
+If the file contains credentials, restrict access to that file with `chmod 600`
+(for the default T3 home, `chmod 600 ~/.t3/service.env`).
+
 ## Follow laptop updates automatically
 
 In the Jones desktop app, open **Settings → Connections** and choose **Enroll
@@ -207,11 +238,36 @@ check the saved connection there too.
 | `restart-pending`                       | A newer runtime is installed; restart when active work can be interrupted.                                   |
 | `conflicting` or `unknown` route        | Inspect the host and Serve configuration; do not force overwrite or use raw Serve removal.                   |
 
-On macOS, check **System Settings → General → Login Items** if startup fails.
-Access to Desktop, Documents, or Downloads may need Full Disk Access for the
-`t3` executable listed in the Jones LaunchAgent's `ProgramArguments`.
-For T3 Connect failures, see
-[connection troubleshooting](./remote-access.md#t3-connect-troubleshooting).
+```sh
+sudo loginctl enable-linger "$(id -un)"
+```
+
+Over SSH, allow sudo to prompt:
+
+```sh
+ssh -t your-server 'sudo loginctl enable-linger "$(id -un)"'
+```
+
+Then retry service setup as your normal user. Run only the `loginctl` command
+with sudo; running T3 Code as root creates a separate installation and Connect
+identity. Without administrator access, run `t3 serve` in a terminal and keep
+that session open.
+
+| Status problem                          | Next step                                                                                                                      |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `linger-unavailable`                    | Run `loginctl show-user "$(id -un)" --property=Linger` and check that systemd-logind is available.                             |
+| `user-manager-unavailable`              | Run `systemctl --user status` in a login session for the service user; check your distribution's systemd user-session support. |
+| `service-disabled` or `service-stopped` | Read the log and `systemctl --user status t3code.service`, then use the repair command printed by T3 Code.                     |
+| `restart-pending`                       | A newer version is installed but the service still runs the previous one. Run `t3 service restart`.                            |
+
+On macOS, check **System Settings → General → Login Items** if the service no
+longer starts at login. If agent work cannot access Desktop, Documents, or
+Downloads, it may need Full Disk Access for the `t3` executable listed in
+`ProgramArguments` in
+`~/Library/LaunchAgents/com.t3tools.t3code.service.plist`.
+
+For failures after signing in to T3 Connect, see
+[connection troubleshooting](./t3-connect-troubleshooting.md).
 
 ## Reclaim database space
 

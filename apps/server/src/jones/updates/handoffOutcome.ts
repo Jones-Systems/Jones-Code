@@ -32,19 +32,19 @@ const receiptOutcome = (
  * off to every 30 seconds, while the launcher can answer, and otherwise waits until this process
  * exits.
  */
-export const awaitHandoffOutcome = (input: {
-  readonly operationId: string | undefined;
-  readonly cause: Cause.Cause<ServerSelfUpdateError>;
-  readonly reconcile: (operationId: string) => Effect.Effect<OperationReconciliation>;
-  /** Absent when the launcher cannot report outcomes. */
-  readonly query?: (
-    operationId: string,
-  ) => Effect.Effect<
-    { readonly outcome: "accepted" | "rejected" | "unknown" },
-    ServiceLauncherClientError
-  >;
-}): Effect.Effect<HandoffOutcome> =>
-  Effect.gen(function* () {
+export const awaitHandoffOutcome = Effect.fn("HandoffOutcome.awaitHandoffOutcome")(
+  function* (input: {
+    readonly operationId: string | undefined;
+    readonly cause: Cause.Cause<ServerSelfUpdateError>;
+    readonly reconcile: (operationId: string) => Effect.Effect<OperationReconciliation>;
+    /** Absent when the launcher cannot report outcomes. */
+    readonly query?: (
+      operationId: string,
+    ) => Effect.Effect<
+      { readonly outcome: "accepted" | "rejected" | "unknown" },
+      ServiceLauncherClientError
+    >;
+  }): Effect.fn.Return<HandoffOutcome> {
     const error = Cause.findErrorOption(input.cause);
     const refused =
       Option.isSome(error) &&
@@ -63,4 +63,5 @@ export const awaitHandoffOutcome = (input: {
       if (answer.outcome !== "unknown") return answer.outcome;
       yield* Effect.sleep(Duration.millis(delay));
     }
-  });
+  },
+);

@@ -10,6 +10,7 @@ import * as HttpClientResponse from "effect/http/HttpClientResponse";
 
 import * as PeerLinks from "../../peer/PeerLinks.ts";
 import * as PeerMcpClient from "../../peer/PeerMcpClient.ts";
+import { LINKED_MESSAGE_ORIGIN_HEADER, type LinkedMessageOrigin } from "./LinkedMessageOrigin.ts";
 
 const input = {
   environmentId: EnvironmentId.make("peer-test"),
@@ -67,6 +68,34 @@ const fixture = (
     Layer.provide(Layer.succeed(HttpClient.HttpClient, http)),
   );
 };
+
+it.effect(
+  "carries a caller's origin per request and preserves it on explicit retry without leaking it",
+  () => {
+    const origin: LinkedMessageOrigin = {
+      schemaVersion: "t3.linked-message-origin/v1",
+      environmentId: "source",
+      thread: { threadId: "sender", title: "Sender" },
+    };
+    const origins: Array<string | undefined> = [];
+    const layer = fixture((body, request) => {
+      origins.push(request.headers[LINKED_MESSAGE_ORIGIN_HEADER]);
+      return origins.length === 1
+        ? new Response(null, { status: 404 })
+        : answer(body.id, { content: content({ count: 1 }) });
+    });
+    return Effect.gen(function* () {
+      const client = yield* PeerMcpClient.PeerMcpClient;
+      expect((yield* client.call({ ...input, origin }).pipe(Effect.result))._tag).toBe("Failure");
+      expect(origins).toHaveLength(1);
+      yield* client.call({ ...input, origin });
+      yield* client.call(input);
+      expect(JSON.parse(Buffer.from(origins[0]!, "base64url").toString("utf8"))).toEqual(origin);
+      expect(origins[1]).toBe(origins[0]);
+      expect(origins[2]).toBeUndefined();
+    }).pipe(Effect.provide(layer));
+  },
+);
 
 it.effect(
   "does not replay a committed mutation after 404; only an explicit retry opens a new session",

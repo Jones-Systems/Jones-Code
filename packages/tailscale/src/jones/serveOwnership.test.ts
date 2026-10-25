@@ -9,7 +9,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/process";
 
-import { readTailscaleServeConfigJson, TAILSCALE_STATUS_TIMEOUT } from "../tailscale.ts";
+import { readTailscaleServeConfigJson } from "../tailscale.ts";
 import {
   acquireServeMapping,
   classifyServeConfig,
@@ -157,7 +157,7 @@ describe("Serve configuration ownership", () => {
     const { commands, layer } = recordingLayer([{ never: true }]);
     return Effect.gen(function* () {
       const fiber = yield* queryServeMapping(claim).pipe(Effect.forkChild);
-      yield* TestClock.adjust(TAILSCALE_STATUS_TIMEOUT);
+      yield* TestClock.adjust("3500 millis");
       assert.deepEqual(yield* Fiber.join(fiber), { _tag: "unknown", reason: "status-failed" });
       assert.deepEqual(commands, [statusArgs]);
     }).pipe(Effect.provide(layer));

@@ -453,6 +453,112 @@ def inspect_selection_transactions(active, transaction_id=None, claiming=False, 
         elif intent.exists() or preparation.exists() or prepared:
             raise SelectionRefused('activation-pending')
 
+def pre_swap_preparation_recovery(request, request_path, request_sha256, active, manifest_raw):
+    if set(request) != {'manifestSha256', 'observed', 'preSwapPreparationRecovery'}: raise SelectionRefused('unknown-transaction')
+    approval = request['preSwapPreparationRecovery']
+    if not isinstance(approval, dict) or set(approval) != {'transactionId', 'journalSha256', 'intentSha256'} or any(not isinstance(value, str) or len(value) != 64 or any(char not in '0123456789abcdef' for char in value) for value in approval.values()):
+        raise SelectionRefused('unknown-transaction')
+    if request['observed'] != active: raise SelectionRefused('running-changed')
+    root = manifest_path.parent / 'jones-updates' / 'transactions'
+    tx = root / approval['transactionId']
+    if root.is_symlink() or tx.is_symlink() or not tx.is_dir() or tx.resolve(strict=True) != tx:
+        raise SelectionRefused('unknown-transaction')
+    entries = list(root.iterdir())
+    if len(entries) > 1000: raise SelectionRefused('unknown-transaction')
+    directory_identities = {path: (path.stat().st_dev, path.stat().st_ino, path.stat().st_mtime_ns) for path in entries + [root]}
+    sibling_records = {}
+    for other in entries:
+        if other == tx: continue
+        if other.is_symlink() or not other.is_dir() or len(other.name) != 64 or any(char not in '0123456789abcdef' for char in other.name): raise SelectionRefused('unknown-transaction')
+        value = bounded_native_json(other / 'journal.json')[0]
+        prior = bounded_native_json(other / 'intent.json')[0]
+        if value.get('phase') not in ('resumed', 'rolled-back') or value.get('intent') != prior or prior.get('transactionId') != other.name or prior.get('protocol') != PROTOCOL or prior.get('expected', {}).get('home') != active['home'] or ((other / 'retirement-intent.json').exists() and not (other / 'retirement-receipt.json').exists()):
+            raise SelectionRefused('unknown-transaction')
+        for name in ('journal.json', 'intent.json'):
+            _, raw, info = bounded_native_json(other / name)
+            sibling_records[other / name] = (raw, info.st_dev, info.st_ino)
+    allowed = {'intent.json', 'journal.json', 'prepare-intent.json', 'prepare-dispatched.json', 'continuation.json', 'activation-request.json', 'prepare-request.json', 'prepare-failure.json', 'recovery-reserve.bin'}
+    entry_names = sorted(child.name for child in entries)
+    def inspect():
+        if root.is_symlink() or tx.is_symlink() or tx.resolve(strict=True) != tx or sorted(child.name for child in root.iterdir()) != entry_names: raise SelectionRefused('unknown-transaction')
+        for path, identity in directory_identities.items():
+            info = path.lstat()
+            if not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino, info.st_mtime_ns) != identity: raise SelectionRefused('unknown-transaction')
+        for path, identity in sibling_records.items():
+            _, raw, info = bounded_native_json(path)
+            if (raw, info.st_dev, info.st_ino) != identity: raise SelectionRefused('unknown-transaction')
+        names = {child.name for child in tx.iterdir()}
+        if not names <= allowed: raise SelectionRefused('activation-incomplete')
+        records = {name: bounded_native_json(tx / name) for name in names if name.endswith('.json')}
+        journal, journal_raw, _ = records['journal.json']
+        intent, intent_raw, _ = records['intent.json']
+        if hashlib.sha256(intent_raw).hexdigest() != approval['intentSha256']: raise SelectionRefused('running-changed')
+        terminal = journal.get('phase') == 'rolled-back' and journal.get('preSwapPreparationRecovery') == approval
+        keys = {'intent', 'phase', 'message', 'storage', 'recoveryReserves', 'incomingBundle', 'previousBundle'} | ({'preSwapPreparationRecovery'} if terminal else set())
+        if not set(journal) <= keys or (not terminal and (journal.get('phase') != 'blocked' or hashlib.sha256(journal_raw).hexdigest() != approval['journalSha256'])):
+            raise SelectionRefused('activation-incomplete')
+        if set(intent) != {'protocol', 'transactionId', 'expected', 'staged', 'continuationReceipt', 'processes', 'listener'} or type(intent['protocol']) is not int or intent['protocol'] != PROTOCOL or intent['transactionId'] != tx.name or intent['expected'] != active or journal['intent'] != intent or intent['continuationReceipt'] != str(tx / 'continuation.json') or not valid_process_proofs(intent['processes']) or not isinstance(intent['listener'], str) or not intent['listener'].strip():
+            raise SelectionRefused('unknown-transaction')
+        staged = intent['staged']
+        claim, claim_raw, _ = records['prepare-intent.json']
+        path, selection, selection_raw, selection_info = selection_binding(active, staged['handle'], claim['selectionPath'], claim['selectionSha256'])
+        if claim != preparation_claim(active, staged['handle'], tx.name, path, claim['selectionSha256'], claim['preparationClaimProtocol']) or records['prepare-dispatched.json'][0] != claim or records['continuation.json'][0] != dict(claim, prepared=True) or selection['app'] != staged:
+            raise SelectionRefused('claim-mismatch')
+        attempt_selection_binding(active, staged['handle'], tx.name, path, claim['selectionSha256'])
+        attempt_path = manifest_path.parent / 'jones-updates' / 'attempt-selections' / (hashlib.sha256((str(path) + '\n' + claim['selectionSha256']).encode()).hexdigest() + '.json')
+        _, attempt_raw, attempt_info = bounded_native_json(attempt_path)
+        if 'activation-request.json' in records and records['activation-request.json'][0] != intent: raise SelectionRefused('claim-mismatch')
+        if 'prepare-request.json' in records:
+            prepare = records['prepare-request.json'][0]
+            if set(prepare) != {'protocol', 'transactionId', 'stagedHandle', 'claimSha256', 'processes'} or type(prepare['protocol']) is not int or prepare['protocol'] != PROTOCOL or prepare['transactionId'] != tx.name or prepare['stagedHandle'] != staged['handle'] or prepare['claimSha256'] != hashlib.sha256(claim_raw).hexdigest() or not valid_process_proofs(prepare['processes']): raise SelectionRefused('claim-mismatch')
+        if 'prepare-failure.json' in records:
+            failure = records['prepare-failure.json'][0]
+            if set(failure) != {'protocol', 'reason'} or type(failure['protocol']) is not int or failure['protocol'] != PROTOCOL or not isinstance(failure['reason'], str): raise SelectionRefused('unknown-transaction')
+        verify_app(staged, active)
+        stable = pathlib.Path(active['appPath'])
+        incoming = stable.with_name(stable.name + '.jones-incoming-' + tx.name)
+        previous = stable.with_name(stable.name + '.jones-previous-' + active['generation'])
+        if journal.get('incomingBundle') != str(incoming) or journal.get('previousBundle') != str(previous) or previous.exists() or previous.is_symlink() or incoming.is_symlink() or not incoming.is_dir(): raise SelectionRefused('activation-incomplete')
+        bundle_identity(active)
+        incoming_binding = dict(staged, appPath=str(incoming), executablePath=str(incoming / pathlib.Path(staged['executablePath']).relative_to(staged['appPath'])))
+        bundle_identity(incoming_binding, stable=False)
+        if app_digest(stable) != active['appDigest'] or app_digest(incoming) != staged['appDigest']: raise SelectionRefused('running-changed')
+        if any(alive(proof) for proof in intent['processes']): raise SelectionRefused('writer-active')
+        if 'prepare-request.json' in records and any(alive(proof) for proof in records['prepare-request.json'][0]['processes']): raise SelectionRefused('writer-active')
+        reserve_identities = []
+        reserves = journal.get('recoveryReserves', [])
+        if not isinstance(reserves, list) or len(reserves) > 3: raise SelectionRefused('unknown-transaction')
+        for reserve in reserves:
+            reserve_path = pathlib.Path(reserve['path'])
+            if reserve_path not in (tx / 'recovery-reserve.bin', tx / 'recovery-journal-reserve.bin', stable.parent / ('.jones-recovery-reserve-' + tx.name)): raise SelectionRefused('unknown-transaction')
+            if not reserve_path.exists() and not reserve_path.is_symlink():
+                if reserve_path == tx / 'recovery-journal-reserve.bin' and reserve.get('purpose') == 'journal': continue
+                raise SelectionRefused('unknown-transaction')
+            info = reserve_path.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or str(info.st_dev) != reserve['device'] or str(info.st_ino) != reserve['inode'] or info.st_size != reserve['bytes']: raise SelectionRefused('unknown-transaction')
+            reserve_identities.append((str(reserve_path), info.st_dev, info.st_ino, info.st_size))
+        if 'recovery-reserve.bin' in names and not any(value[0] == str(tx / 'recovery-reserve.bin') for value in reserve_identities): raise SelectionRefused('unknown-transaction')
+        if manifest_path.read_bytes() != manifest_raw or digest(request_path) != request_sha256: raise SelectionRefused('running-changed')
+        evidence = ({name: (raw, info.st_dev, info.st_ino) for name, (_, raw, info) in records.items()}, (selection_raw, selection_info.st_dev, selection_info.st_ino), (attempt_raw, attempt_info.st_dev, attempt_info.st_ino), reserve_identities)
+        return journal, terminal, evidence
+    journal, terminal, evidence = inspect()
+    connections = []
+    try:
+        prove_quiescence(active)
+        connections = acquire_writer_exclusion(active, initialize=False)
+        prove_quiescence(active)
+        current, completed, current_evidence = inspect()
+        if current_evidence != evidence or current != journal or completed != terminal: raise SelectionRefused('running-changed')
+        if not terminal:
+            try:
+                durable(tx / 'journal.json', dict(journal, phase='rolled-back', preSwapPreparationRecovery=approval,
+                        message='Explicit pre-swap recovery proved the unchanged previous app and stopped writers; artifacts retained.'))
+            except Exception:
+                return {'protocol': PROTOCOL, 'status': 'uncertain', 'reason': 'journal-publication-unknown'}
+        return {'protocol': PROTOCOL, 'status': 'reconciled', 'active': active}
+    finally:
+        release_writer_exclusion(connections)
+
 def reconcile_running(request_path, request_sha256):
     result = {'protocol': PROTOCOL, 'status': 'refused'}
     try:
@@ -473,6 +579,8 @@ def reconcile_running(request_path, request_sha256):
             raise SelectionRefused('running-changed')
         bundle_identity(observed)
         if (manifest_path.parent / 'jones-maintenance').exists(): raise SelectionRefused('unknown-transaction')
+        if 'preSwapPreparationRecovery' in request:
+            return pre_swap_preparation_recovery(request, request_path, request_sha256, active, manifest_raw)
         root = manifest_path.parent / 'jones-updates' / 'transactions'
         pending, resolved = [], None
         entries = list(root.iterdir()) if root.exists() else []
