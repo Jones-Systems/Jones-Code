@@ -159,10 +159,14 @@ describe("shared paired-state Python source", () => {
     "clones the complete pair with real APFS isolation and restores it by rename",
     () => {
       const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
-      NodeChildProcess.execFileSync("python3", ["-I", "-c", definitions + "\n" + appleCloneScenario], {
-        encoding: "utf8",
-        timeout: 10_000,
-      });
+      NodeChildProcess.execFileSync(
+        "python3",
+        ["-I", "-c", definitions + "\n" + appleCloneScenario],
+        {
+          encoding: "utf8",
+          timeout: 10_000,
+        },
+      );
     },
   );
 

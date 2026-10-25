@@ -1499,7 +1499,13 @@ assert launch_services_available() is False and len(calls) == 1
       for (const [source, arguments_, message] of [
         [
           older,
-          ["--inspect-manual-install", "plan.json", "--plan-sha256", "0".repeat(64), "--require-clone"],
+          [
+            "--inspect-manual-install",
+            "plan.json",
+            "--plan-sha256",
+            "0".repeat(64),
+            "--require-clone",
+          ],
           "unrecognized arguments: --require-clone",
         ],
         [
@@ -1541,11 +1547,19 @@ assert launch_services_available() is False and len(calls) == 1
   ])("runs clone-required manual installation with %s", async (fault) => {
     const f = await fixture();
     try {
-      const nativeFunctions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const nativeFunctions = jonesNativeHelperSource.split(
+        "\nparser = argparse.ArgumentParser()",
+      )[0];
       const setup = activationScenario.split("\nevents = []")[0];
       const result = JSON.parse(
         runPython(
-          nativeFunctions + "\n" + setup + "\n" + manualInstallSetup + "\n" + cloneRequiredManualScenario,
+          nativeFunctions +
+            "\n" +
+            setup +
+            "\n" +
+            manualInstallSetup +
+            "\n" +
+            cloneRequiredManualScenario,
           [f.directory, "success", fault],
           { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10_000 },
         ),
