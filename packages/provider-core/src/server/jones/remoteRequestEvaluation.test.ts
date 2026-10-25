@@ -6,6 +6,7 @@ import * as Schema from "effect/Schema";
 import { ProviderInstanceId, TextGenerationError } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { decodeJsonReply, fromRunner, type Runner } from "../textGenerationOperations.ts";
+import { toJsonSchemaObject } from "../textGenerationUtils.ts";
 import {
   buildRemoteRequestEvaluationPrompt,
   RemoteRequestEvaluationResult,
@@ -25,6 +26,32 @@ const replyRunner =
 const pass = { verdict: "pass", category: "none", reason: "Bounded coding work." } as const;
 
 describe("remote request evaluation", () => {
+  it.effect("uses a flat object schema while retaining strict domain validation after the runner", () =>
+    Effect.gen(function* () {
+      const { outputSchema } = yield* buildRemoteRequestEvaluationPrompt(input);
+      expect(toJsonSchemaObject(outputSchema)).toMatchObject({
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          verdict: { enum: ["pass", "hold"] },
+          category: { enum: ["none", "malicious", "ridiculous", "risky", "out_of_scope"] },
+          reason: { type: "string", maxLength: 600, pattern: "\\S" },
+        },
+        required: ["verdict", "category", "reason"],
+      });
+      expect(toJsonSchemaObject(outputSchema)).not.toHaveProperty("anyOf");
+      const mismatched = { verdict: "pass", category: "risky", reason: "Invalid pairing." };
+      expect(Schema.is(outputSchema)(mismatched)).toBe(true);
+      expect(Schema.is(RemoteRequestEvaluationResult)(mismatched)).toBe(false);
+      const generation = fromRunner("Synthetic", replyRunner(JSON.stringify(mismatched)), {
+        remoteRequestEvaluation: "tool-less",
+      });
+      expect((yield* generation.evaluateRemoteRequest(input).pipe(Effect.flip)).detail).toContain(
+        "invalid structured output",
+      );
+    }),
+  );
+
   it.effect("encodes hostile input as reference data and keeps evaluation policy outside it", () =>
     Effect.gen(function* () {
       const request = {

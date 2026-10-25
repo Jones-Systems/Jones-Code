@@ -8,6 +8,8 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { makeCodexRemoteRequestEvaluation } from "./CodexRemoteRequestEvaluation.ts";
+import { buildRemoteRequestEvaluationPrompt } from "@t3tools/provider-core/server/textGenerationOperations";
+import { toJsonSchemaObject } from "@t3tools/provider-core/server/textGenerationUtils";
 
 const instanceId = ProviderInstanceId.make("managed-codex-second-account");
 const pass = { verdict: "pass", category: "none", reason: "Bounded implementation" };
@@ -73,6 +75,7 @@ it.effect.each(["medium", "high"])(
   (effort) =>
     Effect.gen(function* () {
       let calls = 0;
+      const { outputSchema } = yield* buildRemoteRequestEvaluationPrompt(input);
       const http = HttpClient.make((request) =>
         Effect.sync(() => {
           calls++;
@@ -100,6 +103,8 @@ it.effect.each(["medium", "high"])(
             },
           });
           expect(body).not.toHaveProperty("max_output_tokens");
+          expect(body.text.format.schema).toEqual(toJsonSchemaObject(outputSchema));
+          expect(body.text.format.schema).not.toHaveProperty("anyOf");
           expect(JSON.stringify(body)).not.toContain(input.cwd);
           expect(body.input[0].content[0].text).toContain("untrusted data");
           return HttpClientResponse.fromWeb(request, streamingResponse(realisticStream()));
@@ -438,14 +443,21 @@ it.effect.each([302, 401, 429, 503])(
       const http = HttpClient.make((request) =>
         Effect.sync(() => {
           calls++;
-          return HttpClientResponse.fromWeb(request, new Response(null, { status }));
+          return HttpClientResponse.fromWeb(
+            request,
+            new Response("private upstream body: synthetic-secret-value", { status }),
+          );
         }),
       );
       const evaluate = yield* makeCodexRemoteRequestEvaluation({
         instanceId,
         access: Effect.succeed({ accessToken: "synthetic" }),
       }).pipe(Effect.provideService(HttpClient.HttpClient, http));
-      yield* evaluate(input).pipe(Effect.flip);
+      const error = yield* evaluate(input).pipe(Effect.flip);
+      expect(error.detail).toBe(
+        `The managed Codex evaluator did not return a successful response (HTTP ${status}).`,
+      );
+      expect(JSON.stringify(error)).not.toContain("synthetic-secret-value");
       expect(calls).toBe(1);
     }),
 );

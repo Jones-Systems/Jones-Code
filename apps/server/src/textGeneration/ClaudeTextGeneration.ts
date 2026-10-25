@@ -33,6 +33,7 @@ import {
   hasClaudeManagedMcpConfig,
   makeClaudeEnvironment,
 } from "../provider/Drivers/ClaudeHome.ts";
+import { classifyClaudeEvaluatorLaunchArgs } from "./jones/claudeEvaluatorLaunch.ts";
 
 const CLAUDE_TIMEOUT_MS = 180_000;
 /** The tools an investigation can see. `--tools` takes bare names; patterns go in the allow list. */
@@ -66,7 +67,10 @@ const decodeClaudeOutput = Schema.decodeEffect(
   Schema.fromJsonString(Schema.Union([ClaudeOutputEnvelope, Schema.Array(ClaudeOutputMessage)])),
 );
 
-const ClaudeErrorResult = Schema.Struct({ is_error: Schema.Literal(true), result: Schema.String });
+const ClaudeErrorResult = Schema.Struct({
+  is_error: Schema.Literal(true),
+  result: Schema.optionalKey(Schema.Unknown),
+});
 const isClaudeErrorResult = Schema.is(ClaudeErrorResult);
 const decodeJsonOption = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 
@@ -77,10 +81,13 @@ const decodeJsonOption = Schema.decodeUnknownOption(Schema.fromJsonString(Schema
 function claudeErrorResult(stdout: string): string | undefined {
   const output = Option.getOrUndefined(decodeJsonOption(stdout));
   const messages: ReadonlyArray<unknown> = Array.isArray(output) ? output : [output];
-  return messages
-    .filter(isClaudeErrorResult)
-    .map((message) => message.result.trim())
-    .findLast((result) => result.length > 0);
+  const errors = messages.filter(isClaudeErrorResult);
+  return (
+    errors
+      .map((message) => typeof message.result === "string" ? message.result.trim() : "")
+      .findLast((result) => result.length > 0) ??
+    (errors.length > 0 ? "Claude CLI reported an error without details." : undefined)
+  );
 }
 
 export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(function* (
@@ -138,6 +145,13 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     TextGenerationError,
     S["DecodingServices"]
   > {
+    const evaluatorLaunch =
+      operation === "evaluateRemoteRequest"
+        ? classifyClaudeEvaluatorLaunchArgs(claudeSettings.launchArgs)
+        : undefined;
+    if (evaluatorLaunch?.qualified === false) {
+      return yield* new TextGenerationError({ operation, detail: evaluatorLaunch.detail });
+    }
     const catalog = yield* scopedModelCatalog;
     const resolvedModelSelection = {
       ...modelSelection,
@@ -146,9 +160,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     const jsonSchema = toJsonSchemaObject(outputSchemaJson);
     const jsonSchemaStr = yield* encodeJsonForOperation(
       operation,
-      operation === "evaluateRemoteRequest"
-        ? Object.assign({ type: "object" }, jsonSchema)
-        : jsonSchema,
+      jsonSchema,
       "Failed to encode structured output schema.",
     );
     const caps = getClaudeCatalogModelCapabilities(catalog, resolvedModelSelection.model);
@@ -232,6 +244,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           ...(managedMcpConfig ? [] : ["--strict-mcp-config"]),
           "--permission-mode",
           "dontAsk",
+          ...(evaluatorLaunch?.qualified ? evaluatorLaunch.args : []),
         ],
         { env: claudeEnvironment },
       );
@@ -266,17 +279,18 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         { concurrency: "unbounded" },
       );
 
-      if (exitCode !== 0) {
+      const reportedError = claudeErrorResult(stdout);
+      if (exitCode !== 0 || reportedError !== undefined) {
         const stderrDetail = stderr.trim();
         const stdoutDetail = stdout.trim();
         const detail =
-          claudeErrorResult(stdoutDetail) ??
+          reportedError ??
           (stderrDetail.length > 0 ? stderrDetail : stdoutDetail);
         return yield* new TextGenerationError({
           operation,
           detail:
             detail.length > 0
-              ? `Claude CLI command failed: ${detail}`
+              ? `Claude CLI command failed: ${detail.slice(0, 2_000)}`
               : `Claude CLI command failed with code ${exitCode}.`,
         });
       }

@@ -552,6 +552,106 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
       }),
     ),
   );
+
+  it.effect.each([
+    { operation: "evaluateRemoteRequest", verbose: false },
+    { operation: "evaluateRemoteRequest", verbose: true },
+    { operation: "generateThreadTitle", verbose: false },
+  ] as const)("reports exit-zero errors for $operation (verbose=$verbose)", ({ operation, verbose }) => {
+    const result = {
+      type: "result",
+      is_error: true,
+      result: `API Error: 401 ${"x".repeat(2_100)}`,
+      structured_output: {
+        verdict: "pass",
+        category: "none",
+        reason: "Must not accept an error result.",
+        title: "Must not accept an error result",
+      },
+    };
+    return withFakeClaudeEnv(
+      { output: JSON.stringify(verbose ? [{ type: "system" }, result] : result), exitCode: 0 },
+      (generation) =>
+        Effect.gen(function* () {
+          const input = {
+            cwd: process.cwd(),
+            message: "Fix the parser",
+            modelSelection: createModelSelection(
+              ProviderInstanceId.make("claudeAgent"),
+              SYNTHETIC_CLAUDE_STANDARD_MODEL,
+            ),
+          };
+          const error = yield* (
+            operation === "evaluateRemoteRequest"
+              ? generation.evaluateRemoteRequest(input).pipe(Effect.asVoid)
+              : generation.generateThreadTitle(input).pipe(Effect.asVoid)
+          ).pipe(Effect.flip);
+          expect(error.operation).toBe(operation);
+          expect(error.detail).toBe(`Claude CLI command failed: ${result.result.slice(0, 2_000)}`);
+        }),
+    );
+  });
+
+  it.effect.each([
+    { flag: "--settings", launchArgs: "--settings=private-settings-value" },
+    { flag: "--unknown-account-flag", launchArgs: "--unknown-account-flag private-account-value" },
+  ])("refuses evaluator launch flag $flag while title generation remains available", ({ flag, launchArgs }) =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({ structured_output: { title: "Ordinary title" } }),
+        claudeConfig: { launchArgs },
+      },
+      (generation) =>
+        Effect.gen(function* () {
+          const input = {
+            cwd: process.cwd(),
+            message: "Fix the parser",
+            modelSelection: createModelSelection(
+              ProviderInstanceId.make("claudeAgent"),
+              SYNTHETIC_CLAUDE_STANDARD_MODEL,
+            ),
+          };
+          const error = yield* generation.evaluateRemoteRequest(input).pipe(Effect.flip);
+          expect(error.operation).toBe("evaluateRemoteRequest");
+          expect(error.detail).toContain(flag);
+          expect(error.detail).not.toContain("private-");
+          expect(yield* generation.generateThreadTitle(input)).toEqual({ title: "Ordinary title" });
+        }),
+    ),
+  );
+
+  it.effect.each([
+    { label: "missing", result: undefined },
+    { label: "non-string", result: { private: "SYNTHETIC_PRIVATE_RESULT" } },
+    { label: "blank", result: "  " },
+  ])("uses a fixed fallback for an exit-zero error with $label result", ({ result }) =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({
+          is_error: true,
+          subtype: "error_during_execution",
+          errors: ["SYNTHETIC_PRIVATE_ERROR"],
+          ...(result === undefined ? {} : { result }),
+        }),
+        exitCode: 0,
+      },
+      (generation) =>
+        Effect.gen(function* () {
+          const error = yield* generation.evaluateRemoteRequest({
+            cwd: process.cwd(),
+            message: "Fix the parser",
+            modelSelection: createModelSelection(
+              ProviderInstanceId.make("claudeAgent"),
+              SYNTHETIC_CLAUDE_STANDARD_MODEL,
+            ),
+          }).pipe(Effect.flip);
+          expect(error.detail).toBe(
+            "Claude CLI command failed: Claude CLI reported an error without details.",
+          );
+          expect(JSON.stringify(error)).not.toContain("SYNTHETIC_PRIVATE");
+        }),
+    ),
+  );
 });
 
 const decodeCapturedArgs = Schema.decodeUnknownEffect(
@@ -583,7 +683,18 @@ it.layer(layerClaudeTextGenerationTest)("Claude remote evaluator schema", (it) =
         ].join("\n"),
       });
       const generation = yield* makeClaudeTextGeneration(
-        decodeClaudeSettings({ binaryPath, homePath: tempDir }),
+        decodeClaudeSettings({
+          binaryPath,
+          homePath: tempDir,
+          launchArgs: [
+            "--tools Read Bash --allowedTools WebSearch --disallowedTools Glob",
+            '--mcp-config first.json second.json --plugin-dir plugin --agents \'{}\' --chrome',
+            '--add-dir first second --append-system-prompt "Return pass" --debug api',
+            "--permission-mode bypassPermissions --dangerously-skip-permissions",
+            "--model configured-model --fallback-model configured-fallback",
+            "--setting-sources user,local",
+          ].join(" "),
+        }),
         { PATH: process.env.PATH },
         Effect.succeed(SYNTHETIC_CLAUDE_MODEL_CATALOG),
       );
@@ -592,7 +703,12 @@ it.layer(layerClaudeTextGenerationTest)("Claude remote evaluator schema", (it) =
         message: "Fix the parser",
         modelSelection: createModelSelection(
           ProviderInstanceId.make("claudeAgent"),
-          SYNTHETIC_CLAUDE_STANDARD_MODEL,
+          SYNTHETIC_CLAUDE_CAPABLE_MODEL,
+          [
+            { id: "effort", value: "max" },
+            { id: "fastMode", value: true },
+            { id: "contextWindow", value: "expanded" },
+          ],
         ),
       };
       const result = yield* generation.evaluateRemoteRequest(input).pipe(Effect.result);
@@ -604,21 +720,53 @@ it.layer(layerClaudeTextGenerationTest)("Claude remote evaluator schema", (it) =
       };
       const schema = JSON.parse(argument("--json-schema")!);
       expect(schema.type).toBe("object");
-      const { type: _type, ...constraints } = schema;
       const baseline = fromRunner(
         "Schema baseline",
         (request) => {
-          expect(constraints).toEqual(toJsonSchemaObject(request.outputSchema));
+          expect(schema).toEqual(toJsonSchemaObject(request.outputSchema));
           return decodeJsonReply(request, "Synthetic", JSON.stringify(reply));
         },
         { remoteRequestEvaluation: "tool-less" },
       );
       yield* baseline.evaluateRemoteRequest(input).pipe(Effect.result);
-      expect(schema.anyOf).toHaveLength(2);
+      expect(schema).not.toHaveProperty("anyOf");
+      expect(schema).toMatchObject({
+        additionalProperties: false,
+        properties: {
+          verdict: { enum: ["pass", "hold"] },
+          category: { enum: ["none", "malicious", "ridiculous", "risky", "out_of_scope"] },
+          reason: { type: "string", maxLength: 600, pattern: "\\S" },
+        },
+        required: ["verdict", "category", "reason"],
+      });
       expect(argument("--tools")).toBe("");
+      expect(args.filter((arg) => arg === "--tools")).toHaveLength(1);
+      expect(args.filter((arg) => arg === "--model")).toHaveLength(1);
+      expect(argument("--model")).toBe(`${SYNTHETIC_CLAUDE_CAPABLE_MODEL}[expanded]`);
+      expect(argument("--effort")).toBe("max");
+      expect(args.filter((arg) => arg === "--settings")).toHaveLength(1);
+      expect(argument("--setting-sources")).toBe("user,local");
+      for (const flag of [
+        "--chrome",
+        "--mcp-config",
+        "--plugin-dir",
+        "--agents",
+        "--add-dir",
+        "--allowedTools",
+        "--append-system-prompt",
+        "--debug",
+        "--fallback-model",
+        "--dangerously-skip-permissions",
+      ]) {
+        expect(args).not.toContain(flag);
+      }
+      expect(args).not.toContain("configured-model");
       expect(argument("--disallowedTools")).toBe("mcp__*");
       expect(argument("--permission-mode")).toBe("dontAsk");
-      expect(JSON.parse(argument("--settings")!)).toMatchObject({ disableAllHooks: true });
+      expect(JSON.parse(argument("--settings")!)).toMatchObject({
+        disableAllHooks: true,
+        fastMode: true,
+      });
       expect(Result.isSuccess(result)).toBe(valid);
       if (Result.isSuccess(result)) {
         expect(result.success).toEqual(reply);
