@@ -70,7 +70,7 @@ export function useAdmissionOverview() {
         const state = store.getSnapshot();
         held += actionableAdmissions(state).length;
         if (state.loadFailed || !state.snapshot) unknown++;
-        capped ||= state.atLimit;
+        capped = capped || state.atLimit;
       }
       return `${held}:${unknown}:${capped ? 1 : 0}`;
     },

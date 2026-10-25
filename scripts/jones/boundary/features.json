@@ -1345,6 +1345,7 @@
     {
       "id": "remote-admission",
       "tests": [
+        "apps/web/src/reactCompilerCoverage.test.ts",
         "apps/server/src/jones/remoteAdmission/RemoteAdmission.test.ts",
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
         "apps/server/src/jones/remoteAdmissionIntegration/RemoteAdmissionIntake.test.ts",
