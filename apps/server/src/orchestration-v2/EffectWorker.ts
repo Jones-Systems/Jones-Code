@@ -4,6 +4,11 @@ import {
   isGoalNotificationNotDelivered,
 } from "../jones/goals/GoalNotificationDelivery.ts";
 import * as RuntimeStopStore from "../jones/runtime/RuntimeStopSqlite.ts";
+import {
+  withOperation,
+  sameOperationRequest,
+} from "../jones/workspaceLifecycle/NativeOperation.ts";
+import { withOriginalTransition } from "../jones/workspaceLifecycle/NativeBoundary.ts";
 import * as RuntimeStop from "../jones/runtime/RuntimeStop.ts";
 import { executeNativeProviderEffect } from "../jones/nativeCreation/NativeCreationProviderExecution.ts";
 import { CommandId } from "@t3tools/contracts";
@@ -562,7 +567,10 @@ export const layerExecutor: Layer.Layer<
                           commandId: CommandId.make(`${effect.commandId}:rollback-failed`),
                           threadId: effect.threadId,
                           requestId: effect.commandId,
-                          message: CheckpointRollbackService.ROLLBACK_FAILED_MESSAGE,
+                          message: Option.match(Cause.findErrorOption(cause), {
+                            onNone: () => CheckpointRollbackService.ROLLBACK_FAILED_MESSAGE,
+                            onSome: CheckpointRollbackService.rollbackFailureClientMessage,
+                          }),
                         })
                         .pipe(
                           Effect.catchCause((recordCause) =>
@@ -599,6 +607,17 @@ export const layerExecutor: Layer.Layer<
                     }),
                 ),
               );
+          case "scheduled-tasks.cleanup":
+            return resourceCleanup.cleanupScheduledTasks(effect.threadId).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationEffectExecutionError({
+                    effectId: effect.id,
+                    effectType: effect.request.type,
+                    cause,
+                  }),
+              ),
+            );
           case "terminal.cleanup":
             return resourceCleanup
               .cleanupTerminals(effect.threadId, effect.request.legacyOwnedControl)
@@ -812,8 +831,9 @@ export const layerWithOptions = (
           ? requeueClaim(effect, cause)
           : terminalizeClaim(effect, cause);
 
-      const runOnce = (excludeRestartContinuations = false) =>
-        Effect.gen(function* () {
+      // The worker probes for work repeatedly, including when the outbox is empty.
+      const runOnce = Effect.fnUntraced(
+        function* (excludeRestartContinuations = false) {
           const claimExit = yield* Effect.exit(
             outbox.claimNext({ workerId, leaseDurationMs, excludeRestartContinuations }),
           );
@@ -864,7 +884,48 @@ export const layerWithOptions = (
 
           const execution = executor
             .execute(effect, { willRetry: effect.attemptCount < maxAttempts })
-            .pipe(Effect.as("executed" as const));
+            .pipe(
+              (execution) =>
+                withOriginalTransition(
+                  `effect:${effect.id}`,
+                  {
+                    commandId: effect.commandId,
+                    threadId: effect.threadId,
+                    request: effect.request,
+                  },
+                  execution,
+                ),
+              (execution) =>
+                withOperation(
+                  {
+                    id: `effect:${effect.id}`,
+                    kind: "effect",
+                    threadId: effect.threadId,
+                    boundaries: ["start", "resume", "recreate"],
+                    sqlOnly: true,
+                    check: Effect.gen(function* () {
+                      const current = yield* outbox.get(effect.id);
+                      if (
+                        Option.isNone(current) ||
+                        current.value.status !== "running" ||
+                        current.value.leaseOwner !== workerId ||
+                        current.value.attemptCount !== effect.attemptCount ||
+                        current.value.commandId !== effect.commandId ||
+                        !sameOperationRequest(current.value.request, effect.request) ||
+                        current.value.leaseExpiresAt === null ||
+                        DateTime.toEpochMillis(DateTime.makeUnsafe(current.value.leaseExpiresAt)) <=
+                          DateTime.toEpochMillis(yield* DateTime.now)
+                      )
+                        return yield* new OrchestrationEffectWorkerError({
+                          operation: "workspace-custody",
+                          effectId: effect.id,
+                        });
+                    }),
+                  },
+                  execution,
+                ),
+              Effect.as("executed" as const),
+            );
           const exit = yield* Effect.exit(Effect.raceFirst(execution, cancellation)).pipe(
             Effect.ensuring(outbox.clearCancellation(effect.id)),
           );
@@ -939,13 +1000,16 @@ export const layerWithOptions = (
             );
           }
           return true;
-        }).pipe(
-          Effect.mapError((cause) =>
-            isOrchestrationEffectWorkerError(cause)
-              ? cause
-              : new OrchestrationEffectWorkerError({ operation: "run", cause }),
+        },
+        (effect, _excludeRestartContinuations?: boolean) =>
+          effect.pipe(
+            Effect.mapError((cause) =>
+              isOrchestrationEffectWorkerError(cause)
+                ? cause
+                : new OrchestrationEffectWorkerError({ operation: "run", cause }),
+            ),
           ),
-        );
+      );
 
       return OrchestrationEffectWorkerV2.of({
         awaitWork: outbox.awaitAvailable,
@@ -960,14 +1024,13 @@ export const layerWithOptions = (
               }),
           ),
         ),
-        drain: (maxEffects = Number.MAX_SAFE_INTEGER) =>
-          Effect.gen(function* () {
-            let completed = 0;
-            while (completed < maxEffects && (yield* runOnce())) {
-              completed += 1;
-            }
-            return completed;
-          }),
+        drain: Effect.fn("EffectWorker.drain")(function* (maxEffects = Number.MAX_SAFE_INTEGER) {
+          let completed = 0;
+          while (completed < maxEffects && (yield* runOnce())) {
+            completed += 1;
+          }
+          return completed;
+        }),
       });
     }),
   );

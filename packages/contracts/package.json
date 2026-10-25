@@ -1,12 +1,16 @@
 {
   "name": "@t3tools/contracts",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "files": [
     "dist"
   ],
   "type": "module",
   "exports": {
+    "./jones/workstreamOperations": {
+      "types": "./src/jones/workstreamOperations.ts",
+      "import": "./src/jones/workstreamOperations.ts"
+    },
     "./jones/shellDestinationFence": {
       "types": "./src/jones/shellDestinationFence.ts",
       "import": "./src/jones/shellDestinationFence.ts"
@@ -62,6 +66,18 @@
     "./jones/threadReferenceExcerptRpc": {
       "types": "./src/jones/threadReferenceExcerptRpc.ts",
       "import": "./src/jones/threadReferenceExcerptRpc.ts"
+    },
+    "./jones/linkedThreads": {
+      "types": "./src/jones/linkedThreads.ts",
+      "import": "./src/jones/linkedThreads.ts"
+    },
+    "./jones/linkedThreadsCapability": {
+      "types": "./src/jones/linkedThreadsCapability.ts",
+      "import": "./src/jones/linkedThreadsCapability.ts"
+    },
+    "./jones/linkedThreadsRpc": {
+      "types": "./src/jones/linkedThreadsRpc.ts",
+      "import": "./src/jones/linkedThreadsRpc.ts"
     }
   },
   "scripts": {

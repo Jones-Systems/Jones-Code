@@ -7,6 +7,14 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import { jonesNativeHelperSource } from "./jonesNativeHelperSource.ts";
 import { hashMacApp } from "./jonesMacStaging.ts";
 
+function runPython(
+  source: string,
+  args: ReadonlyArray<string>,
+  options: Omit<NodeChildProcess.ExecFileSyncOptionsWithStringEncoding, "input">,
+): string {
+  return NodeChildProcess.execFileSync("python3", ["-", ...args], { ...options, input: source });
+}
+
 const fixtures = new Set<string>();
 async function cleanupFixture(root: string): Promise<void> {
   await NodeFSP.rm(root, { recursive: true, force: true });
@@ -26,6 +34,14 @@ async function fixture() {
 
 const activationScenario = String.raw`
 root, fault = pathlib.Path(sys.argv[1]), sys.argv[2]
+def seed_record(path, value, exclusive=False):
+    # These isolated input records have no observer until synchronous setup ends.
+    # Restore real fsync before every tested transition and durability fault.
+    fsync = os.fsync
+    try:
+        os.fsync = lambda descriptor: None
+        durable(path, value, exclusive)
+    finally: os.fsync = fsync
 # Exercise the real allocation/release protocol with small fixture-only capacity.
 RECOVERY_HEADROOM = 16384
 home, profile = root / 'userdata', root / 'profile'
@@ -47,7 +63,7 @@ expected = {'protocol': 1, 'owner': 'desktop', 'generation': 'previous', 'transa
     'appPath': str(previous_app), 'executablePath': str(previous_app / 'Contents/MacOS/Jones'),
     'version': 'same-preview-version', 'sourceSha': 'a' * 40, 'sourceTree': 'b' * 40, 'appDigest': app_digest(previous_app)}
 manifest_path = root / 'runtime' / 'jones-active-install.json'
-durable(manifest_path, expected, True)
+seed_record(manifest_path, expected, True)
 transaction_id = 'e' * 64
 tx = root / 'runtime' / 'jones-updates' / 'transactions' / transaction_id
 tx.mkdir(parents=True)
@@ -63,27 +79,29 @@ staged = {'handle': 'f' * 64, 'receiptPath': str(root / 'mac-app-receipt.json'),
 if fault == 'candidate-gate-missing': staged.pop('startupGateProtocol')
 if fault == 'candidate-gate-wrong': staged['startupGateProtocol'] = 2
 if fault == 'candidate-gate-boolean': staged['startupGateProtocol'] = True
-durable(staged['receiptPath'], {'app': staged, 'candidate': candidate,
+seed_record(staged['receiptPath'], {'app': staged, 'candidate': candidate,
     'artifact': {'candidate': candidate, 'payloadPath': str(payload), 'receipt': {'sha256': digest(payload)}}}, True)
 staging = manifest_path.parent / 'jones-updates' / 'staging'; staging.mkdir()
 selection_path = staging / (expected['sourceSha'] + '-' + 'e' * 64 + '.json')
 selection = {'schema': 1, 'source': 'jones-actions', 'home': expected['home'], 'profile': expected['profile'],
              'currentVersion': expected['version'], 'installedSource': expected['sourceSha'], 'active': expected,
              'artifactDirectory': str(root / 'artifact'), 'app': staged}
-durable(selection_path, selection, True)
+seed_record(selection_path, selection, True)
 selection_digest = digest(selection_path)
 claim = preparation_claim(expected, staged['handle'], transaction_id, selection_path, selection_digest)
 attempt_key = hashlib.sha256((str(selection_path) + '\n' + selection_digest).encode()).hexdigest()
 attempt_path = manifest_path.parent / 'jones-updates' / 'attempt-selections' / (attempt_key + '.json')
-durable(attempt_path, {'protocol': 1, 'transactionId': transaction_id, 'stagedHandle': staged['handle'], 'selectionPath': str(selection_path), 'selectionSha256': selection_digest, 'expected': expected}, True)
-durable(tx / 'prepare-intent.json', claim, True)
-durable(tx / 'prepare-dispatched.json', claim, True)
+seed_record(attempt_path, {'protocol': 1, 'transactionId': transaction_id, 'stagedHandle': staged['handle'], 'selectionPath': str(selection_path), 'selectionSha256': selection_digest, 'expected': expected}, True)
+seed_record(tx / 'prepare-intent.json', claim, True)
+seed_record(tx / 'prepare-dispatched.json', claim, True)
 continuation = dict(claim, prepared=True)
-durable(tx / 'continuation.json', continuation, True)
+seed_record(tx / 'continuation.json', continuation, True)
 intent = {'protocol': 1, 'transactionId': transaction_id, 'expected': expected, 'staged': staged,
     'continuationReceipt': str(tx / 'continuation.json'), 'processes': [{'pid': 123, 'identity': 'owned-native-process'}],
     'listener': 'http://127.0.0.1:3777'}
-durable(tx / 'intent.json', intent, True)
+seed_record(tx / 'intent.json', intent, True)
+launch_services_available = lambda: True
+def launch_services(request): raise AssertionError('Unexpected real launch request')
 events = []
 authority_state = 'active'
 def persisted_transition(operation, guard=None):
@@ -184,12 +202,13 @@ if fault == 'old-quiescence':
 native_pair = pair_state
 def synthetic_pair(active, directory):
     events.append('pair')
-    if fault == 'snapshot-failed': raise RuntimeError('Profile snapshot did not complete.')
+    if fault in ('snapshot-failed', 'snapshot-restart-refused'): raise RuntimeError('Profile snapshot did not complete.')
     return native_pair(active, directory)
 pair_state = synthetic_pair
 def synthetic_launch(active, descriptor=None):
     if descriptor is None:
         events.append('restart-previous')
+        if fault in ('restart-refused', 'snapshot-restart-refused'): raise RuntimeError('Synthetic relaunch refusal')
         return {'pid': 789, 'identity': 'restored-native-app'}
     events.append('candidate-launch')
     assert (tx / 'previous-pair' / 'pair.json').exists()
@@ -211,7 +230,7 @@ def synthetic_launch(active, descriptor=None):
     if fault == 'listener-mismatch': receipt['listener'] = 'http://127.0.0.1:4777'
     if fault == 'invalid-backend': receipt['backendProcess'] = {'pid': True, 'identity': 'unqualified-process'}
     if fault.startswith('missing-'): receipt.pop(fault.removeprefix('missing-'))
-    if fault in ('trial-mismatch', 'candidate-stop', 'resume-dispatched', 'reserve-release-failed', 'recovery-space-missing', 'recovery-lease-busy'): receipt['sourceSha'] = 'wrong-source'
+    if fault in ('trial-mismatch', 'restart-refused', 'candidate-stop', 'resume-dispatched', 'reserve-release-failed', 'recovery-space-missing', 'recovery-lease-busy'): receipt['sourceSha'] = 'wrong-source'
     if fault.startswith('authority-'): receipt['sourceSha'] = 'wrong-source'
     if fault == 'resume-dispatched': durable(tx / 'resume-dispatched.json', {'uncertain': True}, True)
     durable(tx / 'trial-receipt.json', receipt, True)
@@ -306,11 +325,16 @@ else:
         assert (home / 'settings.json').read_text() == 'previous-settings'
         assert (profile / 'opaque').read_text() == ('advanced-profile' if 'candidate-launch' in events else 'same-host-profile')
         assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
-        if fault not in ('snapshot-failed', 'state-grew'):
+        if fault not in ('snapshot-failed', 'snapshot-restart-refused', 'state-grew'):
             with sqlite3.connect(tx / 'advanced-state' / 'state.sqlite') as db:
                 assert db.execute('SELECT value FROM identity').fetchone()[0] == ('previous-state' if fault.startswith('bundle-') else 'advanced-state')
         else:
             assert 'candidate-launch' not in events
+    if fault in ('restart-refused', 'snapshot-restart-refused'):
+        assert journal['phase'] == 'rolled-back', journal
+        assert events.count('restart-previous') == 1
+        assert journal['relaunch'] == 'failed'
+        assert 'Jones Code was not reopened automatically: Synthetic relaunch refusal' in journal['message']
     if journal['phase'] == 'blocked' and 'candidate-launch' in events:
         assert state == ('previous-state' if fault in ('authority-retention-sync', 'authority-advance-failed', 'authority-advance-lost') else 'advanced-state')
         assert (tx / 'previous-pair' / 'state.sqlite').exists() == (fault not in ('authority-retention-sync', 'authority-advance-failed', 'authority-advance-lost'))
@@ -340,6 +364,50 @@ else:
 `;
 
 describe("Jones native helper", () => {
+  it("seeds equivalent private records and restores real durability before activation", async () => {
+    const f = await fixture();
+    try {
+      const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const setup = activationScenario.split("\nevents = []")[0];
+      const observe = String.raw`
+fsync_calls = []
+real_fsync = os.fsync
+def observed_fsync(descriptor):
+    fsync_calls.append(descriptor)
+    return real_fsync(descriptor)
+os.fsync = observed_fsync
+`;
+      const scenario = String.raw`
+assert fsync_calls == [], 'Unobserved fixture records repeated durable disk flushes'
+assert os.fsync is observed_fsync, 'Fixture seeding did not restore real durability'
+records = [manifest_path, pathlib.Path(staged['receiptPath']), selection_path, attempt_path,
+           tx / 'prepare-intent.json', tx / 'prepare-dispatched.json', tx / 'continuation.json', tx / 'intent.json']
+for index, path in enumerate(records):
+    reference = root / 'reference' / str(index) / path.name
+    durable(reference, read(path), True)
+    assert path.read_bytes() == reference.read_bytes()
+    assert stat.S_IMODE(path.stat().st_mode) == stat.S_IMODE(reference.stat().st_mode) == 0o600
+    assert path.stat().st_nlink == reference.stat().st_nlink == 1
+assert len(fsync_calls) == 2 * len(records), 'Real durable publication lost its file or parent flush'
+before = manifest_path.read_bytes()
+try: seed_record(manifest_path, {'must': 'not overwrite'}, True)
+except FileExistsError: pass
+else: raise AssertionError('Fixture seeding replaced an exclusive record')
+assert manifest_path.read_bytes() == before
+assert os.fsync is observed_fsync, 'Failed fixture seeding did not restore real durability'
+assert len(fsync_calls) == 2 * len(records)
+assert not list(manifest_path.parent.glob(manifest_path.name + '.*'))
+`;
+      runPython(`${definitions}\n${observe}\n${setup}\n${scenario}`, [f.directory, "success"], {
+        encoding: "utf8",
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+    } finally {
+      await f.cleanup();
+    }
+  });
+
   it("releases reserves across successful generations while protecting the current recovery pair", async () => {
     const f = await fixture();
     try {
@@ -393,11 +461,11 @@ assert retired['status'] == 'retired', retired
 assert not (oldest / 'previous-pair' / 'state.sqlite').exists()
 assert all((generation / 'previous-pair' / 'state.sqlite').exists() for generation in generations[1:])
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${definitions}\n${runtime}\n${scenario}`, f.directory, "success"],
-        { encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024 },
-      );
+      runPython(`${definitions}\n${runtime}\n${scenario}`, [f.directory, "success"], {
+        encoding: "utf8",
+        timeout: 10_000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
@@ -473,11 +541,11 @@ else:
             assert 'cleanup' in journal['message']
         else: assert 'recoveryReserveCleanup' not in journal
 `;
-        NodeChildProcess.execFileSync(
-          "python3",
-          ["-c", `${definitions}\n${runtime}\n${scenario}`, f.directory, "success", boundary],
-          { encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024 },
-        );
+        runPython(`${definitions}\n${runtime}\n${scenario}`, [f.directory, "success", boundary], {
+          encoding: "utf8",
+          timeout: 10_000,
+          maxBuffer: 1024 * 1024,
+        });
       } finally {
         await f.cleanup();
       }
@@ -492,7 +560,7 @@ else:
       );
       await NodeFSP.writeFile(
         NodePath.join(f.directory, "withdraw-helper.py"),
-        `${definitions}\nsys.platform = 'darwin'\nbundle_identity = lambda active: None\nparser = argparse.ArgumentParser()${parser}`,
+        `${definitions}\nsys.platform = 'darwin'\nbundle_identity = lambda active: None\nlaunch_services_available = lambda: True\nparser = argparse.ArgumentParser()${parser}`,
       );
       const setup = activationScenario.split("\nevents = []")[0];
       const scenario = String.raw`
@@ -534,11 +602,11 @@ assert run('--claim-preparation', staged['handle'], '--transaction', transaction
 assert run('--claim-activation', str(request))['reason'] == 'preparation-withdrawn'
 assert read(pathlib.Path(retired['retiredPath']) / 'preparation-withdrawal.json') == proof
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${definitions}\n${setup}\n${scenario}`, f.directory, "withdraw"],
-        { encoding: "utf8", timeout: 15_000, maxBuffer: 1024 * 1024 },
-      );
+      runPython(`${definitions}\n${setup}\n${scenario}`, [f.directory, "withdraw"], {
+        encoding: "utf8",
+        timeout: 15_000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
@@ -629,11 +697,11 @@ else:
 assert selection_path.exists() and attempt_path.exists()
 assert (profile / 'opaque').read_text() == 'same-host-profile'
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${definitions}\n${setup}\n${scenario}`, f.directory, fault],
-        { encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024 },
-      );
+      runPython(`${definitions}\n${setup}\n${scenario}`, [f.directory, fault], {
+        encoding: "utf8",
+        timeout: 10_000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
@@ -650,6 +718,7 @@ assert (profile / 'opaque').read_text() == 'same-host-profile'
         const barrier = String.raw`
 sys.platform = 'darwin'
 bundle_identity = lambda active: None
+launch_services_available = lambda: True
 original_durable = durable
 def durable(path, value, exclusive=False):
     root = pathlib.Path(__file__).parent
@@ -707,16 +776,143 @@ finally:
     if child.poll() is None: child.kill()
     child.wait(timeout=5)
 `;
-        NodeChildProcess.execFileSync(
-          "python3",
-          ["-c", `${definitions}\n${setup}\n${scenario}`, f.directory, order],
-          { encoding: "utf8", timeout: 20_000, maxBuffer: 1024 * 1024 },
-        );
+        runPython(`${definitions}\n${setup}\n${scenario}`, [f.directory, order], {
+          encoding: "utf8",
+          timeout: 20_000,
+          maxBuffer: 1024 * 1024,
+        });
       } finally {
         await f.cleanup();
       }
     },
   );
+
+  it.each([
+    "success",
+    "default",
+    "journal-hash",
+    "intent-hash",
+    "live",
+    "identity-unknown",
+    "previous",
+    "previous-pair",
+    "trial-descriptor.json",
+    "trial-receipt.json",
+    "commit-grant.json",
+    "resume-dispatched.json",
+    "advanced-state",
+    "advanced-state-authority-guard.json",
+    "retirement-intent.json",
+    "extra",
+    "journal-extra",
+    "incoming",
+    "old-app",
+    "unknown-transaction",
+    "unknown-path",
+    "claim",
+    "lease-busy",
+    "revalidate",
+    "durability",
+    "durability-lost",
+    "reserve-drift",
+  ])("requires exact pre-swap recovery evidence for %s", async (mode) => {
+    const f = await fixture();
+    try {
+      const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const setup = activationScenario.split("\nevents = []")[0];
+      const scenario = String.raw`
+mode = sys.argv[3]
+(home / 'environment-id').write_text(expected['environmentId'])
+for path, scope in native_writer_lease_paths(expected): initialize_native_lease(path, scope)
+incoming, previous = prepare_bundle(expected, staged, transaction_id)
+seed_record(tx / 'activation-request.json', intent, True)
+seed_record(tx / 'prepare-request.json', {'protocol': 1, 'transactionId': transaction_id, 'stagedHandle': staged['handle'], 'claimSha256': digest(tx / 'prepare-intent.json'), 'processes': intent['processes']}, True)
+seed_record(tx / 'prepare-failure.json', {'protocol': 1, 'reason': 'TIMEOUT'}, True)
+reserve_path = tx / 'recovery-reserve.bin'
+reserve_path.write_bytes(bytes(4096))
+reserve_info = reserve_path.stat()
+reserves = [{'path': str(reserve_path), 'bytes': reserve_info.st_size, 'device': str(reserve_info.st_dev), 'inode': str(reserve_info.st_ino), 'purpose': 'recovery'}, {'path': str(tx / 'recovery-journal-reserve.bin'), 'bytes': 4096, 'device': '0', 'inode': '0', 'purpose': 'journal'}]
+seed_record(tx / 'journal.json', {'intent': intent, 'phase': 'blocked', 'message': 'Untrusted diagnostic text', 'incomingBundle': str(incoming), 'previousBundle': str(previous), 'recoveryReserves': reserves}, True)
+bound = {'transactionId': transaction_id, 'journalSha256': digest(tx / 'journal.json'), 'intentSha256': digest(tx / 'intent.json')}
+if mode in ('journal-hash', 'intent-hash'): bound['journalSha256' if mode == 'journal-hash' else 'intentSha256'] = '0' * 64
+if mode == 'unknown-transaction': bound['transactionId'] = '0' * 64
+if mode == 'unknown-path': bound['transactionId'] = '../' + transaction_id
+if mode == 'previous': previous.mkdir()
+if mode == 'reserve-drift': reserve_path.write_bytes(bytes(8192))
+if mode == 'incoming': (incoming / 'Contents/MacOS/Jones').write_text('changed')
+if mode == 'old-app': (previous_app / 'Contents/MacOS/Jones').write_text('changed')
+if mode == 'claim': durable(tx / 'prepare-dispatched.json', dict(claim, stagedHandle='0' * 64))
+if mode == 'journal-extra':
+    durable(tx / 'journal.json', dict(read(tx / 'journal.json'), candidateWriter={'pid': 321, 'identity': 'unknown'}))
+    bound['journalSha256'] = digest(tx / 'journal.json')
+if mode in ('previous-pair', 'advanced-state'): (tx / mode).mkdir()
+elif mode in ('trial-descriptor.json', 'trial-receipt.json', 'commit-grant.json', 'resume-dispatched.json', 'advanced-state-authority-guard.json', 'retirement-intent.json', 'extra'):
+    seed_record(tx / mode, {'unknown': True}, True)
+request = manifest_path.parent / 'pre-swap-request.json'
+seed_record(request, dict({'manifestSha256': digest(manifest_path), 'observed': expected}, **({} if mode == 'default' else {'preSwapPreparationRecovery': bound})), True)
+before_manifest, before_state, before_journal = manifest_path.read_bytes(), database.read_bytes(), (tx / 'journal.json').read_bytes()
+bundle_identity = lambda active, stable=True: None
+process_identity = lambda pid: 'owned-native-process' if mode == 'live' else None
+if mode == 'identity-unknown':
+    def process_identity(pid): raise RuntimeError('Uncertain process inspection')
+quiescence = []
+prove_quiescence = lambda active: quiescence.append('checked')
+native_acquire = acquire_writer_exclusion
+leases = []
+def acquire_writer_exclusion(active, initialize=True):
+    assert initialize is False, 'Recovery must not initialize lease databases'
+    if mode == 'lease-busy': raise RuntimeError('Busy writer lease')
+    held = native_acquire(active, initialize)
+    leases.extend(held)
+    if mode == 'revalidate': native_durable(tx / 'intent.json', dict(intent, listener='changed'))
+    return held
+native_durable = durable
+writes = []
+def durable(path, value, exclusive=False):
+    assert pathlib.Path(path) == tx / 'journal.json', 'Recovery wrote outside the journal'
+    assert leases and all(connection.in_transaction for connection in leases)
+    assert len(quiescence) >= 2
+    writes.append(str(path))
+    if mode == 'durability': raise OSError('Synthetic journal publication failure')
+    result = native_durable(path, value, exclusive)
+    if mode == 'durability-lost': raise OSError('Synthetic lost durable acknowledgment')
+    return result
+result = reconcile_running(request, digest(request))
+assert manifest_path.read_bytes() == before_manifest
+assert database.read_bytes() == before_state
+for connection in leases:
+    try: connection.execute('SELECT 1')
+    except sqlite3.ProgrammingError: pass
+    else: raise AssertionError('Writer exclusion leaked')
+if mode == 'success':
+    assert result['status'] == 'reconciled', result
+    journal = read(tx / 'journal.json')
+    assert journal['phase'] == 'rolled-back' and journal['intent'] == intent
+    assert journal['preSwapPreparationRecovery'] == bound
+    assert writes == [str(tx / 'journal.json')]
+    assert incoming.exists() and not previous.exists()
+    assert not (tx / 'previous-pair').exists()
+    assert reconcile_running(request, digest(request))['status'] == 'reconciled'
+elif mode in ('durability', 'durability-lost'):
+    assert result == {'protocol': 1, 'status': 'uncertain', 'reason': 'journal-publication-unknown'}, result
+    assert writes == [str(tx / 'journal.json')]
+    if mode == 'durability': assert (tx / 'journal.json').read_bytes() == before_journal
+    else:
+        assert read(tx / 'journal.json')['phase'] == 'rolled-back'
+        assert reconcile_running(request, digest(request))['status'] == 'reconciled'
+else:
+    assert result['status'] == 'refused', result
+    assert (tx / 'journal.json').read_bytes() == before_journal
+    assert writes == []
+`;
+      runPython(definitions + "\n" + setup + "\n" + scenario, [f.directory, "success", mode], {
+        encoding: "utf8",
+        timeout: 10000,
+      });
+    } finally {
+      await f.cleanup();
+    }
+  });
 
   it("re-adopts a stale manifest from independently observed bundle metadata and preserves one preimage", async () => {
     const f = await fixture();
@@ -752,7 +948,7 @@ assert read(manifest_path.with_name(manifest_path.name + '.superseded')) == stal
 assert (state / 'statev2.sqlite').read_bytes() == b'synthetic state'
 assert reconcile_running(request, digest(request)) == {'protocol': 1, 'status': 'refused', 'reason': 'running-changed'}
 `;
-      NodeChildProcess.execFileSync("python3", ["-c", definitions + "\n" + scenario, f.directory], {
+      runPython(definitions + "\n" + scenario, [f.directory], {
         encoding: "utf8",
         timeout: 10000,
       });
@@ -937,47 +1133,177 @@ else:
     assert result == ({'kind': 'absent'} if fault == 'absent' else guard) if operation == 'fence' else result['state'] in ('advanced', 'absent')
 assert len(calls) == (0 if fault in ('wrong-source', 'wrong-version', 'digest-drift', 'binary-link', 'binary-mode') else 1)
 `;
-        NodeChildProcess.execFileSync(
-          "python3",
-          ["-c", nativeFunctions + "\n" + scenario, f.directory, fault],
-          {
-            encoding: "utf8",
-            maxBuffer: 1024 * 1024,
-            timeout: 10000,
-          },
-        );
+        runPython(nativeFunctions + "\n" + scenario, [f.directory, fault], {
+          encoding: "utf8",
+          maxBuffer: 1024 * 1024,
+          timeout: 10000,
+        });
       } finally {
         await f.cleanup();
       }
     },
   );
 
-  it("clears inherited trial and cold selectors for an ordinary native launch", () => {
+  it("launches the exact bundle once through LaunchServices with an explicit environment", () => {
     const nativeFunctions = jonesNativeHelperSource.split(
       "\nparser = argparse.ArgumentParser()",
     )[0];
     const scenario = String.raw`
 manifest_path = pathlib.Path('/synthetic/jones-active-install.json')
 active = {'home': '/synthetic', 'profile': '/synthetic-profile', 'generation': 'new-generation',
-          'executablePath': '/synthetic/Jones.app/Contents/MacOS/Jones'}
-selectors = ('T3CODE_JONES_TRIAL_DESCRIPTOR', 'T3CODE_JONES_COLD_CHANNEL_FD', 'T3CODE_JONES_COLD_TRIAL_DESCRIPTOR')
-for name in selectors: os.environ[name] = 'stale'
-captured = {}
+          'appPath': '/synthetic/Jones.app', 'executablePath': '/synthetic/Jones.app/Contents/MacOS/Jones'}
+for name in ('JONES_AMBIENT_SENTINEL', 'ELECTRON_RUN_AS_NODE', 'T3CODE_JONES_TRIAL_DESCRIPTOR',
+             'T3CODE_JONES_COLD_CHANNEL_FD', 'T3CODE_JONES_COLD_TRIAL_DESCRIPTOR', 'T3CODE_OTLP_HEADERS',
+             'T3CODE_PORT', 'T3CODE_TAILSCALE_SERVE', 'T3CODE_HOST', 'T3CODE_DISABLE_AUTO_UPDATE'):
+    os.environ[name] = 'must-not-be-forwarded'
+os.environ['T3CODE_NATIVE_AUTHORITY_STATE_DIR'] = '/synthetic/authority'
+calls, direct = [], []
 def capture(command, **kwargs):
-    captured.update(kwargs['env'])
+    calls.append((command, kwargs))
+    return type('Result', (), {'returncode': 0, 'stdout': json.dumps({'protocol': 1, 'status': 'launched',
+        'pid': 456, 'bundlePath': active['appPath'], 'executablePath': active['executablePath']}).encode('ascii')})()
+def direct_launch(*args, **kwargs):
+    direct.append((args, kwargs))
     return type('Child', (), {'pid': 456})()
-subprocess.Popen = capture
-process_identity = lambda pid: 'captured-process'
-assert launch(active) == {'pid': 456, 'identity': 'captured-process'}
-assert all(name not in captured for name in selectors)
-assert captured['T3CODE_JONES_ACTIVE_GENERATION'] == 'new-generation'
-assert captured['T3CODE_HOME'] == '/synthetic'
+subprocess.run = capture
+subprocess.Popen = direct_launch
+process_identity = lambda pid: 'start ' + active['executablePath']
+read = lambda path: {'listener': 'http://127.0.0.1:3777'}
+for descriptor in (None, pathlib.Path('/synthetic/trial.json')):
+    calls.clear()
+    proof = launch(active, descriptor)
+    assert direct == [], 'Direct exec inherits the invoker privacy attribution and ambient environment'
+    assert len(calls) == 1
+    command, options = calls[0]
+    assert command[:4] == ['/usr/bin/osascript', '-l', 'JavaScript', '-e'] and len(command) == 6
+    wanted = {'T3CODE_HOME': active['home'], 'T3CODE_DESKTOP_USER_DATA_DIR': active['profile'],
+              'T3CODE_JONES_ACTIVE_MANIFEST': str(manifest_path), 'T3CODE_JONES_ACTIVE_GENERATION': active['generation'],
+              'T3CODE_NATIVE_AUTHORITY_STATE_DIR': '/synthetic/authority'}
+    if descriptor:
+        wanted.update(T3CODE_JONES_TRIAL_DESCRIPTOR=str(descriptor), T3CODE_PORT='3777')
+    assert json.loads(command[5]) == {'appPath': active['appPath'], 'environment': wanted}
+    assert options['env'] == dict({'PATH': '/usr/bin:/bin:/usr/sbin:/sbin'},
+        **{name: os.environ[name] for name in ('HOME', 'TMPDIR', 'USER', 'LOGNAME') if name in os.environ})
+    assert options['stdin'] == subprocess.DEVNULL and options['stdout'] == subprocess.PIPE
+    assert options['stderr'] == subprocess.DEVNULL and options['timeout'] == 30
+    assert proof == {'pid': 456, 'identity': 'start ' + active['executablePath']}
+del os.environ['T3CODE_NATIVE_AUTHORITY_STATE_DIR']
+launch(active)
+assert 'T3CODE_NATIVE_AUTHORITY_STATE_DIR' not in json.loads(calls[-1][0][5])['environment']
 `;
-    NodeChildProcess.execFileSync("python3", ["-c", nativeFunctions + "\n" + scenario], {
+    runPython(nativeFunctions + "\n" + scenario, [], {
       encoding: "utf8",
       maxBuffer: 1024 * 1024,
       timeout: 10000,
     });
+  });
+
+  it("rejects unproved LaunchServices outcomes after one attempt without direct fallback", () => {
+    const nativeFunctions = jonesNativeHelperSource.split(
+      "\nparser = argparse.ArgumentParser()",
+    )[0];
+    const scenario = String.raw`
+manifest_path = pathlib.Path('/synthetic/jones-active-install.json')
+active = {'home': '/synthetic', 'profile': '/synthetic-profile', 'generation': 'previous',
+          'appPath': '/synthetic/Old Jones.app', 'executablePath': '/synthetic/Old Jones.app/Contents/MacOS/Jones'}
+good = {'protocol': 1, 'status': 'launched', 'pid': 456,
+        'bundlePath': active['appPath'], 'executablePath': active['executablePath']}
+cases = ['timeout', 'os-error', 'nonzero', 'oversized', 'non-ascii', 'malformed', 'list', 'protocol-missing',
+         'protocol-wrong', 'protocol-boolean', 'failed', 'unavailable', 'pid-zero', 'pid-negative', 'pid-boolean',
+         'pid-string', 'pid-missing', 'bundle-missing', 'bundle-wrong', 'executable-missing', 'executable-wrong',
+         'exited', 'identity-wrong', 'identity-prefix']
+for fault in cases:
+    calls, direct, observed = [], [], []
+    def capture(command, **kwargs):
+        calls.append(command)
+        if fault == 'timeout': raise subprocess.TimeoutExpired(command, 30)
+        if fault == 'os-error': raise OSError('must-not-leak-environment-or-command')
+        reply = dict(good)
+        if fault == 'protocol-missing': reply.pop('protocol')
+        if fault == 'protocol-wrong': reply['protocol'] = 2
+        if fault == 'protocol-boolean': reply['protocol'] = True
+        if fault in ('failed', 'unavailable'): reply = {'protocol': 1, 'status': fault, 'domain': 'NSOSStatusErrorDomain', 'code': -10810}
+        if fault.startswith('pid-'):
+            reply['pid'] = {'pid-zero': 0, 'pid-negative': -1, 'pid-boolean': True, 'pid-string': '456', 'pid-missing': None}[fault]
+        if fault == 'bundle-missing': reply.pop('bundlePath')
+        if fault == 'bundle-wrong': reply['bundlePath'] = '/substituted.app'
+        if fault == 'executable-missing': reply.pop('executablePath')
+        if fault == 'executable-wrong': reply['executablePath'] = '/substituted/Jones'
+        raw = json.dumps(reply).encode('ascii')
+        if fault == 'oversized': raw = b' ' * 16385
+        if fault == 'non-ascii': raw = b'\xff'
+        if fault == 'malformed': raw = b'{'
+        if fault == 'list': raw = b'[]'
+        return type('Result', (), {'returncode': 1 if fault == 'nonzero' else 0, 'stdout': raw})()
+    def direct_launch(*args, **kwargs):
+        direct.append(args)
+        raise AssertionError('Direct fallback attempted')
+    def identity(pid):
+        observed.append(pid)
+        if fault == 'exited': return None
+        if fault == 'identity-wrong': return 'start /some/other/app'
+        if fault == 'identity-prefix': return 'start ' + active['executablePath'] + '-substituted'
+        return 'start ' + active['executablePath']
+    subprocess.run, subprocess.Popen, process_identity = capture, direct_launch, identity
+    try: launch(active)
+    except RuntimeError as error:
+        assert 'must-not-leak' not in str(error) and '/usr/bin/osascript' not in str(error)
+    else: raise AssertionError('Unproved launch accepted: ' + fault)
+    assert len(calls) == 1 and direct == [], fault
+    assert observed == ([456] if fault in ('exited', 'identity-wrong', 'identity-prefix') else []), fault
+`;
+    runPython(nativeFunctions + "\n" + scenario, [], {
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 10000,
+    });
+  });
+
+  it("admits launch support only for the exact availability reply", () => {
+    const nativeFunctions = jonesNativeHelperSource.split(
+      "\nparser = argparse.ArgumentParser()",
+    )[0];
+    const scenario = String.raw`
+replies = [{'protocol': 1, 'status': 'available'}, {'protocol': True, 'status': 'available'},
+           {'protocol': 2, 'status': 'available'}, {'protocol': 1, 'status': 'available', 'extra': True},
+           {'protocol': 1, 'status': 'unavailable'}, {'protocol': 1, 'status': 'launched'}, {}, [], None]
+for reply in replies:
+    calls = []
+    def capture(command, **kwargs):
+        calls.append(command)
+        assert json.loads(command[5]) == {'probe': True}
+        return type('Result', (), {'returncode': 0, 'stdout': json.dumps(reply).encode('ascii')})()
+    subprocess.run = capture
+    assert launch_services_available() is (reply is replies[0]), reply
+    assert len(calls) == 1
+calls = []
+def unavailable(command, **kwargs):
+    calls.append(command)
+    raise OSError('Synthetic unavailable osascript')
+subprocess.run = unavailable
+assert launch_services_available() is False and len(calls) == 1
+`;
+    runPython(nativeFunctions + "\n" + scenario, [], {
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 10000,
+    });
+  });
+
+  it("keeps the validated LaunchServices script parseable through the raw materializer", () => {
+    const nativeFunctions = jonesNativeHelperSource.split(
+      "\nparser = argparse.ArgumentParser()",
+    )[0];
+    const script = JSON.parse(
+      runPython(nativeFunctions + "\nprint(json.dumps(LAUNCH_SERVICES_SCRIPT))", [], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      }),
+    ) as string;
+    expect(script).not.toContain("`");
+    expect(script).not.toContain("${");
+    expect(() => new Function(script)).not.toThrow();
   });
 
   it.each([
@@ -988,6 +1314,7 @@ assert captured['T3CODE_HOME'] == '/synthetic'
     "missing-bundle-identity",
     "cold-state",
     "launch-unknown",
+    "launch-unavailable",
   ])(
     "runs the controlled manual installation with %s and preserves the recovery pair",
     async (fault) => {
@@ -999,6 +1326,7 @@ assert captured['T3CODE_HOME'] == '/synthetic'
         const setup = activationScenario.split("\nevents = []")[0];
         const scenario = String.raw`
 manual_fault = sys.argv[3]
+launch_services_available = lambda: manual_fault != 'launch-unavailable'
 # A completed old transaction remains historical; manual adoption creates no warm transaction.
 durable(tx / 'journal.json', {'intent': intent, 'phase': 'resumed'}, True)
 installed = dict(expected, version='old-13', sourceSha='3' * 40, sourceTree='4' * 40,
@@ -1050,10 +1378,11 @@ def manual_launch(active, descriptor=None):
     return {'pid': 456, 'identity': 'captured-new-process'}
 launch = manual_launch
 manual_root = manifest_path.parent / 'jones-manual-installs'
-if manual_fault in ('stale-admission', 'wrong-bundle', 'wrong-artifact', 'missing-bundle-identity', 'cold-state'):
+if manual_fault in ('stale-admission', 'wrong-bundle', 'wrong-artifact', 'missing-bundle-identity', 'cold-state', 'launch-unavailable'):
     try: manual_install(plan_path, plan_hash, apply=True)
-    except RuntimeError: pass
-    else: raise AssertionError('A changed manual plan or cold state was accepted')
+    except RuntimeError as error:
+        if manual_fault == 'launch-unavailable': assert 'LaunchServices is unavailable' in str(error)
+    else: raise AssertionError('A changed manual plan, cold state, or unavailable launcher was accepted')
     assert events == []
     assert not manual_root.exists()
     assert manifest_path.read_bytes() == original_manifest
@@ -1094,9 +1423,9 @@ else:
 print(json.dumps({'case': manual_fault, 'passed': True}))
 `;
         const result = JSON.parse(
-          NodeChildProcess.execFileSync(
-            "python3",
-            ["-c", nativeFunctions + "\n" + setup + "\n" + scenario, f.directory, "success", fault],
+          runPython(
+            nativeFunctions + "\n" + setup + "\n" + scenario,
+            [f.directory, "success", fault],
             { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
           ),
         ) as { passed: boolean };
@@ -1220,15 +1549,9 @@ if boundary_fault.startswith('mount-'):
     assert {str(path): path.read_bytes() for path in tx.rglob('*') if path.is_file()} == before
 assert database.exists() and (profile / 'opaque').read_text() == 'advanced-profile'
 `;
-        NodeChildProcess.execFileSync(
-          "python3",
-          [
-            "-c",
-            `${nativeFunctions}\n${runtime}\n${scenario}`,
-            f.directory,
-            "trial-mismatch",
-            fault,
-          ],
+        runPython(
+          `${nativeFunctions}\n${runtime}\n${scenario}`,
+          [f.directory, "trial-mismatch", fault],
           {
             encoding: "utf8",
             timeout: 10000,
@@ -1394,15 +1717,14 @@ assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-ex
 assert read(staged['receiptPath'])['app'] == staged and candidate_app.exists()
 if retirement_fault == 'internal-symlink': assert (root / 'unrelated-payload').read_text() == 'must survive'
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${runtime}\n${scenario}`, f.directory, "trial-mismatch", fault],
-        {
-          encoding: "utf8",
-          timeout: 10000,
-          maxBuffer: 1024 * 1024,
-        },
-      );
+      // Keep generated programs out of argv: Linux limits each argument to 128 KiB.
+      const script = NodePath.join(f.directory, "retirement-scenario.py");
+      await NodeFSP.writeFile(script, `${nativeFunctions}\n${runtime}\n${scenario}`);
+      NodeChildProcess.execFileSync("python3", [script, f.directory, "trial-mismatch", fault], {
+        encoding: "utf8",
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
@@ -1451,15 +1773,11 @@ assert (profile / 'opaque').read_text() == 'advanced-profile'
 assert {str(path): digest(path) for path in first.rglob('*') if path.is_file()} == retained
 assert read(staged['receiptPath'])['app'] == staged
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${runtime}\n${scenario}`, f.directory, "trial-mismatch"],
-        {
-          encoding: "utf8",
-          timeout: 10000,
-          maxBuffer: 1024 * 1024,
-        },
-      );
+      runPython(`${nativeFunctions}\n${runtime}\n${scenario}`, [f.directory, "trial-mismatch"], {
+        encoding: "utf8",
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
@@ -1503,15 +1821,11 @@ assert read(tx / 'journal.json') == prior_journal
 assert (tx / 'retained-evidence').read_text() == 'previous attempt retained'
 assert read(staged['receiptPath'])['app']['handle'] == staged['handle']
 `;
-        NodeChildProcess.execFileSync(
-          "python3",
-          ["-c", `${nativeFunctions}\n${setup}\n${scenario}`, f.directory, fault],
-          {
-            encoding: "utf8",
-            timeout: 10000,
-            maxBuffer: 1024 * 1024,
-          },
-        );
+        runPython(`${nativeFunctions}\n${setup}\n${scenario}`, [f.directory, fault], {
+          encoding: "utf8",
+          timeout: 10000,
+          maxBuffer: 1024 * 1024,
+        });
       } finally {
         await f.cleanup();
       }
@@ -1558,15 +1872,11 @@ finally:
     sys.platform = original_platform
 assert not path.exists() and sibling.read_text() == 'keep'
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
-        {
-          encoding: "utf8",
-          timeout: 10000,
-          maxBuffer: 1024 * 1024,
-        },
-      );
+      runPython(`${nativeFunctions}\n${scenario}`, [f.directory], {
+        encoding: "utf8",
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
@@ -1618,15 +1928,11 @@ else:
         assert not (tx / 'journal.json').exists()
 assert (profile / 'opaque').read_text() == 'same-host-profile'
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${setup}\n${scenario}`, f.directory, fault],
-        {
-          encoding: "utf8",
-          timeout: 10000,
-          maxBuffer: 1024 * 1024,
-        },
-      );
+      runPython(`${nativeFunctions}\n${setup}\n${scenario}`, [f.directory, fault], {
+        encoding: "utf8",
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
@@ -1683,15 +1989,11 @@ finally:
     if child.poll() is None: child.kill()
     child.wait(timeout=5)
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${setup}\n${scenario}`, f.directory, "interleaved"],
-        {
-          encoding: "utf8",
-          timeout: 15000,
-          maxBuffer: 1024 * 1024,
-        },
-      );
+      runPython(`${nativeFunctions}\n${setup}\n${scenario}`, [f.directory, "interleaved"], {
+        encoding: "utf8",
+        timeout: 15000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
@@ -1741,15 +2043,11 @@ except RuntimeError as error: assert 'inode changed' in str(error)
 else: raise AssertionError('Replaced lease inode was accepted')
 assert old.exists()
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
-        {
-          encoding: "utf8",
-          timeout: 10000,
-          maxBuffer: 1024 * 1024,
-        },
-      );
+      runPython(`${nativeFunctions}\n${scenario}`, [f.directory], {
+        encoding: "utf8",
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
@@ -1769,6 +2067,7 @@ assert old.exists()
     "unknown-journal",
     "discard-sync-failed",
     "claim-sync-failed",
+    "launch-unavailable",
   ])("serializes the %s selection outcome without deleting retained artifacts", async (fault) => {
     const f = await fixture();
     try {
@@ -1777,11 +2076,12 @@ assert old.exists()
       )[0];
       const setup = activationScenario.split("\nevents = []")[0];
       const scenario = String.raw`
+launch_services_available = lambda: fault != 'launch-unavailable'
 request = tx / 'activation-request.json'
 os.rename(tx / 'intent.json', request)
 def run(operation):
     return selection_command(operation, expected, staged['handle'], str(selection_path), selection_digest, str(request), transaction_id if operation != 'discard-staged' else None)
-claiming = fault in ('claim', 'discard-before-claim', 'wrong-request', 'wrong-candidate', 'wrong-continuation', 'claim-sync-failed')
+claiming = fault in ('claim', 'discard-before-claim', 'wrong-request', 'wrong-candidate', 'wrong-continuation', 'claim-sync-failed', 'launch-unavailable')
 if not claiming or fault == 'discard-before-claim':
     for name in ('prepare-intent.json', 'prepare-dispatched.json', 'continuation.json'): (tx / name).unlink()
 if fault == 'wrong-selection': selection_digest = '0' * 64
@@ -1822,6 +2122,7 @@ elif fault in ('discard-sync-failed', 'claim-sync-failed'):
     assert selection_path.exists() == (fault == 'claim-sync-failed')
 else:
     assert outcome['status'] == 'refused', outcome
+    if fault == 'launch-unavailable': assert outcome['reason'] == 'launch-unavailable', outcome
     assert not (tx / 'intent.json').exists()
     assert selection_path.exists() == (fault != 'discard-before-claim')
 assert (candidate_app / 'Contents/MacOS/Jones').read_text() == 'candidate-executable'
@@ -1830,11 +2131,11 @@ assert payload.read_text() == 'synthetic-qualified-dmg'
 assert (profile / 'opaque').read_text() == 'same-host-profile'
 with sqlite3.connect(database) as db: assert db.execute('SELECT value FROM identity').fetchone()[0] == 'previous-state'
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${setup}\n${scenario}`, f.directory, fault],
-        { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
-      );
+      runPython(`${nativeFunctions}\n${setup}\n${scenario}`, [f.directory, fault], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      });
     } finally {
       await f.cleanup();
     }
@@ -2012,14 +2313,9 @@ else:
 assert (profile / 'opaque').read_text() == 'same-host-profile'
 with sqlite3.connect(database) as db: assert db.execute('SELECT value FROM identity').fetchone()[0] == 'previous-state'
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        [
-          "-c",
-          `${nativeFunctions}\n${setup}\n${preparationOnlyScenario}\n${scenario}`,
-          f.directory,
-          fault,
-        ],
+      runPython(
+        `${nativeFunctions}\n${setup}\n${preparationOnlyScenario}\n${scenario}`,
+        [f.directory, fault],
         { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
       );
     } finally {
@@ -2057,14 +2353,9 @@ held()
 recovered(run('--retire-preparation', transaction_id, '--plan-sha256', inspected['planSha256'], '--quiescent'), 'writers-quiescent')
 assert run('--discard-staged', staged['handle'], '--selection', str(selection_path), '--selection-sha256', selection_digest)['reason'] == 'activation-pending'
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        [
-          "-c",
-          `${nativeFunctions}\n${setup}\n${preparationOnlyScenario}\n${scenario}`,
-          f.directory,
-          "operator",
-        ],
+      runPython(
+        `${nativeFunctions}\n${setup}\n${preparationOnlyScenario}\n${scenario}`,
+        [f.directory, "operator"],
         { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 20000 },
       );
     } finally {
@@ -2101,15 +2392,11 @@ with open(lock_path, 'r+') as lock:
         assert json.loads(result.stdout) == {'protocol': 1, 'operation': operation, 'transactionId': 'e' * 64, 'status': 'refused', 'reason': 'busy'}
 assert sorted(path.name for path in root.iterdir()) == ['jones-activation.lock', 'manifest.json', 'synthetic-helper.py']
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
-        {
-          encoding: "utf8",
-          maxBuffer: 1024 * 1024,
-          timeout: 10000,
-        },
-      );
+      runPython(`${nativeFunctions}\n${scenario}`, [f.directory], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      });
     } finally {
       await f.cleanup();
     }
@@ -2150,6 +2437,8 @@ assert sorted(path.name for path in root.iterdir()) == ['jones-activation.lock',
   it.each([
     ["success", "resumed"],
     ["trial-mismatch", "rolled-back"],
+    ["restart-refused", "rolled-back"],
+    ["snapshot-restart-refused", "rolled-back"],
     ["authority-restore", "rolled-back"],
     ["authority-absent", "rolled-back"],
     ["authority-fence-lost", "blocked"],
@@ -2289,11 +2578,11 @@ restore_pair(expected, root / 'pair', root / 'advanced', expected)
 with sqlite3.connect(database) as db:
     assert db.execute('SELECT value FROM identity').fetchone()[0] == 'previous'
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
-        { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
-      );
+      runPython(`${nativeFunctions}\n${scenario}`, [f.directory], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      });
     } finally {
       await f.cleanup();
     }
@@ -2355,15 +2644,11 @@ try: storage_preflight(expected, staged, recursive)
 except RuntimeError as error: assert 'own destination' in str(error)
 else: raise AssertionError('Recursive database snapshot was accepted')
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
-        {
-          encoding: "utf8",
-          maxBuffer: 1024 * 1024,
-          timeout: 10000,
-        },
-      );
+      runPython(`${nativeFunctions}\n${scenario}`, [f.directory], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      });
     } finally {
       await f.cleanup();
     }
@@ -2408,15 +2693,11 @@ for suffix in ('', '-wal', '-shm'):
     assert pathlib.Path(str(database) + suffix).read_bytes() == ('old' + suffix).encode()
     assert (tx / 'advanced' / (database.name + suffix)).read_bytes() == ('advanced' + suffix).encode()
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
-        {
-          encoding: "utf8",
-          maxBuffer: 1024 * 1024,
-          timeout: 10000,
-        },
-      );
+      runPython(`${nativeFunctions}\n${scenario}`, [f.directory], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      });
     } finally {
       await f.cleanup();
     }
@@ -2458,11 +2739,11 @@ for suffix, content in contents.items():
     assert pathlib.Path(str(database) + suffix).read_bytes() == content
     assert (root / 'copy-advanced' / ('state.sqlite' + suffix)).read_bytes() == b'advanced state'
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
-        { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
-      );
+      runPython(`${nativeFunctions}\n${scenario}`, [f.directory], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      });
     } finally {
       await f.cleanup();
     }
@@ -2504,7 +2785,7 @@ finally:
     if child.returncode is None: child.kill()
     child.wait(timeout=2)
 `;
-    NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`], {
+    runPython(`${nativeFunctions}\n${scenario}`, [], {
       encoding: "utf8",
       maxBuffer: 1024 * 1024,
       timeout: 10000,
@@ -2586,7 +2867,7 @@ for birth in ('Sa 10 Okt 08:20:14 2026', '2026年10月10日 08:20:14'):
     blocked([result(birth + ' /different/process'), result(birth + ' S')], 'Process identity changed; signal withheld.')
     blocked([zombie, result(birth.replace('08:20:14', '08:20:15') + ' Z')], 'Process identity changed; signal withheld.')
 `;
-    NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`], {
+    runPython(`${nativeFunctions}\n${scenario}`, [], {
       encoding: "utf8",
       maxBuffer: 1024 * 1024,
       timeout: 10000,
@@ -2621,7 +2902,7 @@ try: inspect('', 1, "lsof: WARNING: can't stat() /synthetic/profile/Local Storag
 except RuntimeError: pass
 else: raise AssertionError('An incomplete profile inspection was accepted')
 `;
-    NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`], {
+    runPython(`${nativeFunctions}\n${scenario}`, [], {
       encoding: "utf8",
       maxBuffer: 1024 * 1024,
       timeout: 10000,
@@ -2658,11 +2939,11 @@ for key, bad in (('sourceSha', 'c' * 40), ('sourceTree', 'd' * 40), ('version', 
     except RuntimeError: pass
     else: raise AssertionError('A changed bundle identity was accepted')
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
-        { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
-      );
+      runPython(`${nativeFunctions}\n${scenario}`, [f.directory], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      });
     } finally {
       await f.cleanup();
     }
@@ -2732,11 +3013,11 @@ assert (root / 'advanced-state' / 'profile').exists() == legacy
 if legacy: assert (root / 'advanced-state' / 'profile' / 'opaque-profile').read_text() == 'advanced-profile'
 assert (pair / 'state.sqlite').exists() == legacy
 `;
-        NodeChildProcess.execFileSync(
-          "python3",
-          ["-c", `${nativeFunctions}\n${scenario}`, f.directory, String(legacy)],
-          { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
-        );
+        runPython(`${nativeFunctions}\n${scenario}`, [f.directory, String(legacy)], {
+          encoding: "utf8",
+          maxBuffer: 1024 * 1024,
+          timeout: 10000,
+        });
       } finally {
         await f.cleanup();
       }
@@ -2804,11 +3085,10 @@ else:
     assert (profile / 'opaque').read_bytes() == b'profile'
     assert not (advanced / 'profile').exists()
 `;
-        NodeChildProcess.execFileSync(
-          "python3",
-          ["-c", definitions + "\n" + scenario, f.directory, fault],
-          { encoding: "utf8", timeout: 10000 },
-        );
+        runPython(definitions + "\n" + scenario, [f.directory, fault], {
+          encoding: "utf8",
+          timeout: 10000,
+        });
       } finally {
         await f.cleanup();
       }
@@ -2828,11 +3108,11 @@ else:
       const nativeFunctions = jonesNativeHelperSource.split(
         "\nparser = argparse.ArgumentParser()",
       )[0];
-      const digest = NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\nprint(app_digest(sys.argv[1]))`, app],
-        { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
-      ).trim();
+      const digest = runPython(`${nativeFunctions}\nprint(app_digest(sys.argv[1]))`, [app], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      }).trim();
       expect(await hashMacApp(app)).toBe(digest);
       await NodeFSP.symlink(f.directory, NodePath.join(app, "escape"));
       await expect(hashMacApp(app)).rejects.toThrow("escapes");

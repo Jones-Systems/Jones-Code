@@ -3,7 +3,7 @@
   // Exported types are part of our contracts even before they have consumers.
   "rules": { "types": "off", "nsTypes": "off" },
   // These executables are supplied by the OS or installed separately from npm.
-  "ignoreBinaries": ["eas", "file", "mkfifo", "pkill", "pkg-config", "plutil", "sips"],
+  "ignoreBinaries": ["cc", "eas", "file", "mkfifo", "pkill", "pkg-config", "plutil", "sips"],
   "workspaces": {
     ".": {
       // Keep vendored reference repositories outside the root project.
@@ -20,9 +20,12 @@
     },
     "scripts": {
       // Knip loads its preprocessor through a CLI option; native verification and
-      // worktree setup (from t3.json) run directly. Retain the CLI archive verifier.
+      // worktree setup (from t3.json) run directly. Retain the CLI archive verifier,
+      // explicit Windows artifact verifier, and electron-builder macOS signer.
       "entry": [
         "knip-schemas.ts",
+        // Retained upstream release CLI; its publishing workflow stays disabled.
+        "resolve-nightly-release.ts",
         "mobile-native-client.ts",
         "setup-worktree.ts",
         "smoke-cli-archive.ts",
@@ -40,11 +43,14 @@
         "jones/performance/fixtures-historical-worker.mjs",
         "jones/performance/migration-restore-worker.mjs",
         "jones/performance/current-qualification-worker.mjs",
+        "sign-macos.ts",
+        "verify-windows-desktop-artifact.ts",
         // Candidate CI builds and invokes these disposable SEA qualification entries.
         "jones/native-enrollment/candidate.vite.config.ts",
         "jones/native-enrollment/sea-fixture.cjs",
         "jones/native-enrollment/sea-fixture.node-test.mjs",
       ],
+      "ignoreDependencies": ["esbuild"],
       // The `t3` npm package's files: copied into the package, never imported.
       "ignore": ["npm-launcher/**"],
     },
@@ -63,17 +69,26 @@
         "src/claude-history-worker.ts!",
         "scripts/cli.ts",
         "scripts/evaluate-thread-titles.ts",
+        "scripts/fetch-expo-schema.ts",
         "scripts/measure-pr-preview.ts",
         "scripts/probe-claude-fork-local-rollback-replay.ts",
         "scripts/update-test-shard-weights.ts",
         "scripts/verify-background-live.ts",
+        // The physical-host operator and relay launch these fixtures by filename.
+        "integration/jones-e2e/physicalHost.ts",
+        "integration/jones-e2e/physicalHost.worker.ts",
         "src/provider/testFixtures/*.mjs",
+        "src/jones/workstreams/operations/fullAppFixture.ts",
         // Staged native creation substrate is consumed by the deferred L39 execution slice.
         // Analyzer entries preserve these APIs without registering runtime authority or launch.
         "src/jones/nativeCreation/NativeCreationPreparation.ts",
         "src/jones/nativeCreation/NativeCreationAuthority.ts",
         "src/jones/nativeCreation/NativeCreationRepositorySqlite.ts",
+        // graphqlgen reads its config.
+        "graphql.config.ts",
       ],
+      // The generated operations export every selection's class.
+      "ignoreIssues": { "**/*.graphql.ts": ["exports", "types", "namespaceMembers"] },
       // Keep the transitive Effect runtime pinned for standalone npm installs.
       // The Vite+ web build prerequisite.
       // Native and disk-loaded provider packages stay external to the bundle; the
@@ -102,8 +117,11 @@
         // The namespace launcher stages and loads these modules by filename.
         "scripts/ui-evidence/probe.mjs",
         "scripts/ui-evidence/runner.mjs",
+        "scripts/ui-evidence/support/pin-oracle.mjs",
         "scripts/ui-evidence/scenarios/example.mjs",
         "scripts/ui-evidence/scenarios/sidebar-rename.mjs",
+        "scripts/ui-evidence/scenarios/sidebar-pin-reload.mjs",
+        "scripts/ui-evidence/scenarios/two-servers-one-client.mjs",
         "scripts/ui-evidence/scenarios/thread-self-configure.mjs",
         "scripts/ui-evidence/thread-self-configure-support.mjs",
       ],
@@ -126,11 +144,18 @@
         "src/jones/updates/fixtures/client-update-notices-entry.tsx",
         // The PR read fixture HTML loads this synthetic verification entry.
         "src/jones/pullRequestReads/fixtures/pr-read-pause-entry.tsx",
+        "src/jones/workstreams/operationsPreview.tsx",
+        // Evidence fixtures run under node.
+        "test/fixtures/**/*.mjs",
       ],
       // UI component modules are copied and adapted as cohesive sets. Keep their
       // named subcomponents even before they have callers; the file audit still
       // reports an entire component module when nothing imports it.
       "ignoreIssues": { "src/components/ui/*.tsx": ["exports", "nsExports", "duplicates"] },
+    },
+    "apps/marketing": {
+      // `astro check` runs from the typecheck task in vite.config.ts, which knip does not read.
+      "ignoreDependencies": ["@astrojs/check"],
     },
     "apps/mobile": {
       // Expo loads plugins and the fingerprint config by string; Metro embeds the browser entry in the native WebView.

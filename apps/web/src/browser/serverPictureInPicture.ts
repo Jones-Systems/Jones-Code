@@ -5,10 +5,14 @@ import {
   createPreviewStreamClient,
   type PreviewStreamClient,
 } from "@t3tools/client-runtime/preview/server-browser-stream";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { previewPdfAssetUrl } from "@t3tools/shared/preview";
 import { useSyncExternalStore } from "react";
 
 import { readPreviewStreamAccess } from "~/state/previewStream";
+import { previewStateAtom, type ThreadPreviewState } from "~/previewStateStore";
+import { appAtomRegistry } from "~/rpc/atomRegistry";
 
 interface WebKitVideo {
   webkitSetPresentationMode?: (mode: string) => void;
@@ -64,7 +68,7 @@ export function closeServerPictureInPicture(): void {
 /** Open during user activation, seeding the video with the currently visible frame. */
 export async function openServerPictureInPicture(input: {
   readonly environmentId: EnvironmentId;
-  readonly threadId: string;
+  readonly threadId: ThreadId;
   readonly tabId: string;
   readonly seed: HTMLCanvasElement | null;
 }): Promise<void> {
@@ -92,6 +96,7 @@ export async function openServerPictureInPicture(input: {
   let stopped = false;
   let refusals = 0;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let stopWatchingPreview = () => {};
   const onLeave = () => {
     if (active === current) closeServerPictureInPicture();
   };
@@ -146,6 +151,7 @@ export async function openServerPictureInPicture(input: {
     key: serverPictureInPictureKey(input.threadId, input.tabId),
     stop: () => {
       stopped = true;
+      stopWatchingPreview();
       if (retryTimer !== null) clearTimeout(retryTimer);
       client?.stop();
       painter.stop();
@@ -182,5 +188,20 @@ export async function openServerPictureInPicture(input: {
     onLeave();
     throw error;
   }
-  if (active === current) void connect(false);
+  if (active === current) {
+    const atom = previewStateAtom(scopedThreadKey(input));
+    const closeForPdf = (state: ThreadPreviewState) => {
+      const navigation = state.sessions[input.tabId]?.navStatus;
+      if (
+        navigation?._tag === "Success" &&
+        previewPdfAssetUrl(navigation.url, navigation.url) !== null
+      ) {
+        onLeave();
+      }
+    };
+    // PDFs render in the client and cannot appear in the server's video stream.
+    stopWatchingPreview = appAtomRegistry.subscribe(atom, closeForPdf);
+    closeForPdf(appAtomRegistry.get(atom));
+    if (active === current) void connect(false);
+  }
 }

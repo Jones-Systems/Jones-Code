@@ -1,3 +1,8 @@
+import {
+  threadLinksHandler,
+  threadLinkHandler,
+  threadHandoffHandler,
+} from "../../../jones/linkedThreads/tools.ts";
 import { threadGoalHandler } from "../../../jones/goals/tool.ts";
 import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import { OrchestratorToolkit } from "./tools.ts";
@@ -11,6 +16,9 @@ import * as OrchestratorMcpService from "../../OrchestratorMcpService.ts";
 import * as ThreadMetadataMcpService from "../../ThreadMetadataMcpService.ts";
 
 const handlers = {
+  t3_thread_links: threadLinksHandler,
+  t3_thread_link: threadLinkHandler,
+  t3_thread_handoff: threadHandoffHandler,
   t3_thread_goal: threadGoalHandler,
   t3_thread_settle: McpToolAccess.actsAsCaller((input) =>
     Effect.gen(function* () {
@@ -19,11 +27,11 @@ const handlers = {
       return yield* service.settleThread(scope, input);
     }),
   ),
-  orchestrator_capabilities: McpToolAccess.reads(() =>
+  orchestrator_capabilities: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.McpInvocationContext;
       const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-      return yield* service.capabilities(scope);
+      return yield* service.capabilities(scope, input);
     }),
   ),
   delegate_task: McpToolAccess.actsAsCaller((input) =>

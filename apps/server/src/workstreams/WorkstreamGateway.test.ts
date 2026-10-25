@@ -16,8 +16,10 @@ import {
   WORKSTREAM_CONTRACT_HEADER_VERSION,
   WORKSTREAM_CONTRACT_MANIFEST_SHA256,
   type WorkstreamCommand,
+  type WorkstreamReceiptRead,
   type WorkstreamTransport,
   WorkstreamTransportError,
+  WorkstreamVerifiedPreDispatchRefusal,
   make,
 } from "./WorkstreamGateway.ts";
 import { makeSyntheticWorkstreamTransport } from "./SyntheticWorkstreamTransport.ts";
@@ -29,6 +31,33 @@ const binding = {
   principalId: "principal-fixture",
   authorizationRevision: 1,
 } as const;
+
+it.effect("recognizes only a verified pre-dispatch refusal after capabilities succeeded", () =>
+  Effect.gen(function* () {
+    const fixture = makeSyntheticWorkstreamTransport();
+    const calls: string[] = [];
+    const refusal = new WorkstreamVerifiedPreDispatchRefusal({});
+    const gateway = yield* make(
+      {
+        ...fixture,
+        getCapabilities: (input) =>
+          fixture
+            .getCapabilities(input)
+            .pipe(Effect.tap(() => Effect.sync(() => calls.push("ready")))),
+        // Qualified internal fixture only; producer proof verification belongs to the adapter.
+        submitCommand: () => {
+          calls.push("refused-before-dispatch");
+          return Effect.fail(refusal);
+        },
+      },
+      { binding },
+    );
+    const error = yield* gateway.submit(updateCommand()).pipe(Effect.flip);
+    expect(error.reason).toBe("authorization-not-current");
+    expect(error.cause).toBe(refusal);
+    expect(calls).toEqual(["ready", "refused-before-dispatch"]);
+  }),
+);
 
 const updateCommand = (overrides: Partial<WorkstreamCommand> = {}): WorkstreamCommand => ({
   command_id: "command-fixture-0001",
@@ -45,6 +74,222 @@ const updateCommand = (overrides: Partial<WorkstreamCommand> = {}): WorkstreamCo
   },
   ...overrides,
 });
+
+it.effect("recovers its own lost commit after version advance with identical retained bytes", () =>
+  Effect.gen(function* () {
+    const fixture = makeSyntheticWorkstreamTransport();
+    const bodies: string[] = [];
+    const gateway = yield* make(
+      {
+        ...fixture,
+        resubmitCommand: (input) =>
+          Effect.gen(function* () {
+            bodies.push(input.body);
+            const receipt = yield* fixture.submitCommand(input).pipe(Effect.orDie);
+            if (bodies.length === 1)
+              return yield* new WorkstreamTransportError({
+                operation: "resubmit_command",
+                effect: "unknown-effect",
+                detail: "reply lost after commit",
+              });
+            return { kind: "receipt" as const, receipt };
+          }),
+      },
+      { binding },
+    );
+    const command = updateCommand();
+    const body = `${JSON.stringify(command, null, 2)}\n`;
+    expect((yield* gateway.resubmit(command.command_id, body).pipe(Effect.flip)).reason).toBe(
+      "unknown-effect",
+    );
+    expect((yield* gateway.readSession()).registryVersion).toBe(12);
+    // Legacy refusal cannot answer whether the previous dispatch committed.
+    expect((yield* gateway.submit(command).pipe(Effect.flip)).reason).toBe("version-conflict");
+    const replay = yield* gateway.resubmit(command.command_id, body);
+    expect(replay.kind).toBe("receipt");
+    if (replay.kind !== "receipt") throw new Error("Expected replay receipt");
+    expect(replay.receipt.state).toBe("committed");
+    expect(replay.receipt.request_sha256).toBe(
+      NodeCrypto.createHash("sha256").update(body).digest("hex"),
+    );
+    expect(bodies).toEqual([body, body]);
+    expect((yield* gateway.readSession()).registryVersion).toBe(12);
+  }),
+);
+
+it.effect("reads its witness before the receipt even when a commit interleaves", () =>
+  Effect.gen(function* () {
+    const fixture = makeSyntheticWorkstreamTransport();
+    const calls: string[] = [];
+    const command = updateCommand();
+    const body = JSON.stringify(command);
+    const gateway = yield* make(
+      {
+        ...fixture,
+        getCapabilities: (input) =>
+          fixture
+            .getCapabilities(input)
+            .pipe(Effect.tap(() => Effect.sync(() => calls.push("witness")))),
+        readCommandReceipt: () =>
+          Effect.gen(function* () {
+            calls.push("receipt");
+            if (calls.length > 2) return { kind: "absent" as const };
+            const receipt = yield* fixture
+              .submitCommand({
+                body,
+                command,
+                idempotencyKey: command.command_id,
+                contractVersion: WORKSTREAM_CONTRACT_HEADER_VERSION,
+                contractManifest: WORKSTREAM_CONTRACT_MANIFEST_SHA256,
+              })
+              .pipe(Effect.orDie);
+            return { kind: "receipt" as const, receipt };
+          }),
+      },
+      { binding },
+    );
+    const result = yield* gateway.readReceipt(command.command_id);
+    expect(result).toMatchObject({
+      witness_version: 11,
+      kind: "receipt",
+      receipt: { state: "committed" },
+    });
+    expect(yield* gateway.readReceipt("another-command")).toEqual({
+      witness_version: 12,
+      kind: "absent",
+    });
+    expect(calls).toEqual(["witness", "receipt", "witness", "receipt"]);
+  }),
+);
+
+it.effect(
+  "reuses a locally refused absent index with new bytes without poisoning legacy guards",
+  () =>
+    Effect.gen(function* () {
+      const fixture = makeSyntheticWorkstreamTransport();
+      const bodies: string[] = [];
+      const gateway = yield* make(
+        {
+          ...fixture,
+          readCommandReceipt: () => Effect.succeed<WorkstreamReceiptRead>({ kind: "absent" }),
+          resubmitCommand: (input) => {
+            bodies.push(input.body);
+            return fixture.submitCommand(input).pipe(
+              Effect.orDie,
+              Effect.map((receipt) => ({ kind: "receipt" as const, receipt })),
+            );
+          },
+        },
+        { binding },
+      );
+      const refused = updateCommand({ expected_registry_version: 10 });
+      expect((yield* gateway.submit(refused).pipe(Effect.flip)).reason).toBe("version-conflict");
+      expect(yield* gateway.readReceipt(refused.command_id)).toEqual({
+        witness_version: 11,
+        kind: "absent",
+      });
+      const body = JSON.stringify(updateCommand());
+      expect(yield* gateway.resubmit(refused.command_id, body)).toMatchObject({
+        kind: "receipt",
+        receipt: { state: "committed" },
+      });
+      expect(bodies).toEqual([body]);
+    }),
+);
+
+it.effect(
+  "leaves recovery unknown when CP refuses an old generation or current authorization fails",
+  () =>
+    Effect.gen(function* () {
+      const fixture = makeSyntheticWorkstreamTransport();
+      let submissions = 0;
+      let permitted = true;
+      const gateway = yield* make(
+        {
+          ...fixture,
+          getCapabilities: (input) =>
+            fixture.getCapabilities(input).pipe(
+              Effect.map((value) => ({
+                ...value,
+                permissions: permitted ? value.permissions : [],
+                context: { ...value.context, server_generation: 8 },
+              })),
+            ),
+          resubmitCommand: () => {
+            submissions += 1;
+            return Effect.fail(
+              new WorkstreamTransportError({
+                operation: "resubmit_command",
+                effect: "no-effect",
+                detail: "generation_conflict",
+              }),
+            );
+          },
+        },
+        { binding },
+      );
+      const command = updateCommand();
+      const body = JSON.stringify(command);
+      expect((yield* gateway.resubmit(command.command_id, body).pipe(Effect.flip)).reason).toBe(
+        "unknown-effect",
+      );
+      expect(submissions).toBe(1);
+      permitted = false;
+      expect((yield* gateway.resubmit(command.command_id, body).pipe(Effect.flip)).reason).toBe(
+        "unknown-effect",
+      );
+      expect(submissions).toBe(1);
+    }),
+);
+
+it.effect(
+  "exposes recovery idempotency conflicts and rejects mismatched retained command IDs",
+  () =>
+    Effect.gen(function* () {
+      let submissions = 0;
+      const gateway = yield* make(
+        {
+          ...makeSyntheticWorkstreamTransport(),
+          resubmitCommand: () => {
+            submissions += 1;
+            return Effect.succeed({ kind: "idempotency_conflict" as const });
+          },
+        },
+        { binding },
+      );
+      const command = updateCommand();
+      expect(yield* gateway.resubmit(command.command_id, JSON.stringify(command))).toEqual({
+        kind: "idempotency_conflict",
+      });
+      const mismatched = yield* gateway
+        .resubmit("different-command", JSON.stringify(command))
+        .pipe(Effect.flip);
+      expect(mismatched.reason).toBe("unknown-effect");
+      expect(submissions).toBe(1);
+    }),
+);
+
+it.effect("never converts an unverified receipt failure into absence", () =>
+  Effect.gen(function* () {
+    const gateway = yield* make(
+      {
+        ...makeSyntheticWorkstreamTransport(),
+        readCommandReceipt: () =>
+          Effect.fail(
+            new WorkstreamTransportError({
+              operation: "read_command_receipt",
+              effect: "no-effect",
+              detail: "not_found",
+            }),
+          ),
+      },
+      { binding },
+    );
+    expect((yield* gateway.readReceipt("unknown-command").pipe(Effect.flip)).reason).toBe(
+      "unknown-effect",
+    );
+  }),
+);
 
 it.effect("bounds metadata reads and falls back only to its metadata cache", () =>
   Effect.gen(function* () {

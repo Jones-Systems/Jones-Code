@@ -123,6 +123,43 @@ its agents can already do anything that user can, so the fence would only stop
 T3's own tools. Its work still carries `linkOrigin`, so clients show where it
 came from. A stamp without the access, from before it was recorded, is fenced.
 
+## Linked threads across environments
+
+[Linked threads](../user/linked-threads.md) are navigation records independent
+of upstream lineage and peer authorization. A cross-environment relationship
+can have a local copy in each endpoint's environment, sharing one link ID.
+Clients combine copies from connected capable environments; a missing copy
+must not hide the copy another environment can provide. This avoids a fleet
+store and lets a relationship remain visible when one environment is offline.
+
+Forwarded launches and link mirroring reuse the authenticated
+`t3-linked-message-origin` header to identify the originating environment and
+thread. Recording cannot make a successful launch fail, and receiving the
+header does not grant access or create a reverse peer connection. Subagents,
+forks and remote delegation retain their existing lineage rather than acquiring
+standalone launch links.
+
+Reverse state describes recording, not message delivery or handoff acceptance:
+`local` means both endpoints share an environment; `recorded` confirms the
+other copy; `unavailable` means the other copy could not be recorded through
+the available capability or authorized route; `unknown` leaves an ambiguous
+outcome unresolved. An incoming forwarded launch initially has an unknown
+reverse state because its origin records after the launch returns. A one-sided
+record remains useful and must be reported as such.
+
+Peer links are directional. A handoff return route naming the origin does not
+prove the recipient can reach it: verify the recipient environment's outgoing
+link, access, reachability and receiving server support before promising a
+native reply. The origin's outgoing catalog proves neither presence nor absence
+of that reverse route. Incoming message policy also applies; otherwise the user
+can relay the report. Remote-delegation result following uses its existing
+origin-side follower and does not prove a reverse messaging route.
+
+These guarantees depend on the running servers' advertised capabilities.
+An older peer can still launch a thread without recording the relationship;
+an older origin may send no origin header. Source delivery alone does not
+upgrade either server or establish installed support.
+
 ## Hosted web is a client
 
 The hosted web app stores its connection catalog in the browser and connects

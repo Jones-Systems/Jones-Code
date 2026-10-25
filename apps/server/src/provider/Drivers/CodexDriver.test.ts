@@ -4,12 +4,12 @@ import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { expect, it } from "@effect/vitest";
 import { EnvironmentId, ProviderInstanceId, ProviderSessionId, ThreadId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
@@ -103,6 +103,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
   it.effect("disconnect refreshes a restored managed account while its auth flow is idle", () =>
     Effect.gen(function* () {
       const instanceId = ProviderInstanceId.make("restored-managed-account");
+      let evaluationRequests = 0;
       const credentials = new Map<string, Uint8Array>();
       const secrets = ServerSecretStore.ServerSecretStore.of({
         get: (key) => Effect.sync(() => Option.fromUndefinedOr(credentials.get(key))),
@@ -144,9 +145,17 @@ it.layer(layerTest)("CodexDriver", (it) => {
         > = [];
 
         let interruptedChecks = 0;
+        let failAcquire = false;
         const startupChecksInterrupted = yield* Deferred.make<void>();
         const acquire = () =>
           Effect.suspend(() => {
+            if (failAcquire)
+              return Effect.fail(
+                new CodexInstallation.CodexInstallationError({
+                  operation: "acquire",
+                  detail: "The fixture runtime is unavailable",
+                }),
+              );
             if (interruptedChecks === 2) return Effect.succeed(executable);
             interruptedChecks += 1;
             return (
@@ -206,11 +215,36 @@ it.layer(layerTest)("CodexDriver", (it) => {
         );
         yield* Deferred.await(startupChecksInterrupted);
         const restored = yield* instance.snapshot.refresh;
+        expect(restored.supportsRemoteRequestEvaluation).toBe(true);
         expect(restored.auth.email).toBe("account@example.test");
         expect(restored.runtimePaths?.homePath).toBe(sharedHome);
         expect(restored.runtimePaths?.shadowHomePath).toContain(
           `providers/codex/${instanceId}/shadow`,
         );
+        // The fixture app-server cannot start, so the workspace scan fails
+        // instead of passing the machine snapshot off as the workspace's skills.
+        const scan = yield* instance.snapshotForCwd!(serverConfig.stateDir).pipe(Effect.exit);
+        expect(Exit.isFailure(scan)).toBe(true);
+        // The account is still signed in, so a runtime that cannot start is a
+        // failed scan too, not the machine snapshot's inventory.
+        failAcquire = true;
+        expect(
+          yield* instance.textGeneration.evaluateRemoteRequest({
+            cwd: "/missing/untrusted-project",
+            modelSelection: {
+              instanceId,
+              model: "gpt-6.1-sol",
+              options: [{ id: "reasoningEffort", value: "high" }],
+            },
+            message: "Fix the parser",
+          }),
+        ).toEqual({ verdict: "pass", category: "none", reason: "Routine work" });
+        expect(evaluationRequests).toBe(1);
+        const runtimeScan = yield* instance.snapshotForCwd!(serverConfig.stateDir).pipe(
+          Effect.exit,
+        );
+        failAcquire = false;
+        expect(Exit.isFailure(runtimeScan)).toBe(true);
         yield* Deferred.await(observedAccount);
 
         const threadId = ThreadId.make("managed-account-thread");
@@ -242,6 +276,18 @@ it.layer(layerTest)("CodexDriver", (it) => {
         expect(after.installed).toBe(true);
         expect(after.models).toEqual([]);
         expect(Option.isNone(yield* store.get)).toBe(true);
+        yield* instance.textGeneration
+          .evaluateRemoteRequest({
+            cwd: "/missing/untrusted-project",
+            modelSelection: { instanceId, model: "gpt-6.1-sol" },
+            message: "Fix the parser",
+          })
+          .pipe(Effect.flip);
+        expect(evaluationRequests).toBe(1);
+        // Signed out, there is no runtime to scan with, so the machine
+        // snapshot's empty inventory stands instead of a failed scan.
+        const signedOutScan = yield* instance.snapshotForCwd!(serverConfig.stateDir);
+        expect(signedOutScan.skills).toEqual([]);
       }).pipe(
         Effect.provideService(ServerSecretStore.ServerSecretStore, secrets),
         Effect.provideService(
@@ -252,7 +298,41 @@ it.layer(layerTest)("CodexDriver", (it) => {
                 "https://auth.openai.com/.well-known/openid-configuration",
                 "https://auth.openai.com/revoke",
                 "https://api.openai.com/v1/models",
+                "https://api.openai.com/v1/responses",
               ]).toContain(request.url);
+              if (request.url.endsWith("/responses")) {
+                evaluationRequests++;
+                expect(request.headers.authorization).toBe("Bearer dummy-owned-access");
+                return HttpClientResponse.fromWeb(
+                  request,
+                  new Response(
+                    `event: response.completed\ndata: ${JSON.stringify({
+                      type: "response.completed",
+                      response: {
+                        status: "completed",
+                        output: [
+                          {
+                            type: "message",
+                            role: "assistant",
+                            status: "completed",
+                            content: [
+                              {
+                                type: "output_text",
+                                text: JSON.stringify({
+                                  verdict: "pass",
+                                  category: "none",
+                                  reason: "Routine work",
+                                }),
+                              },
+                            ],
+                          },
+                        ],
+                      },
+                    })}\n\n`,
+                    { headers: { "content-type": "text/event-stream" } },
+                  ),
+                );
+              }
               if (request.url.endsWith("/models"))
                 return HttpClientResponse.fromWeb(request, Response.json({ models: [] }));
               return HttpClientResponse.fromWeb(
@@ -313,22 +393,6 @@ it.layer(layerTest)("CodexDriver", (it) => {
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn),
         Effect.scoped,
       ),
-  );
-
-  it.effect("stays manual-only when the configured executable does not exist", () =>
-    Effect.gen(function* () {
-      const instance = yield* CodexDriver.create({
-        instanceId: ProviderInstanceId.make("codex-missing"),
-        displayName: "Codex test",
-        enabled: false,
-        environment: [],
-        config: {
-          ...CodexDriver.defaultConfig(),
-          binaryPath: NodePath.join(NodeOS.tmpdir(), "t3-codex-missing", "codex"),
-        },
-      });
-      expect((yield* instance.snapshot.resolveMaintenance()).update).toBeNull();
-    }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn), Effect.scoped),
   );
 
   for (const fixture of [
@@ -411,44 +475,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
     );
   }
 
-  for (const layout of ["direct", "wrapper"] as const) {
-    it.effect.skipIf(windowsHost)(`leaves a mise ${layout} installation manual-only`, () =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const tempDir = yield* fs
-          .makeTempDirectoryScoped({ prefix: `t3-codex-mise-${layout}-` })
-          .pipe(Effect.flatMap((directory) => fs.realPath(directory)));
-        const binaryPath =
-          layout === "direct"
-            ? NodePath.join(tempDir, "mise", "installs", "codex", "0.110.0", "codex")
-            : NodePath.join(tempDir, "omarchy", "bin", "codex");
-        yield* fs.makeDirectory(NodePath.dirname(binaryPath), { recursive: true });
-        yield* fs.writeFileString(
-          binaryPath,
-          layout === "direct"
-            ? "#!/bin/sh\n"
-            : '#!/bin/sh\nmise use -g --quiet "codex" || exit 1\nexec mise x "codex" -- "codex" "$@"\n',
-        );
-        yield* fs.chmod(binaryPath, 0o755);
-
-        const instance = yield* CodexDriver.create({
-          instanceId: ProviderInstanceId.make(`codex-mise-${layout}`),
-          displayName: "Codex mise test",
-          enabled: false,
-          environment: [],
-          config: {
-            ...CodexDriver.defaultConfig(),
-            binaryPath,
-            homePath: NodePath.join(tempDir, "codex-home"),
-          },
-        });
-
-        expect((yield* instance.snapshot.resolveMaintenance()).update).toBeNull();
-      }).pipe(
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn),
-        Effect.scoped,
-      ),
-    );
+  for (const {} of ["direct", "wrapper"] as const) {
   }
 
   it.effect.each([

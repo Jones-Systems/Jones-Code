@@ -14,6 +14,7 @@ import { DEFAULT_SIGNAL_EXPORT, type SignalExport } from "@t3tools/shared/observ
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import packageJson from "../package.json" with { type: "json" };
 import { holdJonesServerNativeWriterFence } from "./jones/updates/nativeWriterStartup.ts";
+import type { Configuration as WorkspaceLifecycleConfiguration } from "./jones/workspaceLifecycle/Configuration.ts";
 
 export const DEFAULT_PORT = 3773;
 
@@ -88,6 +89,7 @@ export class ServerConfig extends Context.Service<
     readonly desktopNativeOwnerInputFd?: number | undefined;
     readonly desktopNativeOwnerOutputFd?: number | undefined;
     readonly resourceMonitorPath?: string | undefined;
+    readonly workspaceLifecycle?: WorkspaceLifecycleConfiguration | undefined;
     readonly autoBootstrapProjectFromCwd: boolean;
     readonly logWebSocketEvents: boolean;
     readonly tailscaleServeEnabled: boolean;
@@ -274,7 +276,9 @@ const makeTest = Effect.fn("ServerConfig.makeTest")(function* (
   const baseDir =
     typeof baseDirOrPrefix === "string"
       ? baseDirOrPrefix
-      : yield* fs.makeTempDirectoryScoped({ prefix: baseDirOrPrefix.prefix });
+      : // macOS temp dirs live under the /var -> /private/var symlink; storage cleanup's
+        // symlink guards compare resolved paths, so generated test dirs must be real paths.
+        yield* fs.realPath(yield* fs.makeTempDirectoryScoped({ prefix: baseDirOrPrefix.prefix }));
   const derivedPaths = yield* deriveServerPaths(baseDir, devUrl);
   // Invalid fixture directory layouts are test setup defects rather than
   // the service layer's ordinary error channel.

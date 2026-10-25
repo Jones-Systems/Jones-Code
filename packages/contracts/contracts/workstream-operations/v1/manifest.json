@@ -1,0 +1,36 @@
+{
+  "contract_family": "workstream-operations",
+  "contract_version": "1.0.0",
+  "digest_algorithm": "sha256",
+  "manifest_sha256": "82262f6fd0359955b78b864ae707f6875899debe608e957b963f6998b7ce9b20",
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "080373b46f8da7b654eb68ea267207e6d83dcccd416c52112fd37464aeeaad8a"
+    },
+    {
+      "path": "fixtures/conformance.json",
+      "sha256": "1248298f976bc50600ab479ac1ec38fd548dc8235941aa492c95aa8f2905b644"
+    },
+    {
+      "path": "fixtures/negative-cases.json",
+      "sha256": "b2396b2d94a83ba042aeaa00f5bd03250d1e6b33f6f15700246e24b1efffa822"
+    },
+    {
+      "path": "fixtures/semantic-cases.json",
+      "sha256": "52ff53ccf8a7a075c820084366404685224b4f1e9900dcb6ee86eadb9dbcd2e0"
+    },
+    {
+      "path": "schemas/operation-request.schema.json",
+      "sha256": "438bd3ffaa40e70bc88011a254244f05808b6fe7707f9bd52323f5694195ec8d"
+    },
+    {
+      "path": "schemas/operation-result.schema.json",
+      "sha256": "8fe2d557981c70dbfe2f5798b79a6f8424d0eefcc4ebb7269282ede68e826063"
+    },
+    {
+      "path": "schemas/setup-status.schema.json",
+      "sha256": "87557359f45ab14fe9f5c66c37c7398f64f7f3ad0126b39927434ee80a4f5649"
+    }
+  ]
+}

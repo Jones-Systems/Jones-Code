@@ -10,7 +10,7 @@ import { initializeV2Database } from "./initializeV2Database.ts";
 import * as ServerConfig from "../config.ts";
 import { holdJonesServerNativeWriterFence } from "../jones/updates/nativeWriterStartup.ts";
 
-export const WAL_SIZE_LIMIT_BYTES = 32 * 1024 * 1024;
+const WAL_SIZE_LIMIT_BYTES = 32 * 1024 * 1024;
 
 const layerSetup = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -63,6 +63,7 @@ export const layerFromPath = Effect.fn("makeSqlitePersistenceLive")(function* (d
     NodeSqliteClient.layer({
       filename: dbPath,
       readerWorker: true,
+      readerFailureMode: "fail",
       // Checkpoints sync the database, with F_FULLFSYNC on macOS. Run them off
       // the event loop so a slow flush cannot stall clients.
       checkpointWorker: true,

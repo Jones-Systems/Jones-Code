@@ -15,6 +15,10 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
  * even where they differ from the method prefix.
  */
 const RPC_AGGREGATES = {
+  [ORCHESTRATION_V2_WS_METHODS.listLinkedThreads]: "orchestrationV2",
+  [ORCHESTRATION_V2_WS_METHODS.linkThreads]: "orchestrationV2",
+  [ORCHESTRATION_V2_WS_METHODS.unlinkThreads]: "orchestrationV2",
+  [ORCHESTRATION_V2_WS_METHODS.acceptThreadHandoff]: "orchestrationV2",
   [ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap]: "orchestrationV2",
   [ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime]: "orchestrationV2",
   [ORCHESTRATION_V2_WS_METHODS.previewProviderConversationReselection]: "orchestrationV2",
@@ -126,6 +130,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.pullRequestsThreadComments]: "pull-requests",
   [WS_METHODS.pullRequestsDiffFileContents]: "pull-requests",
   [WS_METHODS.pullRequestsFilesViewed]: "pull-requests",
+  [WS_METHODS.pullRequestsChangeBreakdown]: "pull-requests",
   [WS_METHODS.pullRequestsRunAction]: "pull-requests",
   [WS_METHODS.pullRequestsUpdate]: "pull-requests",
   [WS_METHODS.pullRequestsComment]: "pull-requests",
@@ -150,6 +155,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.projectCloneRetry]: "source-control",
   [WS_METHODS.subscribeProjectClones]: "source-control",
   [WS_METHODS.projectsListEntries]: "workspace",
+  [WS_METHODS.projectsListIgnoredFiles]: "workspace",
   [WS_METHODS.projectsReadFile]: "workspace",
   [WS_METHODS.projectsSearchContents]: "workspace",
   [WS_METHODS.projectsSearchEntries]: "workspace",
@@ -211,6 +217,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.subscribeDiscoveredLocalServers]: "preview",
   [WS_METHODS.deviceConfigure]: "device",
   [WS_METHODS.deviceTestHost]: "device",
+  [WS_METHODS.deviceEasAccount]: "device",
   [WS_METHODS.deviceList]: "device",
   [WS_METHODS.deviceOpen]: "device",
   [WS_METHODS.deviceClose]: "device",

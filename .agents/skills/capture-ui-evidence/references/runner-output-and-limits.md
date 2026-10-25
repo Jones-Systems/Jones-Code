@@ -54,4 +54,14 @@ Pass its absolute path through `--build-receipt`. The command rejects changed so
 
 The default `.t3/ui-evidence/runs/` output is task-local and untracked. Attach screenshots or video through the repository's authorized GitHub workflow and verify that each attachment can be retrieved and renders in the PR. The runner does not upload evidence or commit generated captures. Keep the manifest with the PR evidence record so reviewers can identify the exact build, fixture, route, and coverage.
 
+Prefer the official GitHub CLI attachment support using existing CLI authentication. Check `gh pr edit --help` for `--attach` before concluding that browser sign-in is needed. A signed-out Browser profile does not establish that the CLI cannot upload. For an existing PR:
+
+```bash
+gh pr edit 123 --repo OWNER/REPO --attach './before.png#Before the change' --attach './after.png#After the change'
+```
+
+Repeating `--attach` uploads multiple images or videos. Without a body flag, the command preserves the existing PR body and appends the attachments. If updating the description too, use `--body-file`; references to attached local paths are replaced with uploaded URLs. See the [official CLI manual](https://cli.github.com/manual/gh_pr_edit). No extension or browser session is required when the installed CLI and its authentication support the operation.
+
+Read the PR body back and check the uploaded images in the rendered PR. A command can upload some attachments and return a nonzero exit status for others; inspect the saved URLs before retrying so successful uploads are not duplicated. If the local CLI lacks the flag or GitHub rejects the upload, report the actual limitation and use an authorized fallback.
+
 For every evidence set, identify the comparison and candidate revisions, build identity when available, route and platform, actual viewport, scale and theme, fixture and scenario, observable action/readback, and coverage limits. A combined preview must name its integration revision and constituent heads. Refresh any exact-current-head claim after the PR head changes.

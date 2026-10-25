@@ -95,252 +95,251 @@ export const make = Effect.gen(function* () {
   };
 
   // The caller owns the same SQL transaction as the eventual single-event append.
-  const select = (input: HistoricalTerminalInput) =>
-    Effect.gen(function* () {
-      const { event, terminal } = input;
-      const turn = event.providerTurn;
-      if (
-        !isHistoricalTerminalCandidate(event) ||
-        event.runtimeEvidence === undefined ||
-        terminal.type !== "provider-turn.updated"
-      )
-        return "ordinary" as const;
-      const control = yield* projections.getProviderControlContext(input.threadId, {
-        providerThreadId: turn.providerThreadId,
-        providerTurnId: turn.id,
-        ...(turn.runAttemptId === null ? {} : { attemptId: turn.runAttemptId }),
-      });
-      if (control.attempt?.status !== "superseded") return "ordinary" as const;
-      const locator = locators.get(input.threadId);
-      const origin = ProviderEventOrigin.readProviderEventOrigin(event);
-      const binding = origin?.turn?.binding;
-      const capture = event.runtimeEvidence;
-      if (
-        origin?.turn === undefined ||
-        binding === undefined ||
-        binding.runtimeGeneration === undefined ||
-        origin.producer.runtimeGeneration === undefined ||
-        input.runId !== origin.turn.runId ||
-        input.runId !== control.attempt.runId ||
-        input.threadId !== binding.threadId ||
-        (event.threadId !== undefined && event.threadId !== input.threadId) ||
-        input.providerSessionId !== binding.providerSessionId ||
-        input.providerInstanceId !== binding.providerInstanceId ||
-        turn.id !== origin.turn.providerTurnId ||
-        turn.runAttemptId !== origin.turn.attemptId ||
-        turn.nodeId !== control.attempt.rootNodeId ||
-        turn.providerThreadId !== binding.providerThreadId ||
-        control.attempt.providerInstanceId !== binding.providerInstanceId ||
-        control.attempt.providerThreadId !== binding.providerThreadId ||
-        control.attempt.providerTurnId !== turn.id ||
-        capture.threadId !== binding.threadId ||
-        capture.providerThreadId !== binding.providerThreadId ||
-        capture.providerSessionId !== binding.providerSessionId ||
-        capture.providerInstanceId !== binding.providerInstanceId ||
-        capture.driver !== binding.driver ||
-        capture.nativeThreadId !== binding.nativeThreadId ||
-        capture.runtimeGeneration !== binding.runtimeGeneration ||
-        terminal.threadId !== input.threadId ||
-        terminal.runId !== input.runId ||
-        terminal.nodeId !== turn.nodeId ||
-        terminal.driver !== event.driver ||
-        terminal.providerInstanceId !== input.providerInstanceId ||
-        control.providerTurn === undefined ||
-        control.providerTurn.status !== "running" ||
-        control.providerTurn.nodeId !== turn.nodeId ||
-        control.providerTurn.runAttemptId !== turn.runAttemptId ||
-        control.providerTurn.nativeTurnRef === null ||
-        turn.nativeTurnRef === null ||
-        control.providerTurn.nativeTurnRef.driver !== turn.nativeTurnRef.driver ||
-        control.providerTurn.nativeTurnRef.nativeId !== turn.nativeTurnRef.nativeId ||
-        turn.nativeTurnRef.driver !== binding.driver ||
-        turn.completedAt === null
-      )
-        return "stale" as const;
-      const producer = yield* ProviderEventOrigin.revalidateProviderEventOrigin(event, {
-        driver: binding.driver,
-        instanceId: input.providerInstanceId,
-        providerSessionId: input.providerSessionId,
-        eventOriginMode: "captured",
-      }).pipe(Effect.result);
-      if (producer._tag === "Failure") return "stale" as const;
-      if (locator === undefined) return "deferred" as const;
-      const effect = yield* outbox.get(locator.effectId);
-      if (
-        Option.isNone(effect) ||
-        effect.value.commandId !== locator.commandId ||
-        effect.value.threadId !== input.threadId ||
-        effect.value.request.type !== "provider-turn.restart"
-      )
-        return "stale" as const;
-      const request = effect.value.request;
-      if (
-        request.runId !== input.runId ||
-        request.interruptedAttemptId !== turn.runAttemptId ||
-        request.providerTurnId !== turn.id ||
-        request.providerThreadId !== binding.providerThreadId ||
-        request.providerSessionId !== binding.providerSessionId
-      )
-        return "stale" as const;
-      const committed = Array.from(
-        yield* events.readByCommandId({ commandId: locator.commandId }).pipe(Stream.runCollect),
-      );
-      const created = committed.find(
-        (stored) => stored.event.id === locator.successorEventId,
-      )?.event;
-      if (
-        created?.type !== "run-attempt.created" ||
-        created.threadId !== input.threadId ||
-        created.payload.runId !== input.runId ||
-        created.payload.reason !== "steering_restart" ||
-        created.payload.attemptOrdinal !== control.attempt.attemptOrdinal + 1 ||
-        created.payload.providerTurnId !== null ||
-        created.payload.status !== "pending"
-      )
-        return "stale" as const;
-      const successor = created.payload;
-      const recordedRun = committed.find(
-        (stored) => stored.event.type === "run.updated" && stored.event.payload.id === input.runId,
-      )?.event;
-      const retired = committed.find(
+  const select = Effect.fn("HistoricalTerminalHistory.select")(function* (
+    input: HistoricalTerminalInput,
+  ) {
+    const { event, terminal } = input;
+    const turn = event.providerTurn;
+    if (
+      !isHistoricalTerminalCandidate(event) ||
+      event.runtimeEvidence === undefined ||
+      terminal.type !== "provider-turn.updated"
+    )
+      return "ordinary" as const;
+    const control = yield* projections.getProviderControlContext(input.threadId, {
+      providerThreadId: turn.providerThreadId,
+      providerTurnId: turn.id,
+      ...(turn.runAttemptId === null ? {} : { attemptId: turn.runAttemptId }),
+    });
+    if (control.attempt?.status !== "superseded") return "ordinary" as const;
+    const locator = locators.get(input.threadId);
+    const origin = ProviderEventOrigin.readProviderEventOrigin(event);
+    const binding = origin?.turn?.binding;
+    const capture = event.runtimeEvidence;
+    if (
+      origin?.turn === undefined ||
+      binding === undefined ||
+      binding.runtimeGeneration === undefined ||
+      origin.producer.runtimeGeneration === undefined ||
+      input.runId !== origin.turn.runId ||
+      input.runId !== control.attempt.runId ||
+      input.threadId !== binding.threadId ||
+      (event.threadId !== undefined && event.threadId !== input.threadId) ||
+      input.providerSessionId !== binding.providerSessionId ||
+      input.providerInstanceId !== binding.providerInstanceId ||
+      turn.id !== origin.turn.providerTurnId ||
+      turn.runAttemptId !== origin.turn.attemptId ||
+      turn.nodeId !== control.attempt.rootNodeId ||
+      turn.providerThreadId !== binding.providerThreadId ||
+      control.attempt.providerInstanceId !== binding.providerInstanceId ||
+      control.attempt.providerThreadId !== binding.providerThreadId ||
+      control.attempt.providerTurnId !== turn.id ||
+      capture.threadId !== binding.threadId ||
+      capture.providerThreadId !== binding.providerThreadId ||
+      capture.providerSessionId !== binding.providerSessionId ||
+      capture.providerInstanceId !== binding.providerInstanceId ||
+      capture.driver !== binding.driver ||
+      capture.nativeThreadId !== binding.nativeThreadId ||
+      capture.runtimeGeneration !== binding.runtimeGeneration ||
+      terminal.threadId !== input.threadId ||
+      terminal.runId !== input.runId ||
+      terminal.nodeId !== turn.nodeId ||
+      terminal.driver !== event.driver ||
+      terminal.providerInstanceId !== input.providerInstanceId ||
+      control.providerTurn === undefined ||
+      control.providerTurn.status !== "running" ||
+      control.providerTurn.nodeId !== turn.nodeId ||
+      control.providerTurn.runAttemptId !== turn.runAttemptId ||
+      control.providerTurn.nativeTurnRef === null ||
+      turn.nativeTurnRef === null ||
+      control.providerTurn.nativeTurnRef.driver !== turn.nativeTurnRef.driver ||
+      control.providerTurn.nativeTurnRef.nativeId !== turn.nativeTurnRef.nativeId ||
+      turn.nativeTurnRef.driver !== binding.driver ||
+      turn.completedAt === null
+    )
+      return "stale" as const;
+    const producer = yield* ProviderEventOrigin.revalidateProviderEventOrigin(event, {
+      driver: binding.driver,
+      instanceId: input.providerInstanceId,
+      providerSessionId: input.providerSessionId,
+      eventOriginMode: "captured",
+    }).pipe(Effect.result);
+    if (producer._tag === "Failure") return "stale" as const;
+    if (locator === undefined) return "deferred" as const;
+    const effect = yield* outbox.get(locator.effectId);
+    if (
+      Option.isNone(effect) ||
+      effect.value.commandId !== locator.commandId ||
+      effect.value.threadId !== input.threadId ||
+      effect.value.request.type !== "provider-turn.restart"
+    )
+      return "stale" as const;
+    const request = effect.value.request;
+    if (
+      request.runId !== input.runId ||
+      request.interruptedAttemptId !== turn.runAttemptId ||
+      request.providerTurnId !== turn.id ||
+      request.providerThreadId !== binding.providerThreadId ||
+      request.providerSessionId !== binding.providerSessionId
+    )
+      return "stale" as const;
+    const committed = Array.from(
+      yield* events.readByCommandId({ commandId: locator.commandId }).pipe(Stream.runCollect),
+    );
+    const created = committed.find((stored) => stored.event.id === locator.successorEventId)?.event;
+    if (
+      created?.type !== "run-attempt.created" ||
+      created.threadId !== input.threadId ||
+      created.payload.runId !== input.runId ||
+      created.payload.reason !== "steering_restart" ||
+      created.payload.attemptOrdinal !== control.attempt.attemptOrdinal + 1 ||
+      created.payload.providerTurnId !== null ||
+      created.payload.status !== "pending"
+    )
+      return "stale" as const;
+    const successor = created.payload;
+    const recordedRun = committed.find(
+      (stored) => stored.event.type === "run.updated" && stored.event.payload.id === input.runId,
+    )?.event;
+    const retired = committed.find(
+      (stored) =>
+        stored.event.type === "run-attempt.updated" &&
+        stored.event.payload.id === turn.runAttemptId,
+    )?.event;
+    const root = committed.find(
+      (stored) =>
+        stored.event.type === "node.updated" && stored.event.payload.id === successor.rootNodeId,
+    )?.event;
+    if (
+      recordedRun?.type !== "run.updated" ||
+      recordedRun.payload.activeAttemptId !== successor.id ||
+      recordedRun.payload.rootNodeId !== successor.rootNodeId ||
+      recordedRun.payload.status !== "starting" ||
+      retired?.type !== "run-attempt.updated" ||
+      retired.payload.status !== "superseded" ||
+      retired.payload.providerTurnId !== turn.id ||
+      retired.payload.rootNodeId !== turn.nodeId ||
+      retired.payload.runId !== input.runId ||
+      retired.payload.providerThreadId !== binding.providerThreadId ||
+      retired.payload.providerInstanceId !== binding.providerInstanceId ||
+      retired.payload.attemptOrdinal !== control.attempt.attemptOrdinal ||
+      root?.type !== "node.updated" ||
+      root.payload.runId !== input.runId ||
+      root.payload.providerThreadId !== successor.providerThreadId ||
+      root.payload.status !== "pending"
+    )
+      return "stale" as const;
+    const runRows = yield* sql<{
+      payload_json: string;
+    }>`SELECT payload_json FROM orchestration_v2_projection_runs WHERE run_id = ${input.runId} AND thread_id = ${input.threadId}`;
+    const attemptRows = yield* sql<{
+      payload_json: string;
+    }>`SELECT payload_json FROM orchestration_v2_projection_run_attempts WHERE attempt_id = ${successor.id} AND thread_id = ${input.threadId}`;
+    const nodeRows = yield* sql<{
+      payload_json: string;
+    }>`SELECT payload_json FROM orchestration_v2_projection_nodes WHERE node_id = ${successor.rootNodeId} AND thread_id = ${input.threadId}`;
+    if (runRows[0] === undefined || attemptRows[0] === undefined || nodeRows[0] === undefined)
+      return "stale" as const;
+    const currentRoot = yield* decodeNode(nodeRows[0].payload_json);
+    const currentRun = yield* decodeRun(runRows[0].payload_json);
+    const currentAttempt = yield* decodeAttempt(attemptRows[0].payload_json);
+    if (
+      currentRoot.runId !== input.runId ||
+      currentRoot.rootNodeId !== successor.rootNodeId ||
+      currentRoot.providerThreadId !== successor.providerThreadId ||
+      currentRoot.providerTurnId !== null ||
+      currentRoot.kind !== "root_turn" ||
+      currentRoot.parentNodeId !== null ||
+      (currentRoot.status !== "pending" && currentRoot.status !== "failed") ||
+      currentRun.activeAttemptId !== successor.id ||
+      currentRun.rootNodeId !== successor.rootNodeId ||
+      currentRun.providerThreadId !== successor.providerThreadId ||
+      currentRun.providerInstanceId !== successor.providerInstanceId ||
+      (currentRun.status !== "starting" && currentRun.status !== "failed") ||
+      currentAttempt.runId !== input.runId ||
+      currentAttempt.rootNodeId !== successor.rootNodeId ||
+      currentAttempt.attemptOrdinal !== successor.attemptOrdinal ||
+      currentAttempt.reason !== "steering_restart" ||
+      currentAttempt.providerInstanceId !== successor.providerInstanceId ||
+      currentAttempt.providerThreadId !== successor.providerThreadId ||
+      currentAttempt.providerTurnId !== null ||
+      currentAttempt.providerSettlement !== null ||
+      (currentAttempt.status !== "pending" && currentAttempt.status !== "failed")
+    )
+      return "stale" as const;
+    const oldThread = control.providerThread;
+    if (
+      oldThread === undefined ||
+      oldThread.appThreadId !== binding.threadId ||
+      oldThread.driver !== binding.driver ||
+      oldThread.nativeThreadRef?.nativeId !== binding.nativeThreadId ||
+      oldThread.nativeThreadRef.driver !== binding.driver ||
+      oldThread.runtimeIdentity?.runtimeGeneration !== binding.runtimeGeneration ||
+      (capture.evidenceRevision !== undefined &&
+        (oldThread.runtimeIdentity?.evidenceRevision === undefined ||
+          oldThread.runtimeIdentity.evidenceRevision < capture.evidenceRevision))
+    )
+      return "stale" as const;
+    if (request.sessionTransition?.type === "replace") {
+      const replacement = committed.find(
         (stored) =>
-          stored.event.type === "run-attempt.updated" &&
-          stored.event.payload.id === turn.runAttemptId,
-      )?.event;
-      const root = committed.find(
-        (stored) =>
-          stored.event.type === "node.updated" && stored.event.payload.id === successor.rootNodeId,
+          stored.event.type === "provider-thread.updated" &&
+          stored.event.payload.id === successor.providerThreadId,
       )?.event;
       if (
-        recordedRun?.type !== "run.updated" ||
-        recordedRun.payload.activeAttemptId !== successor.id ||
-        recordedRun.payload.rootNodeId !== successor.rootNodeId ||
-        recordedRun.payload.status !== "starting" ||
-        retired?.type !== "run-attempt.updated" ||
-        retired.payload.status !== "superseded" ||
-        retired.payload.providerTurnId !== turn.id ||
-        retired.payload.rootNodeId !== turn.nodeId ||
-        retired.payload.runId !== input.runId ||
-        retired.payload.providerThreadId !== binding.providerThreadId ||
-        retired.payload.providerInstanceId !== binding.providerInstanceId ||
-        retired.payload.attemptOrdinal !== control.attempt.attemptOrdinal ||
-        root?.type !== "node.updated" ||
-        root.payload.runId !== input.runId ||
-        root.payload.providerThreadId !== successor.providerThreadId ||
-        root.payload.status !== "pending"
+        replacement?.type !== "provider-thread.updated" ||
+        successor.providerThreadId !== oldThread.id ||
+        oldThread.providerSessionId !== request.sessionTransition.replacementProviderSessionId ||
+        oldThread.providerInstanceId !== successor.providerInstanceId ||
+        replacement.payload.providerSessionId !== oldThread.providerSessionId ||
+        replacement.payload.providerInstanceId !== oldThread.providerInstanceId ||
+        replacement.payload.runtimeIdentity?.runtimeGeneration !== binding.runtimeGeneration ||
+        replacement.payload.nativeThreadRef?.nativeId !== binding.nativeThreadId
       )
         return "stale" as const;
-      const runRows = yield* sql<{
-        payload_json: string;
-      }>`SELECT payload_json FROM orchestration_v2_projection_runs WHERE run_id = ${input.runId} AND thread_id = ${input.threadId}`;
-      const attemptRows = yield* sql<{
-        payload_json: string;
-      }>`SELECT payload_json FROM orchestration_v2_projection_run_attempts WHERE attempt_id = ${successor.id} AND thread_id = ${input.threadId}`;
-      const nodeRows = yield* sql<{
-        payload_json: string;
-      }>`SELECT payload_json FROM orchestration_v2_projection_nodes WHERE node_id = ${successor.rootNodeId} AND thread_id = ${input.threadId}`;
-      if (runRows[0] === undefined || attemptRows[0] === undefined || nodeRows[0] === undefined)
-        return "stale" as const;
-      const currentRoot = yield* decodeNode(nodeRows[0].payload_json);
-      const currentRun = yield* decodeRun(runRows[0].payload_json);
-      const currentAttempt = yield* decodeAttempt(attemptRows[0].payload_json);
+    } else {
       if (
-        currentRoot.runId !== input.runId ||
-        currentRoot.rootNodeId !== successor.rootNodeId ||
-        currentRoot.providerThreadId !== successor.providerThreadId ||
-        currentRoot.providerTurnId !== null ||
-        currentRoot.kind !== "root_turn" ||
-        currentRoot.parentNodeId !== null ||
-        (currentRoot.status !== "pending" && currentRoot.status !== "failed") ||
-        currentRun.activeAttemptId !== successor.id ||
-        currentRun.rootNodeId !== successor.rootNodeId ||
-        currentRun.providerThreadId !== successor.providerThreadId ||
-        currentRun.providerInstanceId !== successor.providerInstanceId ||
-        (currentRun.status !== "starting" && currentRun.status !== "failed") ||
-        currentAttempt.runId !== input.runId ||
-        currentAttempt.rootNodeId !== successor.rootNodeId ||
-        currentAttempt.attemptOrdinal !== successor.attemptOrdinal ||
-        currentAttempt.reason !== "steering_restart" ||
-        currentAttempt.providerInstanceId !== successor.providerInstanceId ||
-        currentAttempt.providerThreadId !== successor.providerThreadId ||
-        currentAttempt.providerTurnId !== null ||
-        currentAttempt.providerSettlement !== null ||
-        (currentAttempt.status !== "pending" && currentAttempt.status !== "failed")
+        oldThread.providerSessionId !== binding.providerSessionId ||
+        oldThread.providerInstanceId !== binding.providerInstanceId
       )
         return "stale" as const;
-      const oldThread = control.providerThread;
-      if (
-        oldThread === undefined ||
-        oldThread.appThreadId !== binding.threadId ||
-        oldThread.driver !== binding.driver ||
-        oldThread.nativeThreadRef?.nativeId !== binding.nativeThreadId ||
-        oldThread.nativeThreadRef.driver !== binding.driver ||
-        oldThread.runtimeIdentity?.runtimeGeneration !== binding.runtimeGeneration ||
-        (capture.evidenceRevision !== undefined &&
-          (oldThread.runtimeIdentity?.evidenceRevision === undefined ||
-            oldThread.runtimeIdentity.evidenceRevision < capture.evidenceRevision))
-      )
-        return "stale" as const;
-      if (request.sessionTransition?.type === "replace") {
+      if (successor.providerThreadId !== oldThread.id) {
         const replacement = committed.find(
           (stored) =>
             stored.event.type === "provider-thread.updated" &&
             stored.event.payload.id === successor.providerThreadId,
         )?.event;
+        const rows = yield* sql<{
+          payload_json: string;
+        }>`SELECT payload_json FROM orchestration_v2_projection_provider_threads WHERE provider_thread_id = ${successor.providerThreadId} AND thread_id = ${input.threadId}`;
         if (
+          request.sessionTransition?.type !== "detach" ||
           replacement?.type !== "provider-thread.updated" ||
-          successor.providerThreadId !== oldThread.id ||
-          oldThread.providerSessionId !== request.sessionTransition.replacementProviderSessionId ||
-          oldThread.providerInstanceId !== successor.providerInstanceId ||
-          replacement.payload.providerSessionId !== oldThread.providerSessionId ||
-          replacement.payload.providerInstanceId !== oldThread.providerInstanceId ||
-          replacement.payload.runtimeIdentity?.runtimeGeneration !== binding.runtimeGeneration ||
-          replacement.payload.nativeThreadRef?.nativeId !== binding.nativeThreadId
+          rows[0] === undefined
         )
           return "stale" as const;
-      } else {
+        const current = yield* decodeThread(rows[0].payload_json);
         if (
-          oldThread.providerSessionId !== binding.providerSessionId ||
-          oldThread.providerInstanceId !== binding.providerInstanceId
+          current.providerSessionId !== replacement.payload.providerSessionId ||
+          current.providerInstanceId !== successor.providerInstanceId ||
+          current.runtimeIdentity?.runtimeGeneration !==
+            replacement.payload.runtimeIdentity?.runtimeGeneration ||
+          current.nativeThreadRef?.nativeId !== replacement.payload.nativeThreadRef?.nativeId
         )
           return "stale" as const;
-        if (successor.providerThreadId !== oldThread.id) {
-          const replacement = committed.find(
-            (stored) =>
-              stored.event.type === "provider-thread.updated" &&
-              stored.event.payload.id === successor.providerThreadId,
-          )?.event;
-          const rows = yield* sql<{
-            payload_json: string;
-          }>`SELECT payload_json FROM orchestration_v2_projection_provider_threads WHERE provider_thread_id = ${successor.providerThreadId} AND thread_id = ${input.threadId}`;
-          if (
-            request.sessionTransition?.type !== "detach" ||
-            replacement?.type !== "provider-thread.updated" ||
-            rows[0] === undefined
-          )
-            return "stale" as const;
-          const current = yield* decodeThread(rows[0].payload_json);
-          if (
-            current.providerSessionId !== replacement.payload.providerSessionId ||
-            current.providerInstanceId !== successor.providerInstanceId ||
-            current.runtimeIdentity?.runtimeGeneration !==
-              replacement.payload.runtimeIdentity?.runtimeGeneration ||
-            current.nativeThreadRef?.nativeId !== replacement.payload.nativeThreadRef?.nativeId
-          )
-            return "stale" as const;
-        }
       }
-      const finalOrigin = yield* origin.producer.revalidateCurrent.pipe(Effect.result);
-      if (finalOrigin._tag === "Failure") return "stale" as const;
-      return {
-        ...terminal,
-        payload: {
-          ...control.providerTurn,
-          status: turn.status,
-          completedAt: turn.completedAt,
-          ...(turn.turnTokenUsage === undefined ? {} : { turnTokenUsage: turn.turnTokenUsage }),
-        },
-      };
-    });
+    }
+    const finalOrigin = yield* origin.producer.revalidateCurrent.pipe(Effect.result);
+    if (finalOrigin._tag === "Failure") return "stale" as const;
+    return {
+      ...terminal,
+      payload: {
+        ...control.providerTurn,
+        status: turn.status,
+        completedAt: turn.completedAt,
+        ...(turn.turnTokenUsage === undefined ? {} : { turnTokenUsage: turn.turnTokenUsage }),
+      },
+    };
+  });
   return { rememberCommitted, select };
 });

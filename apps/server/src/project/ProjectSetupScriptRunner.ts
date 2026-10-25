@@ -4,6 +4,7 @@ import * as NativeSetup from "../terminal/NativeSetupControl.ts";
 import type { TerminalError, TerminalSessionSnapshot } from "@t3tools/contracts";
 import {
   projectScriptRuntimeEnv,
+  projectScriptTerminalInput,
   resolveProjectScripts,
   settleProjectScript,
   setupProjectScript,
@@ -261,16 +262,16 @@ export const make = Effect.gen(function* () {
     yield* HostProcess.Environment,
   );
 
-  const observeTerminalCompletion = (input: {
-    readonly threadId: string;
-    readonly terminalId: string;
-    readonly sentinel: string;
-    readonly sentinelPattern: RegExp;
-    /** The shell echoes typed input; lines ending with these are the wrapper, not output. */
-    readonly echoedWrapperLines: ReadonlyArray<string>;
-    readonly onOutputLine: ((line: string) => Effect.Effect<void>) | undefined;
-  }) =>
-    Effect.gen(function* () {
+  const observeTerminalCompletion = Effect.fn("ProjectSetupScriptRunner.observeTerminalCompletion")(
+    function* (input: {
+      readonly threadId: string;
+      readonly terminalId: string;
+      readonly sentinel: string;
+      readonly sentinelPattern: RegExp;
+      /** The shell echoes typed input; lines ending with these are the wrapper, not output. */
+      readonly echoedWrapperLines: ReadonlyArray<string>;
+      readonly onOutputLine: ((line: string) => Effect.Effect<void>) | undefined;
+    }) {
       const startedAtMs = yield* Clock.currentTimeMillis;
       const done = yield* Deferred.make<ProjectSetupScriptCompletion>();
       // The shell redraws its prompt just after the sentinel. Closing before
@@ -348,7 +349,8 @@ export const make = Effect.gen(function* () {
         Effect.ensuring(Effect.sync(() => unsubscribe())),
       );
       return { completion, unsubscribe };
-    });
+    },
+  );
 
   const runForThread: ProjectSetupScriptRunner["Service"]["runForThread"] = Effect.fn(
     "ProjectSetupScriptRunner.runForThread",
@@ -549,102 +551,104 @@ export const make = Effect.gen(function* () {
       native !== undefined
         ? terminalManager.openNativeSetup!(openInput, {
             control: native.control,
-            beforeSpawn: (plan) =>
-              Effect.gen(function* () {
-                if (completionToken === null)
-                  return yield* new NativeSetup.NativeSetupControlError({
-                    operation: "open",
-                    message: "Native setup completion token is unavailable",
-                  });
-                const shellName = plan.shell
-                  .split(/[\\/]/u)
-                  .at(-1)
-                  ?.replace(/\.exe$/iu, "");
-                const shellKind =
-                  shellName === "fish"
-                    ? "fish"
-                    : shellName === "pwsh" || shellName === "powershell"
-                      ? "powershell"
-                      : "posix";
-                commandLine = wrapCommandForCompletion(
-                  native.script.command,
-                  shellKind,
-                  completionSentinel(completionToken),
-                );
-                yield* native.beforeSpawn({
-                  ...plan,
-                  script: native.script,
-                  commandLine,
-                  completionToken,
+            beforeSpawn: Effect.fn("ProjectSetupScriptRunner.beforeNativeSpawn")(function* (
+              plan: NativeSetup.NativeSetupSpawnPlan,
+            ) {
+              if (completionToken === null)
+                return yield* new NativeSetup.NativeSetupControlError({
+                  operation: "open",
+                  message: "Native setup completion token is unavailable",
                 });
-              }),
+              const shellName = plan.shell
+                .split(/[\\/]/u)
+                .at(-1)
+                ?.replace(/\.exe$/iu, "");
+              const shellKind =
+                shellName === "fish"
+                  ? "fish"
+                  : shellName === "pwsh" || shellName === "powershell"
+                    ? "powershell"
+                    : "posix";
+              commandLine = wrapCommandForCompletion(
+                native.script.command,
+                shellKind,
+                completionSentinel(completionToken),
+              );
+              yield* native.beforeSpawn({
+                ...plan,
+                script: native.script,
+                commandLine,
+                completionToken,
+              });
+            }),
             afterSpawn: native.afterSpawn,
           })
         : legacy === undefined
           ? terminalManager.open(openInput)
           : terminalManager.open(openInput, {
               binding: legacy.binding,
-              beforeSpawn: (plan) =>
-                Effect.gen(function* () {
-                  if (
-                    captured !== undefined &&
-                    (captured.shell !== plan.shell ||
-                      canonicalLegacyPayload(captured.shellArgs) !==
-                        canonicalLegacyPayload(plan.shellArgs))
-                  )
-                    return yield* new TerminalManager.LegacyTerminalControlError({
-                      operation: "open",
-                      detail: "Captured setup shell plan changed.",
-                    });
-                  const actualShellName = plan.shell
-                    .split(/[\\/]/u)
-                    .at(-1)
-                    ?.replace(/\.exe$/iu, "");
-                  const actualCompletionShell =
-                    actualShellName === "fish"
-                      ? "fish"
-                      : actualShellName === "pwsh" || actualShellName === "powershell"
-                        ? "powershell"
-                        : "posix";
-                  if (captured === undefined && completionToken !== null)
-                    commandLine = wrapCommandForCompletion(
-                      script.command,
-                      actualCompletionShell,
-                      completionSentinel(completionToken),
-                    );
-                  const definition: LegacySetupDefinition = captured ?? {
-                    id: script.id,
-                    name: script.name,
-                    command: script.command,
-                    async: script.async !== false,
-                    runOnWorktreeCreate: script.runOnWorktreeCreate === true,
-                    definitionHash: legacyPayloadHash(
-                      canonicalLegacyPayload({
-                        id: script.id,
-                        name: script.name,
-                        command: script.command,
-                        async: script.async !== false,
-                        runOnWorktreeCreate: script.runOnWorktreeCreate === true,
-                      }),
-                    ),
-                    projectCwd: project.workspaceRoot,
-                    cwd,
-                    terminalId,
-                    generation: legacy.binding.generation,
-                    shell: plan.shell,
-                    shellArgs: [...plan.shellArgs],
-                    commandLine,
-                    completionToken,
-                    env: {
-                      T3CODE_PROJECT_ROOT: project.workspaceRoot,
-                      T3CODE_WORKTREE_PATH: input.worktreePath,
-                      COLORTERM: "",
-                      NO_COLOR: "1",
-                      FORCE_COLOR: "0",
-                    },
-                  };
-                  yield* legacy.beforeSpawn(definition);
-                }),
+              beforeSpawn: Effect.fn("ProjectSetupScriptRunner.beforeLegacySpawn")(function* (
+                plan: Parameters<TerminalManager.LegacyTerminalPreparationHooks["beforeSpawn"]>[0],
+              ) {
+                if (
+                  captured !== undefined &&
+                  (captured.shell !== plan.shell ||
+                    canonicalLegacyPayload(captured.shellArgs) !==
+                      canonicalLegacyPayload(plan.shellArgs))
+                )
+                  return yield* new TerminalManager.LegacyTerminalControlError({
+                    operation: "open",
+                    detail: "Captured setup shell plan changed.",
+                  });
+                const actualShellName = plan.shell
+                  .split(/[\\/]/u)
+                  .at(-1)
+                  ?.replace(/\.exe$/iu, "");
+                const actualCompletionShell =
+                  actualShellName === "fish"
+                    ? "fish"
+                    : actualShellName === "pwsh" || actualShellName === "powershell"
+                      ? "powershell"
+                      : "posix";
+                if (captured === undefined && completionToken !== null)
+                  commandLine = wrapCommandForCompletion(
+                    script.command,
+                    actualCompletionShell,
+                    completionSentinel(completionToken),
+                  );
+                const definition: LegacySetupDefinition = captured ?? {
+                  id: script.id,
+                  name: script.name,
+                  command: script.command,
+                  async: script.async !== false,
+                  runOnWorktreeCreate: script.runOnWorktreeCreate === true,
+                  definitionHash: legacyPayloadHash(
+                    canonicalLegacyPayload({
+                      id: script.id,
+                      name: script.name,
+                      command: script.command,
+                      async: script.async !== false,
+                      runOnWorktreeCreate: script.runOnWorktreeCreate === true,
+                    }),
+                  ),
+                  projectCwd: project.workspaceRoot,
+                  cwd,
+                  terminalId,
+                  generation: legacy.binding.generation,
+                  shell: plan.shell,
+                  shellArgs: [...plan.shellArgs],
+                  commandLine,
+                  completionToken,
+                  env: {
+                    T3CODE_PROJECT_ROOT: project.workspaceRoot,
+                    T3CODE_WORKTREE_PATH: input.worktreePath,
+                    COLORTERM: "",
+                    NO_COLOR: "1",
+                    FORCE_COLOR: "0",
+                  },
+                };
+                yield* legacy.beforeSpawn(definition);
+              }),
               ...(legacy.neverInvoked === undefined ? {} : { neverInvoked: legacy.neverInvoked }),
               afterSpawn: legacy.afterSpawn,
             });
@@ -671,7 +675,11 @@ export const make = Effect.gen(function* () {
           })
         : undefined;
 
-    const writeInput = { threadId: input.threadId, terminalId, data: `${commandLine}\r` };
+    const writeInput = {
+      threadId: input.threadId,
+      terminalId,
+      data: projectScriptTerminalInput(commandLine),
+    };
     const write: Effect.Effect<
       void,
       | TerminalError

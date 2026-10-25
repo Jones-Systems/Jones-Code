@@ -1,4 +1,8 @@
+import { goalResumeNeedsNativeThread } from "../jones/goals/preserveGoalConversation.ts";
+import { WorkspaceLifecycle as WorkspaceLifecycleService } from "../jones/workspaceLifecycle/WorkspaceLifecycle.ts";
+import { withOperation } from "../jones/workspaceLifecycle/NativeOperation.ts";
 import * as ProviderSwitchService from "./ProviderSwitchService.ts";
+import * as WorkspaceLifecycle from "../jones/workspaceLifecycle/NativeBoundary.ts";
 import { prepareExecutionSession } from "../jones/threadConfiguration/prepareExecutionSession.ts";
 import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
 import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
@@ -74,7 +78,10 @@ import {
 
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
-import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
+import {
+  knownProviderFailureMessage,
+  makeProviderFailure,
+} from "@t3tools/provider-core/server/failure";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 import {
@@ -93,9 +100,18 @@ export class ProviderTurnStartError extends Schema.TaggedError<ProviderTurnStart
 
 const isProviderTurnStartError = Schema.is(ProviderTurnStartError);
 
-/** Claude refuses to replace a process running background work before it reads the prompt. */
+/**
+ * Claude refuses these before it reads the prompt: replacing a process running background work,
+ * or launch arguments whose appended system prompt cannot be read.
+ */
+const PROMPT_REFUSAL_TAGS = [
+  "ClaudeBackgroundWorkBlocksQueryReplacementError",
+  "ClaudeAppendSystemPromptFileError",
+  "ClaudeAppendSystemPromptMissingValueError",
+] as const;
+
 const refusedBeforePrompt = (error: unknown): boolean =>
-  Predicate.isTagged(error, "ClaudeBackgroundWorkBlocksQueryReplacementError") ||
+  PROMPT_REFUSAL_TAGS.some((tag) => Predicate.isTagged(error, tag)) ||
   (Predicate.hasProperty(error, "cause") && refusedBeforePrompt(error.cause));
 
 export interface ProviderTurnStartServiceV2Shape {
@@ -302,8 +318,16 @@ export const layer: Layer.Layer<
       const checkpointScope = projection.checkpointScopes.find(
         (candidate) => candidate.id === rootNode?.checkpointScopeId,
       );
+      // Older versions also stored subagent replies as history handoffs. Their
+      // queued completion messages carry the results without a history budget.
+      const subagentResultTransfers = new Set(
+        projection.contextTransfers
+          .filter((transfer) => transfer.type === "subagent_result")
+          .map((transfer) => transfer.id),
+      );
       const handoffs = projection.contextHandoffs.filter(
         (handoff) =>
+          (handoff.transferId == null || !subagentResultTransfers.has(handoff.transferId)) &&
           handoff.status === "ready" &&
           (handoff.targetRunId === run.id ||
             (handoff.toProviderThreadId === run.providerThreadId &&
@@ -579,6 +603,11 @@ export const layer: Layer.Layer<
             cause: "Native verified workspace disappeared; ordinary recreation is unavailable.",
           });
         if (!exists && (yield* isManagedWorktreePath(worktreePath))) {
+          yield* WorkspaceLifecycle.beforeUse({
+            threadId: input.threadId,
+            boundary: "recreate",
+            fallback: { id: `turn-start:${runId}`, request: { runId, threadId: input.threadId } },
+          }).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
           const project = yield* projects.getById(projection.thread.projectId).pipe(
             Effect.map(Option.getOrUndefined),
             Effect.orElseSucceed(() => undefined),
@@ -590,6 +619,16 @@ export const layer: Layer.Layer<
               branch,
             });
             yield* gitWorkflow.pruneWorktrees({ cwd: project.workspaceRoot }).pipe(
+              Effect.andThen(
+                WorkspaceLifecycle.beforeUse({
+                  threadId: input.threadId,
+                  boundary: "recreate",
+                  fallback: {
+                    id: `turn-start:${runId}`,
+                    request: { runId, threadId: input.threadId },
+                  },
+                }),
+              ),
               Effect.andThen(
                 gitWorkflow.createWorktree({
                   cwd: project.workspaceRoot,
@@ -610,6 +649,11 @@ export const layer: Layer.Layer<
           }
         }
       }
+      yield* WorkspaceLifecycle.beforeUse({
+        threadId: input.threadId,
+        boundary: "start",
+        fallback: { id: `turn-start:${runId}`, request: { runId, threadId: input.threadId } },
+      }).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
       const selectInheritedBackgroundItems = (
         current: ProjectionStore.ProjectionRuntimeRecoveryState,
       ): ReturnType<typeof RunExecutionService.selectInheritedBackgroundTurnItems> =>
@@ -646,9 +690,107 @@ export const layer: Layer.Layer<
         thread: projection.thread,
         modelSelection: run.modelSelection,
       });
+      if (!(yield* isCurrentAttemptInStatus("starting"))) return;
       const existingSessionProjection = projection.providerSessions.find(
         (candidate) => candidate.id === providerSessionId,
       );
+      const settleStartFailure = Effect.fn("ProviderTurnStartService.settleStartFailure")(
+        function* (failed: {
+          readonly signal: string;
+          readonly title: string;
+          readonly error: Error;
+        }) {
+          const nestedCause = "cause" in failed.error ? failed.error.cause : undefined;
+          yield* settleRunBeforeStart({
+            signal: failed.signal,
+            status: "failed",
+            now: yield* DateTime.now,
+            providerInstanceId: run.providerInstanceId,
+            itemProviderThreadId: providerThread.id,
+            item: {
+              type: "error",
+              title: failed.title,
+              failure: makeProviderFailure({
+                cause: failed.error,
+                message:
+                  knownProviderFailureMessage(failed.error) ??
+                  (nestedCause instanceof Error
+                    ? nestedCause.message
+                    : typeof nestedCause === "string"
+                      ? nestedCause
+                      : failed.error.message),
+                class: "provider_error",
+              }),
+            },
+          });
+        },
+      );
+      const failedRuns = new Map(
+        projection.runs
+          .filter(
+            (previous) =>
+              previous.ordinal < run.ordinal &&
+              previous.providerThreadId === providerThread.id &&
+              previous.status === "failed",
+          )
+          .map((previous) => [previous.activeAttemptId, previous] as const),
+      );
+      const abandonedTurns = projection.providerTurns.flatMap((turn) => {
+        const previous = failedRuns.get(turn.runAttemptId);
+        return turn.providerThreadId === providerThread.id &&
+          turn.status === "running" &&
+          previous !== undefined &&
+          turn.nodeId === previous.rootNodeId
+          ? [{ turn, run: previous }]
+          : [];
+      });
+      const abandonedTurn = abandonedTurns.at(-1)?.turn;
+      if (abandonedTurn !== undefined) {
+        const liveSession = yield* providerSessions.get(providerSessionId);
+        if (Option.isSome(liveSession)) {
+          // Older versions could fail the run without stopping its provider.
+          // Recover that exact turn before reusing its native conversation.
+          const recovered = yield* Effect.result(
+            liveSession.value.interruptTurn({
+              providerThread,
+              providerTurnId: abandonedTurn.id,
+              requestRuntimeRestart: true,
+              preserveGoal: true,
+            }),
+          );
+          if (recovered._tag === "Failure") {
+            if (input.willRetry === true) return yield* recovered.failure;
+            yield* settleStartFailure({
+              signal: "provider-turn-recovery-failure",
+              title: "Provider turn recovery failed",
+              error: recovered.failure,
+            });
+            return;
+          }
+        }
+        const completedAt = yield* DateTime.now;
+        const repaired = yield* eventSink.writeIfRunCurrent({
+          threadId: projection.thread.id,
+          runId: run.id,
+          activeAttemptId: attempt.id,
+          expectedStatus: "starting",
+          events: yield* Effect.forEach(abandonedTurns, ({ turn, run: failedRun }) =>
+            Effect.gen(function* () {
+              return {
+                id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+                type: "provider-turn.updated" as const,
+                threadId: projection.thread.id,
+                runId: failedRun.id,
+                nodeId: turn.nodeId,
+                providerInstanceId: failedRun.providerInstanceId,
+                occurredAt: completedAt,
+                payload: { ...turn, status: "interrupted" as const, completedAt },
+              };
+            }),
+          ),
+        });
+        if (!repaired.committed) return;
+      }
       const keepWarm = isWorkModeKeepWarm(message);
       const plannedWorkResume =
         keepWarm &&
@@ -693,35 +835,6 @@ export const layer: Layer.Layer<
                   }),
             }),
       );
-      const settleStartFailure = (failed: {
-        readonly signal: string;
-        readonly title: string;
-        readonly error: Error;
-      }) =>
-        Effect.gen(function* () {
-          const nestedCause = "cause" in failed.error ? failed.error.cause : undefined;
-          yield* settleRunBeforeStart({
-            signal: failed.signal,
-            status: "failed",
-            now: yield* DateTime.now,
-            providerInstanceId: run.providerInstanceId,
-            itemProviderThreadId: providerThread.id,
-            item: {
-              type: "error",
-              title: failed.title,
-              failure: makeProviderFailure({
-                cause: failed.error,
-                message:
-                  nestedCause instanceof Error
-                    ? nestedCause.message
-                    : typeof nestedCause === "string"
-                      ? nestedCause
-                      : failed.error.message,
-                class: "provider_error",
-              }),
-            },
-          });
-        });
       if (sessionResult._tag === "Failure") {
         if (input.willRetry === true && findSteerFailure(sessionResult.failure) === undefined)
           return yield* sessionResult.failure;
@@ -733,21 +846,22 @@ export const layer: Layer.Layer<
         return;
       }
       const session = sessionResult.success;
-      const loadFromProvider = (
+      if (!(yield* isCurrentAttemptInStatus("starting"))) return;
+      const loadFromProvider = Effect.fn("ProviderTurnStartService.loadFromProvider")(function* (
         load: Effect.Effect<OrchestrationV2ProviderThread, ProviderAdapter.ProviderAdapterV2Error>,
-      ) =>
-        Effect.gen(function* () {
-          const loaded = yield* Effect.result(load);
-          if (loaded._tag === "Success") return loaded.success;
-          if (input.willRetry === true && findSteerFailure(loaded.failure) === undefined)
-            return yield* loaded.failure;
-          yield* settleStartFailure({
-            signal: "provider-thread-load-failure",
-            title: "Provider turn failed to start",
-            error: loaded.failure,
-          });
-          return undefined;
+      ) {
+        const loaded = yield* Effect.result(load);
+        if (loaded._tag === "Success") return loaded.success;
+        if (input.willRetry === true && findSteerFailure(loaded.failure) === undefined)
+          return yield* loaded.failure;
+        yield* settleStartFailure({
+          signal: "provider-thread-load-failure",
+          title: "Provider turn failed to start",
+          error: loaded.failure,
         });
+        return undefined;
+      });
+      const preserveNativeGoal = goalResumeNeedsNativeThread(providerThread.driver, message);
       let effectiveHandoffs = handoffs;
       const loadedProviderThread = yield* Effect.gen(function* () {
         if (nativeForkTransfer !== undefined) {
@@ -786,6 +900,19 @@ export const layer: Layer.Layer<
                 ? {}
                 : { providerTurnId: sourceProviderTurn.id }),
             }),
+          );
+        }
+        if (preserveNativeGoal && providerThread.nativeThreadRef === null) {
+          return yield* loadFromProvider(
+            Effect.fail(
+              new ProviderAdapter.ProviderAdapterTurnStartError({
+                driver: session.driver,
+                threadId: projection.thread.id,
+                providerThreadId: providerThread.id,
+                runId,
+                cause: "Goal resume requires its existing native conversation.",
+              }),
+            ),
           );
         }
         if (providerThread.nativeThreadRef === null) {
@@ -837,6 +964,7 @@ export const layer: Layer.Layer<
 
         if (
           keepWarm ||
+          preserveNativeGoal ||
           findSteerFailure(resumed.failure) !== undefined ||
           hasUnknownRuntimeBinding(resumed.failure)
         ) {
@@ -933,18 +1061,23 @@ export const layer: Layer.Layer<
       });
       if (loadedProviderThread === undefined) return;
       if (
-        plannedWorkResume &&
+        (plannedWorkResume || preserveNativeGoal) &&
         (loadedProviderThread.nativeThreadRef?.nativeId !==
           providerThread.nativeThreadRef?.nativeId ||
           loadedProviderThread.nativeThreadRef?.driver !== providerThread.nativeThreadRef?.driver)
       ) {
         yield* settleStartFailure({
-          signal: "planned-work-native-identity-changed",
-          title: "Work Mode could not resume its existing provider conversation",
+          signal: preserveNativeGoal
+            ? "goal-native-identity-changed"
+            : "planned-work-native-identity-changed",
+          title: preserveNativeGoal
+            ? "Goal could not resume its existing provider conversation"
+            : "Work Mode could not resume its existing provider conversation",
           error: new ProviderTurnStartError({
             runId,
-            cause:
-              "The provider returned a different native conversation after the planned update.",
+            cause: preserveNativeGoal
+              ? "The provider returned a different native conversation while resuming the goal."
+              : "The provider returned a different native conversation after the planned update.",
           }),
         });
         return;
@@ -1283,106 +1416,109 @@ export const layer: Layer.Layer<
       const startWithConfiguredEffort = (
         turnInput: Parameters<typeof session.startTurn>[0],
         compact = false,
-      ) =>
-        Effect.gen(function* () {
-          let dispatchInput = turnInput;
-          if (
-            session.driver === "codex" &&
-            !turnInput.modelSelection.options?.some((option) => option.id === "reasoningEffort")
-          ) {
-            const settingsResult = yield* currentSettings.getSettings.pipe(Effect.option);
-            if (Option.isSome(settingsResult)) {
-              const project = yield* projects
-                .getById(projection.thread.projectId)
-                .pipe(Effect.catch(() => Effect.succeedNone));
-              const settings = resolveProjectSettings(
-                settingsResult.value,
-                projection.thread.projectId,
-                Option.getOrUndefined(project),
-              ).settings;
-              const defaultSelection = settings.defaultModelSelection ?? undefined;
-              const selected = yield* instanceRegistry.getInstance(
-                turnInput.modelSelection.instanceId,
-              );
-              const snapshot =
-                selected === undefined ? undefined : yield* selected.snapshot.getSnapshot;
-              const defaultInstance =
-                defaultSelection === undefined
-                  ? undefined
-                  : yield* instanceRegistry.getInstance(defaultSelection.instanceId);
-              const canonical = normalizeModelSlug(
-                codexModelFamily(turnInput.modelSelection.model),
-                session.driver,
-              );
-              const model =
-                snapshot?.models.find(
-                  (candidate) => candidate.slug === turnInput.modelSelection.model,
-                ) ??
-                snapshot?.models.find((candidate) =>
-                  [candidate.slug, ...(candidate.aliases ?? [])].some(
-                    (slug) =>
-                      normalizeModelSlug(codexModelFamily(slug), session.driver) === canonical,
-                  ),
+      ) => {
+        const startWithConfiguredEffortEffect = Effect.fn(
+          "ProviderTurnStartService.startWithConfiguredEffort",
+        )(
+          function* () {
+            let dispatchInput = turnInput;
+            if (
+              session.driver === "codex" &&
+              !turnInput.modelSelection.options?.some((option) => option.id === "reasoningEffort")
+            ) {
+              const settingsResult = yield* currentSettings.getSettings.pipe(Effect.option);
+              if (Option.isSome(settingsResult)) {
+                const project = yield* projects
+                  .getById(projection.thread.projectId)
+                  .pipe(Effect.catch(() => Effect.succeedNone));
+                const settings = resolveProjectSettings(
+                  settingsResult.value,
+                  projection.thread.projectId,
+                  Option.getOrUndefined(project),
+                ).settings;
+                const defaultSelection = settings.defaultModelSelection ?? undefined;
+                const selected = yield* instanceRegistry.getInstance(
+                  turnInput.modelSelection.instanceId,
                 );
-              const effort = getConfiguredReasoningEffort({
-                modelSelection: turnInput.modelSelection,
-                driverKind: session.driver,
-                capabilities: model?.capabilities ?? undefined,
-                defaultModelSelection: defaultSelection,
-                defaultDriverKind:
+                const snapshot =
+                  selected === undefined ? undefined : yield* selected.snapshot.getSnapshot;
+                const defaultInstance =
                   defaultSelection === undefined
                     ? undefined
-                    : (settings.providerInstances[defaultSelection.instanceId]?.driver ??
-                      defaultInstance?.driverKind),
-              });
-              if (effort !== undefined)
-                dispatchInput = { ...turnInput, configuredReasoningEffort: effort };
-            }
-          }
-          // A settings read can outlive the attempt. Never dispatch its stale prompt.
-          if (!(yield* isCurrentAttemptInStatus("running"))) return;
-          const stopRuntimeGeneration = loadedProviderThread.runtimeIdentity?.runtimeGeneration;
-          dispatchInput = {
-            ...dispatchInput,
-            revalidateStartAdmission:
-              eventSink.assertRuntimeStopStartAllowed === undefined
-                ? Effect.void
-                : eventSink
-                    .assertRuntimeStopStartAllowed({
-                      threadId: input.threadId,
-                      runId,
-                      providerThreadId: providerThread.id,
-                      ...(stopRuntimeGeneration === undefined
-                        ? {}
-                        : {
-                            runtimeGeneration: stopRuntimeGeneration,
-                          }),
-                    })
-                    .pipe(
-                      Effect.mapError(
-                        (cause) =>
-                          new ProviderAdapterTurnStartError({
-                            driver: session.driver,
-                            threadId: input.threadId,
-                            providerThreadId: providerThread.id,
-                            runId,
-                            cause,
-                          }),
-                      ),
+                    : yield* instanceRegistry.getInstance(defaultSelection.instanceId);
+                const canonical = normalizeModelSlug(
+                  codexModelFamily(turnInput.modelSelection.model),
+                  session.driver,
+                );
+                const model =
+                  snapshot?.models.find(
+                    (candidate) => candidate.slug === turnInput.modelSelection.model,
+                  ) ??
+                  snapshot?.models.find((candidate) =>
+                    [candidate.slug, ...(candidate.aliases ?? [])].some(
+                      (slug) =>
+                        normalizeModelSlug(codexModelFamily(slug), session.driver) === canonical,
                     ),
-          };
-          const start = compact ? session.compactThread! : session.startTurn;
-          if (eventSink.assertRuntimeStopStartAllowed)
-            yield* eventSink.assertRuntimeStopStartAllowed({
-              threadId: input.threadId,
-              runId,
-              providerThreadId: providerThread.id,
-              ...(stopRuntimeGeneration === undefined
-                ? {}
-                : { runtimeGeneration: stopRuntimeGeneration }),
-            });
-          yield* start(dispatchInput);
-        }).pipe(
+                  );
+                const effort = getConfiguredReasoningEffort({
+                  modelSelection: turnInput.modelSelection,
+                  driverKind: session.driver,
+                  capabilities: model?.capabilities ?? undefined,
+                  defaultModelSelection: defaultSelection,
+                  defaultDriverKind:
+                    defaultSelection === undefined
+                      ? undefined
+                      : (settings.providerInstances[defaultSelection.instanceId]?.driver ??
+                        defaultInstance?.driverKind),
+                });
+                if (effort !== undefined)
+                  dispatchInput = { ...turnInput, configuredReasoningEffort: effort };
+              }
+            }
+            // A settings read can outlive the attempt. Never dispatch its stale prompt.
+            if (!(yield* isCurrentAttemptInStatus("running"))) return;
+            const stopRuntimeGeneration = loadedProviderThread.runtimeIdentity?.runtimeGeneration;
+            dispatchInput = {
+              ...dispatchInput,
+              revalidateStartAdmission:
+                eventSink.assertRuntimeStopStartAllowed === undefined
+                  ? Effect.void
+                  : eventSink
+                      .assertRuntimeStopStartAllowed({
+                        threadId: input.threadId,
+                        runId,
+                        providerThreadId: providerThread.id,
+                        ...(stopRuntimeGeneration === undefined
+                          ? {}
+                          : {
+                              runtimeGeneration: stopRuntimeGeneration,
+                            }),
+                      })
+                      .pipe(
+                        Effect.mapError(
+                          (cause) =>
+                            new ProviderAdapterTurnStartError({
+                              driver: session.driver,
+                              threadId: input.threadId,
+                              providerThreadId: providerThread.id,
+                              runId,
+                              cause,
+                            }),
+                        ),
+                      ),
+            };
+            const start = compact ? session.compactThread! : session.startTurn;
+            if (eventSink.assertRuntimeStopStartAllowed)
+              yield* eventSink.assertRuntimeStopStartAllowed({
+                threadId: input.threadId,
+                runId,
+                providerThreadId: providerThread.id,
+                ...(stopRuntimeGeneration === undefined
+                  ? {}
+                  : { runtimeGeneration: stopRuntimeGeneration }),
+              });
+            yield* start(dispatchInput);
+          },
           Effect.mapError((cause) =>
             cause._tag === "ProviderAdapterTurnStartError"
               ? cause
@@ -1395,11 +1531,10 @@ export const layer: Layer.Layer<
                 }),
           ),
         );
-      const startWithHandoffs = (
-        turnInput: Parameters<typeof session.startTurn>[0],
-        compact = false,
-      ) =>
-        Effect.gen(function* () {
+        return startWithConfiguredEffortEffect();
+      };
+      const startWithHandoffs = Effect.fn("ProviderTurnStartService.startWithHandoffs")(
+        function* (turnInput: Parameters<typeof session.startTurn>[0], compact = false) {
           const retryHandoff =
             missedItems.length === 0
               ? []
@@ -1437,7 +1572,9 @@ export const layer: Layer.Layer<
                 providerThreadId: providerThread.id,
                 ...(loadedProviderThread.runtimeIdentity?.runtimeGeneration === undefined
                   ? {}
-                  : { runtimeGeneration: loadedProviderThread.runtimeIdentity.runtimeGeneration }),
+                  : {
+                      runtimeGeneration: loadedProviderThread.runtimeIdentity.runtimeGeneration,
+                    }),
               });
           }).pipe(
             Effect.mapError(
@@ -1490,25 +1627,24 @@ export const layer: Layer.Layer<
                         ...history,
                       }),
                   }),
-              persist: (handoff) =>
-                Effect.gen(function* () {
-                  const updatedAt = yield* DateTime.now;
-                  yield* eventSink.write({
-                    events: [
-                      {
-                        id: yield* idAllocator.allocate.event({
-                          threadId: projection.thread.id,
-                        }),
-                        type: "context-handoff.updated",
+              persist: Effect.fn("ProviderTurnStartService.persist")(function* (handoff) {
+                const updatedAt = yield* DateTime.now;
+                yield* eventSink.write({
+                  events: [
+                    {
+                      id: yield* idAllocator.allocate.event({
                         threadId: projection.thread.id,
-                        runId: run.id,
-                        providerInstanceId: run.providerInstanceId,
-                        occurredAt: updatedAt,
-                        payload: { ...handoff, updatedAt },
-                      },
-                    ],
-                  });
-                }),
+                      }),
+                      type: "context-handoff.updated",
+                      threadId: projection.thread.id,
+                      runId: run.id,
+                      providerInstanceId: run.providerInstanceId,
+                      occurredAt: updatedAt,
+                      payload: { ...handoff, updatedAt },
+                    },
+                  ],
+                });
+              }),
             },
             {
               input: turnInput,
@@ -1560,20 +1696,20 @@ export const layer: Layer.Layer<
                 ),
               )
             : delivery.delivered;
-        }).pipe(
-          Effect.scoped,
-          Effect.mapError((cause) =>
-            cause._tag === "ProviderAdapterTurnStartError"
-              ? cause
-              : new ProviderAdapter.ProviderAdapterTurnStartError({
-                  driver: session.driver,
-                  threadId: projection.thread.id,
-                  providerThreadId: providerThread.id,
-                  runId: run.id,
-                  cause,
-                }),
-          ),
-        );
+        },
+        Effect.scoped,
+        Effect.mapError((cause) =>
+          cause._tag === "ProviderAdapterTurnStartError"
+            ? cause
+            : new ProviderAdapter.ProviderAdapterTurnStartError({
+                driver: session.driver,
+                threadId: projection.thread.id,
+                providerThreadId: providerThread.id,
+                runId: run.id,
+                cause,
+              }),
+        ),
+      );
       const deliverySession =
         effectiveHandoffs.length === 0 &&
         missedItems.length === 0 &&
@@ -1635,14 +1771,72 @@ export const layer: Layer.Layer<
       });
     });
 
+    const attestStart = Effect.fn("ProviderTurnStartService.attestWorkspaceStart")(function* <
+      A,
+      E,
+      R,
+    >(
+      input: {
+        readonly threadId: ThreadId;
+        readonly runId: RunId;
+        readonly guard?: NativeProvider.NativeProviderExecutionGuard;
+      },
+      effect: Effect.Effect<A, E, R>,
+    ) {
+      if (Option.isNone(yield* Effect.serviceOption(WorkspaceLifecycleService)))
+        return yield* effect;
+      const admitted = yield* projectionStore.getTurnStartContext(input.threadId, input.runId);
+      const originalAttempt = admitted.runs.find((run) => run.id === input.runId)?.activeAttemptId;
+      return yield* withOperation(
+        {
+          id: `run:${input.runId}`,
+          kind: input.guard ? "native-start" : "provider-start",
+          threadId: input.threadId,
+          boundaries: ["start", "resume", "recreate"],
+          sqlOnly: input.guard === undefined,
+          check: Effect.gen(function* () {
+            if (input.guard)
+              yield* NativeProvider.assertNativeProviderStartOperation(
+                input.guard,
+                input.threadId,
+                input.runId,
+              );
+            const current = yield* projectionStore.getTurnStartContext(input.threadId, input.runId);
+            const active = current.runs.find((run) => run.id === input.runId);
+            if (
+              !active ||
+              !["starting", "running"].includes(active.status) ||
+              !active.activeAttemptId ||
+              (originalAttempt !== undefined && originalAttempt !== active.activeAttemptId) ||
+              !current.attempts.some(
+                (attempt) => attempt.id === active.activeAttemptId && attempt.runId === active.id,
+              ) ||
+              !current.nodes.some((node) => node.id === active.rootNodeId)
+            )
+              return yield* new ProviderTurnStartError({
+                runId: input.runId,
+                cause: "Native run ownership changed before workspace use.",
+              });
+          }),
+        },
+        effect,
+      );
+    });
+
     return ProviderTurnStartServiceV2.of({
-      startNative: (input) =>
-        Effect.gen(function* () {
-          yield* start({
+      startNative: Effect.fn("ProviderTurnStartService.startNative")(
+        function* (input) {
+          yield* NativeProvider.assertNativeProviderStartOperation(
+            input.guard,
+            input.threadId,
+            input.runId,
+          );
+          const providerTurn = yield* start({
             threadId: input.threadId,
             runId: input.runId,
             nativeCreationGuard: input.guard,
           });
+          if (providerTurn !== undefined) yield* providerTurn;
           const evidence = NativeProvider.readNativeProviderAcknowledgement(input.guard);
           if (evidence === undefined)
             return yield* new ProviderTurnStartError({
@@ -1650,15 +1844,25 @@ export const layer: Layer.Layer<
               cause: "Native start did not receive its direct whole-operation acknowledgement.",
             });
           return evidence;
-        }).pipe(
-          Effect.mapError((cause) =>
-            isProviderTurnStartError(cause)
-              ? cause
-              : new ProviderTurnStartError({ runId: input.runId, cause }),
+        },
+        (effect, input) =>
+          attestStart(
+            input,
+            WorkspaceLifecycle.inheritOriginalTransition(
+              `turn-start:${input.runId}`,
+              { runId: input.runId, threadId: input.threadId },
+              effect,
+            ),
+          ).pipe(
+            Effect.mapError((cause) =>
+              isProviderTurnStartError(cause)
+                ? cause
+                : new ProviderTurnStartError({ runId: input.runId, cause }),
+            ),
           ),
-        ),
-      start: (input) =>
-        Effect.gen(function* () {
+      ),
+      start: Effect.fn("ProviderTurnStartService.start")(
+        function* (input) {
           // Storage cleanup removes worktrees under the same lease. Only startup
           // holds it; the provider turn runs after it is released.
           const { thread } = yield* projectionStore.getThreadRecords(input.threadId, []);
@@ -1666,13 +1870,23 @@ export const layer: Layer.Layer<
             ? start(input)
             : withWorkspaceLease(path.resolve(thread.worktreePath), start(input));
           if (providerTurn !== undefined) yield* providerTurn;
-        }).pipe(
-          Effect.mapError((cause) =>
-            isProviderTurnStartError(cause)
-              ? cause
-              : new ProviderTurnStartError({ runId: input.runId, cause }),
+        },
+        (effect, input) =>
+          attestStart(
+            input,
+            WorkspaceLifecycle.inheritOriginalTransition(
+              `turn-start:${input.runId}`,
+              { runId: input.runId, threadId: input.threadId },
+              effect,
+            ),
+          ).pipe(
+            Effect.mapError((cause) =>
+              isProviderTurnStartError(cause)
+                ? cause
+                : new ProviderTurnStartError({ runId: input.runId, cause }),
+            ),
           ),
-        ),
+      ),
     });
   }),
 );

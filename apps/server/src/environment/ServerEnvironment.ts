@@ -1,3 +1,5 @@
+import { LINKED_THREADS_CAPABILITY } from "@t3tools/contracts/jones/linkedThreadsCapability";
+import { WORKSTREAM_OPERATIONS_CONTRACT } from "@t3tools/contracts/jones/workstreamOperations";
 import { QUEUED_STEER_BATCH_LIMITS } from "@t3tools/contracts";
 import { THREAD_ATTENTION_CAPABILITY } from "@t3tools/contracts/jones/threadAttention";
 import {
@@ -232,7 +234,9 @@ export const make = Effect.gen(function* () {
       queuedSteerBatch: QUEUED_STEER_BATCH_LIMITS,
       queueDispatch: QUEUE_DISPATCH_CAPABILITY,
       threadAttention: THREAD_ATTENTION_CAPABILITY,
+      linkedThreads: LINKED_THREADS_CAPABILITY,
       workQueueMetadata: true,
+      workstreamOperations: { contract: WORKSTREAM_OPERATIONS_CONTRACT },
       settlementOrigins: SETTLEMENT_ORIGINS_CAPABILITY,
       // Startup refuses to serve until Jones migrations, including the restore table, have run.
       settlementRestore: SETTLEMENT_RESTORE_CAPABILITY,
@@ -283,8 +287,10 @@ export const make = Effect.gen(function* () {
       threadPullRequestLinking: true,
       serverResolvedCommandContext: true,
       queuedToolBoundaryDelivery: true,
+      queuedRunStart: true,
       environmentIcon: true,
       projectCloneTracking: true,
+      ignoredFileListing: true,
       ...(serverSelfUpdate === null ? {} : { serverSelfUpdate }),
       ...(serverInstallation === null ? {} : { serverInstallation }),
       ...(serverSelfUpdate === "boot-service" || desktopAppUpdate

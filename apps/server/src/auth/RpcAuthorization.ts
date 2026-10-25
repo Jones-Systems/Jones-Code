@@ -39,6 +39,7 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
 
 export const RPC_REQUIRED_SCOPES = {
   ...CLIENT_GUARDED_RPC_SCOPES,
+  [ORCHESTRATION_V2_WS_METHODS.listLinkedThreads]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_V2_WS_METHODS.previewProviderConversationReselection]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.reselectProviderConversation]: AuthOrchestrationOperateScope,
@@ -142,6 +143,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.pullRequestsThreadComments]: AuthOrchestrationReadScope,
   [WS_METHODS.pullRequestsDiffFileContents]: AuthOrchestrationReadScope,
   [WS_METHODS.pullRequestsFilesViewed]: AuthOrchestrationReadScope,
+  [WS_METHODS.pullRequestsChangeBreakdown]: AuthOrchestrationReadScope,
   [WS_METHODS.pullRequestsInvalidate]: AuthOrchestrationReadScope,
   [WS_METHODS.pullRequestsReportState]: AuthOrchestrationReadScope,
   [WS_METHODS.pullRequestsSubscribeRefreshes]: AuthOrchestrationReadScope,
@@ -150,6 +152,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.sourceControlLookupRepository]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeProjectClones]: AuthOrchestrationReadScope,
   [WS_METHODS.projectsListEntries]: AuthFilesystemReadScope,
+  [WS_METHODS.projectsListIgnoredFiles]: AuthFilesystemReadScope,
   [WS_METHODS.projectsReadFile]: AuthFilesystemReadScope,
   [WS_METHODS.projectsSearchContents]: AuthFilesystemReadScope,
   [WS_METHODS.projectsSearchEntries]: AuthFilesystemReadScope,
@@ -203,6 +206,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.subscribeDiscoveredLocalServers]: AuthOrchestrationReadScope,
   [WS_METHODS.deviceConfigure]: AuthSettingsWriteScope,
   [WS_METHODS.deviceTestHost]: AuthSettingsWriteScope,
+  [WS_METHODS.deviceEasAccount]: AuthSettingsWriteScope,
   [WS_METHODS.deviceList]: AuthOrchestrationReadScope,
   [WS_METHODS.deviceOpen]: AuthOrchestrationOperateScope,
   [WS_METHODS.deviceClose]: AuthOrchestrationOperateScope,
@@ -276,11 +280,22 @@ const requiredScopesForRpcCall = (
   return [requiredScopeForRpcMethod(method)];
 };
 
-export const layer = (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
+/**
+ * `onAuthorized` runs once after an authorized request succeeds; for a stream
+ * RPC, that is when the stream completes. Every RPC passes through here, so it
+ * is the one place to observe requests without wrapping each handler.
+ */
+export const layer = (
+  scopes: ReadonlyArray<AuthEnvironmentScope>,
+  onAuthorized?: (method: string, payload: unknown) => Effect.Effect<void>,
+) =>
   Layer.succeed(RpcScopeAuthorization)((effect, { rpc, payload }) => {
     const requiredScopes = requiredScopesForRpcCall(rpc._tag, payload);
     const requiredScope = requiredScopes.find((scope) => !scopes.includes(scope));
-    return requiredScope === undefined ? effect : Effect.fail(rpcAuthorizationError(requiredScope));
+    if (requiredScope !== undefined) return Effect.fail(rpcAuthorizationError(requiredScope));
+    return onAuthorized === undefined
+      ? effect
+      : Effect.tap(effect, () => onAuthorized(rpc._tag, payload));
   });
 
 /** Retrying can install or restart tools even though ordinary listing is readable. */

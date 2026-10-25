@@ -8,6 +8,8 @@ import {
   type JonesUpdateDownloadInput,
   type JonesUpdateExactInput,
   type JonesUpdateInstallInput,
+  type JonesUpdateReconcileInput,
+  type JonesUpdateRecordRetiredInput,
   type JonesNativePrepareInput,
   ServerSelfUpdateError,
 } from "@t3tools/contracts";
@@ -37,6 +39,8 @@ import {
   isUpdateOperationId,
   operationBinding,
   reconcileUpdateOperation,
+  readUpdateOperationSettlement,
+  readUpdateOperationCause,
   type OperationReconciliation,
 } from "./launcherOperation.ts";
 import { parseServiceState } from "../../cloud/serviceProtocol.ts";
@@ -71,6 +75,10 @@ export class JonesUpdates extends Context.Service<
     readonly prepareNative: (input: JonesNativePrepareInput) => Effect.Effect<JonesUpdateState>;
     readonly download: (input: JonesUpdateDownloadInput) => Effect.Effect<JonesUpdateState>;
     readonly install: (input: JonesUpdateInstallInput) => Effect.Effect<JonesUpdateState>;
+    readonly reconcile: (input: JonesUpdateReconcileInput) => Effect.Effect<JonesUpdateState>;
+    readonly recordRetired: (
+      input: JonesUpdateRecordRetiredInput,
+    ) => Effect.Effect<JonesUpdateState>;
     /** Stages the build of one exact source for this host's own operator; no fleet operation. */
     readonly downloadExact: (input: JonesUpdateExactInput) => Effect.Effect<JonesUpdateState>;
     readonly stageExact: (input: {
@@ -120,6 +128,33 @@ export const layer = Layer.effect(
     const context = yield* Effect.context<never>();
     const run = Effect.runPromiseWith(context);
     const version = launcher.currentVersion ?? packageJson.version;
+    const launcherStatus = {
+      childVersion: version,
+      ...(launcher.launcherVersion === undefined
+        ? {}
+        : { launcherVersion: launcher.launcherVersion }),
+      launcherSettlement:
+        launcher.managed && launcher.qualifiedSettlement === true
+          ? ("supported" as const)
+          : ("unsupported" as const),
+      launcherRefresh:
+        launcher.managed && launcher.qualifiedSettlement === true
+          ? ("none" as const)
+          : ("recommended" as const),
+      ...(launcher.managed && launcher.qualifiedSettlement === true
+        ? {}
+        : { launcherRefreshReason: "settlement-unsupported" as const }),
+    };
+    const unsupportedSettlement = (input: JonesUpdateReconcileInput) =>
+      Effect.succeed({
+        ...blocked("Launcher refresh recommended"),
+        ...launcherStatus,
+        updateId: input.operationId,
+        settlementRefusal: "capability-unsupported" as const,
+        launcherSettlement: "unsupported" as const,
+        launcherRefresh: "recommended" as const,
+        launcherRefreshReason: "settlement-unsupported" as const,
+      });
     const currentBuildStartedAt = readCurrentJonesBuildStartedAt(packageJson, version);
     const receiptStarted = yield* Clock.currentTimeMillis;
     const runtimeReceipt = isPreviewRuntime(version)
@@ -141,6 +176,8 @@ export const layer = Layer.effect(
             tree: runtimeReceipt.sourceTree,
           };
     const unsupportedOperations = {
+      reconcile: unsupportedSettlement,
+      recordRetired: unsupportedSettlement,
       refreshPolicy: Effect.succeed(undefined),
       retireStagedOperation: () =>
         Effect.succeed({
@@ -271,8 +308,8 @@ export const layer = Layer.effect(
             Effect.succeed(blocked("The desktop host could not accept this request.")),
           ),
         );
-      const prepareNative = (input: JonesNativePrepareInput) =>
-        Effect.gen(function* () {
+      const prepareNative = Effect.fn("JonesUpdates.prepareNative")(
+        function* (input: JonesNativePrepareInput) {
           const mismatch =
             !/^[a-f0-9]{64}$/.test(input.stagedHandle) ||
             !/^[a-f0-9]{64}$/.test(input.transactionId)
@@ -321,17 +358,17 @@ export const layer = Layer.effect(
               }),
           });
           return snapshot();
-        }).pipe(
-          Effect.catch((error) =>
-            Effect.succeed(
-              blocked(
-                error.cause instanceof NativePreparationRefusal
-                  ? `Native preparation was refused: ${error.cause.message}`
-                  : "Native preparation was dispatched but did not complete; its effects need reconciliation.",
-              ),
+        },
+        Effect.catch((error) =>
+          Effect.succeed(
+            blocked(
+              error.cause instanceof NativePreparationRefusal
+                ? `Native preparation was refused: ${error.cause.message}`
+                : "Native preparation was dispatched but did not complete; its effects need reconciliation.",
             ),
           ),
-        );
+        ),
+      );
       return JonesUpdates.of({
         ...unsupportedOperations,
         prepareNative,
@@ -473,6 +510,24 @@ export const layer = Layer.effect(
       });
     };
     const terminal = launcher.qualifiedStartupOutcome;
+    type SettlementStatus = Pick<JonesUpdateState, "settlement" | "settlementRefusal" | "cause">;
+    const readSettlement = (operationId: string) =>
+      Effect.promise(async (): Promise<SettlementStatus> => {
+        const receipt = await readUpdateOperationSettlement(config.baseDir, operationId).catch(
+          () => undefined,
+        );
+        const cause = await readUpdateOperationCause(config.baseDir, operationId).catch(
+          () => undefined,
+        );
+        return {
+          settlement:
+            receipt === undefined || receipt.basis === "retired-exception" ? "none" : receipt.basis,
+          ...(cause === undefined ? {} : { cause: cause.message }),
+        };
+      });
+    let terminalSettlement =
+      terminal?.status === "failed" ? yield* readSettlement(terminal.id) : undefined;
+    let settlementOperationId = terminal?.status === "failed" ? terminal.id : undefined;
     let restoreFailure: string | undefined;
     const restoreStarted = yield* Clock.currentTimeMillis;
     const restored = yield* Effect.tryPromise({
@@ -522,10 +577,15 @@ export const layer = Layer.effect(
     };
     const updater = new JonesUpdater({
       stateChanged: publishCapability,
-      startupOutcome: () =>
-        restoreFailure === undefined ? launcher.qualifiedStartupOutcome : undefined,
+      startupOutcome: () => {
+        const latest = launcher.qualifiedStartupOutcome;
+        return restoreFailure === undefined && latest !== undefined
+          ? { ...latest, ...(latest.id === settlementOperationId ? terminalSettlement : {}) }
+          : undefined;
+      },
       initialState: {
         ...blocked("A source-qualified runtime and launcher bootstrap is required."),
+        ...launcherStatus,
         ...(terminal === undefined
           ? {}
           : {
@@ -806,45 +866,109 @@ export const layer = Layer.effect(
       Effect.forever,
       Effect.forkScoped,
     );
-    const installForOperation: JonesUpdates["Service"]["installForOperation"] = (input) =>
-      Effect.gen(function* () {
-        const prior = yield* reconcileOperation(input.operationId);
-        if (prior.state === "rejected")
-          return blocked("The launcher refused this exact operation before accepting it.");
-        if (prior.state !== "absent") {
-          const binding = prior.binding;
-          if (
-            prior.state === "blocked" ||
-            binding === undefined ||
-            binding.environmentId !== input.environmentId ||
-            binding.currentVersion !== input.currentVersion ||
-            binding.expectedInstalledSource !== input.expectedInstalledSource ||
-            binding.targetSource !== input.targetSource ||
-            binding.stagedHandle !== input.stagedHandle
-          )
-            return blocked(
-              "The operation is ambiguous or its immutable installation binding changed.",
-            );
-          const { outcome: _outcome, updateId: _updateId, ...current } = updater.snapshot();
-          return {
-            ...current,
-            updateId: input.operationId,
-            phase: prior.state === "pending" ? "installing" : prior.state,
-            message: "The native launcher retained this exact installation operation.",
-          };
-        }
+    const installForOperation: JonesUpdates["Service"]["installForOperation"] = Effect.fn(
+      "JonesUpdates.installForOperation",
+    )(function* (input: Parameters<JonesUpdates["Service"]["installForOperation"]>[0]) {
+      const prior = yield* reconcileOperation(input.operationId);
+      if (prior.state === "rejected")
+        return blocked("The launcher refused this exact operation before accepting it.");
+      if (prior.state !== "absent") {
+        const binding = prior.binding;
         if (
-          launcher.qualifiedOperations !== true ||
-          launcher.qualifiedRetirement !== true ||
-          runtimeReceipt?.sourceSha !== input.expectedInstalledSource ||
-          updater.snapshot().provenance?.sourceSha !== input.targetSource
+          prior.state === "blocked" ||
+          binding === undefined ||
+          binding.environmentId !== input.environmentId ||
+          binding.currentVersion !== input.currentVersion ||
+          binding.expectedInstalledSource !== input.expectedInstalledSource ||
+          binding.targetSource !== input.targetSource ||
+          binding.stagedHandle !== input.stagedHandle
         )
           return blocked(
-            "The installed source, staged source, or operation-capable launcher changed.",
+            "The operation is ambiguous or its immutable installation binding changed.",
           );
-        return yield* Effect.promise(() => updater.install({ ...input, origin: "fleet" }));
-      });
+        const { outcome: _outcome, updateId: _updateId, ...current } = updater.snapshot();
+        return {
+          ...current,
+          updateId: input.operationId,
+          phase: prior.state === "pending" ? "installing" : prior.state,
+          message: "The native launcher retained this exact installation operation.",
+        };
+      }
+      if (
+        launcher.qualifiedOperations !== true ||
+        launcher.qualifiedRetirement !== true ||
+        runtimeReceipt?.sourceSha !== input.expectedInstalledSource ||
+        updater.snapshot().provenance?.sourceSha !== input.targetSource
+      )
+        return blocked(
+          "The installed source, staged source, or operation-capable launcher changed.",
+        );
+      return yield* Effect.promise(() => updater.install({ ...input, origin: "fleet" }));
+    });
+    const settleOperation = Effect.fn("JonesUpdates.settleOperation")(function* (
+      input: JonesUpdateReconcileInput | JonesUpdateRecordRetiredInput,
+    ) {
+      if (!launcher.managed || launcher.qualifiedSettlement !== true)
+        return yield* unsupportedSettlement(input);
+      const request =
+        "retiredLocation" in input
+          ? launcher.recordRetiredOperation?.(input)
+          : launcher.reconcileFailedUpdate?.(input);
+      if (request === undefined) return yield* unsupportedSettlement(input);
+      const result = yield* request.pipe(
+        Effect.match({
+          onFailure: () => undefined,
+          onSuccess: (value) => value,
+        }),
+      );
+      if (result === undefined)
+        return {
+          ...blocked(
+            "The reconciliation request was sent but its outcome is unknown. Check status before trying again.",
+          ),
+          ...launcherStatus,
+          updateId: input.operationId,
+        };
+      const settlement = yield* readSettlement(input.operationId);
+      const refusal = result.result === "refused" ? result.reason : undefined;
+      const latest = launcher.qualifiedStartupOutcome;
+      if (latest?.status === "failed" && latest.id === input.operationId) {
+        settlementOperationId = input.operationId;
+        terminalSettlement = {
+          ...settlement,
+          ...(refusal === undefined ? {} : { settlementRefusal: refusal }),
+        };
+        updater.refreshStartupOutcome();
+      }
+      if (refusal !== undefined)
+        return {
+          ...blocked(`Reconciliation refused: ${refusal}.`),
+          ...launcherStatus,
+          ...settlement,
+          updateId: input.operationId,
+          settlementRefusal: refusal,
+        };
+      if ("retiredLocation" in input)
+        return {
+          ...blocked("Retired operation recorded. Its attempt ID remains reserved."),
+          ...launcherStatus,
+          updateId: input.operationId,
+        };
+      if (latest?.id === input.operationId) return updater.snapshot();
+      return {
+        ...blocked(
+          settlement.settlement === "none"
+            ? "Previous attempt needs reconciliation"
+            : `Update did not start: ${settlement.cause ?? "cause unavailable"}. Nothing changed.`,
+        ),
+        ...launcherStatus,
+        ...settlement,
+        updateId: input.operationId,
+      };
+    });
     return JonesUpdates.of({
+      reconcile: settleOperation,
+      recordRetired: settleOperation,
       refreshPolicy,
       retireStagedOperation: (input) => Effect.promise(() => updater.retireStagedOperation(input)),
       fleetOperationsSupported:

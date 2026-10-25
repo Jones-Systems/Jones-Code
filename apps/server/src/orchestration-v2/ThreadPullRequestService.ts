@@ -24,6 +24,7 @@ import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import * as GitManager from "../git/GitManager.ts";
+import { asBackgroundGitWork } from "../jones/git/backgroundGitAdmission.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
@@ -63,7 +64,7 @@ function pullRequestMatchesProject(
   );
 }
 
-export const resolveProjectForPullRequestDiscovery = Effect.fn(
+const resolveProjectForPullRequestDiscovery = Effect.fn(
   "ThreadPullRequestServiceV2.resolveProject",
 )(function* (
   project: OrchestrationProjectShell,
@@ -194,10 +195,12 @@ export const make = Effect.gen(function* () {
           const detected =
             first.branch === null
               ? null
-              : yield* git.branchPullRequest(
-                  { cwd, branch: first.branch },
-                  { refresh: request.refresh, confirmTerminal: false },
-                );
+              : yield* git
+                  .branchPullRequest(
+                    { cwd, branch: first.branch },
+                    { refresh: request.refresh, confirmTerminal: false },
+                  )
+                  .pipe(asBackgroundGitWork);
           if (detected !== null && !pullRequestMatchesProject(detected, resolvedProject)) {
             return finishBackfill(group);
           }
@@ -223,7 +226,10 @@ export const make = Effect.gen(function* () {
                 const previous = yield* pullRequests.summary(thread.branchPullRequest, {
                   recoverTransientFailure: false,
                 });
-                if (previous.state === "merged" || previous.state === "closed") {
+                if (
+                  previous.headBranch === thread.branch &&
+                  (previous.state === "merged" || previous.state === "closed")
+                ) {
                   branchPullRequest = thread.branchPullRequest;
                 }
               }
@@ -269,10 +275,9 @@ export const make = Effect.gen(function* () {
           if (updates.length === 0) return;
 
           if (detected !== null && first.branch !== null) {
-            const current = yield* git.branchPullRequest(
-              { cwd, branch: first.branch },
-              { freshGitState: true },
-            );
+            const current = yield* git
+              .branchPullRequest({ cwd, branch: first.branch }, { freshGitState: true })
+              .pipe(asBackgroundGitWork);
             const currentIdentity = yield* repositoryIdentities.resolve(project.workspaceRoot, {
               refresh: true,
             });

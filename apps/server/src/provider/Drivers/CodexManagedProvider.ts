@@ -6,6 +6,7 @@ import * as Stream from "effect/Stream";
 import * as Option from "effect/Option";
 import { ChildProcessSpawner } from "effect/process";
 import { makeCodexTextGeneration } from "../../textGeneration/CodexTextGeneration.ts";
+import { makeCodexRemoteRequestEvaluation } from "../../textGeneration/jones/CodexRemoteRequestEvaluation.ts";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import { chatGptModels } from "../CodexChatGptModels.ts";
 import { makeCodexManagedRuntime } from "../CodexManagedRuntime.ts";
@@ -55,13 +56,14 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     homePath: runtime.homeLayout.sharedHomePath,
     shadowHomePath: runtime.homeLayout.mode === "authOverlay" ? runtime.homePath : null,
   };
-  const pending = makePendingCodexProvider({ ...config, customModels: [] }).pipe(
+  const pending = makePendingCodexProvider({ ...config, enabled, customModels: [] }).pipe(
     Effect.map((draft) =>
       stamp({
         ...draft,
         models: [],
         setup,
         runtimePaths,
+        supportsRemoteRequestEvaluation: true,
       }),
     ),
   );
@@ -156,6 +158,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
           })),
           setup,
           runtimePaths,
+          supportsRemoteRequestEvaluation: true,
           ...(draft.slashCommands
             ? {
                 slashCommands: draft.slashCommands.filter((command) => command.name !== "feedback"),
@@ -258,9 +261,13 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
           }),
       ),
     );
+  const evaluateRemoteRequest = yield* makeCodexRemoteRequestEvaluation({
+    instanceId,
+    access: runtime.auth.access,
+  });
   const textGeneration: ProviderInstance["textGeneration"] = {
     evaluateRemoteRequest: (value) =>
-      protect("evaluateRemoteRequest", nativeGeneration.evaluateRemoteRequest(value)),
+      protect("evaluateRemoteRequest", evaluateRemoteRequest(value)),
     generateCommitMessage: (value) =>
       protect("generateCommitMessage", nativeGeneration.generateCommitMessage(value)),
     generatePrContent: (value) =>
@@ -286,21 +293,44 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     snapshotForCwd: (cwd: string) =>
       enabled
         ? resolveRuntime.pipe(
-            Effect.flatMap((effective) =>
-              probeCodexSkillsForCwd({
-                binaryPath: effective.config.binaryPath,
-                homePath: effective.config.homePath,
-                launchArgs: effective.config.launchArgs,
-                cwd,
-                environment: effective.environment,
-              }),
-            ),
-            Effect.flatMap((skills) =>
-              snapshot.getSnapshot.pipe(Effect.map((draft) => ({ ...draft, skills }))),
-            ),
+            Effect.matchEffect({
+              // Signed out or not set up, there is nothing to scan with and the
+              // machine snapshot's empty inventory says as much. Otherwise the
+              // runtime failed for a signed-in account (a token refresh or
+              // reconnect) or before the first check, and the scan failed.
+              onFailure: (cause) =>
+                snapshot.getSnapshot.pipe(
+                  Effect.filterOrFail(
+                    (machine) => machine.auth.status === "unauthenticated",
+                    () => cause,
+                  ),
+                ),
+              onSuccess: (effective) =>
+                probeCodexSkillsForCwd({
+                  binaryPath: effective.config.binaryPath,
+                  homePath: effective.config.homePath,
+                  launchArgs: effective.config.launchArgs,
+                  cwd,
+                  environment: effective.environment,
+                }).pipe(
+                  Effect.flatMap((skills) =>
+                    snapshot.getSnapshot.pipe(Effect.map((draft) => ({ ...draft, skills }))),
+                  ),
+                ),
+            }),
             Effect.scoped,
             Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-            Effect.catch(() => snapshot.getSnapshot),
+            // Fail rather than return the machine snapshot: the registry
+            // publishes any returned snapshot as this workspace's inventory.
+            Effect.mapError(
+              (cause) =>
+                new ProviderDriverError({
+                  driver: DRIVER,
+                  instanceId,
+                  detail: `Failed to probe Codex skills for '${cwd}'`,
+                  cause,
+                }),
+            ),
           )
         : snapshot.getSnapshot,
   } satisfies ProviderInstance;

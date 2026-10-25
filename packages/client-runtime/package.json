@@ -3,6 +3,14 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./jones/linked-threads": {
+      "types": "./src/jones/linkedThreads/index.ts",
+      "default": "./src/jones/linkedThreads/index.ts"
+    },
+    "./jones/workstreams/operations": {
+      "types": "./src/jones/workstreams/operations.ts",
+      "default": "./src/jones/workstreams/operations.ts"
+    },
     "./jones/remote-admission": {
       "types": "./src/jones/remoteAdmission/index.ts",
       "default": "./src/jones/remoteAdmission/index.ts"
@@ -18,6 +26,10 @@
     "./jones/fleet-updates": {
       "types": "./src/jones/fleetUpdates/index.ts",
       "default": "./src/jones/fleetUpdates/index.ts"
+    },
+    "./workspace-basename-lookup": {
+      "types": "./src/workspaceBasenameLookup.ts",
+      "default": "./src/workspaceBasenameLookup.ts"
     },
     "./composerThreadItems": {
       "types": "./src/composerThreadItems.ts",
@@ -335,6 +347,10 @@
       "types": "./src/state/threadSubagents.ts",
       "default": "./src/state/threadSubagents.ts"
     },
+    "./state/thread-undo": {
+      "types": "./src/state/threadUndo.ts",
+      "default": "./src/state/threadUndo.ts"
+    },
     "./state/thread-settled": {
       "types": "./src/state/threadSettled.ts",
       "default": "./src/state/threadSettled.ts"
@@ -510,6 +526,10 @@
     "./jones/thread-read-dwell": {
       "types": "./src/jones/threadReadDwell.ts",
       "default": "./src/jones/threadReadDwell.ts"
+    },
+    "./model-traits": {
+      "types": "./src/modelTraits.ts",
+      "default": "./src/modelTraits.ts"
     },
     "./jones/threadReferenceExcerpt": {
       "types": "./src/jones/threadReferenceExcerpt.ts",

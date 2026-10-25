@@ -106,12 +106,46 @@ does not perform repository deletion or authorize runtime changes.
 
 ## Workflow policy
 
-The Jones-Code workflow allowlist is `ci.yml`, `artifact-cli-linux.yml`, `artifact-cli-mac.yml`, `artifact-desktop-mac.yml`, and `jones-update-qualification.yml`, using GitHub-hosted Ubuntu and macOS runners. CI runs on pull requests, main pushes, and manual dispatch. The Linux CLI and Mac desktop artifact workflows also run on main pushes, matching pull requests, and manual dispatch; the Mac desktop PR trigger is restricted to bases `main` and `work/jones-rebuild/staging`. The separate Mac CLI artifact workflow runs only on manual dispatch, with no push or PR trigger. There are no tag, release, schedule, privileged PR, workflow-completion, or repository-dispatch triggers. The Jones update qualification workflow runs affected regression and strict boundary checks on matching pull requests and manual dispatch. Additional Jones-Code-owned workflows require their own reviewed PRs. Other upstream workflows are absent from `.github/workflows/` so a sync cannot quietly activate a release, deployment, privileged PR event, or Blacksmith job. A removed workflow remains available from the pinned upstream commit. Classify any new upstream workflow before merging the sync PR; default to deferred until its trigger, runner, permissions, and secrets are reviewed.
+The Jones-Code workflow allowlist is `ci.yml`, `artifact-cli-linux.yml`,
+`artifact-cli-mac.yml`, `artifact-desktop-mac.yml`,
+`jones-update-qualification.yml`, `native-enrollment-candidate.yml`,
+`jones-native-workflows.yml`, and `jones-ios-native.yml`, using GitHub-hosted
+Ubuntu and macOS runners. CI runs on pull requests, main pushes and manual
+dispatch. `Check` is the required aggregate; selected Linux jobs may skip only
+on explicit successful classification, with full main, unknown-change and
+complete-stack backstops. The macOS enrollment and mobile-source gates remain
+independent. The enrollment candidate workflow remains path-filtered/manual,
+with read-only permissions and task-owned scratch cleanup.
+
+Linux CLI artifacts run on main pushes, packaging-filtered pull requests and
+manual dispatch. Mac desktop artifacts run nightly, on desktop/packaging-filtered
+pull requests and by manual dispatch; PR bases remain `main` and
+`work/jones-rebuild/staging`. The separate Mac CLI workflow remains manual only.
+Desktop update discovery accepts authenticated nightly artifacts; exact-source
+CI qualification remains a successful canonical main push. These trial artifacts
+do not publish a Release or install an application.
+
+Jones update qualification keeps unique native startup, macOS lifecycle and
+Preview evidence behind their path gates; the duplicate Linux Vitest batch and
+second strict boundary check are absent. Native Electron E2E runs nightly or
+by manual dispatch/`native-e2e` label. Native iOS E2E runs only by manual dispatch
+or that label while simulator startup and cleanup remain unqualified. Both
+native E2E workflows and all artifact workflows are advisory. The macOS
+enrollment and install-lifecycle path gates from #562 and #581 remain.
+
+There are no tag, release, privileged PR, workflow-completion or
+repository-dispatch triggers. Additional Jones-Code-owned workflows require
+their own reviewed PRs. Other upstream workflows are absent from
+`.github/workflows/` so a sync cannot quietly activate a release, deployment,
+privileged PR event or Blacksmith job. Deferred workflows remain available in
+upstream history; a workflow upstream itself removed may require an earlier
+commit. Classify any new upstream workflow before merging the sync PR; default
+to deferred until its trigger, runner, permissions and secrets are reviewed.
 
 | Upstream workflow                   | Main trigger                             | Jones-Code disposition | Reason                                                              |
 | ----------------------------------- | ---------------------------------------- | ---------------------- | ------------------------------------------------------------------- |
 | `ci.yml`                            | PR, push to `main`                       | Active                 | Checks, tests, and builds on GitHub-hosted runners.                 |
-| `cursor-hygiene-webhook.yml`        | Push, PR, issue, discussion              | Not applicable         | Upstream webhook and secrets.                                       |
+| `cursor-hygiene-webhook.yml`        | Removed upstream                         | Retired                | Absent at the pinned upstream baseline; keep the tombstone.         |
 | `deploy-relay.yml`                  | Push, manual                             | Deferred               | Deploys a service using upstream credentials.                       |
 | `desktop-macos-preview-publish.yml` | Workflow completion, privileged PR event | Deferred               | Publishes preview artifacts with secrets.                           |
 | `desktop-macos-preview.yml`         | PR                                       | Deferred               | Preview build requires a separate hosted-runner design.             |
@@ -142,7 +176,7 @@ CI retains the release smoke checks for package versions, lockfile regeneration,
 
 ## Upstream sync procedure
 
-1. Pin the chosen upstream tag and full commit, the receiving branch and full commit, and the previously incorporated upstream commit. Use the owner-assigned receiving branch; do not assume `main` when the workstream targets staging. Inspect the complete delta, including nonconflicting changes to contracts, migrations, dependencies, provider runtimes, browser automation, clients, CI and workflows.
+1. Pin the chosen upstream tag or branch ref and full commit, the receiving branch and full commit, and the previously incorporated upstream commit. Use the owner-assigned receiving branch; do not assume `main` when the workstream targets staging. Inspect the complete delta, including nonconflicting changes to contracts, migrations, dependencies, provider runtimes, browser automation, clients, CI and workflows.
 2. Check open Jones-Code PRs for overlapping paths and behavior. Create a dedicated non-main import branch in an isolated linked worktree with one Git owner. Merge the pinned upstream commit with a merge commit. Keep the bottom PR focused on upstream incorporation and conflict resolution, favoring upstream implementations with minimal new divergence. Retain unaffected Jones-owned modules. Preserve repository identity, workflow restrictions, authorization boundaries and separate migration histories; record every necessary exception.
 3. Reapply the workflow policy above. Keep disabled upstream workflows disabled and classify new ones. Compare workflows with the reviewed receiving set and account for every trigger, runner or permissions change. Do not activate release/deployment workflows, unreviewed schedules, privileged events, unsupported runners or upstream secrets as a side effect of a source sync. Also review the non-workflow install surfaces the Jones update feed and host adoption depend on: the artifact workflows' version stamp, artifact names and `ARTIFACT.json` fields; `scripts/stamp-jones-build.ts`; `scripts/update-release-package-versions.ts`; `scripts/build-cli-archive.ts`; `scripts/build-desktop-artifact.ts` (update provider and DMG name); `packages/shared/src/cliRelease.ts`; `packages/shared/src/jones/jonesActions.ts`; and `apps/server/src/jones/hostService/`. A changed name, version pattern or field can make new main builds silently ineligible for updates. `scripts/install.sh`, `scripts/install.ps1` and `docs/operations/release.md` stay upstream-only; keep them pointed at upstream and do not present them as Jones install paths.
 4. Maintain the repair ledger as each conflict is resolved or changed dependency, API or pathway is inspected; do not wait until the import is finished. Record the affected Jones behavior, source path/change and reason, expected failure or changed result, proposed follow-on PR scope and dependencies, and the check that will prove restoration. Include changes that merge cleanly but break compatibility. Update each entry with its actual PR and verification as restoration progresses. Temporary Jones functionality or compilation failures in the bottom PR are repair obligations, not reasons to rebuild Jones behavior inside it or weaken checks. Restore behavior in moderate, coherent PRs stacked above the import, using the [extracted contribution structure](./contributor-guidance.md#keep-jones-changes-separate-from-upstream). Each feature records its restoration PR and evidence, or M Jones's explicit acceptance of an upstream replacement or deferral. Similar names or APIs do not establish parity.

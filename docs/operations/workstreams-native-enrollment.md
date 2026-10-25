@@ -61,7 +61,7 @@ sidecars. Approval for these commands must cover those effects.
 
 The store is opened through a fixed `file:` URI with extensions disabled, and
 only on these source-qualified runtime pairs: Node 24.13.1 with SQLite 3.51.2,
-24.19.0 with 3.53.3, 24.21.0, 24.22.0 or 26.8.2 with 3.53.4, and 26.12.1
+24.19.0 with 3.53.3, 24.21.0, 24.22.0, 24.22.1 or 26.8.2 with 3.53.4, and 26.12.1
 with 3.54.0. Node 26.12.1 serves the standalone CLI artifacts; the desktop's
 Electron backend uses its own embedded Node runtime. Qualification follows the
 process executing the enrollment command, not the version of a different running
@@ -70,11 +70,11 @@ server.
 The native-enrollment CI jobs exercise both exact Node 26 pairs on Linux x64
 and macOS arm64, record the test and subprocess executable identities, and check
 escaped file URIs, missing-file non-creation, read-only writes, disabled
-extension loading, WAL visibility and transaction-bound authority. The 26.8.2
-Linux job runs on every CI run. Its macOS job, which needs a scarce hosted
-runner, runs when the enrollment, store-authority or SQLite client sources, the
-CI workflow, or the dependency manifests and root test configuration change; a
-manual CI run can request it. The separate 26.12.1 workflow runs on pull
+extension loading, WAL visibility and transaction-bound authority. The Linux
+jobs for Node 24.22.1 and 26.8.2 run on every CI run. Their macOS jobs, which
+need scarce hosted runners, run when the enrollment, store-authority or SQLite
+client sources, the CI workflow, or the dependency manifests and root test
+configuration change; a manual CI run can request them. The separate 26.12.1 workflow runs on pull
 requests that change its sources and also checks SQLite engine behavior in a
 disposable SEA fixture; this does not replace the ordinary Jones artifact
 version and serve smoke tests.
@@ -161,9 +161,13 @@ The Control Plane enrollment CLI emits `registry_context`, `owner_grants` and
 `source_bindings`; that output is not the native descriptor. The provisioning
 CLI's `stage-runtime` stages signing keys, and `stage-jones` stages the six
 legacy activation values plus an optional seventh
-`T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION=1.0.0|2.0.0` value. Explicit
+`T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION=1.0.0|2.0.0|3.0.0` value. Explicit
 `--registration-context-version 2.0.0` selects fleet registration metadata;
-v1 refuses multiple active native sources. When the option is omitted,
+v1 refuses multiple active native sources. Opt-in `3.0.0` uses the enrolled
+native profile policy: accepting provider v2 permits routine build drift,
+while v1-only sources and selectors `1.0.0`/`2.0.0` retain exact build matching.
+An absent selector remains `1.0.0`; a registry rejection of v3 does not fall back.
+Jones translates v3 into the existing client v2 response with the local running build. When the option is omitted,
 staging preserves an existing selector. Changing activation bytes requires the
 exact existing-file SHA guard. Neither staging command updates native
 descriptors. Preserve the persisted selector, and do not rewrite unchanged
@@ -175,19 +179,26 @@ changed. See the producer's [enrollment and staging guide](https://github.com/Jo
 The bearer expires with its session: 1–30 days from `prepare`, default and
 maximum 30. Use the request's `session.expires_at` as the deadline; `apply` does
 not restart that clock. Enrollment records are permanent. A replacement bearer
-or a changed source build needs a new `--enrollment-id` and native context.
-The enrollment binds repository, commit SHA and tree as well as environment,
-authority namespace and store generation; an unexpired old bearer does not
-qualify a changed build.
+needs a new `--enrollment-id` and native context when its session expires or is
+revoked. A compatible build update using native provider v2 preserves the same
+enrollment, bearer and attempts. The enrolled repository, commit SHA and tree
+remain immutable provenance; the v2 response reports the current build separately.
+Provider v1 remains strict: its observed build must equal the enrolled build.
+Historical `readback` accepts a compatible current build while checking the exact
+persisted request, authority, session and credential hash. It never reserves or
+publishes. `plan` and `apply` still require the request's enrolled build to match
+the current build, and executable and desktop-owner custody checks remain exact.
 
 Assign an operator and a due trigger before `expires_at`, allowing time for
-replacement and proof, and make this procedure part of every source-changing
-update. This runbook does not install a renewal scheduler. With approval for
-the exact installation, private configuration and restart effects:
+replacement and proof. Use this renewal procedure for expiry, revocation,
+an enrollment/authority change, or a build change under strict v1. A compatible
+v2 build update alone does not require renewal. This runbook does not install
+a renewal scheduler. With approval for the exact installation, private
+configuration and restart effects:
 
-Before a source-changing update or the selected source's descriptor/enrollment
-switch, prevent new work from entering the controlled transition window and
-prove there are no active jobs and zero outstanding native settlements for that
+Before a strict v1 source-changing update or the selected source's descriptor/
+enrollment switch, prevent new work from entering the controlled transition
+window and prove there are no active jobs and zero outstanding native settlements for that
 source. Maintain both conditions through the transition. Reconcile known
 pending receipts through the existing receipt lookup while the old qualified
 descriptor and its original session/enrollment remain usable; do not resubmit
@@ -225,15 +236,48 @@ unproved drain hold only the selected transition until reconciled.
 5. Only after the new adapter and same-reference verification succeed, revoke
    the old session with `t3 auth session revoke <session_id>` and confirm its
    rejection. On failed proof, retain the old session and private recovery
-   material. Reconcile unknown effects before another change; restoring old
-   descriptor bytes alone cannot qualify a source build that has changed.
+   material. Reconcile unknown effects before another change. Under strict v1,
+   restoring old descriptor bytes alone cannot qualify a changed source build.
+
+### Compatible native upgrades and rollback
+
+Roll out native v2 under exact installation, private configuration and restart
+approval. First install the dual-profile Control Plane with configuration bytes
+unchanged. For each source, capture the complete configuration and guard its
+replacement by the observed hash, adding only
+`native_profiles: ["workstreams-t3-provider/2.0.0", "workstreams-t3-provider/1.0.0"]`.
+Preserve its origin, credential locator and original context, every other source,
+and GitHub. After the controlled Control Plane restart, prove that the running
+adapter still works through strict v1 against the old Jones build. Then update
+Jones to a v2-capable release and prove v2 readiness through that adapter as below.
+The same enrollment, credential and attempt records remain in use. Registration
+availability has its own version selector and qualification; native readiness
+alone does not prove it. Select v2-only policy only after every host that may
+serve the source has passed the v2 readback.
+
+Retain the captured configuration and a qualified v2-capable Jones rollback
+release. Before downgrading Control Plane below descriptor support, restore its
+captured three-key configuration through the same guarded change and restart.
+Downgrading Jones below v2 restores strict v1 and requires the exact enrolled
+build. Attempts started under v2 at another build stay unresolved until a
+v2-capable build returns; after adoption, roll back to a v2-capable release or
+prove the source is drained first. Reconcile pending attempts with their original
+request bytes and enrollment through lookup, never redispatch them. Restore any
+unsupported registration selector before its runtime downgrade. Configuration
+rollback cannot undo session expiry, revocation or an authority generation
+change, and this upgrade requires no enrollment migration.
 
 ### Prove the running adapter and renew an existing reference
 
 Through the actual running Control Plane adapter and configured credential,
-require `GET /api/workstreams/native/v1/context` to return `ready` with full
-context equality, including the build and enrollment ID. Then require
-`POST /api/workstreams/native/v1/attestations` for the intended native identity
+require the selected native profile's context endpoint to return `ready`. For
+`GET /api/workstreams/native/v2/context`, require complete `enrollment` equality
+with the configured original v1 context, including enrolled build and enrollment
+ID, and a valid `observed_build` for Jones Code. The observed SHA/tree may differ.
+For strict `GET /api/workstreams/native/v1/context`, require full `context`
+equality, including the current build and enrollment ID. Then require
+`POST /api/workstreams/native/v2/attestations` (or `/v1/attestations` for the
+selected v1 profile) for the intended native identity
 and expected namespace/generation to return `attested` with fresh timestamps
 and `expires_at - attested_at = 300000` milliseconds. A standalone request with
 a manually substituted bearer does not prove what the running adapter loaded.

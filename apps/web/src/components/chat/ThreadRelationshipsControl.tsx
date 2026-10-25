@@ -1,14 +1,22 @@
 import { RemoteSubagentRow, RemoteParentRow } from "../../jones/remoteAgentLineage/RemoteRows";
-import {
-  groupLineageRows,
-  resolveMachineIdentity,
-  type LineageRow,
-} from "../../jones/remoteAgentLineage/model";
+import { groupLineageRows, resolveMachineIdentity } from "../../jones/remoteAgentLineage/model";
 import { useParentLink } from "../../jones/remoteAgentLineage/useParentLink";
+import {
+  LinkedThreadsSection,
+  LinkedContinuationFocusContext,
+} from "../../jones/linkedThreads/LinkedThreadsSection";
+import { LinkedLineageGroups } from "../../jones/linkedThreads/LinkedLineageGroups";
+import { buildLinkedEntries, type LinkedEntry } from "../../jones/linkedThreads/model";
+import {
+  LinkedThreadRow,
+  LinkedEntryLabels,
+  LinkedEntryActions,
+} from "../../jones/linkedThreads/LinkedThreadRow";
+import { LinkedThreadsActions } from "../../jones/linkedThreads/LinkedThreadsActions";
+import { useLinkedThreads } from "../../jones/linkedThreads/useLinkedThreads";
 import { useAtomValue } from "@effect/atom-react";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import { ThreadHoverCardPopup } from "../ThreadHoverCard";
-import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { CollapsibleSectionHeader, SectionHeaderStatus } from "../ui/collapsible-section-header";
 import { SubagentTooltipContent } from "./SubagentTooltipContent";
 import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
@@ -19,6 +27,7 @@ import {
   type RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import { formatSubagentDisplayTitle } from "@t3tools/client-runtime/state/subagent-display";
+import { deriveProviderSubagentStatus } from "@t3tools/client-runtime/state/thread-execution";
 import {
   deriveThreadRelationshipGraph,
   immediateThreadRelationships,
@@ -33,6 +42,8 @@ import {
   resolveLatestMergeBackRun,
 } from "@t3tools/client-runtime/state/thread-workflows";
 import {
+  isOrchestrationV2WorkActive,
+  isProviderNativeSubagentThread,
   NodeId,
   type EnvironmentId,
   type OrchestrationV2Subagent,
@@ -48,12 +59,10 @@ import {
   CornerLeftUpIcon,
   GitForkIcon,
   LoaderCircleIcon,
-  MoreHorizontalIcon,
   PlusIcon,
   SquareIcon,
-  UnplugIcon,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useContext, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { useArchivedThreadSnapshots } from "../../lib/archivedThreadsState";
 import { buildThreadRouteParams } from "../../threadRoutes";
@@ -70,7 +79,6 @@ import { AgentElapsed } from "./AgentElapsed";
 import { ThreadRelationshipIcon, threadRelationshipStatusLabel } from "./ThreadRelationshipIcon";
 import { ThreadLineageWorkflowRow } from "./ThreadLineageWorkflowRow";
 
-import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 import {
@@ -82,7 +90,7 @@ import {
 const THREAD_LINEAGE_INITIAL_COUNT = 6;
 const THREAD_LINEAGE_PAGE_COUNT = 12;
 
-export function resolveThreadLineageWindow<Row>(
+function resolveThreadLineageWindow<Row>(
   rows: ReadonlyArray<Row>,
   visibleCount: number,
 ): { readonly visibleRows: ReadonlyArray<Row>; readonly hiddenCount: number } {
@@ -124,24 +132,41 @@ function ThreadLineageRowList(props: {
 
 function ThreadLineageGroup(props: {
   readonly label: string | null;
-  readonly rows: ReadonlyArray<LineageRow>;
+  readonly id: string;
+  readonly rows: ReadonlyArray<LinkedEntry>;
   readonly expanded: boolean;
-  readonly children: (rows: ReadonlyArray<LineageRow>) => ReactNode;
+  readonly children: (rows: ReadonlyArray<LinkedEntry>) => ReactNode;
 }) {
-  const [expanded, setExpanded] = useState(props.expanded);
+  const [manuallyExpanded, setManuallyExpanded] = useState(props.expanded);
+  const [manualFocusRequest, setManualFocusRequest] = useState(0);
+  const focusRequest = useContext(LinkedContinuationFocusContext);
+  const hasContinuation = props.rows.some((entry) =>
+    entry.relations.some((relation) => relation.link.kind === "continuation"),
+  );
+  const expanded = manuallyExpanded || (hasContinuation && focusRequest > manualFocusRequest);
+  const handledFocus = useRef(0);
+  const element = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (focusRequest <= handledFocus.current || !hasContinuation) return;
+    handledFocus.current = focusRequest;
+    element.current?.querySelector<HTMLButtonElement>("button")?.focus();
+  }, [focusRequest, hasContinuation]);
   const [visibleCount, setVisibleCount] = useState(THREAD_LINEAGE_INITIAL_COUNT);
   const { visibleRows, hiddenCount } = resolveThreadLineageWindow(props.rows, visibleCount);
-  const failedCount = props.rows.filter(
-    ({ status }) => status === "failed" || status === "error",
+  const failedCount = props.rows.filter((entry) =>
+    entry.lineage.some(({ status }) => status === "failed" || status === "error"),
   ).length;
   if (props.rows.length === 0) return null;
   return (
-    <div>
+    <div ref={element} data-linked-group={props.id}>
       {props.label ? (
         <CollapsibleSectionHeader
           variant="panel"
           expanded={expanded}
-          onClick={() => setExpanded(!expanded)}
+          onClick={() => {
+            setManuallyExpanded(!expanded);
+            setManualFocusRequest(focusRequest);
+          }}
           accessory={
             failedCount > 0 ? <SectionHeaderStatus>{failedCount} failed</SectionHeaderStatus> : null
           }
@@ -182,9 +207,9 @@ function currentSubagent<Agent extends RuntimeSubagent>(
   agent: Agent | undefined,
   childThread: OrchestrationV2ThreadShell | null | undefined,
 ): Agent | undefined {
+  if (!agent || !childThread || isOrchestrationV2WorkActive(agent.status)) return agent;
   const liveStatus =
-    childThread?.activityRunStatus ?? (childThread?.status === "queued" ? "queued" : null);
-  if (!agent || !childThread) return agent;
+    childThread.activityRunStatus ?? (childThread.status === "queued" ? "queued" : null);
   const newerRun =
     childThread.latestRunRequestedAt &&
     DateTime.toEpochMillis(childThread.latestRunRequestedAt) >
@@ -225,6 +250,33 @@ export function ThreadRelationshipsPanel(props: {
   const relationshipShells = useThreadRelationshipShells(ref);
   const allProjects = useProjects();
   const archived = useArchivedThreadSnapshots([props.environmentId]);
+  const archivedShells = archived.snapshots.find(
+    (entry) => entry.environmentId === props.environmentId,
+  )?.snapshot.threads;
+  const currentShell =
+    relationshipShells.find((thread) => thread.id === props.threadId) ??
+    archivedShells?.find((thread) => thread.id === props.threadId);
+  const currentThread = projection?.thread ?? currentShell;
+  const linked = useLinkedThreads(
+    ref,
+    currentShell?.activityRunStatus != null ||
+      currentShell?.status === "running" ||
+      currentShell?.status === "queued",
+    currentShell?.latestRunRequestedAt ? DateTime.formatIso(currentShell.latestRunRequestedAt) : "",
+  );
+  const parentThreadId =
+    currentThread?.forkedFrom?.type === "run"
+      ? currentThread.forkedFrom.threadId
+      : currentThread?.lineage.parentThreadId;
+  const parentShell = parentThreadId
+    ? (relationshipShells.find((thread) => thread.id === parentThreadId) ??
+      archivedShells?.find((thread) => thread.id === parentThreadId))
+    : undefined;
+  const parentRef =
+    parentShell && isProviderNativeSubagentThread(parentShell)
+      ? scopeThreadRef(props.environmentId, parentShell.id)
+      : null;
+  const parentProjection = useThreadProjection(parentRef)?.projection;
   const navigate = useNavigate();
   const mergeBack = useAtomCommand(threadEnvironment.mergeBack);
   const stopSession = useAtomCommand(threadEnvironment.stopSession);
@@ -239,9 +291,9 @@ export function ThreadRelationshipsPanel(props: {
   // the panel's hooks where the compiler can cache them.
   const providers = providersByEnvironment.get(props.environmentId);
   const projects = allProjects.filter((project) => project.environmentId === props.environmentId);
-  const archivedShells = archived.snapshots.find(
-    (entry) => entry.environmentId === props.environmentId,
-  )?.snapshot.threads;
+  const parentNativeStatus = parentProjection
+    ? deriveProviderSubagentStatus(parentProjection)?.status
+    : undefined;
   const projected = projection?.subagents ?? [];
   const runtimeSubagents = projectedSubagentsToRuntime(projected);
   const byId = new Map(runtimeSubagents.map((agent) => [agent.id, agent]));
@@ -281,7 +333,6 @@ export function ThreadRelationshipsPanel(props: {
             subagents: projected.filter((agent) => agent.remoteChild === undefined),
           },
   });
-  const currentThread = projection?.thread ?? graph.nodes.get(props.threadId)?.thread;
   const currentProject = projects.find((project) => project.id === currentThread?.projectId);
   const latestMergeBackRun = projection === null ? null : resolveLatestMergeBackRun(projection);
   const mergeTargetThreadId = resolveMergeBackTargetThreadId(projection);
@@ -308,12 +359,16 @@ export function ThreadRelationshipsPanel(props: {
     projected,
     props.threadId,
   );
-  const groups = [
-    { id: "related", label: null, rows: related, expanded: true },
-    { id: "active", label: null, rows: active, expanded: true },
-    { id: "previous", label: "Previous agents", rows: previous, expanded: false },
-  ];
-  if (groups.every((group) => group.rows.length === 0) && runningCount === 0 && !parentLink?.remote)
+  const entries = buildLinkedEntries({
+    subject: ref,
+    related,
+    active,
+    previous,
+    relations: linked.relations,
+    snapshots: linked.snapshots,
+    ...(parentLink?.remote ? { remoteParent: parentLink.ref } : {}),
+  });
+  if (entries.length === 0 && runningCount === 0 && !parentLink?.remote && !linked.visible)
     return null;
 
   const openThread = (threadId: ThreadId) => {
@@ -350,16 +405,13 @@ export function ThreadRelationshipsPanel(props: {
 
   const stopSubagent = async (
     childThreadId: ThreadId,
-    agent: Pick<OrchestrationV2Subagent, "id" | "origin" | "threadId">,
+    agent: Pick<OrchestrationV2Subagent, "id" | "threadId">,
   ) => {
     if (stoppingId !== null) return;
     setStoppingId(childThreadId);
     const result = await interruptTurn({
       environmentId: props.environmentId,
-      input:
-        agent.origin === "provider_native"
-          ? { threadId: agent.threadId, subagentId: agent.id }
-          : { threadId: childThreadId },
+      input: { threadId: agent.threadId, subagentId: agent.id },
     });
     setStoppingId(null);
     if (result._tag === "Failure") {
@@ -386,313 +438,383 @@ export function ThreadRelationshipsPanel(props: {
       : (graph.nodes.get(mergeTargetThreadId)?.thread?.title ?? null);
 
   return (
-    <ThreadDetailsSection
-      headingId="thread-details-lineage-heading"
-      title={runningCount > 0 ? `Lineage · ${runningCount} running` : "Lineage"}
-      data-thread-relationships-panel
+    <LinkedThreadsSection
+      key={scopedThreadKey(ref)}
+      runningCount={runningCount}
+      count={entries.length}
+      incomplete={linked.incomplete}
+      continued={linked.hasSuccessor}
+      onExpand={linked.onExpand}
       actions={
-        canDetach ? (
-          <Menu>
-            <MenuTrigger
-              render={
-                <ThreadDetailsControl
-                  size="icon-xs"
-                  variant="ghost"
-                  part="icon"
-                  aria-label="More thread actions"
-                  disabled={busyAction !== null}
-                />
-              }
-            >
-              <MoreHorizontalIcon className="size-3.5" />
-            </MenuTrigger>
-            <MenuPopup align="end" className="min-w-60 max-w-(--available-width)">
-              <MenuItem onClick={() => void detach()}>
-                <UnplugIcon className="size-3.5" />
-                Disconnect agent session
-              </MenuItem>
-            </MenuPopup>
-          </Menu>
-        ) : null
+        <LinkedThreadsActions
+          key={scopedThreadKey(ref)}
+          subject={ref}
+          view={linked}
+          title={currentThread?.title ?? props.threadId}
+          environmentLabel={environment?.label ?? "unknown environment"}
+          canDetach={canDetach}
+          busy={busyAction !== null}
+          onDetach={() => void detach()}
+        />
       }
     >
-      {parentLink?.remote ? <RemoteParentRow parent={parentLink} /> : null}
-      {groups.map((group) => (
-        <ThreadLineageGroup key={`${scopedThreadKey(ref)}:${group.id}`} {...group}>
-          {(visibleRows) =>
-            visibleRows.map((lineageRow) => {
-              if (lineageRow.kind === "remote") {
-                const agent = lineageRow.agent;
-                return (
-                  <RemoteSubagentRow
-                    key={`${scopedThreadKey(scopeThreadRef(agent.remoteChild.environmentId, agent.remoteChild.threadId))}:${agent.id}`}
-                    agent={agent}
-                    provider={providersByEnvironment
-                      .get(agent.remoteChild.environmentId)
-                      ?.find((entry) => entry.instanceId === agent.providerInstanceId)}
-                  />
-                );
-              }
-              const { threadId, edge } = lineageRow.row;
-              const node = graph.nodes.get(threadId);
-              const isSubagent = edge.kind === "subagent";
-              const isMergeTarget = threadId === mergeTargetThreadId;
-              const isParent = isParentThreadRelationship(edge, props.threadId);
-              const rowStatus = threadRelationshipRowStatus(graph, { threadId, edge });
-              const RelationshipIcon = isParent
-                ? CornerLeftUpIcon
-                : isSubagent
-                  ? BotIcon
-                  : GitForkIcon;
-              const relationship = relationshipLabel(edge, props.threadId);
-              const projectedAgent =
-                isSubagent && !isParent ? subagentsByThreadId.get(threadId) : undefined;
-              const workflowGroup =
-                projectedAgent === undefined
-                  ? undefined
-                  : workflowGroupsById.get(projectedAgent.id);
-              const agent = workflowGroup
-                ? projectedAgent
-                : currentSubagent(projectedAgent, node?.thread);
-              const failed = rowStatus === "failed" || rowStatus === "error";
-              const canStop =
-                agent &&
-                (agent.origin === "app_owned" ||
-                  (agent.origin === "provider_native" &&
-                    agent.driver === "claudeAgent" &&
-                    agent.runId != null &&
-                    agent.nativeTaskRef?.strength === "strong" &&
-                    agent.nativeTaskRef.nativeId !== null &&
-                    ["pending", "running", "waiting"].includes(agent.nativeStatus))) &&
-                agent.startedAt &&
-                ["pending", "running", "waiting"].includes(agent.status);
-              const threadTitle = relationshipThreadTitle({
-                title:
-                  workflowGroup?.workflow.workflowName ??
-                  node?.thread?.title ??
-                  agent?.title ??
-                  threadId,
-                isSubagent,
-              });
-              const provider = providers?.find(
-                (entry) =>
-                  entry.instanceId ===
-                  (agent?.providerInstanceId ?? node?.thread?.providerInstanceId),
-              );
-              const providerDriver = agent?.driver ?? provider?.driver;
-              const canStopWorkflow =
-                canOperateWorkflow &&
-                workflowGroup?.workflow.status === "running" &&
-                agent?.origin === "provider_native" &&
-                providerDriver === "claudeAgent";
-              const trailingVisibilityClass = (workflowGroup ? canStopWorkflow : canStop)
-                ? "group-hover:opacity-0 group-focus-within:opacity-0 pointer-coarse:opacity-0 [@media(hover:none)]:opacity-0"
-                : "";
-              const project = projects.find((project) => project.id === node?.thread?.projectId);
-              const relationshipHint = node?.missing
-                ? "This related thread is unavailable"
-                : `Open ${relationship.toLowerCase()} in this chat`;
-              const RelationshipPopup = agent ? ThreadHoverCardPopup : TooltipPopup;
-              const relationshipTooltip = agent ? (
-                <SubagentTooltipContent
-                  title={threadTitle}
-                  model={agent.model}
-                  providerInstanceId={agent.providerInstanceId}
-                  origin={agent.origin}
-                  modelSelection={agent.modelSelection}
-                  provider={provider}
-                  providers={providers}
-                  driver={providerDriver}
-                  elapsed={<AgentElapsed agent={agent} />}
-                  status={agent.status}
-                  result={agent.result}
-                  progress={agent.progress}
-                  parentThread={currentThread ?? undefined}
-                  childThread={node?.thread ?? undefined}
-                  parentProject={currentProject}
-                  childProject={project}
-                />
-              ) : (
-                relationshipHint
-              );
-              const relationshipContent = (
-                <>
-                  <ThreadRelationshipIcon
-                    driver={isSubagent && !isParent ? providerDriver : undefined}
-                    provider={provider}
-                    fallbackIcon={RelationshipIcon}
-                    status={rowStatus}
-                  />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-left text-sm font-medium leading-4 text-foreground/85">
-                      {threadTitle}
-                    </span>
-                  </span>
-                  {agent ? null : (
-                    <ArrowRightIcon className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
-                  )}
-                  {agent && !workflowGroup ? (
-                    <span
-                      className={`shrink-0 text-2xs ${failed ? "text-destructive" : "text-muted-foreground"} ${trailingVisibilityClass}`}
-                    >
-                      on {machineLabel} · {threadRelationshipStatusLabel(rowStatus)}
-                    </span>
-                  ) : agent &&
-                    !failed &&
-                    (deriveSubagentElapsedMs(agent, 0) !== null || canStopWorkflow) ? (
-                    <span
-                      className={`shrink-0 text-2xs font-normal tabular-nums text-muted-foreground ${canStopWorkflow ? "min-w-6 text-end" : ""} ${trailingVisibilityClass}`}
-                    >
-                      <AgentElapsed agent={agent} compact />
-                    </span>
-                  ) : !isMergeTarget ? (
-                    <span
-                      className={
-                        workflowGroup
-                          ? "sr-only"
-                          : `shrink-0 text-2xs ${failed ? "text-destructive" : "text-muted-foreground"} ${trailingVisibilityClass}`
-                      }
-                    >
-                      {threadRelationshipStatusLabel(rowStatus)}
-                    </span>
-                  ) : null}
-                </>
-              );
-              const relationshipLink = (
-                <Tooltip>
-                  <TooltipTrigger
-                    delay={200}
-                    render={
-                      <ThreadDetailsControl
-                        size="sm"
-                        variant="ghost"
-                        part={workflowGroup ? "primary" : "row"}
-                        disabled={node?.missing === true}
-                        onClick={() => openThread(threadId)}
+      <LinkedLineageGroups
+        entries={entries}
+        renderGroup={(group) => (
+          <ThreadLineageGroup key={`${scopedThreadKey(ref)}:${group.id}`} {...group}>
+            {(visibleRows) =>
+              visibleRows.flatMap((entry) => {
+                if (entry.lineage.length === 0) {
+                  if (entry.remoteParent && parentLink)
+                    return (
+                      <li key={entry.key}>
+                        <div className="flex min-w-0 items-center">
+                          <div className="min-w-0 flex-1">
+                            <RemoteParentRow parent={parentLink} />
+                          </div>
+                          <LinkedEntryActions entry={entry} view={linked} />
+                        </div>
+                        <LinkedEntryLabels entry={entry} />
+                      </li>
+                    );
+                  return (
+                    <LinkedThreadRow
+                      key={entry.key}
+                      entry={entry}
+                      view={linked}
+                      subjectEnvironmentId={props.environmentId}
+                    />
+                  );
+                }
+                return entry.lineage.map((lineageRow) => {
+                  if (lineageRow.kind === "remote") {
+                    const agent = lineageRow.agent;
+                    const remoteRow = (
+                      <RemoteSubagentRow
+                        key={`${scopedThreadKey(scopeThreadRef(agent.remoteChild.environmentId, agent.remoteChild.threadId))}:${agent.id}`}
+                        agent={agent}
+                        // Its provider instance belongs to the environment it runs in.
+                        provider={providersByEnvironment
+                          .get(agent.remoteChild.environmentId)
+                          ?.find((entry) => entry.instanceId === agent.providerInstanceId)}
                       />
-                    }
-                  >
-                    {relationshipContent}
-                  </TooltipTrigger>
-                  <RelationshipPopup side="left">{relationshipTooltip}</RelationshipPopup>
-                </Tooltip>
-              );
-              if (workflowGroup && agent) {
-                return (
-                  <ThreadLineageWorkflowRow
-                    key={threadId}
-                    group={workflowGroup}
-                    providerInstanceId={agent.providerInstanceId}
-                    provider={provider}
-                    providers={providers}
-                    driver={providerDriver}
-                    onOpenThread={(memberThreadId) => openThread(memberThreadId as ThreadId)}
-                    isThreadAvailable={(memberThreadId) =>
-                      graph.nodes.get(memberThreadId as ThreadId)?.missing === false
-                    }
-                    onStop={canStopWorkflow ? () => void stopWorkflow(agent.id) : undefined}
-                    stopping={stoppingId === agent.id}
-                    stopDisabled={stoppingId !== null}
-                    header={relationshipLink}
-                  />
-                );
-              }
-              return (
-                <li key={threadId} className="group relative flex h-8 items-center rounded-lg">
-                  {isMergeTarget ? (
-                    <div className={THREAD_DETAILS_PANEL_SPLIT_GROUP_CLASS}>
-                      <Tooltip>
-                        <TooltipTrigger
-                          delay={200}
-                          render={
-                            <ThreadDetailsControl
-                              size="sm"
-                              variant="ghost"
-                              part="primary"
-                              aria-label={`${threadTitle} ${threadRelationshipStatusLabel(rowStatus)}`}
-                              disabled={node?.missing === true}
-                              onClick={() => openThread(threadId)}
-                            />
-                          }
-                        >
-                          {relationshipContent}
-                        </TooltipTrigger>
-                        <RelationshipPopup side="left">{relationshipTooltip}</RelationshipPopup>
-                      </Tooltip>
-                      <span
-                        aria-hidden="true"
-                        className={THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS}
-                      />
-                      <Tooltip>
-                        <TooltipTrigger
-                          render={
-                            <ThreadDetailsControl
-                              size="sm"
-                              variant="ghost"
-                              part="secondary"
-                              aria-label={
-                                parentTitle
-                                  ? `Merge back to ${parentTitle}`
-                                  : "Merge back to source conversation"
-                              }
-                              disabled={!canMerge || busyAction !== null}
-                              onClick={() => void merge()}
-                            >
-                              {busyAction === "merge" ? (
-                                <LoaderCircleIcon className="size-3 animate-spin" />
-                              ) : (
-                                <PullRequestGlyph.merged className="size-3" />
-                              )}
-                            </ThreadDetailsControl>
-                          }
-                        />
-                        <TooltipPopup side="left">
-                          {latestMergeBackRun === null
-                            ? "Complete a run in this fork before merging it back"
-                            : parentTitle
-                              ? `Merge this conversation back into ${parentTitle}`
-                              : "Merge this conversation back into its source"}
-                        </TooltipPopup>
-                      </Tooltip>
-                      <span className="shrink-0 border border-transparent ps-1 pe-2.5 text-2xs font-medium text-muted-foreground">
-                        {threadRelationshipStatusLabel(rowStatus)}
-                      </span>
-                    </div>
+                    );
+                    return entry.relations.length === 0 ? (
+                      remoteRow
+                    ) : (
+                      <li key={entry.key}>
+                        <div className="flex min-w-0 items-center">
+                          <ul className="m-0 min-w-0 flex-1 list-none p-0">{remoteRow}</ul>
+                          <LinkedEntryActions entry={entry} view={linked} />
+                        </div>
+                        <LinkedEntryLabels entry={entry} />
+                      </li>
+                    );
+                  }
+                  const { threadId, edge } = lineageRow.row;
+                  const node = graph.nodes.get(threadId);
+                  const isSubagent = edge.kind === "subagent";
+                  const isMergeTarget = threadId === mergeTargetThreadId;
+                  const isParent = isParentThreadRelationship(edge, props.threadId);
+                  const rowStatus =
+                    (isParent && threadId === parentRef?.threadId
+                      ? (node?.thread?.activityRunStatus ?? parentNativeStatus)
+                      : undefined) ?? threadRelationshipRowStatus(graph, { threadId, edge });
+                  const RelationshipIcon = isParent
+                    ? CornerLeftUpIcon
+                    : isSubagent
+                      ? BotIcon
+                      : GitForkIcon;
+                  const relationship = relationshipLabel(edge, props.threadId);
+                  const projectedAgent =
+                    isSubagent && !isParent ? subagentsByThreadId.get(threadId) : undefined;
+                  const workflowGroup =
+                    projectedAgent === undefined
+                      ? undefined
+                      : workflowGroupsById.get(projectedAgent.id);
+                  const agent = workflowGroup
+                    ? projectedAgent
+                    : currentSubagent(projectedAgent, node?.thread);
+                  const failed = rowStatus === "failed" || rowStatus === "error";
+                  const canStop =
+                    agent &&
+                    (agent.origin === "app_owned" ||
+                      (agent.origin === "provider_native" &&
+                        agent.driver === "claudeAgent" &&
+                        agent.runId != null &&
+                        agent.nativeTaskRef?.strength === "strong" &&
+                        agent.nativeTaskRef.nativeId !== null &&
+                        ["pending", "running", "waiting"].includes(agent.nativeStatus))) &&
+                    agent.startedAt &&
+                    ["pending", "running", "waiting"].includes(agent.status);
+                  const threadTitle = relationshipThreadTitle({
+                    title:
+                      workflowGroup?.workflow.workflowName ??
+                      node?.thread?.title ??
+                      agent?.title ??
+                      threadId,
+                    isSubagent,
+                  });
+                  const provider = providers?.find(
+                    (entry) =>
+                      entry.instanceId ===
+                      (agent?.providerInstanceId ?? node?.thread?.providerInstanceId),
+                  );
+                  const providerDriver = agent?.driver ?? provider?.driver;
+                  const canStopWorkflow =
+                    canOperateWorkflow &&
+                    workflowGroup?.workflow.status === "running" &&
+                    agent?.origin === "provider_native" &&
+                    providerDriver === "claudeAgent";
+                  const trailingVisibilityClass = (workflowGroup ? canStopWorkflow : canStop)
+                    ? "group-hover:opacity-0 group-focus-within:opacity-0 pointer-coarse:opacity-0 [@media(hover:none)]:opacity-0"
+                    : "";
+                  const project = projects.find(
+                    (project) => project.id === node?.thread?.projectId,
+                  );
+                  const relationshipHint = node?.missing
+                    ? "This related thread is unavailable"
+                    : `Open ${relationship.toLowerCase()} in this chat`;
+                  const RelationshipPopup = agent ? ThreadHoverCardPopup : TooltipPopup;
+                  const relationshipTooltip = agent ? (
+                    <SubagentTooltipContent
+                      title={threadTitle}
+                      model={agent.model}
+                      providerInstanceId={agent.providerInstanceId}
+                      origin={agent.origin}
+                      modelSelection={agent.modelSelection}
+                      provider={provider}
+                      providers={providers}
+                      driver={providerDriver}
+                      elapsed={<AgentElapsed agent={agent} />}
+                      status={agent.status}
+                      result={agent.result}
+                      progress={agent.progress}
+                      parentThread={currentThread ?? undefined}
+                      childThread={node?.thread ?? undefined}
+                      parentProject={currentProject}
+                      childProject={project}
+                    />
                   ) : (
-                    relationshipLink
-                  )}
-                  {canStop && agent ? (
-                    <div className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100 [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100">
-                      <Tooltip>
-                        <TooltipTrigger
-                          render={
-                            <ThreadDetailsControl
-                              size="icon-xs"
-                              variant="ghost"
-                              part="icon"
-                              tone="destructive"
-                              aria-label={`Stop subagent ${threadTitle}`}
-                              disabled={stoppingId !== null}
-                              onClick={() => void stopSubagent(threadId, agent)}
-                            />
+                    relationshipHint
+                  );
+                  const relationshipContent = (
+                    <>
+                      <ThreadRelationshipIcon
+                        driver={isSubagent && !isParent ? providerDriver : undefined}
+                        provider={provider}
+                        fallbackIcon={RelationshipIcon}
+                        status={rowStatus}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-left text-sm font-medium leading-4 text-foreground/85">
+                          {threadTitle}
+                        </span>
+                        <LinkedEntryLabels entry={entry} />
+                      </span>
+                      {agent ? null : (
+                        <ArrowRightIcon className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+                      )}
+                      {agent && !workflowGroup ? (
+                        <span
+                          className={`shrink-0 text-2xs ${failed ? "text-destructive" : "text-muted-foreground"} ${trailingVisibilityClass}`}
+                        >
+                          on {machineLabel} · {threadRelationshipStatusLabel(rowStatus)}
+                        </span>
+                      ) : agent &&
+                        !failed &&
+                        (deriveSubagentElapsedMs(agent, 0) !== null || canStopWorkflow) ? (
+                        <span
+                          className={`shrink-0 text-2xs font-normal tabular-nums text-muted-foreground ${canStopWorkflow ? "min-w-6 text-end" : ""} ${trailingVisibilityClass}`}
+                        >
+                          <AgentElapsed agent={agent} compact />
+                        </span>
+                      ) : !isMergeTarget ? (
+                        <span
+                          className={
+                            workflowGroup
+                              ? "sr-only"
+                              : `shrink-0 text-2xs ${failed ? "text-destructive" : "text-muted-foreground"} ${trailingVisibilityClass}`
                           }
                         >
-                          {stoppingId === threadId ? (
-                            <LoaderCircleIcon aria-hidden className="size-3 animate-spin" />
-                          ) : (
-                            <SquareIcon aria-hidden className="size-3 fill-current" />
-                          )}
-                        </TooltipTrigger>
-                        <TooltipPopup side="left">Stop subagent</TooltipPopup>
-                      </Tooltip>
-                    </div>
-                  ) : null}
-                </li>
-              );
-            })
-          }
-        </ThreadLineageGroup>
-      ))}
-    </ThreadDetailsSection>
+                          {threadRelationshipStatusLabel(rowStatus)}
+                        </span>
+                      ) : null}
+                    </>
+                  );
+                  const relationshipLink = (
+                    <Tooltip>
+                      <TooltipTrigger
+                        delay={200}
+                        render={
+                          <ThreadDetailsControl
+                            size="sm"
+                            variant="ghost"
+                            part={workflowGroup ? "primary" : "row"}
+                            disabled={node?.missing === true}
+                            onClick={() => openThread(threadId)}
+                          />
+                        }
+                      >
+                        {relationshipContent}
+                      </TooltipTrigger>
+                      <RelationshipPopup side="left">{relationshipTooltip}</RelationshipPopup>
+                    </Tooltip>
+                  );
+                  if (workflowGroup && agent) {
+                    return (
+                      <ThreadLineageWorkflowRow
+                        key={threadId}
+                        group={workflowGroup}
+                        providerInstanceId={agent.providerInstanceId}
+                        provider={provider}
+                        providers={providers}
+                        driver={providerDriver}
+                        onOpenThread={(memberThreadId) => openThread(memberThreadId as ThreadId)}
+                        isThreadAvailable={(memberThreadId) =>
+                          graph.nodes.get(memberThreadId as ThreadId)?.missing === false
+                        }
+                        onStop={canStopWorkflow ? () => void stopWorkflow(agent.id) : undefined}
+                        stopping={stoppingId === agent.id}
+                        stopDisabled={stoppingId !== null}
+                        header={
+                          <div
+                            data-has-continuation={
+                              entry.relations.some(
+                                (relation) => relation.link.kind === "continuation",
+                              ) || undefined
+                            }
+                            className="flex min-w-0 items-center"
+                          >
+                            {relationshipLink}
+                            <LinkedEntryActions entry={entry} view={linked} />
+                          </div>
+                        }
+                      />
+                    );
+                  }
+                  return (
+                    <li
+                      key={threadId}
+                      data-has-continuation={
+                        entry.relations.some((relation) => relation.link.kind === "continuation") ||
+                        undefined
+                      }
+                      className="group relative flex h-8 items-center rounded-lg"
+                    >
+                      {isMergeTarget ? (
+                        <div className={THREAD_DETAILS_PANEL_SPLIT_GROUP_CLASS}>
+                          <Tooltip>
+                            <TooltipTrigger
+                              delay={200}
+                              render={
+                                <ThreadDetailsControl
+                                  size="sm"
+                                  variant="ghost"
+                                  part="primary"
+                                  aria-label={`${threadTitle} ${threadRelationshipStatusLabel(rowStatus)}`}
+                                  disabled={node?.missing === true}
+                                  onClick={() => openThread(threadId)}
+                                />
+                              }
+                            >
+                              {relationshipContent}
+                            </TooltipTrigger>
+                            <RelationshipPopup side="left">{relationshipTooltip}</RelationshipPopup>
+                          </Tooltip>
+                          <span
+                            aria-hidden="true"
+                            className={THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS}
+                          />
+                          <Tooltip>
+                            <TooltipTrigger
+                              render={
+                                <ThreadDetailsControl
+                                  size="sm"
+                                  variant="ghost"
+                                  part="secondary"
+                                  aria-label={
+                                    parentTitle
+                                      ? `Merge back to ${parentTitle}`
+                                      : "Merge back to source conversation"
+                                  }
+                                  disabled={!canMerge || busyAction !== null}
+                                  onClick={() => void merge()}
+                                >
+                                  {busyAction === "merge" ? (
+                                    <LoaderCircleIcon className="size-3 animate-spin" />
+                                  ) : (
+                                    <PullRequestGlyph.merged className="size-3" />
+                                  )}
+                                </ThreadDetailsControl>
+                              }
+                            />
+                            <TooltipPopup side="left">
+                              {latestMergeBackRun === null
+                                ? "Complete a run in this fork before merging it back"
+                                : parentTitle
+                                  ? `Merge this conversation back into ${parentTitle}`
+                                  : "Merge this conversation back into its source"}
+                            </TooltipPopup>
+                          </Tooltip>
+                          <span className="shrink-0 border border-transparent ps-1 pe-2.5 text-2xs font-medium text-muted-foreground">
+                            {threadRelationshipStatusLabel(rowStatus)}
+                          </span>
+                        </div>
+                      ) : (
+                        relationshipLink
+                      )}
+                      <LinkedEntryActions entry={entry} view={linked} />
+                      {canStop && agent ? (
+                        <div
+                          className={`pointer-events-none absolute ${entry.relations.length > 0 ? "right-7" : "right-1"} top-1/2 -translate-y-1/2 opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100 [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100`}
+                        >
+                          <Tooltip>
+                            <TooltipTrigger
+                              render={
+                                <ThreadDetailsControl
+                                  size="icon-xs"
+                                  variant="ghost"
+                                  part="icon"
+                                  tone="destructive"
+                                  aria-label={`Stop subagent ${threadTitle}`}
+                                  disabled={stoppingId !== null}
+                                  onClick={() => void stopSubagent(threadId, agent)}
+                                />
+                              }
+                            >
+                              {stoppingId === threadId ? (
+                                <LoaderCircleIcon aria-hidden className="size-3 animate-spin" />
+                              ) : (
+                                <SquareIcon aria-hidden className="size-3 fill-current" />
+                              )}
+                            </TooltipTrigger>
+                            <TooltipPopup side="left">Stop subagent</TooltipPopup>
+                          </Tooltip>
+                        </div>
+                      ) : null}
+                    </li>
+                  );
+                });
+              })
+            }
+          </ThreadLineageGroup>
+        )}
+      />
+      <div className="space-y-1 px-2 pt-1 text-2xs text-muted-foreground" aria-live="polite">
+        {linked.loading ? <p>Loading linked threads…</p> : null}
+        {linked.truncated ? <p>Results are truncated; more links may exist.</p> : null}
+        {linked.errors.map((id) => (
+          <p key={id}>
+            Could not read links from{" "}
+            {linked.environments.find((env) => env.environmentId === id)?.label ?? id}; may hold
+            more links.
+          </p>
+        ))}
+        {linked.offline.map((env) => (
+          <p key={env.environmentId}>{env.label} is offline and may hold more links.</p>
+        ))}
+      </div>
+    </LinkedThreadsSection>
   );
 }

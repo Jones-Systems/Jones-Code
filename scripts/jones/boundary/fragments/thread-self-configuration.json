@@ -23,8 +23,7 @@
     "apps/server/src/orchestration-v2/ProviderSwitchService.ts",
     "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
     "packages/shared/src/t3McpToolPresentation.ts",
-    "apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts",
-    "apps/server/src/orchestration-v2/testkit/ProviderTurnStartMemory.fixture.mjs"
+    "apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts"
   ],
   "tombstones": [],
   "allowedImports": [
@@ -73,7 +72,7 @@
       "to": "packages/provider-core/src/server/jones/ThreadSelfConfigurationInstructions.ts"
     },
     {
-      "from": "apps/web/src/components/ChatView.tsx",
+      "from": "apps/web/src/components/chat/useComposerSend.ts",
       "to": "apps/web/src/jones/threadConfiguration/composerSelection.ts"
     }
   ]

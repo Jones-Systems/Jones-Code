@@ -1,3 +1,4 @@
+import { LifecycleError } from "../jones/workspaceLifecycle/Protocol.ts";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
@@ -20,6 +21,8 @@ import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import * as GitManager from "../git/GitManager.ts";
+import { withOperation } from "../jones/workspaceLifecycle/NativeOperation.ts";
+import { beforeCleanup } from "../jones/workspaceLifecycle/NativeBoundary.ts";
 import { workModeSettlementActivity } from "../jones/workMode/Settlement.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
@@ -37,7 +40,7 @@ export interface SettlementPullRequest {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
-export const QUEUED_TURN_START_GRACE_MS = 2 * 60 * 1_000;
+const QUEUED_TURN_START_GRACE_MS = 2 * 60 * 1_000;
 
 function toMillis(value: DateTime.Utc | null | undefined): number | null {
   return value == null ? null : DateTime.toEpochMillis(value);
@@ -76,6 +79,34 @@ function pullRequestMatchesProject(
     canonicalRepositoryKey(pullRequest.repositoryKey) ===
       canonicalRepositoryKey(project.repositoryIdentity.canonicalKey)
   );
+}
+
+type SettlementPullRequestLink = NonNullable<
+  ProjectionStore.ProjectionSettlementCandidate["pullRequests"]
+>[number];
+
+/** When the linked pull request merged or closed, or -Infinity if it has not. */
+function linkTerminalAtMs(link: SettlementPullRequestLink): number {
+  const snapshot = link.snapshot;
+  const value = snapshot?.state === "merged" ? snapshot.mergedAt : snapshot?.closedAt;
+  const timestamp = Date.parse(value ?? "");
+  return Number.isNaN(timestamp) ? Number.NEGATIVE_INFINITY : timestamp;
+}
+
+/**
+ * The links whose outcome the thread waits on. A link made after its pull
+ * request had already merged or closed records work the thread did, such as an
+ * agent merging pull requests it was asked to merge, so it cannot settle the
+ * thread.
+ */
+function settlementPullRequestLinks(
+  links: ReadonlyArray<SettlementPullRequestLink>,
+): ReadonlyArray<SettlementPullRequestLink> {
+  return visibleThreadPullRequests(links).filter((link) => {
+    if (link.snapshot === null || link.snapshot.state === "open") return true;
+    const linkedAtMs = Date.parse(link.linkedAt);
+    return Number.isNaN(linkedAtMs) || linkTerminalAtMs(link) >= linkedAtMs;
+  });
 }
 
 /**
@@ -139,16 +170,8 @@ export function isAutoSettlementCandidate(
   if (thread.activityRunStatus != null) return false;
   if (backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])) return false;
   if (threadHasQueuedTurnStart(thread, nowMs)) return false;
-  const snoozedUntilMs = toMillis(thread.snoozedUntil);
-  if (snoozedUntilMs === null || snoozedUntilMs <= nowMs) return true;
-  const snoozedAtMs = toMillis(thread.snoozedAt);
-  const completedAtMs = toMillis(thread.latestRunCompletedAt);
-  const wokeOnError =
-    thread.status === "failed" &&
-    (snoozedAtMs === null || (completedAtMs !== null && completedAtMs > snoozedAtMs));
-  const wokeOnCompletion =
-    snoozedAtMs !== null && completedAtMs !== null && completedAtMs > snoozedAtMs;
-  return wokeOnError || wokeOnCompletion;
+  // Interrupted runs must keep the same snooze protection the sidebar shows.
+  return !isSnoozed(thread, nowMs);
 }
 
 /**
@@ -170,12 +193,7 @@ export function isSnoozed(
   const wokeOnError =
     thread.status === "failed" &&
     (snoozedAtMs === null || (completedAtMs !== null && completedAtMs > snoozedAtMs));
-  const wokeOnCompletion =
-    thread.status === "completed" &&
-    snoozedAtMs !== null &&
-    completedAtMs !== null &&
-    completedAtMs > snoozedAtMs;
-  return !wokeOnError && !wokeOnCompletion;
+  return !wokeOnError;
 }
 
 export function resolveAutoSettlementAt(input: {
@@ -188,17 +206,11 @@ export function resolveAutoSettlementAt(input: {
 }): DateTime.Utc | null {
   const { thread } = input;
   let pullRequest = input.pullRequest;
-  const links = visibleThreadPullRequests(thread.pullRequests ?? []);
+  const links = settlementPullRequestLinks(thread.pullRequests ?? []);
   if (links.some((link) => link.snapshot === null || link.snapshot.state === "open")) return null;
   if (links.length > 0) {
-    const terminalAt = (link: (typeof links)[number]) => {
-      const snapshot = link.snapshot;
-      const value = snapshot?.state === "merged" ? snapshot.mergedAt : snapshot?.closedAt;
-      const timestamp = Date.parse(value ?? "");
-      return Number.isNaN(timestamp) ? Number.NEGATIVE_INFINITY : timestamp;
-    };
     const latest = links.reduce((current, candidate) =>
-      terminalAt(candidate) > terminalAt(current) ? candidate : current,
+      linkTerminalAtMs(candidate) > linkTerminalAtMs(current) ? candidate : current,
     );
     pullRequest =
       latest.snapshot === null
@@ -210,19 +222,20 @@ export function resolveAutoSettlementAt(input: {
           };
   }
   if (!isAutoSettlementCandidate(thread, input.nowMs)) return null;
-  const activityAtMs = latestMillis([
-    toMillis(thread.latestUserMessageAt),
-    toMillis(thread.latestRunRequestedAt),
-    toMillis(thread.latestRunStartedAt),
-    toMillis(thread.latestRunCompletedAt),
-  ]);
+  const activityAtMs =
+    latestMillis([
+      toMillis(thread.latestUserMessageAt),
+      toMillis(thread.latestRunRequestedAt),
+      toMillis(thread.latestRunStartedAt),
+      toMillis(thread.latestRunCompletedAt),
+    ]) ?? DateTime.toEpochMillis(thread.createdAt);
   if (pullRequest !== null && pullRequestSettles(thread, pullRequest, input.autoSettleOnMerge)) {
-    return activityAtMs === null ? thread.createdAt : DateTime.makeUnsafe(activityAtMs);
+    return DateTime.makeUnsafe(activityAtMs);
   }
   const hasPullRequest =
     pullRequest !== null || thread.linkedPullRequest != null || thread.branchPullRequest != null;
   if (input.autoSettleKeepPullRequests === true && hasPullRequest) return null;
-  if (input.autoSettleAfterDays === null || activityAtMs === null) return null;
+  if (input.autoSettleAfterDays === null) return null;
   const snoozedUntilMs = toMillis(thread.snoozedUntil);
   const timerWakeAtMs =
     snoozedUntilMs !== null && snoozedUntilMs <= input.nowMs ? snoozedUntilMs : null;
@@ -554,6 +567,32 @@ export const make = Effect.gen(function* () {
       if (thread.settledOverride !== "settled") return;
       const settledAtMs = toMillis(thread.settledAt);
       if (settledAtMs === null || settleActionRunAt.get(threadId) === settledAtMs) return;
+      yield* withOperation(
+        {
+          id: `settle:${threadId}:${settledAtMs}`,
+          kind: "preservation",
+          threadId,
+          boundaries: ["settle-script"],
+          inherit: false,
+          check: Effect.gen(function* () {
+            const current = yield* projections.getThread(threadId);
+            if (
+              current.settledOverride !== "settled" ||
+              toMillis(current.settledAt) !== settledAtMs ||
+              current.projectId !== thread.projectId ||
+              current.worktreePath !== worktreePath ||
+              current.branch !== thread.branch ||
+              toMillis(current.updatedAt) !== toMillis(thread.updatedAt)
+            )
+              return yield* new LifecycleError({ reason: "stale" });
+          }),
+        },
+        beforeCleanup({
+          threadId,
+          boundary: "settle-script",
+          id: `settle:${threadId}:${settledAtMs}`,
+        }),
+      );
       const run = yield* projectScripts.runForThread({
         threadId,
         projectId: thread.projectId,

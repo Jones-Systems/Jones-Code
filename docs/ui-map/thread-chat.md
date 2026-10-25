@@ -52,12 +52,76 @@ Known shared consumers:
   A proposed plan alone creates no input status; explicit own/child requests and
   native approvals retain precedence. Working includes displayed Waiting rows in
   its count and selection; double-click Hide working excludes both. Filtering
-  preserves the roster order, including pin order. Existing user-input cards render the
+  preserves the roster order, including pin order. The optional activity window
+  in Settings → Jones Code limits status counts and positive selections to real
+  message/run activity and includes read successful completions with reliable
+  completion times. All preserves the scoped roster; Hide working still removes
+  every working row. Current and legacy views expire rows within a minute. Existing user-input cards render the
   instruction, optional choices and open response for `t3_request_user_response`.
 - [RightPanelTabs](../../apps/web/src/components/RightPanelTabs.tsx) also serves
   [Pull requests](../../apps/web/src/routes/_chat.pull-requests.tsx), outside
   this map's journeys. Shared workspace header consumers are listed in
   [Settings](settings.md#shared-layout-and-consumers).
+
+### Linked thread details
+
+[ThreadDetailsPanel](../../apps/web/src/components/chat/ThreadDetailsPanel.tsx)
+mounts [ThreadRelationshipsControl](../../apps/web/src/components/chat/ThreadRelationshipsControl.tsx).
+Its [Linked section](../../apps/web/src/jones/linkedThreads/LinkedThreadsSection.tsx)
+starts collapsed and resets closed when the selected thread changes. The header
+shows distinct related threads, a plus sign for incomplete results, the running
+agent count and a Continued shortcut when a successor exists. Expanding it
+exposes Continuations, Parents, Delegated tasks, Children, and Siblings & peers.
+The groups retain fork ancestry, context transfers, previous agents and their
+existing task controls. A related thread appears once, with additional
+relationships shown as secondary labels.
+
+[useLinkedThreads](../../apps/web/src/jones/linkedThreads/useLinkedThreads.ts)
+combines navigation links from connected capable environments with existing
+lineage. Remote rows retain environment identity and destination-aware
+navigation; offline destinations are disabled and incomplete coverage remains
+visible. Old servers retain the lineage view. Links grant no task control or
+connection access. The section menu offers Link thread and Copy handoff text;
+continuation recipients can accept an offered handoff from the row menu.
+
+For the source-discovered journey, open details on synthetic threads with a
+continuation, launch parent, sibling, fork and delegated task. Expand Linked,
+open its groups, navigate related threads, and use an existing task control.
+Create a manual link, accept a received handoff, copy its full origin/return
+address, unlink it and reload to verify persistence. Switch threads and confirm
+Linked starts closed again. Test unavailable environments and the lineage-only
+compatibility view separately.
+
+The [Linked browser regression](../../apps/web/src/jones/linkedThreads/LinkedThreads.browser.test.tsx)
+and [lineage browser regression](../../apps/web/src/jones/remoteAgentLineage/ThreadRelationships.browser.test.tsx)
+cover component interactions; integrated runtime captures and backend readback
+are separate evidence. This map does not claim the journey has been exercised.
+
+### Queued-message batch steering
+
+The active thread composer exposes
+[QueuedRunsControl](../../apps/web/src/components/chat/QueuedRunsControl.tsx).
+Its header uses the [batch action](../../apps/web/src/jones/queue/QueuedSteerBatchAction.tsx)
+and the [shared selector](../../packages/client-runtime/src/jones/queue/queuedSteerBatch.ts);
+native mobile consumes the same selector through its own queue sheet.
+
+For the account-change journey, start a synthetic active Codex turn and queue
+four ordinary messages whose saved account, provider thread and model differ
+from that turn. With no pending request or edit, **Steer all (4)** must be
+enabled. Click once: one command must contain all four ordered message IDs.
+Server readback must retain the four original messages and create one combined
+provider input. Automatic tool-boundary delivery must still reject mismatched
+queued configurations. Pending requests, stale message versions, maintenance
+commands, ended turns and input limits retain their own guards.
+
+The adjacent [browser regression](../../apps/web/src/jones/queue/QueuedSteerBatch.browser.test.tsx),
+[client tests](../../packages/client-runtime/src/jones/queue/queuedSteerBatch.test.ts)
+and [server integration](../../apps/server/src/jones/orchestration/QueuedSteerBatch.integration.test.ts)
+cover those layers separately. Use the Browser-panel workflow for interactive
+candidate evidence and retain its exact fixture, source and captures with the
+PR. Synthetic component evidence does not qualify a live provider, packaged
+desktop shell or native mobile interaction. Reset only the task-owned fixture;
+do not consume or remove messages in another thread to reproduce this case.
 
 ### Destination shell blocks
 

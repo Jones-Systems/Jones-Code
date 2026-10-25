@@ -1,3 +1,6 @@
+import * as HandoffLaunch from "./jones/linkedThreads/launchTransport.ts";
+import * as ThreadHandoff from "./jones/linkedThreads/handoff.ts";
+import * as LinkedThreads from "./jones/linkedThreads/LinkedThreads.ts";
 import { assertServerProcessPlacement } from "./jones/processPlacement/processPlacement.ts";
 import * as ProcessPlacementRuntime from "./jones/processPlacement/processPlacementRuntime.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
@@ -14,14 +17,13 @@ import * as QueueCompatibility from "./orchestration-v2/QueueCompatibility.ts";
 import { queueCompatibilityHttpApiLayer } from "./orchestration-v2/queueCompatibilityHttp.ts";
 import { providerQueueHttpApiLayer } from "./provider/providerQueueHttp.ts";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
-import * as Clock from "effect/Clock";
 import * as Random from "effect/Random";
-import * as Semaphore from "effect/Semaphore";
 import * as DatabaseStorage from "./persistence/DatabaseStorage.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
 import * as PullRequestSyncReactor from "./orchestration-v2/PullRequestSyncReactor.ts";
 import * as PullRequestWatchReactor from "./orchestration-v2/PullRequestWatchReactor.ts";
 import * as DelegatedTaskQuestionReactor from "./orchestration-v2/DelegatedTaskQuestionReactor.ts";
+// Effect wraps this raw Node HTTP server after its startup and write-error guards attach.
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeHttp from "node:http";
 
@@ -39,7 +41,6 @@ import type * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
-import * as Schedule from "effect/Schedule";
 import { FetchHttpClient, HttpRouter, HttpServer } from "effect/http";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 
@@ -48,10 +49,14 @@ import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
 import * as ServerConfig from "./config.ts";
 import { withUntracedRequests } from "./http.ts";
 import * as ServerHttp from "./http.ts";
-import { guardHttpResponseWriteErrors } from "./httpResponseErrorGuard.ts";
+import {
+  guardHttpResponseWriteErrors,
+  rejectRequestsUntilServing,
+} from "./httpResponseErrorGuard.ts";
 import { fixPath } from "./os-jank.ts";
 import * as Ws from "./ws.ts";
 import {
+  workstreamOperationsLayerLive,
   workstreamGatewayLayerLive,
   workstreamHttpApiLayer,
   workstreamNativeAuthorityLayerLive,
@@ -70,6 +75,7 @@ import * as PullRequestReviewGuides from "./persistence/PullRequestReviewGuides.
 import * as PullRequestReviewGuideService from "./pullRequest/PullRequestReviewGuideService.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
+import * as DelegatedTaskAnalytics from "./telemetry/DelegatedTaskAnalytics.ts";
 import * as ProviderEventIngestor from "./orchestration-v2/ProviderEventIngestor.ts";
 import * as ModelManifest from "./provider/ModelManifest.ts";
 import * as ResetCreditCoordinator from "./provider/resetCreditCoordinator.ts";
@@ -169,13 +175,15 @@ import {
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as CloudHttp from "./cloud/http.ts";
 import * as CloudLink from "./cloud/CloudLink.ts";
+import * as ConnectReachability from "./cloud/ConnectReachability.ts";
 import { pendingServiceUpdateExists } from "./cloud/updateHandoff.ts";
 import * as RelayTracing from "./cloud/relayTracing.ts";
 import * as CloudManagedEndpointRuntime from "./cloud/ManagedEndpointRuntime.ts";
 import {
   MANAGED_TUNNEL_FIRST_REGISTRATION_JITTER,
-  MANAGED_TUNNEL_RECOVERY_COOLDOWN,
+  makeManagedTunnelRecovery,
   managedTunnelStartupAction,
+  retryDesiredLinkReconcile,
   retryManagedTunnelRegistration,
 } from "./cloud/managedTunnelStartup.ts";
 import * as CloudCliTokenManager from "./cloud/CliTokenManager.ts";
@@ -192,23 +200,26 @@ import * as NativeTelemetryClient from "./resourceTelemetry/NativeTelemetryClien
 import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts";
 import * as ProcessAttribution from "./jones/resourceTelemetry/ProcessAttribution.ts";
 import * as ResourceMonitorBinary from "./resourceTelemetry/ResourceMonitorBinary.ts";
+import * as ProcessGroupMetrics from "./resourceTelemetry/ProcessGroupMetrics.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as AntigravityUsage from "./provider/Drivers/AntigravityUsage.ts";
 import * as CursorAccountReader from "@t3tools/provider-cursor/server/CursorAccountReader";
 import * as CursorKeychain from "@t3tools/provider-cursor/server/CursorKeychain";
 import * as CursorUsageAccounts from "@t3tools/provider-cursor/server/CursorUsageAccounts";
 import * as UsageService from "./usage/UsageService.ts";
+import * as CodexUsageHistory from "./usage/CodexUsageHistory.ts";
 import * as RuntimeLayer from "./orchestration-v2/runtimeLayer.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import * as ThreadSearch from "./orchestration-v2/ThreadSearch.ts";
-import * as ResourceCleanupService from "./orchestration-v2/ResourceCleanupService.ts";
 import * as ThreadSettlementService from "./orchestration-v2/ThreadSettlementService.ts";
+import * as IdleCompactionService from "./orchestration-v2/IdleCompactionService.ts";
 import * as ThreadPullRequestService from "./orchestration-v2/ThreadPullRequestService.ts";
 import * as RunFinalizationService from "./orchestration-v2/RunFinalizationService.ts";
 import * as EventStoreV2 from "./orchestration-v2/EventStore.ts";
 import * as ProjectionMaintenance from "./orchestration-v2/ProjectionMaintenance.ts";
 import * as ProjectionStoreV2 from "./orchestration-v2/ProjectionStore.ts";
 import { makePersistedServerRuntimeState } from "./serverRuntimeState.ts";
+import { loopbackUrlHostForAddress } from "./startupAccess.ts";
 import * as OrchestrationHttp from "./orchestration-v2/http.ts";
 import * as ProjectHttp from "./project/http.ts";
 import * as NetService from "@t3tools/shared/Net";
@@ -301,6 +312,7 @@ const layerUsage = UsageService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
       AntigravityUsage.layer,
+      CodexUsageHistory.layer,
       CursorUsageAccounts.layer.pipe(
         Layer.provide(CursorAccountReader.layer.pipe(Layer.provide(CursorKeychain.layer))),
       ),
@@ -314,6 +326,7 @@ const layerResourceDiagnostics = Layer.mergeAll(
   layerResourceTelemetry,
   ProcessDiagnostics.layer.pipe(Layer.provide(layerResourceTelemetry)),
   ProcessResourceMonitor.layer.pipe(Layer.provide(layerResourceTelemetry)),
+  ProcessGroupMetrics.layer.pipe(Layer.provide(layerResourceTelemetry)),
 );
 
 const layerRelayClient = Layer.unwrap(
@@ -326,16 +339,19 @@ const layerRelayClient = Layer.unwrap(
 const layerHttpServer = Layer.unwrap(
   Effect.gen(function* () {
     const config = yield* ServerConfig.ServerConfig;
-    return NodeHttpServer.layer(() => guardHttpResponseWriteErrors(NodeHttp.createServer()), {
-      host: config.host ?? "127.0.0.1",
-      port: config.port,
-      gracefulShutdownTimeout: HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS,
-      // Context takeover stays enabled (ws default) so the compression
-      // window is shared across frames — that also makes small frames cheap
-      // to compress, so no size threshold is set (ws only honors
-      // `threshold` when context takeover is disabled).
-      websocket: { perMessageDeflate: true },
-    });
+    return NodeHttpServer.layer(
+      () => rejectRequestsUntilServing(guardHttpResponseWriteErrors(NodeHttp.createServer())),
+      {
+        host: config.host ?? "127.0.0.1",
+        port: config.port,
+        gracefulShutdownTimeout: HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS,
+        // Context takeover stays enabled (ws default) so the compression
+        // window is shared across frames — that also makes small frames cheap
+        // to compress, so no size threshold is set (ws only honors
+        // `threshold` when context takeover is disabled).
+        websocket: { perMessageDeflate: true },
+      },
+    );
   }),
 );
 
@@ -433,6 +449,7 @@ const layerVcs = Layer.empty.pipe(
   Layer.provideMerge(
     VcsStatusBroadcaster.layer.pipe(
       Layer.provide(layerGitWorkflow),
+      Layer.provide(VcsStatusBroadcaster.layerAutomaticFetchInterval),
       // The orchestration runtime also consumes the broadcaster (run
       // finalization), so the policy cannot read the store from the runtime's
       // output.
@@ -528,7 +545,6 @@ const layerOrchestrationV2Runtime = RuntimeLayer.layerProduction.pipe(
   Layer.provide(ProviderEventIngestor.layerAnalytics),
   Layer.provide(layerCheckpointStore),
   Layer.provide(layerGitWorkflow),
-  Layer.provide(ResourceCleanupService.layer),
   Layer.provide(
     RunFinalizationService.layerObserver.pipe(
       Layer.provide(ProjectionStoreV2.layer),
@@ -546,6 +562,10 @@ const layerOrchestrationApplication = CheckpointDiffQuery.layer.pipe(
 const layerThreadSettlementWorker = Layer.effectDiscard(
   ThreadSettlementService.make.pipe(Effect.flatMap((service) => service.start())),
 ).pipe(Layer.provide(layerPullRequestService), Layer.provide(ProjectionStoreV2.layer));
+
+const layerIdleCompactionWorker = Layer.effectDiscard(
+  IdleCompactionService.make.pipe(Effect.flatMap((service) => service.start())),
+).pipe(Layer.provide(ProjectionStoreV2.layer));
 
 const layerThreadPullRequestWorker = Layer.effectDiscard(
   ThreadPullRequestService.make.pipe(Effect.flatMap((service) => service.start())),
@@ -597,6 +617,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   AgentAwarenessRelay.layer,
   HeldHooksWaker.layer,
   layerThreadSettlementWorker,
+  layerIdleCompactionWorker,
   StorageCleanup.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
   DatabaseStorage.layer.pipe(
     Layer.provide(ProjectionMaintenance.layer),
@@ -605,6 +626,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
     ),
   ),
   layerThreadPullRequestWorker,
+  DelegatedTaskAnalytics.layer,
   Layer.effectDiscard(
     Effect.gen(function* () {
       const service = yield* PullRequestSyncReactor.PullRequestSyncReactor;
@@ -769,43 +791,49 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.effectDiscard(
     RemoteDelegation.RemoteDelegation.pipe(Effect.flatMap((remote) => remote.start())),
   ),
-).pipe(
-  Layer.provide(
-    PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
-  ),
-  // delegate_task to a linked environment, from /mcp and the follower above.
-  Layer.provide(RemoteDelegation.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
-  // Both transports consume the same service instance, so caches single-flight across clients
-  // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
-  Layer.provide(layerPullRequestService),
-  Layer.provide(ServerBrowser.layer),
-  Layer.provide(
-    Layer.merge(JonesHttp.previewCompanionServicesLayer, JonesHttp.remoteAdmissionServicesLayer),
-  ),
-  Layer.provide(DesktopBrowserChannel.layer),
-  Layer.provide(PreviewBrowser.layer),
-  Layer.provide(workstreamGatewayLayerLive),
-  Layer.provide(workstreamRegistrationContextLayerLive),
-  // Same layer identity as the gateway's, so the config descriptor reads the same authority.
-  Layer.provide(workstreamNativeAuthorityLayerLive),
-  // Links to other environments, shared by Settings (WebSocket) and agents (/mcp).
-  Layer.provide(
-    PeerForwarding.layer.pipe(
-      Layer.provideMerge(PeerMcpClient.layer),
-      Layer.provideMerge(PeerLinks.layer),
+)
+  .pipe(
+    Layer.provide(
+      PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
     ),
-  ),
-  Layer.provide(PreviewAutomationBroker.layer),
-  Layer.provide(layerServerSelfUpdate),
-  // The same relation layer as the Jones updates routes, so both share one ancestry cache.
-  Layer.provide(FleetUpdates.layer.pipe(Layer.provide(JonesSourceRelation.layer))),
-  Layer.provide(layerJonesUpdates),
-  Layer.provide(layerCommandReadiness),
-  Layer.provide(JonesHttp.voiceReviewResponseHeadersLayer),
-  Layer.provide(workstreamResponseHeadersLayer),
-  Layer.provide(ServerHttp.layerBrowserApiCors),
-  Layer.provide(ServerHttp.layerHttpCompression),
-);
+    // delegate_task to a linked environment, from /mcp and the follower above.
+    Layer.provide(RemoteDelegation.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
+    // Both transports consume the same service instance, so caches single-flight across clients
+    // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
+    Layer.provide(layerPullRequestService),
+    Layer.provide(ServerBrowser.layer),
+    Layer.provide(
+      Layer.merge(JonesHttp.previewCompanionServicesLayer, JonesHttp.remoteAdmissionServicesLayer),
+    ),
+    Layer.provide(DesktopBrowserChannel.layer),
+    Layer.provide(PreviewBrowser.layer),
+    Layer.provide(workstreamOperationsLayerLive),
+  )
+  .pipe(
+    Layer.provide(workstreamGatewayLayerLive),
+    Layer.provide(workstreamRegistrationContextLayerLive),
+    // Same layer identity as the gateway's, so the config descriptor reads the same authority.
+    Layer.provide(workstreamNativeAuthorityLayerLive),
+    Layer.provide(ThreadHandoff.layer.pipe(Layer.provide(HandoffLaunch.layer))),
+    // Links to other environments, shared by Settings (WebSocket) and agents (/mcp).
+    Layer.provide(
+      PeerForwarding.layer.pipe(
+        Layer.provideMerge(PeerMcpClient.layer),
+        Layer.provideMerge(PeerLinks.layer),
+      ),
+    ),
+    Layer.provide(LinkedThreads.layer),
+    Layer.provide(PreviewAutomationBroker.layer),
+    Layer.provide(layerServerSelfUpdate),
+    // The same relation layer as the Jones updates routes, so both share one ancestry cache.
+    Layer.provide(FleetUpdates.layer.pipe(Layer.provide(JonesSourceRelation.layer))),
+    Layer.provide(layerJonesUpdates),
+    Layer.provide(layerCommandReadiness),
+    Layer.provide(JonesHttp.voiceReviewResponseHeadersLayer),
+    Layer.provide(workstreamResponseHeadersLayer),
+    Layer.provide(ServerHttp.layerBrowserApiCors),
+    Layer.provide(ServerHttp.layerHttpCompression),
+  );
 
 const layerMakeServer = Layer.unwrap(
   Effect.gen(function* () {
@@ -871,7 +899,7 @@ const layerMakeServer = Layer.unwrap(
               const localPort = address.port;
               const claim = {
                 servePort: config.tailscaleServePort,
-                expectedTarget: `http://127.0.0.1:${String(localPort)}`,
+                expectedTarget: `http://${loopbackUrlHostForAddress(address)}:${String(localPort)}`,
               };
               const acquired = yield* acquireServeMapping(claim);
               if ("skipped" in acquired) {
@@ -949,44 +977,28 @@ const layerMakeServer = Layer.unwrap(
             const server = yield* HttpServer.HttpServer;
             const address = server.address;
             if (typeof address === "string" || !("port" in address)) return;
-            const localOrigin = `http://127.0.0.1:${address.port}`;
+            const localOrigin = `http://${loopbackUrlHostForAddress(address)}:${address.port}`;
             const endpointRuntime = yield* CloudManagedEndpointRuntime.CloudManagedEndpointRuntime;
-            const recoveryLock = yield* Semaphore.make(1);
-            let lastRecoveryAtMillis = 0;
+            const runManagedTunnelRecovery = yield* makeManagedTunnelRecovery({
+              recover: (config: RelayManagedEndpointRuntimeConfig) =>
+                cloudLink.recoverManagedTunnel(localOrigin, config, {
+                  retryRuntimeFailures: true,
+                }),
+              isRetryable: (error) =>
+                CloudLink.shouldRetryCloudLink(error) &&
+                error._tag !== "CloudLinkEndpointUnavailableError",
+            });
             const recoverManagedTunnel = (config: RelayManagedEndpointRuntimeConfig) =>
-              recoveryLock.withPermits(1)(
-                Effect.gen(function* () {
-                  const elapsed = (yield* Clock.currentTimeMillis) - lastRecoveryAtMillis;
-                  const wait = Duration.toMillis(MANAGED_TUNNEL_RECOVERY_COOLDOWN) - elapsed;
-                  if (wait > 0) yield* Effect.sleep(Duration.millis(wait));
-                  lastRecoveryAtMillis = yield* Clock.currentTimeMillis;
-                }).pipe(
-                  Effect.andThen(
-                    cloudLink.recoverManagedTunnel(localOrigin, config, {
-                      retryRuntimeFailures: true,
-                    }),
-                  ),
-                  Effect.retry({
-                    while: (error) =>
-                      CloudLink.shouldRetryCloudLink(error) &&
-                      error._tag !== "CloudLinkEndpointUnavailableError",
-                    schedule: Schedule.exponential("1 second").pipe(
-                      Schedule.modifyDelay(({ duration }) =>
-                        Effect.succeed(Duration.min(duration, Duration.seconds(30))),
-                      ),
-                      Schedule.jittered,
-                    ),
-                  }),
-                  Effect.tap((recovered) =>
-                    recovered ? Effect.logInfo("T3 Connect managed tunnel recovered") : Effect.void,
-                  ),
-                  Effect.catchCause((cause) =>
-                    Cause.hasInterrupts(cause)
-                      ? Effect.interrupt
-                      : Effect.logWarning("Failed to recover the T3 Connect managed tunnel", {
-                          cause,
-                        }),
-                  ),
+              runManagedTunnelRecovery(config).pipe(
+                Effect.tap((recovered) =>
+                  recovered ? Effect.logInfo("T3 Connect managed tunnel recovered") : Effect.void,
+                ),
+                Effect.catchCause((cause) =>
+                  Cause.hasInterrupts(cause)
+                    ? Effect.interrupt
+                    : Effect.logWarning("Failed to recover the T3 Connect managed tunnel", {
+                        cause,
+                      }),
                 ),
               );
             yield* endpointRuntime.recoveryRequests.pipe(
@@ -1088,15 +1100,13 @@ const layerMakeServer = Layer.unwrap(
               const reconciledMode = yield* cloudLink
                 .reconcileDesiredLinkIfStillDesired(localOrigin)
                 .pipe(
-                  Effect.retry({
-                    while: CloudLink.shouldRetryCloudLink,
-                    schedule: Schedule.exponential("1 second").pipe(
-                      Schedule.modifyDelay(({ duration }) =>
-                        Effect.succeed(Duration.min(duration, Duration.seconds(30))),
+                  (reconcile) =>
+                    retryDesiredLinkReconcile(reconcile, CloudLink.shouldRetryCloudLink, (cause) =>
+                      Effect.logWarning(
+                        "T3 Connect relay is still unavailable; retrying the desired link in the background",
+                        { cause },
                       ),
-                      Schedule.upTo({ duration: "10 minutes" }),
                     ),
-                  }),
                   Effect.tap((mode) =>
                     mode === null
                       ? Effect.void
@@ -1152,7 +1162,7 @@ const layerMakeServer = Layer.unwrap(
     );
 
     return layerServerApplication.pipe(
-      Layer.provide(CloudLink.layer),
+      Layer.provide(CloudLink.layer.pipe(Layer.provideMerge(ConnectReachability.layer))),
       Layer.provideMerge(layerRuntimeServices),
       Layer.provideMerge(
         McpSessionRegistry.layer.pipe(

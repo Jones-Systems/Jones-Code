@@ -10,7 +10,8 @@
     "apps/server/src/jones/goals/tool.ts",
     "apps/server/src/jones/goals/GoalStartDispatch.test.ts",
     "apps/server/src/jones/goals/GoalNotificationDelivery.ts",
-    "apps/server/src/jones/goals/GoalResumeCorrelation.ts"
+    "apps/server/src/jones/goals/GoalResumeCorrelation.ts",
+    "apps/server/src/jones/goals/preserveGoalConversation.ts"
   ],
   "hookPaths": [
     "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
@@ -61,6 +62,10 @@
     {
       "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
       "to": "apps/server/src/jones/goals/GoalNotificationDelivery.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/goals/preserveGoalConversation.ts"
     }
   ]
 }

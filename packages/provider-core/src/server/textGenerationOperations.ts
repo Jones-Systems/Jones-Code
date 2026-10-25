@@ -10,6 +10,7 @@ import {
   remoteRequestEvaluationUnsupported,
 } from "./jones/remoteRequestEvaluation.ts";
 export { remoteRequestEvaluationUnsupported } from "./jones/remoteRequestEvaluation.ts";
+export { buildRemoteRequestEvaluationPrompt } from "./jones/remoteRequestEvaluation.ts";
 
 import type { ProviderTextGeneration } from "./textGeneration.ts";
 import {
@@ -139,6 +140,7 @@ export function fromRunner(
         diffPatch: input.diffPatch,
         policy: input.policy,
         changeRequestTemplate: input.changeRequestTemplate,
+        threadContext: input.threadContext,
       }),
     });
     return { title: sanitizePrTitle(generated.title), body: generated.body.trim() };
