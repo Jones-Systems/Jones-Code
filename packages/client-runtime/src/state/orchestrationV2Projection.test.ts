@@ -47,7 +47,11 @@ const run = {
   contextHandoffId: null,
 } satisfies OrchestrationV2Run;
 
-function commandItem(id: string, output = "done", ordinal = 1): OrchestrationV2TurnItem {
+function commandItem(
+  id: string,
+  output = "done",
+  ordinal = 1,
+): Extract<OrchestrationV2TurnItem, { type: "command_execution" }> {
   return {
     id: TurnItemId.make(id),
     threadId,
@@ -602,9 +606,9 @@ describe("stable local item replacement", () => {
           expect(row).toBe(unchanged);
         }
       }
-      expect(
-        applyOrchestrationV2ProjectionEvent(projection, eventOf(item))?.visibleTurnItems,
-      ).toBe(projection.visibleTurnItems);
+      expect(applyOrchestrationV2ProjectionEvent(projection, eventOf(item))?.visibleTurnItems).toBe(
+        projection.visibleTurnItems,
+      );
     }
   });
 
@@ -618,43 +622,40 @@ describe("stable local item replacement", () => {
     "following tie",
     "interrupt",
     "previous interrupt",
-  ] as const)(
-    "preserves structural fallback for %s rows",
-    (kind) => {
-      const first = commandItem("first", "before", 1);
-      const target =
-        kind === "interrupt" || kind === "previous interrupt"
-          ? {
-              ...commandItem("target", "before", 2),
-              type: "run_interrupt_request" as const,
-              message: "Stop",
-            }
-          : commandItem("target", "before", 2);
-      const last = commandItem("last", "before", kind === "following tie" ? 2 : 3);
-      const rows = [rowOf(first, 0), rowOf(target, 1), rowOf(last, 2)];
-      if (kind === "inherited" || kind === "synthetic") {
-        rows[2] = { ...rows[2]!, visibility: kind };
-      }
-      if (kind === "inherited target") rows[1] = { ...rows[1]!, visibility: "inherited" };
-      if (kind === "source") rows[1] = { ...rows[1]!, sourceThreadId: ThreadId.make("other") };
-      if (kind === "identity") {
-        rows[1] = { ...rows[1]!, item: commandItem("stale-identity", "before", 2) };
-      }
-      if (kind === "position") rows[1] = { ...rows[1]!, position: 7 };
-      const item = {
-        ...(kind === "previous interrupt" ? commandItem("target", "before", 2) : target),
-        title: "updated",
-      };
-      const projection = {
-        ...emptyProjection,
-        runs: [run],
-        turnItems: [first, target, last],
-        visibleTurnItems: rows,
-      };
-      const next = applyOrchestrationV2ProjectionEvent(projection, eventOf(item));
-      expect(next?.visibleTurnItems).toEqual(oldVisibleUpsert(rows, item));
-    },
-  );
+  ] as const)("preserves structural fallback for %s rows", (kind) => {
+    const first = commandItem("first", "before", 1);
+    const target =
+      kind === "interrupt" || kind === "previous interrupt"
+        ? {
+            ...commandItem("target", "before", 2),
+            type: "run_interrupt_request" as const,
+            message: "Stop",
+          }
+        : commandItem("target", "before", 2);
+    const last = commandItem("last", "before", kind === "following tie" ? 2 : 3);
+    const rows = [rowOf(first, 0), rowOf(target, 1), rowOf(last, 2)];
+    if (kind === "inherited" || kind === "synthetic") {
+      rows[2] = { ...rows[2]!, visibility: kind };
+    }
+    if (kind === "inherited target") rows[1] = { ...rows[1]!, visibility: "inherited" };
+    if (kind === "source") rows[1] = { ...rows[1]!, sourceThreadId: ThreadId.make("other") };
+    if (kind === "identity") {
+      rows[1] = { ...rows[1]!, item: commandItem("stale-identity", "before", 2) };
+    }
+    if (kind === "position") rows[1] = { ...rows[1]!, position: 7 };
+    const item = {
+      ...(kind === "previous interrupt" ? commandItem("target", "before", 2) : target),
+      title: "updated",
+    };
+    const projection = {
+      ...emptyProjection,
+      runs: [run],
+      turnItems: [first, target, last],
+      visibleTurnItems: rows,
+    };
+    const next = applyOrchestrationV2ProjectionEvent(projection, eventOf(item));
+    expect(next?.visibleTurnItems).toEqual(oldVisibleUpsert(rows, item));
+  });
 
   it.each([
     { visibility: "inherited", ordinal: 1 },
@@ -681,9 +682,9 @@ describe("stable local item replacement", () => {
         turnItems: [first, target, last],
         visibleTurnItems: rows,
       };
-      expect(applyOrchestrationV2ProjectionEvent(projection, eventOf(item))?.visibleTurnItems).toEqual(
-        oldVisibleUpsert(rows, item),
-      );
+      expect(
+        applyOrchestrationV2ProjectionEvent(projection, eventOf(item))?.visibleTurnItems,
+      ).toEqual(oldVisibleUpsert(rows, item));
     },
   );
 
@@ -709,7 +710,12 @@ describe("stable local item replacement", () => {
         return index;
       },
     }));
-    const projection = { ...emptyProjection, runs: [run], turnItems: items, visibleTurnItems: rows };
+    const projection = {
+      ...emptyProjection,
+      runs: [run],
+      turnItems: items,
+      visibleTurnItems: rows,
+    };
     const item = commandItem("tail-999", "after", 999);
     const next = applyOrchestrationV2ProjectionEvent(projection, eventOf(item))!;
     expect(identityReads).toBeLessThanOrEqual(4);
