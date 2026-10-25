@@ -89,6 +89,9 @@ function tool(
 const T3_MCP_SERVER_ALIASES = new Set(["t3-code", "t3_code", "t3code"]);
 
 const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
+  t3_thread_links: tool(["List", "Listing", "Listed", "linked threads"], "thread-list"),
+  t3_thread_link: tool(["Update", "Updating", "Updated", "thread links"], "thread-update"),
+  t3_thread_handoff: tool(["Hand off", "Handing off", "Handed off", "thread work"], "thread-send"),
   link_pull_request: tool(
     ["Link", "Linking", "Linked", "a pull request"],
     "link-pr",

@@ -1,4 +1,10 @@
-import { CommandId, OrchestratorMcpFailure, type ClientLaunchLookup } from "@t3tools/contracts";
+import { claimForCaller } from "../../linkedThreads/launch.ts";
+import {
+  CommandId,
+  OrchestratorMcpFailure,
+  type LinkedThreadOriginLink,
+  type ClientLaunchLookup,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -185,6 +191,7 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
   caller: Caller,
   modes: StartedModes,
   gate: ThreadStartGate,
+  navigationExcluded = false,
 ) {
   if (
     input.scratch !== undefined ||
@@ -241,6 +248,7 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
   };
   const invoke = (request: ThreadLaunch.ThreadLaunchInput) =>
     launches.launch(request).pipe(Effect.mapError(unavailable));
+  let originLink: LinkedThreadOriginLink | undefined;
   let replayed = receipt?.status === "accepted";
   const continueAccepted = Effect.fn("ClientLaunchService.continueAccepted")(function* () {
     const claim = yield* readClaim(ids.commandId);
@@ -249,6 +257,7 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
         code: "request_conflict",
         message: "The key belongs to a different launch request.",
       });
+    originLink = yield* claimForCaller(caller, ids.threadId, ids.commandId, navigationExcluded);
     const state = yield* lookup(caller.scope.requestNamespace, input.clientRequestId);
     if (state.threadDeleted)
       return yield* new OrchestratorMcpFailure({
@@ -345,6 +354,12 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
               Effect.mapError(unavailable),
             );
           }
+          originLink = yield* claimForCaller(
+            caller,
+            ids.threadId,
+            ids.commandId,
+            navigationExcluded,
+          );
         }),
       )
       .pipe(Effect.mapError((error) => (isMcpFailure(error) ? error : unavailable())));
@@ -399,6 +414,7 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
     runId: state.runId,
     status: state.runStatus,
     replayed,
+    ...(originLink === undefined ? {} : { originLink }),
     requestDigest: digest,
     initialMessage: state.initialMessage,
     preparation: state.preparation,
