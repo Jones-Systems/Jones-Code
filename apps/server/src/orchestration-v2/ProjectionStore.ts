@@ -6099,7 +6099,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             const snapshotSequence = revisions[0]?.sequence ?? 0;
             const local =
               thread.forkedFrom === null && throughEntryId === undefined
-                ? yield* readLocalHistoryPage(threadId, cursor, snapshotSequence)
+                ? yield* readLocalHistoryPage(threadId, cursor, snapshotSequence).pipe(
+                    Effect.provideService(SqlClient.SqlClient, sql),
+                  )
                 : null;
             const { page, hasUserTurns } =
               local ??
