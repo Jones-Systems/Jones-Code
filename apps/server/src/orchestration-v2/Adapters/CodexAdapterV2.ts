@@ -2385,6 +2385,23 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           payload: unknown,
           replay: Effect.Effect<void, CodexErrors.CodexAppServerError>,
         ): Effect.fn.Return<void, CodexErrors.CodexAppServerError> {
+          if (method === "turn/completed") {
+            // The client has decoded this method's payload. Reconciliation facts
+            // must survive overflow or cancellation of the replayable effects.
+            const completion = payload as CodexSchema.V2TurnCompletedNotification;
+            const binding = {
+              runtimeGeneration: producer.generation,
+              nativeThreadId: completion.threadId,
+            };
+            const status = mapCodexTurnStatus(completion.turn.status);
+            if (
+              producer.active &&
+              producer === currentProducer &&
+              !handoffCompaction.owns(binding) &&
+              (status === "completed" || status === "failed" || status === "interrupted")
+            )
+              lateStarts.complete(binding, completion.turn.id);
+          }
           const captured = pendingStartNotifications.capture(
             producer.generation,
             method,
@@ -7134,7 +7151,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
         const handleNativeCompletion = Effect.fn("CodexAdapterV2.handleNativeCompletion")(
           function* (payload: CodexSchema.V2TurnCompletedNotification): Effect.fn.Return<void> {
-            const producer = yield* CodexProducerContext;
             const binding = {
               runtimeGeneration: currentProducer.generation,
               nativeThreadId: payload.threadId,
@@ -7146,23 +7162,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 payload.turn.status === "completed",
               );
               return;
-            }
-            const terminalStatus = mapCodexTurnStatus(payload.turn.status);
-            if (
-              producer !== undefined &&
-              producer.active &&
-              producer === currentProducer &&
-              (terminalStatus === "completed" ||
-                terminalStatus === "failed" ||
-                terminalStatus === "interrupted")
-            ) {
-              lateStarts.complete(
-                {
-                  runtimeGeneration: producer.generation,
-                  nativeThreadId: payload.threadId,
-                },
-                payload.turn.id,
-              );
             }
             const request =
               capacityByTurn.get(payload.turn.id) ?? capacityByThread.get(payload.threadId);
@@ -7473,6 +7472,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             retryOrdinal,
             nativeTurnId: started.turn.id,
           });
+          // The ACK has bound the original input. A native goal successor seen
+          // during replay must enter through goal bookkeeping, not adopt it again.
+          yield* Ref.update(pendingRootTurns, (current) => {
+            if (current.get(request.state.binding.nativeThreadId) !== request.input) return current;
+            const updated = new Map(current);
+            updated.delete(request.state.binding.nativeThreadId);
+            return updated;
+          });
           const earlyStart = request.earlyStarts.get(started.turn.id);
           const earlyError = request.earlyErrors.get(started.turn.id);
           const earlyCompletion = request.earlyCompletions.get(started.turn.id);
@@ -7503,12 +7510,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           }
           lateStarts.release(dispatch);
           request.lateStartDispatch = undefined;
-          yield* Ref.update(pendingRootTurns, (current) => {
-            if (current.get(request.state.binding.nativeThreadId) !== request.input) return current;
-            const updated = new Map(current);
-            updated.delete(request.state.binding.nativeThreadId);
-            return updated;
-          });
         });
         const scheduleCapacityRetry = Effect.fn("CodexAdapterV2.scheduleCapacityRetry")(function* (
           request: CapacityRequest,

@@ -12,7 +12,7 @@ const payload = (turnId = "turn", delta = "output") => ({
 });
 
 describe("Codex pending-start notifications", () => {
-  it("replays only the ACK-selected turn in order, including arrivals during replay", () => {
+  it("selects pre-ACK turn effects while preserving ordered thread usage", () => {
     const buffer = makeCodexPendingStartNotifications<string>();
     const dispatch = makeCodexLateStartRecovery().begin(binding, ["historical"]);
     buffer.begin(dispatch);
@@ -32,10 +32,15 @@ describe("Codex pending-start notifications", () => {
       ),
     ).toBeUndefined();
     buffer.capture("producer", "item/started", payload("unrelated"), "unrelated");
+    expect(
+      buffer.capture("producer", "thread/tokenUsage/updated", payload("unrelated"), "baseline")
+        ?.status,
+    ).toBe("buffered");
     buffer.capture("producer", "item/started", payload(), "started");
     buffer.capture("producer", "item/commandExecution/outputDelta", payload(), "delta");
     expect(buffer.take(dispatch)).toBeUndefined();
     buffer.acknowledge(dispatch, "turn");
+    expect(buffer.take(dispatch)).toBe("baseline");
     expect(buffer.take(dispatch)).toBe("started");
     buffer.capture("producer", "item/completed", payload(), "completed");
     buffer.capture(
@@ -66,6 +71,46 @@ describe("Codex pending-start notifications", () => {
     buffer.acknowledge(next, "next");
     expect(buffer.take(next)).toBe("next-start");
     expect(buffer.take(next)).toBeUndefined();
+  });
+
+  it("orders same-thread goal successors behind the queued terminal during replay", () => {
+    const buffer = makeCodexPendingStartNotifications<string>();
+    const dispatch = makeCodexLateStartRecovery().begin(binding, ["historical"]);
+    buffer.begin(dispatch);
+    buffer.capture("producer", "item/started", payload("successor"), "unrelated-before-ack");
+    buffer.capture("producer", "item/started", payload(), "replay-in-progress");
+    buffer.acknowledge(dispatch, "turn");
+    expect(buffer.take(dispatch)).toBe("replay-in-progress");
+    buffer.capture(
+      "producer",
+      "turn/completed",
+      { threadId: "thread", turn: { id: "turn" } },
+      "terminal",
+    );
+    expect(
+      buffer.capture(
+        "producer",
+        "turn/started",
+        { threadId: "thread", turn: { id: "successor" } },
+        "successor",
+      )?.status,
+    ).toBe("buffered");
+    buffer.capture("producer", "item/started", payload("successor"), "successor-item");
+    buffer.capture("producer", "thread/tokenUsage/updated", payload("successor"), "successor-usage");
+    buffer.capture(
+      "producer",
+      "thread/goal/updated",
+      { threadId: "thread", turnId: null },
+      "goal-update",
+    );
+    buffer.capture("producer", "thread/goal/cleared", { threadId: "thread" }, "goal-cleared");
+    expect(buffer.take(dispatch)).toBe("terminal");
+    expect(buffer.take(dispatch)).toBe("successor");
+    expect(buffer.take(dispatch)).toBe("successor-item");
+    expect(buffer.take(dispatch)).toBe("successor-usage");
+    expect(buffer.take(dispatch)).toBe("goal-update");
+    expect(buffer.take(dispatch)).toBe("goal-cleared");
+    expect(buffer.take(dispatch)).toBeUndefined();
   });
 
   it("clears cancelled or failed dispatches without clearing their replacement", () => {

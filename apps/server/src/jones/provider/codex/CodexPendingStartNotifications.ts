@@ -1,4 +1,4 @@
-import { Buffer } from "node:buffer";
+import * as NodeBuffer from "node:buffer";
 
 import type { CodexStartDispatch } from "./CodexLateStartRecovery.ts";
 
@@ -9,13 +9,14 @@ const MAX_EVENTS = 512;
 const MAX_BYTES = 1024 * 1024;
 
 interface PendingNotification<A> {
-  readonly nativeTurnId: string;
+  readonly nativeTurnId: string | undefined;
+  readonly threadWideUsage: boolean;
   readonly replay: A;
 }
 
 interface PendingStart<A> {
   readonly dispatch: CodexStartDispatch;
-  readonly events: Array<PendingNotification<A>>;
+  events: Array<PendingNotification<A>>;
   bytes: number;
   count: number;
   acknowledgedTurnId: string | undefined;
@@ -32,7 +33,13 @@ const contextMethods = new Set([
   "turn/plan/updated",
   "thread/tokenUsage/updated",
 ]);
-const lifecycleMethods = new Set(["turn/started", "turn/completed", "error"]);
+const lifecycleMethods = new Set([
+  "turn/started",
+  "turn/completed",
+  "error",
+  "thread/goal/updated",
+  "thread/goal/cleared",
+]);
 
 export function makeCodexPendingStartNotifications<A>() {
   const pending = new Map<string, PendingStart<A>>();
@@ -60,8 +67,8 @@ export function makeCodexPendingStartNotifications<A>() {
       if (typeof payload.threadId !== "string") return;
       const entry = pending.get(payload.threadId);
       if (entry === undefined || entry.dispatch.runtimeGeneration !== runtimeGeneration) return;
-      // The existing lifecycle handlers record pre-ACK facts for unknown-start
-      // reconciliation. During replay they must queue behind the earlier items.
+      // Lifecycle handlers record pre-ACK facts for unknown-start reconciliation.
+      // During replay their effects must queue behind the earlier items.
       if (entry.acknowledgedTurnId === undefined && lifecycleMethods.has(method)) return;
       const nativeTurnId =
         "turnId" in payload
@@ -72,17 +79,24 @@ export function makeCodexPendingStartNotifications<A>() {
               "id" in payload.turn
             ? payload.turn.id
             : undefined;
-      if (typeof nativeTurnId !== "string" || entry.dispatch.excludedTurnIds.has(nativeTurnId))
+      if (
+        entry.acknowledgedTurnId === undefined &&
+        (typeof nativeTurnId !== "string" || entry.dispatch.excludedTurnIds.has(nativeTurnId))
+      )
         return;
-      if (entry.acknowledgedTurnId !== undefined && entry.acknowledgedTurnId !== nativeTurnId)
-        return;
-      const bytes = Buffer.byteLength(JSON.stringify(payload), "utf8");
+      const bytes = NodeBuffer.Buffer.byteLength(JSON.stringify(payload), "utf8");
       if (entry.count >= MAX_EVENTS || bytes > MAX_BYTES - entry.bytes) {
         clear(entry.dispatch);
         entry.events.length = 0;
         return { status: "overflow", dispatch: entry.dispatch } as const;
       }
-      entry.events.push({ nativeTurnId, replay });
+      // Once replay begins, same-thread successors and goal updates must stay
+      // behind the predecessor's terminal. Their handlers retain turn ownership.
+      entry.events.push({
+        nativeTurnId: typeof nativeTurnId === "string" ? nativeTurnId : undefined,
+        threadWideUsage: method === "thread/tokenUsage/updated",
+        replay,
+      });
       entry.bytes += bytes;
       entry.count++;
       return { status: "buffered", dispatch: entry.dispatch } as const;
@@ -92,6 +106,13 @@ export function makeCodexPendingStartNotifications<A>() {
     acknowledge(dispatch: CodexStartDispatch, nativeTurnId: string) {
       const entry = byDispatch.get(dispatch);
       if (entry === undefined || dispatch.excludedTurnIds.has(nativeTurnId)) return;
+      // Only pre-ACK notifications need selection. Later arrivals are already
+      // ordered behind this acknowledged turn and must not be filtered as its items.
+      // Usage also carries a thread-wide baseline. Its handler accounts for
+      // history without creating or awaiting a turn context.
+      entry.events = entry.events.filter(
+        (event) => event.nativeTurnId === nativeTurnId || event.threadWideUsage,
+      );
       entry.acknowledgedTurnId = nativeTurnId;
     },
     take(dispatch: CodexStartDispatch): A | undefined {
@@ -99,10 +120,7 @@ export function makeCodexPendingStartNotifications<A>() {
       // old turn's tail. Keep that tail owned by its original dispatch.
       const entry = byDispatch.get(dispatch);
       if (entry === undefined || entry.acknowledgedTurnId === undefined) return;
-      while (entry.events.length > 0) {
-        const event = entry.events.shift()!;
-        if (event.nativeTurnId === entry.acknowledgedTurnId) return event.replay;
-      }
+      if (entry.events.length > 0) return entry.events.shift()!.replay;
       clear(dispatch);
     },
     clear,
