@@ -7,6 +7,18 @@ import {
 } from "./t3McpToolPresentation.ts";
 
 describe("resolveT3McpToolPresentation", () => {
+  it("presents linked thread observations, mutations and handoffs", () => {
+    for (const [name, displayName] of [
+      ["t3_thread_links", "List linked threads"],
+      ["t3_thread_link", "Update thread links"],
+      ["t3_thread_handoff", "Hand off thread work"],
+    ]) {
+      expect(resolveT3McpToolPresentation(`mcp__t3_code__${name}`)).toEqual({
+        displayName,
+        logo: "t3-code",
+      });
+    }
+  });
   it("presents durable owner response requests across provider tool names", () => {
     for (const name of ["t3_request_user_response", "mcp__t3_code__t3_request_user_response"]) {
       expect(resolveT3McpToolPresentation(name)).toEqual({
