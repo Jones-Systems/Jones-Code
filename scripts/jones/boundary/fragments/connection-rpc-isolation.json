@@ -3,14 +3,28 @@
   "feature": "connection-rpc-isolation",
   "jonesOwnedPaths": [
     "packages/client-runtime/src/jones/connection/routeAttemptBudget.ts",
-    "packages/client-runtime/src/jones/connection/routeAttemptBudget.test.ts"
+    "packages/client-runtime/src/jones/connection/routeAttemptBudget.test.ts",
+    "packages/client-runtime/src/jones/activity/reportLanes.ts",
+    "packages/client-runtime/src/jones/activity/reportLanes.test.ts"
   ],
-  "hookPaths": ["packages/client-runtime/src/connection/driver.ts"],
+  "hookPaths": [
+    "packages/client-runtime/src/connection/driver.ts",
+    "apps/web/src/lib/backgroundActivityReporter.ts",
+    "apps/mobile/src/connection/background-activity.ts"
+  ],
   "tombstones": [],
   "allowedImports": [
     {
       "from": "packages/client-runtime/src/connection/driver.ts",
       "to": "packages/client-runtime/src/jones/connection/routeAttemptBudget.ts"
+    },
+    {
+      "from": "apps/web/src/lib/backgroundActivityReporter.ts",
+      "to": "packages/client-runtime/src/jones/activity/reportLanes.ts"
+    },
+    {
+      "from": "apps/mobile/src/connection/background-activity.ts",
+      "to": "packages/client-runtime/src/jones/activity/reportLanes.ts"
     }
   ]
 }

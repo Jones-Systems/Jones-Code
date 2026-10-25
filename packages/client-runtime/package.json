@@ -534,6 +534,10 @@
     "./jones/threadReferenceExcerpt": {
       "types": "./src/jones/threadReferenceExcerpt.ts",
       "default": "./src/jones/threadReferenceExcerpt.ts"
+    },
+    "./jones/activity/report-lanes": {
+      "types": "./src/jones/activity/reportLanes.ts",
+      "default": "./src/jones/activity/reportLanes.ts"
     }
   },
   "scripts": {
