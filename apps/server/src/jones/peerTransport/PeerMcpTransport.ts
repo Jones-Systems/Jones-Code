@@ -10,9 +10,12 @@ import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import * as PeerLinks from "../../peer/PeerLinks.ts";
 import type { PeerMcpClient } from "../../peer/PeerMcpClient.ts";
+import { encodeLinkedMessageOrigin, LINKED_MESSAGE_ORIGIN_HEADER } from "./LinkedMessageOrigin.ts";
 
 /** The protocol negotiated by this client with the peer's `/mcp`. */
 const PROTOCOL_VERSION = "2025-06-18";
+// Remote waits support 50 seconds; leave 10 seconds for transport and body draining.
+const POST_TIMEOUT_MS = 60_000;
 const Envelope = Schema.Struct({
   jsonrpc: Schema.Literal("2.0"),
   id: Schema.Union([Schema.Number, Schema.String]),
@@ -69,64 +72,63 @@ const fromLinkError = (error: PeerLinkError) =>
     message: error.message,
   });
 
-const readEnvelope = (
+const readEnvelope = Effect.fn("PeerMcpTransport.readEnvelope")(function* (
   response: { readonly headers: Readonly<Record<string, string>>; readonly text: string },
   id: number,
-) =>
-  Effect.gen(function* () {
-    const text = response.text;
-    const raw = yield* Effect.try({
-      try: () => {
-        if (!response.headers["content-type"]?.toLowerCase().includes("text/event-stream")) {
-          return decodeJson(text);
+) {
+  const text = response.text;
+  const raw = yield* Effect.try({
+    try: () => {
+      if (!response.headers["content-type"]?.toLowerCase().includes("text/event-stream")) {
+        return decodeJson(text);
+      }
+      // Each SSE event is one message; only its own data lines may be joined.
+      const matches: Array<unknown> = [];
+      for (const event of text
+        .split(/\r\n|\r|\n/)
+        .join("\n")
+        .split("\n\n")) {
+        const data = event
+          .split("\n")
+          .filter((line) => line.startsWith("data:") || line === "data")
+          .map((line) => line.slice(5).replace(/^ /, ""))
+          .join("\n");
+        if (data === "") continue;
+        const message = decodeJson(data);
+        if (
+          typeof message !== "object" ||
+          message === null ||
+          !("jsonrpc" in message) ||
+          message.jsonrpc !== "2.0"
+        ) {
+          throw new Error("Invalid JSON-RPC event");
         }
-        // Each SSE event is one message; only its own data lines may be joined.
-        const matches: Array<unknown> = [];
-        for (const event of text
-          .split(/\r\n|\r|\n/)
-          .join("\n")
-          .split("\n\n")) {
-          const data = event
-            .split("\n")
-            .filter((line) => line.startsWith("data:") || line === "data")
-            .map((line) => line.slice(5).replace(/^ /, ""))
-            .join("\n");
-          if (data === "") continue;
-          const message = decodeJson(data);
-          if (
-            typeof message !== "object" ||
-            message === null ||
-            !("jsonrpc" in message) ||
-            message.jsonrpc !== "2.0"
-          ) {
-            throw new Error("Invalid JSON-RPC event");
-          }
-          if ("id" in message) {
-            if (message.id === id) matches.push(message);
-          } else if (!("method" in message) || typeof message.method !== "string") {
-            throw new Error("Invalid JSON-RPC notification");
-          }
+        if ("id" in message) {
+          if (message.id === id) matches.push(message);
+        } else if (!("method" in message) || typeof message.method !== "string") {
+          throw new Error("Invalid JSON-RPC notification");
         }
-        if (matches.length !== 1) throw new Error("Missing or duplicate response");
-        return matches[0];
-      },
-      catch: malformed,
-    });
-    const envelope = yield* decodeEnvelope(raw).pipe(Effect.mapError(malformed));
-    if (
-      envelope.id !== id ||
-      Object.hasOwn(envelope, "result") === Object.hasOwn(envelope, "error")
-    ) {
-      return yield* malformed();
-    }
-    if (envelope.error !== undefined) {
-      const refused = decodeFailure(envelope.error.data);
-      return yield* refused._tag === "Some"
-        ? new OrchestratorMcpFailure(refused.value)
-        : new OrchestratorMcpFailure({ code: "invalid_request", message: envelope.error.message });
-    }
-    return envelope;
+      }
+      if (matches.length !== 1) throw new Error("Missing or duplicate response");
+      return matches[0];
+    },
+    catch: malformed,
   });
+  const envelope = yield* decodeEnvelope(raw).pipe(Effect.mapError(malformed));
+  if (
+    envelope.id !== id ||
+    Object.hasOwn(envelope, "result") === Object.hasOwn(envelope, "error")
+  ) {
+    return yield* malformed();
+  }
+  if (envelope.error !== undefined) {
+    const refused = decodeFailure(envelope.error.data);
+    return yield* refused._tag === "Some"
+      ? new OrchestratorMcpFailure(refused.value)
+      : new OrchestratorMcpFailure({ code: "invalid_request", message: envelope.error.message });
+  }
+  return envelope;
+});
 
 export const make = Effect.gen(function* () {
   const links = yield* PeerLinks.PeerLinks;
@@ -158,6 +160,18 @@ export const make = Effect.gen(function* () {
             Effect.map((text) => ({ status: response.status, headers: response.headers, text })),
           ),
         ),
+        // A timeout aborts local I/O, but cannot establish whether the peer committed a mutation.
+        Effect.timeoutOrElse({
+          duration: POST_TIMEOUT_MS,
+          orElse: () =>
+            Effect.fail(
+              new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message:
+                  "The linked environment timed out. The call was not replayed. Reconcile its outcome before explicitly retrying with the same operation key.",
+              }),
+            ),
+        }),
         Effect.flatMap((response) => {
           if (response.status >= 300 && response.status < 400)
             return Effect.fail(
@@ -179,52 +193,55 @@ export const make = Effect.gen(function* () {
         }),
       );
 
-  const openSession = (url: string, token: string, limitHeader: Record<string, string>) =>
-    Effect.gen(function* () {
-      const id = yield* nextId;
-      const initialized = yield* post(
-        url,
-        token,
-        {
-          jsonrpc: "2.0",
-          id,
-          method: "initialize",
-          params: {
-            protocolVersion: PROTOCOL_VERSION,
-            capabilities: {},
-            clientInfo: { name: "t3code-peer", version: "1" },
-          },
+  const openSession = Effect.fn("PeerMcpTransport.openSession")(function* (
+    url: string,
+    token: string,
+    limitHeader: Record<string, string>,
+  ) {
+    const id = yield* nextId;
+    const initialized = yield* post(
+      url,
+      token,
+      {
+        jsonrpc: "2.0",
+        id,
+        method: "initialize",
+        params: {
+          protocolVersion: PROTOCOL_VERSION,
+          capabilities: {},
+          clientInfo: { name: "t3code-peer", version: "1" },
         },
-        limitHeader,
-      );
-      const sessionId = initialized.headers["mcp-session-id"];
-      if (initialized.status !== 200 || !sessionId)
-        return yield* new OrchestratorMcpFailure({
-          code: "orchestration_error",
-          message: `The linked environment refused to start an MCP session (HTTP ${initialized.status}).`,
-        });
-      const envelope = yield* readEnvelope(initialized, id);
-      yield* decodeInitialization(envelope.result).pipe(Effect.mapError(malformed));
-      const notified = yield* post(
-        url,
-        token,
-        { jsonrpc: "2.0", method: "notifications/initialized" },
-        {
-          ...limitHeader,
-          "mcp-session-id": sessionId,
-          "mcp-protocol-version": PROTOCOL_VERSION,
-        },
-      );
-      if (notified.status !== 200 && notified.status !== 202)
-        return yield* new OrchestratorMcpFailure({
-          code: "orchestration_error",
-          message: `The linked environment refused MCP initialization (HTTP ${notified.status}).`,
-        });
-      return { id: sessionId };
-    });
+      },
+      limitHeader,
+    );
+    const sessionId = initialized.headers["mcp-session-id"];
+    if (initialized.status !== 200 || !sessionId)
+      return yield* new OrchestratorMcpFailure({
+        code: "orchestration_error",
+        message: `The linked environment refused to start an MCP session (HTTP ${initialized.status}).`,
+      });
+    const envelope = yield* readEnvelope(initialized, id);
+    yield* decodeInitialization(envelope.result).pipe(Effect.mapError(malformed));
+    const notified = yield* post(
+      url,
+      token,
+      { jsonrpc: "2.0", method: "notifications/initialized" },
+      {
+        ...limitHeader,
+        "mcp-session-id": sessionId,
+        "mcp-protocol-version": PROTOCOL_VERSION,
+      },
+    );
+    if (notified.status !== 200 && notified.status !== 202)
+      return yield* new OrchestratorMcpFailure({
+        code: "orchestration_error",
+        message: `The linked environment refused MCP initialization (HTTP ${notified.status}).`,
+      });
+    return { id: sessionId };
+  });
 
-  const call: PeerMcpClient["Service"]["call"] = (input) =>
-    Effect.gen(function* () {
+  const call: PeerMcpClient["Service"]["call"] = Effect.fn("PeerMcpTransport.call")(
+    function* (input) {
       const resolved = yield* links
         .resolve(input.environmentId)
         .pipe(Effect.mapError(fromLinkError));
@@ -251,7 +268,16 @@ export const make = Effect.gen(function* () {
           method: "tools/call",
           params: { name: input.tool, arguments: input.arguments },
         },
-        { ...limitHeader, "mcp-session-id": session.id, "mcp-protocol-version": PROTOCOL_VERSION },
+        {
+          ...limitHeader,
+          ...(input.origin === undefined
+            ? {}
+            : {
+                [LINKED_MESSAGE_ORIGIN_HEADER]: encodeLinkedMessageOrigin(input.origin),
+              }),
+          "mcp-session-id": session.id,
+          "mcp-protocol-version": PROTOCOL_VERSION,
+        },
       );
       if (response.status === 404) {
         yield* Ref.update(sessions, (current) => {
@@ -307,21 +333,24 @@ export const make = Effect.gen(function* () {
             }),
         ),
       );
-    }).pipe(
-      Effect.tapError((error) =>
-        links.recordOutcome(input.environmentId, { error: error.message }),
+    },
+    (effect, input) =>
+      effect.pipe(
+        Effect.tapError((error) =>
+          links.recordOutcome(input.environmentId, { error: error.message }),
+        ),
+        Effect.tap(() => links.recordOutcome(input.environmentId, { error: null })),
+        // Recorded above with the transport's own message; the agent hears it plainly.
+        Effect.catchTags({
+          HttpClientError: () =>
+            Effect.fail(
+              new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: "The linked environment stopped answering.",
+              }),
+            ),
+        }),
       ),
-      Effect.tap(() => links.recordOutcome(input.environmentId, { error: null })),
-      // Recorded above with the transport's own message; the agent hears it plainly.
-      Effect.catchTags({
-        HttpClientError: () =>
-          Effect.fail(
-            new OrchestratorMcpFailure({
-              code: "orchestration_error",
-              message: "The linked environment stopped answering.",
-            }),
-          ),
-      }),
-    );
+  );
   return { call };
 });

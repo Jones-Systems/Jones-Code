@@ -16,6 +16,8 @@ import {
   JonesUpdateExactInput,
   JonesNativePrepareInput,
   JonesUpdateInstallInput,
+  JonesUpdateReconcileInput,
+  JonesUpdateRecordRetiredInput,
   JonesUpdateState,
 } from "./jonesUpdates.ts";
 import { WorkQueueMetadataResult } from "./workQueueMetadata.ts";
@@ -66,9 +68,21 @@ import {
   WorkstreamAppearance,
 } from "./workstreamAppearance.ts";
 
+import {
+  EnvironmentWorkstreamOperationConflictError as WorkstreamOperationConflictError,
+  WorkstreamOperationSubmitRequest,
+  WorkstreamOperationSubmitResponse,
+  WorkstreamOperationReadRequest,
+  WorkstreamOperationReadResponse,
+  WorkstreamSetupStatus,
+} from "./workstreamOperations.ts";
+
 import { WorkstreamsRegistrationContextAcceptedResponse } from "./workstreamsRegistrationContext.ts";
 import {
   WorkstreamsNativeContextResponse,
+  WorkstreamsNativeContextResponseV2,
+  WorkstreamsNativeAttestationResponseV2,
+  WorkstreamsNativeSettlementResponseV2,
   WorkstreamsNativeAttestationRequest,
   WorkstreamsNativeAttestationResponse,
   WorkstreamsNativeSettlementRequest,
@@ -141,6 +155,12 @@ export type EnvironmentConversationLibraryError =
   typeof EnvironmentConversationLibraryErrorSchema.Type;
 
 export const EnvironmentConversationLibraryErrorCode = LibraryErrorCodeSchema;
+
+export const EnvironmentWorkstreamOperationConflictError = WorkstreamOperationConflictError.pipe(
+  HttpApiSchema.status(409),
+);
+export type EnvironmentWorkstreamOperationConflictError =
+  typeof EnvironmentWorkstreamOperationConflictError.Type;
 
 export const makeJonesHttpGroups = ({
   OptionalBearerHeaders,
@@ -362,6 +382,38 @@ export const makeJonesHttpGroups = ({
           EnvironmentHttpBadRequestError,
         ],
       }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("operationSubmit", "/api/workstreams/operations/submit", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamOperationSubmitRequest,
+        success: WorkstreamOperationSubmitResponse,
+        error: [
+          EnvironmentHttpBadRequestError,
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentWorkstreamOperationConflictError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("operationRead", "/api/workstreams/operations/read", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamOperationReadRequest,
+        success: WorkstreamOperationReadResponse,
+        error: [
+          EnvironmentHttpBadRequestError,
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.get("setupStatus", "/api/workstreams/setup-status", {
+        headers: OptionalBearerHeaders,
+        success: WorkstreamSetupStatus,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
     ) {}
 
   class EnvironmentWorkstreamsNativeHttpApi extends HttpApiGroup.make("workstreamsNative")
@@ -423,6 +475,53 @@ export const makeJonesHttpGroups = ({
           EnvironmentHttpBadRequestError,
         ],
       }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.get("contextV2", "/api/workstreams/native/v2/context", {
+        headers: OptionalBearerHeaders,
+        success: WorkstreamsNativeContextResponseV2,
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("attestationsV2", "/api/workstreams/native/v2/attestations", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamsNativeAttestationRequest,
+        success: WorkstreamsNativeAttestationResponseV2,
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("settlementsV2", "/api/workstreams/native/v2/settlements", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamsNativeSettlementRequest,
+        success: WorkstreamsNativeSettlementResponseV2,
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("settlementLookupV2", "/api/workstreams/native/v2/settlements/lookup", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamsNativeSettlementRequest,
+        success: WorkstreamsNativeSettlementResponseV2,
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
     ) {}
 
   class EnvironmentWorkQueueMetadataHttpApi extends HttpApiGroup.make("workQueueMetadata").add(
@@ -452,6 +551,22 @@ export const makeJonesHttpGroups = ({
   ) {}
 
   class EnvironmentJonesUpdatesHttpApi extends HttpApiGroup.make("jonesUpdates")
+    .add(
+      HttpApiEndpoint.post("reconcile", "/api/jones-updates/reconcile", {
+        headers: OptionalBearerHeaders,
+        payload: JonesUpdateReconcileInput,
+        success: JonesUpdateState,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("recordRetired", "/api/jones-updates/record-retired", {
+        headers: OptionalBearerHeaders,
+        payload: JonesUpdateRecordRetiredInput,
+        success: JonesUpdateState,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
     .add(
       HttpApiEndpoint.post("prepareNative", "/api/jones-updates/prepare-native", {
         headers: OptionalBearerHeaders,

@@ -145,8 +145,8 @@ const writeTarget = (input: ServeMappingInput) => {
   });
 };
 
-export const acquireServeMapping = (input: ServeMappingInput) =>
-  Effect.gen(function* () {
+export const acquireServeMapping = Effect.fn("TailscaleServeOwnership.acquireServeMapping")(
+  function* (input: ServeMappingInput) {
     const state = yield* queryServeMapping(input);
     if (state._tag === "exact") return { created: false } as const;
     if (state._tag !== "absent") return { skipped: state } as const;
@@ -159,17 +159,18 @@ export const acquireServeMapping = (input: ServeMappingInput) =>
     return readback._tag === "exact"
       ? ({ created: true } as const)
       : ({ skipped: { _tag: "unknown", reason: "status-failed" } } as const);
-  });
+  },
+);
 
 /** The CLI has no CAS: rechecking narrows the race but cannot make removal atomic. */
-export const releaseServeMapping = (
-  input: ServeMappingInput & { readonly created: boolean },
-): Effect.Effect<
-  "disabled" | "skipped" | "unknown",
-  never,
-  ChildProcessSpawner.ChildProcessSpawner
-> =>
-  Effect.gen(function* () {
+export const releaseServeMapping = Effect.fn("TailscaleServeOwnership.releaseServeMapping")(
+  function* (
+    input: ServeMappingInput & { readonly created: boolean },
+  ): Effect.fn.Return<
+    "disabled" | "skipped" | "unknown",
+    never,
+    ChildProcessSpawner.ChildProcessSpawner
+  > {
     if (!input.created) return "skipped";
     const state = yield* queryServeMapping(input);
     if (state._tag === "unknown") return "unknown";
@@ -180,4 +181,5 @@ export const releaseServeMapping = (
     );
     const readback = yield* queryServeMapping(input);
     return disabled && readback._tag === "absent" ? "disabled" : "unknown";
-  });
+  },
+);

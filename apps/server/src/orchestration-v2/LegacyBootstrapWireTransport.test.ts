@@ -1,3 +1,7 @@
+import * as WsProviderMaintenanceRunner from "../provider/providerMaintenanceRunner.ts";
+import * as WsSourceControlDiscovery from "../sourceControl/SourceControlDiscovery.ts";
+import * as WsOtlpEndpointCheck from "../observability/OtlpEndpointCheck.ts";
+import * as WsAgentSessionScanner from "../project/AgentSessionScanner.ts";
 import * as WsDirectEndpoints from "../environment/DirectEndpoints.ts";
 import * as WsPeerLinks from "../peer/PeerLinks.ts";
 import * as WsMcpAppRequests from "../mcpApps/McpAppRequests.ts";
@@ -533,6 +537,10 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
     Layer.mock(WsManagedProjectFolders.ManagedProjectFolders)({
       namedProjectsRoot: "/synthetic-unused-projects",
     }),
+    Layer.mock(WsProviderMaintenanceRunner.ProviderMaintenanceRunner)({}),
+    Layer.mock(WsSourceControlDiscovery.SourceControlDiscovery)({}),
+    Layer.mock(WsOtlpEndpointCheck.OtlpEndpointCheck)({}),
+    Layer.mock(WsAgentSessionScanner.AgentSessionScanner)({}),
     Layer.mock(WsThreadSearch.ThreadSearch)({}),
     Layer.mock(WsProviderSessionManager.ProviderSessionManagerV2)({}),
     Layer.mock(WsAnalyticsService.AnalyticsService)({}),
@@ -1171,6 +1179,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                 ProviderRegistryMock.layer(),
                 Layer.mock(WsManagedProjectFolders.ManagedProjectFolders)({
                   namedProjectsRoot: `${cwd}/unused-projects`,
+                  isScratchProject: () => Effect.succeed(false),
                   folderForThread: () => Effect.succeed(Option.none()),
                 }),
               );
@@ -1265,9 +1274,16 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           Layer.mock(WsManagedProjectFolders.ManagedProjectFolders)({
             namedProjectsRoot: "/synthetic-unused-projects",
           }),
+          Layer.mock(WsProviderMaintenanceRunner.ProviderMaintenanceRunner)({}),
+          Layer.mock(WsSourceControlDiscovery.SourceControlDiscovery)({}),
+          Layer.mock(WsOtlpEndpointCheck.OtlpEndpointCheck)({}),
+          Layer.mock(WsAgentSessionScanner.AgentSessionScanner)({}),
           Layer.mock(WsThreadSearch.ThreadSearch)({}),
           Layer.mock(WsProviderSessionManager.ProviderSessionManagerV2)({}),
-          Layer.mock(WsAnalyticsService.AnalyticsService)({ record: () => Effect.void }),
+          Layer.mock(WsAnalyticsService.AnalyticsService)({
+            record: () => Effect.void,
+            recordOwners: () => Effect.void,
+          }),
           Layer.mock(WsThreadLaunchService.ThreadLaunchService)({
             preflightLegacyBootstrap: (binding) =>
               Effect.sync(() => {
@@ -1550,6 +1566,22 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value._tag)
               ? value._tag
               : "Untagged";
+          const diagnosticError = (value: unknown) => {
+            if (!(value instanceof Error)) return {};
+            const unimplemented =
+              /^(t3\/[A-Za-z0-9_/-]{1,160}): Unimplemented method "([A-Za-z_$][A-Za-z0-9_$]{0,63})"$/.exec(
+                value.message,
+              );
+            const missingService =
+              /^Service not found: ([A-Za-z@][A-Za-z0-9_/@.-]{0,160})(?:\s|$)/.exec(value.message);
+            return {
+              name: /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value.name) ? value.name : "Error",
+              ...(unimplemented === null
+                ? {}
+                : { service: unimplemented[1], member: unimplemented[2] }),
+              ...(missingService === null ? {} : { missingService: missingService[1] }),
+            };
+          };
           const servingEnded = WsFiber.join(serving).pipe(
             Effect.matchCauseEffect({
               onFailure: (cause) =>
@@ -1557,6 +1589,13 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                   _tag: "LegacyWireServingFailed",
                   causes: cause.reasons.slice(0, 8).map((reason) => ({
                     kind: reason._tag,
+                    ...diagnosticError(
+                      reason._tag === "Fail"
+                        ? reason.error
+                        : reason._tag === "Die"
+                          ? reason.defect
+                          : undefined,
+                    ),
                     tag:
                       reason._tag === "Fail"
                         ? diagnosticTag(reason.error)

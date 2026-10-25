@@ -1,3 +1,4 @@
+import type { ServerProviderSkill } from "@t3tools/contracts";
 import type { Editor } from "@tiptap/core";
 import { closeHistory } from "@tiptap/pm/history";
 import { act, createRef, useState } from "react";
@@ -10,16 +11,24 @@ import {
   type ComposerPromptEditorHandle,
   type ComposerPromptEditorProps,
 } from "~/components/ComposerPromptEditor";
+import { formatInlineContextReference } from "~/lib/composerContextReferences";
+
+const review: ServerProviderSkill = {
+  name: "review",
+  path: "/synthetic/skills/review/SKILL.md",
+  enabled: true,
+};
 
 const counts = vi.hoisted(() => ({ serialize: vi.fn() }));
 vi.mock(import("./editorSerializationCache"), async (original) => {
   const actual = await original();
   return {
     ...actual,
-    createEditorSerializationCache: () => actual.createEditorSerializationCache((doc) => {
-      counts.serialize(doc);
-      return serializeEditorDoc(doc);
-    }),
+    createEditorSerializationCache: () =>
+      actual.createEditorSerializationCache((doc) => {
+        counts.serialize(doc);
+        return serializeEditorDoc(doc);
+      }),
   };
 });
 
@@ -48,28 +57,32 @@ async function mount(initial: string, options: Partial<ComposerPromptEditorProps
   const changed = vi.fn<ComposerPromptEditorProps["onChange"]>();
   const visibleSelection = vi.fn();
   let replace: (value: string) => void = () => {};
+  let replaceSkills: (skills: ReadonlyArray<ServerProviderSkill>) => void = () => {};
   function Harness() {
     const [value, setValue] = useState(initial);
     const [cursor, setCursor] = useState(0);
+    const [skills, setSkills] = useState(options.skills ?? []);
     replace = setValue;
+    replaceSkills = setSkills;
     return (
       <ComposerPromptEditor
         editorRef={editorRef}
         value={value}
         cursor={cursor}
         contextRecords={new Map()}
-        skills={[]}
         disabled={false}
         placeholder=""
         richTextEnabled
         onPaste={() => {}}
         onVisibleSelectionChange={visibleSelection}
+        {...options}
+        skills={skills}
         onChange={(...args) => {
           changed(...args);
           setValue(args[0]);
           setCursor(args[1]);
+          options.onChange?.(...args);
         }}
-        {...options}
       />
     );
   }
@@ -82,32 +95,36 @@ async function mount(initial: string, options: Partial<ComposerPromptEditorProps
     changed,
     visibleSelection,
     replace: (value: string) => replace(value),
+    replaceSkills: (skills: ReadonlyArray<ServerProviderSkill>) => replaceSkills(skills),
   };
 }
 
-it.each([true, false])("reuses serialization for selection and focus with rich text %s", async (richTextEnabled) => {
-  const { editor, editorRef, changed, visibleSelection } = await mount("hello world", {
-    richTextEnabled,
-  });
-  await act(async () => editorRef.current?.focusAt(0));
-  expect(counts.serialize).toHaveBeenCalled();
-  counts.serialize.mockClear();
-  await act(async () => {
-    editor.commands.setTextSelection(3);
-  });
-  expect(changed).toHaveBeenLastCalledWith("hello world", 2, 2, false, []);
-  await act(async () => {
-    editor.commands.setTextSelection({ from: 3, to: 6 });
-  });
-  expect(visibleSelection).toHaveBeenCalled();
-  expect(editorRef.current?.readSelectionRange()).toEqual({ start: 2, end: 5 });
-  await act(async () => editorRef.current?.focusAt(5));
-  expect(editorRef.current?.readSelectionRange()).toEqual({ start: 5, end: 5 });
-  expect(counts.serialize).not.toHaveBeenCalled();
-});
+it.each([true, false])(
+  "reuses serialization for selection and focus with rich text %s",
+  async (richTextEnabled) => {
+    const { editor, editorRef, changed, visibleSelection } = await mount("hello world", {
+      richTextEnabled,
+    });
+    await act(async () => editorRef.current?.focusAt(0));
+    expect(counts.serialize).toHaveBeenCalled();
+    counts.serialize.mockClear();
+    await act(async () => {
+      editor.commands.setTextSelection(3);
+    });
+    expect(changed).toHaveBeenLastCalledWith("hello world", 2, 2, false, []);
+    await act(async () => {
+      editor.commands.setTextSelection({ from: 3, to: 6 });
+    });
+    expect(visibleSelection).toHaveBeenCalled();
+    expect(editorRef.current?.readSelectionRange()).toEqual({ start: 2, end: 5 });
+    await act(async () => editorRef.current?.focusAt(5));
+    expect(editorRef.current?.readSelectionRange()).toEqual({ start: 5, end: 5 });
+    expect(counts.serialize).not.toHaveBeenCalled();
+  },
+);
 
 it("invalidates for content, marks, skill chips, undo, redo and controlled replacement", async () => {
-  const { editor, editorRef, changed, replace } = await mount("hello world");
+  const { editor, editorRef, changed, replace } = await mount("hello world", { skills: [review] });
   async function changesDoc(change: () => unknown, expected: string) {
     const before = editor.state.doc;
     counts.serialize.mockClear();
@@ -158,7 +175,7 @@ it("keeps literal mode trigger suppression with a reused map", async () => {
 });
 
 it("recomputes chip and Markdown cursor coordinates from the cached map", async () => {
-  const { editor, editorRef, changed } = await mount("$review **bold**");
+  const { editor, editorRef, changed } = await mount("$review **bold**", { skills: [review] });
   counts.serialize.mockClear();
   await act(async () => {
     editor.commands.setTextSelection(2);
@@ -169,6 +186,77 @@ it("recomputes chip and Markdown cursor coordinates from the cached map", async 
   });
   expect(changed).toHaveBeenLastCalledWith("$review **bold**", 5, 11, false, []);
   expect(editorRef.current?.readSelectionRange()).toEqual({ start: 11, end: 11 });
+  expect(counts.serialize).not.toHaveBeenCalled();
+});
+
+it("isolates callback and snapshot context arrays from a warmed cache", async () => {
+  const contextId = "file_cache-test";
+  const value = `See ${formatInlineContextReference({ kind: "file", contextId, label: "notes.txt" })} now`;
+  const received: string[][] = [];
+  const { editor, editorRef } = await mount(value, {
+    onChange: (_value, _cursor, _expandedCursor, _suppressTrigger, contextIds) => {
+      received.push([...contextIds]);
+      contextIds.splice(0, contextIds.length, "callback-mutation");
+    },
+  });
+  await act(async () => editorRef.current?.focusAt(0));
+  const cachedDoc = editor.state.doc;
+  counts.serialize.mockClear();
+  received.length = 0;
+  await act(async () => {
+    editor.commands.setTextSelection(2);
+  });
+  expect(received).toEqual([[contextId]]);
+  await act(async () => {
+    editor.commands.setTextSelection({ from: 2, to: 3 });
+  });
+  expect(received).toEqual([[contextId]]);
+  const snapshot = editorRef.current!.readSnapshot();
+  expect(snapshot.contextIds).toEqual([contextId]);
+  snapshot.contextIds.splice(0, snapshot.contextIds.length, "snapshot-mutation");
+  await act(async () => {
+    editor.commands.setTextSelection({ from: 2, to: 4 });
+  });
+  expect(received).toEqual([[contextId]]);
+  await act(async () => editorRef.current?.focusAt(2));
+  expect(received).toEqual([[contextId], [contextId]]);
+  expect(editorRef.current!.readSnapshot().contextIds).toEqual([contextId]);
+  expect(editor.state.doc).toBe(cachedDoc);
+  expect(counts.serialize).not.toHaveBeenCalled();
+});
+
+it("invalidates a warmed cache when provider skills reconcile text and chips", async () => {
+  const value = "$review tail";
+  const { editor, editorRef, changed, replaceSkills } = await mount(value);
+  await act(async () => editorRef.current?.focusAt(0));
+  const textDoc = editor.state.doc;
+  expect(textDoc.textContent).toBe(value);
+  counts.serialize.mockClear();
+  await act(async () => replaceSkills([review]));
+  const chipDoc = editor.state.doc;
+  expect(chipDoc).not.toBe(textDoc);
+  expect(chipDoc.firstChild?.firstChild?.type.name).toBe("composer-skill");
+  expect(counts.serialize).toHaveBeenCalledWith(chipDoc);
+  expect(counts.serialize).toHaveBeenCalledTimes(1);
+  counts.serialize.mockClear();
+  await act(async () => editorRef.current?.focusAt(1));
+  expect(changed).toHaveBeenLastCalledWith(value, 1, 7, true, []);
+  expect(editorRef.current!.readSnapshot().value).toBe(value);
+  expect(counts.serialize).not.toHaveBeenCalled();
+
+  await act(async () => replaceSkills([]));
+  const restoredTextDoc = editor.state.doc;
+  expect(restoredTextDoc).not.toBe(chipDoc);
+  expect(restoredTextDoc.textContent).toBe(value);
+  expect(restoredTextDoc.firstChild?.firstChild?.isText).toBe(true);
+  expect(counts.serialize).toHaveBeenCalledWith(restoredTextDoc);
+  expect(counts.serialize).toHaveBeenCalledTimes(1);
+  counts.serialize.mockClear();
+  await act(async () => {
+    editor.commands.setTextSelection(4);
+  });
+  expect(changed).toHaveBeenLastCalledWith(value, 1, 3, false, []);
+  expect(editorRef.current!.readSnapshot()).toMatchObject({ value, cursor: 1, expandedCursor: 3 });
   expect(counts.serialize).not.toHaveBeenCalled();
 });
 

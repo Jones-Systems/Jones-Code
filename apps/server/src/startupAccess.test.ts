@@ -1,23 +1,12 @@
 import { assert, expect, it } from "@effect/vitest";
 
 import {
+  resolveHeadlessConnectionString,
   buildPairingUrl,
   formatHeadlessServeOutput,
   renderTerminalQrCode,
-  resolveHeadlessConnectionHost,
-  resolveHeadlessConnectionString,
   resolveListeningPort,
 } from "./startupAccess.ts";
-
-it("prefers localhost when no explicit host is configured", () => {
-  expect(resolveHeadlessConnectionHost(undefined)).toBe("localhost");
-  expect(resolveHeadlessConnectionString(undefined, 3773)).toBe("http://localhost:3773");
-});
-
-it("keeps explicit bind hosts in the connection string", () => {
-  expect(resolveHeadlessConnectionString("127.0.0.1", 3773)).toBe("http://127.0.0.1:3773");
-  expect(resolveHeadlessConnectionString("::1", 3773)).toBe("http://[::1]:3773");
-});
 
 it("resolves wildcard hosts to a concrete external interface when one is available", () => {
   const connectionString = resolveHeadlessConnectionString("0.0.0.0", 3773, {

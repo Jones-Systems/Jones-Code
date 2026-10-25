@@ -17,7 +17,9 @@
     "apps/server/src/peer/PeerMcpClient.ts",
     "packages/provider-core/src/server/textGeneration.ts",
     "packages/provider-core/src/server/textGenerationOperations.ts",
-    "apps/server/src/peer/RemoteDelegation.ts"
+    "apps/server/src/peer/RemoteDelegation.ts",
+    "apps/server/src/peer/PeerForwarding.ts",
+    "apps/server/src/orchestration-v2/DelegatedTaskQuestionReactor.ts"
   ],
   "tombstones": [
     "apps/server/src/persistence/Migrations/064_PeerLinks.ts",
@@ -77,8 +79,72 @@
       "to": "apps/server/src/jones/remoteDelegation/PeerMonitor.ts"
     },
     {
-      "from": "apps/server/src/mcp/toolkits/worktree/registration.test.ts",
-      "to": "apps/server/src/jones/remoteAdmissionIntegration/RemoteAdmissionIntake.ts"
+      "from": "apps/server/src/peer/RemoteDelegation.ts",
+      "to": "apps/server/src/jones/remoteDelegation/FinalText.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/peerTransport/LinkedMessageOrigin.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpInvocationContext.ts",
+      "to": "apps/server/src/jones/peerTransport/LinkedMessageOrigin.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/OrchestratorMcpService.ts",
+      "to": "apps/server/src/jones/remoteDelegation/ChildProgress.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/OrchestratorMcpService.ts",
+      "to": "apps/server/src/jones/remoteDelegation/BlockingQuestions.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/OrchestratorMcpService.ts",
+      "to": "apps/server/src/jones/peerTransport/LinkedMessageOrigin.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/remoteDelegation/ObservationHooks.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/peerTransport/LinkedMessageOrigin.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadManagementService.ts",
+      "to": "apps/server/src/jones/remoteDelegation/ObservationHooks.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadManagementService.ts",
+      "to": "apps/server/src/jones/peerTransport/LinkedMessageOrigin.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadManagementService.ts",
+      "to": "apps/server/src/jones/remoteDelegation/BlockingQuestions.ts"
+    },
+    {
+      "from": "apps/server/src/peer/PeerForwarding.ts",
+      "to": "apps/server/src/jones/peerTransport/LinkedMessageOrigin.ts"
+    },
+    {
+      "from": "apps/server/src/peer/PeerMcpClient.ts",
+      "to": "apps/server/src/jones/peerTransport/LinkedMessageOrigin.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/remoteTaskObservation.ts"
+    },
+    {
+      "from": "packages/contracts/src/orchestratorMcp.ts",
+      "to": "packages/contracts/src/jones/remoteTaskObservation.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/OrchestratorMcpService.ts",
+      "to": "apps/server/src/jones/remoteDelegation/ObservationSupport.ts"
+    },
+    {
+      "from": "apps/server/src/peer/RemoteDelegation.ts",
+      "to": "apps/server/src/jones/remoteDelegation/ObservationSupport.ts"
     }
   ]
 }

@@ -1,0 +1,336 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.jones.systems/workstream-operations/1.0.0/operation-request.schema.json",
+  "title": "workstream-operations/1.0.0 operation-request",
+  "$ref": "#/$defs/Request",
+  "$defs": {
+    "CommandId": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$"
+    },
+    "ConflictError": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "enum": ["operation_id_conflict", "thread_operation_in_progress"]
+        },
+        "open_operation_id": {
+          "$ref": "#/$defs/CommandId"
+        }
+      },
+      "required": ["code"],
+      "additionalProperties": false
+    },
+    "CreateRequest": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "workstream-operations/1.0.0"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/CommandId"
+        },
+        "origin": {
+          "$ref": "#/$defs/Origin"
+        },
+        "kind": {
+          "const": "create_workstream"
+        },
+        "registry": {
+          "$ref": "#/$defs/Registry"
+        },
+        "workstream": {
+          "$ref": "#/$defs/Workstream"
+        }
+      },
+      "required": ["contract", "operation_id", "origin", "kind", "registry", "workstream"],
+      "additionalProperties": false
+    },
+    "Expected": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "enum": ["any", "unassigned"]
+            }
+          },
+          "required": ["kind"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "primary"
+            },
+            "workstream_id": {
+              "$ref": "#/$defs/Id"
+            }
+          },
+          "required": ["kind", "workstream_id"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Id": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "Name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "\\S"
+    },
+    "Origin": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "enum": ["app", "cli", "agent"]
+            }
+          },
+          "required": ["kind"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "queue"
+            },
+            "request_id": {
+              "$ref": "#/$defs/Id"
+            }
+          },
+          "required": ["kind", "request_id"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Progress": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "enum": ["progressing", "unknown", "stale"]
+            }
+          },
+          "required": ["state"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "const": "waiting"
+            },
+            "condition": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "\\S"
+            }
+          },
+          "required": ["state", "condition"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "const": "blocked"
+            },
+            "impediment": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "\\S"
+            }
+          },
+          "required": ["state", "impediment"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ReadRequest": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "operation_id": {
+              "$ref": "#/$defs/CommandId"
+            }
+          },
+          "required": ["operation_id"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "thread": {
+              "$ref": "#/$defs/Thread"
+            }
+          },
+          "required": ["thread"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "open": {
+              "const": true
+            }
+          },
+          "required": ["open"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Registry": {
+      "type": "object",
+      "properties": {
+        "registry_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "owner_id": {
+          "$ref": "#/$defs/Id"
+        }
+      },
+      "required": ["registry_id", "owner_id"],
+      "additionalProperties": false
+    },
+    "Request": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SetPrimaryRequest"
+        },
+        {
+          "$ref": "#/$defs/CreateRequest"
+        }
+      ]
+    },
+    "SetPrimaryRequest": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "workstream-operations/1.0.0"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/CommandId"
+        },
+        "origin": {
+          "$ref": "#/$defs/Origin"
+        },
+        "kind": {
+          "const": "set_primary"
+        },
+        "thread": {
+          "$ref": "#/$defs/Thread"
+        },
+        "target": {
+          "$ref": "#/$defs/Target"
+        },
+        "expected": {
+          "$ref": "#/$defs/Expected"
+        }
+      },
+      "required": ["contract", "operation_id", "origin", "kind", "thread", "target", "expected"],
+      "additionalProperties": false
+    },
+    "SubmitRequest": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "$ref": "#/$defs/Request"
+        },
+        "wait_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3000
+        }
+      },
+      "required": ["request", "wait_ms"],
+      "additionalProperties": false
+    },
+    "Target": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "workstream"
+            },
+            "registry_id": {
+              "$ref": "#/$defs/Id"
+            },
+            "owner_id": {
+              "$ref": "#/$defs/Id"
+            },
+            "workstream_id": {
+              "$ref": "#/$defs/Id"
+            }
+          },
+          "required": ["kind", "registry_id", "owner_id", "workstream_id"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "unassigned"
+            },
+            "registry_id": {
+              "$ref": "#/$defs/Id"
+            },
+            "owner_id": {
+              "$ref": "#/$defs/Id"
+            }
+          },
+          "required": ["kind", "registry_id", "owner_id"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Thread": {
+      "type": "object",
+      "properties": {
+        "environment_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "thread_id": {
+          "$ref": "#/$defs/Id"
+        }
+      },
+      "required": ["environment_id", "thread_id"],
+      "additionalProperties": false
+    },
+    "Workstream": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/Name"
+        },
+        "lifecycle": {
+          "enum": ["planned", "active", "paused", "completed", "deferred", "abandoned"]
+        },
+        "progress": {
+          "$ref": "#/$defs/Progress"
+        },
+        "sort_order": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        }
+      },
+      "required": ["name", "lifecycle", "progress", "sort_order"],
+      "additionalProperties": false
+    }
+  }
+}

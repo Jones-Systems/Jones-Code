@@ -6,6 +6,7 @@ import type {
   JonesUpdateDownloadInput,
   JonesUpdateExactInput,
   JonesUpdateInstallInput,
+  JonesUpdateReconcileInput,
 } from "@t3tools/contracts/jones/jonesUpdates";
 import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
@@ -37,6 +38,7 @@ export type JonesAction =
   | { action: "download"; input: JonesUpdateDownloadInput }
   /** Hosts that predate exact selection answer 404; callers gate this on `capability.exactSource`. */
   | { action: "downloadExact"; input: JonesUpdateExactInput }
+  | { action: "reconcile"; input: JonesUpdateReconcileInput }
   | { action: "install"; input: JonesUpdateInstallInput };
 
 const request = Effect.fn("clientRuntime.jonesUpdates.request")(function* (
@@ -73,6 +75,8 @@ const request = Effect.fn("clientRuntime.jonesUpdates.request")(function* (
           return client.downloadExact({ headers, payload: input.input });
         case "install":
           return client.install({ headers, payload: input.input });
+        case "reconcile":
+          return client.reconcile({ headers, payload: input.input });
       }
     },
   });
@@ -243,6 +247,18 @@ export function createJonesUpdateAtoms<R, E>(
   return { value, observation, action };
 }
 
+const SETTLEMENT_REFUSALS = {
+  "not-failed": "This attempt is not a failed update.",
+  "not-found": "The attempt record was not found.",
+  "insufficient-evidence": "Retained evidence cannot prove this attempt made no changes.",
+  "restore-pending": "Recovery is still pending.",
+  "active-changed": "The running version changed. Its outcome needs review.",
+  "trial-evidence-present": "The candidate may have started. Its outcome needs review.",
+  "retired-evidence-mismatch": "The retired attempt does not match the retained evidence.",
+  "settlement-write-failed": "The launcher could not save reconciliation.",
+  "capability-unsupported": "Launcher refresh recommended",
+} satisfies Record<NonNullable<JonesUpdateState["settlementRefusal"]>, string>;
+
 export function jonesUpdatePresentation(state: JonesUpdateState) {
   const busy = ["checking", "downloading", "verifying", "preparing", "installing"].includes(
     state.phase,
@@ -251,6 +267,18 @@ export function jonesUpdatePresentation(state: JonesUpdateState) {
     state.phase === "installing"
       ? "Installing — server restarting. Waiting for the launcher outcome."
       : (state.message ?? state.phase);
+  const settled =
+    state.settlement === "launcher-recorded" || state.settlement === "legacy-reconciled";
+  const settlementMessage =
+    state.settlement === undefined
+      ? undefined
+      : settled
+        ? `Update did not start: ${state.cause ?? "cause unavailable"}. Nothing changed.`
+        : "Previous attempt needs reconciliation";
+  const refusalMessage =
+    state.settlementRefusal === undefined
+      ? undefined
+      : SETTLEMENT_REFUSALS[state.settlementRefusal];
   const outcome = state.outcome;
   const outcomeLabels =
     outcome === undefined
@@ -281,7 +309,18 @@ export function jonesUpdatePresentation(state: JonesUpdateState) {
     outcome === undefined
       ? undefined
       : `${outcome.status === "committed" ? "Installed" : outcome.status === "rolled-back" ? "Rolled back" : "Blocked"}: ${outcomeLabels![0]!.text} → ${outcomeLabels![1]!.text}${outcome.reason ? ` · ${outcome.reason}` : ""}`;
-  return { busy, message, outcomeMessage };
+  return {
+    busy,
+    message,
+    outcomeMessage,
+    settlementMessage,
+    refusalMessage,
+    settled,
+    canReconcile:
+      state.settlement === "none" &&
+      state.updateId !== undefined &&
+      state.launcherSettlement === "supported",
+  };
 }
 
 export function jonesUpdateActionError(
@@ -293,6 +332,13 @@ export function jonesUpdateActionError(
       : "The update request failed. Check the connection and try again.";
   const state = result.value;
   if (state === null) return "This host does not support Jones updates.";
+  const presentation = jonesUpdatePresentation(state);
+  if (presentation.refusalMessage !== undefined) return presentation.refusalMessage;
+  if (
+    presentation.settled &&
+    (state.phase === "error" || state.message === presentation.settlementMessage)
+  )
+    return null;
   return ["error", "blocked", "rolled-back"].includes(state.phase)
     ? (state.message ?? `The update is ${state.phase}.`)
     : null;

@@ -317,6 +317,7 @@ const config: ExpoConfig = {
   },
   plugins: [
     "expo-asset",
+    "react-native-pdf-jsi",
     [
       "expo-font",
       {
@@ -442,6 +443,7 @@ const config: ExpoConfig = {
       },
     ],
     "./plugins/withIosCocoaPodsUuidCache.cjs",
+    ...(process.env.JONES_IOS_E2E === "1" ? ["./plugins/withJonesE2eUITests.cjs"] : []),
     // Only the accelerometer is used (device viewer shake). Compile out the
     // pedometer so iOS needs no motion purpose string.
     ["expo-sensors", { motionPermission: false }],
@@ -453,6 +455,7 @@ const config: ExpoConfig = {
     ...(!isIosPersonalTeamBuild ? ["./plugins/withWidgetLogoAsset.cjs", widgetsPlugin] : []),
     "./plugins/withAndroidCleartextTraffic.cjs",
     "./plugins/withAndroidGradleHeap.cjs",
+    "./plugins/withAndroidFbjniVersion.cjs",
     "./plugins/withAndroidInputBackground.cjs",
     "./plugins/withAndroidModernPopupMenu.cjs",
     "./plugins/withAndroidModernAlertDialog.cjs",

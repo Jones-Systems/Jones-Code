@@ -1,5 +1,3 @@
-"use client";
-
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   AuthPreviewOperateScope,
@@ -17,6 +15,7 @@ import { primaryEnvironmentIdAtom } from "~/state/primaryEnvironment";
 
 import { isElectron } from "~/env";
 import { useClientSettingsHydrated } from "~/hooks/useSettings";
+import { useDesktopHostedPreviewSessions } from "~/components/preview/usePreviewSession";
 import { useActivePreviewSessions } from "~/previewStateStore";
 import { previewEnvironment } from "~/state/preview";
 import { useEnvironmentScope } from "~/state/session";
@@ -33,6 +32,7 @@ import { previewRuntimeTabId } from "./previewRuntimeTabId";
 export function ElectronBrowserHost() {
   const previewByThreadKey = useActivePreviewSessions();
   const primaryEnvironmentId = useAtomValue(primaryEnvironmentIdAtom);
+  useDesktopHostedPreviewSessions(primaryEnvironmentId);
   const assignedSessions = useAssignedCompanionSessions();
   const bindingResults = useAtomValue(
     Atom.make((get) => {
@@ -87,7 +87,11 @@ export function ElectronBrowserHost() {
     },
   );
 
-  const sessions = mergeCompanionSessions(ordinarySessions, assignedSessions);
+  // Electron destroys a moved webview's guest, so keep the combined host inventory in a fixed order.
+  const sessions = mergeCompanionSessions(ordinarySessions, assignedSessions).toSorted(
+    (left, right) =>
+      left.runtimeTabId < right.runtimeTabId ? -1 : left.runtimeTabId > right.runtimeTabId ? 1 : 0,
+  );
 
   useEffect(() => {
     const preview = window.desktopBridge?.preview;
