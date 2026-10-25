@@ -1,3 +1,4 @@
+import { makeReportLanes } from "@t3tools/client-runtime/jones/activity/report-lanes";
 import { EnvironmentRegistry } from "@t3tools/client-runtime/connection";
 import {
   EnvironmentRpcSubscriptionObserver,
@@ -191,24 +192,21 @@ export const layer = Layer.effectDiscard(
     };
     const passiveListenerOptions = { passive: true } as const;
 
+    const lanes = yield* makeReportLanes(
+      (environmentId: EnvironmentId, report: ClientActivityReportInput) =>
+        registry.run(environmentId, request(WS_METHODS.serverReportClientActivity, report)),
+    );
     const report = Effect.gen(function* () {
       const observedAtMs = yield* Clock.currentTimeMillis;
       const entries = yield* SubscriptionRef.get(registry.entries);
       yield* Effect.forEach(
         entries.keys(),
         (environmentId) =>
-          registry
-            .run(
-              environmentId,
-              request(
-                WS_METHODS.serverReportClientActivity,
-                createActivityReport(environmentId, lastInteractionAtMs, observedAtMs),
-              ),
-            )
-            // Not `ignore`: tearing down an environment mid-request interrupts its report,
-            // and an interrupt leaking out here would end the reporting loop for good.
-            .pipe(Effect.ignoreCause),
-        { concurrency: "unbounded", discard: true },
+          lanes.submit(
+            environmentId,
+            createActivityReport(environmentId, lastInteractionAtMs, observedAtMs),
+          ),
+        { discard: true },
       );
     }).pipe(Effect.withSpan("web.backgroundActivity.report"));
 
@@ -239,7 +237,9 @@ export const layer = Layer.effectDiscard(
     );
 
     yield* SubscriptionRef.changes(registry.entries).pipe(
-      Stream.runForEach(() => Effect.sync(requestReport)),
+      Stream.runForEach((entries) =>
+        lanes.retain(entries.keys()).pipe(Effect.andThen(Effect.sync(requestReport))),
+      ),
       Effect.forkScoped,
     );
     yield* Stream.fromQueue(reportRequests).pipe(

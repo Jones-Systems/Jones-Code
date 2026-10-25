@@ -4,11 +4,6 @@
   "baseline": "05b697f6a2012497ae790425e197fbd1fcef7de7",
   "features": [
     {
-      "id": "queue-removal",
-      "tests": ["apps/web/src/jones/queue/QueuedRunRemoval.browser.test.tsx"],
-      "scope": "Web and desktop queue header Clear All cancels the saved click snapshot through existing per-run commands. Independent removals reserve only their own IDs; failures retain authoritative rows and report unconfirmed removals. Send, steer, edit, reorder and imported-history review remain fenced during cancellation and until accepted cancellations leave the projection. Active queued drafts and unsaved optimistic rows disable Clear All. No server, wire, provider, mobile, MCP or scheduled-task behavior changes. QueuedRunsControl retains narrow presentation and safety hooks into Jones-owned removal logic."
-    },
-    {
       "id": "project-group-title",
       "tests": ["packages/client-runtime/src/jones/projectGroupTitle.test.ts"],
       "scope": "Shared saved project names take precedence over repository labels when every checkout agrees, including names equal to the repository short name. Mixed titles retain the repository fallback; group identity, environment membership and persistence stay unchanged. One shared-client hook covers web, desktop and mobile."
@@ -898,9 +893,15 @@
         "packages/client-runtime/src/jones/commandPermissionCompatibility.test.ts",
         "apps/server/src/ws.test.ts",
         "apps/server/src/relay/AgentAwarenessRelay.test.ts",
-        "packages/client-runtime/src/jones/connection/routeAttemptBudget.test.ts"
+        "packages/client-runtime/src/jones/connection/routeAttemptBudget.test.ts",
+        "packages/client-runtime/src/jones/activity/reportLanes.test.ts",
+        "apps/web/src/lib/backgroundActivityReporter.test.ts",
+        "apps/mobile/src/connection/background-activity-reporter.test.ts",
+        "apps/mobile/src/connection/background-activity.test.ts",
+        "apps/server/src/environment/DirectEndpoints.test.ts",
+        "apps/server/src/environment/RemoteOpenTargets.test.ts"
       ],
-      "scope": "Bounded serial delivery per ACK-capable RPC stream keeps unrelated unary replies and health traffic responsive while preserving ordered chunks, acknowledgments, cancellation and terminal flow-control windows. Non-ACK transports preserve synchronous backpressure. Shared dependency patch and existing virtual WebSocket integration harness are the lifecycle owners; no wire or installed-runtime change. Preferred-route preparation and connection share a 15-second allowance, followed by 75 seconds for readiness, when a fallback remains. The final actual route retains the existing aggregate supervisor bound; timeout cleanup completes before fallback."
+      "scope": "Bounded serial delivery per ACK-capable RPC stream keeps unrelated unary replies and health traffic responsive while preserving ordered chunks, acknowledgments, cancellation and terminal flow-control windows. Non-ACK transports preserve synchronous backpressure. Shared dependency patch and existing virtual WebSocket integration harness are the lifecycle owners; no wire or installed-runtime change. Preferred-route preparation and connection share a 15-second allowance, followed by 75 seconds for readiness, when a fallback remains. The final actual route retains the existing aggregate supervisor bound; timeout cleanup completes before fallback. Activity reporting has independent environment lanes with one in-flight and one latest pending report, a ten-second deadline, and removal/shutdown cancellation. Original observation timestamps, reporter triggers, debounce, cadence and lease duration are preserved; report failure does not retry or reconnect. Server configuration resolves its three fixed independent editor, remote-open and direct-endpoint discoveries concurrently. Each existing five-second timeout/fallback and response field is preserved; scoped integration cases exercise parallel entry and cancellation."
     },
     {
       "id": "queue-hold-isolation",
@@ -1557,9 +1558,11 @@
         "apps/server/src/jones/git/backgroundGitAdmission.test.ts",
         "apps/server/src/jones/git/prLookupGitState.test.ts",
         "apps/server/src/git/GitManager.test.ts",
-        "apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts"
+        "apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts",
+        "apps/server/src/jones/git/gitTiming.test.ts",
+        "apps/server/src/orchestration-v2/ThreadSettlementService.test.ts"
       ],
-      "scope": "PR discovery Git-state memoization is Jones-owned, bounded per cwd and key, coalesced and cancellation safe. Automatic discovery and its mandatory fresh confirmation mark their nested GitVcsDriverCore work for a process-wide four-permit lane acquired before the existing eight shared permits. Marked permit-eligible commands cannot consume more than four of those eight permits; this does not reserve idle capacity or bound wait time, including exact-key cache joins. Existing null or over-30-second command bypasses, VcsProcess, direct identity probes and other callers retain their behavior. GitManager retains optional config-reader plumbing and fresh identity checks because extracting its head-resolution machinery would duplicate upstream behavior. Discovery width, provider batching and write guards are unchanged. Integration tests stay with their existing Git and orchestration harnesses. Installed runtime is unchanged."
+      "scope": "PR discovery Git-state memoization is Jones-owned, bounded per cwd and key, coalesced and cancellation safe. Automatic discovery and its mandatory fresh confirmation mark their nested GitVcsDriverCore work for a process-wide four-permit lane acquired before the existing eight shared permits. Marked permit-eligible commands cannot consume more than four of those eight permits; this does not reserve idle capacity or bound wait time, including exact-key cache joins. Existing null or over-30-second command bypasses, VcsProcess, direct identity probes and other callers retain their behavior. GitManager retains optional config-reader plumbing and fresh identity checks because extracting its head-resolution machinery would duplicate upstream behavior. Discovery width, provider batching and write guards are unchanged. Integration tests stay with their existing Git and orchestration harnesses. Installed runtime is unchanged. Both automatic settlement lookup paths share this background classification. Existing spans distinguish background admission, shared permits, subprocess execution and worktree spawn/exit."
     },
     {
       "id": "workstreams-multi-environment",
@@ -2020,9 +2023,10 @@
         "apps/server/src/orchestration-v2/FoundationPersistence.test.ts",
         "apps/server/src/jones/orchestration/actionWorkerAdmission.test.ts",
         "apps/server/src/jones/orchestration/FoundationPersistence.jones.test.ts",
-        "apps/server/src/serverRuntimeStartup.autoPull.test.ts"
+        "apps/server/src/serverRuntimeStartup.autoPull.test.ts",
+        "apps/server/src/jones/orchestration/effectClaimTiming.test.ts"
       ],
-      "scope": "Reserve one existing worker for actions at concurrency at least two while preserving all action capacity and serial mixed operation. Shared claim/deadline predicates and scoped wake relay retain leases, recovery and ordering. Jones policy/tests use narrow worker hooks; existing outbox/worker harness edits and typed mock adaptations retain private core machinery."
+      "scope": "Reserve one existing worker for actions at concurrency at least two while preserving all action capacity and serial mixed operation. Shared claim/deadline predicates and scoped wake relay retain leases, recovery and ordering. Jones policy/tests use narrow worker hooks; existing outbox/worker harness edits and typed mock adaptations retain private core machinery. Existing execution spans also report effect availability, claim time and queue wait before the durable cancellation read."
     },
     {
       "id": "workspace-refresh-efficiency",
@@ -2071,6 +2075,34 @@
       "id": "pele-lifecycle-acceptance",
       "tests": ["apps/web/src/jones/markdown/MermaidDiagram.browser.test.tsx"],
       "scope": "Focused browser acceptance of existing Pele integration: commit-only mounting, balanced cleanup through source changes, navigation and source toggle, unchanged rerenders, chunk-load retry, invalid-source recovery, and real SVG/MathML sanitization. The real components and DOMPurify run against a controlled Pele engine; navigation uses content replacement and native core-import rejection, parsing/layout, device behavior and live performance remain unqualified. No production behavior is changed."
+    },
+    {
+      "id": "thread-metadata-reads-efficiency",
+      "tests": [
+        "apps/server/src/jones/orchestration/threadMetadataReads.test.ts",
+        "apps/server/src/jones/orchestration/ThreadLaunchService.jones.test.ts",
+        "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+        "apps/server/src/orchestration-v2/LegacyBootstrapWireTransport.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+        "apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts",
+        "apps/server/src/project/ProjectService.test.ts",
+        "apps/server/src/project/ProjectService.deletion.test.ts",
+        "apps/server/src/serverRuntimeStartup.test.ts",
+        "apps/server/src/serverRuntimeStartup.autoPull.test.ts",
+        "apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts",
+        "apps/server/src/jones/mcp/delegatedTaskWorkspace/DelegatedTaskWorkspace.test.ts"
+      ],
+      "scope": "Narrow threads-only ID, metadata, count and watermark reads replace full-shell work for rename discovery, startup selection/counting and project deletion. Standalone rename/count reads select the reader; bootstrap/deletion retain writer read-your-writes. Rows and event watermark share a transaction, decode follows commit, deleted rows are excluded, and active-before-archived order is preserved. Existing integration harness exceptions retain production locking, cascade ordering and startup behavior; no database schema or installed-runtime change."
+    },
+    {
+      "id": "queue-removal",
+      "tests": ["apps/web/src/jones/queue/QueuedRunRemoval.browser.test.tsx"],
+      "scope": "Web and desktop queue header Clear All cancels the saved click snapshot through existing per-run commands. Independent removals reserve only their own IDs; failures retain authoritative rows and report unconfirmed removals. Send, steer, edit, reorder and imported-history review remain fenced during cancellation and until accepted cancellations leave the projection. Active queued drafts and unsaved optimistic rows disable Clear All. No server, wire, provider, mobile, MCP or scheduled-task behavior changes. QueuedRunsControl retains narrow presentation and safety hooks into Jones-owned removal logic."
+    },
+    {
+      "id": "workspace-content-search-slicing",
+      "tests": ["apps/server/src/jones/workspace/contentSearchPages.test.ts"],
+      "scope": "Enforced small native grep pages yield a cancellable Node macrotask between continuations, preserving zero-hit discovery, the original deadline after native hits, cursor/limit/truncation/fallback semantics and finder ownership. The Jones integration test imports the upstream service to prove its real mapping and typed error hook."
     }
   ]
 }

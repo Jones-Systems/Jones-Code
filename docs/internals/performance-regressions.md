@@ -72,6 +72,20 @@ the writer. The regression tests in
 [`foregroundReads.test.ts`](../../apps/server/src/jones/requestEconomy/foregroundReads.test.ts)
 hold the writer busy to prove that native-thread reads can still finish.
 
+Branch rename discovery and startup telemetry use thread metadata queries instead
+of materializing shells. Only standalone rename discovery and telemetry counts
+choose the reader; bootstrap selection and project deletion retain writer
+routing, including read-your-writes inside an enclosing transaction. Metadata
+selection excludes deleted rows and preserves active-before-archived order.
+It still reads thread metadata; it does not establish constant-cost SQL or a
+measured latency improvement. JSON/schema decoding remains on the serving loop.
+
+Keep metadata rows and their watermark in one transaction, and decode after
+leaving that transaction. File-backed WAL coverage in
+[`threadMetadataReads.test.ts`](../../apps/server/src/jones/orchestration/threadMetadataReads.test.ts)
+holds the writer, compares an unmarked control, and commits between row and
+watermark statements to check routing and snapshot coherence.
+
 Keep snapshot rows and their sequence in one read transaction. The live tail
 subscribes before replaying from that sequence, so changing the connection does
 not leave a gap between the snapshot and subsequent events. The single reader

@@ -142,6 +142,51 @@ describe("installed Jones build time", () => {
 });
 
 describe("host-owned Jones updater", () => {
+  it.each([undefined, { pendingUpstream: [], pendingJones: [122, 123] }])(
+    "shows only the offered candidate's migration plan: %j",
+    async (migrationPlan) => {
+      const initialState = fixture().updater.snapshot();
+      const previousPlan = { pendingUpstream: [64, 65], pendingJones: [121] };
+      const f = fixture({
+        initialState: { ...initialState, migrationPlan: previousPlan },
+        startupOutcome: () => ({
+          id: "previous-update",
+          status: "committed",
+          fromVersion: "previous-version",
+          targetVersion: initialState.currentVersion!,
+        }),
+        prepare: async (_candidate, options) => {
+          expect(f.updater.snapshot()).not.toHaveProperty("migrationPlan");
+          options.onVerifying();
+          expect(f.updater.snapshot()).not.toHaveProperty("migrationPlan");
+          return {
+            stagedHandle: "fixed-handle",
+            version: candidate.version,
+            payloadSha256: "e".repeat(64),
+            ...(migrationPlan === undefined ? {} : { migrationPlan }),
+          };
+        },
+      });
+      const offered = await f.updater.check();
+      expect(offered).not.toHaveProperty("migrationPlan");
+      expect(offered).toMatchObject({
+        updateId: "previous-update",
+        outcome: { status: "committed", targetVersion: initialState.currentVersion },
+      });
+      const staged = await f.updater.download({
+        artifactId: candidate.artifactId,
+        sourceSha: candidate.source,
+      });
+      expect(staged.phase).toBe("staged");
+      expect(staged.migrationPlan).toEqual(migrationPlan);
+      if (migrationPlan === undefined) expect(staged).not.toHaveProperty("migrationPlan");
+      f.newer();
+      const checked = await f.updater.check();
+      expect(checked.provenance?.sourceSha).toBe(candidate.source);
+      expect(checked.migrationPlan).toEqual(migrationPlan);
+    },
+  );
+
   it("carries candidate time through download and keeps the staged time across later checks", async () => {
     const f = fixture();
     const buildStartedAt = "2026-10-20T21:13:43Z";

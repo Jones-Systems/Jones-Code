@@ -1,3 +1,5 @@
+import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Path from "effect/Path";
 import * as NativeBootstrap from "../jones/nativeCreation/NativeBootstrapDispatch.ts";
 import { EnvironmentAuthenticatedPrincipal } from "@t3tools/contracts";
@@ -310,6 +312,7 @@ const make = Effect.gen(function* () {
   const eventSink = yield* EventSink.EventSinkV2;
   const ids = yield* IdAllocator.IdAllocatorV2;
   const threads = yield* ThreadManagement.ThreadManagementService;
+  const metadata = yield* ThreadMetadataReads.ThreadMetadataReads;
   const outbox = yield* EffectOutbox.EffectOutboxV2;
   const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
   const preparationScope = yield* Scope.make("sequential");
@@ -1524,21 +1527,18 @@ const make = Effect.gen(function* () {
               // Re-read after each pass for children of subagents updated in that pass.
               const visited = new Set([threadId]);
               while (true) {
-                const snapshot = yield* threads.getShellSnapshot();
-                const sharing = [...snapshot.threads, ...snapshot.archivedThreads].filter(
-                  (thread) =>
-                    !visited.has(thread.id) &&
-                    thread.worktreePath === worktreeCwd &&
-                    thread.branch === oldBranch,
-                );
+                const matchingIds = yield* metadata
+                  .listIds({ worktree: { path: worktreeCwd, branch: oldBranch } })
+                  .pipe(NodeSqliteClient.readOnly);
+                const sharing = matchingIds.filter((id) => !visited.has(id));
                 if (sharing.length === 0) break;
-                for (const thread of sharing) {
-                  visited.add(thread.id);
+                for (const id of sharing) {
+                  visited.add(id);
                   yield* threads
                     .dispatch({
                       type: "thread.metadata.update",
-                      commandId: CommandId.make(`${input.commandId}:branch-rename:${thread.id}`),
-                      threadId: thread.id,
+                      commandId: CommandId.make(`${input.commandId}:branch-rename:${id}`),
+                      threadId: id,
                       branch: renamed.branch,
                       expectedBranch: oldBranch,
                       expectedWorktreePath: worktreeCwd,
@@ -1546,7 +1546,7 @@ const make = Effect.gen(function* () {
                     .pipe(
                       Effect.catchCause((cause) =>
                         Effect.logWarning("Shared thread worktree branch update failed", {
-                          threadId: thread.id,
+                          threadId: id,
                           cause,
                         }),
                       ),
