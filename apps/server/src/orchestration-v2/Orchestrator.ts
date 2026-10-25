@@ -11,6 +11,7 @@ import {
 } from "../jones/orchestration/QueuedSteerBatch.ts";
 import { planQueuedSteerBatch } from "@t3tools/shared/jones/queuedSteerBatch";
 import * as CheckoutIntent from "../jones/ordinaryCheckout/CheckoutIntent.ts";
+import { commitCommand as commitWorkspaceLifecycleCommand } from "../jones/workspaceLifecycle/NativeBoundary.ts";
 import { makeJonesTablePresence } from "../jones/persistence/JonesTablePresence.ts";
 import {
   checkSettlementRestoreReplay,
@@ -14181,45 +14182,49 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       return { sequence: resultSequence, storedEvents: [] } satisfies OrchestratorV2DispatchResult;
     }
     const acceptedAt = plan.events.at(-1)?.occurredAt ?? (yield* DateTime.now);
-    const committed = yield* eventSink
-      .commitCommand({
-        commandId: command.commandId,
-        threadId: commandThreadId(command),
-        commandType: command.type,
-        acceptedAt,
-        ordinaryCheckoutCommand: command,
-        ...(command.type === "thread.settlement.restore"
-          ? { settlementRestore: { settleCommandId: command.settleCommandId } }
-          : {}),
-        events: plan.events,
-        effects:
-          nativeAcceptance === undefined
-            ? plan.effects
-            : plan.effects.map((effect) => ({
-                ...effect,
-                nativeCreationExecutionReference: {
-                  version: 2 as const,
-                  claimId: nativeAcceptance.claimId,
-                  stageCommandId: nativeAcceptance.command.commandId,
-                  effectId: effect.id,
-                  stage: "native_command" as const,
-                },
-              })),
-        ...(nativeAcceptance === undefined ? {} : { nativeCreation: nativeAcceptance }),
-        ...(plan.cancelUnsettledEffects === undefined
-          ? {}
-          : { cancelUnsettledEffects: plan.cancelUnsettledEffects }),
-      })
-      .pipe(
-        Effect.mapError(
-          (cause) =>
-            new OrchestratorDispatchError({
-              commandId: command.commandId,
-              commandType: command.type,
-              cause,
-            }),
+    const committed = yield* commitWorkspaceLifecycleCommand(
+      command,
+      plan.events,
+      eventSink
+        .commitCommand({
+          commandId: command.commandId,
+          threadId: commandThreadId(command),
+          commandType: command.type,
+          acceptedAt,
+          ordinaryCheckoutCommand: command,
+          ...(command.type === "thread.settlement.restore"
+            ? { settlementRestore: { settleCommandId: command.settleCommandId } }
+            : {}),
+          events: plan.events,
+          effects:
+            nativeAcceptance === undefined
+              ? plan.effects
+              : plan.effects.map((effect) => ({
+                  ...effect,
+                  nativeCreationExecutionReference: {
+                    version: 2 as const,
+                    claimId: nativeAcceptance.claimId,
+                    stageCommandId: nativeAcceptance.command.commandId,
+                    effectId: effect.id,
+                    stage: "native_command" as const,
+                  },
+                })),
+          ...(nativeAcceptance === undefined ? {} : { nativeCreation: nativeAcceptance }),
+          ...(plan.cancelUnsettledEffects === undefined
+            ? {}
+            : { cancelUnsettledEffects: plan.cancelUnsettledEffects }),
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new OrchestratorDispatchError({
+                commandId: command.commandId,
+                commandType: command.type,
+                cause,
+              }),
+          ),
         ),
-      );
+    ).pipe(mapDispatchError(command));
 
     if (committed.receipt.status === "rejected") {
       return yield* new OrchestratorCommandPreviouslyRejectedError({
