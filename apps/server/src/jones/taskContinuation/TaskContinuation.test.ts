@@ -186,7 +186,7 @@ const scenario = <E>(
           },
           hooks,
           dispatchCount: () => dispatches,
-        }).pipe(Effect.provide(service), Effect.provide(Receipts.layer));
+        }).pipe(Effect.provide(Layer.mergeAll(service, Receipts.layer)));
       }).pipe(Effect.provide(storage));
     }),
   ).pipe(Effect.provide(NodeServices.layer));
