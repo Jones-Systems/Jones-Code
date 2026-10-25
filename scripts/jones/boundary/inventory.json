@@ -1884,6 +1884,7 @@
     "apps/server/src/jones/orchestration/threadReferenceExcerpt.test.ts": "jones-owned",
     "apps/server/src/jones/orchestration/threadReferenceCoherent.test.ts": "jones-owned",
     "scripts/jones/boundary/fragments/coherent-reference-reads.json": "jones-owned",
+    "apps/server/src/jones/goals/preserveGoalConversation.ts": "jones-owned",
     "apps/web/src/jones/markdown/MermaidDiagram.browser.test.tsx": "jones-owned"
   },
   "jonesOwnedPaths": [
