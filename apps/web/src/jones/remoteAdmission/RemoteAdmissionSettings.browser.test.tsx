@@ -134,7 +134,7 @@ function setup(name: string) {
     policy: { enabled: true, revision: "synthetic-policy", modelSelection: selection },
   };
   request.mockReset().mockResolvedValue(snapshot);
-  let now = Date.now();
+  let now = 1_800_000_000_000;
   const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
   let tick!: () => void;
   const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
