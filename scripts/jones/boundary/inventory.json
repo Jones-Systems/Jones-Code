@@ -1802,6 +1802,8 @@
     "apps/server/src/jones/mcp/workstreams/registration.test.ts": "jones-owned",
     "apps/server/src/pullRequest/PullRequestReadCache.ts": "accepted-shared",
     "apps/server/src/pullRequest/PullRequestReadCache.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/pullRequestWatch.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/pullRequestWatch.test.ts": "jones-tests-in-upstream",
     "apps/server/src/jones/pullRequest/pullRequestScopeLocks.ts": "jones-owned",
     "apps/server/src/jones/pullRequest/pullRequestScopeLocks.test.ts": "jones-owned",
     "scripts/jones/boundary/fragments/pr-cache-scope-locks.json": "jones-owned",
