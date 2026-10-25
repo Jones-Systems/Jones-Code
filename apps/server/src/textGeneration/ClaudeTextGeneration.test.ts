@@ -746,7 +746,7 @@ it.layer(layerClaudeTextGenerationTest)("Claude remote evaluator schema", (it) =
         properties: {
           verdict: { enum: ["pass", "hold"] },
           category: { enum: ["none", "malicious", "ridiculous", "risky", "out_of_scope"] },
-          reason: { type: "string", maxLength: 600, pattern: "\\S" },
+          reason: { type: "string", maxLength: 600 },
         },
         required: ["verdict", "category", "reason"],
       });

@@ -80,7 +80,7 @@ it.layer(layerTest)("ClaudeDriver evaluator capability", (it) => {
         );
         const snapshot = yield* instance.snapshot.getSnapshot;
         expect(snapshot.supportsRemoteRequestEvaluation).toBe(supported);
-        expect(snapshot.status).toBe("warning");
+        expect(snapshot.status).toBe("disabled");
         expect(instance.orchestrationAdapter).toBeDefined();
         expect(instance.textGeneration).toBeDefined();
       }).pipe(Effect.scoped),

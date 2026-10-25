@@ -12,6 +12,7 @@ import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import { admissionSnapshot } from "./testFixtures";
 import { RemoteAdmissionSettings } from "./RemoteAdmissionSettings";
 import { TooltipProvider } from "../../components/ui/tooltip";
+import "../../index.css";
 
 const request = vi.hoisted(() => vi.fn());
 vi.mock("./runtime", () => ({ remoteAdmissionRequest: request }));
