@@ -3240,13 +3240,20 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             let ancestor: ActiveCodexTurnContext | undefined = subagent.parentContext;
             while (ancestor !== undefined) {
               if (terminalizedNativeTurns.has(ancestor.nativeTurnId)) {
+                const producer = (yield* CodexProducerContext) ?? currentProducer;
                 const nativeThreadId = yield* getNativeThreadId(subagent.providerThread);
-                const interrupted = yield* client
-                  .request("turn/interrupt", {
-                    threadId: nativeThreadId,
-                    turnId: turn.nativeTurnId,
-                  })
-                  .pipe(
+                const params = { threadId: nativeThreadId, turnId: turn.nativeTurnId };
+                // The notification reader must return to drain this RPC's reply.
+                // Keep the interrupt on its captured producer, including retirement.
+                yield* Effect.gen(function* () {
+                  const interrupted = yield* requestAdmission("turn/interrupt", params).pipe(
+                    Effect.andThen(
+                      Effect.suspend(() =>
+                        producer.active && producer === currentProducer
+                          ? producer.client.request("turn/interrupt", params)
+                          : Effect.void,
+                      ),
+                    ),
                     Effect.as(true),
                     Effect.catch((cause) =>
                       Effect.logWarning("orchestration-v2.codex-late-subagent-interrupt-failed", {
@@ -3257,15 +3264,16 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     ),
                     Effect.timeoutOption("10 seconds"),
                   );
-                if (Option.isNone(interrupted)) {
-                  yield* Effect.logWarning(
-                    "orchestration-v2.codex-late-subagent-interrupt-timeout",
-                    {
-                      nativeThreadId,
-                      nativeTurnId: turn.nativeTurnId,
-                    },
-                  );
-                }
+                  if (Option.isNone(interrupted)) {
+                    yield* Effect.logWarning(
+                      "orchestration-v2.codex-late-subagent-interrupt-timeout",
+                      {
+                        nativeThreadId,
+                        nativeTurnId: turn.nativeTurnId,
+                      },
+                    );
+                  }
+                }).pipe(Effect.forkIn(producer.scope, { startImmediately: true }));
                 return;
               }
               ancestor = ancestor.subagent?.parentContext;

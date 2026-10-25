@@ -148,8 +148,9 @@ terminals that wait at an idle prompt, and keeps their output. A terminal that
 runs a command, such as a dev server, stays open.
 
 Top-level threads and user-created forks settled by agents or automatically
-appear in a persistent notification. Subagent threads stay in their parent's
-lineage and do not appear in settlement notifications.
+appear in a persistent notification. New settlement notifications exclude subagents,
+including tasks delegated from linked machines. Some older saved child notices
+may still appear.
 Threads you settle yourself through the app's buttons, menus, shortcuts or bulk
 actions stay quiet. This distinction requires an updated server; older servers
 continue notifying for all settlements. Expand a notification with multiple
