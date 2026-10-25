@@ -898,9 +898,13 @@
         "packages/client-runtime/src/jones/commandPermissionCompatibility.test.ts",
         "apps/server/src/ws.test.ts",
         "apps/server/src/relay/AgentAwarenessRelay.test.ts",
-        "packages/client-runtime/src/jones/connection/routeAttemptBudget.test.ts"
+        "packages/client-runtime/src/jones/connection/routeAttemptBudget.test.ts",
+        "packages/client-runtime/src/jones/activity/reportLanes.test.ts",
+        "apps/web/src/lib/backgroundActivityReporter.test.ts",
+        "apps/mobile/src/connection/background-activity-reporter.test.ts",
+        "apps/mobile/src/connection/background-activity.test.ts"
       ],
-      "scope": "Bounded serial delivery per ACK-capable RPC stream keeps unrelated unary replies and health traffic responsive while preserving ordered chunks, acknowledgments, cancellation and terminal flow-control windows. Non-ACK transports preserve synchronous backpressure. Shared dependency patch and existing virtual WebSocket integration harness are the lifecycle owners; no wire or installed-runtime change. Preferred-route preparation and connection share a 15-second allowance, followed by 75 seconds for readiness, when a fallback remains. The final actual route retains the existing aggregate supervisor bound; timeout cleanup completes before fallback."
+      "scope": "Bounded serial delivery per ACK-capable RPC stream keeps unrelated unary replies and health traffic responsive while preserving ordered chunks, acknowledgments, cancellation and terminal flow-control windows. Non-ACK transports preserve synchronous backpressure. Shared dependency patch and existing virtual WebSocket integration harness are the lifecycle owners; no wire or installed-runtime change. Preferred-route preparation and connection share a 15-second allowance, followed by 75 seconds for readiness, when a fallback remains. The final actual route retains the existing aggregate supervisor bound; timeout cleanup completes before fallback. Activity reporting has independent environment lanes with one in-flight and one latest pending report, a ten-second deadline, and removal/shutdown cancellation. Original observation timestamps, reporter triggers, debounce, cadence and lease duration are preserved; report failure does not retry or reconnect."
     },
     {
       "id": "queue-hold-isolation",

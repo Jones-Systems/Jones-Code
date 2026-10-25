@@ -1950,7 +1950,13 @@
     "scripts/jones/boundary/fragments/queue-removal.json": "jones-owned",
     "packages/client-runtime/src/jones/connection/routeAttemptBudget.ts": "jones-owned",
     "packages/client-runtime/src/jones/connection/routeAttemptBudget.test.ts": "jones-owned",
-    "packages/client-runtime/src/connection/driver.ts": "hook"
+    "packages/client-runtime/src/connection/driver.ts": "hook",
+    "packages/client-runtime/src/jones/activity/reportLanes.ts": "jones-owned",
+    "packages/client-runtime/src/jones/activity/reportLanes.test.ts": "jones-owned",
+    "apps/web/src/lib/backgroundActivityReporter.ts": "hook",
+    "apps/web/src/lib/backgroundActivityReporter.test.ts": "jones-tests-in-upstream",
+    "apps/mobile/src/connection/background-activity.ts": "hook",
+    "apps/mobile/src/connection/background-activity-reporter.test.ts": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
