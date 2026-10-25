@@ -103,6 +103,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
   it.effect("disconnect refreshes a restored managed account while its auth flow is idle", () =>
     Effect.gen(function* () {
       const instanceId = ProviderInstanceId.make("restored-managed-account");
+      let evaluationRequests = 0;
       const credentials = new Map<string, Uint8Array>();
       const secrets = ServerSecretStore.ServerSecretStore.of({
         get: (key) => Effect.sync(() => Option.fromUndefinedOr(credentials.get(key))),
@@ -214,6 +215,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
         );
         yield* Deferred.await(startupChecksInterrupted);
         const restored = yield* instance.snapshot.refresh;
+        expect(restored.supportsRemoteRequestEvaluation).toBe(true);
         expect(restored.auth.email).toBe("account@example.test");
         expect(restored.runtimePaths?.homePath).toBe(sharedHome);
         expect(restored.runtimePaths?.shadowHomePath).toContain(
@@ -226,6 +228,18 @@ it.layer(layerTest)("CodexDriver", (it) => {
         // The account is still signed in, so a runtime that cannot start is a
         // failed scan too, not the machine snapshot's inventory.
         failAcquire = true;
+        expect(
+          yield* instance.textGeneration.evaluateRemoteRequest({
+            cwd: "/missing/untrusted-project",
+            modelSelection: {
+              instanceId,
+              model: "gpt-6.1-sol",
+              options: [{ id: "reasoningEffort", value: "high" }],
+            },
+            message: "Fix the parser",
+          }),
+        ).toEqual({ verdict: "pass", category: "none", reason: "Routine work" });
+        expect(evaluationRequests).toBe(1);
         const runtimeScan = yield* instance.snapshotForCwd!(serverConfig.stateDir).pipe(
           Effect.exit,
         );
@@ -262,6 +276,14 @@ it.layer(layerTest)("CodexDriver", (it) => {
         expect(after.installed).toBe(true);
         expect(after.models).toEqual([]);
         expect(Option.isNone(yield* store.get)).toBe(true);
+        yield* instance.textGeneration
+          .evaluateRemoteRequest({
+            cwd: "/missing/untrusted-project",
+            modelSelection: { instanceId, model: "gpt-6.1-sol" },
+            message: "Fix the parser",
+          })
+          .pipe(Effect.flip);
+        expect(evaluationRequests).toBe(1);
         // Signed out, there is no runtime to scan with, so the machine
         // snapshot's empty inventory stands instead of a failed scan.
         const signedOutScan = yield* instance.snapshotForCwd!(serverConfig.stateDir);
@@ -276,7 +298,35 @@ it.layer(layerTest)("CodexDriver", (it) => {
                 "https://auth.openai.com/.well-known/openid-configuration",
                 "https://auth.openai.com/revoke",
                 "https://api.openai.com/v1/models",
+                "https://api.openai.com/v1/responses",
               ]).toContain(request.url);
+              if (request.url.endsWith("/responses")) {
+                evaluationRequests++;
+                expect(request.headers.authorization).toBe("Bearer dummy-owned-access");
+                return HttpClientResponse.fromWeb(
+                  request,
+                  Response.json({
+                    status: "completed",
+                    output: [
+                      {
+                        type: "message",
+                        role: "assistant",
+                        status: "completed",
+                        content: [
+                          {
+                            type: "output_text",
+                            text: JSON.stringify({
+                              verdict: "pass",
+                              category: "none",
+                              reason: "Routine work",
+                            }),
+                          },
+                        ],
+                      },
+                    ],
+                  }),
+                );
+              }
               if (request.url.endsWith("/models"))
                 return HttpClientResponse.fromWeb(request, Response.json({ models: [] }));
               return HttpClientResponse.fromWeb(
