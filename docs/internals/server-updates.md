@@ -248,9 +248,17 @@ that note waits for the next user message.
 Recovery retires effects tied to the lost process and records continuation intent
 in the durable outbox. That intent survives another restart before provider startup.
 Continuation effects wait for activation; a slow provider must not delay the server's
-readiness or the launcher's commit boundary. Graceful shutdown captures intent before
-closing providers, then reconciles after ingestion has stopped so a late completion
-cannot be overwritten by a stale cancellation.
+readiness or the launcher's commit boundary. Before quitting, the desktop asks its
+ready local backends to write the same passive, opted-in continuation markers as
+the native installer. Preparing before signalling the backend process group avoids
+racing provider exit; the markers remain passive until process-loss recovery.
+Graceful shutdown also captures intent before closing providers, then reconciles
+after ingestion has stopped so a late completion cannot be overwritten by a stale
+cancellation. Older or unavailable backends fall back to that shutdown and startup
+recovery. Desktop Quit and updater handoff allow the same server shutdown grace
+and await the captured backend exit, including after forced escalation; expiration
+of the grace alone does not establish closure. Ordinary restart recovery keeps
+queued runs held.
 
 Shutdown releases captured provider sessions concurrently, retaining the existing
 30-second bound for each session scope. The launcher gives the child 75 seconds

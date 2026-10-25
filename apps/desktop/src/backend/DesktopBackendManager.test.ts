@@ -515,7 +515,7 @@ describe("DesktopBackendManager", () => {
         assert.equal(spawnedCommand.options.additionalFds?.fd5?.type, "output");
         assert.equal(
           Duration.toMillis(Duration.fromInputUnsafe(spawnedCommand.options.forceKillAfter)),
-          5_000,
+          75_000,
         );
 
         assert.deepEqual(yield* decodeBootstrap(bootstrapJson), configWithObservability);
@@ -1128,12 +1128,13 @@ describe("DesktopBackendManager", () => {
     ),
   );
 
-  it.effect("stopAllPoolInstances bounds the quit finalizer when backends hang", () =>
+  it.effect("stopAllPoolInstances waits for every backend to finish teardown", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const teardownStarted = yield* Queue.unbounded<string>();
         const teardownFinished = yield* Queue.unbounded<string>();
-        const allowTeardown = yield* Deferred.make<void>();
+        const allowFirstTeardown = yield* Deferred.make<void>();
+        const allowSecondTeardown = yield* Deferred.make<void>();
 
         const makeInstance = (name: string) =>
           makeTestInstance({
@@ -1142,16 +1143,22 @@ describe("DesktopBackendManager", () => {
               ChildProcessSpawner.ChildProcessSpawner,
               ChildProcessSpawner.make(() =>
                 Effect.gen(function* () {
+                  const exited = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
                   const scope = yield* Scope.Scope;
                   yield* Scope.addFinalizer(
                     scope,
                     Queue.offer(teardownStarted, name).pipe(
-                      Effect.andThen(Deferred.await(allowTeardown)),
+                      Effect.andThen(
+                        Deferred.await(
+                          name === "instance1" ? allowFirstTeardown : allowSecondTeardown,
+                        ),
+                      ),
                       Effect.andThen(Queue.offer(teardownFinished, name)),
+                      Effect.andThen(Deferred.succeed(exited, ChildProcessSpawner.ExitCode(0))),
                       Effect.asVoid,
                     ),
                   );
-                  return makeProcess({ exitCode: Effect.never });
+                  return makeProcess({ exitCode: Deferred.await(exited) });
                 }),
               ),
             ),
@@ -1179,13 +1186,21 @@ describe("DesktopBackendManager", () => {
         const started = yield* Queue.takeN(teardownStarted, 2);
         assert.deepEqual(started.toSorted(), ["instance1", "instance2"]);
 
-        yield* TestClock.adjust(Duration.seconds(5));
-        yield* Fiber.join(quitFiber);
+        yield* TestClock.adjust(Duration.seconds(6));
+        assert.isUndefined(quitFiber.pollUnsafe());
         assert.equal(yield* Queue.size(teardownFinished), 0);
 
-        yield* Deferred.succeed(allowTeardown, undefined);
-        const finished = yield* Queue.takeN(teardownFinished, 2);
-        assert.deepEqual(finished.toSorted(), ["instance1", "instance2"]);
+        yield* Deferred.succeed(allowFirstTeardown, undefined);
+        assert.equal(yield* Queue.take(teardownFinished), "instance1");
+        assert.isUndefined(quitFiber.pollUnsafe());
+        yield* Deferred.succeed(allowSecondTeardown, undefined);
+        yield* Fiber.join(quitFiber);
+        assert.equal(yield* Queue.take(teardownFinished), "instance2");
+        for (const instance of [instance1, instance2]) {
+          const snapshot = yield* instance.snapshot;
+          assert.isTrue(Option.isNone(snapshot.activePid));
+          assert.isFalse(snapshot.ready);
+        }
       }).pipe(Effect.provide(TestClock.layer())),
     ),
   );

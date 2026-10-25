@@ -15,6 +15,7 @@ import {
   JonesUpdateDownloadInput,
   JonesUpdateExactInput,
   JonesNativePrepareInput,
+  JonesQuitPreparation,
   JonesUpdateInstallInput,
   JonesUpdateReconcileInput,
   JonesUpdateRecordRetiredInput,
@@ -572,6 +573,13 @@ export const makeJonesHttpGroups = ({
         headers: OptionalBearerHeaders,
         payload: JonesNativePrepareInput,
         success: JonesUpdateState,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("prepareQuit", "/api/jones-updates/prepare-quit", {
+        headers: OptionalBearerHeaders,
+        success: JonesQuitPreparation,
         error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
       }).middleware(EnvironmentAuthenticatedAuth),
     )
