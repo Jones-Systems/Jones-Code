@@ -35,6 +35,7 @@ import {
   WorkstreamGateway,
   WorkstreamGatewayError,
   WorkstreamTransportError,
+  WorkstreamVerifiedPreDispatchRefusal,
   type WorkstreamTransport,
 } from "./WorkstreamGateway.ts";
 import { WorkstreamsRegistrationContext } from "../jones/workstreams/registrationContext/service.ts";
@@ -332,6 +333,7 @@ it.effect.each([
 );
 
 const decodeInternalError = Schema.decodeUnknownSync(EnvironmentInternalError);
+const decodeConflictError = Schema.decodeUnknownSync(EnvironmentHttpConflictError);
 
 const submitRequest = (value: unknown = command) =>
   new Request("http://fixture/api/workstreams/commands", {
@@ -407,9 +409,51 @@ it.effect.each(["permission", "owner", "contract", "page-bound"] as const)(
     ),
 );
 
-it.effect.each(["no-effect", "unknown-effect"] as const)(
-  "keeps transport %s failures opaque after dispatch",
-  (effect) =>
+it.effect(
+  "maps a verified producer refusal after ready capabilities to the existing not-current codec",
+  () => {
+    const calls: string[] = [];
+    return withHttpFixture(
+      [AuthOrchestrationOperateScope],
+      async ({ handler, submissions }) => {
+        const result = await handler(submitRequest());
+        expect(submissions.count).toBe(1);
+        expect(calls).toEqual(["ready", "refused-before-dispatch"]);
+        expect(result.status).toBe(409);
+        const body = await result.json();
+        expect(body).toEqual({
+          _tag: "EnvironmentHttpConflictError",
+          message: "workstream_command_not_current",
+        });
+        expect(decodeConflictError(body).message).toBe("workstream_command_not_current");
+      },
+      undefined,
+      (transport) => ({
+        ...transport,
+        getCapabilities: (input) =>
+          transport
+            .getCapabilities(input)
+            .pipe(Effect.tap(() => Effect.sync(() => calls.push("ready")))),
+        // This fixture supplies qualified internal evidence, not a cryptographic proof verifier.
+        submitCommand: () => {
+          calls.push("refused-before-dispatch");
+          return Effect.fail(new WorkstreamVerifiedPreDispatchRefusal({}));
+        },
+      }),
+    );
+  },
+);
+
+it.effect.each([
+  { effect: "no-effect", detail: "workstream_command_not_current" },
+  { effect: "no-effect", detail: "contract_mismatch" },
+  { effect: "no-effect", detail: "invalid_response" },
+  { effect: "unknown-effect", detail: "missing_refusal_proof" },
+  { effect: "unknown-effect", detail: "invalid_refusal_proof" },
+  { effect: "unknown-effect", detail: "response_lost_after_dispatch" },
+] as const)(
+  "keeps unverified $detail transport failures opaque after submit",
+  ({ effect, detail }) =>
     withHttpFixture(
       [AuthOrchestrationOperateScope],
       async ({ handler, submissions }) => {
@@ -426,7 +470,7 @@ it.effect.each(["no-effect", "unknown-effect"] as const)(
             new WorkstreamTransportError({
               operation: "submit",
               effect,
-              detail: "synthetic lost response",
+              detail,
             }),
           ),
       }),
@@ -520,7 +564,7 @@ it.effect("both live consumers share one file snapshot and keep it until the nex
         }),
     );
     const environment = {
-      T3_WORKSTREAM_CONTROL_PLANE_URL: "http://127.0.0.1:8787/",
+      T3_WORKSTREAM_CONTROL_PLANE_URL: "https://startup.synthetic.test/",
       T3_WORKSTREAM_OWNER_ID: "owner-startup",
       T3_WORKSTREAM_PRINCIPAL_ID: "principal-startup",
       T3_WORKSTREAM_KEY_ID: "key-startup",
@@ -535,7 +579,12 @@ it.effect("both live consumers share one file snapshot and keep it until the nex
       .join("");
     NodeFS.writeFileSync(file, bytes, { mode: 0o600 });
     NodeFS.writeFileSync(NodePath.join(base, "environment-id"), "environment-startup\n");
-    for (const key of Object.keys(environment)) vi.stubEnv(key, undefined);
+    for (const key of [
+      ...Object.keys(environment),
+      "T3_WORKSTREAM_REGISTRY_BINDING",
+      "T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION",
+    ])
+      vi.stubEnv(key, undefined);
     const opened = vi.spyOn(NodeFS, "openSync");
     const requests: Headers[] = [];
     vi.stubGlobal("fetch", async (_input: unknown, init: RequestInit) => {
@@ -578,6 +627,24 @@ it.effect("both live consumers share one file snapshot and keep it until the nex
         "principal-startup",
         "principal-startup",
       ]);
+      expect(process.env.T3_WORKSTREAM_SIGNING_SECRET).toBeUndefined();
+    }).pipe(Effect.provide(live));
+    expect(opened.mock.calls.filter(([path]) => path === file)).toHaveLength(1);
+    vi.stubEnv("T3_WORKSTREAM_PRINCIPAL_ID", undefined);
+    yield* Effect.gen(function* () {
+      const gateway = yield* WorkstreamGateway;
+      const registration = yield* WorkstreamsRegistrationContext;
+      expect(opened.mock.calls.filter(([path]) => path === file)).toHaveLength(2);
+      yield* gateway.readMetadata({}).pipe(Effect.result);
+      yield* registration.read().pipe(Effect.result);
+      expect(requests).toHaveLength(4);
+      expect(requests.map((headers) => headers.get("x-control-principal-id"))).toEqual([
+        "principal-startup",
+        "principal-startup",
+        "principal-replaced",
+        "principal-replaced",
+      ]);
+      expect(opened.mock.calls.filter(([path]) => path === file)).toHaveLength(2);
       expect(process.env.T3_WORKSTREAM_SIGNING_SECRET).toBeUndefined();
     }).pipe(Effect.provide(live));
   }),

@@ -67,11 +67,87 @@ describe("settlement notification controller", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it("removes persisted subagents only after a live shell confirms lineage", async () => {
+  it.each(["cached", "synchronizing"] as const)(
+    "hides saved local and remote children in every publication with %s metadata before hydration",
+    async (status) => {
+      const h = harness();
+      const local = entry("local-child");
+      const remote = entry("remote-child");
+      const parent = entry("parent");
+      const unobserved = entry("remote-child", 200, otherEnv);
+      h.data.inbox = encodeSettlementInbox({
+        ...emptyInbox(),
+        entries: [local, remote, parent, unobserved],
+      });
+      const rows = [
+        thread("local-child", 200, {
+          lineage: {
+            rootThreadId: thread("parent").id,
+            parentThreadId: thread("parent").id,
+            relationshipToParent: "subagent",
+          },
+        }),
+        thread("parent", 200),
+      ];
+      const archived = [
+        thread("remote-child", 200, {
+          delegatedFrom: {
+            environmentId: otherEnv,
+            threadId: thread("parent").id,
+            title: "Remote parent",
+          },
+          archivedAt: DateTime.makeUnsafe(300),
+        }),
+      ];
+      const controller = createSettlementNotificationController({ store: h.store });
+      const publications: string[][] = [];
+      const unsubscribe = controller.subscribe(() => {
+        publications.push(controller.getSnapshot().visible.map((value) => value.id));
+      });
+      try {
+        controller.observe(env, shell(2, rows, archived, status));
+        await controller.hydrate();
+        await controller.flush();
+        expect(publications.length).toBeGreaterThan(0);
+        for (const visible of publications) {
+          expect(visible).not.toContain(local.id);
+          expect(visible).not.toContain(remote.id);
+          expect(visible).toContain(parent.id);
+          expect(visible).toContain(unobserved.id);
+        }
+        expect(
+          controller
+            .getSnapshot()
+            .visible.map((value) => value.id)
+            .sort(),
+        ).toEqual([parent.id, unobserved.id].sort());
+        expect(decodeSettlementInbox(h.data.inbox!).acknowledged).toEqual([]);
+        expect(decodeSettlementInbox(h.data.inbox!).entries).toHaveLength(4);
+
+        controller.observe(env, shell(2, rows, archived));
+        await controller.flush();
+        expect(decodeSettlementInbox(h.data.inbox!).acknowledged).toEqual([local.id, remote.id]);
+        const reloaded = createSettlementNotificationController({ store: h.store });
+        await reloaded.hydrate();
+        expect(
+          reloaded
+            .getSnapshot()
+            .visible.map((value) => value.id)
+            .sort(),
+        ).toEqual([parent.id, unobserved.id].sort());
+      } finally {
+        unsubscribe();
+      }
+    },
+  );
+
+  it("hides children when cached metadata arrives after hydration and acknowledges only live rows", async () => {
     const h = harness();
     const entries = [
       entry("child"),
       entry("deleted-child"),
+      entry("remote-child"),
+      entry("linked-remote-child"),
       entry("missing"),
       entry("deleted-top"),
       entry("child", 200, otherEnv),
@@ -86,6 +162,13 @@ describe("settlement notification controller", () => {
     };
     const rows = [
       thread("child", 200, { lineage }),
+      thread("remote-child", 200, {
+        delegatedFrom: { environmentId: otherEnv, threadId: thread().id, title: "Remote parent" },
+      }),
+      thread("linked-remote-child", 200, {
+        delegatedFrom: { environmentId: otherEnv, threadId: thread().id, title: "Remote parent" },
+        linkOrigin: { sessionId: "linked-session", label: "Linked machine" },
+      }),
       thread("deleted-top", 200, { deletedAt: DateTime.makeUnsafe(300) }),
     ];
     const archived = [
@@ -95,17 +178,36 @@ describe("settlement notification controller", () => {
         deletedAt: DateTime.makeUnsafe(300),
       }),
     ];
+    expect(controller.getSnapshot().visible).toHaveLength(7);
     controller.observe(env, shell(2, rows, archived, "cached"));
     await controller.flush();
-    expect(controller.getSnapshot().visible).toHaveLength(5);
+    expect(
+      controller
+        .getSnapshot()
+        .visible.map((value) => value.id)
+        .sort(),
+    ).toEqual(
+      entries
+        .slice(4)
+        .map((value) => value.id)
+        .sort(),
+    );
     expect(decodeSettlementInbox(h.data.inbox!).acknowledged).toEqual([]);
     controller.observe(env, shell(2, rows, archived));
     await controller.flush();
     const persisted = decodeSettlementInbox(h.data.inbox!);
-    expect(persisted.acknowledged).toEqual([entries[0]!.id, entries[1]!.id]);
+    expect(persisted.acknowledged).toEqual(
+      entries
+        .slice(0, 4)
+        .map((value) => value.id)
+        .sort(),
+    );
     const retained = persisted.entries;
     expect(retained.map((value) => value.id).sort()).toEqual(
-      [entries[2]!.id, entries[3]!.id, entries[4]!.id].sort(),
+      entries
+        .slice(4)
+        .map((value) => value.id)
+        .sort(),
     );
     expect(
       retained.filter((value) => value.environmentId === env).every((value) => value.threadGone),

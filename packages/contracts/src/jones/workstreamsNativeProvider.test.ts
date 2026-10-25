@@ -107,3 +107,72 @@ describe("workstreams-t3-provider/1.0.0 native contract", () => {
     expect(response.result.native_evidence.principal_id).not.toBe(response.request.principal_id);
   });
 });
+
+const v2Files = import.meta.glob<string>("../../contracts/workstreams-t3-provider/v2/**", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+});
+const v2File = (path: string) => v2Files[`../../contracts/workstreams-t3-provider/v2/${path}`]!;
+const v2Manifest = JSON.parse(v2File("manifest.json")) as typeof manifest;
+const v2Conformance = JSON.parse(v2File("fixtures/conformance.json")) as { cases: Fixture[] };
+const v2Negatives = JSON.parse(v2File("fixtures/negative-cases.json")) as { cases: Fixture[] };
+const v2Decoders = new Map(decoders);
+v2Decoders.set(
+  "ContextResponse",
+  Schema.decodeUnknownSync(Provider.WorkstreamsNativeContextResponseV2),
+);
+v2Decoders.set(
+  "AttestationResponse",
+  Schema.decodeUnknownSync(Provider.WorkstreamsNativeAttestationResponseV2),
+);
+v2Decoders.set(
+  "SettlementResponse",
+  Schema.decodeUnknownSync(Provider.WorkstreamsNativeSettlementResponseV2),
+);
+v2Decoders.set(
+  "SettlementLookupResponse",
+  Schema.decodeUnknownSync(Provider.WorkstreamsNativeSettlementLookupResponseV2),
+);
+v2Decoders.set(
+  "ProviderResponse",
+  Schema.decodeUnknownSync(Provider.WorkstreamsNativeProviderResponseV2),
+);
+const decodeV2 = (fixture: Fixture) => {
+  const name = fixture.schema.slice(fixture.schema.lastIndexOf("/") + 1);
+  const decoder = v2Decoders.get(name);
+  if (!decoder) throw new Error(`Uncovered v2 fixture schema: ${name}`);
+  return decoder(fixture.value);
+};
+describe("workstreams-t3-provider/2.0.0 additive native contract", () => {
+  it.each(v2Manifest.files)("preserves producer bytes for $path", ({ path, sha256 }) => {
+    expect(NodeCrypto.createHash("sha256").update(v2File(path)).digest("hex")).toBe(sha256);
+  });
+  it("pins the complete producer manifest", () => {
+    const records = v2Manifest.files.map(({ path, sha256 }) => `${sha256}  ${path}\n`).join("");
+    expect(NodeCrypto.createHash("sha256").update(records).digest("hex")).toBe(
+      Provider.WORKSTREAMS_T3_PROVIDER_V2_MANIFEST_SHA256,
+    );
+    expect(v2Manifest.manifest_sha256).toBe(Provider.WORKSTREAMS_T3_PROVIDER_V2_MANIFEST_SHA256);
+  });
+  it.each(v2Conformance.cases)("decodes $name", (fixture) => {
+    expect(decodeV2(fixture)).toEqual(fixture.value);
+  });
+  it.each(
+    (
+      JSON.parse(v2File("fixtures/semantic-cases.json")) as {
+        cases: Array<Fixture & { expected_enrollment: unknown }>;
+      }
+    ).cases,
+  )("preserves the full $name for consumer qualification", (fixture) => {
+    const response = Schema.decodeUnknownSync(Provider.WorkstreamsNativeContextResponseV2)(
+      fixture.value,
+    );
+    expect(response.state).toBe("ready");
+    if (response.state === "ready")
+      expect(response.enrollment).not.toEqual(fixture.expected_enrollment);
+  });
+  it.each(v2Negatives.cases)("rejects $name", (fixture) => {
+    expect(() => decodeV2(fixture)).toThrow();
+  });
+});

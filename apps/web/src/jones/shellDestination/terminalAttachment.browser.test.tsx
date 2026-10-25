@@ -1,9 +1,8 @@
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import { nextTerminalAttachSeedState } from "@t3tools/client-runtime/state/terminal";
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import { expect, it, vi } from "vite-plus/test";
+import { render } from "../../../test/render";
 
 const state = vi.hoisted(() => ({ attach: vi.fn(), command: vi.fn(), surface: vi.fn() }));
 vi.mock(import("@effect/atom-react"), async (original) => ({
@@ -39,23 +38,10 @@ vi.mock(import("../../state/session"), async (original) => ({
 
 import { TerminalViewport } from "../../components/ThreadTerminalDrawer";
 
-let root: Root;
-let container: HTMLDivElement;
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+it("reattaches a destination run without the launch fields that can create a missing PTY", async () => {
   state.attach.mockReset().mockReturnValue(nextTerminalAttachSeedState());
   state.command.mockReset();
   state.surface.mockReset().mockReturnValue(new Promise(() => undefined));
-  container = document.body.appendChild(document.createElement("div"));
-  root = createRoot(container);
-});
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-});
-
-it("reattaches a destination run without the launch fields that can create a missing PTY", async () => {
   const threadRef = {
     environmentId: EnvironmentId.make("destination"),
     threadId: ThreadId.make("jones-shell-run"),
@@ -75,7 +61,9 @@ it("reattaches a destination run without the launch fields that can create a mis
     drawerHeight: 256,
     keybindings: [],
   };
-  await act(async () => root.render(<TerminalViewport {...props} attachExistingOnly />));
+  await using screen = await render(<TerminalViewport {...props} attachExistingOnly />, {
+    router: false,
+  });
   expect(state.attach).toHaveBeenLastCalledWith({
     environmentId: "destination",
     terminal: {
@@ -89,13 +77,11 @@ it("reattaches a destination run without the launch fields that can create a mis
     status: "error",
     error: "Terminal session not found",
   });
-  await act(async () =>
-    root.render(<TerminalViewport {...props} attachExistingOnly focusRequestId={1} />),
-  );
+  await screen.rerender(<TerminalViewport {...props} attachExistingOnly focusRequestId={1} />);
   expect(state.attach.mock.lastCall?.[0].terminal).not.toHaveProperty("cwd");
   expect(state.command).not.toHaveBeenCalled();
   // The existing drawer and onboarding callers still opt into opening a shell.
-  await act(async () => root.render(<TerminalViewport {...props} />));
+  await screen.rerender(<TerminalViewport {...props} />);
   expect(state.attach.mock.lastCall?.[0].terminal).toEqual({
     threadId: "jones-shell-run",
     terminalId: props.terminalId,

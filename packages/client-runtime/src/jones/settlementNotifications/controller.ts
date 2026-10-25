@@ -1,9 +1,13 @@
-import { EnvironmentId, type ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  type OrchestrationV2ShellSnapshot,
+  type ThreadId,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
 
 import type { EnvironmentShellState } from "../../state/shell.ts";
-import { observeEnvironment } from "./detect.ts";
+import { isSettlementChild, observeEnvironment } from "./detect.ts";
 import { addArrivals, dismiss, mergeInbox, refreshThreads, visibleEntries } from "./inbox.ts";
 import {
   SettlementOriginDetails,
@@ -58,6 +62,10 @@ export function createSettlementNotificationController(deps: {
   >();
   const pendingClassifications = new Map<EnvironmentId, number>();
   const confirmed = new Map<EnvironmentId, EnvironmentShellState>();
+  const children = new Map<
+    EnvironmentId,
+    { snapshot: OrchestrationV2ShellSnapshot; ids: ReadonlySet<ThreadId> }
+  >();
   const staleSince = new Map<EnvironmentId, number>();
   const catalog = new Set<EnvironmentId>();
   let inbox = emptyInbox();
@@ -80,7 +88,9 @@ export function createSettlementNotificationController(deps: {
   }
 
   function publish() {
-    const visible = visibleEntries(inbox);
+    const visible = visibleEntries(inbox).filter(
+      (entry) => !children.get(entry.environmentId)?.ids.has(entry.threadId),
+    );
     const persistence = !hydrated ? "loading" : errors.size > 0 ? "degraded" : "ok";
     const sameVisible =
       visible.length === snapshot.visible.length &&
@@ -122,6 +132,19 @@ export function createSettlementNotificationController(deps: {
     return true;
   }
 
+  function noteChildren(environmentId: EnvironmentId, state: EnvironmentShellState): boolean {
+    if (Option.isNone(state.snapshot)) return false;
+    const next = state.snapshot.value;
+    const previous = children.get(environmentId);
+    if (previous?.snapshot === next) return false;
+    const ids = new Set<ThreadId>();
+    for (const thread of [...next.threads, ...next.archivedThreads]) {
+      if (isSettlementChild(thread)) ids.add(thread.id);
+    }
+    children.set(environmentId, { snapshot: next, ids });
+    return ids.size !== (previous?.ids.size ?? 0) || [...ids].some((id) => !previous?.ids.has(id));
+  }
+
   function refreshFromState(
     value: SettlementInboxState,
     environmentId: EnvironmentId,
@@ -135,7 +158,7 @@ export function createSettlementNotificationController(deps: {
       ...state.snapshot.value.threads,
       ...state.snapshot.value.archivedThreads,
     ]) {
-      if (thread.lineage.relationshipToParent === "subagent") excluded.add(thread.id);
+      if (isSettlementChild(thread)) excluded.add(thread.id);
       if (thread.deletedAt !== null) gone.add(thread.id);
       else titles.set(thread.id, thread.title);
     }
@@ -427,6 +450,9 @@ export function createSettlementNotificationController(deps: {
       options?: { resolveOrigins?: SettlementOriginResolver },
     ): void {
       observations.set(environmentId, { state, ...options });
+      // Lineage and delegation are fixed at creation, so cached metadata may hide a child.
+      // Only confirmed live state may acknowledge its notice.
+      if (noteChildren(environmentId, state)) publish();
       if (!hydrated) {
         void hydrate();
         return;

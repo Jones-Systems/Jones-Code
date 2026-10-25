@@ -6,8 +6,13 @@ import {
   WorkstreamsRegistrationContextBuild,
   WorkstreamsRegistrationContextResponse,
   WorkstreamsRegistrationContextV2Response,
+  WorkstreamsRegistrationContextV3Response,
+  WORKSTREAMS_REGISTRATION_CONTEXT_V2_PROTOCOL,
+  WORKSTREAMS_T3_PROVIDER_PROTOCOL,
+  WORKSTREAMS_T3_PROVIDER_V2_PROTOCOL,
   type WorkstreamsRegistrationContextAcceptedResponse,
   type WorkstreamsRegistrationContextT3Source,
+  type WorkstreamsRegistrationContextSource,
   type WorkstreamsRegistrationContextVersion,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -110,9 +115,11 @@ const decodeResponse = Effect.fn("RegistrationContext.decodeResponse")(function*
   if (!withinDepth(json))
     return yield* new RegistrationContextError({ reason: "response_too_deep" });
   const schema =
-    version === "2.0.0"
-      ? WorkstreamsRegistrationContextV2Response
-      : WorkstreamsRegistrationContextResponse;
+    version === "3.0.0"
+      ? WorkstreamsRegistrationContextV3Response
+      : version === "2.0.0"
+        ? WorkstreamsRegistrationContextV2Response
+        : WorkstreamsRegistrationContextResponse;
   return yield* Schema.decodeUnknownEffect(schema)(json).pipe(
     Effect.mapError(() => new RegistrationContextError({ reason: "invalid_response" })),
   );
@@ -123,7 +130,9 @@ export const makeWorkstreamsRegistrationContext = (
 ): WorkstreamsRegistrationContext["Service"] => {
   const build = ports.build ?? readRegistrationContextBuild;
   const qualifyT3 = Effect.fn("RegistrationContext.qualifyT3")(function* (
-    context: WorkstreamsRegistrationContextAcceptedResponse,
+    context:
+      | WorkstreamsRegistrationContextAcceptedResponse
+      | WorkstreamsRegistrationContextV3Response,
   ): Effect.fn.Return<{
     readonly availability: T3RegistrationAvailability;
     readonly source: WorkstreamsRegistrationContextT3Source | null;
@@ -152,17 +161,37 @@ export const makeWorkstreamsRegistrationContext = (
     if (source === undefined) return unavailable("source_mismatch");
     const actualBuild = yield* build;
     if (Option.isNone(actualBuild)) return unavailable("build_unavailable");
+    const enrolledBuild = "enrolled_build" in source ? source.enrolled_build : source.build;
+    const acceptsV2 =
+      "accepted_native_profiles" in source &&
+      source.accepted_native_profiles.some(
+        (profile) => profile === WORKSTREAMS_T3_PROVIDER_V2_PROTOCOL,
+      );
     if (
-      source.build.repository !== actualBuild.value.repository ||
-      source.build.sha !== actualBuild.value.sha ||
-      source.build.tree !== actualBuild.value.tree
+      !acceptsV2 &&
+      (enrolledBuild.repository !== actualBuild.value.repository ||
+        enrolledBuild.sha !== actualBuild.value.sha ||
+        enrolledBuild.tree !== actualBuild.value.tree)
     )
       return unavailable("contract_mismatch");
     if (source.authority_namespace !== current.tuple.authorityNamespace)
       return unavailable("authority_mismatch");
     if (source.store_generation !== current.tuple.storeGeneration)
       return unavailable("generation_mismatch");
-    return { availability: { state: "ready" }, source };
+    return {
+      availability: { state: "ready" },
+      source: {
+        provider: source.provider,
+        source_instance_id: source.source_instance_id,
+        authority_namespace: source.authority_namespace,
+        store_generation: source.store_generation,
+        resource_kind: source.resource_kind,
+        id_kind: source.id_kind,
+        account_provenance: source.account_provenance,
+        native_protocol: WORKSTREAMS_T3_PROVIDER_PROTOCOL,
+        build: actualBuild.value,
+      },
+    };
   });
 
   const read = Effect.fn("RegistrationContext.read")(function* () {
@@ -172,7 +201,7 @@ export const makeWorkstreamsRegistrationContext = (
     if (binding === null) return yield* new RegistrationContextError({ reason: "unconfigured" });
     const version =
       ports.registrationContextVersion === undefined ? "1.0.0" : ports.registrationContextVersion;
-    if (version !== "1.0.0" && version !== "2.0.0")
+    if (version !== "1.0.0" && version !== "2.0.0" && version !== "3.0.0")
       return yield* new RegistrationContextError({ reason: "registry_unavailable" });
     const text = yield* ports.readRegistrationContext.pipe(
       Effect.mapError(() => new RegistrationContextError({ reason: "registry_unavailable" })),
@@ -191,9 +220,16 @@ export const makeWorkstreamsRegistrationContext = (
     return {
       context: {
         ...context,
-        sources: context.sources.filter(
-          (source) => source.provider !== "t3" || source === qualified.source,
-        ),
+        protocol:
+          context.protocol === "workstreams-registration-context/3.0.0"
+            ? WORKSTREAMS_REGISTRATION_CONTEXT_V2_PROTOCOL
+            : context.protocol,
+        sources: context.sources.flatMap((source): WorkstreamsRegistrationContextSource[] => {
+          if (source.provider !== "t3") return [source];
+          return qualified.source?.source_instance_id === source.source_instance_id
+            ? [qualified.source]
+            : [];
+        }),
       },
       t3Availability: qualified.availability,
     };

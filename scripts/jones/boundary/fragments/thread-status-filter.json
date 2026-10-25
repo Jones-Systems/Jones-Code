@@ -7,7 +7,9 @@
     "apps/web/src/jones/threadStatusFilter/ThreadStatusFilterPill.browser.test.tsx",
     "apps/web/src/jones/threadStatusFilter/useThreadStatusFilter.ts",
     "apps/web/src/jones/threadStatusFilter/ThreadStatusFilterPill.tsx",
-    "apps/web/src/jones/threadStatusFilter/model.ts"
+    "apps/web/src/jones/threadStatusFilter/model.ts",
+    "apps/web/src/jones/threadStatusFilter/ThreadActivitySettings.tsx",
+    "apps/web/src/jones/threadStatusFilter/ThreadActivitySettings.browser.test.tsx"
   ],
   "hookPaths": [],
   "tombstones": ["apps/web/src/components/sidebar/SidebarActiveThreadsPill.tsx"],
@@ -35,6 +37,10 @@
     {
       "from": "apps/web/src/components/Sidebar.tsx",
       "to": "apps/web/src/jones/threadStatusFilter/model.ts"
+    },
+    {
+      "from": "packages/contracts/src/settings.ts",
+      "to": "packages/contracts/src/jones/threadActivitySettings.ts"
     }
   ]
 }

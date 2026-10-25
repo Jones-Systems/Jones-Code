@@ -1,5 +1,15 @@
-import type { UserInputQuestion } from "@t3tools/contracts";
+import type { ThreadContextRecord, UserInputQuestion } from "@t3tools/contracts";
 export { projectPendingUserInputAnswer } from "./jones/questionAnswer/threadReferenceAnswer";
+import { collectInlineContextIds } from "./lib/composerContextReferences";
+
+// Question drafts retain deleted chip records for undo; only transfer referenced records.
+export function threadContextsReferencedByAnswer(
+  answer: string,
+  threadContexts: ReadonlyArray<ThreadContextRecord>,
+) {
+  const referencedIds = new Set(collectInlineContextIds(answer));
+  return threadContexts.filter((record) => referencedIds.has(record.contextId));
+}
 
 export interface PendingUserInputDraftAnswer {
   selectedOptionValues?: string[];
@@ -88,6 +98,51 @@ export function setPendingUserInputCustomAnswer(
   };
 }
 
+export function pendingUserInputRequestKey(
+  environmentId: string,
+  threadId: string | null,
+  requestId: string | undefined,
+): string {
+  return JSON.stringify([environmentId, threadId, requestId]);
+}
+
+/** Drops a thread's drafts for requests that are no longer pending. Unchanged input is returned as is. */
+export function pruneResolvedUserInputDrafts<T>(
+  draftsByRequestKey: Record<string, T>,
+  environmentId: string,
+  threadId: string,
+  pendingRequestIds: ReadonlyArray<string>,
+): Record<string, T> {
+  const threadPrefix = JSON.stringify([environmentId, threadId]).slice(0, -1);
+  const pendingKeys = new Set(
+    pendingRequestIds.map((requestId) =>
+      pendingUserInputRequestKey(environmentId, threadId, requestId),
+    ),
+  );
+  const retained = Object.entries(draftsByRequestKey).filter(
+    ([key]) => !key.startsWith(threadPrefix) || pendingKeys.has(key),
+  );
+  return retained.length === Object.keys(draftsByRequestKey).length
+    ? draftsByRequestKey
+    : Object.fromEntries(retained);
+}
+
+const DISPLACED_ANSWER_SEPARATOR = "\n\n";
+
+export function carryDisplacedCustomAnswerIntoPrompt(
+  prompt: string,
+  customAnswer: string | undefined,
+): string {
+  const displaced = customAnswer?.trim() ?? "";
+  if (displaced.length === 0) {
+    return prompt;
+  }
+  if (prompt.trim().length === 0) {
+    return displaced;
+  }
+  return `${prompt.trimEnd()}${DISPLACED_ANSWER_SEPARATOR}${displaced}`;
+}
+
 export function togglePendingUserInputOptionSelection(
   question: UserInputQuestion,
   draft: PendingUserInputDraftAnswer | undefined,
@@ -130,7 +185,7 @@ export function buildPendingUserInputAnswers(
   return answers;
 }
 
-export function countAnsweredPendingUserInputQuestions(
+function countAnsweredPendingUserInputQuestions(
   questions: ReadonlyArray<UserInputQuestion>,
   draftAnswers: Record<string, PendingUserInputDraftAnswer>,
 ): number {
