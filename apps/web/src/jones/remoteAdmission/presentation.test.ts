@@ -1,8 +1,32 @@
 import { describe, expect, it } from "vite-plus/test";
 import type { RemoteAdmissionRecord } from "@t3tools/contracts";
-import { admissionPresentation } from "./presentation";
+import {
+  admissionCategory,
+  admissionPresentation,
+  admissionStatus,
+  groupAdmissions,
+} from "./presentation";
+import { admissionFixture } from "./testFixtures";
 
 describe("owner remote request presentation", () => {
+  it("groups service failures separately from risk and scopes identical labels by authenticated source", () => {
+    const risk = admissionFixture();
+    const unavailable = admissionFixture({ id: "failed", category: "evaluation_unavailable" });
+    const interrupted = admissionFixture({ id: "interrupted", category: "evaluation_interrupted" });
+    const other = admissionFixture({
+      id: "other",
+      envelope: { ...risk.envelope, identity: { clientId: "other", linkId: null } },
+    });
+    expect(
+      groupAdmissions([risk, unavailable, interrupted, other]).map((group) => group.records.length),
+    ).toEqual([1, 2, 1]);
+    expect(admissionCategory(unavailable)).toBe("Evaluator service failure");
+    expect(admissionCategory(risk)).toBe("Request review");
+    expect(admissionStatus(admissionFixture({ status: "dispatching" }))).toContain("unknown");
+    expect(admissionStatus(admissionFixture({ status: "approved" }))).toBe(
+      "Approved · awaiting dispatch",
+    );
+  });
   it("shows received task text, authenticated sender label, and resolved worktree", () => {
     const record = {
       envelope: {

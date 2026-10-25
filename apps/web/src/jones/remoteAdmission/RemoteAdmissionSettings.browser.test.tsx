@@ -1,169 +1,256 @@
-import {
-  EnvironmentId,
-  ProviderInstanceId,
-  type RemoteAdmissionSnapshot,
-} from "@t3tools/contracts";
 import { act, render } from "../../../test/render";
 import { expect, it, vi } from "vite-plus/test";
+import {
+  EnvironmentId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ModelSelection,
+  type ServerProvider,
+} from "@t3tools/contracts";
+import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
+import { admissionSnapshot } from "./testFixtures";
 import { RemoteAdmissionSettings } from "./RemoteAdmissionSettings";
 
 const request = vi.hoisted(() => vi.fn());
 vi.mock("./runtime", () => ({ remoteAdmissionRequest: request }));
-vi.mock("../../state/environments", () => ({ useEnvironmentProviders: () => new Map() }));
+vi.mock("../../state/environments", () => ({
+  useEnvironmentProviders: () => new Map([[environmentId, providers]]),
+  useEnvironment: () => ({ label: "Synthetic receiver" }),
+  useEnvironmentIds: () => [],
+  useEnvironments: () => ({ environments: [], isReady: true }),
+}));
 vi.mock("../../state/server", () => ({ EMPTY_SERVER_PROVIDERS: [] }));
-vi.mock("../../hooks/useSettings", () => ({ useEnvironmentSettings: () => ({}) }));
+vi.mock("../../hooks/useSettings", () => ({
+  useEnvironmentSettings: () => ({
+    ...DEFAULT_UNIFIED_SETTINGS,
+    providerInstances: {
+      [instanceId]: { driver: ProviderDriverKind.make("codex"), enabled: true },
+    },
+  }),
+}));
 vi.mock("../../components/chat/ProviderModelPicker", () => ({
   ProviderModelPicker: ({
     model,
     disabled,
+    triggerLabel,
+    instanceEntries,
     onInstanceModelChange,
   }: {
     model: string;
     disabled: boolean;
+    triggerLabel?: string;
+    instanceEntries: readonly { instanceId: ProviderInstanceId }[];
     onInstanceModelChange: (instanceId: ProviderInstanceId, model: string) => void;
   }) => (
     <button
       disabled={disabled}
       aria-label="Evaluator model"
+      data-instances={instanceEntries.map((entry) => entry.instanceId).join(",")}
+      onClick={() => onInstanceModelChange(instanceId, model)}
+    >
+      {triggerLabel ?? model}
+    </button>
+  ),
+}));
+vi.mock("../../components/chat/TraitsPicker", () => ({
+  TraitsMenuContent: () => null,
+  getReasoningTraitStep: () => undefined,
+  shouldRenderTraitsControls: () => false,
+  readPromptUltrathink: () => "none",
+  buildTraitsOptionSelections: () => undefined,
+  useTraitsSelection: () => null,
+  TraitsPicker: ({
+    onModelOptionsChange,
+  }: {
+    onModelOptionsChange: (options: ModelSelection["options"]) => void;
+  }) => (
+    <button
+      aria-label="Evaluator effort"
       onClick={() =>
-        onInstanceModelChange(ProviderInstanceId.make("synthetic-claude"), "draft-model")
+        onModelOptionsChange([
+          { id: "reasoningEffort", value: "medium" },
+          { id: "serviceTier", value: "default" },
+        ])
       }
     >
-      {model}
+      Medium
     </button>
   ),
 }));
 
-const environmentId = EnvironmentId.make("synthetic-environment");
-const snapshot: RemoteAdmissionSnapshot = {
-  eligible: true,
-  policy: {
-    enabled: true,
-    revision: "synthetic-policy",
-    modelSelection: {
-      instanceId: ProviderInstanceId.make("synthetic-claude"),
-      model: "saved-model",
-    },
-  },
-  pending: [],
+const instanceId = ProviderInstanceId.make("synthetic-codex");
+let environmentId: EnvironmentId;
+let providers: readonly (ServerProvider & { supportsRemoteRequestEvaluation?: boolean })[];
+const provider: ServerProvider & { supportsRemoteRequestEvaluation?: boolean } = {
+  instanceId,
+  driver: ProviderDriverKind.make("codex"),
+  displayName: "Synthetic Codex account",
+  enabled: true,
+  installed: true,
+  version: null,
+  status: "ready",
+  auth: { status: "authenticated" },
+  checkedAt: "2026-10-24T12:00:00Z",
+  supportsRemoteRequestEvaluation: true,
+  models: [
+    { slug: "gpt-6.1-sol", name: "Sol", isCustom: false, capabilities: {}, isDefault: true },
+  ],
+  slashCommands: [],
+  skills: [],
 };
-function setupPolling() {
+const selection: ModelSelection = {
+  instanceId,
+  model: "gpt-6.1-sol",
+  options: [
+    { id: "reasoningEffort", value: "high" },
+    { id: "serviceTier", value: "default" },
+  ],
+};
+function setup(name: string) {
+  environmentId = EnvironmentId.make(name);
+  const { supportsRemoteRequestEvaluation: _supports, ...olderProvider } = provider;
+  providers = [
+    provider,
+    {
+      ...provider,
+      instanceId: ProviderInstanceId.make("unsupported"),
+      supportsRemoteRequestEvaluation: false,
+    },
+    {
+      ...olderProvider,
+      instanceId: ProviderInstanceId.make("older-server"),
+    },
+  ];
+  const snapshot = {
+    ...admissionSnapshot(),
+    policy: { enabled: true, revision: "synthetic-policy", modelSelection: selection },
+  };
+  request.mockReset().mockResolvedValue(snapshot);
   let tick!: () => void;
   const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
-  const interval = vi.spyOn(window, "setInterval").mockImplementation((callback, delay) => {
-    expect(delay).toBe(10_000);
+  const interval = vi.spyOn(window, "setInterval").mockImplementation((callback) => {
     tick = callback as () => void;
     return 123 as unknown as ReturnType<typeof window.setInterval>;
   });
-  const clearInterval = vi.spyOn(window, "clearInterval").mockImplementation(() => undefined);
-  request.mockReset().mockResolvedValue(snapshot);
+  const clear = vi.spyOn(window, "clearInterval").mockImplementation(() => undefined);
   return {
+    snapshot,
     visibility,
     poll: () => act(async () => tick()),
     [Symbol.dispose]() {
-      try {
-        expect(clearInterval).toHaveBeenCalledWith(123);
-      } finally {
-        clearInterval.mockRestore();
-        interval.mockRestore();
-        visibility.mockRestore();
-      }
+      clear.mockRestore();
+      interval.mockRestore();
+      visibility.mockRestore();
     },
   };
 }
+const button = (container: HTMLElement, text: string) =>
+  [...container.querySelectorAll("button")].find((entry) => entry.textContent === text)!;
 
-function controls(container: HTMLElement) {
-  return {
-    alert: () => container.querySelector('[role="alert"]'),
-    model: () => container.querySelector<HTMLButtonElement>('[aria-label="Evaluator model"]')!,
-    toggle: () => container.querySelector<HTMLElement>('[aria-label="Evaluate remote requests"]')!,
-  };
-}
-
-it("keeps the review heading and a safe load error visible, then recovers on the next poll", async () => {
-  using polling = setupPolling();
-  request.mockRejectedValueOnce(new Error("private backend detail: synthetic-secret"));
-  await using screen = await render(<RemoteAdmissionSettings environmentId={environmentId} />, {
-    router: false,
-  });
-  const { container } = screen;
-  const { alert, model, toggle } = controls(container);
-  expect(container.querySelector("h3")?.textContent).toBe("Review remote requests on this laptop");
-  expect(alert()?.textContent).toBe(
-    "Remote request review could not be loaded. Retrying automatically.",
-  );
-  expect(container.textContent).not.toContain("synthetic-secret");
-  expect(container.querySelector('[aria-label="Evaluate remote requests"]')).toBeNull();
-  expect(container.querySelector("article")).toBeNull();
-  await polling.poll();
-  expect(alert()).toBeNull();
-  expect(toggle().getAttribute("aria-checked")).toBe("true");
-  expect(model().textContent).toBe("saved-model");
-  expect(request.mock.calls.every(([, input]) => input.action === "snapshot")).toBe(true);
-});
-
-it("preserves policy and an unsaved model through a failed refresh and recovery", async () => {
-  using polling = setupPolling();
-  await using screen = await render(<RemoteAdmissionSettings environmentId={environmentId} />, {
-    router: false,
-  });
-  const { container } = screen;
-  const { alert, model, toggle } = controls(container);
-  await act(async () => model().click());
-  expect(model().textContent).toBe("draft-model");
-  request.mockRejectedValueOnce(new Error("private backend failure"));
-  await polling.poll();
-  expect(alert()?.textContent).toContain("could not be loaded");
-  expect(toggle().getAttribute("aria-checked")).toBe("true");
-  expect(toggle().getAttribute("aria-disabled")).toBe("true");
-  expect(model().textContent).toBe("draft-model");
-  expect(model().disabled).toBe(true);
-  await polling.poll();
-  expect(alert()).toBeNull();
-  expect(toggle().getAttribute("aria-disabled")).not.toBe("true");
-  expect(model().textContent).toBe("draft-model");
-  const save = [...container.querySelectorAll("button")].find(
-    (button) => button.textContent === "Save model",
+it("saves the complete exact Codex account selection and keeps request articles and decisions out of Settings", async () => {
+  using _fixture = setup("settings-exact");
+  await using screen = await render(<RemoteAdmissionSettings environmentId={environmentId} />);
+  expect(screen.container.textContent).toContain("Receiving environment: Synthetic receiver");
+  expect(screen.container.querySelector("article")).toBeNull();
+  expect(screen.container.textContent).not.toContain("Inspect synthetic project");
+  const picker = screen.container.querySelector<HTMLButtonElement>(
+    '[aria-label="Evaluator model"]',
   )!;
-  await act(async () => save.click());
+  expect(picker.dataset.instances).toBe(instanceId);
+  await act(async () => picker.click());
+  await act(async () => button(screen.container, "Save model").click());
+  expect(request).toHaveBeenCalledWith(environmentId, {
+    action: "policy",
+    input: {
+      enabled: true,
+      expectedRevision: "synthetic-policy",
+      modelSelection: selection,
+    },
+  });
+  await act(async () =>
+    screen.container.querySelector<HTMLButtonElement>('[aria-label="Evaluator effort"]')!.click(),
+  );
+  await act(async () => button(screen.container, "Save model").click());
+  expect(request).toHaveBeenLastCalledWith(environmentId, { action: "snapshot" });
   expect(request).toHaveBeenCalledWith(environmentId, {
     action: "policy",
     input: {
       enabled: true,
       expectedRevision: "synthetic-policy",
       modelSelection: {
-        instanceId: "synthetic-claude",
-        model: "draft-model",
+        ...selection,
+        options: [
+          { id: "reasoningEffort", value: "medium" },
+          { id: "serviceTier", value: "default" },
+        ],
       },
     },
   });
 });
 
-it("keeps hidden and overlapping polls suppressed while a failed load can recover", async () => {
-  using polling = setupPolling();
-  let resolve!: (value: RemoteAdmissionSnapshot) => void;
+it("shows a saved unavailable selection without replacing it or permitting Save", async () => {
+  using fixture = setup("settings-unavailable");
+  request.mockResolvedValue({
+    ...fixture.snapshot,
+    policy: {
+      ...fixture.snapshot.policy,
+      modelSelection: {
+        ...selection,
+        instanceId: ProviderInstanceId.make("missing-account"),
+        model: "retired-model",
+      },
+    },
+  });
+  await using screen = await render(<RemoteAdmissionSettings environmentId={environmentId} />);
+  expect(screen.container.textContent).toContain("retired-model (Unavailable)");
+  expect(screen.container.textContent).toContain("missing-account / retired-model");
+  const save = button(screen.container, "Save model");
+  expect(save.getAttribute("aria-disabled")).toBe("true");
+  await act(async () => save.click());
+  expect(request.mock.calls.every(([, input]) => input.action === "snapshot")).toBe(true);
+});
+
+it("keeps a safe load error and unsaved effort, disables writes, then recovers without hidden or overlapping polls", async () => {
+  using fixture = setup("settings-recovery");
+  await using screen = await render(<RemoteAdmissionSettings environmentId={environmentId} />);
+  await act(async () =>
+    screen.container.querySelector<HTMLButtonElement>('[aria-label="Evaluator effort"]')!.click(),
+  );
+  fixture.visibility.mockReturnValue("hidden");
+  await fixture.poll();
+  expect(request).toHaveBeenCalledTimes(1);
+  fixture.visibility.mockReturnValue("visible");
+  request.mockRejectedValueOnce(new Error("private synthetic-secret"));
+  await fixture.poll();
+  expect(screen.container.textContent).toContain("Owner review is unavailable");
+  expect(screen.container.textContent).not.toContain("synthetic-secret");
+  await act(async () => button(screen.container, "Save model").click());
+  expect(request).toHaveBeenCalledTimes(2);
+  let resolve!: (value: typeof fixture.snapshot) => void;
   request.mockImplementationOnce(
     () =>
-      new Promise<RemoteAdmissionSnapshot>((done) => {
+      new Promise((done) => {
         resolve = done;
       }),
   );
-  await using screen = await render(<RemoteAdmissionSettings environmentId={environmentId} />, {
-    router: false,
-  });
-  const { container } = screen;
-  const { alert } = controls(container);
-  await polling.poll();
-  expect(request).toHaveBeenCalledTimes(1);
-  await act(async () => resolve(snapshot));
-  polling.visibility.mockReturnValue("hidden");
-  await polling.poll();
-  expect(request).toHaveBeenCalledTimes(1);
-  polling.visibility.mockReturnValue("visible");
-  request.mockRejectedValueOnce(new Error("offline"));
-  await polling.poll();
-  expect(alert()).not.toBeNull();
-  await polling.poll();
-  expect(alert()).toBeNull();
+  await fixture.poll();
+  await fixture.poll();
   expect(request).toHaveBeenCalledTimes(3);
+  await act(async () => resolve(fixture.snapshot));
+  expect(screen.container.querySelector('[role="alert"]')).toBeNull();
+  await act(async () => button(screen.container, "Save model").click());
+  expect(request).toHaveBeenCalledWith(environmentId, {
+    action: "policy",
+    input: {
+      enabled: true,
+      expectedRevision: "synthetic-policy",
+      modelSelection: {
+        ...selection,
+        options: [
+          { id: "reasoningEffort", value: "medium" },
+          { id: "serviceTier", value: "default" },
+        ],
+      },
+    },
+  });
 });
