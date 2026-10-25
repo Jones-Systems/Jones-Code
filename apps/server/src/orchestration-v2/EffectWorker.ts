@@ -42,7 +42,10 @@ import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
 import { findSteerFailure } from "../jones/orchestration/LateSteer.ts";
-import { makeActionWorkerAdmission } from "../jones/orchestration/actionWorkerAdmission.ts";
+import {
+  actionWorkerLane,
+  makeActionWorkerAdmission,
+} from "../jones/orchestration/actionWorkerAdmission.ts";
 import { continueRestartedRun } from "./RestartContinuation.ts";
 
 export class OrchestrationEffectExecutionError extends Schema.TaggedError<OrchestrationEffectExecutionError>()(
@@ -709,12 +712,17 @@ export interface OrchestrationEffectWorkerV2Shape {
   readonly awaitWork: Effect.Effect<void>;
   readonly runOnce: Effect.Effect<boolean, OrchestrationEffectWorkerError>;
   readonly runActionOnce: Effect.Effect<boolean, OrchestrationEffectWorkerError>;
+  readonly runUrgentOnce: Effect.Effect<boolean, OrchestrationEffectWorkerError>;
   readonly runRecoveryOnce: Effect.Effect<boolean, OrchestrationEffectWorkerError>;
   readonly nextClaimableAt: Effect.Effect<
     Option.Option<DateTime.Utc>,
     OrchestrationEffectWorkerError
   >;
   readonly nextActionClaimableAt: Effect.Effect<
+    Option.Option<DateTime.Utc>,
+    OrchestrationEffectWorkerError
+  >;
+  readonly nextUrgentClaimableAt: Effect.Effect<
     Option.Option<DateTime.Utc>,
     OrchestrationEffectWorkerError
   >;
@@ -839,13 +847,18 @@ export const layerWithOptions = (
 
       // The worker probes for work repeatedly, including when the outbox is empty.
       const runOnce = Effect.fnUntraced(
-        function* (excludeRestartContinuations = false, excludeTitleGeneration = false) {
+        function* (
+          excludeRestartContinuations = false,
+          excludeTitleGeneration = false,
+          urgentOnly = false,
+        ) {
           const claimExit = yield* Effect.exit(
             outbox.claimNext({
               workerId,
               leaseDurationMs,
               excludeRestartContinuations,
               excludeTitleGeneration,
+              urgentOnly,
             }),
           );
           yield* increment(orchestrationEffectClaimsTotal, {
@@ -1018,7 +1031,12 @@ export const layerWithOptions = (
           }
           return true;
         },
-        (effect, _excludeRestartContinuations?: boolean, _excludeTitleGeneration?: boolean) =>
+        (
+          effect,
+          _excludeRestartContinuations?: boolean,
+          _excludeTitleGeneration?: boolean,
+          _urgentOnly?: boolean,
+        ) =>
           effect.pipe(
             Effect.mapError((cause) =>
               isOrchestrationEffectWorkerError(cause)
@@ -1028,8 +1046,8 @@ export const layerWithOptions = (
           ),
       );
 
-      const nextClaimableAt = (excludeTitleGeneration = false) =>
-        outbox.nextClaimableAt({ excludeTitleGeneration }).pipe(
+      const nextClaimableAt = (excludeTitleGeneration = false, urgentOnly = false) =>
+        outbox.nextClaimableAt({ excludeTitleGeneration, urgentOnly }).pipe(
           Effect.mapError(
             (cause) =>
               new OrchestrationEffectWorkerError({
@@ -1043,9 +1061,11 @@ export const layerWithOptions = (
         awaitWork: outbox.awaitAvailable,
         runOnce: runOnce(),
         runActionOnce: runOnce(false, true),
+        runUrgentOnce: runOnce(false, false, true),
         runRecoveryOnce: runOnce(true),
         nextClaimableAt: nextClaimableAt(),
         nextActionClaimableAt: nextClaimableAt(true),
+        nextUrgentClaimableAt: nextClaimableAt(false, true),
         drain: Effect.fn("EffectWorker.drain")(function* (maxEffects = Number.MAX_SAFE_INTEGER) {
           let completed = 0;
           while (completed < maxEffects && (yield* runOnce())) {
@@ -1086,17 +1106,27 @@ export const runDaemonWithOptions = (options: OrchestrationEffectDaemonOptions =
       // durable retry schedule, and the long liveness poll only recovers from a
       // missed in-process notification or work inserted by another process.
       const runWorker = Effect.fnUntraced(function* (index: number) {
-        const reserved = admission !== undefined && index === 0;
-        const runOnce = reserved ? worker.runActionOnce : worker.runOnce;
-        const readNextClaimableAt = reserved
-          ? worker.nextActionClaimableAt
-          : worker.nextClaimableAt;
+        const lane = actionWorkerLane(index, concurrency);
+        const runOnce =
+          lane === "urgent"
+            ? worker.runUrgentOnce
+            : lane === "action"
+              ? worker.runActionOnce
+              : worker.runOnce;
+        const readNextClaimableAt =
+          lane === "urgent"
+            ? worker.nextUrgentClaimableAt
+            : lane === "action"
+              ? worker.nextActionClaimableAt
+              : worker.nextClaimableAt;
         const awaitWork =
           admission === undefined
             ? worker.awaitWork
-            : reserved
-              ? admission.awaitActionWork
-              : admission.awaitMixedWork;
+            : lane === "urgent"
+              ? admission.awaitUrgentWork
+              : lane === "action"
+                ? admission.awaitActionWork
+                : admission.awaitMixedWork;
         while (true) {
           const outcome = yield* runOnce.pipe(
             Effect.map((worked) => (worked ? ("worked" as const) : ("idle" as const))),

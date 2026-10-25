@@ -144,6 +144,7 @@ it.effect("parks automatic pull until activation without delaying command readin
           runOnce: Effect.never,
           awaitWork: Effect.never,
           runActionOnce: Effect.never,
+          runUrgentOnce: Effect.never,
         }),
         Layer.mock(ServerLifecycleEvents.ServerLifecycleEvents)({
           publish: (event) => Effect.succeed({ ...event, sequence: 1 }),
