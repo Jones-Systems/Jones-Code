@@ -302,47 +302,49 @@ describe("Codex pre-ACK item reader progress", () => {
           Effect.forkScoped,
         );
         const now = yield* DateTime.now;
-        const start = yield* runtime.startTurn({
-          appThread: {
-            createdBy: "user",
-            creationSource: "web",
-            id: threadId,
-            projectId: ProjectId.make("pre-ack-reader-project"),
-            title: "Reader progress",
-            providerInstanceId: modelSelection.instanceId,
+        const start = yield* runtime
+          .startTurn({
+            appThread: {
+              createdBy: "user",
+              creationSource: "web",
+              id: threadId,
+              projectId: ProjectId.make("pre-ack-reader-project"),
+              title: "Reader progress",
+              providerInstanceId: modelSelection.instanceId,
+              modelSelection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: null,
+              activeProviderThreadId: providerThread.id,
+              lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+              forkedFrom: null,
+              createdAt: now,
+              updatedAt: now,
+              archivedAt: null,
+              settledOverride: null,
+              settledAt: null,
+              lastVisitedAt: null,
+              deletedAt: null,
+            },
+            threadId,
+            runId: RunId.make("pre-ack-reader-run"),
+            runOrdinal: 1,
+            providerTurnOrdinal: 1,
+            attemptId: RunAttemptId.make("pre-ack-reader-attempt"),
+            rootNodeId: NodeId.make("pre-ack-reader-node"),
+            providerThread,
+            message: {
+              createdBy: "user",
+              creationSource: "web",
+              messageId: MessageId.make("pre-ack-reader-message"),
+              text: "Work",
+              attachments: [],
+            },
             modelSelection,
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            branch: null,
-            worktreePath: null,
-            activeProviderThreadId: providerThread.id,
-            lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
-            forkedFrom: null,
-            createdAt: now,
-            updatedAt: now,
-            archivedAt: null,
-            settledOverride: null,
-            settledAt: null,
-            lastVisitedAt: null,
-            deletedAt: null,
-          },
-          threadId,
-          runId: RunId.make("pre-ack-reader-run"),
-          runOrdinal: 1,
-          providerTurnOrdinal: 1,
-          attemptId: RunAttemptId.make("pre-ack-reader-attempt"),
-          rootNodeId: NodeId.make("pre-ack-reader-node"),
-          providerThread,
-          message: {
-            createdBy: "user",
-            creationSource: "web",
-            messageId: MessageId.make("pre-ack-reader-message"),
-            text: "Work",
-            attachments: [],
-          },
-          modelSelection,
-          runtimePolicy,
-        }).pipe(Effect.result, Effect.forkScoped);
+            runtimePolicy,
+          })
+          .pipe(Effect.result, Effect.forkScoped);
         // Wait for real notification handlers to finish, not just for the replay
         // transport to enqueue their frames. The original RPC is still withheld.
         yield* Deferred.await(preAckHandled);
@@ -408,7 +410,10 @@ describe("Codex pre-ACK item reader progress", () => {
         assert.equal(events.filter((event) => event.type === "turn.terminal").length, 1);
         const terminalIndex = events.findIndex((event) => event.type === "turn.terminal");
         const deltaIndex = events.findIndex((event) => event.type === "command_output.delta");
-        assert.isAbove(deltaIndex, events.findIndex((event) => event.type === "turn_item.updated"));
+        assert.isAbove(
+          deltaIndex,
+          events.findIndex((event) => event.type === "turn_item.updated"),
+        );
         assert.isAbove(events.indexOf(completed[0]!), deltaIndex);
         assert.isAbove(terminalIndex, events.indexOf(completed[0]!));
       }).pipe(

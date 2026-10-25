@@ -2036,7 +2036,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         );
         const registrations: Array<(producer: CodexRuntimeProducer) => Effect.Effect<void>> = [];
         const pendingStartNotifications =
-          makeCodexPendingStartNotifications<Effect.Effect<void, CodexErrors.CodexAppServerError>>();
+          makeCodexPendingStartNotifications<
+            Effect.Effect<void, CodexErrors.CodexAppServerError>
+          >();
         const handleServerNotification: CodexRuntimeProducer["client"]["handleServerNotification"] =
           (method, handler) => {
             const install = (producer: CodexRuntimeProducer) =>

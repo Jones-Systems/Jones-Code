@@ -17,7 +17,9 @@ describe("Codex pending-start notifications", () => {
     const dispatch = makeCodexLateStartRecovery().begin(binding, ["historical"]);
     buffer.begin(dispatch);
     expect(buffer.capture("old-producer", "item/started", payload(), "stale")).toBeUndefined();
-    expect(buffer.capture("producer", "item/started", payload("historical"), "old")).toBeUndefined();
+    expect(
+      buffer.capture("producer", "item/started", payload("historical"), "old"),
+    ).toBeUndefined();
     expect(
       buffer.capture("producer", "item/started", { ...payload(), threadId: "other" }, "other"),
     ).toBeUndefined();
@@ -95,7 +97,8 @@ describe("Codex pending-start notifications", () => {
     if (limit === "count") {
       for (let index = 1; index < 512; index++)
         expect(
-          buffer.capture("producer", "item/commandExecution/outputDelta", payload(), "delta")?.status,
+          buffer.capture("producer", "item/commandExecution/outputDelta", payload(), "delta")
+            ?.status,
         ).toBe("buffered");
     }
     expect(
