@@ -4,6 +4,14 @@
   "baseline": "05b697f6a2012497ae790425e197fbd1fcef7de7",
   "features": [
     {
+      "id": "cross-environment-model-selection",
+      "tests": [
+        "apps/web/src/jones/settings/modelSelectionCorrespondence.test.ts",
+        "apps/web/src/jones/settings/modelSelectionCorrespondence.plan.test.ts"
+      ],
+      "scope": "Scoped web model settings use one Jones resolver for full-catalog configured-label correspondence, destination readiness, all four selection keys and semantic Mixed display. Generic planner hooks resolve every environment or project member before dispatch. Same-environment and no-resolver behavior, null inheritance and existing RPC failure reporting are preserved. Narrow accepted-shared SettingsPanels hooks retain literal text-generation reset and restore defaults; settingsLayout routes row inheritance indicators through the same semantic comparator. No server fallback, registration, migration, mobile, MCP, composer or installed-runtime changes."
+    },
+    {
       "id": "vitest-scratch-cleanup",
       "tests": ["scripts/jones/test-scratch/vitest-cleanup.node-test.mjs"],
       "scope": "Serial real Vitest pass/fail fixtures resolve through installed VitePlus, positively observe transformed SHA1 modules with filesystem caching disabled, and require removal after context close and child exit. Exact owned disk fixtures are removed only after consumers close. The scripts package registration is an accepted shared edit; no app, dependency, lockfile or runtime changes."
