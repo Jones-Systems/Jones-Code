@@ -845,6 +845,7 @@
     "docs/ui-map/README.md": "jones-owned",
     "docs/ui-map/host-status.md": "jones-owned",
     "docs/ui-map/settings.md": "jones-owned",
+    "docs/ui-map/requests.md": "jones-owned",
     "docs/ui-map/thread-chat.md": "jones-owned",
     "docs/ui-map/workstreams.md": "jones-owned",
     "docs/user/background-service.md": "accepted-shared",
@@ -1672,7 +1673,6 @@
     "apps/web/src/jones/shellDestination/terminalAttachment.browser.test.tsx": "jones-owned",
     "apps/web/src/components/chat/ThreadActivityBanners.browser.test.tsx": "jones-tests-in-upstream",
     "apps/web/src/components/chat/TimelineAssistantRows.tsx": "hook",
-    "apps/mobile/src/features/diffs/nativeReviewDiffHighlighter.test.ts": "accepted-shared",
     "scripts/jones/boundary/fragments/thread-stall-recovery.json": "jones-owned",
     "apps/server/src/provider/ProviderOrchestrationAdapterInfrastructure.ts": "hook",
     "apps/server/src/orchestration-v2/ProjectionControlReads.test.ts": "jones-tests-in-upstream",
@@ -1858,6 +1858,10 @@
     "packages/contracts/src/jones/threadActivitySettings.ts": "jones-owned",
     "packages/contracts/src/jones/threadActivitySettings.test.ts": "jones-owned",
     "apps/web/src/jones/threadStatusFilter/ThreadActivitySettings.tsx": "jones-owned",
+    "apps/server/src/jones/orchestration/threadReferenceExcerpt.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/threadReferenceExcerpt.test.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/threadReferenceCoherent.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/coherent-reference-reads.json": "jones-owned",
     "apps/web/src/jones/markdown/MermaidDiagram.browser.test.tsx": "jones-owned"
   },
   "jonesOwnedPaths": [
