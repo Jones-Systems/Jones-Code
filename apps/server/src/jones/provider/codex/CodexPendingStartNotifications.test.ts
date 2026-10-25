@@ -73,50 +73,58 @@ describe("Codex pending-start notifications", () => {
     expect(buffer.take(next)).toBeUndefined();
   });
 
-  it.each(["before-ack", "during-replay"] as const)("orders a goal successor after its %s terminal", (terminalTiming) => {
-    const buffer = makeCodexPendingStartNotifications<string>();
-    const dispatch = makeCodexLateStartRecovery().begin(binding, ["historical"]);
-    buffer.begin(dispatch);
-    buffer.capture("producer", "item/started", payload("successor"), "unrelated-before-ack");
-    buffer.capture("producer", "item/started", payload(), "replay-in-progress");
-    buffer.acknowledge(dispatch, "turn", terminalTiming === "before-ack" ? "terminal" : undefined);
-    expect(buffer.take(dispatch)).toBe("replay-in-progress");
-    if (terminalTiming === "during-replay") buffer.capture(
-      "producer",
-      "turn/completed",
-      { threadId: "thread", turn: { id: "turn" } },
-      "terminal",
-    );
-    expect(
+  it.each(["before-ack", "during-replay"] as const)(
+    "orders a goal successor after its %s terminal",
+    (terminalTiming) => {
+      const buffer = makeCodexPendingStartNotifications<string>();
+      const dispatch = makeCodexLateStartRecovery().begin(binding, ["historical"]);
+      buffer.begin(dispatch);
+      buffer.capture("producer", "item/started", payload("successor"), "unrelated-before-ack");
+      buffer.capture("producer", "item/started", payload(), "replay-in-progress");
+      buffer.acknowledge(
+        dispatch,
+        "turn",
+        terminalTiming === "before-ack" ? "terminal" : undefined,
+      );
+      expect(buffer.take(dispatch)).toBe("replay-in-progress");
+      if (terminalTiming === "during-replay")
+        buffer.capture(
+          "producer",
+          "turn/completed",
+          { threadId: "thread", turn: { id: "turn" } },
+          "terminal",
+        );
+      expect(
+        buffer.capture(
+          "producer",
+          "turn/started",
+          { threadId: "thread", turn: { id: "successor" } },
+          "successor",
+        )?.status,
+      ).toBe("buffered");
+      buffer.capture("producer", "item/started", payload("successor"), "successor-item");
       buffer.capture(
         "producer",
-        "turn/started",
-        { threadId: "thread", turn: { id: "successor" } },
-        "successor",
-      )?.status,
-    ).toBe("buffered");
-    buffer.capture("producer", "item/started", payload("successor"), "successor-item");
-    buffer.capture(
-      "producer",
-      "thread/tokenUsage/updated",
-      payload("successor"),
-      "successor-usage",
-    );
-    buffer.capture(
-      "producer",
-      "thread/goal/updated",
-      { threadId: "thread", turnId: null },
-      "goal-update",
-    );
-    buffer.capture("producer", "thread/goal/cleared", { threadId: "thread" }, "goal-cleared");
-    expect(buffer.take(dispatch)).toBe("terminal");
-    expect(buffer.take(dispatch)).toBe("successor");
-    expect(buffer.take(dispatch)).toBe("successor-item");
-    expect(buffer.take(dispatch)).toBe("successor-usage");
-    expect(buffer.take(dispatch)).toBe("goal-update");
-    expect(buffer.take(dispatch)).toBe("goal-cleared");
-    expect(buffer.take(dispatch)).toBeUndefined();
-  });
+        "thread/tokenUsage/updated",
+        payload("successor"),
+        "successor-usage",
+      );
+      buffer.capture(
+        "producer",
+        "thread/goal/updated",
+        { threadId: "thread", turnId: null },
+        "goal-update",
+      );
+      buffer.capture("producer", "thread/goal/cleared", { threadId: "thread" }, "goal-cleared");
+      expect(buffer.take(dispatch)).toBe("terminal");
+      expect(buffer.take(dispatch)).toBe("successor");
+      expect(buffer.take(dispatch)).toBe("successor-item");
+      expect(buffer.take(dispatch)).toBe("successor-usage");
+      expect(buffer.take(dispatch)).toBe("goal-update");
+      expect(buffer.take(dispatch)).toBe("goal-cleared");
+      expect(buffer.take(dispatch)).toBeUndefined();
+    },
+  );
 
   it("clears cancelled or failed dispatches without clearing their replacement", () => {
     const buffer = makeCodexPendingStartNotifications<string>();
