@@ -1372,10 +1372,12 @@ def activate(intent_file):
     finally:
         release_writer_exclusion(exclusive_writers)
 
-def manual_install_plan(plan_path, plan_sha256):
+def manual_install_plan(plan_path, plan_sha256, clone_required=False):
     plan, raw, _ = bounded_native_json(pathlib.Path(plan_path))
     if hashlib.sha256(raw).hexdigest() != plan_sha256 or plan.get('protocol') != 1 or plan.get('restart') != 'ordinary':
         raise RuntimeError('Manual installation plan changed or restart mode is unsupported.')
+    if ('stateRecovery' in plan) != clone_required or ('stateRecovery' in plan and plan['stateRecovery'] != 'clone-required'):
+        raise RuntimeError('Manual state recovery policy must match --require-clone.')
     expected, manifest_raw, _ = bounded_native_json(manifest_path)
     if hashlib.sha256(manifest_raw).hexdigest() != plan.get('expectedManifestSha256') or expected.get('owner') != 'desktop' or expected.get('protocol') != PROTOCOL:
         raise RuntimeError('Manual installation admission preimage changed.')
@@ -1422,16 +1424,25 @@ def manual_install_plan(plan_path, plan_sha256):
             raise RuntimeError('Manual process identity is invalid.')
         alive(proof)
     if not launch_services_available(): raise RuntimeError('LaunchServices is unavailable; manual installation was not started.')
+    if clone_required:
+        try: darwin_clonefile()
+        except (OSError, AttributeError) as error:
+            raise RuntimeError('Required clonefile capability is unavailable; installation was not started.') from error
+        if pathlib.Path(expected['databasePath']).parent.stat().st_dev != manifest_path.parent.stat().st_dev:
+            raise RuntimeError('Required state clones need same-volume recovery; installation was not started.')
     return plan, expected, manifest_raw
 
-def manual_install(plan_path, plan_sha256, apply=False):
+def manual_install(plan_path, plan_sha256, apply=False, clone_required=False):
     # This explicit operator route uses ordinary restart, never forged warm
     # preparation/continuation receipts. Legacy relaunchers must be stopped by
     # the operator; lsof and cooperative leases do not establish universal exclusion.
-    plan, expected, manifest_raw = manual_install_plan(plan_path, plan_sha256)
+    # Only explicit clone-required recovery omits state copy capacity and reserves
+    # headroom before shutdown; defaults retain conservative copy fallback.
+    plan, expected, manifest_raw = manual_install_plan(plan_path, plan_sha256, clone_required)
+    state_recovery = 'clone-required' if clone_required else 'clone-or-copy'
     if not apply:
         return {'protocol': 1, 'operation': 'manual-install', 'status': 'ready',
-                'automaticContinuationRequested': False, 'sourceSha': plan['candidate']['sourceSha']}
+                'automaticContinuationRequested': False, 'sourceSha': plan['candidate']['sourceSha'], 'stateRecovery': state_recovery}
     transaction_id = uuid.uuid4().hex + uuid.uuid4().hex
     directory = manifest_path.parent / 'jones-manual-installs' / transaction_id
     directory.mkdir(parents=True, mode=0o700)
@@ -1440,15 +1451,19 @@ def manual_install(plan_path, plan_sha256, apply=False):
     receipt = {'protocol': 1, 'operation': 'manual-install', 'transactionId': transaction_id,
                'planSha256': plan_sha256, 'originalManifest': manifest_raw.decode(),
                'installed': plan['installed'], 'candidate': plan['candidate'],
-               'automaticContinuationRequested': False, 'phase': 'preparing'}
+               'automaticContinuationRequested': False, 'phase': 'preparing', 'stateRecovery': state_recovery}
     def record(phase, **fields):
         receipt.update(fields, phase=phase)
         durable(receipt_path, receipt)
     record('preparing')
     writers = []
+    reserves = []
     try:
-        storage = storage_preflight(expected, plan['candidate'], directory)
+        storage = storage_preflight(expected, plan['candidate'], directory, clone_required)
         record('preparing', storage=storage)
+        if clone_required:
+            reserves = reserve_recovery_capacity(expected, directory, storage)
+            record('preparing', recoveryReserves=list(reserves))
         stop_exact(plan['processes'])
         prove_quiescence(expected)
         writers = acquire_writer_exclusion(expected)
@@ -1458,8 +1473,8 @@ def manual_install(plan_path, plan_sha256, apply=False):
             raise RuntimeError('The captured old writers have not stopped.')
         if manifest_path.read_bytes() != manifest_raw or app_digest(plan['installed']['appPath']) != plan['installed']['appDigest']:
             raise RuntimeError('Manual installation preimage changed after shutdown.')
-        pair_state(expected, directory / 'previous-pair')
-        record('paired', pairedState=str(directory / 'previous-pair'))
+        pair_state(expected, directory / 'previous-pair', clone_required)
+        record('paired', pairedState=str(directory / 'previous-pair'), recovery=read(directory / 'previous-pair' / 'pair.json')['recovery'])
         incoming, previous = prepare_bundle(expected, plan['candidate'], transaction_id)
         record('swap-intent', incomingBundle=str(incoming), previousBundle=str(previous))
         if manifest_path.read_bytes() != manifest_raw:
@@ -1482,16 +1497,23 @@ def manual_install(plan_path, plan_sha256, apply=False):
         writers = []
         process = launch(next_active)
         record('launched', process=process)
-        return {'protocol': 1, 'operation': 'manual-install', 'status': 'launched',
-                'sourceSha': next_active['sourceSha'], 'process': process, 'receiptPath': str(receipt_path),
-                'automaticContinuationRequested': False, 'readinessVerified': False}
     except Exception as failure:
         # An ordinary candidate may already have migrated state. Preserve both
         # generations; a failed response never authorizes replay or stale restore.
-        record('held', stoppedAt=receipt['phase'], message=str(failure))
+        message = str(failure)
+        try: release_recovery_reserve(reserves, 'journal')
+        except Exception: message += '; recovery reserve ownership uncertain'
+        record('held', stoppedAt=receipt['phase'], message=message)
         raise
     finally:
         release_writer_exclusion(writers)
+    try: release_recovery_reserve(reserves)
+    except Exception:
+        try: record('launched', recoveryReserveCleanup='held')
+        except Exception: pass
+    return {'protocol': 1, 'operation': 'manual-install', 'status': 'launched',
+            'sourceSha': next_active['sourceSha'], 'process': process, 'receiptPath': str(receipt_path),
+            'automaticContinuationRequested': False, 'readinessVerified': False, 'stateRecovery': state_recovery}
 
 
 parser = argparse.ArgumentParser()
@@ -1519,8 +1541,10 @@ parser.add_argument('--staged-handle')
 parser.add_argument('--selection')
 parser.add_argument('--selection-sha256')
 parser.add_argument('--plan-sha256')
+parser.add_argument('--require-clone', action='store_true')
 parser.add_argument('arguments', nargs=argparse.REMAINDER)
 args = parser.parse_args()
+if args.require_clone and not (args.inspect_manual_install or args.manual_install): parser.error('--require-clone requires a manual installation action')
 if args.arguments and args.arguments[0] == '--': args.arguments = args.arguments[1:]
 manifest_path = pathlib.Path(args.manifest).resolve(strict=True)
 if sys.platform != 'darwin': raise SystemExit('The Jones native helper requires macOS.')
@@ -1569,7 +1593,7 @@ with os.fdopen(descriptor, 'r+', encoding='utf8') as lock:
         raise SystemExit('Native launcher bootstrap is required.')
     manual_plan = args.inspect_manual_install or args.manual_install
     if manual_plan:
-        print(json.dumps(manual_install(manual_plan, args.plan_sha256, apply=args.manual_install is not None)))
+        print(json.dumps(manual_install(manual_plan, args.plan_sha256, apply=args.manual_install is not None, clone_required=args.require_clone)))
         raise SystemExit(0)
     bundle_identity(active)
     if args.withdraw_preparation:

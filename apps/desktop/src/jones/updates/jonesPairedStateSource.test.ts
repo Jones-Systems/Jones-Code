@@ -2,6 +2,7 @@
 import * as NodeChildProcess from "node:child_process";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- The raw-source consumer must read the same tracked literals as the TypeScript composer.
 import * as NodeFSP from "node:fs/promises";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { describe, expect, it } from "vite-plus/test";
 // @ts-expect-error -- This standalone Node fixture has no declaration file; its output is checked against the typed source exports below.
 import * as PairedExecutorFixture from "../../../../../scripts/jones/updates/paired-executor-fixture.mjs";
@@ -99,7 +100,76 @@ with tempfile.TemporaryDirectory(prefix='paired-identity-') as scratch:
 assert not root.exists()
 `;
 
+const appleCloneScenario = String.raw`
+import tempfile, errno
+with tempfile.TemporaryDirectory(prefix='paired-apple-clone-') as scratch:
+    root = pathlib.Path(scratch)
+    home, transaction = root / 'userdata', root / 'transaction'
+    home.mkdir(); transaction.mkdir()
+    database = home / 'state.sqlite'
+    originals = {'state.sqlite': b'previous-database', 'state.sqlite-wal': b'previous-wal',
+                 'state.sqlite-shm': b'previous-shm', 'settings.json': b'previous-settings'}
+    for name, content in originals.items():
+        path = home / name
+        path.write_bytes(content)
+        path.chmod(0o640)
+        os.utime(path, ns=(1700000000123456789, 1700000000123456789))
+    expected = {'databasePath': str(database), 'profile': str(root / 'profile')}
+    pair = transaction / 'previous-pair'
+    pair_state(expected, pair, clone_required=True)
+    assert read(pair / 'pair.json')['recovery']['method'] == 'clone'
+    for name, content in originals.items():
+        source, snapshot = home / name, pair / name
+        assert snapshot.read_bytes() == content
+        assert stat.S_IMODE(snapshot.stat().st_mode) == stat.S_IMODE(source.stat().st_mode)
+        assert snapshot.stat().st_mtime_ns == source.stat().st_mtime_ns
+    database.write_bytes(b'advanced-database')
+    (home / 'state.sqlite-wal').write_bytes(b'advanced-wal')
+    assert (pair / 'state.sqlite').read_bytes() == originals['state.sqlite']
+    assert (pair / 'state.sqlite-wal').read_bytes() == originals['state.sqlite-wal']
+    probe = transaction / 'probe'
+    clone_file(database, probe, required=True)
+    probe.write_bytes(b'changed-probe')
+    assert database.read_bytes() == b'advanced-database'
+    database.write_bytes(b'advanced-again')
+    assert probe.read_bytes() == b'changed-probe'
+    try: clone_file(database, probe, required=True)
+    except OSError as error: assert error.errno == errno.EEXIST
+    else: raise AssertionError('Existing clone target was replaced')
+    assert probe.read_bytes() == b'changed-probe'
+    link = transaction / 'link'
+    link.symlink_to(database)
+    try: clone_file(link, transaction / 'link-copy', required=True)
+    except RuntimeError: pass
+    else: raise AssertionError('Symlink recovery source was accepted')
+    assert not (transaction / 'link-copy').exists()
+    prove_quiescence = lambda active: None
+    guard = {'syntheticGeneration': 1}
+    native_authority_transition = lambda active, candidate, operation, supplied=None: guard
+    advanced = transaction / 'advanced-state'
+    restore_pair(expected, pair, advanced, {})
+    for name, content in originals.items(): assert (home / name).read_bytes() == content
+    assert (advanced / 'state.sqlite').read_bytes() == b'advanced-again'
+    assert (advanced / 'state.sqlite-wal').read_bytes() == b'advanced-wal'
+assert not root.exists()
+`;
+
 describe("shared paired-state Python source", () => {
+  it.runIf(HostProcess.Platform.defaultValue() === "darwin")(
+    "clones the complete pair with real APFS isolation and restores it by rename",
+    () => {
+      const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      NodeChildProcess.execFileSync(
+        "python3",
+        ["-I", "-c", definitions + "\n" + appleCloneScenario],
+        {
+          encoding: "utf8",
+          timeout: 10_000,
+        },
+      );
+    },
+  );
+
   it.each(["present", "absent", "manifest-missing", "fence-failed", "symlink", "directory"])(
     "preserves environment identity and authority boundaries: %s",
     (fault) => {
