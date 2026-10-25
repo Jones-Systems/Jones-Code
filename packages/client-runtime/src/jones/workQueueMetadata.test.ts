@@ -1,3 +1,4 @@
+/// <reference path="../../../contracts/src/workstreams-fixtures/raw-fixtures.d.ts" />
 import { expect, it } from "@effect/vitest";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -5,7 +6,14 @@ import * as Option from "effect/Option";
 import { RelayConnectionTarget, type PreparedConnection } from "../connection/model.ts";
 import type { ManagedRelayDpopSigner } from "../relay/managedRelay.ts";
 import { layerRemoteHttpClient } from "../rpc/http.ts";
-import { fetchWorkQueueMetadata } from "./workQueueMetadata.ts";
+import {
+  fetchWorkQueueMetadata,
+  publishWorkQueueLocalNames,
+  readWorkQueueLocalNames,
+  subscribeWorkQueueLocalNames,
+  workQueueDestinationLabel,
+} from "./workQueueMetadata.ts";
+import producerV4Raw from "../../../contracts/src/jones/fixtures/work_queue_metadata_v4.json.fixture?raw";
 
 function connection(id: string, cookie = false): PreparedConnection {
   const environmentId = EnvironmentId.make(id);
@@ -72,3 +80,50 @@ it.effect("keeps old or unreachable servers unavailable without returning mock o
     });
   }),
 );
+
+it.effect("fetches v4 unchanged from the selected environment without a name lookup", () =>
+  Effect.gen(function* () {
+    const snapshot = JSON.parse(producerV4Raw);
+    const response = { status: "ready", snapshot, expires_at_ms: 30_100 };
+    const calls: string[] = [];
+    const layer = layerRemoteHttpClient(async (url) => {
+      calls.push(String(url));
+      return Response.json(response);
+    });
+    expect(
+      yield* fetchWorkQueueMetadata({ prepared: connection("selected"), signer }).pipe(
+        Effect.provide(layer),
+      ),
+    ).toEqual(response);
+    expect(calls).toEqual(["https://selected.test/api/work-queue/metadata"]);
+  }),
+);
+it("uses only same-environment safe local labels and clears them with their owner", () => {
+  let notifications = 0;
+  const unsubscribe = subscribeWorkQueueLocalNames(() => {
+    notifications += 1;
+  });
+  const release = publishWorkQueueLocalNames("env", [
+    { workstreamId: "work", name: "Local project" },
+  ]);
+  try {
+    expect(workQueueDestinationLabel("work", "env", readWorkQueueLocalNames())).toBe(
+      "Local project (work)",
+    );
+    expect(workQueueDestinationLabel("work", "other", readWorkQueueLocalNames())).toBe("work");
+    expect(workQueueDestinationLabel("missing", "env", readWorkQueueLocalNames())).toBe("missing");
+    for (const name of ["", "   ", "x".repeat(257), "bad\nname", "hidden\u202ename"]) {
+      expect(
+        workQueueDestinationLabel("work", "env", {
+          environmentId: "env",
+          names: new Map([["work", name]]),
+        }),
+      ).toBe("work");
+    }
+  } finally {
+    release();
+    unsubscribe();
+  }
+  expect(readWorkQueueLocalNames()).toBeNull();
+  expect(notifications).toBe(2);
+});

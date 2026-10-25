@@ -12,6 +12,14 @@
     {
       "from": "apps/server/src/server.ts",
       "to": "apps/server/src/jones/orchestration/shellMaterialization.ts"
+    },
+    {
+      "from": "apps/server/src/ws.test.ts",
+      "to": "apps/server/src/jones/orchestration/shellMaterialization.ts"
+    },
+    {
+      "from": "apps/server/integration/transferBudgetV2.integration.test.ts",
+      "to": "apps/server/src/jones/orchestration/shellMaterialization.ts"
     }
   ]
 }

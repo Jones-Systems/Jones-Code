@@ -69,8 +69,8 @@ function setup(
           bridge: { openDeviceMediaTunnel: open, closeDeviceMediaTunnel: close },
         }),
     fetch,
-    // @effect-diagnostics-next-line globalDate:off -- Grant deadlines must share the Vitest fake timer clock.
-    now: () => Date.now(),
+    // Grant deadlines share the Vitest fake timer clock.
+    now: () => vi.getMockedSystemTime()!.getTime(),
     retire: () => {
       order.push("retire");
       options.retire?.();
@@ -738,8 +738,8 @@ describe("device media route", () => {
       open: async () => ({ ...tunnel, id: `tunnel-${++leases}` }),
       fetch: async (url) =>
         String(url).includes("/direct-access")
-          ? // @effect-diagnostics-next-line globalDate:off -- Renewal advances with the same fake clock as the route manager.
-            Response.json({ ...grant, expiresAt: Date.now() + 300_000 })
+          ? // Renewal advances with the same fake clock as the route manager.
+            Response.json({ ...grant, expiresAt: vi.getMockedSystemTime()!.getTime() + 300_000 })
           : Response.json({ owner: grant.owner, generation: grant.generation }),
     });
     await run.manager.start();

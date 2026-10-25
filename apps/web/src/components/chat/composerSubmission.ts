@@ -70,7 +70,7 @@ export function handleComposerEnter(options: {
   const intent = composerSubmissionIntentForKey({ ...options.intent, event });
   if (
     (intent === null || intent === "foreground") &&
-    !options.intent.isMobileViewport &&
+    !options.intent.isSoftwareKeyboardOpen &&
     !event.shiftKey &&
     !event.altKey &&
     !event.metaKey &&

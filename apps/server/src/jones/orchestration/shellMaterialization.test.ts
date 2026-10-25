@@ -60,8 +60,9 @@ const testLayer = (input: {
     Layer.provide(NodeSqliteClient.layer({ filename: ":memory:" })),
   );
 
-for (const subscribers of [1, 2, 8, 32]) {
-  it.effect(`${subscribers} materialization subscribers share one read and preserve output`, () =>
+it.effect.each([1, 2, 8, 32])(
+  "%i materialization subscribers share one read and preserve output",
+  (subscribers) =>
     Effect.gen(function* () {
       let reads = 0;
       const value = shell("shared");
@@ -92,8 +93,7 @@ for (const subscribers of [1, 2, 8, 32]) {
         ),
       );
     }),
-  );
-}
+);
 
 it.effect("late subscribers reuse the committed version across different event sequences", () =>
   Effect.gen(function* () {

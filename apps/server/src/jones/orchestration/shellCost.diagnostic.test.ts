@@ -10,7 +10,6 @@ import {
   type ApplicationStoredEvent,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
-import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -20,9 +19,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
-import * as Tracer from "effect/Tracer";
 import * as SqlClient from "effect/sql/SqlClient";
-import * as Statement from "effect/sql/Statement";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
@@ -44,8 +41,13 @@ const instanceId = ProviderInstanceId.make("codex");
 const modelSelection = { instanceId, model: "synthetic-shell-cost" };
 const runId = (id: ThreadId, index: number) => RunId.make(`${id}:run:${index}`);
 
-type Query = { text: string; parameters?: ReadonlyArray<unknown> };
-type Measurement = { operation: string; milliseconds: number; statements: Query[] };
+import {
+  measure,
+  NativeTimeline,
+  withNativeWatchdog,
+  type Query,
+  type Measurement,
+} from "./shellCost.testFixtures.ts";
 
 function boundedService<T extends object>(methods: Partial<T>): T {
   return new Proxy(methods, {
@@ -54,47 +56,6 @@ function boundedService<T extends object>(methods: Partial<T>): T {
       return Reflect.get(target, key);
     },
   }) as T;
-}
-
-function measure<A, E, R>(
-  operation: string,
-  effect: Effect.Effect<A, E, R>,
-  measurements: Measurement[],
-): Effect.Effect<A, E, R> {
-  return Effect.suspend(() => {
-    const statements: Query[] = [];
-    const bindings = new WeakMap<Tracer.Span, Query>();
-    const capture: Statement.Transformer = (statement, _sql, _fiber, span) => {
-      const [text, parameters] = statement.compile();
-      bindings.set(span, { text, parameters: [...parameters] });
-      return Effect.succeed(statement);
-    };
-    const tracer = Tracer.make({
-      span(options) {
-        const span = new Tracer.NativeSpan(options);
-        const end = span.end.bind(span);
-        span.end = (endTime, exit) => {
-          end(endTime, exit);
-          const text = span.attributes.get("db.query.text");
-          if (typeof text === "string") {
-            const captured = bindings.get(span);
-            statements.push(captured?.text === text ? captured : { text });
-          }
-        };
-        return span;
-      },
-    });
-    const start = performance.now();
-    return effect.pipe(
-      Effect.provideService(Statement.CurrentTransformer, capture),
-      Effect.withTracer(tracer),
-      Effect.ensuring(
-        Effect.sync(() => {
-          measurements.push({ operation, milliseconds: performance.now() - start, statements });
-        }),
-      ),
-    );
-  });
 }
 
 // These are diagnostic re-executions after timing, not row counts from the timed
@@ -262,8 +223,6 @@ function scenario(clients: number, ending: "complete" | "cancel" | "failure", hi
     let activeEnrichment = 0;
     let liveStarts = 0;
     let markerCount = 0;
-    let releaseAt = 0;
-    let publishedAt = 0;
     let committedSequence = 0;
     const sharedMeasurements: Measurement[] = [];
     const sharedShellCalls: ThreadId[] = [];
@@ -275,6 +234,7 @@ function scenario(clients: number, ending: "complete" | "cancel" | "failure", hi
             Effect.orDie,
           );
         });
+    const timeline = new NativeTimeline();
     const observations = Array.from({ length: clients }, (_, subscriber) => ({
       subscriber,
       measurements: [] as Measurement[],
@@ -287,19 +247,13 @@ function scenario(clients: number, ending: "complete" | "cancel" | "failure", hi
       firstLiveAfterPublishMilliseconds: null as number | null,
     }));
     const bounded = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-      effect.pipe(
-        Effect.raceFirst(
-          Effect.sleep("15 seconds").pipe(
-            Effect.andThen(() =>
-              Effect.die(
-                new Error(
-                  `shell cost milestone stalled: ${JSON.stringify({ clients, ending, activeLive, activeEnrichment, markerCount })}`,
-                ),
-              ),
-            ),
-            Effect.provideService(Clock.Clock, Clock.Clock.defaultValue()),
+      withNativeWatchdog(
+        effect,
+        "15 seconds",
+        () =>
+          new Error(
+            `shell cost milestone stalled: ${JSON.stringify({ clients, ending, activeLive, activeEnrichment, markerCount })}`,
           ),
-        ),
       );
     const applicationEvents = boundedService<
       OrchestrationEventStore.OrchestrationEventStore["Service"]
@@ -395,7 +349,7 @@ function scenario(clients: number, ending: "complete" | "cancel" | "failure", hi
                       kind: item.kind,
                       ...(sequence === undefined ? {} : { sequence }),
                       ...(threadId === undefined ? {} : { threadId }),
-                      releaseMilliseconds: performance.now() - releaseAt,
+                      releaseMilliseconds: timeline.elapsed("release"),
                     });
                     if (item.kind === "synchronized") {
                       assert.strictEqual(observation.frames[0]?.kind, "snapshot");
@@ -426,8 +380,7 @@ function scenario(clients: number, ending: "complete" | "cancel" | "failure", hi
                         0,
                       );
                       if (observation.firstLiveAfterPublishMilliseconds === null)
-                        observation.firstLiveAfterPublishMilliseconds =
-                          performance.now() - publishedAt;
+                        observation.firstLiveAfterPublishMilliseconds = timeline.elapsed("publish");
                       assert.strictEqual(
                         item.thread.id,
                         item.sequence === 511 ? targetId : otherId,
@@ -476,7 +429,7 @@ function scenario(clients: number, ending: "complete" | "cancel" | "failure", hi
         );
         yield* bounded(Deferred.await(snapshotEntered));
         assert.isTrue(observations.every(({ frames }) => frames.length === 0));
-        releaseAt = performance.now();
+        timeline.mark("release");
         yield* Deferred.succeed(releaseSnapshot, undefined);
         yield* bounded(Effect.all([Deferred.await(allLive), Deferred.await(allMarkers)]));
         if (ending === "cancel") {
@@ -498,8 +451,8 @@ function scenario(clients: number, ending: "complete" | "cancel" | "failure", hi
               },
             };
           });
-          publishedAt = performance.now();
           committedSequence = 512;
+          timeline.mark("publish");
           yield* PubSub.publishAll(eventBus, events);
           const results = yield* bounded(Effect.forEach(fibers, Fiber.join));
           for (const result of results) {
@@ -594,18 +547,12 @@ function scenario(clients: number, ending: "complete" | "cancel" | "failure", hi
 it.effect.each([1, 2, 8, 32])(
   "%i real V2 shell subscribers: startup and post-marker cost",
   (clients) => scenario(clients, "complete"),
-  { timeout: 30_000 },
 );
-it.effect("real V2 shell cancellation releases observers", () => scenario(1, "cancel"), {
-  timeout: 30_000,
-});
-it.live("real V2 shell upstream failure releases observers", () => scenario(1, "failure"), {
-  timeout: 30_000,
-});
+it.effect("real V2 shell cancellation releases observers", () => scenario(1, "cancel"));
+it.live("real V2 shell upstream failure releases observers", () => scenario(1, "failure"));
 
 // Explicit opt-in keeps the 10,000-run/history fixture out of ordinary discovery.
 it.effect.skipIf(process.env.JONES_SHELL_COST_LARGE !== "1")(
   "large history: real V2 shell cost with a bounded fork source",
   () => scenario(1, "complete", 10_000),
-  { timeout: 120_000 },
 );

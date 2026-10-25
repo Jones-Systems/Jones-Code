@@ -28,6 +28,8 @@ import {
   fixtureHost,
   isLowestWorkerPriority,
   makePreparationHome,
+  makePreparationWorkerObservations,
+  measurePreparationCancellation,
   sourceWorkerCommand,
   stageFixtureRuntime,
   VERSION,
@@ -225,12 +227,12 @@ describe("real preparation worker", () => {
   it("runs one worker at a time for a host", async () => {
     const fixture = await home();
     const staged = await stageFixtureRuntime(fixture);
-    const spans: Array<readonly [number, number]> = [];
+    const { spans, observe } = makePreparationWorkerObservations();
     const supervisor = makePreparationSupervisor({
       baseDir: fixture.base,
       cacheRoot: fixture.cacheRoot,
       command: sourceWorkerCommand,
-      observe: (exit) => spans.push([Date.now() - exit.durationMs, Date.now()]),
+      observe,
     });
     await Promise.all([
       supervisor.run(verifyJob(staged.stagedHandle)),
@@ -261,11 +263,12 @@ describe("real preparation worker", () => {
     });
     const { gh, worker } = await hangingGh(actions);
     expect(phases).toEqual(["downloading"]);
-    const cancelled = Date.now();
-    controller.abort(new Error("superseded by a newer target"));
-    await expect(running).rejects.toThrow("superseded by a newer target");
+    const cancellation = await measurePreparationCancellation(async () => {
+      controller.abort(new Error("superseded by a newer target"));
+      await expect(running).rejects.toThrow("superseded by a newer target");
+    });
     // The caller is released at once; the queue still reaps the worker behind it.
-    expect(Date.now() - cancelled).toBeLessThan(1_000);
+    expect(cancellation.elapsedMs).toBeLessThan(1_000);
     await vi.waitFor(() => expect(exits.map((exit) => exit.kind)).toEqual(["stage", "sweep"]), {
       timeout: 20_000,
     });

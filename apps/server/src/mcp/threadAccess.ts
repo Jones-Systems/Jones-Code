@@ -1,3 +1,5 @@
+import * as ProviderSessions from "../orchestration-v2/ProviderSessionManager.ts";
+import * as Option from "effect/Option";
 import type { ProjectionRecordField } from "../orchestration-v2/ProjectionStore.ts";
 import {
   CommandId,
@@ -16,6 +18,7 @@ import type { OrchestratorV2Error } from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import { resolveInteractionMode, resolveRuntimeMode } from "./delegatedTaskModes.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
+import * as OrchestrationMcp from "./OrchestratorMcpService.ts";
 
 export const unavailable = () =>
   new OrchestratorMcpFailure({
@@ -127,16 +130,39 @@ export const isLiveCallerShell = (
  * token that outlived its session cannot act. An OAuth client has no run; its
  * session and ceiling are its authority.
  */
-export function assertLiveCaller({ caller, scope }: Caller) {
+export function assertLiveCaller({ caller, scope, threads }: Caller) {
   if (caller === undefined) return Effect.void;
-  return isLiveCallerShell(caller, scope.thread?.providerInstanceId)
-    ? Effect.void
-    : Effect.fail(
-        new OrchestratorMcpFailure({
-          code: "parent_not_active",
-          message: "The calling provider no longer owns an active thread run.",
-        }),
-      );
+  return Effect.gen(function* () {
+    if (isLiveCallerShell(caller, scope.thread?.providerInstanceId)) return;
+    const manager = yield* Effect.serviceOption(ProviderSessions.ProviderSessionManagerV2);
+    if (
+      caller.archivedAt === null &&
+      caller.deletedAt === null &&
+      scope.thread !== undefined &&
+      Option.isSome(manager)
+    ) {
+      const records = yield* threads
+        .getThreadRecords(caller.id, ["runs", "providerThreads"])
+        .pipe(Effect.mapError(unavailable));
+      const run = records.runs.find((run) => run.id === caller.activeRunId);
+      const provider = records.providerThreads.find((row) => row.id === run?.providerThreadId);
+      if (
+        run?.providerInstanceId === scope.thread.providerInstanceId &&
+        provider?.providerSessionId != null &&
+        (yield* manager.value.isMcpCallerAttached({
+          threadId: caller.id,
+          providerSessionId: provider.providerSessionId,
+          providerInstanceId: scope.thread.providerInstanceId,
+          mcpCredentialId: scope.thread.providerSessionId,
+        }))
+      )
+        return;
+    }
+    return yield* new OrchestratorMcpFailure({
+      code: "parent_not_active",
+      message: "The calling provider no longer owns an active thread run.",
+    });
+  });
 }
 
 export const assertFullAccess = (context: Caller, message: string) =>
@@ -175,10 +201,11 @@ export const readThread = Effect.fn("mcp.readThread")(function* <
   const targetId = yield* resolveThreadId(context, threadId);
   const shell = yield* context.threads.getThreadShell(targetId).pipe(Effect.mapError(unavailable));
   if (shell === null || shell.deletedAt !== null) {
-    return yield* new OrchestratorMcpFailure({
-      code: "thread_not_found",
-      message: "The thread was not found.",
-    });
+    return yield* OrchestrationMcp.threadNotFound(
+      context.threads,
+      targetId,
+      "The thread was not found.",
+    );
   }
   const projection = yield* context.threads
     .getProjectThreadRecords({ projectId: shell.projectId, threadId: targetId }, fields, {
@@ -202,8 +229,8 @@ export const readMessageWritableThread = Effect.fn("mcp.readMessageWritableThrea
 >(threadId?: ThreadId, fields: ReadonlyArray<K> = []) {
   const context = yield* readThread(threadId, fields);
   if (
-    context.caller !== undefined &&
-    context.caller.id !== context.projection.thread.id &&
+    (context.scope.client?.linked === true ||
+      (context.caller !== undefined && context.caller.id !== context.projection.thread.id)) &&
     context.projection.thread.threadMessagesBlocked === true
   ) {
     return yield* new OrchestratorMcpFailure({

@@ -204,6 +204,7 @@ export function buildQueuedThreadCreationStartTurnInput(input: {
     commandId: message.commandId,
     messageId: message.messageId,
     createdAt: message.createdAt,
+    titleText: message.text,
     ...serializeComposerMessageForServer(
       message.text.trim(),
       uploadedComposerContext(message.context, message.attachments, input.attachments),

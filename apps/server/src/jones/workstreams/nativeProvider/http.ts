@@ -1,5 +1,9 @@
 import {
   WORKSTREAMS_T3_PROVIDER_PROTOCOL,
+  WORKSTREAMS_T3_PROVIDER_V2_PROTOCOL,
+  WorkstreamsNativeContextResponseV2,
+  WorkstreamsNativeAttestationResponseV2,
+  WorkstreamsNativeSettlementResponseV2,
   WORKSTREAMS_T3_PROVIDER_MAX_REQUEST_BYTES,
   WORKSTREAMS_T3_PROVIDER_MAX_RESPONSE_BYTES,
   WORKSTREAMS_T3_PROVIDER_MAX_JSON_DEPTH,
@@ -29,11 +33,6 @@ class NativeProviderBodyError extends Schema.TaggedError<NativeProviderBodyError
   "NativeProviderBodyError",
   {},
 ) {}
-const invalid: Extract<WorkstreamsNativeContextResponse, { state: "rejected" }> = {
-  protocol: WORKSTREAMS_T3_PROVIDER_PROTOCOL,
-  state: "rejected",
-  reason: "invalid_request",
-};
 const jsonCodec = Schema.fromJsonString(Schema.Json);
 
 const withinDepth = (value: Schema.Json): boolean => {
@@ -94,18 +93,28 @@ const decodeBody = Effect.fn("NativeProviderHttp.decodeBody")(function* <E>(
 });
 
 const render = Effect.fn("NativeProviderHttp.render")(function* (
+  profile: "v1" | "v2",
   operation: NativeProviderOperation,
   response:
     | WorkstreamsNativeContextResponse
     | WorkstreamsNativeAttestationResponse
-    | WorkstreamsNativeSettlementResponse,
+    | WorkstreamsNativeSettlementResponse
+    | WorkstreamsNativeContextResponseV2
+    | WorkstreamsNativeAttestationResponseV2
+    | WorkstreamsNativeSettlementResponseV2,
 ) {
   const schema =
-    operation === "context"
-      ? WorkstreamsNativeContextResponse
-      : operation === "attestations"
-        ? WorkstreamsNativeAttestationResponse
-        : WorkstreamsNativeSettlementResponse;
+    profile === "v2"
+      ? operation === "context"
+        ? WorkstreamsNativeContextResponseV2
+        : operation === "attestations"
+          ? WorkstreamsNativeAttestationResponseV2
+          : WorkstreamsNativeSettlementResponseV2
+      : operation === "context"
+        ? WorkstreamsNativeContextResponse
+        : operation === "attestations"
+          ? WorkstreamsNativeAttestationResponse
+          : WorkstreamsNativeSettlementResponse;
   const json = yield* Schema.encodeUnknownEffect(Schema.fromJsonString(schema))(response).pipe(
     Effect.option,
   );
@@ -114,7 +123,7 @@ const render = Effect.fn("NativeProviderHttp.render")(function* (
     new TextEncoder().encode(json.value).byteLength > WORKSTREAMS_T3_PROVIDER_MAX_RESPONSE_BYTES
   )
     return HttpServerResponse.text(
-      '{"protocol":"workstreams-t3-provider/1.0.0","state":"rejected","reason":"invalid_request"}',
+      `{"protocol":"${profile === "v2" ? WORKSTREAMS_T3_PROVIDER_V2_PROTOCOL : WORKSTREAMS_T3_PROVIDER_PROTOCOL}","state":"rejected","reason":"invalid_request"}`,
       { status: 500, contentType: "application/json", headers: { "cache-control": "no-store" } },
     );
   const status =
@@ -135,17 +144,26 @@ const render = Effect.fn("NativeProviderHttp.render")(function* (
 });
 
 export const createNativeProviderHandlers = (
-  provider: WorkstreamsNativeProvider,
+  provider: WorkstreamsNativeProvider<"v1" | "v2">,
   enrollments: NativeProviderEnrollment["Service"],
 ) => {
+  const protocol =
+    provider.profile === "v2"
+      ? WORKSTREAMS_T3_PROVIDER_V2_PROTOCOL
+      : WORKSTREAMS_T3_PROVIDER_PROTOCOL;
+  const invalid = { protocol, state: "rejected", reason: "invalid_request" } as const;
+  const renderResponse = (
+    operation: NativeProviderOperation,
+    response: Parameters<typeof render>[2],
+  ) => render(provider.profile, operation, response);
   const handle = Effect.fn("NativeProviderHttp.handle")(function* <E>(
     operation: NativeProviderOperation,
     authenticatedSessionId: string | null,
     body: Stream.Stream<Uint8Array, E>,
   ) {
     if (authenticatedSessionId === null)
-      return yield* render(operation, {
-        protocol: WORKSTREAMS_T3_PROVIDER_PROTOCOL,
+      return yield* renderResponse(operation, {
+        protocol,
         state: "rejected",
         reason: "unauthorized",
       });
@@ -157,8 +175,8 @@ export const createNativeProviderHandlers = (
       Option.isNone(enrolled.value) ||
       Option.isNone(enrolled.value.value)
     )
-      return yield* render(operation, {
-        protocol: WORKSTREAMS_T3_PROVIDER_PROTOCOL,
+      return yield* renderResponse(operation, {
+        protocol,
         state: "rejected",
         reason: "forbidden",
       });
@@ -166,8 +184,8 @@ export const createNativeProviderHandlers = (
       enrolled.value.value.value,
     ).pipe(Effect.option);
     if (Option.isNone(binding) || binding.value.session_id !== authenticatedSessionId)
-      return yield* render(operation, {
-        protocol: WORKSTREAMS_T3_PROVIDER_PROTOCOL,
+      return yield* renderResponse(operation, {
+        protocol,
         state: "rejected",
         reason: "caller_mismatch",
       });
@@ -176,20 +194,20 @@ export const createNativeProviderHandlers = (
       Effect.timeoutOption(WORKSTREAMS_T3_PROVIDER_METADATA_TIMEOUT_MS),
     );
     if (Option.isNone(parsed) || Option.isNone(parsed.value))
-      return yield* render(operation, invalid);
+      return yield* renderResponse(operation, invalid);
     const input = parsed.value.value;
     if (operation === "context") {
       const request = yield* Schema.decodeUnknownEffect(WorkstreamsNativeContextRequest)(
         input.value,
       ).pipe(Effect.option);
-      if (Option.isNone(request)) return yield* render(operation, invalid);
+      if (Option.isNone(request)) return yield* renderResponse(operation, invalid);
       const result = yield* provider
         .context(binding.value)
         .pipe(Effect.timeoutOption(WORKSTREAMS_T3_PROVIDER_METADATA_TIMEOUT_MS));
-      return yield* render(
+      return yield* renderResponse(
         operation,
         Option.getOrElse(result, () => ({
-          protocol: WORKSTREAMS_T3_PROVIDER_PROTOCOL,
+          protocol,
           state: "unavailable" as const,
           reason: "authority_unavailable" as const,
         })),
@@ -199,14 +217,14 @@ export const createNativeProviderHandlers = (
       const request = yield* Schema.decodeUnknownEffect(WorkstreamsNativeAttestationRequest)(
         input.value,
       ).pipe(Effect.option);
-      if (Option.isNone(request)) return yield* render(operation, invalid);
+      if (Option.isNone(request)) return yield* renderResponse(operation, invalid);
       const result = yield* provider
         .attest(binding.value, request.value)
         .pipe(Effect.timeoutOption(WORKSTREAMS_T3_PROVIDER_METADATA_TIMEOUT_MS));
-      return yield* render(
+      return yield* renderResponse(
         operation,
         Option.getOrElse(result, () => ({
-          protocol: WORKSTREAMS_T3_PROVIDER_PROTOCOL,
+          protocol,
           state: "unknown" as const,
           reason: "observation_unavailable" as const,
         })),
@@ -215,7 +233,7 @@ export const createNativeProviderHandlers = (
     const request = yield* Schema.decodeUnknownEffect(WorkstreamsNativeSettlementRequest)(
       input.value,
     ).pipe(Effect.option);
-    if (Option.isNone(request)) return yield* render(operation, invalid);
+    if (Option.isNone(request)) return yield* renderResponse(operation, invalid);
     const action = operation === "settlements" ? provider.settle : provider.lookup;
     const result = yield* action(binding.value, request.value, input.requestBytesSha256).pipe(
       Effect.timeoutOption(
@@ -224,10 +242,10 @@ export const createNativeProviderHandlers = (
           : WORKSTREAMS_T3_PROVIDER_METADATA_TIMEOUT_MS,
       ),
     );
-    return yield* render(
+    return yield* renderResponse(
       operation,
       Option.getOrElse(result, () => ({
-        protocol: WORKSTREAMS_T3_PROVIDER_PROTOCOL,
+        protocol,
         state: "unknown" as const,
         request: request.value,
         reason: "provider_unavailable" as const,

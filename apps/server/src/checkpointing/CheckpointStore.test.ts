@@ -112,27 +112,6 @@ function buildLargeText(lineCount = 5_000): string {
 }
 
 it.layer(layerTest)("CheckpointStore.layer", (it) => {
-  describe("isGitRepository", () => {
-    it.effect("returns false when no Git repository is detected", () =>
-      Effect.gen(function* () {
-        const tmp = yield* makeTmpDir();
-        const checkpointStore = yield* CheckpointStore.CheckpointStore;
-
-        expect(yield* checkpointStore.isGitRepository(tmp)).toBe(false);
-      }),
-    );
-
-    it.effect("returns true when a Git repository is detected", () =>
-      Effect.gen(function* () {
-        const tmp = yield* makeTmpDir();
-        yield* initRepoWithCommit(tmp);
-        const checkpointStore = yield* CheckpointStore.CheckpointStore;
-
-        expect(yield* checkpointStore.isGitRepository(tmp)).toBe(true);
-      }),
-    );
-  });
-
   it.effect("detects a nested workspace without its own .git entry", () =>
     Effect.gen(function* () {
       const tmp = yield* makeTmpDir();

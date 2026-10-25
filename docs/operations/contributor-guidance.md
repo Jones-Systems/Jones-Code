@@ -354,6 +354,8 @@ video. For each evidence set, record:
 
 Refresh exact-head claims after the PR head changes. Upload PR evidence to
 GitHub; never commit PR-only screenshots or assets such as `.github/pr-assets/`.
+Use the [CLI attachment workflow](../../.agents/skills/capture-ui-evidence/references/runner-output-and-limits.md#sharing-evidence)
+with existing GitHub CLI authentication before requesting browser sign-in.
 
 Do not invoke automated PR review services or reviewer bots for Jones-Systems
 PRs, including `@codex review`, Codex Code Review, or Copilot PR review.
@@ -361,6 +363,33 @@ When asked to watch a PR, inspect current-head checks and new comments, validate
 reported problems against the source, and follow the task's authority for
 disposition and fixes. Stay quiet when nothing changes. Report current-head
 results and unresolved findings; absence of a bot review is not a failure.
+
+### Required and advisory checks
+
+The required merge check is **`Check`**, the final job of the `CI` workflow
+(`.github/workflows/ci.yml`). It aggregates every pull-request job in that
+workflow and fails on failed or cancelled jobs, failed change detection, and
+unexplained skips. A skip is intentional only when a successful classifier
+explicitly selects that job out. Linux selection preserves full runs for main
+pushes, unknown or unreadable changes, and complete-stack qualification; the
+macOS enrollment and native-source gates remain independent. No branch
+protection or ruleset enforces it today; this contract does.
+
+Every other check is advisory:
+
+- `Jones update qualification`;
+- `Native enrollment candidate`;
+- `Linux CLI artifacts`;
+- `Mac Desktop Artifact`;
+- `Mac CLI artifact`;
+- any native E2E workflow.
+
+An advisory failure gets investigated, fixed, or filed as an issue, but it
+does not hold a merge. A pending advisory check is not a reason to wait.
+When a workflow or job is added, renamed or moved, update this list in the
+same change. The organization-wide rules live in the Codex V3
+[CI budget and placement](https://github.com/Jones-Systems/Codex-V3/blob/main/docs/design/test-performance-practice.md#ci-budget-and-placement)
+practice.
 
 ### Standing delivery and merge contract
 
@@ -379,11 +408,12 @@ new per-PR merge request. It does not extend to other repositories or bases.
   explicitly requested early checkpoint or visibility-only handoff. An owner
   merge/review hold still permits publication unless it also limits publication.
 - **Qualify the current head.** Inspect live repository merge settings, branch
-  protections and rulesets; require passing applicable checks on the exact PR
-  head, all required reviews, and resolved review threads. Repair in-scope CI
-  failures and refresh evidence after every head change. Missing, pending,
-  skipped, unavailable, stale or unrelated checks are not passing evidence.
-  Absence of branch protection does not waive these policy requirements.
+  protections and rulesets; require the [required checks](#required-and-advisory-checks)
+  to pass on the exact PR head, all required reviews, and resolved review
+  threads. Repair in-scope CI failures and refresh evidence after every head
+  change. A missing, pending, skipped, unavailable, stale or unrelated required
+  check is not passing evidence. Absence of branch protection does not waive
+  these policy requirements. Advisory checks never hold a merge.
   Use app-owned PR watching when available; otherwise use bounded observation.
   Do not invoke reviewer bots or bypass a required review.
 - **Merge with a guard.** Immediately before merging, re-read the PR head and
