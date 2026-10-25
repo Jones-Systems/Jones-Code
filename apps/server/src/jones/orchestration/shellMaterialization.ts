@@ -43,7 +43,7 @@ export class ShellMaterialization extends Context.Service<
       ) => Effect.Effect<OrchestrationV2ThreadShell | null, ReadError>;
     }>;
   }
->()("jones/orchestration/ShellMaterialization") {}
+>()("t3/jones/orchestration/shellMaterialization") {}
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;

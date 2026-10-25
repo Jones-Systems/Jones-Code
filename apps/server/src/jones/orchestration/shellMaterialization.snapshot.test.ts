@@ -97,7 +97,7 @@ it.effect(
           );
         const firstSequence = yield* commit(created);
         const versionRead = yield* Deferred.make<void>();
-        const writerCommitted = yield* Deferred.make<void, unknown>();
+        const writerCommitted = yield* Deferred.make<void, Effect.Error<ReturnType<typeof commit>>>();
         // Spawn outside the reader context: this writer must commit while the
         // materialization holds its read snapshot open across both reads.
         const writer = yield* Effect.forkChild(

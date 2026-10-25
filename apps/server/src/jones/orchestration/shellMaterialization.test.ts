@@ -1,11 +1,15 @@
 import { assert, it } from "@effect/vitest";
 import {
+  EventId,
+  ProjectId,
+  ProviderInstanceId,
   ThreadId,
   type OrchestrationV2StoredEvent,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -224,21 +228,54 @@ it.effect(
         const active = yield* service.forSubscription;
         const archive = yield* service.forSubscription;
         const archivedAt = "2026-10-01T00:00:00.000Z";
-        const states = [value, shell("archived", archivedAt), null, shell("restored")];
-        const types = [
-          "thread.metadata-updated",
-          "thread.archived",
-          "thread.deleted",
-          "thread.unarchived",
-        ];
-        for (let index = 0; index < states.length; index++) {
-          value = states[index]!;
+        const occurredAt = DateTime.makeUnsafe(archivedAt);
+        const instanceId = ProviderInstanceId.make("codex");
+        const states = [
+          { shell: value, type: "thread.metadata-updated" },
+          { shell: shell("archived", archivedAt), type: "thread.archived" },
+          { shell: null, type: "thread.deleted" },
+          { shell: shell("restored"), type: "thread.unarchived" },
+        ] satisfies ReadonlyArray<{
+          readonly shell: OrchestrationV2ThreadShell | null;
+          readonly type: OrchestrationV2StoredEvent["event"]["type"];
+        }>;
+        for (const [index, state] of states.entries()) {
+          value = state.shell;
           version = index * 10 + 10;
           const sequence = index * 10 + 1;
-          const stored = {
+          const stored: OrchestrationV2StoredEvent = {
             sequence,
-            event: { threadId, type: types[index], payload: { archivedAt } },
-          } as OrchestrationV2StoredEvent;
+            commandId: null,
+            event: {
+              id: EventId.make(`materialization:lifecycle:${sequence}`),
+              threadId,
+              type: state.type,
+              occurredAt,
+              payload: {
+                id: threadId,
+                projectId: ProjectId.make("materialization:project"),
+                title: value?.title ?? "deleted",
+                providerInstanceId: instanceId,
+                modelSelection: { instanceId, model: "synthetic" },
+                createdBy: "user",
+                creationSource: "web",
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                branch: null,
+                worktreePath: null,
+                activeProviderThreadId: null,
+                lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+                forkedFrom: null,
+                createdAt: occurredAt,
+                updatedAt: occurredAt,
+                archivedAt: index === 1 || index === 2 ? occurredAt : null,
+                deletedAt: index === 2 ? occurredAt : null,
+                settledOverride: null,
+                settledAt: null,
+                lastVisitedAt: null,
+              },
+            },
+          };
           const activeItem = shellStreamItemFromThreadShell({
             stored,
             shell: yield* active.get(threadId, sequence),

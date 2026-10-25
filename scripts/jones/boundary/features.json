@@ -1893,7 +1893,8 @@
         "apps/server/src/ws.test.ts",
         "apps/server/src/jones/requestEconomy/foregroundReads.test.ts",
         "apps/server/src/orchestration-v2/ShellStream.test.ts",
-        "apps/server/integration/transferBudgetV2.integration.test.ts"
+        "apps/server/integration/transferBudgetV2.integration.test.ts",
+        "apps/server/src/orchestration-v2/LegacyBootstrapWireTransport.test.ts"
       ],
       "scope": "Environment-owned shared shell materialization uses committed snapshot versions, per-subscription monotonic floors, bounded newest-success retention and cancellation isolation. Narrow WS/server hooks and existing harness adaptations preserve replay, resend, freshness and reader routing; dedicated Jones tests cover fanout and file-backed snapshot interleaving."
     }

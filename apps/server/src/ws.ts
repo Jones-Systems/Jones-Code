@@ -1905,11 +1905,13 @@ export const layerWsRpc = (
               Effect.forEach(
                 coalesceStoredThreadEvents(Array.from(events)),
                 (stored) =>
-                  shellReader.get(stored.event.threadId, stored.sequence).pipe(
-                    Effect.map((shell) =>
-                      archivedShellStreamItemFromThreadShell({ stored, shell }),
+                  shellReader
+                    .get(stored.event.threadId, stored.sequence)
+                    .pipe(
+                      Effect.map((shell) =>
+                        archivedShellStreamItemFromThreadShell({ stored, shell }),
+                      ),
                     ),
-                  ),
                 { concurrency: 8 },
               ),
             ),

@@ -88,9 +88,7 @@ const composedPair = Effect.fn("shellFanout.composedPair")(function* (input: {
         Stream.tap((item) =>
           "sequence" in item ? Queue.offer(observed, { client, item }) : Effect.void,
         ),
-        Stream.takeUntil(
-          (item) => "sequence" in item && item.sequence === input.terminalSequence,
-        ),
+        Stream.takeUntil((item) => "sequence" in item && item.sequence === input.terminalSequence),
         Stream.runCollect,
       );
     }).pipe(
@@ -137,9 +135,7 @@ const composedPair = Effect.fn("shellFanout.composedPair")(function* (input: {
   return { publish, nextPair, collect: Effect.forEach(fibers, Fiber.join) };
 });
 
-const composedLayer = ProjectionStore.layer.pipe(
-  Layer.provideMerge(SqlitePersistence.layerMemory),
-);
+const composedLayer = ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory));
 
 it.effect("composed subscribers refresh a fork when only its inherited shell count changes", () =>
   Effect.gen(function* () {
@@ -160,7 +156,10 @@ it.effect("composed subscribers refresh a fork when only its inherited shell cou
     version = 512;
     yield* pair.publish(512);
     const before = yield* pair.nextPair;
-    assert.sameMembers(before.map(({ client }) => client), [0, 1]);
+    assert.sameMembers(
+      before.map(({ client }) => client),
+      [0, 1],
+    );
     assert.strictEqual(reads, 1);
     yield* appendInheritedItem(2);
     version = 1024;
@@ -168,7 +167,10 @@ it.effect("composed subscribers refresh a fork when only its inherited shell cou
     const results = yield* pair.collect;
     for (const items of results) {
       const updates = items.filter((item) => item.kind === "thread.updated");
-      assert.deepEqual(updates.map(({ sequence }) => sequence), [512, 1024]);
+      assert.deepEqual(
+        updates.map(({ sequence }) => sequence),
+        [512, 1024],
+      );
       const [first, second] = updates;
       assert.strictEqual(first!.thread.itemCount, 0);
       assert.strictEqual(second!.thread.itemCount, 0);
@@ -204,7 +206,10 @@ it.effect("composed subscribers resend an unchanged cached shell at five seconds
     version = 1536;
     yield* pair.publish(512);
     const first = yield* pair.nextPair;
-    assert.sameMembers(first.map(({ client }) => client), [0, 1]);
+    assert.sameMembers(
+      first.map(({ client }) => client),
+      [0, 1],
+    );
     assert.isTrue(
       first.every(({ item }) => item.kind === "thread.updated" && item.sequence === 512),
     );
@@ -212,7 +217,10 @@ it.effect("composed subscribers resend an unchanged cached shell at five seconds
     yield* pair.publish(1024, true);
     const suppressed = yield* pair.nextPair;
     // The project barrier is downstream of the skipped thread in each composed stream.
-    assert.sameMembers(suppressed.map(({ client }) => client), [0, 1]);
+    assert.sameMembers(
+      suppressed.map(({ client }) => client),
+      [0, 1],
+    );
     assert.isTrue(
       suppressed.every(({ item }) => item.kind === "project.removed" && item.sequence === 1024),
     );
