@@ -8,6 +8,10 @@
     {
       "from": "apps/server/src/orchestration-v2/EffectWorker.ts",
       "to": "apps/server/src/jones/orchestration/actionWorkerAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectOutbox.ts",
+      "to": "apps/server/src/jones/orchestration/actionWorkerAdmission.ts"
     }
   ]
 }

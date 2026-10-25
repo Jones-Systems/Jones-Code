@@ -31,7 +31,7 @@ const testLayer = Layer.mergeAll(
 );
 
 it.effect(
-  "four real workers release unknown steers at the budget and another instance proceeds",
+  "four ordinary workers release unknown steers at the budget and another instance proceeds",
   () =>
     Effect.gen(function* () {
       const outbox = yield* EffectOutbox.EffectOutboxV2;
@@ -114,7 +114,7 @@ it.effect(
       });
       const workerLayer = EffectWorker.layer.pipe(Layer.provide(executor));
       yield* outbox.enqueue(effects);
-      const daemon = yield* EffectWorker.runDaemon.pipe(
+      const daemon = yield* EffectWorker.runDaemonWithOptions({ concurrency: 5 }).pipe(
         Effect.provide(workerLayer),
         Effect.forkScoped,
       );
