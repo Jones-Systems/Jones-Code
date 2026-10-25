@@ -1972,6 +1972,9 @@
     "apps/server/src/jones/workspace/contentSearchPages.test.ts": "jones-owned",
     "apps/server/src/workspace/WorkspaceSearchIndex.ts": "hook",
     "scripts/jones/boundary/fragments/workspace-content-search-slicing.json": "jones-owned",
+    "apps/server/src/jones/peerTransport/InFlight.ts": "jones-owned",
+    "apps/server/src/jones/peerTransport/PeerLinkLifecycle.test.ts": "jones-owned",
+    "apps/server/src/jones/peerTransport/PeerSessionContext.test.ts": "jones-owned",
     "scripts/jones/boundary/fragments/terminal-history-urgent-flush.json": "jones-owned",
     "apps/server/src/jones/terminal/TerminalHistoryWorker.ts": "jones-owned",
     "apps/server/src/jones/terminal/TerminalHistoryWorker.test.ts": "jones-owned"
