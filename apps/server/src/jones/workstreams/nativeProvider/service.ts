@@ -3,6 +3,10 @@ import * as NodeCrypto from "node:crypto";
 import packageJson from "../../../../package.json" with { type: "json" };
 import {
   WORKSTREAMS_T3_PROVIDER_PROTOCOL,
+  WORKSTREAMS_T3_PROVIDER_V2_PROTOCOL,
+  type WorkstreamsNativeContextResponseV2,
+  type WorkstreamsNativeAttestationResponseV2,
+  type WorkstreamsNativeSettlementResponseV2,
   WORKSTREAMS_T3_PROVIDER_ATTESTATION_TTL_MS,
   WorkstreamsNativeBuild,
   WorkstreamsNativeContext,
@@ -97,21 +101,35 @@ export interface NativeProviderPorts {
   readonly build?: Effect.Effect<Option.Option<WorkstreamsNativeBuild>>;
 }
 
-type Rejection = Extract<WorkstreamsNativeSettlementResponse, { state: "rejected" }>;
-const reject = (reason: Rejection["reason"]): Rejection => ({
-  protocol: WORKSTREAMS_T3_PROVIDER_PROTOCOL,
-  state: "rejected",
-  reason,
+type NativeProviderProfile = "v1" | "v2";
+type ContextResponse = WorkstreamsNativeContextResponse | WorkstreamsNativeContextResponseV2;
+type AttestationResponse =
+  | WorkstreamsNativeAttestationResponse
+  | WorkstreamsNativeAttestationResponseV2;
+type SettlementResponse =
+  | WorkstreamsNativeSettlementResponse
+  | WorkstreamsNativeSettlementResponseV2;
+type Rejection = Extract<SettlementResponse, { state: "rejected" }>;
+
+const enrollmentContext = (binding: NativeProviderEnrollmentBinding): WorkstreamsNativeContext => ({
+  owner_id: binding.owner_id,
+  principal_id: binding.principal_id,
+  source_instance_id: binding.source_instance_id,
+  authority_namespace: binding.authority_namespace,
+  store_generation: binding.store_generation,
+  enrollment_id: binding.enrollment_id,
+  protocol: binding.protocol,
+  build: binding.build,
 });
-const unknownSettlement = (
-  request: WorkstreamsNativeSettlementRequest,
-  reason: Extract<WorkstreamsNativeSettlementResponse, { state: "unknown" }>["reason"],
-): WorkstreamsNativeSettlementResponse => ({
-  protocol: WORKSTREAMS_T3_PROVIDER_PROTOCOL,
-  state: "unknown",
-  request,
-  reason,
-});
+const enrollmentDigest = (binding: NativeProviderEnrollmentBinding) =>
+  Schema.encodeEffect(Schema.fromJsonString(WorkstreamsNativeContext))(
+    enrollmentContext(binding),
+  ).pipe(
+    Effect.map((json) => sha256Bytes(`${binding.registry_origin}\n${binding.session_id}\n${json}`)),
+  );
+const nativeCommandId = (digest: string, requestJson: string) =>
+  `workstreams:${sha256Bytes(`${digest}\n${requestJson}`)}`;
+
 const sameAuthority = (
   binding: NativeProviderEnrollmentBinding,
   tuple: NativeStoreAuthority["Service"]["readCurrent"] extends Effect.Effect<infer A, infer _E>
@@ -164,7 +182,35 @@ export const nativeProviderResultEvidence = Effect.fn("NativeProvider.resultEvid
   return { ...value, result_sha256: sha256Bytes(encoded) };
 }, Effect.orDie);
 
-export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
+export function makeWorkstreamsNativeProvider(
+  ports: NativeProviderPorts,
+  profile?: "v1",
+): WorkstreamsNativeProvider;
+export function makeWorkstreamsNativeProvider(
+  ports: NativeProviderPorts,
+  profile: "v2",
+): WorkstreamsNativeProvider<"v2">;
+export function makeWorkstreamsNativeProvider(
+  ports: NativeProviderPorts,
+  profile: NativeProviderProfile = "v1",
+) {
+  const protocol =
+    profile === "v2" ? WORKSTREAMS_T3_PROVIDER_V2_PROTOCOL : WORKSTREAMS_T3_PROVIDER_PROTOCOL;
+  const reject = (reason: Rejection["reason"]): Rejection => ({
+    protocol,
+    state: "rejected",
+    reason,
+  });
+  const unknownSettlement = (
+    request: WorkstreamsNativeSettlementRequest,
+    reason: Extract<SettlementResponse, { state: "unknown" }>["reason"],
+  ): SettlementResponse => ({
+    protocol,
+    state: "unknown",
+    request,
+    reason,
+  });
+
   const build = ports.build ?? readNativeProviderBuild;
   const validateBinding = Effect.fn("NativeProvider.validateBinding")(function* (
     binding: NativeProviderEnrollmentBinding,
@@ -172,12 +218,14 @@ export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
   ) {
     if (!binding.scopes.includes(scope)) return reject("forbidden");
     const actualBuild = yield* build;
-    if (Option.isNone(actualBuild)) return "build_unavailable" as const;
+    if (Option.isNone(actualBuild) || !Schema.is(WorkstreamsNativeBuild)(actualBuild.value))
+      return "build_unavailable" as const;
     if (
       binding.protocol !== WORKSTREAMS_T3_PROVIDER_PROTOCOL ||
-      binding.build.repository !== actualBuild.value.repository ||
-      binding.build.sha !== actualBuild.value.sha ||
-      binding.build.tree !== actualBuild.value.tree
+      (profile === "v1" &&
+        (binding.build.repository !== actualBuild.value.repository ||
+          binding.build.sha !== actualBuild.value.sha ||
+          binding.build.tree !== actualBuild.value.tree))
     )
       return reject("contract_mismatch");
     return null;
@@ -216,38 +264,39 @@ export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
 
   const context = Effect.fn("NativeProvider.context")(function* (
     binding: NativeProviderEnrollmentBinding,
-  ): Effect.fn.Return<WorkstreamsNativeContextResponse> {
+  ): Effect.fn.Return<ContextResponse> {
     const invalid = yield* validateBinding(binding, NATIVE_PROVIDER_SCOPES.context);
-    if (invalid === "build_unavailable")
-      return { protocol: WORKSTREAMS_T3_PROVIDER_PROTOCOL, state: "unavailable", reason: invalid };
+    if (invalid === "build_unavailable") return { protocol, state: "unavailable", reason: invalid };
     if (invalid !== null) return invalid;
     const current = yield* checkAuthority;
     if (current.state === "failed")
       return current.fenced
         ? reject("authority_fenced")
         : {
-            protocol: WORKSTREAMS_T3_PROVIDER_PROTOCOL,
+            protocol,
             state: "unavailable",
             reason: "authority_unavailable",
           };
     if (!sameAuthority(binding, current.tuple)) return reject("generation_conflict");
-    const contextValue = {
-      owner_id: binding.owner_id,
-      principal_id: binding.principal_id,
-      source_instance_id: binding.source_instance_id,
-      authority_namespace: binding.authority_namespace,
-      store_generation: binding.store_generation,
-      enrollment_id: binding.enrollment_id,
-      protocol: binding.protocol,
-      build: binding.build,
-    };
+    const contextValue = enrollmentContext(binding);
+    if (profile === "v2") {
+      const observed = yield* build;
+      if (Option.isNone(observed) || !Schema.is(WorkstreamsNativeBuild)(observed.value))
+        return { protocol, state: "unavailable", reason: "build_unavailable" };
+      return {
+        protocol: WORKSTREAMS_T3_PROVIDER_V2_PROTOCOL,
+        state: "ready",
+        enrollment: contextValue,
+        observed_build: observed.value,
+      };
+    }
     return { protocol: WORKSTREAMS_T3_PROVIDER_PROTOCOL, state: "ready", context: contextValue };
   });
 
   const attest = Effect.fn("NativeProvider.attest")(function* (
     binding: NativeProviderEnrollmentBinding,
     request: WorkstreamsNativeAttestationRequest,
-  ): Effect.fn.Return<WorkstreamsNativeAttestationResponse> {
+  ): Effect.fn.Return<AttestationResponse> {
     const invalid = yield* validateBinding(binding, NATIVE_PROVIDER_SCOPES.context);
     if (invalid === "build_unavailable") return reject("contract_mismatch");
     if (invalid !== null) return invalid;
@@ -258,7 +307,7 @@ export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
       return before.fenced
         ? reject("authority_fenced")
         : {
-            protocol: WORKSTREAMS_T3_PROVIDER_PROTOCOL,
+            protocol,
             state: "unknown",
             reason: "authority_unavailable",
           };
@@ -271,19 +320,19 @@ export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
       return after.fenced
         ? reject("authority_fenced")
         : {
-            protocol: WORKSTREAMS_T3_PROVIDER_PROTOCOL,
+            protocol,
             state: "unknown",
             reason: "authority_unavailable",
           };
     if (!sameAuthority(binding, after.tuple))
       return {
-        protocol: WORKSTREAMS_T3_PROVIDER_PROTOCOL,
+        protocol,
         state: "unknown",
         reason: "authority_changed",
       };
     if (Option.isNone(exists))
       return {
-        protocol: WORKSTREAMS_T3_PROVIDER_PROTOCOL,
+        protocol,
         state: "unknown",
         reason: "observation_unavailable",
       };
@@ -298,7 +347,7 @@ export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
     )(request).pipe(Effect.option);
     if (Option.isNone(requestJson)) return reject("invalid_request");
     return {
-      protocol: WORKSTREAMS_T3_PROVIDER_PROTOCOL,
+      protocol,
       state: "attested",
       request,
       attestation: {
@@ -317,7 +366,7 @@ export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
   const observe = Effect.fn("NativeProvider.observe")(function* (
     binding: NativeProviderEnrollmentBinding,
     attempt: NativeProviderAttempt,
-  ): Effect.fn.Return<WorkstreamsNativeSettlementResponse> {
+  ): Effect.fn.Return<SettlementResponse> {
     const request = attempt.request;
     if (attempt.dispatchStartedAt === null)
       return unknownSettlement(request, "dispatch_in_progress");
@@ -363,7 +412,7 @@ export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
     if (receipt.status === "rejected") {
       if (events.length !== 0) return unknownSettlement(request, "evidence_conflict");
       return {
-        protocol: WORKSTREAMS_T3_PROVIDER_PROTOCOL,
+        protocol,
         state: "terminal",
         request,
         result: {
@@ -406,7 +455,7 @@ export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
       occurredAt: settlement.occurredAt,
     };
     return {
-      protocol: WORKSTREAMS_T3_PROVIDER_PROTOCOL,
+      protocol,
       state: "terminal",
       request,
       result: {
@@ -423,7 +472,7 @@ export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
       binding: NativeProviderEnrollmentBinding,
       request: WorkstreamsNativeSettlementRequest,
       requestBytesSha256: string,
-    ): Effect.fn.Return<WorkstreamsNativeSettlementResponse> {
+    ): Effect.fn.Return<SettlementResponse> {
       const invalid = yield* validateBinding(
         binding,
         lookupOnly ? NATIVE_PROVIDER_SCOPES.reconciliation : NATIVE_PROVIDER_SCOPES.settlement,
@@ -432,30 +481,17 @@ export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
       if (invalid !== null) return invalid;
       const wrongRequest = validateRequest(binding, request);
       if (wrongRequest !== null) return wrongRequest;
-      const bindingJson = yield* Schema.encodeEffect(
-        Schema.fromJsonString(WorkstreamsNativeContext),
-      )({
-        owner_id: binding.owner_id,
-        principal_id: binding.principal_id,
-        source_instance_id: binding.source_instance_id,
-        authority_namespace: binding.authority_namespace,
-        store_generation: binding.store_generation,
-        enrollment_id: binding.enrollment_id,
-        protocol: binding.protocol,
-        build: binding.build,
-      }).pipe(Effect.option);
+      const digest = yield* enrollmentDigest(binding).pipe(Effect.option);
       const requestJson = yield* Schema.encodeEffect(
         Schema.fromJsonString(WorkstreamsNativeSettlementRequest),
       )(request).pipe(Effect.option);
       if (
-        Option.isNone(bindingJson) ||
+        Option.isNone(digest) ||
         Option.isNone(requestJson) ||
         !/^[a-f0-9]{64}$/.test(requestBytesSha256)
       )
         return reject("invalid_request");
-      const enrollmentSha256 = sha256Bytes(
-        `${binding.registry_origin}\n${binding.session_id}\n${bindingJson.value}`,
-      );
+      const enrollmentSha256 = digest.value;
       const existing = yield* ports.attempts.get(request).pipe(Effect.option);
       if (Option.isNone(existing)) return unknownSettlement(request, "provider_unavailable");
       let attempt: NativeProviderAttempt;
@@ -488,7 +524,7 @@ export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
             requestBytesSha256,
             enrollmentSha256,
             enrollment: binding,
-            nativeCommandId: `workstreams:${sha256Bytes(`${enrollmentSha256}\n${requestJson.value}`)}`,
+            nativeCommandId: nativeCommandId(enrollmentSha256, requestJson.value),
             createdAt,
             dispatchStartedAt: null,
           })
@@ -533,7 +569,32 @@ export const makeWorkstreamsNativeProvider = (ports: NativeProviderPorts) => {
       return yield* observe(binding, { ...attempt, dispatchStartedAt: startedAt });
     });
 
-  return { context, attest, settle: settlement(false), lookup: settlement(true) };
-};
+  return { profile, context, attest, settle: settlement(false), lookup: settlement(true) };
+}
 
-export type WorkstreamsNativeProvider = ReturnType<typeof makeWorkstreamsNativeProvider>;
+export interface WorkstreamsNativeProvider<Profile extends NativeProviderProfile = "v1"> {
+  readonly profile: Profile;
+  readonly context: (
+    binding: NativeProviderEnrollmentBinding,
+  ) => Effect.Effect<
+    Profile extends "v2" ? WorkstreamsNativeContextResponseV2 : WorkstreamsNativeContextResponse
+  >;
+  readonly attest: (
+    binding: NativeProviderEnrollmentBinding,
+    request: WorkstreamsNativeAttestationRequest,
+  ) => Effect.Effect<
+    Profile extends "v2"
+      ? WorkstreamsNativeAttestationResponseV2
+      : WorkstreamsNativeAttestationResponse
+  >;
+  readonly settle: (
+    binding: NativeProviderEnrollmentBinding,
+    request: WorkstreamsNativeSettlementRequest,
+    requestBytesSha256: string,
+  ) => Effect.Effect<
+    Profile extends "v2"
+      ? WorkstreamsNativeSettlementResponseV2
+      : WorkstreamsNativeSettlementResponse
+  >;
+  readonly lookup: WorkstreamsNativeProvider<Profile>["settle"];
+}

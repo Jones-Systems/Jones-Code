@@ -29,7 +29,8 @@
     "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.ts",
     "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.test.ts",
     "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.fixture.ts",
-    "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.test.tsx",
+    "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.browser.test.tsx",
+    "apps/desktop/src/app/DesktopConnectionCustody.testFixtures.ts",
     "apps/server/src/jones/fleetUpdates/quietSignals.ts",
     "apps/server/src/jones/updates/followerPolicy.ts",
     "apps/server/src/jones/updates/followerPolicy.test.ts",
@@ -54,9 +55,13 @@
     "apps/server/src/jones/updates/preparation/stage.test.ts",
     "apps/server/src/jones/updates/preparation/responsiveness.test.ts",
     "apps/server/src/jones/updates/preparation/Preparation.testkit.ts",
-    "apps/server/src/jones/updates/preparation/packagedWorkerSmoke.ts"
+    "apps/server/src/jones/updates/preparation/packagedWorkerSmoke.ts",
+    "apps/web/src/jones/fleetUpdates/EnvironmentRow.browser.test.tsx"
   ],
-  "hookPaths": ["apps/web/vite.config.ts"],
+  "hookPaths": [
+    "apps/web/vite.config.ts",
+    "apps/web/src/components/settings/SavedEnvironmentRows.tsx"
+  ],
   "tombstones": [],
   "allowedImports": [
     {
@@ -142,6 +147,10 @@
     {
       "from": "apps/server/src/bin.ts",
       "to": "apps/server/src/jones/updates/preparation/worker.ts"
+    },
+    {
+      "from": "apps/web/src/components/settings/SavedEnvironmentRows.tsx",
+      "to": "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.tsx"
     }
   ]
 }

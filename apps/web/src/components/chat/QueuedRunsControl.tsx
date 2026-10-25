@@ -1,14 +1,18 @@
+import { canDispatchQueuedRun } from "../../jones/queue/queuedRunAdmission";
 import { QueuedSteerBatchAction } from "../../jones/queue/QueuedSteerBatchAction";
 import { useQueuedSteerBatch } from "../../jones/queue/useQueuedSteerBatch";
 import {
-  ContinuationChoiceBanner,
   importedHistoryCommands,
   type PreparedImportedHistoryChoice,
 } from "../../jones/importedHistory/ContinuationChoiceBanner";
-import { resolveImportedHistoryReview } from "@t3tools/client-runtime/jones/imported-history/continuation";
+import {
+  importedHistoryContinuationEligible,
+  resolveImportedHistoryReview,
+} from "@t3tools/client-runtime/jones/imported-history/continuation";
 import { importedHistoryCanonicalJson } from "@t3tools/shared/jones/importedHistoryCanonical";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { deriveThreadQueueWorkflowState } from "@t3tools/client-runtime/state/thread-workflows";
+import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
 import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import type {
   ChatAttachment as ContractChatAttachment,
@@ -28,7 +32,7 @@ import { useId, useImperativeHandle, useLayoutEffect, useRef, useState, type Ref
 
 import { useAssetUrls } from "../../assets/assetUrls";
 import { threadEnvironment } from "../../state/threads";
-import { useThreadProjection } from "../../state/entities";
+import { useThreadProjection, useServerConfigs } from "../../state/entities";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { isImageAttachment, type ChatMessage } from "../../types";
 import { cn } from "~/lib/utils";
@@ -84,18 +88,25 @@ export function QueuedRunsControl({
   readonly editingRunId: RunId | null;
   readonly onEditQueuedRun: (request: EditQueuedRunRequest) => void;
   readonly onCancelEdit: () => void;
+  readonly onImportedHistoryChoice?: (choice: {
+    environmentId: EnvironmentId;
+    threadId: ThreadId;
+    prepared: PreparedImportedHistoryChoice | null;
+    reason: string | null;
+  }) => void;
 }) {
   const projection = useThreadProjection(
     scopeThreadRef(props.environmentId, props.threadId),
   )?.projection;
+  const serverConfig = useServerConfigs().get(props.environmentId);
   const reorder = useAtomCommand(threadEnvironment.reorderQueuedRun);
   const promote = useAtomCommand(threadEnvironment.promoteQueuedRun);
+  const resume = useAtomCommand(threadEnvironment.resumeThreadQueue);
   const cancel = useAtomCommand(threadEnvironment.cancelQueuedRun);
   const reviewImportedHistory = useAtomCommand(importedHistoryCommands.review, {
     reportFailure: false,
   });
-  const [importedChoice, setImportedChoice] = useState<PreparedImportedHistoryChoice | null>(null);
-  const [importedReason, setImportedReason] = useState<string | null>(null);
+  const importedEligible = importedHistoryContinuationEligible(projection);
 
   const [expanded, setExpanded] = useState(true);
   const queueListId = useId();
@@ -123,19 +134,30 @@ export function QueuedRunsControl({
     environmentId: props.environmentId,
     threadId: props.threadId,
     queued,
+    importedEligible,
   });
+  // Async review guards always compare against the latest committed route and queue.
   useLayoutEffect(() => {
     currentQueueRef.current = {
       environmentId: props.environmentId,
       threadId: props.threadId,
       queued,
+      importedEligible,
     };
-  }, [props.environmentId, props.threadId, queued]);
+  }, [props.environmentId, props.threadId, queued, importedEligible, currentQueueRef]);
   const reviewImportedQueued = async (runId: RunId, messageId: MessageId) => {
-    if (busyRunId !== null || steerInFlightRef.current) return;
+    const onImportedHistoryChoice = props.onImportedHistoryChoice;
+    if (
+      !importedEligible ||
+      !onImportedHistoryChoice ||
+      busyRunId !== null ||
+      steerInFlightRef.current
+    )
+      return;
     const entry = queued.find((item) => item.run.id === runId && item.messageId === messageId);
-    if (!entry) return;
+    if (!entry || entry !== queued[0]) return;
     const snapshot = importedHistoryCanonicalJson(entry);
+    const queueIdentity = importedHistoryCanonicalJson(queued);
     const environmentId = props.environmentId;
     const threadId = props.threadId;
     const unchanged = () => {
@@ -144,10 +166,12 @@ export function QueuedRunsControl({
         (candidate) => candidate.run.id === runId && candidate.messageId === messageId,
       );
       return (
+        current.importedEligible &&
         current.environmentId === environmentId &&
         current.threadId === threadId &&
         item !== undefined &&
-        importedHistoryCanonicalJson(item) === snapshot
+        importedHistoryCanonicalJson(item) === snapshot &&
+        importedHistoryCanonicalJson(current.queued) === queueIdentity
       );
     };
     steerInFlightRef.current = true;
@@ -157,12 +181,20 @@ export function QueuedRunsControl({
       const result = await reviewImportedHistory({ environmentId, input: { threadId, delivery } });
       const review = resolveImportedHistoryReview(result._tag === "Success" ? result.value : null);
       if (unchanged()) {
-        setImportedReason(review.reason);
-        setImportedChoice(
-          review.status === "available"
-            ? { delivery, reviewedBasis: review.reviewedBasis, draftIdentity: snapshot, unchanged }
-            : null,
-        );
+        onImportedHistoryChoice({
+          environmentId,
+          threadId,
+          reason: review.reason,
+          prepared:
+            review.status === "available"
+              ? {
+                  delivery,
+                  reviewedBasis: review.reviewedBasis,
+                  draftIdentity: snapshot,
+                  unchanged,
+                }
+              : null,
+        });
       }
     })().finally(() => {
       steerInFlightRef.current = false;
@@ -200,6 +232,13 @@ export function QueuedRunsControl({
     },
   });
   const queueBusy = busyRunId !== null || batch.pending;
+  const canSend = canDispatchQueuedRun({
+    busy: queueBusy,
+    importedHistory: importedEligible,
+    canStart: workflow?.canSendNow === true,
+    canSteer: workflow?.canPromoteToSteer === true,
+    queuedRunStart: serverConfig?.environment.capabilities.queuedRunStart,
+  });
   const items = [
     ...queued.map(({ run, text, attachments }, serverIndex) => ({
       key: run.id,
@@ -236,7 +275,7 @@ export function QueuedRunsControl({
   ];
 
   const move = async (runId: RunId, beforeRunId: RunId | null) => {
-    if (steerInFlightRef.current) return;
+    if (queueBusy || steerInFlightRef.current) return;
     steerInFlightRef.current = true;
     setBusyRunId(runId);
     await Promise.resolve()
@@ -262,29 +301,33 @@ export function QueuedRunsControl({
     void move(runId, queued[insertIndex]?.run.id ?? null);
   };
 
-  const steer = async (queuedRunId: RunId) => {
-    if (
-      activeRun === null ||
-      !workflow?.canPromoteToSteer ||
-      busyRunId !== null ||
-      steerInFlightRef.current
-    )
-      return;
+  const sendQueuedMessage = async (queuedRunId: RunId) => {
+    if (!canSend || steerInFlightRef.current) return;
     steerInFlightRef.current = true;
     setBusyRunId(queuedRunId);
-    await promote({
-      environmentId: props.environmentId,
-      input: { threadId: props.threadId, queuedRunId, targetRunId: activeRun.id },
+    await (async () => {
+      if (workflow?.canSendNow) {
+        await resume({
+          environmentId: props.environmentId,
+          input: { threadId: props.threadId, runId: queuedRunId },
+        });
+      } else if (activeRun !== null) {
+        await promote({
+          environmentId: props.environmentId,
+          input: { threadId: props.threadId, queuedRunId, targetRunId: activeRun.id },
+        });
+      }
+    })().finally(() => {
+      steerInFlightRef.current = false;
+      setBusyRunId(null);
     });
-    steerInFlightRef.current = false;
-    setBusyRunId(null);
   };
 
   useImperativeHandle(ref, () => ({
     steerNext(repeat) {
       const next = queued[0];
-      if (!next || !workflow?.canPromoteToSteer) return false;
-      if (!repeat && !queueBusy) void steer(next.run.id);
+      if (!next || !canSend) return false;
+      if (!repeat && !queueBusy) void sendQueuedMessage(next.run.id);
       return true;
     },
     // Declines while a queued message is already being edited so the key keeps
@@ -306,18 +349,10 @@ export function QueuedRunsControl({
     },
   }));
 
-  if (items.length === 0)
-    return projection?.thread?.historyOrigin === "v1_import" ? (
-      <ContinuationChoiceBanner
-        key={`${props.environmentId}:${props.threadId}`}
-        environmentId={props.environmentId}
-        threadId={props.threadId}
-        prepared={null}
-      />
-    ) : null;
+  if (items.length === 0) return null;
 
   const remove = async (runId: RunId) => {
-    if (steerInFlightRef.current) return;
+    if (queueBusy || steerInFlightRef.current) return;
     steerInFlightRef.current = true;
     setBusyRunId(runId);
     await Promise.resolve()
@@ -335,19 +370,6 @@ export function QueuedRunsControl({
 
   return (
     <>
-      {projection?.thread?.historyOrigin === "v1_import" ? (
-        <ContinuationChoiceBanner
-          key={`${props.environmentId}:${props.threadId}`}
-          environmentId={props.environmentId}
-          threadId={props.threadId}
-          prepared={importedChoice}
-          reason={importedReason}
-          onDismiss={() => {
-            setImportedChoice(null);
-            setImportedReason(null);
-          }}
-        />
-      ) : null}
       <ComposerBanner.Attachment>
         <ComposerBanner.Root
           role="region"
@@ -382,8 +404,10 @@ export function QueuedRunsControl({
           <ComposerBanner.Scroll className={cn("max-h-32", !expanded && "hidden")}>
             <ComposerBanner.Children render={<ol />} id={queueListId}>
               {items.map((item) => {
-                const previewText = replaceComposerContextReferences(item.text, (reference) =>
-                  reference.kind === "image" && item.thumbnails.length > 0 ? "" : reference.label,
+                const previewText = assistantCitationsToPlainText(
+                  replaceComposerContextReferences(item.text, (reference) =>
+                    reference.kind === "image" && item.thumbnails.length > 0 ? "" : reference.label,
+                  ),
                 ).trim();
                 const rowRunId = item.runId;
                 const rowServerIndex = item.serverIndex;
@@ -458,7 +482,7 @@ export function QueuedRunsControl({
                             dragArmedRunIdRef.current = rowRunId;
                           }}
                           onKeyDown={(event) => {
-                            if (busyRunId !== null || steerInFlightRef.current) return;
+                            if (queueBusy || steerInFlightRef.current) return;
                             if (event.key === "ArrowUp" && rowServerIndex > 0) {
                               event.preventDefault();
                               void move(rowRunId, queued[rowServerIndex - 1]?.run.id ?? null);
@@ -514,7 +538,9 @@ export function QueuedRunsControl({
                       </Tooltip>
                     </ComposerBanner.Content>
                     <ComposerBanner.Actions>
-                      {projection?.thread?.historyOrigin === "v1_import" &&
+                      {importedEligible &&
+                      props.onImportedHistoryChoice &&
+                      item.serverIndex === 0 &&
                       item.runId !== null &&
                       item.messageId !== null ? (
                         <Button
@@ -534,8 +560,11 @@ export function QueuedRunsControl({
                           size="xs"
                           variant="ghost"
                           aria-label="Cancel editing queued message"
-                          disabled={batch.pending}
-                          onClick={props.onCancelEdit}
+                          disabled={queueBusy}
+                          onClick={() => {
+                            if (queueBusy || steerInFlightRef.current) return;
+                            props.onCancelEdit();
+                          }}
                         >
                           Cancel
                         </Button>
@@ -550,7 +579,7 @@ export function QueuedRunsControl({
                                   aria-label="Edit queued message"
                                   disabled={item.runId === null || queueBusy}
                                   onClick={() => {
-                                    if (steerInFlightRef.current) return;
+                                    if (queueBusy || steerInFlightRef.current) return;
                                     if (item.runId !== null && item.messageId !== null) {
                                       props.onEditQueuedRun({
                                         runId: item.runId,
@@ -574,23 +603,19 @@ export function QueuedRunsControl({
                               <Button
                                 size="xs"
                                 variant="ghost-muted"
-                                disabled={
-                                  item.runId === null || queueBusy || !workflow?.canPromoteToSteer
-                                }
+                                disabled={item.runId === null || queueBusy || !canSend}
                                 onClick={() => {
                                   if (item.runId !== null) {
-                                    void steer(item.runId);
+                                    void sendQueuedMessage(item.runId);
                                   }
                                 }}
                               >
                                 <CornerUpRightIcon />
-                                Steer
+                                {workflow?.canSendNow ? "Send now" : "Steer"}
                               </Button>
                             </TooltipTrigger>
                             <TooltipPopup>
-                              {activeRun === null
-                                ? "There is no active run to steer"
-                                : `Send as a steer instead${item.serverIndex === 0 && props.steerShortcutLabel ? ` (${props.steerShortcutLabel})` : ""}`}
+                              {`${workflow?.canSendNow ? "Start a turn with this message" : "Send as a steer instead"}${item.serverIndex === 0 && props.steerShortcutLabel ? ` (${props.steerShortcutLabel})` : ""}`}
                             </TooltipPopup>
                           </Tooltip>
                           <Tooltip>
@@ -600,7 +625,6 @@ export function QueuedRunsControl({
                                   aria-label="Remove queued message"
                                   disabled={item.runId === null || queueBusy}
                                   onClick={() => {
-                                    if (steerInFlightRef.current) return;
                                     if (item.runId !== null) void remove(item.runId);
                                   }}
                                 />

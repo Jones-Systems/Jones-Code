@@ -51,8 +51,8 @@ const make = Effect.gen(function* () {
     )
       return yield* rejected("unavailable", "Native setup original terminal owner is unavailable");
   });
-  const run = (input: SetupInput) =>
-    Effect.gen(function* () {
+  const run = Effect.fn("NativeWorkspaceSetupExecutor.run")(
+    function* (input: SetupInput) {
       yield* assertAvailable;
       const ownedStart = yield* SetupCustody.consume(input.custody, input.claim, input.basis);
       const effectId = digest(
@@ -181,57 +181,54 @@ const make = Effect.gen(function* () {
         nativePreparation: {
           control,
           script,
-          beforeSpawn: (plan) =>
-            Effect.gen(function* () {
-              yield* revalidate;
-              if (
-                captured !== undefined ||
-                canonical(plan.control) !== canonical(control) ||
-                canonical(plan.script) !== canonical(script) ||
-                plan.cwd !== control.worktreePath ||
-                !plan.completionToken ||
-                !plan.commandLine
-              )
-                return yield* rejected(
-                  "conflict",
-                  "Native setup shell plan differs from its captured command",
-                );
-              captured = plan;
-            }),
-          afterSpawn: (proof) =>
-            Effect.gen(function* () {
-              if (
-                captured === undefined ||
-                spawned !== undefined ||
-                canonical(proof.control) !== canonical(control) ||
-                proof.shell !== captured.shell ||
-                canonical(proof.shellArgs) !== canonical(captured.shellArgs) ||
-                proof.cwd !== control.worktreePath ||
-                !Number.isInteger(proof.pid) ||
-                proof.pid <= 0
-              )
-                return yield* rejected(
-                  "unknown",
-                  "Native setup process did not prove its captured spawn",
-                );
-              spawned = proof;
-            }),
-          beforeWrite: (write) =>
-            Effect.gen(function* () {
-              yield* revalidate;
-              if (
-                captured === undefined ||
-                spawned === undefined ||
-                canonical(write.control) !== canonical(control) ||
-                write.data !== `${captured.commandLine}\r`
-              )
-                return yield* rejected(
-                  "conflict",
-                  "Native setup write differs from its captured shell command",
-                );
-            }),
-          afterCompletion: (completion) =>
-            Effect.gen(function* () {
+          beforeSpawn: Effect.fn("NativeWorkspaceSetupExecutor.beforeSpawn")(function* (plan) {
+            yield* revalidate;
+            if (
+              captured !== undefined ||
+              canonical(plan.control) !== canonical(control) ||
+              canonical(plan.script) !== canonical(script) ||
+              plan.cwd !== control.worktreePath ||
+              !plan.completionToken ||
+              !plan.commandLine
+            )
+              return yield* rejected(
+                "conflict",
+                "Native setup shell plan differs from its captured command",
+              );
+            captured = plan;
+          }),
+          afterSpawn: Effect.fn("NativeWorkspaceSetupExecutor.afterSpawn")(function* (proof) {
+            if (
+              captured === undefined ||
+              spawned !== undefined ||
+              canonical(proof.control) !== canonical(control) ||
+              proof.shell !== captured.shell ||
+              canonical(proof.shellArgs) !== canonical(captured.shellArgs) ||
+              proof.cwd !== control.worktreePath ||
+              !Number.isInteger(proof.pid) ||
+              proof.pid <= 0
+            )
+              return yield* rejected(
+                "unknown",
+                "Native setup process did not prove its captured spawn",
+              );
+            spawned = proof;
+          }),
+          beforeWrite: Effect.fn("NativeWorkspaceSetupExecutor.beforeWrite")(function* (write) {
+            yield* revalidate;
+            if (
+              captured === undefined ||
+              spawned === undefined ||
+              canonical(write.control) !== canonical(control) ||
+              write.data !== `${captured.commandLine}\r`
+            )
+              return yield* rejected(
+                "conflict",
+                "Native setup write differs from its captured shell command",
+              );
+          }),
+          afterCompletion: Effect.fn("NativeWorkspaceSetupExecutor.afterCompletion")(
+            function* (completion) {
               const observed = yield* terminal.observeNativeSetup!(control);
               if (
                 spawned === undefined ||
@@ -244,7 +241,8 @@ const make = Effect.gen(function* () {
                   "unknown",
                   "Native setup completion has no exact retained terminal attribution",
                 );
-            }),
+            },
+          ),
         },
       });
       if (
@@ -271,13 +269,13 @@ const make = Effect.gen(function* () {
           ),
         ),
       };
-    }).pipe(
-      Effect.mapError((cause) =>
-        Schema.is(Workspace.NativeWorkspaceError)(cause)
-          ? cause
-          : rejected("unknown", "Native setup start requires original-owner observation"),
-      ),
-    );
+    },
+    Effect.mapError((cause) =>
+      Schema.is(Workspace.NativeWorkspaceError)(cause)
+        ? cause
+        : rejected("unknown", "Native setup start requires original-owner observation"),
+    ),
+  );
   return NativeWorkspaceSetupExecutor.of({ assertAvailable, run });
 });
 export const layer = Layer.effect(NativeWorkspaceSetupExecutor, make);

@@ -212,6 +212,19 @@ These facts hold for the DMG above and affect any install or update plan:
   transaction to `runtime/jones-updates/retired-preparations/` and writes a
   receipt there.
 
+- A native helper can stop the old writers and then refuse before taking a
+  recovery snapshot. A `blocked` journal still holds normal startup; its error
+  message alone does not prove recovery is safe. The explicit
+  `--reconcile-running REQUEST --plan-sha256 REQUEST_SHA256` operator route
+  accepts `preSwapPreparationRecovery` in its request, containing the exact
+  `transactionId`, `journalSha256`, and `intentSha256`, alongside the usual
+  `manifestSha256` and independently verified `observed` binding. It requires
+  unchanged old app bytes, the matching incoming candidate, stopped writers,
+  writer exclusion, and no snapshot, swap or candidate-startup evidence. A
+  successful result marks only that transaction `rolled-back` and preserves
+  its artifacts. It does not launch or install an app. Changed or ambiguous
+  evidence remains held; never edit journal phases to clear the fence.
+
 - A successful activation keeps the replaced bundle beside the stable app as
   `Jones Code.app.jones-previous-GENERATION`. Staging can also leave
   `Jones Code.app.jones-incoming-GENERATION`. These siblings are recovery

@@ -1,6 +1,7 @@
 import {
   AuthOrchestrationReadScope,
   AuthOrchestrationOperateScope,
+  AuthEnvironmentMaintainScope,
   EnvironmentHttpApi,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -23,6 +24,20 @@ export const jonesUpdatesHttpApiLayer = HttpApiBuilder.group(
       const updates = yield* JonesUpdates;
       const sourceRelation = yield* SourceRelation.JonesSourceRelation;
       return handlers
+        .handle("reconcile", ({ payload }) =>
+          Effect.gen(function* () {
+            yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+            yield* noStore;
+            return yield* updates.reconcile(payload);
+          }),
+        )
+        .handle("recordRetired", ({ payload }) =>
+          Effect.gen(function* () {
+            yield* requireEnvironmentScope(AuthEnvironmentMaintainScope);
+            yield* noStore;
+            return yield* updates.recordRetired(payload);
+          }),
+        )
         .handle("prepareNative", ({ payload }) =>
           Effect.gen(function* () {
             yield* requireEnvironmentScope(AuthOrchestrationOperateScope);

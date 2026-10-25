@@ -34,6 +34,8 @@ import {
 
 import { isElectron } from "../../env";
 import { cn } from "../../lib/utils";
+import { usePrimarySettings } from "../../hooks/useSettings";
+import { resolveHour12 } from "../../timestampFormat";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { environmentPresentations } from "../../state/presentation";
 import { primaryServerKeybindingsAtom, serverEnvironment } from "../../state/server";
@@ -194,6 +196,7 @@ export function UsagePage() {
   } = useUsageWindow();
   useEscapeToGoBack();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
+  const hour12 = usePrimarySettings((settings) => resolveHour12(settings.timestampFormat));
   const shortcutTitle = (
     option: (typeof METRIC_OPTIONS)[number] | (typeof WINDOW_OPTIONS)[number],
   ) => {
@@ -224,7 +227,9 @@ export function UsagePage() {
   const refreshingUsage = isRefreshing && !showingLimits;
   const showingKept = shown !== null && shown.window !== window;
   const presentations = useAtomValue(environmentPresentations.presentationsAtom);
-  const providersByEnvironment = useAtomValue(environmentPresentations.providersByEnvironmentAtom);
+  const presentationsWithProviders = useAtomValue(
+    environmentPresentations.presentationsWithProvidersAtom,
+  );
   const cursorAccessEnvironments = hiddenProviders.has("cursor")
     ? []
     : cursorKeychainAccessEnvironments(selectedEnvironments);
@@ -330,15 +335,15 @@ export function UsagePage() {
       : enumerateHourStarts(shownWindow.sinceTime, shownWindow.untilTime);
   const showChatGptSharing =
     !hiddenProviders.has("codex") &&
-    [...providersByEnvironment].some(
-      ([id, providers]) =>
+    [...presentationsWithProviders].some(
+      ([id, presentation]) =>
         (selectedEnvironmentIds === null || selectedEnvironmentIds.has(id)) &&
-        providers.some(usesChatGptSharing),
+        (presentation.serverConfig?.providers ?? []).some(usesChatGptSharing),
     );
 
   const windowLabel =
     shownHourly && shownWindow.sinceTime !== undefined && shownWindow.untilTime !== undefined
-      ? `${formatDateTimeShort(shownWindow.sinceTime, shownWindow.timeZone)} to ${formatDateTimeShort(shownWindow.untilTime, shownWindow.timeZone)}`
+      ? `${formatDateTimeShort(shownWindow.sinceTime, shownWindow.timeZone, hour12)} to ${formatDateTimeShort(shownWindow.untilTime, shownWindow.timeZone, hour12)}`
       : `${formatDayShort(shownWindow.sinceDay)} to ${formatDayShort(shownWindow.untilDay)}`;
   const desktopWindowLabel =
     windowSelection.kind === "hours"
@@ -567,6 +572,7 @@ export function UsagePage() {
                     : JSON.stringify([...selectedEnvironmentIds].sort())
                 }
                 shownWindow={shownWindow}
+                hour12={hour12}
                 days={days}
                 hours={hours}
                 showingKept={showingKept}
@@ -598,6 +604,7 @@ export function UsagePage() {
             resolution: shownHourly ? "hour" : "day",
             timeZone: shownWindow.timeZone,
             referenceTime: shownWindow.untilTime,
+            hour12,
           }}
           onSetPrice={(model) => setPriceDialog({ model })}
         />
@@ -620,6 +627,7 @@ function UsageOverview({
   merged,
   providerSelectionScope,
   shownWindow,
+  hour12,
   days,
   hours,
   showingKept,
@@ -635,6 +643,7 @@ function UsageOverview({
   readonly merged: MergedUsage;
   readonly providerSelectionScope: string;
   readonly shownWindow: UsageSummaryInput;
+  readonly hour12: boolean;
   readonly days: readonly string[];
   readonly hours: readonly string[];
   readonly showingKept: boolean;
@@ -868,6 +877,7 @@ function UsageOverview({
             referenceTime={shownWindow.untilTime}
             resolution={shownHourly ? "hour" : "day"}
             timeZone={shownWindow.timeZone}
+            hour12={hour12}
           />
         </div>
       </section>
@@ -993,80 +1003,87 @@ function UsageOverview({
             </table>
           </div>
         ) : (
-          <table className="w-full table-fixed text-sm">
-            <colgroup>
-              <col className="w-2/5" />
-              {breakdownProviders.map((provider) => (
-                <col key={provider} style={{ width: timeValueColumnWidth }} />
-              ))}
-              <col style={{ width: timeValueColumnWidth }} />
-              <col style={{ width: timeValueColumnWidth }} />
-            </colgroup>
-            <thead>
-              <tr className="border-b border-border text-left text-xs text-muted-foreground">
-                <th className="py-2 font-normal">{shownHourly ? "Hour" : "Day"}</th>
+          <div
+            className="overflow-x-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+            role="region"
+            aria-label="Usage breakdown by time"
+            tabIndex={0}
+          >
+            <table className="w-full text-sm whitespace-nowrap">
+              <colgroup>
+                <col className="w-2/5" />
                 {breakdownProviders.map((provider) => (
-                  <th key={provider} className="py-2 text-right font-normal">
-                    {PROVIDER_PRESENTATION[provider].label}
-                  </th>
+                  <col key={provider} style={{ width: timeValueColumnWidth }} />
                 ))}
-                <th className="py-2 text-right font-normal">Total</th>
-                <th className="py-2 text-right font-normal">Tokens</th>
-              </tr>
-            </thead>
-            <tbody>
-              {breakdownPeriods.length === 0 ? (
-                <tr>
-                  <td
-                    colSpan={breakdownProviders.length + 3}
-                    className="py-6 text-center text-muted-foreground"
-                  >
-                    No activity in this window.
-                  </td>
+                <col style={{ width: timeValueColumnWidth }} />
+                <col style={{ width: timeValueColumnWidth }} />
+              </colgroup>
+              <thead>
+                <tr className="border-b border-border text-left text-xs text-muted-foreground">
+                  <th className="py-2 font-normal">{shownHourly ? "Hour" : "Day"}</th>
+                  {breakdownProviders.map((provider) => (
+                    <th key={provider} className="py-2 pl-4 text-right font-normal">
+                      {PROVIDER_PRESENTATION[provider].label}
+                    </th>
+                  ))}
+                  <th className="py-2 pl-4 text-right font-normal">Total</th>
+                  <th className="py-2 pl-4 text-right font-normal">Tokens</th>
                 </tr>
-              ) : (
-                breakdownPeriods.map((period) => (
-                  <tr
-                    key={"hourStart" in period ? period.hourStart : period.day}
-                    className="border-b border-border/50 transition-colors hover:bg-muted/50"
-                  >
-                    <td className="py-2 text-foreground">
-                      {"hourStart" in period
-                        ? formatHourShort(period.hourStart, shownWindow.timeZone)
-                        : formatDayShort(period.day)}
-                    </td>
-                    {breakdownProviders.map((provider) => (
-                      <td
-                        key={provider}
-                        className={cn(
-                          "py-2 text-right text-muted-foreground tabular-nums",
-                          figureClass(loadingProviders.has(provider)),
-                        )}
-                      >
-                        {formatUsd(period.byProvider.get(provider)?.costUsd ?? 0)}
-                      </td>
-                    ))}
+              </thead>
+              <tbody>
+                {breakdownPeriods.length === 0 ? (
+                  <tr>
                     <td
-                      className={cn(
-                        "py-2 text-right text-foreground tabular-nums",
-                        figureClass(loadingPartial),
-                      )}
+                      colSpan={breakdownProviders.length + 3}
+                      className="py-6 text-center text-muted-foreground"
                     >
-                      {formatUsd(period.costUsd)}
-                    </td>
-                    <td
-                      className={cn(
-                        "py-2 text-right text-muted-foreground tabular-nums",
-                        figureClass(loadingPartial),
-                      )}
-                    >
-                      {formatTokens(period.totalTokens)}
+                      No activity in this window.
                     </td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+                ) : (
+                  breakdownPeriods.map((period) => (
+                    <tr
+                      key={"hourStart" in period ? period.hourStart : period.day}
+                      className="border-b border-border/50 transition-colors hover:bg-muted/50"
+                    >
+                      <td className="py-2 text-foreground">
+                        {"hourStart" in period
+                          ? formatHourShort(period.hourStart, shownWindow.timeZone, hour12)
+                          : formatDayShort(period.day)}
+                      </td>
+                      {breakdownProviders.map((provider) => (
+                        <td
+                          key={provider}
+                          className={cn(
+                            "py-2 pl-4 text-right text-muted-foreground tabular-nums",
+                            figureClass(loadingProviders.has(provider)),
+                          )}
+                        >
+                          {formatUsd(period.byProvider.get(provider)?.costUsd ?? 0)}
+                        </td>
+                      ))}
+                      <td
+                        className={cn(
+                          "py-2 pl-4 text-right text-foreground tabular-nums",
+                          figureClass(loadingPartial),
+                        )}
+                      >
+                        {formatUsd(period.costUsd)}
+                      </td>
+                      <td
+                        className={cn(
+                          "py-2 pl-4 text-right text-muted-foreground tabular-nums",
+                          figureClass(loadingPartial),
+                        )}
+                      >
+                        {formatTokens(period.totalTokens)}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
     </div>

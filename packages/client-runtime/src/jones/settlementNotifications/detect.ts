@@ -1,4 +1,4 @@
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId, OrchestrationV2ThreadShell, ThreadId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 
@@ -19,6 +19,12 @@ export type ObserveResult =
       threadTitles: ReadonlyMap<ThreadId, string>;
       goneThreadIds: ReadonlySet<ThreadId>;
     };
+
+export function isSettlementChild(
+  thread: Pick<OrchestrationV2ThreadShell, "lineage" | "delegatedFrom">,
+): boolean {
+  return thread.lineage.relationshipToParent === "subagent" || thread.delegatedFrom !== undefined;
+}
 
 export function observeEnvironment(
   prev: EnvironmentSettlementBaseline | null,
@@ -59,12 +65,7 @@ export function observeEnvironment(
       continue;
     }
     threadTitles.set(thread.id, thread.title);
-    if (
-      prev === null ||
-      lowerSequence ||
-      settledAtMs === null ||
-      thread.lineage.relationshipToParent === "subagent"
-    )
+    if (prev === null || lowerSequence || settledAtMs === null || isSettlementChild(thread))
       continue;
     const known = Object.hasOwn(prev.threads, thread.id);
     if (

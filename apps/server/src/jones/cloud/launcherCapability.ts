@@ -15,6 +15,7 @@ export interface LauncherCapabilityReceipt {
   readonly launcherProtocol: 4;
   readonly qualifiedUpdatesProtocol: 1;
   readonly startupGateProtocol: 1;
+  readonly updateSettlementProtocol?: 1;
   readonly childPid: number;
   readonly childVersion: string;
 }
@@ -41,6 +42,7 @@ function decode(value: unknown): LauncherCapabilityReceipt {
     receipt.launcherProtocol !== 4 ||
     receipt.qualifiedUpdatesProtocol !== 1 ||
     receipt.startupGateProtocol !== 1 ||
+    (receipt.updateSettlementProtocol !== undefined && receipt.updateSettlementProtocol !== 1) ||
     typeof receipt.baseDir !== "string" ||
     !NodePath.isAbsolute(receipt.baseDir) ||
     typeof receipt.launcherVersion !== "string" ||

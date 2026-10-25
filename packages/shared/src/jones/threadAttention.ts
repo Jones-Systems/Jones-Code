@@ -30,6 +30,8 @@ export interface ThreadRunSummary {
     | (Omit<OrchestrationV2ProviderSettlement, "completedAt"> & { readonly completedAt: string })
     | null;
   readonly assistantMessageId: MessageId | null;
+  /** The provider turn ended while the run remains open for settlement. */
+  readonly turnEnded?: boolean;
   readonly sourcePlanRef?: {
     readonly threadId: ThreadId;
     readonly planId: PlanId;
@@ -143,14 +145,22 @@ export function shellAttentionInput(
   thread: OrchestrationV2ThreadShell,
   pendingSubagentRequest: PendingSubagentRequest | null = null,
 ): ThreadAttentionInput {
+  const runtime = shellRuntime(thread);
+  // A nonblocking input is actionable only once the provider is no longer working.
+  const runtimeIsWorking =
+    runtime?.status === "preparing" ||
+    runtime?.status === "starting" ||
+    runtime?.status === "running";
   return {
     latestRun: shellLatestRun(thread),
-    runtime: shellRuntime(thread),
+    runtime,
     hasPendingApprovals:
       thread.pendingRuntimeRequest !== null &&
       thread.pendingRuntimeRequest.kind !== "user_input" &&
       thread.pendingRuntimeRequest.kind !== "auth_refresh",
-    hasPendingUserInput: thread.pendingRuntimeRequest?.kind === "user_input",
+    hasPendingUserInput:
+      thread.pendingRuntimeRequest?.kind === "user_input" &&
+      (thread.pendingRuntimeRequest.blocking !== false || !runtimeIsWorking),
     pendingSubagentRequest,
     interactionMode: thread.interactionMode,
     hasActionableProposedPlan: thread.hasActionableProposedPlan,

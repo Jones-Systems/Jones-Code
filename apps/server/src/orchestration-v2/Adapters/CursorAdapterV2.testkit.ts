@@ -716,6 +716,7 @@ export const recordCursorAgentSdkReplayTranscript = Effect.fn(
     }),
     threadId,
     mcpSession: undefined,
+    platform: yield* HostProcess.Platform,
   });
   const sendOptions = {
     model: cursorSdkModelSelection(input.modelSelection),
