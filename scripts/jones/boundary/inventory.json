@@ -1933,7 +1933,10 @@
     "packages/client-runtime/src/jones/projectGroupTitle.ts": "jones-owned",
     "packages/client-runtime/src/jones/projectGroupTitle.test.ts": "jones-owned",
     "scripts/jones/boundary/fragments/project-group-title.json": "jones-owned",
-    "packages/client-runtime/src/state/projectGrouping.ts": "hook"
+    "packages/client-runtime/src/state/projectGrouping.ts": "hook",
+    "packages/client-runtime/src/jones/connection/routeAttemptBudget.ts": "jones-owned",
+    "packages/client-runtime/src/jones/connection/routeAttemptBudget.test.ts": "jones-owned",
+    "packages/client-runtime/src/connection/driver.ts": "hook"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

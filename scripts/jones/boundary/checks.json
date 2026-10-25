@@ -1618,7 +1618,8 @@
         "packages/client-runtime/src/jones/rpcObservationCompatibility.test.ts",
         "packages/client-runtime/src/jones/commandPermissionCompatibility.test.ts",
         "apps/server/src/ws.test.ts",
-        "apps/server/src/relay/AgentAwarenessRelay.test.ts"
+        "apps/server/src/relay/AgentAwarenessRelay.test.ts",
+        "packages/client-runtime/src/jones/connection/routeAttemptBudget.test.ts"
       ],
       "commands": [
         "cd packages/client-runtime && vp test run src/rpc/session.test.ts src/rpc/client.test.ts src/connection/outdatedHostUpdate.test.ts src/connection/supervisor.test.ts --maxWorkers=1",
@@ -1629,7 +1630,9 @@
         "node scripts/jones/check-boundary.ts --strict",
         "vp test run packages/client-runtime/src/jones/commandPermissionCompatibility.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/server/src/ws.test.ts apps/server/src/relay/AgentAwarenessRelay.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run packages/client-runtime/src/jones/rpcObservationCompatibility.test.ts --maxWorkers=1 --no-file-parallelism"
+        "vp test run packages/client-runtime/src/jones/rpcObservationCompatibility.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run packages/client-runtime/src/jones/connection/routeAttemptBudget.test.ts packages/client-runtime/src/connection/supervisor.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint packages/client-runtime/src/connection/driver.ts packages/client-runtime/src/jones/connection/routeAttemptBudget.ts packages/client-runtime/src/jones/connection/routeAttemptBudget.test.ts"
       ]
     },
     {
