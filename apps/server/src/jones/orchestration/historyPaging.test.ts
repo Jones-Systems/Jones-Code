@@ -226,6 +226,52 @@ const seedHistory = Effect.fn("historyPaging.test.seedHistory")(function* (
 
 it.layer(layer)("direct history-page metadata selection", (it) => {
   it.effect(
+    "caps a long human-started history window and pages every row with fallback parity",
+    () =>
+      Effect.gen(function* () {
+        const store = yield* ProjectionStore.ProjectionStoreV2;
+        const sql = yield* SqlClient.SqlClient;
+        const { threadId, itemId } = yield* seedHistory("long-human", "tools");
+        yield* sql`UPDATE orchestration_v2_projection_turn_items
+        SET type = 'user_message',
+          payload_json = json_set(payload_json, '$.type', 'user_message',
+            '$.createdBy', 'user', '$.creationSource', 'web', '$.inputIntent', 'turn_start',
+            '$.messageId', 'message:long-human', '$.text', 'Continue', '$.attachments', json('[]'))
+        WHERE turn_item_id = ${itemId(2)}`;
+        const snapshot = yield* store.getThreadSnapshotWindow(threadId, { rowLimit: 77 });
+        const initial = buildBoundedThreadProjection(snapshot);
+        assert.isAtMost(initial.projection.visibleTurnItems.length, 75);
+        assert.isNotNull(initial.historyCursor);
+        let cursor = initial.historyCursor;
+        let ids = initial.projection.visibleTurnItems.map((row) => String(row.sourceItemId));
+        let pages = 0;
+        while (cursor !== null) {
+          const observation = observeMetadata();
+          const page = yield* store
+            .getThreadHistoryPage(threadId, cursor)
+            .pipe(observation.observe);
+          const fallback = yield* store.getThreadHistoryPage(threadId, cursor, "entry:absent");
+          assert.strictEqual(JSON.stringify(page), JSON.stringify(fallback));
+          assert.isAtMost(page.items.length, 75);
+          assert.isAtMost(
+            selectionMetadata(observation.queries).filter(({ query }) =>
+              query.includes("ORDER BY ordinal DESC"),
+            ).length,
+            7,
+          );
+          ids = [...page.items.map((row) => String(row.sourceItemId)), ...ids];
+          cursor = page.nextCursor;
+          pages += 1;
+          assert.isAtMost(pages, 20);
+        }
+        assert.deepEqual(
+          ids,
+          Array.from({ length: 1040 }, (_, index) => itemId(index + 1)),
+        );
+      }),
+  );
+
+  it.effect(
     "bounds metadata from a relative snapshot cursor and preserves the 150 raw-turn ceiling",
     () =>
       Effect.gen(function* () {
