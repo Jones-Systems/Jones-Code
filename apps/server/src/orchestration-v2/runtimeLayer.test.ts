@@ -2841,21 +2841,25 @@ it.layer(layerTest)("RuntimeLayer.layer lifecycle", (it) => {
                 Layer.succeed(ProjectionStore.ProjectionStoreV2, {
                   ...projections,
                   getThreadsWithPullRequests: () =>
-                    projections.getThreadsWithPullRequests().pipe(
-                      Effect.map((threads) => threads.filter((thread) => thread.id === threadId)),
-                    ),
+                    projections
+                      .getThreadsWithPullRequests()
+                      .pipe(
+                        Effect.map((threads) => threads.filter((thread) => thread.id === threadId)),
+                      ),
                 }),
                 Layer.succeed(Orchestrator.OrchestratorV2, {
                   ...orchestrator,
                   dispatch: (command) =>
-                    orchestrator.dispatch(command).pipe(
-                      Effect.tap(() =>
-                        command.type === "thread.pull-request-watch.sync" &&
-                        command.number === firstReleased
-                          ? Deferred.succeed(firstUpdate, undefined)
-                          : Effect.void,
+                    orchestrator
+                      .dispatch(command)
+                      .pipe(
+                        Effect.tap(() =>
+                          command.type === "thread.pull-request-watch.sync" &&
+                          command.number === firstReleased
+                            ? Deferred.succeed(firstUpdate, undefined)
+                            : Effect.void,
+                        ),
                       ),
-                    ),
                 }),
                 Layer.mock(PullRequestService.PullRequestService)({
                   watchFingerprint: ({ number }) =>
@@ -2945,7 +2949,8 @@ it.layer(layerTest)("RuntimeLayer.layer lifecycle", (it) => {
           yield* Deferred.await(firstUpdate);
           const thread = yield* orchestrator.getThreadShell(threadId);
           assert.deepEqual(
-            thread?.pullRequests?.find((link) => link.number === firstReleased)?.watch?.failedChecks,
+            thread?.pullRequests?.find((link) => link.number === firstReleased)?.watch
+              ?.failedChecks,
             ["lint"],
           );
           assert.equal(activeFingerprints, 1);
