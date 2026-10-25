@@ -14,6 +14,7 @@ import {
   makeCodexLateStartRecovery,
   type CodexStartDispatch,
 } from "../../jones/provider/codex/CodexLateStartRecovery.ts";
+import { makeCodexPendingStartNotifications } from "../../jones/provider/codex/CodexPendingStartNotifications.ts";
 import * as NativeProvider from "../../jones/nativeCreation/NativeCreationProviderGuard.ts";
 import * as BackgroundLiveness from "../../jones/provider/observations/ProviderSessionBackgroundLiveness.ts";
 import type * as RuntimeObservation from "../../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
@@ -2034,13 +2035,22 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           input.runtimePolicy,
         );
         const registrations: Array<(producer: CodexRuntimeProducer) => Effect.Effect<void>> = [];
+        const pendingStartNotifications =
+          makeCodexPendingStartNotifications<Effect.Effect<void, CodexErrors.CodexAppServerError>>();
         const handleServerNotification: CodexRuntimeProducer["client"]["handleServerNotification"] =
           (method, handler) => {
             const install = (producer: CodexRuntimeProducer) =>
               producer.client.handleServerNotification(method, (payload) =>
                 Effect.suspend(() =>
                   producer.active && producer === currentProducer
-                    ? handler(payload).pipe(Effect.provideService(CodexProducerContext, producer))
+                    ? deferPendingStartNotification(
+                        producer,
+                        method,
+                        payload,
+                        handler(payload).pipe(
+                          Effect.provideService(CodexProducerContext, producer),
+                        ),
+                      )
                     : Effect.void,
                 ),
               );
@@ -2345,6 +2355,18 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           request.state.binding.runtimeGeneration === currentProducer.generation;
 
         const releaseCapacityRequest = (request: CapacityRequest) => {
+          // A terminal replay can release capacity while buffered background
+          // output remains. Its start caller still owns that drain; failures
+          // and retired producers must discard it immediately.
+          if (
+            request.lateStartDispatch !== undefined &&
+            (!request.logicalTerminalEmitted ||
+              request.lateStartDispatch.unknown ||
+              capacityScopeClosed ||
+              !currentProducer.active ||
+              request.state.binding.runtimeGeneration !== currentProducer.generation)
+          )
+            pendingStartNotifications.clear(request.lateStartDispatch);
           if (capacityByThread.get(request.state.binding.nativeThreadId) === request) {
             capacityByThread.delete(request.state.binding.nativeThreadId);
           }
@@ -2352,6 +2374,31 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             if (owner === request) capacityByTurn.delete(nativeTurnId);
           }
         };
+
+        // This hook runs on the serialized reader; buffering must not wait for
+        // the start ACK that only this reader can deliver.
+        const deferPendingStartNotification = Effect.fnUntraced(function* (
+          producer: CodexRuntimeProducer,
+          method: string,
+          payload: unknown,
+          replay: Effect.Effect<void, CodexErrors.CodexAppServerError>,
+        ): Effect.fn.Return<void, CodexErrors.CodexAppServerError> {
+          const captured = pendingStartNotifications.capture(
+            producer.generation,
+            method,
+            payload,
+            replay,
+          );
+          if (captured === undefined) return yield* replay;
+          if (captured.status === "overflow") {
+            yield* Effect.logWarning("Codex pending-start notification buffer exceeded its limit.");
+            const request = capacityByThread.get(captured.dispatch.nativeThreadId);
+            if (request?.lateStartDispatch !== captured.dispatch) return;
+            yield* finishUnknownCapacityStart(request);
+            if (request.pendingStartCancelled !== undefined)
+              yield* Deferred.succeed(request.pendingStartCancelled, undefined);
+          }
+        });
 
         const turnWaiters = yield* Ref.make(new Map<string, Deferred.Deferred<void, never>>());
         const subagentThreads = yield* Ref.make(new Map<string, CodexSubagentThreadContext>());
@@ -7349,6 +7396,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             ...(yield* Ref.get(settledTurns)).keys(),
           ]);
           request.lateStartDispatch = dispatch;
+          pendingStartNotifications.begin(dispatch);
           // Keep the original RPC waiter in its producer's scope after the caller
           // times out. A replacement producer cannot acknowledge this dispatch.
           const startCancelled = yield* Deferred.make<void>();
@@ -7405,6 +7453,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           });
           if (!currentCapacityBinding(request))
             return yield* toProtocolError("Native physical binding changed after acknowledgement.");
+          pendingStartNotifications.acknowledge(dispatch, started.turn.id);
           const context = yield* registerRootTurn({
             turnInput: {
               ...request.input,
@@ -7430,8 +7479,26 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           request.earlyCompletions.clear();
           if (earlyStart !== undefined && context.nativeStartReady !== undefined)
             yield* Deferred.succeed(context.nativeStartReady, undefined);
-          if (earlyError !== undefined) yield* handleNativeError(earlyError);
-          if (earlyCompletion !== undefined) yield* handleNativeCompletion(earlyCompletion);
+          const canReplayPendingStart = () =>
+            !capacityScopeClosed &&
+            producer.active &&
+            producer === currentProducer &&
+            !dispatch.unknown &&
+            (currentCapacityBinding(request) || request.logicalTerminalEmitted);
+          while (canReplayPendingStart()) {
+            const replay = pendingStartNotifications.take(dispatch);
+            if (replay === undefined) break;
+            yield* replay;
+          }
+          pendingStartNotifications.clear(dispatch);
+          if (!canReplayPendingStart())
+            return yield* toProtocolError(
+              "Native physical binding changed during notification replay.",
+            );
+          if (!request.logicalTerminalEmitted) {
+            if (earlyError !== undefined) yield* handleNativeError(earlyError);
+            if (earlyCompletion !== undefined) yield* handleNativeCompletion(earlyCompletion);
+          }
           lateStarts.release(dispatch);
           request.lateStartDispatch = undefined;
           yield* Ref.update(pendingRootTurns, (current) => {

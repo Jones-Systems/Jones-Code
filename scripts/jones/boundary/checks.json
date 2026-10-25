@@ -1510,6 +1510,23 @@
       ]
     },
     {
+      "id": "jones-codex-pending-start-notifications",
+      "tests": [
+        "apps/server/src/jones/provider/codex/CodexPendingStartNotifications.test.ts",
+        "apps/server/src/jones/provider/codex/CodexPendingStartReplay.test.ts",
+        "apps/server/src/jones/provider/codex/CodexLateSubagentStart.test.ts",
+        "apps/server/src/jones/provider/codex/CodexLateStartRecovery.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/provider/codex/CodexPendingStartNotifications.test.ts apps/server/src/jones/provider/codex/CodexPendingStartReplay.test.ts apps/server/src/jones/provider/codex/CodexLateSubagentStart.test.ts apps/server/src/jones/provider/codex/CodexLateStartRecovery.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts --maxWorkers=1",
+        "vp run --filter t3 typecheck",
+        "vp lint apps/server/src/jones/provider/codex/CodexPendingStartNotifications.ts apps/server/src/jones/provider/codex/CodexPendingStartNotifications.test.ts apps/server/src/jones/provider/codex/CodexPendingStartReplay.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-codex-late-subagent-reader",
       "tests": ["apps/server/src/jones/provider/codex/CodexLateSubagentStart.test.ts"],
       "commands": [
