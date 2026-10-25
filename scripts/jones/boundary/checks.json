@@ -2568,11 +2568,13 @@
         "apps/server/src/jones/git/backgroundGitAdmission.test.ts",
         "apps/server/src/jones/git/prLookupGitState.test.ts",
         "apps/server/src/git/GitManager.test.ts",
-        "apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts"
+        "apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts",
+        "apps/server/src/jones/git/gitTiming.test.ts",
+        "apps/server/src/orchestration-v2/ThreadSettlementService.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/git/backgroundGitAdmission.test.ts apps/server/src/jones/git/prLookupGitState.test.ts apps/server/src/git/GitManager.test.ts apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp lint apps/server/src/jones/git/backgroundGitAdmission.ts apps/server/src/jones/git/backgroundGitAdmission.test.ts apps/server/src/vcs/GitVcsDriverCore.ts apps/server/src/jones/git/prLookupGitState.ts apps/server/src/jones/git/prLookupGitState.test.ts apps/server/src/git/GitManager.ts apps/server/src/orchestration-v2/ThreadPullRequestService.ts apps/server/src/git/GitManager.test.ts apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts",
+        "vp test run apps/server/src/jones/git/backgroundGitAdmission.test.ts apps/server/src/jones/git/prLookupGitState.test.ts apps/server/src/git/GitManager.test.ts apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts apps/server/src/jones/git/gitTiming.test.ts apps/server/src/orchestration-v2/ThreadSettlementService.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/server/src/jones/git/backgroundGitAdmission.ts apps/server/src/jones/git/backgroundGitAdmission.test.ts apps/server/src/vcs/GitVcsDriverCore.ts apps/server/src/jones/git/prLookupGitState.ts apps/server/src/jones/git/prLookupGitState.test.ts apps/server/src/git/GitManager.ts apps/server/src/orchestration-v2/ThreadPullRequestService.ts apps/server/src/git/GitManager.test.ts apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts apps/server/src/jones/git/backgroundGitAdmission.fixture.ts apps/server/src/jones/git/gitTiming.ts apps/server/src/jones/git/gitTiming.test.ts apps/server/src/orchestration-v2/ThreadSettlementService.ts apps/server/src/orchestration-v2/ThreadSettlementService.test.ts",
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
@@ -3215,11 +3217,12 @@
         "apps/server/src/orchestration-v2/FoundationPersistence.test.ts",
         "apps/server/src/jones/orchestration/actionWorkerAdmission.test.ts",
         "apps/server/src/jones/orchestration/FoundationPersistence.jones.test.ts",
-        "apps/server/src/serverRuntimeStartup.autoPull.test.ts"
+        "apps/server/src/serverRuntimeStartup.autoPull.test.ts",
+        "apps/server/src/jones/orchestration/effectClaimTiming.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/orchestration-v2/EffectWorker.test.ts apps/server/src/orchestration-v2/FoundationPersistence.test.ts apps/server/src/jones/orchestration/actionWorkerAdmission.test.ts apps/server/src/jones/orchestration/FoundationPersistence.jones.test.ts apps/server/src/serverRuntimeStartup.autoPull.test.ts",
-        "vp lint apps/server/src/orchestration-v2/EffectOutbox.ts apps/server/src/orchestration-v2/EffectWorker.ts apps/server/src/orchestration-v2/EffectWorker.test.ts apps/server/src/orchestration-v2/FoundationPersistence.test.ts apps/server/src/jones/orchestration/actionWorkerAdmission.ts apps/server/src/jones/orchestration/actionWorkerAdmission.test.ts apps/server/src/jones/orchestration/FoundationPersistence.jones.test.ts apps/server/src/serverRuntimeStartup.autoPull.test.ts",
+        "vp test run apps/server/src/orchestration-v2/EffectWorker.test.ts apps/server/src/orchestration-v2/FoundationPersistence.test.ts apps/server/src/jones/orchestration/actionWorkerAdmission.test.ts apps/server/src/jones/orchestration/FoundationPersistence.jones.test.ts apps/server/src/serverRuntimeStartup.autoPull.test.ts apps/server/src/jones/orchestration/effectClaimTiming.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/server/src/orchestration-v2/EffectOutbox.ts apps/server/src/orchestration-v2/EffectWorker.ts apps/server/src/orchestration-v2/EffectWorker.test.ts apps/server/src/orchestration-v2/FoundationPersistence.test.ts apps/server/src/jones/orchestration/actionWorkerAdmission.ts apps/server/src/jones/orchestration/actionWorkerAdmission.test.ts apps/server/src/jones/orchestration/FoundationPersistence.jones.test.ts apps/server/src/serverRuntimeStartup.autoPull.test.ts apps/server/src/jones/orchestration/effectClaimTiming.test.ts",
         "vp run --filter t3 typecheck",
         "knip --workspace apps/server --exports --preprocessor ./scripts/knip-schemas.ts --no-config-hints",
         "node scripts/jones/check-boundary.ts --strict"

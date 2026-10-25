@@ -1956,7 +1956,12 @@
     "apps/web/src/lib/backgroundActivityReporter.ts": "hook",
     "apps/web/src/lib/backgroundActivityReporter.test.ts": "jones-tests-in-upstream",
     "apps/mobile/src/connection/background-activity.ts": "hook",
-    "apps/mobile/src/connection/background-activity-reporter.test.ts": "jones-tests-in-upstream"
+    "apps/mobile/src/connection/background-activity-reporter.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/ThreadSettlementService.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/git/gitTiming.ts": "jones-owned",
+    "apps/server/src/jones/git/gitTiming.test.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/effectClaimTiming.test.ts": "jones-owned",
+    "apps/server/src/jones/git/backgroundGitAdmission.fixture.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

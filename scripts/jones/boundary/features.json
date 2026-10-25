@@ -1561,9 +1561,11 @@
         "apps/server/src/jones/git/backgroundGitAdmission.test.ts",
         "apps/server/src/jones/git/prLookupGitState.test.ts",
         "apps/server/src/git/GitManager.test.ts",
-        "apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts"
+        "apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts",
+        "apps/server/src/jones/git/gitTiming.test.ts",
+        "apps/server/src/orchestration-v2/ThreadSettlementService.test.ts"
       ],
-      "scope": "PR discovery Git-state memoization is Jones-owned, bounded per cwd and key, coalesced and cancellation safe. Automatic discovery and its mandatory fresh confirmation mark their nested GitVcsDriverCore work for a process-wide four-permit lane acquired before the existing eight shared permits. Marked permit-eligible commands cannot consume more than four of those eight permits; this does not reserve idle capacity or bound wait time, including exact-key cache joins. Existing null or over-30-second command bypasses, VcsProcess, direct identity probes and other callers retain their behavior. GitManager retains optional config-reader plumbing and fresh identity checks because extracting its head-resolution machinery would duplicate upstream behavior. Discovery width, provider batching and write guards are unchanged. Integration tests stay with their existing Git and orchestration harnesses. Installed runtime is unchanged."
+      "scope": "PR discovery Git-state memoization is Jones-owned, bounded per cwd and key, coalesced and cancellation safe. Automatic discovery and its mandatory fresh confirmation mark their nested GitVcsDriverCore work for a process-wide four-permit lane acquired before the existing eight shared permits. Marked permit-eligible commands cannot consume more than four of those eight permits; this does not reserve idle capacity or bound wait time, including exact-key cache joins. Existing null or over-30-second command bypasses, VcsProcess, direct identity probes and other callers retain their behavior. GitManager retains optional config-reader plumbing and fresh identity checks because extracting its head-resolution machinery would duplicate upstream behavior. Discovery width, provider batching and write guards are unchanged. Integration tests stay with their existing Git and orchestration harnesses. Installed runtime is unchanged. Both automatic settlement lookup paths share this background classification. Existing spans distinguish background admission, shared permits, subprocess execution and worktree spawn/exit."
     },
     {
       "id": "workstreams-multi-environment",
@@ -2024,9 +2026,10 @@
         "apps/server/src/orchestration-v2/FoundationPersistence.test.ts",
         "apps/server/src/jones/orchestration/actionWorkerAdmission.test.ts",
         "apps/server/src/jones/orchestration/FoundationPersistence.jones.test.ts",
-        "apps/server/src/serverRuntimeStartup.autoPull.test.ts"
+        "apps/server/src/serverRuntimeStartup.autoPull.test.ts",
+        "apps/server/src/jones/orchestration/effectClaimTiming.test.ts"
       ],
-      "scope": "Reserve one existing worker for actions at concurrency at least two while preserving all action capacity and serial mixed operation. Shared claim/deadline predicates and scoped wake relay retain leases, recovery and ordering. Jones policy/tests use narrow worker hooks; existing outbox/worker harness edits and typed mock adaptations retain private core machinery."
+      "scope": "Reserve one existing worker for actions at concurrency at least two while preserving all action capacity and serial mixed operation. Shared claim/deadline predicates and scoped wake relay retain leases, recovery and ordering. Jones policy/tests use narrow worker hooks; existing outbox/worker harness edits and typed mock adaptations retain private core machinery. Existing execution spans also report effect availability, claim time and queue wait before the durable cancellation read."
     },
     {
       "id": "workspace-refresh-efficiency",

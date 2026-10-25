@@ -861,6 +861,8 @@ export const layerWithOptions = (
             return false;
           }
           const effect = claimed.value;
+          const claimedAt = DateTime.toEpochMillis(yield* DateTime.now);
+          const availableAt = DateTime.toEpochMillis(DateTime.makeUnsafe(effect.availableAt));
           // Arm the process-local cancellation signal before re-reading durable
           // state. A cancellation that commits after the row read has begun can
           // then still win the execution race instead of falling into the gap
@@ -869,10 +871,9 @@ export const layerWithOptions = (
             .awaitCancellation(effect.id)
             .pipe(Effect.as("cancelled" as const));
           const cancelledBeforeExecution = yield* Effect.gen(function* () {
-            const claimedAt = DateTime.toEpochMillis(yield* DateTime.now);
             const eligibleAt = Math.max(
               DateTime.toEpochMillis(DateTime.makeUnsafe(effect.createdAt)),
-              DateTime.toEpochMillis(DateTime.makeUnsafe(effect.availableAt)),
+              availableAt,
             );
             yield* Metric.update(
               Metric.withAttributes(
@@ -935,6 +936,11 @@ export const layerWithOptions = (
                   },
                   execution,
                 ),
+              Effect.annotateSpans({
+                "orchestration.effect.claimed_at_ms": claimedAt,
+                "orchestration.effect.available_at_ms": availableAt,
+                "orchestration.effect.queue_wait_ms": Math.max(0, claimedAt - availableAt),
+              }),
               Effect.as("executed" as const),
             );
           const exit = yield* Effect.exit(Effect.raceFirst(execution, cancellation)).pipe(
