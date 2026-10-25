@@ -8,6 +8,10 @@
     {
       "from": "apps/web/src/routes/__root.tsx",
       "to": "apps/web/src/jones/remoteAdmission/RemoteAdmissionNotifications.tsx"
+    },
+    {
+      "from": "apps/web/src/routeTree.gen.ts",
+      "to": "apps/web/src/routes/requests.tsx"
     }
   ]
 }
