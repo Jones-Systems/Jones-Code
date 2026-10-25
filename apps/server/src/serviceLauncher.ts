@@ -915,6 +915,7 @@ export class Launcher {
   ): QualifiedDigestOptions {
     return {
       mode,
+      retainVerification: true,
       eventLoop: "worker",
       role,
       onDigestTiming: (timing) => this.#recordDigestTiming(operationId, timing),

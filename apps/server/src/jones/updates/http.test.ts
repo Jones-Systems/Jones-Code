@@ -98,7 +98,12 @@ it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
           }),
         );
         yield* Effect.promise(() =>
-          readQualifiedRuntimeReceipt(baseDir, version, { platform: "linux", architecture: "x64" }),
+          readQualifiedRuntimeReceipt(
+            baseDir,
+            version,
+            { platform: "linux", architecture: "x64" },
+            { retainVerification: true },
+          ),
         );
         const operationId = "11111111-1111-4111-8111-111111111111";
         const input = { operationId, requestId: "22222222-2222-4222-8222-222222222222" };
