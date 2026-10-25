@@ -189,7 +189,7 @@ const commandTransitions = (
         ],
   );
 
-export const beforeCommand = Effect.fn("WorkspaceLifecycle.beforeCommand")(function* (
+const beforeCommand = Effect.fn("WorkspaceLifecycle.beforeCommand")(function* (
   command: IntentCommand,
   events: readonly OrchestrationV2DomainEvent[],
 ) {
