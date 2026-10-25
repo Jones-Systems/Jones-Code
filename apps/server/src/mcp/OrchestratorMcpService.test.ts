@@ -107,8 +107,11 @@ describe("OrchestratorMcpService", () => {
       const layerDependencies = Layer.mergeAll(
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          getThreadRecords: (threadId) =>
-            Effect.succeed(
+          getThreadRecords: (threadId, fields) => {
+            if (threadId === parentThreadId) {
+              assert.deepEqual(fields, ["runs", "subagents", "contextTransfers"]);
+            }
+            return Effect.succeed(
               threadId === parentThreadId
                 ? hasNestedWork
                   ? {
@@ -128,7 +131,8 @@ describe("OrchestratorMcpService", () => {
                       ],
                     }
                   : childProjection,
-            ),
+            );
+          },
           dispatch: (command) =>
             Ref.update(acknowledgementCommandIds, (commandIds) => [
               ...commandIds,
@@ -235,8 +239,12 @@ describe("OrchestratorMcpService", () => {
       const layerDependencies = Layer.mergeAll(
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          getThreadRecords: (threadId) =>
-            Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
+          getThreadRecords: (threadId, fields) => {
+            if (threadId === parentThreadId) {
+              assert.deepEqual(fields, ["runs", "subagents", "contextTransfers"]);
+            }
+            return Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection);
+          },
           delegatedTaskResultPending: () =>
             readFails
               ? Effect.fail(new OrchestratorProjectionError({ threadId: childThreadId }))

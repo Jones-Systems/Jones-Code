@@ -7,6 +7,7 @@ import {
   NodeId,
   TurnItemId,
   type OrchestrationV2Run,
+  OrchestrationV2DomainEvent,
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadShell,
@@ -114,6 +115,7 @@ import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
 const MAX_WAIT_TIMEOUT_MS = 60 * 60 * 1_000;
+const isTaskWakeDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 const TASK_WAKE_EVENTS = [
   { thread: "parent", eventType: "subagent.updated" },
   { thread: "child", eventType: "run.updated" },
@@ -900,6 +902,18 @@ const make = Effect.gen(function* () {
         ),
       );
 
+  const loadTaskParent = (
+    threadId: ThreadId,
+  ): Effect.Effect<
+    Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "subagents" | "contextTransfers">,
+    OrchestratorMcpFailure
+  > =>
+    threadManagement.getThreadRecords(threadId, ["runs", "subagents", "contextTransfers"]).pipe(
+      Effect.mapError((error) =>
+        failure("orchestration_error", `Unable to read thread ${threadId}: ${errorMessage(error)}`),
+      ),
+    );
+
   const loadProjectThread = (
     projectId: OrchestrationV2ThreadProjection["thread"]["projectId"],
     threadId: ThreadId,
@@ -1249,7 +1263,7 @@ const make = Effect.gen(function* () {
   ): Effect.Effect<OrchestratorMcpDelegateTaskResult, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
       yield* requireCapability(scope);
-      const parentProjection = yield* loadProjection(scope.thread.threadId);
+      const parentProjection = yield* loadTaskParent(scope.thread.threadId);
       const task = parentProjection.subagents.find(
         (candidate) =>
           candidate.id === taskId &&
@@ -1483,7 +1497,16 @@ const make = Effect.gen(function* () {
         task.completionDelivery?.state !== "acknowledged" &&
         task.completionDelivery?.state !== "disposed"
       ) {
-        const parentProjection = yield* loadProjection(scope.thread.threadId);
+        const parentProjection = yield* threadManagement
+          .getThreadRecords(scope.thread.threadId, ["runs"])
+          .pipe(
+            Effect.mapError((error) =>
+              failure(
+                "orchestration_error",
+                `Unable to read thread ${scope.thread.threadId}: ${errorMessage(error)}`,
+              ),
+            ),
+          );
         const observingRun = ThreadManagementService.latestActiveRun(parentProjection);
         yield* threadManagement
           .dispatch({
@@ -1559,12 +1582,22 @@ const make = Effect.gen(function* () {
           : TASK_WAKE_EVENTS;
       return yield* Stream.mergeAll(
         wakeEvents.map(({ thread, eventType }) =>
-          threadManagement.streamStoredEventsFrom({
-            threadId:
-              thread === "parent" || childThreadId === null ? scope.thread.threadId : childThreadId,
-            afterSequence,
-            eventType,
-          }),
+          threadManagement
+            .streamStoredEventsFrom({
+              threadId:
+                thread === "parent" || childThreadId === null ? scope.thread.threadId : childThreadId,
+              afterSequence,
+              eventType,
+            })
+            .pipe(
+              Stream.filter(
+                (stored) =>
+                  thread !== "parent" ||
+                  !isTaskWakeDomainEvent(stored.event) ||
+                  stored.event.type !== "subagent.updated" ||
+                  stored.event.payload.id === initial.childNodeId,
+              ),
+            ),
         ),
         { concurrency: "unbounded" },
       ).pipe(
