@@ -20,7 +20,17 @@ const review: ServerProviderSkill = {
   enabled: true,
 };
 
-const counts = vi.hoisted(() => ({ serialize: vi.fn() }));
+const counts = vi.hoisted(() => ({ serialize: vi.fn(), boundary: vi.fn() }));
+vi.mock(import("~/composer-rich-text-doc"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    serializeEditorDoc: (...args: Parameters<typeof actual.serializeEditorDoc>) => {
+      counts.boundary(...args);
+      return actual.serializeEditorDoc(...args);
+    },
+  };
+});
 vi.mock(import("./editorSerializationCache"), async (original) => {
   const actual = await original();
   return {
@@ -283,3 +293,29 @@ it("preserves code-block trigger suppression on selection cache hits", async () 
   expect(changed).toHaveBeenLastCalledWith(value, 6, 6, true, []);
   expect(counts.serialize).not.toHaveBeenCalled();
 });
+
+it.each([true, false])(
+  "reuses serialization across warmed snapshot and selection-range reads: %s",
+  async (richTextEnabled) => {
+    using harness = createHarness("hello world", { richTextEnabled });
+    await using screen = await render(harness.ui, { router: false });
+    const { editorRef } = harness;
+    const editor = readMountedEditor(screen.container);
+    await act(async () => editorRef.current?.focusAt(0));
+    const document = editor.state.doc;
+    expect(counts.boundary).toHaveBeenCalledWith(document);
+    await act(async () => editor.commands.setTextSelection({ from: 3, to: 6 }));
+    // Selection decorations have their own serializer; measure the warmed imperative reads separately.
+    counts.boundary.mockClear();
+    expect(editorRef.current?.readSelectionRange()).toEqual({ start: 2, end: 5 });
+    expect(editorRef.current?.readSnapshot()).toMatchObject({ value: "hello world", cursor: 2, expandedCursor: 2 });
+    expect(editorRef.current?.readSelectionRange()).toEqual({ start: 2, end: 5 });
+    expect(counts.boundary).not.toHaveBeenCalled();
+    await act(async () => editorRef.current?.focusAt(5));
+    counts.boundary.mockClear();
+    expect(editorRef.current?.readSelectionRange()).toEqual({ start: 5, end: 5 });
+    expect(editorRef.current?.readSnapshot()).toMatchObject({ value: "hello world", cursor: 5, expandedCursor: 5 });
+    expect(editor.state.doc).toBe(document);
+    expect(counts.boundary).not.toHaveBeenCalled();
+  },
+);
