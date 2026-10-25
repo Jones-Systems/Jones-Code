@@ -1961,7 +1961,11 @@
     "apps/server/src/jones/git/gitTiming.ts": "jones-owned",
     "apps/server/src/jones/git/gitTiming.test.ts": "jones-owned",
     "apps/server/src/jones/orchestration/effectClaimTiming.test.ts": "jones-owned",
-    "apps/server/src/jones/git/backgroundGitAdmission.fixture.ts": "jones-owned"
+    "apps/server/src/jones/git/backgroundGitAdmission.fixture.ts": "jones-owned",
+    "apps/server/src/jones/workspace/contentSearchPages.ts": "jones-owned",
+    "apps/server/src/jones/workspace/contentSearchPages.test.ts": "jones-owned",
+    "apps/server/src/workspace/WorkspaceSearchIndex.ts": "hook",
+    "scripts/jones/boundary/fragments/workspace-content-search-slicing.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
