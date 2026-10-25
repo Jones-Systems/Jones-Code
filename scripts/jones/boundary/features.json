@@ -1998,7 +1998,7 @@
         "apps/server/integration/transferBudgetV2.integration.test.ts",
         "apps/server/src/orchestration-v2/LegacyBootstrapWireTransport.test.ts"
       ],
-      "scope": "Environment-owned shared shell materialization uses committed snapshot versions, per-subscription monotonic floors, bounded newest-success retention and cancellation isolation. Narrow WS/server hooks and existing harness adaptations preserve replay, resend, freshness and reader routing; dedicated Jones tests cover fanout and file-backed snapshot interleaving."
+      "scope": "Environment-owned shared shell materialization uses committed snapshot versions, per-subscription monotonic floors, bounded newest-success retention and cancellation isolation. Narrow WS/server hooks and existing harness adaptations preserve replay, resend, freshness and reader routing; dedicated Jones tests cover fanout and file-backed snapshot interleaving. Opt-in file-backed synthetic cost diagnostics vary history, forks, archive, provider and pending-payload dimensions on a qualified host. SQL-span and replay evidence distinguish combined lookup costs from non-additive probes and deferred decode; driver execution and row-copy timing remain unavailable. Large fixtures require both explicit opt-ins."
     },
     {
       "id": "action-worker-efficiency",
