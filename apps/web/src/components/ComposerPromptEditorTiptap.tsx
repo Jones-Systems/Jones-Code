@@ -1133,7 +1133,9 @@ function ComposerPromptEditorTiptapInner(
       [updated.state.selection.$from.nodeBefore, updated.state.selection.$from.nodeAfter].some(
         (node) => node?.isInline && node.isAtom && !node.isText && node.type.name !== "hardBreak",
       );
-    onChangeRef.current(nextValue, nextCursor, nextExpandedCursor, suppressTrigger, [...contextIds]);
+    onChangeRef.current(nextValue, nextCursor, nextExpandedCursor, suppressTrigger, [
+      ...contextIds,
+    ]);
   };
 
   const editorAttributes = {
