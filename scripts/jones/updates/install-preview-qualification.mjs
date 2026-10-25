@@ -1638,7 +1638,16 @@ export function rendererSteps(origin, sourceSha, runId) {
   exactCase("legacy-staged", "legacy-staged");
   exactState("cannot safely replace that download");
   noExactButton("A legacy host cannot silently replace a download");
-  click(matchButton);
+  check(
+    "Legacy Match laptop is disabled and its click guard sends nothing",
+    `(() => {
+    const button = Array.from(document.querySelectorAll('${connections} button'))
+      .find(button => button.textContent === 'Match laptop');
+    if (button?.getAttribute('aria-disabled') !== 'true') return false;
+    button.click();
+    return JSON.parse(document.querySelector('[data-testid="exact-receipts"]').textContent).length === 0;
+  })()`,
+  );
   exactCallsAre("Disabled Match laptop cannot dispatch a legacy replacement", "c.action", []);
   capture("connections-match-legacy", ["Match laptop", "cannot safely replace that download"]);
   noBridge();
