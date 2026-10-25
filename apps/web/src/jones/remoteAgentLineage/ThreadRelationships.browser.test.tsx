@@ -264,7 +264,10 @@ it("shows the matching child agent details and refreshes them when the agent set
   const previousGroup = container.querySelector('[data-linked-group="previous"]')!;
   const previousRow = previousGroup.querySelector("li")!;
   expect(previousRow.textContent).toContain("Checker");
-  expect(previousRow.textContent).toContain("Delegated task on VPS · Done");
+  expect(
+    [...previousRow.querySelectorAll("span")].some((span) => span.textContent === "Delegated task"),
+  ).toBe(true);
+  expect(previousRow.textContent).toContain("on VPS · Done");
   expect(previousGroup.querySelector("button")?.textContent?.trim()).toBe("Previous agents");
   expect(heading()).toBe("Linked (1)");
   expect(text()).toContain("Done");
