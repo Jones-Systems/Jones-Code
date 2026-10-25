@@ -6,7 +6,7 @@ export function RemoteAdmissionCount() {
   if (!held && !unknown) return null;
   return (
     <span
-      className="text-[10px] tabular-nums"
+      className="text-3xs tabular-nums"
       aria-label={`${capped ? "At least " : ""}${held} requests need review${unknown ? "; some environments unavailable or loading" : ""}`}
     >
       {held || ""}

@@ -1,4 +1,4 @@
-import { useMemo, useSyncExternalStore } from "react";
+import { useSyncExternalStore } from "react";
 import { act, render } from "../../../test/render";
 import { expect, it, vi } from "vite-plus/test";
 import { EnvironmentId } from "@t3tools/contracts";
@@ -30,7 +30,7 @@ vi.mock("@tanstack/react-router", async (original) => ({
 vi.mock("./useAdmission", () => ({
   useAdmission: () => {
     const state = useSyncExternalStore(store.subscribe, store.getSnapshot);
-    return useMemo(() => ({ ...state, store }), [state]);
+    return { ...state, store };
   },
 }));
 

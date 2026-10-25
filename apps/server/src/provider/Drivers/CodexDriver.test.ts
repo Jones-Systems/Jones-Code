@@ -305,26 +305,32 @@ it.layer(layerTest)("CodexDriver", (it) => {
                 expect(request.headers.authorization).toBe("Bearer dummy-owned-access");
                 return HttpClientResponse.fromWeb(
                   request,
-                  Response.json({
-                    status: "completed",
-                    output: [
-                      {
-                        type: "message",
-                        role: "assistant",
+                  new Response(
+                    `event: response.completed\ndata: ${JSON.stringify({
+                      type: "response.completed",
+                      response: {
                         status: "completed",
-                        content: [
+                        output: [
                           {
-                            type: "output_text",
-                            text: JSON.stringify({
-                              verdict: "pass",
-                              category: "none",
-                              reason: "Routine work",
-                            }),
+                            type: "message",
+                            role: "assistant",
+                            status: "completed",
+                            content: [
+                              {
+                                type: "output_text",
+                                text: JSON.stringify({
+                                  verdict: "pass",
+                                  category: "none",
+                                  reason: "Routine work",
+                                }),
+                              },
+                            ],
                           },
                         ],
                       },
-                    ],
-                  }),
+                    })}\n\n`,
+                    { headers: { "content-type": "text/event-stream" } },
+                  ),
                 );
               }
               if (request.url.endsWith("/models"))

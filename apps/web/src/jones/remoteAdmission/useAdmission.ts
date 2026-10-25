@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { actionableAdmissions, createAdmissionStore } from "./store";
 import { useEnvironmentIds } from "../../state/environments";
@@ -49,40 +49,38 @@ export function useAdmission(environmentId: EnvironmentId) {
   const store = storeFor(environmentId);
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot);
   useEffect(() => watch(store), [store]);
-  return useMemo(() => ({ ...state, store }), [state, store]);
+  return { ...state, store };
 }
 
 export function useAdmissionOverview() {
   const environmentIds = useEnvironmentIds();
-  const overview = useMemo(() => {
-    const entries = environmentIds.map(storeFor);
-    return {
-      subscribe: (listener: () => void) => {
-        const unsubscribes = entries.map((store) => store.subscribe(listener));
-        return () => {
-          for (const unsubscribe of unsubscribes) unsubscribe();
-        };
-      },
-      getSnapshot: () => {
-        let held = 0;
-        let unknown = 0;
-        let capped = false;
-        for (const store of entries) {
-          const state = store.getSnapshot();
-          held += actionableAdmissions(state).length;
-          if (state.loadFailed || !state.snapshot) unknown++;
-          capped ||= state.atLimit;
-        }
-        return `${held}:${unknown}:${capped ? 1 : 0}`;
-      },
-      watch: () => {
-        const stops = entries.map(watch);
-        return () => {
-          for (const stop of stops) stop();
-        };
-      },
-    };
-  }, [environmentIds]);
+  const entries = environmentIds.map(storeFor);
+  const overview = {
+    subscribe: (listener: () => void) => {
+      const unsubscribes = entries.map((store) => store.subscribe(listener));
+      return () => {
+        for (const unsubscribe of unsubscribes) unsubscribe();
+      };
+    },
+    getSnapshot: () => {
+      let held = 0;
+      let unknown = 0;
+      let capped = false;
+      for (const store of entries) {
+        const state = store.getSnapshot();
+        held += actionableAdmissions(state).length;
+        if (state.loadFailed || !state.snapshot) unknown++;
+        capped ||= state.atLimit;
+      }
+      return `${held}:${unknown}:${capped ? 1 : 0}`;
+    },
+    watch: () => {
+      const stops = entries.map(watch);
+      return () => {
+        for (const stop of stops) stop();
+      };
+    },
+  };
   const value = useSyncExternalStore(overview.subscribe, overview.getSnapshot);
   useEffect(() => overview.watch(), [overview]);
   const [held, unknown, capped] = value.split(":").map(Number);
