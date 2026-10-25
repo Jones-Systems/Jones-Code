@@ -31,6 +31,25 @@ const guards = new WeakMap<
 const refused = (message: string) =>
   new ProviderAdapterProtocolError({ driver: ProviderDriverKind.make("codex"), detail: message });
 
+export const assertNativeProviderStartOperation = Effect.fn("NativeProvider.assertStartOperation")(
+  function* (
+    guard: NativeProviderExecutionGuard,
+    threadId: ThreadId,
+    runId: import("@t3tools/contracts").RunId,
+  ) {
+    const state = guards.get(guard);
+    if (
+      !state ||
+      state.retired ||
+      state.acknowledgement !== undefined ||
+      state.threadId !== threadId ||
+      state.runId !== runId
+    )
+      return yield* refused("Native start ownership is no longer current");
+    yield* revalidateNativeProviderGuard(guard, { threadId });
+  },
+);
+
 // This private handle is issued only after the native100 durable start; wire correlation cannot mint it.
 export const revalidateNativeProviderGuard = Effect.fn("revalidateNativeProviderGuard")(function* (
   guard: NativeProviderExecutionGuard | undefined,

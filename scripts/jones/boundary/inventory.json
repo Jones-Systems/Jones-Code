@@ -7,6 +7,26 @@
   },
   "baseline": "05b697f6a2012497ae790425e197fbd1fcef7de7",
   "paths": {
+    "apps/server/src/jones/workspaceLifecycle/NativeOperation.ts": "jones-owned",
+    "apps/server/src/jones/workspaceLifecycle/ManagedConsumers.test.ts": "jones-owned",
+    "apps/server/src/jones/workspaceLifecycle/ManagedCleanup.test.ts": "jones-owned",
+    "apps/server/src/jones/workspaceLifecycle/ManagedConsumer.testkit.ts": "jones-owned",
+    "apps/server/src/jones/workspaceLifecycle/NativeStart.test.ts": "jones-owned",
+    "apps/server/src/jones/workspaceLifecycle/NativeStart.testkit.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/workspace-lifecycle.json": "jones-owned",
+    "apps/server/src/jones/persistence/Migrations/123_JonesWorkspaceLifecycle.ts": "jones-owned",
+    "apps/server/src/jones/workspaceLifecycle/Configuration.ts": "jones-owned",
+    "apps/server/src/jones/workspaceLifecycle/RuntimeIntegration.ts": "jones-owned",
+    "apps/server/src/jones/workspaceLifecycle/RuntimeIntegration.test.ts": "jones-owned",
+    "apps/web/src/components/settings/scopedSettings.ts": "hook",
+    "apps/web/src/components/settings/useScopedSettings.ts": "hook",
+    "apps/web/src/components/settings/useScopedModelAvailability.ts": "hook",
+    "apps/web/src/components/settings/ProjectDefaultsSettings.tsx": "hook",
+    "apps/web/src/components/settings/settingsLayout.tsx": "hook",
+    "apps/web/src/jones/settings/modelSelectionCorrespondence.ts": "jones-owned",
+    "apps/web/src/jones/settings/modelSelectionCorrespondence.test.ts": "jones-owned",
+    "apps/web/src/jones/settings/modelSelectionCorrespondence.plan.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/cross-environment-model-selection.json": "jones-owned",
     "scripts/jones/test-scratch/vitest-cleanup.node-test.mjs": "jones-owned",
     "scripts/jones/test-scratch/vitest-cleanup-worker.mjs": "jones-owned",
     "scripts/jones/boundary/fragments/vitest-scratch-cleanup.json": "jones-owned",
@@ -1624,6 +1644,8 @@
     "apps/web/src/jones/testing/nodeRenderer.ts": "jones-owned",
     "apps/server/src/jones/git/prLookupGitState.ts": "jones-owned",
     "apps/server/src/jones/git/prLookupGitState.test.ts": "jones-owned",
+    "apps/server/src/jones/git/backgroundGitAdmission.ts": "jones-owned",
+    "apps/server/src/jones/git/backgroundGitAdmission.test.ts": "jones-owned",
     "apps/server/src/git/GitManager.ts": "accepted-shared",
     ".github/workflows/native-enrollment-candidate.yml": "policy",
     "apps/server/src/jones/platformCompatibility/mcp/OrchestratorMcpService.test.ts": "jones-owned",
@@ -1862,6 +1884,7 @@
     "apps/server/src/jones/orchestration/threadReferenceExcerpt.test.ts": "jones-owned",
     "apps/server/src/jones/orchestration/threadReferenceCoherent.test.ts": "jones-owned",
     "scripts/jones/boundary/fragments/coherent-reference-reads.json": "jones-owned",
+    "apps/server/src/jones/goals/preserveGoalConversation.ts": "jones-owned",
     "apps/server/src/orchestration-v2/threadHistoryPaging.ts": "accepted-shared",
     "apps/server/src/jones/orchestration/historyPaging.ts": "jones-owned",
     "apps/server/src/jones/orchestration/historyPaging.test.ts": "jones-owned",
@@ -1958,6 +1981,14 @@
     "apps/web/src/jones/usage/SavedTokenAccounting.test.tsx"
   ],
   "allowedImports": [
+    {
+      "from": "apps/server/src/config.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/Configuration.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/RuntimeIntegration.ts"
+    },
     {
       "from": "apps/web/src/components/Sidebar.tsx",
       "to": "packages/client-runtime/src/jones/workQueueMetadata.ts"
