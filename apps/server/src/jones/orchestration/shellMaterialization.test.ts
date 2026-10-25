@@ -264,7 +264,11 @@ it.effect(
                 branch: null,
                 worktreePath: null,
                 activeProviderThreadId: null,
-                lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+                lineage: {
+                  parentThreadId: null,
+                  relationshipToParent: null,
+                  rootThreadId: threadId,
+                },
                 forkedFrom: null,
                 createdAt: occurredAt,
                 updatedAt: occurredAt,
