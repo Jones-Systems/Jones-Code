@@ -1424,9 +1424,12 @@
       "tests": [
         "apps/server/src/jones/peerTransport/PeerMcpClient.test.ts",
         "apps/server/src/jones/peerTransport/PeerMcpSessions.test.ts",
-        "apps/server/src/jones/peerTransport/LinkedMessageOrigin.test.ts"
+        "apps/server/src/jones/peerTransport/LinkedMessageOrigin.test.ts",
+        "apps/server/src/jones/peerTransport/PeerLinkLifecycle.test.ts",
+        "apps/server/src/jones/peerTransport/PeerSessionContext.test.ts",
+        "apps/server/src/peer/PeerLinks.test.ts"
       ],
-      "scope": "Jones-owned peer MCP transport preserves the imported client interface through a thin construction hook. Covers no mutation replay after 404, generation-safe session eviction, redirect refusal, JSON-RPC/SSE validation, structured results and typed failures. Jones tests are colocated with the extracted transport. A cancellable deadline covers headers and complete body consumption without replaying uncertain calls. Authenticated linked origin is separate from local caller authority and preserves bounded literal identifiers; forwarding negotiates receiver incoming-message policy before sends. Receiver authentication and central dispatch remain small shared hooks."
+      "scope": "Jones-owned peer MCP transport preserves the imported client interface through a thin construction hook. Covers no mutation replay after 404, generation-safe session eviction, redirect refusal, JSON-RPC/SSE validation, structured results and typed failures. Jones tests are colocated with the extracted transport. A cancellable deadline covers headers and complete body consumption without replaying uncertain calls. Authenticated linked origin is separate from local caller authority and preserves bounded literal identifiers; forwarding negotiates receiver incoming-message policy before sends. Receiver authentication and central dispatch remain small shared hooks. Concurrent cold callers share bounded service-scoped initialization while retaining independent cancellation. Link secret identity fences initialization, dispatch, publication and both successful and failed outcome reports; obsolete links cannot overwrite or evict successors. Descriptor reads coalesce only while in flight. New Jones tests use the existing link, SQL, authentication and actual MCP HTTP/session harnesses to cover relinking, lifecycle cleanup and independent per-call limits/origins. The existing PeerLinks test-support exception is retained; no mutation replay or schema change."
     },
     {
       "id": "peer-persistence",
