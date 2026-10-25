@@ -5,9 +5,12 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "@effect/platform-node/NodePath";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it, describe, expect } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as LayerMap from "effect/LayerMap";
 import * as Path from "effect/Path";
 
 import * as ServerConfig from "../config.ts";
@@ -17,6 +20,7 @@ import * as KnownWorkspaces from "./KnownWorkspaces.ts";
 import * as WorkspaceEntries from "./WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./WorkspaceFileSystem.ts";
 import * as WorkspacePaths from "./WorkspacePaths.ts";
+import * as WorkspaceSearchIndex from "./WorkspaceSearchIndex.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import { vi } from "vite-plus/test";
@@ -73,6 +77,51 @@ const writeTextFile = Effect.fn("writeTextFile")(function* (
     .makeDirectory(path.dirname(absolutePath), { recursive: true })
     .pipe(Effect.orDie);
   yield* fileSystem.writeFileString(absolutePath, contents).pipe(Effect.orDie);
+});
+
+const makeRefreshBarrierFixture = Effect.gen(function* () {
+  const cwd = yield* makeTempDir;
+  const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
+  const normalizedCwd = yield* workspacePaths.normalizeWorkspaceRoot(cwd);
+  const makeGate = Effect.gen(function* () {
+    return {
+      started: yield* Deferred.make<void>(),
+      release: yield* Deferred.make<void>(),
+      finished: yield* Deferred.make<void>(),
+      interrupted: yield* Deferred.make<void>(),
+    };
+  });
+  const gates = { paths: yield* makeGate, content: yield* makeGate };
+  const indexes = yield* LayerMap.make(
+    (key: string): ReturnType<typeof WorkspaceSearchIndex.layer> => {
+      const gate =
+        key === WorkspaceSearchIndex.workspaceSearchIndexKey(normalizedCwd, "paths")
+          ? gates.paths
+          : gates.content;
+      return Layer.mock(WorkspaceSearchIndex.WorkspaceSearchIndex)({
+        refresh: () =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(gate.started, undefined);
+            yield* Deferred.await(gate.release);
+            yield* Deferred.succeed(gate.finished, undefined);
+          }).pipe(Effect.onInterrupt(() => Deferred.succeed(gate.interrupted, undefined))),
+      });
+    },
+  );
+  for (const variant of WorkspaceSearchIndex.WORKSPACE_SEARCH_INDEX_VARIANTS) {
+    yield* indexes.contextEffect(
+      WorkspaceSearchIndex.workspaceSearchIndexKey(normalizedCwd, variant),
+    );
+  }
+  const entries = yield* WorkspaceEntries.make.pipe(
+    Effect.provideService(WorkspaceSearchIndex.WorkspaceSearchIndexMap, indexes),
+    Effect.provide(VcsProcess.layer),
+  );
+  const files = yield* WorkspaceFileSystem.make.pipe(
+    Effect.provideService(WorkspaceEntries.WorkspaceEntries, entries),
+    Effect.provide(layerKnownWorkspacesTest),
+  );
+  return { cwd, gates, files };
 });
 
 it.layer(layerTest, { excludeTestServices: true })("WorkspaceFileSystemLive", (it) => {
@@ -370,6 +419,60 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceFileSystemLive", (i
   });
 
   describe("writeFile", () => {
+    it.effect.each(WorkspaceSearchIndex.WORKSPACE_SEARCH_INDEX_VARIANTS)(
+      "starts both resident refreshes and waits for both when %s finishes first",
+      (first) =>
+        Effect.gen(function* () {
+          const { cwd, gates, files } = yield* makeRefreshBarrierFixture;
+          const second = first === "paths" ? "content" : "paths";
+          const writing = yield* files
+            .writeFile({
+              cwd,
+              relativePath: "new.txt",
+              contents: "written before refresh",
+            })
+            .pipe(Effect.forkChild);
+
+          yield* Deferred.await(gates.paths.started);
+          yield* Deferred.await(gates.content.started);
+          expect(yield* Deferred.isDone(gates.paths.finished)).toBe(false);
+          expect(yield* Deferred.isDone(gates.content.finished)).toBe(false);
+          expect(writing.pollUnsafe()).toBeUndefined();
+          yield* Deferred.succeed(gates[first].release, undefined);
+          yield* Deferred.await(gates[first].finished);
+          expect(writing.pollUnsafe()).toBeUndefined();
+          expect(yield* Deferred.isDone(gates[second].finished)).toBe(false);
+          yield* Deferred.succeed(gates[second].release, undefined);
+          expect(yield* Fiber.join(writing)).toEqual({ relativePath: "new.txt" });
+          expect(yield* Deferred.isDone(gates[second].finished)).toBe(true);
+        }),
+    );
+
+    it.effect("cancels both resident refresh waits without rolling back the written file", () =>
+      Effect.gen(function* () {
+        const { cwd, gates, files } = yield* makeRefreshBarrierFixture;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const writing = yield* files
+          .writeFile({
+            cwd,
+            relativePath: "new.txt",
+            contents: "already written",
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(gates.paths.started);
+        yield* Deferred.await(gates.content.started);
+
+        yield* Fiber.interrupt(writing);
+
+        expect(yield* Deferred.isDone(gates.paths.interrupted)).toBe(true);
+        expect(yield* Deferred.isDone(gates.content.interrupted)).toBe(true);
+        expect(yield* Deferred.isDone(gates.paths.finished)).toBe(false);
+        expect(yield* Deferred.isDone(gates.content.finished)).toBe(false);
+        expect(yield* fileSystem.readFileString(path.join(cwd, "new.txt"))).toBe("already written");
+      }),
+    );
+
     it.effect("rejects writes outside a known workspace", () =>
       Effect.gen(function* () {
         const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
@@ -403,7 +506,7 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceFileSystemLive", (i
       }),
     );
 
-    it.effect("invalidates workspace entry search cache after writes", () =>
+    it.effect("keeps path and content search caches fresh after writes and replacements", () =>
       Effect.gen(function* () {
         const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
         const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
@@ -414,6 +517,17 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceFileSystemLive", (i
         expect(beforeWrite.entries.some((entry) => entry.path === "plans/effect-rpc.md")).toBe(
           false,
         );
+        const pathQuery = { cwd, query: "effect-rpc", limit: 10 };
+        const contentQuery = {
+          cwd,
+          query: "Plan",
+          limit: 10,
+          caseSensitive: true,
+          wholeWord: false,
+          useRegex: false,
+        };
+        expect((yield* workspaceEntries.search(pathQuery)).entries).toEqual([]);
+        expect((yield* workspaceEntries.searchContents(contentQuery)).matches).toEqual([]);
 
         yield* workspaceFileSystem.writeFile({
           cwd,
@@ -426,6 +540,27 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceFileSystemLive", (i
           expect.arrayContaining([expect.objectContaining({ path: "plans/effect-rpc.md" })]),
         );
         expect(afterWrite.truncated).toBe(false);
+        expect((yield* workspaceEntries.search(pathQuery)).entries).toEqual([
+          { path: "plans/effect-rpc.md", kind: "file" },
+        ]);
+        expect((yield* workspaceEntries.searchContents(contentQuery)).matches).toEqual([
+          expect.objectContaining({ path: "plans/effect-rpc.md", lineContent: "# Plan" }),
+        ]);
+
+        yield* workspaceFileSystem.writeFile({
+          cwd,
+          relativePath: "plans/effect-rpc.md",
+          contents: "# Replacement\n",
+        });
+
+        expect((yield* workspaceEntries.searchContents(contentQuery)).matches).toEqual([]);
+        const replacement = yield* workspaceEntries.searchContents({
+          ...contentQuery,
+          query: "Replacement",
+        });
+        expect(replacement.matches).toEqual([
+          expect.objectContaining({ path: "plans/effect-rpc.md", lineContent: "# Replacement" }),
+        ]);
       }),
     );
 

@@ -4,8 +4,10 @@ import { it, afterEach, describe, expect } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as LayerMap from "effect/LayerMap";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
+import * as RcMap from "effect/RcMap";
 import { vi } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
@@ -13,6 +15,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as WorkspaceEntries from "./WorkspaceEntries.ts";
 import * as WorkspacePaths from "./WorkspacePaths.ts";
+import * as WorkspaceSearchIndex from "./WorkspaceSearchIndex.ts";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -91,6 +94,114 @@ const appendSeparator = (input: string) =>
 it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  describe("refresh resident variants", () => {
+    it.effect("refreshes only resident indexes using normalized workspace keys", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTempDir();
+        const path = yield* Path.Path;
+        const cwdAlias = `${cwd}${path.sep}.`;
+        const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
+        const normalizedCwd = yield* workspacePaths.normalizeWorkspaceRoot(cwd);
+        const refreshed: string[] = [];
+        const lookup = vi.fn((key: string): ReturnType<typeof WorkspaceSearchIndex.layer> =>
+          Layer.mock(WorkspaceSearchIndex.WorkspaceSearchIndex)({
+            refresh: () =>
+              Effect.sync(() => {
+                refreshed.push(key);
+              }),
+          }),
+        );
+        const indexes = yield* LayerMap.make(lookup);
+        const entries = yield* WorkspaceEntries.make.pipe(
+          Effect.provideService(WorkspaceSearchIndex.WorkspaceSearchIndexMap, indexes),
+        );
+        yield* entries.refresh(cwdAlias);
+        expect(lookup).not.toHaveBeenCalled();
+        const pathKey = WorkspaceSearchIndex.workspaceSearchIndexKey(normalizedCwd, "paths");
+        const contentKey = WorkspaceSearchIndex.workspaceSearchIndexKey(normalizedCwd, "content");
+        yield* indexes.contextEffect(pathKey);
+
+        yield* entries.refresh(cwdAlias);
+
+        expect(lookup).toHaveBeenCalledTimes(1);
+        expect(refreshed).toEqual([pathKey]);
+        expect(yield* RcMap.has(indexes.rcMap, contentKey)).toBe(false);
+      }),
+    );
+
+    it.effect.each(
+      WorkspaceSearchIndex.WORKSPACE_SEARCH_INDEX_VARIANTS.flatMap((failingVariant) =>
+        (["create", "timeout", "refresh"] as const).map((failure) => ({ failingVariant, failure })),
+      ),
+    )(
+      "invalidates only $failingVariant after $failure failure and refreshes its sibling",
+      ({ failingVariant, failure }) =>
+        Effect.gen(function* () {
+          const cwd = yield* makeTempDir();
+          const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
+          const normalizedCwd = yield* workspacePaths.normalizeWorkspaceRoot(cwd);
+          const failedKey = WorkspaceSearchIndex.workspaceSearchIndexKey(
+            normalizedCwd,
+            failingVariant,
+          );
+          const siblingKey = WorkspaceSearchIndex.workspaceSearchIndexKey(
+            normalizedCwd,
+            failingVariant === "paths" ? "content" : "paths",
+          );
+          const error =
+            failure === "timeout"
+              ? new WorkspaceSearchIndex.WorkspaceSearchIndexScanTimedOut({
+                  cwd,
+                  timeout: "15 seconds",
+                })
+              : new WorkspaceSearchIndex.WorkspaceSearchIndexRefreshFailed({
+                  cwd,
+                  reason: "test failure",
+                });
+          const refreshed: string[] = [];
+          const lookup = vi.fn((key: string): ReturnType<typeof WorkspaceSearchIndex.layer> =>
+            Layer.mock(WorkspaceSearchIndex.WorkspaceSearchIndex)({
+              refresh: () =>
+                Effect.gen(function* () {
+                  refreshed.push(key);
+                  if (key === failedKey) return yield* error;
+                }),
+            }),
+          );
+          const indexes = yield* LayerMap.make(lookup);
+          yield* indexes.contextEffect(failedKey);
+          yield* indexes.contextEffect(siblingKey);
+          const entries = yield* WorkspaceEntries.make.pipe(
+            Effect.provideService(WorkspaceSearchIndex.WorkspaceSearchIndexMap, {
+              ...indexes,
+              get: (key) =>
+                failure === "create" && key === failedKey
+                  ? Layer.effect(
+                      WorkspaceSearchIndex.WorkspaceSearchIndex,
+                      Effect.fail(
+                        new WorkspaceSearchIndex.WorkspaceSearchIndexCreateFailed({
+                          cwd,
+                          reason: "test acquisition failure",
+                        }),
+                      ),
+                    )
+                  : indexes.get(key),
+            }),
+          );
+
+          yield* entries.refresh(cwd);
+
+          expect(refreshed.toSorted()).toEqual(
+            (failure === "create" ? [siblingKey] : [failedKey, siblingKey]).toSorted(),
+          );
+          expect(yield* RcMap.has(indexes.rcMap, failedKey)).toBe(false);
+          expect(yield* RcMap.has(indexes.rcMap, siblingKey)).toBe(true);
+          yield* indexes.contextEffect(failedKey);
+          expect(lookup.mock.calls.map(([key]) => key)).toEqual([failedKey, siblingKey, failedKey]);
+        }),
+    );
   });
 
   describe("list", () => {

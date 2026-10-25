@@ -45,6 +45,7 @@ import {
   OrchestratorThreadAboveModeLimitError,
 } from "../orchestration-v2/Orchestrator.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
+import type { ProjectionRecordField } from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -114,6 +115,7 @@ describe("OrchestratorMcpService", () => {
         let latestTerminalSummary = "The original task succeeded.";
         let reads = 0;
         let acknowledgements = 0;
+        const parentFields: Array<ReadonlyArray<string>> = [];
         let available = false;
         const scope: McpInvocationScope = {
           environmentId: EnvironmentId.make("environment:parent"),
@@ -135,7 +137,12 @@ describe("OrchestratorMcpService", () => {
           NodeServices.layer,
           ServerSettings.layerTest(),
           Layer.mock(ThreadManagementService.ThreadManagementService)({
-            getThreadRecords: () => Effect.succeed(parent),
+            getThreadRecords: (threadId, fields) =>
+              Effect.sync(() => {
+                assert.equal(threadId, parentThreadId);
+                parentFields.push(fields);
+                return parent;
+              }),
             readRemoteTaskObservation: () => Effect.succeed(undefined),
             dispatch: (command) =>
               Effect.sync(() => {
@@ -173,6 +180,7 @@ describe("OrchestratorMcpService", () => {
             "orchestration_error",
           );
           assert.equal(acknowledgements, 0);
+          assert.deepEqual(parentFields, [["runs", "subagents", "contextTransfers"]]);
           available = true;
           const pending = yield* service.taskStatus(scope, taskId);
           assert.equal(pending.status, "completed");
@@ -181,6 +189,10 @@ describe("OrchestratorMcpService", () => {
           assert.isTrue(pending.hasPendingQuestion);
           assert.deepEqual(pending.remoteObservation, current);
           assert.equal(acknowledgements, 1);
+          assert.deepEqual(parentFields.slice(-2), [
+            ["runs", "subagents", "contextTransfers"],
+            ["runs"],
+          ]);
           current = {
             ...current,
             blockingQuestions: { resumeToken: "cleared", requests: [] },
@@ -257,8 +269,15 @@ describe("OrchestratorMcpService", () => {
       const layerDependencies = Layer.mergeAll(
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          getThreadRecords: (threadId) =>
-            Effect.succeed(
+          getThreadRecords: (threadId, fields) => {
+            if (threadId === parentThreadId) {
+              assert.deepEqual<ReadonlyArray<ProjectionRecordField>>(fields, [
+                "runs",
+                "subagents",
+                "contextTransfers",
+              ]);
+            }
+            return Effect.succeed(
               threadId === parentThreadId
                 ? hasNestedWork
                   ? {
@@ -278,7 +297,8 @@ describe("OrchestratorMcpService", () => {
                       ],
                     }
                   : childProjection,
-            ),
+            );
+          },
           dispatch: (command) =>
             Ref.update(acknowledgementCommandIds, (commandIds) => [
               ...commandIds,
@@ -385,8 +405,16 @@ describe("OrchestratorMcpService", () => {
       const layerDependencies = Layer.mergeAll(
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          getThreadRecords: (threadId) =>
-            Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
+          getThreadRecords: (threadId, fields) => {
+            if (threadId === parentThreadId) {
+              assert.deepEqual<ReadonlyArray<ProjectionRecordField>>(fields, [
+                "runs",
+                "subagents",
+                "contextTransfers",
+              ]);
+            }
+            return Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection);
+          },
           delegatedTaskResultPending: () =>
             readFails
               ? Effect.fail(new OrchestratorProjectionError({ threadId: childThreadId }))

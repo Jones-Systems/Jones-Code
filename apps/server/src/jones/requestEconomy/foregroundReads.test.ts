@@ -22,6 +22,7 @@ import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import * as ShellMaterialization from "../orchestration/shellMaterialization.ts";
 import * as CommandReceiptStore from "../../orchestration-v2/CommandReceiptStore.ts";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as EventStore from "../../orchestration-v2/EventStore.ts";
@@ -377,6 +378,7 @@ it.layer(layerSuite, { excludeTestServices: true })("foreground reads", (it) => 
       const enrichmentChanges =
         yield* PubSub.unbounded<ProjectEnrichmentService.ProjectEnrichmentChange>();
       const liveReady = yield* Deferred.make<void>();
+      let applicationSequence = 0;
       const live = Stream.unwrap(
         Effect.gen(function* () {
           const subscription = yield* PubSub.subscribe(eventBus);
@@ -390,6 +392,7 @@ it.layer(layerSuite, { excludeTestServices: true })("foreground reads", (it) => 
           return Array.from(yield* Stream.runCollect(stream.pipe(Stream.take(2))));
         }),
       ).pipe(
+        Effect.provide(ShellMaterialization.layer),
         Effect.provideService(
           ThreadManagementService.ThreadManagementService,
           boundedService<ThreadManagementService.ThreadManagementService["Service"]>({
@@ -408,7 +411,7 @@ it.layer(layerSuite, { excludeTestServices: true })("foreground reads", (it) => 
         Effect.provideService(
           OrchestrationEventStore.OrchestrationEventStore,
           boundedService<OrchestrationEventStore.OrchestrationEventStore["Service"]>({
-            latestApplicationSequence: Effect.succeed(0),
+            latestApplicationSequence: Effect.sync(() => applicationSequence),
             streamProjectedApplicationEvents: ({ project }) => live.pipe(Stream.map(project)),
           }),
         ),
@@ -440,6 +443,7 @@ it.layer(layerSuite, { excludeTestServices: true })("foreground reads", (it) => 
         sequence: index + 1,
         event: { threadId },
       })) as ApplicationStoredEvent[];
+      applicationSequence = 512;
       yield* PubSub.publishAll(eventBus, events);
       const items = yield* Fiber.join(subscriber).pipe(withinBound(release));
       assert.isUndefined(writerShell.pollUnsafe());

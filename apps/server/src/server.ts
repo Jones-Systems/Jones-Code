@@ -55,6 +55,7 @@ import {
 } from "./httpResponseErrorGuard.ts";
 import { fixPath } from "./os-jank.ts";
 import * as Ws from "./ws.ts";
+import * as ShellMaterialization from "./jones/orchestration/shellMaterialization.ts";
 import {
   workstreamOperationsLayerLive,
   workstreamGatewayLayerLive,
@@ -793,6 +794,7 @@ const layerMakeRoutes = Layer.mergeAll(
   ),
 )
   .pipe(
+    Layer.provide(ShellMaterialization.layer),
     Layer.provide(
       PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
     ),
