@@ -5,7 +5,10 @@
     "apps/server/src/jones/git/prLookupGitState.ts",
     "apps/server/src/jones/git/prLookupGitState.test.ts",
     "apps/server/src/jones/git/backgroundGitAdmission.ts",
-    "apps/server/src/jones/git/backgroundGitAdmission.test.ts"
+    "apps/server/src/jones/git/backgroundGitAdmission.test.ts",
+    "apps/server/src/jones/git/backgroundGitAdmission.fixture.ts",
+    "apps/server/src/jones/git/gitTiming.ts",
+    "apps/server/src/jones/git/gitTiming.test.ts"
   ],
   "hookPaths": [
     "apps/server/src/git/GitManager.ts",
@@ -29,6 +32,18 @@
     {
       "from": "apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts",
       "to": "apps/server/src/jones/git/backgroundGitAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadSettlementService.ts",
+      "to": "apps/server/src/jones/git/backgroundGitAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadSettlementService.test.ts",
+      "to": "apps/server/src/jones/git/backgroundGitAdmission.fixture.ts"
+    },
+    {
+      "from": "apps/server/src/vcs/GitVcsDriverCore.ts",
+      "to": "apps/server/src/jones/git/gitTiming.ts"
     }
   ]
 }

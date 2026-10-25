@@ -21,6 +21,7 @@ import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import * as GitManager from "../git/GitManager.ts";
+import { asBackgroundGitWork } from "../jones/git/backgroundGitAdmission.ts";
 import { withOperation } from "../jones/workspaceLifecycle/NativeOperation.ts";
 import { beforeCleanup } from "../jones/workspaceLifecycle/NativeBoundary.ts";
 import { workModeSettlementActivity } from "../jones/workMode/Settlement.ts";
@@ -488,10 +489,9 @@ export const make = Effect.gen(function* () {
         const cwd = lookupCwdByThreadId.get(thread.id);
         if (summary.state !== "open" && thread.branch !== null && cwd !== undefined) {
           if (!(yield* wouldSettle(group, terminal))) return undefined;
-          const current = yield* git.branchPullRequest(
-            { cwd, branch: thread.branch },
-            { refresh: true },
-          );
+          const current = yield* git
+            .branchPullRequest({ cwd, branch: thread.branch }, { refresh: true })
+            .pipe(asBackgroundGitWork);
           const project = projects.get(thread.projectId);
           if (
             current?.state === "open" &&
@@ -508,7 +508,7 @@ export const make = Effect.gen(function* () {
       if (cwd === undefined) {
         return yield* Effect.die(new Error("thread project not found"));
       }
-      return yield* git.branchPullRequest({ cwd, branch: thread.branch });
+      return yield* git.branchPullRequest({ cwd, branch: thread.branch }).pipe(asBackgroundGitWork);
     });
 
     yield* Effect.forEach(
