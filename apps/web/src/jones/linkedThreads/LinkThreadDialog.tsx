@@ -47,16 +47,16 @@ export function LinkThreadDialog(props: {
     if (!selected || busy) return;
     const target = { environmentId: selected.environmentId, threadId: selected.id };
     setBusy(true);
-    try {
+    await (async () => {
       const succeeded = await props.view.link({
         kind: relationship === "peer" ? "peer" : "continuation",
         from: relationship === "continues-from" ? target : props.subject,
         to: relationship === "continues-from" ? props.subject : target,
       });
       if (succeeded) props.onClose();
-    } finally {
+    })().finally(() => {
       setBusy(false);
-    }
+    });
   };
   return (
     <Dialog

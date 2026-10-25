@@ -124,41 +124,41 @@ export function useLinkedThreads(
     }>,
     outcome: "recorded" | "removed" | "accepted" = "recorded",
   ) => {
-    try {
-      const result = await operation();
-      const receiverOnly =
-        outcome === "accepted" && result.steps.some((step) => step.state === "receiver_only");
-      toastManager.add({
-        type: result.steps.every(
-          (step) => (step.state === "recorded" && !step.detail) || step.state === "receiver_only",
-        )
-          ? "success"
-          : "warning",
-        title: receiverOnly
-          ? "Accepted here · origin unchanged"
-          : outcome === "accepted"
-            ? "Handoff accepted"
-            : outcome === "removed"
-              ? "Thread unlinked"
-              : "Threads linked",
-        description: result.steps
-          .map(
-            (step) =>
-              `${label(step.environmentId)}: ${step.state === "recorded" ? outcome : step.state === "receiver_only" ? "origin unchanged" : step.state}${step.detail ? ` (${step.detail})` : ""}`,
+    return await (async () => {
+      try {
+        const result = await operation();
+        const receiverOnly =
+          outcome === "accepted" && result.steps.some((step) => step.state === "receiver_only");
+        toastManager.add({
+          type: result.steps.every(
+            (step) => (step.state === "recorded" && !step.detail) || step.state === "receiver_only",
           )
-          .join(" · "),
-      });
-      return true;
-    } catch (error) {
-      toastManager.add({
-        type: "error",
-        title: "Could not update linked threads",
-        description: error instanceof Error ? error.message : String(error),
-      });
-      return false;
-    } finally {
-      refresh();
-    }
+            ? "success"
+            : "warning",
+          title: receiverOnly
+            ? "Accepted here · origin unchanged"
+            : outcome === "accepted"
+              ? "Handoff accepted"
+              : outcome === "removed"
+                ? "Thread unlinked"
+                : "Threads linked",
+          description: result.steps
+            .map(
+              (step) =>
+                `${label(step.environmentId)}: ${step.state === "recorded" ? outcome : step.state === "receiver_only" ? "origin unchanged" : step.state}${step.detail ? ` (${step.detail})` : ""}`,
+            )
+            .join(" · "),
+        });
+        return true;
+      } catch (error) {
+        toastManager.add({
+          type: "error",
+          title: "Could not update linked threads",
+          description: error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      }
+    })().finally(refresh);
   };
   const available = (id: EnvironmentId) => capable.some((env) => env.environmentId === id);
   const mutate = (kind: "unlink" | "accept", link: LinkedThreadLink) =>

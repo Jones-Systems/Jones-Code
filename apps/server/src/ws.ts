@@ -1309,9 +1309,6 @@ export const layerWsRpc = (
       const threadReferenceExcerpts = yield* ThreadReferenceExcerpts.ThreadReferenceExcerpts.pipe(
         Effect.provide(ThreadReferenceExcerpts.layer),
       );
-      const linkedThreads = yield* LinkedThreads.LinkedThreads.pipe(
-        Effect.provide(LinkedThreads.layer),
-      );
       const queueCompatibility = yield* QueueCompatibility.QueueCompatibility;
       const intakeContext = yield* Effect.context<
         | ThreadManagementService.ThreadManagementService
@@ -1411,6 +1408,12 @@ export const layerWsRpc = (
       const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
       const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
+      const linkedThreads = LinkedThreads.LinkedThreads.pipe(
+        Effect.provide(LinkedThreads.layer),
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.provideService(ThreadManagementService.ThreadManagementService, threadManagement),
+        Effect.provideService(ServerEnvironment.ServerEnvironment, serverEnvironment),
+      );
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());
       yield* Effect.addFinalizer(() =>
@@ -1931,13 +1934,15 @@ export const layerWsRpc = (
 
       const handlers: ServerWsRpcHandlers = {
         [ORCHESTRATION_V2_WS_METHODS.listLinkedThreads]: (input) =>
-          linkedThreads.list({ type: "user" }, input),
+          linkedThreads.pipe(Effect.flatMap((owner) => owner.list({ type: "user" }, input))),
         [ORCHESTRATION_V2_WS_METHODS.linkThreads]: (input) =>
-          linkedThreads.link({ type: "user" }, { ...input, basis: "manual" }),
+          linkedThreads.pipe(
+            Effect.flatMap((owner) => owner.link({ type: "user" }, { ...input, basis: "manual" })),
+          ),
         [ORCHESTRATION_V2_WS_METHODS.unlinkThreads]: (input) =>
-          linkedThreads.unlink({ type: "user" }, input),
+          linkedThreads.pipe(Effect.flatMap((owner) => owner.unlink({ type: "user" }, input))),
         [ORCHESTRATION_V2_WS_METHODS.acceptThreadHandoff]: (input) =>
-          linkedThreads.accept({ type: "user" }, input),
+          linkedThreads.pipe(Effect.flatMap((owner) => owner.accept({ type: "user" }, input))),
         [ORCHESTRATION_V2_WS_METHODS.getThreadReferenceExcerpt]: (input) =>
           threadReferenceExcerpts.capture(input),
         [ORCHESTRATION_V2_WS_METHODS.previewProviderConversationReselection]: (input) =>

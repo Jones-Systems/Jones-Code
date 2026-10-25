@@ -76,20 +76,22 @@ export function CopyHandoffDialog(props: {
   const copy = async () => {
     if (!text || busy || error) return;
     setBusy(true);
-    try {
-      if (await writeTextToClipboard(text, "handoff text")) {
-        toastManager.add({ type: "success", title: "Handoff text copied" });
-        props.onClose();
-      } else toastManager.add({ type: "error", title: "Could not copy handoff text" });
-    } catch (failure) {
-      toastManager.add({
-        type: "error",
-        title: "Could not copy handoff text",
-        description: failure instanceof Error ? failure.message : String(failure),
-      });
-    } finally {
+    await (async () => {
+      try {
+        if (await writeTextToClipboard(text, "handoff text")) {
+          toastManager.add({ type: "success", title: "Handoff text copied" });
+          props.onClose();
+        } else toastManager.add({ type: "error", title: "Could not copy handoff text" });
+      } catch (failure) {
+        toastManager.add({
+          type: "error",
+          title: "Could not copy handoff text",
+          description: failure instanceof Error ? failure.message : String(failure),
+        });
+      }
+    })().finally(() => {
       setBusy(false);
-    }
+    });
   };
   return (
     <Dialog

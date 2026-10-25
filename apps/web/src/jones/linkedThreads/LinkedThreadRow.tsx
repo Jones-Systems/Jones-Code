@@ -28,11 +28,11 @@ export function LinkedEntryActions({
   const run = async (link: LinkedThreadLink, action: "accept" | "unlink") => {
     if (busy) return;
     setBusy(true);
-    try {
+    await (async () => {
       await view[action](link);
-    } finally {
+    })().finally(() => {
       setBusy(false);
-    }
+    });
   };
   return (
     <Menu>
