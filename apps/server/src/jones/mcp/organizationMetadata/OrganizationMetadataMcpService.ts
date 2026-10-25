@@ -1,3 +1,4 @@
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { ProviderRequestKind } from "@t3tools/contracts";
 import type { EnvironmentId, ThreadId, OrchestrationV2ThreadShell } from "@t3tools/contracts";
 import type {
@@ -117,13 +118,12 @@ const make = Effect.gen(function* () {
       function* (environmentId, input) {
         // One unfiltered read covers active and archived threads in a single
         // projection transaction, so both halves share one snapshotSequence.
-        const snapshot = yield* snapshots
-          .getShellSnapshot()
-          .pipe(
-            Effect.mapError(
-              () => new OrganizationMetadataError({ reason: "local-operation-failed" }),
-            ),
-          );
+        const snapshot = yield* snapshots.getShellSnapshot().pipe(
+          NodeSqliteClient.readOnly,
+          Effect.mapError(
+            () => new OrganizationMetadataError({ reason: "local-operation-failed" }),
+          ),
+        );
         const requested = input.threadIds === undefined ? undefined : new Set(input.threadIds);
         const selected =
           requested === undefined && input.pinned !== true

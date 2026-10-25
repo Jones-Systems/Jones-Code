@@ -1,0 +1,17 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "remote-request-inbox",
+  "jonesOwnedPaths": ["apps/web/src/routes/requests.tsx"],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/routes/__root.tsx",
+      "to": "apps/web/src/jones/remoteAdmission/RemoteAdmissionNotifications.tsx"
+    },
+    {
+      "from": "apps/web/src/routeTree.gen.ts",
+      "to": "apps/web/src/routes/requests.tsx"
+    }
+  ]
+}

@@ -14,6 +14,7 @@ import { Route as WelcomeRouteImport } from './routes/welcome'
 import { Route as VoiceReviewRouteImport } from './routes/voice-review'
 import { Route as UsageRouteImport } from './routes/usage'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as RequestsRouteImport } from './routes/requests'
 import { Route as PairRouteImport } from './routes/pair'
 import { Route as DesignRequestsRouteImport } from './routes/design-requests'
 import { Route as ConnectAgentRouteImport } from './routes/connect-agent'
@@ -65,6 +66,11 @@ const UsageRoute = UsageRouteImport.update({
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const RequestsRoute = RequestsRouteImport.update({
+  id: '/requests',
+  path: '/requests',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PairRoute = PairRouteImport.update({
@@ -210,6 +216,7 @@ export interface FileRoutesByFullPath {
   '/connect-agent': typeof ConnectAgentRoute
   '/design-requests': typeof DesignRequestsRoute
   '/pair': typeof PairRoute
+  '/requests': typeof RequestsRoute
   '/settings': typeof SettingsRouteWithChildren
   '/usage': typeof UsageRoute
   '/voice-review': typeof VoiceReviewRoute
@@ -242,6 +249,7 @@ export interface FileRoutesByTo {
   '/connect-agent': typeof ConnectAgentRoute
   '/design-requests': typeof DesignRequestsRoute
   '/pair': typeof PairRoute
+  '/requests': typeof RequestsRoute
   '/settings': typeof SettingsRouteWithChildren
   '/usage': typeof UsageRoute
   '/voice-review': typeof VoiceReviewRoute
@@ -277,6 +285,7 @@ export interface FileRoutesById {
   '/connect-agent': typeof ConnectAgentRoute
   '/design-requests': typeof DesignRequestsRoute
   '/pair': typeof PairRoute
+  '/requests': typeof RequestsRoute
   '/settings': typeof SettingsRouteWithChildren
   '/usage': typeof UsageRoute
   '/voice-review': typeof VoiceReviewRoute
@@ -313,6 +322,7 @@ export interface FileRouteTypes {
     | '/connect-agent'
     | '/design-requests'
     | '/pair'
+    | '/requests'
     | '/settings'
     | '/usage'
     | '/voice-review'
@@ -345,6 +355,7 @@ export interface FileRouteTypes {
     | '/connect-agent'
     | '/design-requests'
     | '/pair'
+    | '/requests'
     | '/settings'
     | '/usage'
     | '/voice-review'
@@ -379,6 +390,7 @@ export interface FileRouteTypes {
     | '/connect-agent'
     | '/design-requests'
     | '/pair'
+    | '/requests'
     | '/settings'
     | '/usage'
     | '/voice-review'
@@ -414,6 +426,7 @@ export interface RootRouteChildren {
   ConnectAgentRoute: typeof ConnectAgentRoute
   DesignRequestsRoute: typeof DesignRequestsRoute
   PairRoute: typeof PairRoute
+  RequestsRoute: typeof RequestsRoute
   SettingsRoute: typeof SettingsRouteWithChildren
   UsageRoute: typeof UsageRoute
   VoiceReviewRoute: typeof VoiceReviewRoute
@@ -457,6 +470,13 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/requests': {
+      id: '/requests'
+      path: '/requests'
+      fullPath: '/requests'
+      preLoaderRoute: typeof RequestsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/pair': {
@@ -717,6 +737,7 @@ const rootRouteChildren: RootRouteChildren = {
   ConnectAgentRoute: ConnectAgentRoute,
   DesignRequestsRoute: DesignRequestsRoute,
   PairRoute: PairRoute,
+  RequestsRoute: RequestsRoute,
   SettingsRoute: SettingsRouteWithChildren,
   UsageRoute: UsageRoute,
   VoiceReviewRoute: VoiceReviewRoute,

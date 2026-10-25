@@ -2258,6 +2258,7 @@
     {
       "id": "jones-remote-admission",
       "tests": [
+        "apps/web/src/reactCompilerCoverage.test.ts",
         "apps/server/src/jones/remoteAdmission/RemoteAdmission.test.ts",
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
         "apps/server/src/jones/remoteAdmissionIntegration/RemoteAdmissionIntake.test.ts",
@@ -2266,11 +2267,17 @@
         "apps/web/src/jones/remoteAdmission/presentation.test.ts",
         "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts",
         "apps/server/src/jones/remoteAdmissionIntegration/owner.test.ts",
-        "apps/web/src/jones/remoteAdmission/RemoteAdmissionSettings.browser.test.tsx"
+        "apps/web/src/jones/remoteAdmission/RemoteAdmissionSettings.browser.test.tsx",
+        "apps/server/src/textGeneration/jones/CodexRemoteRequestEvaluation.test.ts",
+        "apps/server/src/textGeneration/jones/remoteEvaluationModel.test.ts",
+        "apps/web/src/jones/remoteAdmission/store.test.ts",
+        "apps/web/src/jones/remoteAdmission/RequestsPage.browser.test.tsx",
+        "apps/web/src/jones/remoteAdmission/RemoteAdmissionNotifications.browser.test.tsx"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/remoteAdmission/RemoteAdmission.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/remoteAdmissionIntegration/RemoteAdmissionIntake.test.ts apps/server/src/jones/remoteAdmissionIntegration/http.test.ts apps/server/src/jones/remoteAdmissionIntegration/target.test.ts apps/web/src/jones/remoteAdmission/presentation.test.ts apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts apps/server/src/jones/remoteAdmissionIntegration/owner.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run --root apps/web --config vite.config.ts --project browser src/jones/remoteAdmission/RemoteAdmissionSettings.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
+        "vp test run apps/web/src/reactCompilerCoverage.test.ts -t \"compiles apps/web/src/jones/remoteAdmission/useAdmission.ts\" --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/jones/remoteAdmission/RemoteAdmission.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/remoteAdmissionIntegration/RemoteAdmissionIntake.test.ts apps/server/src/jones/remoteAdmissionIntegration/http.test.ts apps/server/src/jones/remoteAdmissionIntegration/target.test.ts apps/web/src/jones/remoteAdmission/presentation.test.ts apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts apps/server/src/jones/remoteAdmissionIntegration/owner.test.ts apps/server/src/textGeneration/jones/CodexRemoteRequestEvaluation.test.ts apps/server/src/textGeneration/jones/remoteEvaluationModel.test.ts apps/web/src/jones/remoteAdmission/store.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/web --config vite.config.ts --project browser src/jones/remoteAdmission/RemoteAdmissionSettings.browser.test.tsx src/jones/remoteAdmission/RequestsPage.browser.test.tsx src/jones/remoteAdmission/RemoteAdmissionNotifications.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -3000,6 +3007,24 @@
         "vp test run apps/web/src/jones/linkedThreads/LinkedThreads.browser.test.tsx apps/web/src/jones/remoteAgentLineage/ThreadRelationships.browser.test.tsx apps/web/src/jones/remoteAgentLineage/MachineIdentity.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
         "vp lint apps/server/src/jones/linkedThreads apps/server/src/jones/persistence/Migrations/122_JonesThreadLinks.ts apps/server/src/jones/persistence/Migrations/122_JonesThreadLinks.test.ts packages/contracts/src/jones/linkedThreads.ts packages/contracts/src/jones/linkedThreadsRpc.ts packages/contracts/src/jones/linkedThreadsCapability.ts packages/contracts/src/jones/linkedThreads.test.ts packages/shared/src/jones/linkedThreads packages/client-runtime/src/jones/linkedThreads apps/web/src/jones/linkedThreads apps/web/src/components/chat/ThreadRelationshipsControl.tsx",
         "vp run --filter @t3tools/contracts --filter @t3tools/shared --filter @t3tools/provider-core --filter @t3tools/client-runtime --filter t3 --filter @t3tools/web --concurrency-limit 1 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-coherent-reference-reads",
+      "tests": [
+        "apps/server/src/jones/orchestration/threadReferenceExcerpt.test.ts",
+        "apps/server/src/jones/orchestration/threadReferenceTail.test.ts",
+        "apps/server/src/jones/orchestration/threadReferenceCoherent.test.ts",
+        "apps/server/src/relay/AgentAwarenessRelay.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
+        "apps/server/src/orchestration-v2/ProjectionStore.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/orchestration/threadReferenceExcerpt.test.ts apps/server/src/jones/orchestration/threadReferenceTail.test.ts apps/server/src/jones/orchestration/threadReferenceCoherent.test.ts",
+        "vp test run apps/server/src/orchestration-v2/ProjectionStore.test.ts -t 'keeps fork visible items stable after a source run is rolled back'",
+        "vp lint apps/server/src/orchestration-v2/ProjectionStore.ts apps/server/src/orchestration-v2/Orchestrator.ts apps/server/src/orchestration-v2/ThreadManagementService.ts apps/server/src/jones/orchestration/threadReferenceExcerpt.ts apps/server/src/jones/orchestration/threadReferenceExcerpt.test.ts apps/server/src/jones/orchestration/threadReferenceTail.test.ts apps/server/src/jones/orchestration/threadReferenceCoherent.test.ts apps/server/src/relay/AgentAwarenessRelay.test.ts apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
+        "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
     },

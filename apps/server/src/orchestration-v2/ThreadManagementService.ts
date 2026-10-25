@@ -389,6 +389,7 @@ export interface ThreadManagementServiceShape extends ObservationPorts {
     command: LegacyGuardRejectionDeleteCommand,
   ) => Effect.Effect<Orchestrator.OrchestratorV2DispatchResult, Orchestrator.OrchestratorV2Error>;
   readonly getThreadHistoryPage: Orchestrator.OrchestratorV2["Service"]["getThreadHistoryPage"];
+  readonly getTimelinePages: Orchestrator.OrchestratorV2["Service"]["getTimelinePages"];
   readonly getTimelinePage: Orchestrator.OrchestratorV2["Service"]["getTimelinePage"];
   readonly getMessageCount: Orchestrator.OrchestratorV2["Service"]["getMessageCount"];
   readonly getTurnItem: (input: {
@@ -1481,6 +1482,12 @@ const make = Effect.gen(function* () {
       : {
           dispatchLegacyGuardRejectionDelete: orchestrator.dispatchLegacyGuardRejectionDelete,
         }),
+    getTimelinePages: (threadId, selections) =>
+      ensureProjectionTranscript(threadId).pipe(
+        Effect.andThen(
+          orchestrator.getTimelinePages(threadId, selections).pipe(NodeSqliteClient.readOnly),
+        ),
+      ),
     getTimelinePage: (threadId, options) =>
       ensureProjectionTranscript(threadId).pipe(
         Effect.andThen(
