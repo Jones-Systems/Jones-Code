@@ -1121,9 +1121,14 @@ const make = Effect.fn("makeWithDatabase")(function* (
   const readerSemaphore = yield* Semaphore.make(1);
 
   const writer = { name: "writer" as const, lock: semaphore, connection };
+  type RouteTarget = {
+    readonly name: Acquired["connection"];
+    readonly lock: typeof semaphore;
+    readonly connection: Connection;
+  };
   const route = Effect.withFiber((fiber) =>
     acquireReader !== undefined && Context.get(fiber.context, ReadOnly)
-      ? Effect.flatMap(acquireReader, (readerConnection) =>
+      ? Effect.flatMap(acquireReader, (readerConnection): Effect.Effect<RouteTarget, SqlError> =>
           readerConnection === undefined
             ? options.readerFailureMode === "fail"
               ? Effect.fail(
