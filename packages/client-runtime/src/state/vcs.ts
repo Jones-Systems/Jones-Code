@@ -199,6 +199,7 @@ export const makeCachedVcsRefsChanges = Effect.fn("CachedVcsRefsState.makeChange
                   }),
                 ),
               ),
+              Effect.catchTags({ EnvironmentAuthorizationError: () => Effect.never }),
             ),
           ).pipe(
             Stream.retry(VCS_REFS_RETRY_SCHEDULE),

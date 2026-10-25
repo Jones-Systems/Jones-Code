@@ -2427,6 +2427,18 @@
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-client-vcs-denial-efficiency",
+      "tests": [
+        "packages/client-runtime/src/state/vcs.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/client-runtime/src/state/vcs.test.ts",
+        "vp lint packages/client-runtime/src/state/vcs.ts packages/client-runtime/src/state/vcs.test.ts",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }
