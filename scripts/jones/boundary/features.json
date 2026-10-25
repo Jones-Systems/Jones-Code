@@ -4,6 +4,11 @@
   "baseline": "05b697f6a2012497ae790425e197fbd1fcef7de7",
   "features": [
     {
+      "id": "project-group-title",
+      "tests": ["packages/client-runtime/src/jones/projectGroupTitle.test.ts"],
+      "scope": "Shared saved project names take precedence over repository labels when every checkout agrees, including names equal to the repository short name. Mixed titles retain the repository fallback; group identity, environment membership and persistence stay unchanged. One shared-client hook covers web, desktop and mobile."
+    },
+    {
       "id": "experimental-typecheck",
       "tests": ["scripts/jones/experimental-typecheck/runner.test.mjs"],
       "scope": "Explicit opt-in tsrs TypeScript-only checking; existing authoritative checks retain Effect diagnostics. The Jones runner discovers pnpm workspaces, validates the existing noEmit script shape, uses the pinned local compiler serially, and owns signal forwarding and isolated build-info cleanup. Root package script and exact dependency/lock entries are minimal shared integration; development documents narrower coverage."
@@ -949,7 +954,14 @@
         "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
         "apps/server/src/jones/updates/desktopInstall.test.ts",
         "apps/server/src/jones/cloud/shutdownBudget.test.ts",
-        "apps/server/src/orchestration-v2/ProjectionRecovery.test.ts"
+        "apps/server/src/orchestration-v2/ProjectionRecovery.test.ts",
+        "apps/desktop/src/jones/updates/jonesQuitPreparation.test.ts",
+        "apps/desktop/src/jones/updates/jonesNativePreparation.test.ts",
+        "apps/desktop/src/backend/DesktopBackendManager.test.ts",
+        "apps/desktop/src/updates/DesktopUpdates.test.ts",
+        "apps/server/src/jones/updates/http.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts",
+        "apps/server/src/orchestration-v2/FoundationPersistence.test.ts"
       ]
     },
     {

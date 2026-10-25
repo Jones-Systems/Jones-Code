@@ -498,6 +498,57 @@ describe("DesktopUpdates", () => {
     }),
   );
 
+  it.effect("waits for every backend exit before invoking the installer", () =>
+    Effect.gen(function* () {
+      const releases = [yield* Deferred.make<void>(), yield* Deferred.make<void>()];
+      const stopping = [yield* Deferred.make<void>(), yield* Deferred.make<void>()];
+      const instances = releases.map(
+        (release, index) =>
+          ({
+            id: DesktopBackendPool.BackendInstanceId(`backend-${index}`),
+            label: Effect.succeed(`backend-${index}`),
+            currentConfig: Effect.succeedNone,
+            start: Effect.void,
+            stop: (options) => {
+              assert.isUndefined(options);
+              return Deferred.succeed(stopping[index]!, undefined).pipe(
+                Effect.andThen(Deferred.await(release)),
+              );
+            },
+            snapshot: Effect.succeed({
+              desiredRunning: true,
+              ready: false,
+              activePid: Option.none(),
+              restartAttempt: 0,
+              restartScheduled: false,
+            }),
+            waitForReady: () => Effect.succeed(true),
+          }) satisfies DesktopBackendPool.DesktopBackendInstance,
+      );
+      const harness = makeHarness({ backendInstances: instances });
+
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const updates = yield* DesktopUpdates.DesktopUpdates;
+          yield* updates.configure;
+          harness.emit("update-downloaded", { version: "1.2.4" });
+          yield* flushCallbacks;
+          const install = yield* updates.install.pipe(Effect.forkScoped);
+          for (const started of stopping) yield* Deferred.await(started);
+          yield* TestClock.adjust("6 seconds");
+          assert.equal(harness.quitAndInstalls(), 0);
+          assert.isUndefined(install.pollUnsafe());
+          yield* Deferred.succeed(releases[0]!, undefined);
+          yield* flushCallbacks;
+          assert.equal(harness.quitAndInstalls(), 0);
+          yield* Deferred.succeed(releases[1]!, undefined);
+          assert.isTrue((yield* Fiber.join(install)).accepted);
+          assert.equal(harness.quitAndInstalls(), 1);
+        }),
+      ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+    }),
+  );
+
   it.effect("keeps windows and restarts backends when quitAndInstall fails", () => {
     const harness = makeHarness({
       quitAndInstall: Effect.fail(

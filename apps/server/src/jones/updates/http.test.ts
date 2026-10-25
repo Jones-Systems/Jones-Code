@@ -403,6 +403,10 @@ function fixture(scopes: ReadonlyArray<AuthEnvironmentScope>) {
     download: (input) => record("download", input),
     downloadExact: (input) => record("downloadExact", input),
     prepareNative: (input) => record("prepareNative", input),
+    prepareQuit: Effect.sync(() => {
+      calls.push({ action: "prepareQuit", input: undefined });
+      return { prepared: true, threadCount: 2 };
+    }),
     install: (input) => record("install", input),
     reconcile: (input) => record("reconcile", input),
     recordRetired: (input) => record("recordRetired", input),
@@ -441,6 +445,26 @@ function fixture(scopes: ReadonlyArray<AuthEnvironmentScope>) {
 }
 
 describe("qualified update HTTP authority and decoding", () => {
+  test("requires operate scope for empty-body quit preparation and returns no-store", async () => {
+    for (const scopes of [[], ["orchestration:read"], ["orchestration:operate"]] as const) {
+      const app = fixture(scopes);
+      try {
+        const response = await app.handler(
+          new Request("http://fixture/api/jones-updates/prepare-quit", { method: "POST" }),
+        );
+        const permitted = scopes.some((scope) => scope === "orchestration:operate");
+        expect(response.status).toBe(permitted ? 200 : 403);
+        expect(app.calls).toEqual(permitted ? [{ action: "prepareQuit", input: undefined }] : []);
+        if (permitted) {
+          expect(response.headers.get("cache-control")).toBe("no-store");
+          expect(await response.json()).toEqual({ prepared: true, threadCount: 2 });
+        }
+      } finally {
+        await app.dispose();
+      }
+    }
+  });
+
   const reconciliation = {
     operationId: "11111111-1111-4111-8111-111111111111",
     requestId: "22222222-2222-4222-8222-222222222222",
