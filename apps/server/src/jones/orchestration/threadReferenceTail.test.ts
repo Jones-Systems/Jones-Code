@@ -29,7 +29,10 @@ import * as Tracer from "effect/Tracer";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as EventStore from "../../orchestration-v2/EventStore.ts";
+import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
+import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { encodeThreadHistoryCursor } from "../../orchestration-v2/threadHistoryPaging.ts";
+import * as Excerpts from "./threadReferenceExcerpt.ts";
 
 const database = SqlitePersistence.layerMemory;
 const testLayer = Layer.merge(ProjectionStore.layer, EventStore.layer).pipe(
@@ -150,12 +153,16 @@ const seed = seedItems(10);
 const tracePayloadStatements = () => {
   const statements: string[] = [];
   const metadataStatements: string[] = [];
+  const transactions: string[] = [];
   const tracer = Tracer.make({
     span(options) {
       const span = new Tracer.NativeSpan(options);
       const end = span.end.bind(span);
       span.end = (time, exit) => {
         const query = span.attributes.get("db.query.text");
+        if (span.name === "sql.transaction" && span.attributes.get("db.connection") !== undefined) {
+          transactions.push(span.name);
+        }
         if (typeof query === "string" && /SELECT turn_item_id, run_id, node_id, type/.test(query)) {
           metadataStatements.push(query);
         }
@@ -172,7 +179,7 @@ const tracePayloadStatements = () => {
       return span;
     },
   });
-  return { statements, metadataStatements, tracer };
+  return { statements, metadataStatements, transactions, tracer };
 };
 
 it.effect.each([0, 1, 2, 64, 100])(
@@ -411,6 +418,42 @@ it.effect("tail excludes superseded interrupt activity", () =>
 );
 
 
+it.effect("excerpt capture shares one SQL index, payload union and transaction", () =>
+  Effect.gen(function* () {
+    const { store } = yield* seed;
+    const timeline = {
+      getTimelinePage: (threadId: ThreadId, options: ProjectionStore.ProjectionTimelinePageOptions) =>
+        store.getTimelinePage(threadId, options).pipe(
+          Effect.mapError((cause) => new Orchestrator.OrchestratorProjectionError({ threadId, cause })),
+        ),
+      getTimelinePages: (
+        threadId: ThreadId,
+        selections: ReadonlyArray<ProjectionStore.ProjectionTimelinePageOptions>,
+      ) => store.getTimelinePages(threadId, selections).pipe(
+        Effect.mapError((cause) => new Orchestrator.OrchestratorProjectionError({ threadId, cause })),
+      ),
+    };
+    const trace = tracePayloadStatements();
+    const result = yield* Effect.gen(function* () {
+      const excerpts = yield* Excerpts.ThreadReferenceExcerpts;
+      return yield* excerpts.capture({ threadId: source });
+    }).pipe(
+      Effect.provide(Excerpts.layer.pipe(
+        Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)(timeline)),
+      )),
+      Effect.withTracer(trace.tracer),
+    );
+    assert.equal(result.excerpt.status, "captured");
+    if (result.excerpt.status !== "captured") return;
+    assert.include(result.excerpt.text, "Synthetic input");
+    assert.include(result.excerpt.text, "canonical-output-9");
+    assert.equal(result.excerpt.sourceSnapshotSequence, 12);
+    assert.equal(trace.metadataStatements.length, 1);
+    assert.equal(trace.statements.length, 1);
+    assert.equal(trace.transactions.length, 1);
+  }).pipe(Effect.provide(testLayer)),
+);
+
 it.effect("coherent timeline pages share one index and union payload read with identical page shapes", () =>
   Effect.gen(function* () {
     const { store } = yield* seed;
@@ -428,6 +471,7 @@ it.effect("coherent timeline pages share one index and union payload read with i
     assert.deepEqual(actual, expected);
     assert.equal(trace.statements.length, 1);
     assert.equal(trace.metadataStatements.length, 1);
+    assert.equal(trace.transactions.length, 1);
     assert.equal(actual[2]?.snapshotSequence, undefined);
   }).pipe(Effect.provide(testLayer)),
 );

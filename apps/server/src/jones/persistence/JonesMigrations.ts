@@ -44,6 +44,7 @@ import JonesMigration0118 from "./Migrations/118_JonesRemoteAdmissionIntegration
 import JonesMigration0119 from "./Migrations/119_JonesPeerEnvironmentLinks.ts";
 
 import JonesMigration0120 from "./Migrations/120_JonesSettlementRestores.ts";
+import JonesMigration0121 from "./Migrations/121_JonesRemoteTaskObservations.ts";
 
 export const jonesMigrationEntries = [
   [1, "WorktreeOwnershipLeases", JonesMigration0001],
@@ -72,14 +73,14 @@ export const jonesMigrationEntries = [
   [118, "RemoteAdmissionIntegration", JonesMigration0118],
   [119, "PeerEnvironmentLinks", JonesMigration0119],
   [120, "SettlementRestores", JonesMigration0120],
+  [121, "RemoteTaskObservations", JonesMigration0121],
 ] as const;
 
-export const runMigrations = () =>
-  Effect.gen(function* () {
-    const jonesMigrations = yield* runJonesMigrations(jonesMigrationEntries);
-    if (jonesMigrations.length > 0) {
-      yield* Effect.log("Jones migrations ran successfully").pipe(
-        Effect.annotateLogs({ migrations: jonesMigrations.map(([id, name]) => `${id}_${name}`) }),
-      );
-    }
-  });
+export const runMigrations = Effect.fn("JonesMigrations.runMigrations")(function* () {
+  const jonesMigrations = yield* runJonesMigrations(jonesMigrationEntries);
+  if (jonesMigrations.length > 0) {
+    yield* Effect.log("Jones migrations ran successfully").pipe(
+      Effect.annotateLogs({ migrations: jonesMigrations.map(([id, name]) => `${id}_${name}`) }),
+    );
+  }
+});

@@ -170,3 +170,31 @@ export function moveNativeThreadOrder(
   next.splice(next.indexOf(neighborId) + (after ? 1 : 0), 0, movedId);
   return next;
 }
+
+export interface MobileOperationActions {
+  readonly supportsOperations?: (environmentId: string) => boolean;
+  readonly operationStatus?: string | null;
+  readonly assignOperation?: (
+    snapshot: import("./projection").MobileWorkstreamSnapshot,
+    thread: WorkstreamThreadLike,
+    destination: string | null,
+  ) => Promise<void>;
+  readonly createOperation?: (
+    snapshot: import("./projection").MobileWorkstreamSnapshot,
+    name: string,
+  ) => Promise<string>;
+}
+
+/** The capable server owns registration and verification; legacy secondary actions keep their guard. */
+export function mobilePrimaryMembershipBlock(
+  input: Parameters<typeof mobileMembershipBlock>[0] & {
+    readonly capable: boolean;
+  },
+): string | null {
+  if (!input.capable) return mobileMembershipBlock(input);
+  return input.snapshot.stale || !canEditWorkstreams(input.snapshot.data)
+    ? "Workstreams are read-only."
+    : input.conflictingThreadKeys.has(input.threadKey)
+      ? "This thread has conflicting Workstream assignments. Refresh before retrying."
+      : null;
+}

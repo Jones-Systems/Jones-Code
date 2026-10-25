@@ -144,6 +144,15 @@ it.live(
             build: Effect.succeed(Option.some(syntheticBuild)),
             threadExists: (threadId) => Effect.succeed(threadId === nativeThreadId),
           }),
+          providerV2: makeWorkstreamsNativeProvider(
+            {
+              ...providerFixture.ports,
+              authority: authorityPort,
+              build: Effect.succeed(Option.some(syntheticBuild)),
+              threadExists: (threadId) => Effect.succeed(threadId === nativeThreadId),
+            },
+            "v2",
+          ),
           enrollments: NativeProviderEnrollment.of({
             getBySessionId: (sessionId) =>
               enrollments.getBySessionId(sessionId).pipe(Effect.orElseSucceed(() => Option.none())),

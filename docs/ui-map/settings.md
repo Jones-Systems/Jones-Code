@@ -26,7 +26,7 @@ that each setting or external integration works.
 | `storage`                | [Storage](../../apps/web/src/routes/settings.storage.tsx)                           | Environment state; destructive cleanup is outside a navigation check.                                  |
 | `connections`            | [Connections](../../apps/web/src/routes/settings.connections.tsx)                   | Device-only route; administration requires suitable scopes and isolated endpoints.                     |
 | `archived`               | [Archive](../../apps/web/src/routes/settings.archived.tsx)                          | Synthetic archived threads for restore checks.                                                         |
-| `jones-code`             | [Jones Code](../../apps/web/src/routes/settings.jones-code.tsx)                     | Device-only prompt defaults and project/environment ordering across connected environments.            |
+| `jones-code`             | [Jones Code](../../apps/web/src/routes/settings.jones-code.tsx)                     | Device-only prompt defaults, sidebar activity windows, and project/environment order.                  |
 | `diagnostics`            | [Diagnostics](../../apps/web/src/routes/settings.diagnostics.tsx)                   | Environment-specific view; reachable from General/search, excluded from ordinary section navigation.   |
 | `open-source-licenses`   | [Open source licenses](../../apps/web/src/routes/settings.open-source-licenses.tsx) | General's link; distinct breadcrumb but General remains the selected sidebar section.                  |
 

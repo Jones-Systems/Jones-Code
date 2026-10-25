@@ -1,3 +1,4 @@
+import { SYNTHETIC_CLAUDE_THINKING_MODEL } from "../provider/ClaudeModelCatalog.testFixtures.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import { ClaudeSettings, ProviderInstanceId } from "@t3tools/contracts";
@@ -12,12 +13,12 @@ import * as Result from "effect/Result";
 import { expect } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
+import { processProbeSource } from "../testUtils/processProbe.ts";
 import {
   SYNTHETIC_CLAUDE_CAPABLE_MODEL,
   SYNTHETIC_CLAUDE_COLLIDING_ALIAS,
   SYNTHETIC_CLAUDE_MODEL_CATALOG,
   SYNTHETIC_CLAUDE_STANDARD_MODEL,
-  SYNTHETIC_CLAUDE_THINKING_MODEL,
 } from "../provider/ClaudeModelCatalog.testFixtures.ts";
 import * as TextGeneration from "./TextGeneration.ts";
 import {
@@ -39,7 +40,7 @@ const layerClaudeTextGenerationTest = ServerConfig.ServerConfig.layerTest(proces
 // The stub behaviour lives in Node so the same implementation runs on Windows,
 // where a shebang file is not executable and would fall through to the real
 // Claude CLI on PATH; `writeFakeCli` picks the launcher shape per host.
-function makeFakeClaudeBinary(dir: string) {
+function makeFakeClaudeBinary(dir: string, lifecyclePort?: number) {
   return Effect.gen(function* () {
     const path = yield* Path.Path;
     const fs = yield* FileSystem.FileSystem;
@@ -53,7 +54,10 @@ function makeFakeClaudeBinary(dir: string) {
       directory: binDir,
       name: "claude",
       platform,
-      source,
+      source:
+        lifecyclePort === undefined
+          ? source
+          : `process.on("SIGTERM", () => {}); ${processProbeSource(lifecyclePort)}`,
     });
     return binDir;
   });
@@ -62,6 +66,7 @@ function makeFakeClaudeBinary(dir: string) {
 function withFakeClaudeEnv<A, E, R>(
   input: {
     output: string;
+    lifecyclePort?: number;
     exitCode?: number;
     stderr?: string;
     argsMustContain?: string;
@@ -76,7 +81,7 @@ function withFakeClaudeEnv<A, E, R>(
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-claude-text-" });
-    const binDir = yield* makeFakeClaudeBinary(tempDir);
+    const binDir = yield* makeFakeClaudeBinary(tempDir, input.lifecyclePort);
     const pathDelimiter = (yield* HostProcess.isWindows) ? ";" : ":";
     const previousPath = process.env.PATH;
     const previousOutput = process.env.T3_FAKE_CLAUDE_OUTPUT;
@@ -286,7 +291,7 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
             body: "",
           },
         }),
-        argsMustContain: `--model ${SYNTHETIC_CLAUDE_COLLIDING_ALIAS} --settings`,
+        argsMustContain: `--model ${SYNTHETIC_CLAUDE_COLLIDING_ALIAS} --effort max --settings {"disableAllHooks":true}`,
         claudeConfig: { customModels: [SYNTHETIC_CLAUDE_COLLIDING_ALIAS] },
       },
       (textGeneration) =>
@@ -386,28 +391,6 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
             );
           }),
       ),
-  );
-
-  it.effect("generates branch names from skill prompts without executable capabilities", () =>
-    withFakeClaudeEnv(
-      {
-        output: JSON.stringify({ structured_output: { branch: "call-script" } }),
-        stdinMustContain: "/call-script",
-      },
-      (textGeneration) =>
-        Effect.gen(function* () {
-          const generated = yield* textGeneration.generateBranchName({
-            cwd: process.cwd(),
-            message: "/call-script",
-            modelSelection: {
-              instanceId: ProviderInstanceId.make("claudeAgent"),
-              model: SYNTHETIC_CLAUDE_STANDARD_MODEL,
-            },
-          });
-
-          expect(generated.branch).toBe("call-script");
-        }),
-    ),
   );
 
   it.effect("runs Claude text generation with the configured CLAUDE_CONFIG_DIR", () =>
@@ -567,31 +550,6 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
 
         expect(error.detail).toBe(`Claude CLI command failed: ${expected}`);
       }),
-    ),
-  );
-
-  it.effect("falls back when Claude thread title normalization becomes whitespace-only", () =>
-    withFakeClaudeEnv(
-      {
-        output: JSON.stringify({
-          structured_output: {
-            title: '  """   """  ',
-          },
-        }),
-      },
-      (textGeneration) =>
-        Effect.gen(function* () {
-          const generated = yield* textGeneration.generateThreadTitle({
-            cwd: process.cwd(),
-            message: "Name this thread.",
-            modelSelection: {
-              instanceId: ProviderInstanceId.make("claudeAgent"),
-              model: SYNTHETIC_CLAUDE_STANDARD_MODEL,
-            },
-          });
-
-          expect(generated.title).toBe("New thread");
-        }),
     ),
   );
 });

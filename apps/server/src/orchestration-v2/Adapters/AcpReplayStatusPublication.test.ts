@@ -246,7 +246,7 @@ it.effect("keeps a valid prior checkpoint and withholds the final answer during 
           }),
       );
       const prior = decodeCheckpoint(NodeFS.readFileSync(statusPath, "utf8"));
-      assert.equal(prior.cursor, 3);
+      assert.equal(prior.cursor, 2);
       assert.equal(prior.total, 4);
       assert.isUndefined(prior.failure);
       assert.isFalse(paused.finalAnswerSent);

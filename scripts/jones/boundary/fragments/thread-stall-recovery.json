@@ -98,20 +98,24 @@
       "to": "apps/server/src/jones/orchestration/RestartPreparation.ts"
     },
     {
-      "from": "apps/server/src/orchestration-v2/testkit/ProviderTurnStartMemory.fixture.mjs",
-      "to": "apps/server/src/jones/orchestration/ControlAdmission.ts"
-    },
-    {
-      "from": "apps/server/src/orchestration-v2/testkit/ProviderTurnStartMemory.fixture.mjs",
-      "to": "apps/server/src/jones/orchestration/RestartPreparation.ts"
-    },
-    {
       "from": "apps/server/src/provider/Drivers/CodexDriver.test.ts",
       "to": "apps/server/src/jones/orchestration/ControlAdmission.ts"
     },
     {
       "from": "apps/server/src/provider/ProviderOrchestrationAdapterInfrastructure.ts",
       "to": "apps/server/src/jones/orchestration/ControlAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.testkit.ts",
+      "to": "apps/server/src/jones/orchestration/ControlAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.testkit.ts",
+      "to": "apps/server/src/jones/orchestration/RestartPreparation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/RunFinalizationQueue.test.ts",
+      "to": "apps/server/src/jones/orchestration/RestartPreparation.ts"
     }
   ]
 }
