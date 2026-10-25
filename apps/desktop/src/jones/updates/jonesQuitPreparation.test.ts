@@ -59,105 +59,121 @@ function makeInstance(input: {
   };
 }
 
-async function withBackend(
+function withBackend<E, R>(
   status: number,
-  body: (listener: string, paths: string[]) => Promise<void>,
+  body: (listener: string, paths: string[]) => Effect.Effect<void, E, R>,
 ) {
-  const paths: string[] = [];
-  const server = NodeHttp.createServer((request, response) => {
-    request.resume();
-    request.on("end", () => {
-      paths.push(request.url ?? "");
-      response.setHeader("content-type", "application/json");
-      if (request.url === "/oauth/token") {
-        response.end(JSON.stringify({ access_token: "fixture-access" }));
-      } else {
-        response.statusCode = status;
-        response.end(JSON.stringify({ prepared: true, threadCount: 1 }));
-      }
-    });
-  });
-  try {
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", resolve);
-    });
-    const address = server.address();
-    if (address === null || typeof address === "string")
-      throw new Error("Missing fixture listener.");
-    await body(`http://127.0.0.1:${address.port}`, paths);
-  } finally {
-    await new Promise<void>((resolve) => {
-      server.close(() => resolve());
-      server.closeAllConnections();
-    });
-  }
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const paths: string[] = [];
+      const server = yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          NodeHttp.createServer((request, response) => {
+            request.resume();
+            request.on("end", () => {
+              paths.push(request.url ?? "");
+              response.setHeader("content-type", "application/json");
+              if (request.url === "/oauth/token") {
+                response.end(JSON.stringify({ access_token: "fixture-access" }));
+              } else {
+                response.statusCode = status;
+                response.end(JSON.stringify({ prepared: true, threadCount: 1 }));
+              }
+            });
+          }),
+        ),
+        (server) =>
+          Effect.callback<void>((resume) => {
+            server.close(() => resume(Effect.void));
+            server.closeAllConnections();
+          }),
+      );
+      yield* Effect.callback<void>((resume) => {
+        server.once("error", (error) => resume(Effect.die(error)));
+        server.listen(0, "127.0.0.1", () => resume(Effect.void));
+      });
+      const address = server.address();
+      if (address === null || typeof address === "string")
+        throw new Error("Missing fixture listener.");
+      yield* body(`http://127.0.0.1:${address.port}`, paths);
+    }),
+  );
 }
 
-it("prepares every ready owned loopback backend without requiring installer state", async () =>
-  withBackend(200, async (listener, paths) => {
-    const instances = ["primary", "wsl"].map((id) => makeInstance({ id, listener }));
-    await Effect.runPromise(
-      prepareLocalBackendsForQuit().pipe(Effect.provide(DesktopBackendPool.layerTest(instances))),
-    );
-    expect(paths.filter((path) => path === "/api/jones-updates/prepare-quit")).toHaveLength(2);
-  }));
+it.live("prepares every ready owned loopback backend without requiring installer state", () =>
+  withBackend(200, (listener, paths) =>
+    Effect.gen(function* () {
+      const instances = ["primary", "wsl"].map((id) => makeInstance({ id, listener }));
+      yield* prepareLocalBackendsForQuit().pipe(
+        Effect.provide(DesktopBackendPool.layerTest(instances)),
+      );
+      expect(paths.filter((path) => path === "/api/jones-updates/prepare-quit")).toHaveLength(2);
+    }),
+  ),
+);
 
-it("skips not-ready, unconfigured, non-loopback and non-http instances", async () =>
-  withBackend(200, async (listener, paths) => {
-    const instances = [
-      makeInstance({ id: "not-ready", listener, ready: false }),
-      makeInstance({ id: "unconfigured", listener, hasConfig: false }),
-      makeInstance({ id: "remote", listener: listener.replace("127.0.0.1", "192.0.2.1") }),
-      makeInstance({ id: "https", listener: listener.replace("http:", "https:") }),
-    ];
-    await Effect.runPromise(
-      prepareLocalBackendsForQuit().pipe(Effect.provide(DesktopBackendPool.layerTest(instances))),
-    );
-    expect(paths).toEqual([]);
-  }));
+it.live("skips not-ready, unconfigured, non-loopback and non-http instances", () =>
+  withBackend(200, (listener, paths) =>
+    Effect.gen(function* () {
+      const instances = [
+        makeInstance({ id: "not-ready", listener, ready: false }),
+        makeInstance({ id: "unconfigured", listener, hasConfig: false }),
+        makeInstance({ id: "remote", listener: listener.replace("127.0.0.1", "192.0.2.1") }),
+        makeInstance({ id: "https", listener: listener.replace("http:", "https:") }),
+      ];
+      yield* prepareLocalBackendsForQuit().pipe(
+        Effect.provide(DesktopBackendPool.layerTest(instances)),
+      );
+      expect(paths).toEqual([]);
+    }),
+  ),
+);
 
-it.each([200, 404, 500])("prepares before stop and still stops after HTTP %s", async (status) =>
-  withBackend(status, async (listener, paths) => {
+it.live.each([200, 404, 500])("prepares before stop and still stops after HTTP %s", (status) =>
+  withBackend(status, (listener, paths) =>
+    Effect.gen(function* () {
+      const instance = makeInstance({
+        id: "primary",
+        listener,
+        stop: (options) =>
+          Effect.sync(() => {
+            expect(options).toBeUndefined();
+            expect(paths).toEqual(["/oauth/token", "/api/jones-updates/prepare-quit"]);
+            paths.push("stop");
+          }),
+      });
+      // Exercise the actual app hook in an uninterruptible finalizer.
+      yield* Effect.scoped(Effect.addFinalizer(() => prepareAndStopAllPoolInstances())).pipe(
+        Effect.provide(DesktopBackendPool.layerTest([instance])),
+      );
+      expect(paths.at(-1)).toBe("stop");
+    }),
+  ),
+);
+
+it.live("tolerates a refused connection and still stops", () =>
+  Effect.gen(function* () {
+    let listener = "";
+    yield* withBackend(200, (value) =>
+      Effect.sync(() => {
+        listener = value;
+      }),
+    );
+    let stopped = false;
     const instance = makeInstance({
       id: "primary",
       listener,
-      stop: (options) =>
+      stop: () =>
         Effect.sync(() => {
-          expect(options).toBeUndefined();
-          expect(paths).toEqual(["/oauth/token", "/api/jones-updates/prepare-quit"]);
-          paths.push("stop");
+          stopped = true;
         }),
     });
-    // Exercise the actual app hook in an uninterruptible finalizer.
-    await Effect.runPromise(
-      Effect.scoped(Effect.addFinalizer(() => prepareAndStopAllPoolInstances())).pipe(
-        Effect.provide(DesktopBackendPool.layerTest([instance])),
-      ),
+    yield* prepareAndStopAllPoolInstances().pipe(
+      Effect.provide(DesktopBackendPool.layerTest([instance])),
     );
-    expect(paths.at(-1)).toBe("stop");
+    expect(stopped).toBe(true);
   }),
 );
-
-it("tolerates a refused connection and still stops", async () => {
-  let listener = "";
-  await withBackend(200, async (value) => {
-    listener = value;
-  });
-  let stopped = false;
-  const instance = makeInstance({
-    id: "primary",
-    listener,
-    stop: () =>
-      Effect.sync(() => {
-        stopped = true;
-      }),
-  });
-  await Effect.runPromise(
-    prepareAndStopAllPoolInstances().pipe(Effect.provide(DesktopBackendPool.layerTest([instance]))),
-  );
-  expect(stopped).toBe(true);
-});
 
 it.effect("bounds even an uninterruptible finalizer's preparation wait at three seconds", () =>
   Effect.gen(function* () {
