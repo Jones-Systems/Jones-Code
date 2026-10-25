@@ -829,6 +829,13 @@ export interface RichDocMap {
   contextIds: string[];
 }
 
+export interface ReadonlyRichDocMap {
+  readonly value: string;
+  readonly runs: readonly Readonly<RichRun>[];
+  readonly docLength: number;
+  readonly contextIds: readonly string[];
+}
+
 function readAtomSource(node: ProseMirrorNode): string {
   const attrs = node.attrs as Record<string, unknown>;
   switch (node.type.name) {
@@ -1443,12 +1450,12 @@ export function skillChipReplacements(
  * own, so the end of the code stays inside the block rather than jumping past
  * the closing fence.
  */
-function runOwnsOffset(run: RichRun, flatOffset: number): boolean {
+function runOwnsOffset(run: Readonly<RichRun>, flatOffset: number): boolean {
   const end = run.flatStart + run.docLen;
   return flatOffset < end || (flatOffset === end && run.nodeName === "codeBlock");
 }
 
-export function flatToMarkdown(map: RichDocMap, flatOffset: number): number {
+export function flatToMarkdown(map: ReadonlyRichDocMap, flatOffset: number): number {
   const bounded = Math.max(0, Math.min(flatOffset, map.docLength));
   for (const run of map.runs) {
     if (runOwnsOffset(run, bounded)) {
@@ -1462,7 +1469,7 @@ export function flatToMarkdown(map: RichDocMap, flatOffset: number): number {
   return last ? last.mdStart + last.mdLen : 0;
 }
 
-export function markdownToFlat(map: RichDocMap, markdownOffset: number): number {
+export function markdownToFlat(map: ReadonlyRichDocMap, markdownOffset: number): number {
   for (const run of map.runs) {
     if (markdownOffset < run.mdStart + run.mdLen) {
       if (run.kind === "prefix") return run.flatStart;
@@ -1481,7 +1488,7 @@ export function markdownToFlat(map: RichDocMap, markdownOffset: number): number 
   return map.docLength;
 }
 
-export function flatToPm(map: RichDocMap, flatOffset: number): number {
+export function flatToPm(map: ReadonlyRichDocMap, flatOffset: number): number {
   const bounded = Math.max(0, Math.min(flatOffset, map.docLength));
   for (const run of map.runs) {
     if (bounded < run.flatStart + run.docLen) {
@@ -1493,7 +1500,7 @@ export function flatToPm(map: RichDocMap, flatOffset: number): number {
   return last.pmPos + last.docLen;
 }
 
-export function pmToFlat(map: RichDocMap, pmPos: number): number {
+export function pmToFlat(map: ReadonlyRichDocMap, pmPos: number): number {
   for (const run of map.runs) {
     if (pmPos >= run.pmPos && pmPos <= run.pmPos + run.docLen) {
       if (run.kind === "token" && pmPos === run.pmPos + run.docLen) {
