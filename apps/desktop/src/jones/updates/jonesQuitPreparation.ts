@@ -4,8 +4,9 @@ import * as DesktopBackendPool from "../../backend/DesktopBackendPool.ts";
 import * as DesktopObservability from "../../app/DesktopObservability.ts";
 import { jonesNativeBootstrapCredential, prepareJonesQuit } from "./jonesNativePreparation.ts";
 
-const { logInfo, logWarning } =
-  DesktopObservability.makeComponentLogger("desktop-quit-preparation");
+const { logInfo, logWarning } = DesktopObservability.makeComponentLogger(
+  "desktop-quit-preparation",
+);
 
 export const prepareLocalBackendsForQuit = Effect.fn("desktop.quit.prepareLocalBackends")(
   function* (): Effect.fn.Return<void, never, DesktopBackendPool.DesktopBackendPool> {

@@ -502,26 +502,29 @@ describe("DesktopUpdates", () => {
     Effect.gen(function* () {
       const releases = [yield* Deferred.make<void>(), yield* Deferred.make<void>()];
       const stopping = [yield* Deferred.make<void>(), yield* Deferred.make<void>()];
-      const instances = releases.map((release, index) => ({
-        id: DesktopBackendPool.BackendInstanceId(`backend-${index}`),
-        label: Effect.succeed(`backend-${index}`),
-        currentConfig: Effect.succeedNone,
-        start: Effect.void,
-        stop: (options) => {
-          assert.isUndefined(options);
-          return Deferred.succeed(stopping[index]!, undefined).pipe(
-            Effect.andThen(Deferred.await(release)),
-          );
-        },
-        snapshot: Effect.succeed({
-          desiredRunning: true,
-          ready: false,
-          activePid: Option.none(),
-          restartAttempt: 0,
-          restartScheduled: false,
-        }),
-        waitForReady: () => Effect.succeed(true),
-      } satisfies DesktopBackendPool.DesktopBackendInstance));
+      const instances = releases.map(
+        (release, index) =>
+          ({
+            id: DesktopBackendPool.BackendInstanceId(`backend-${index}`),
+            label: Effect.succeed(`backend-${index}`),
+            currentConfig: Effect.succeedNone,
+            start: Effect.void,
+            stop: (options) => {
+              assert.isUndefined(options);
+              return Deferred.succeed(stopping[index]!, undefined).pipe(
+                Effect.andThen(Deferred.await(release)),
+              );
+            },
+            snapshot: Effect.succeed({
+              desiredRunning: true,
+              ready: false,
+              activePid: Option.none(),
+              restartAttempt: 0,
+              restartScheduled: false,
+            }),
+            waitForReady: () => Effect.succeed(true),
+          }) satisfies DesktopBackendPool.DesktopBackendInstance,
+      );
       const harness = makeHarness({ backendInstances: instances });
 
       yield* Effect.scoped(

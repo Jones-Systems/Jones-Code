@@ -2758,7 +2758,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
           assert.isTrue(
             Option.isNone(yield* outbox.claimNext({ workerId: "live", leaseDurationMs: 30_000 })),
           );
-          assert.isTrue(Option.isNone(yield* outbox.nextClaimableAt));
+          assert.isTrue(Option.isNone(yield* outbox.nextClaimableAt()));
           yield* recovery.prepareForShutdown;
           yield* recovery.prepareForShutdown;
         }
@@ -2778,8 +2778,10 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         );
         assert.equal((yield* outbox.reconcileAfterProcessLoss).requeued, 1);
         assert.deepEqual(Option.getOrThrow(yield* outbox.get(passiveId)).request, {
-          ...passive.request,
+          type: "provider-runtime.continue",
+          sourceRunId: runId,
           preparedForRestart: false,
+          continueWithoutPreference: false,
         });
         assert.isTrue(
           Option.isNone(
@@ -2816,7 +2818,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
             yield* outbox.claimNext({ workerId: "activated", leaseDurationMs: 30_000 }),
           ),
         );
-      }),
+      }).pipe(Effect.provide(Layer.fresh(layerTest))),
   );
 
   it.effect("leaves restart continuation pending until normal worker claims are enabled", () =>

@@ -1143,18 +1143,22 @@ describe("DesktopBackendManager", () => {
               ChildProcessSpawner.ChildProcessSpawner,
               ChildProcessSpawner.make(() =>
                 Effect.gen(function* () {
+                  const exited = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
                   const scope = yield* Scope.Scope;
                   yield* Scope.addFinalizer(
                     scope,
                     Queue.offer(teardownStarted, name).pipe(
                       Effect.andThen(
-                        Deferred.await(name === "instance1" ? allowFirstTeardown : allowSecondTeardown),
+                        Deferred.await(
+                          name === "instance1" ? allowFirstTeardown : allowSecondTeardown,
+                        ),
                       ),
                       Effect.andThen(Queue.offer(teardownFinished, name)),
+                      Effect.andThen(Deferred.succeed(exited, ChildProcessSpawner.ExitCode(0))),
                       Effect.asVoid,
                     ),
                   );
-                  return makeProcess({ exitCode: Effect.never });
+                  return makeProcess({ exitCode: Deferred.await(exited) });
                 }),
               ),
             ),

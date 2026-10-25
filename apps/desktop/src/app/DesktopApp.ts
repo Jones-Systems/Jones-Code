@@ -152,17 +152,13 @@ export const stopAllPoolInstances = Effect.fn("desktop.app.stopAllPoolInstances"
   function* (): Effect.fn.Return<void, never, DesktopBackendPool.DesktopBackendPool> {
     const pool = yield* DesktopBackendPool.DesktopBackendPool;
     const instances = yield* pool.list;
-    yield* Effect.forEach(
-      instances,
-      (instance) => instance.stop(),
-      { concurrency: "unbounded" },
-    );
+    yield* Effect.forEach(instances, (instance) => instance.stop(), { concurrency: "unbounded" });
   },
 );
 
-export const prepareAndStopAllPoolInstances = Effect.fn("desktop.app.prepareAndStopAllPoolInstances")(
-  () => prepareLocalBackendsForQuit().pipe(Effect.ensuring(stopAllPoolInstances())),
-);
+export const prepareAndStopAllPoolInstances = Effect.fn(
+  "desktop.app.prepareAndStopAllPoolInstances",
+)(() => prepareLocalBackendsForQuit().pipe(Effect.ensuring(stopAllPoolInstances())));
 
 export const bootstrapWithIpcRegistration = Effect.fn("desktop.bootstrap")(function* <E, R>(
   registerIpc: Effect.Effect<void, E, R>,

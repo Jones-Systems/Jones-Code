@@ -83,7 +83,8 @@ async function withBackend(
       server.listen(0, "127.0.0.1", resolve);
     });
     const address = server.address();
-    if (address === null || typeof address === "string") throw new Error("Missing fixture listener.");
+    if (address === null || typeof address === "string")
+      throw new Error("Missing fixture listener.");
     await body(`http://127.0.0.1:${address.port}`, paths);
   } finally {
     await new Promise<void>((resolve) => {
@@ -135,7 +136,8 @@ it.each([200, 404, 500])("prepares before stop and still stops after HTTP %s", a
       ),
     );
     expect(paths.at(-1)).toBe("stop");
-  }));
+  }),
+);
 
 it("tolerates a refused connection and still stops", async () => {
   let listener = "";
@@ -146,9 +148,10 @@ it("tolerates a refused connection and still stops", async () => {
   const instance = makeInstance({
     id: "primary",
     listener,
-    stop: () => Effect.sync(() => {
-      stopped = true;
-    }),
+    stop: () =>
+      Effect.sync(() => {
+        stopped = true;
+      }),
   });
   await Effect.runPromise(
     prepareAndStopAllPoolInstances().pipe(Effect.provide(DesktopBackendPool.layerTest([instance]))),
@@ -162,9 +165,10 @@ it.effect("bounds even an uninterruptible finalizer's preparation wait at three 
     const instance = makeInstance({
       id: "pending",
       listener: "http://127.0.0.1:3773",
-      stop: () => Effect.sync(() => {
-        stopped = true;
-      }),
+      stop: () =>
+        Effect.sync(() => {
+          stopped = true;
+        }),
     });
     const fiber = yield* Effect.scoped(
       Effect.addFinalizer(() => prepareAndStopAllPoolInstances()),
@@ -177,4 +181,5 @@ it.effect("bounds even an uninterruptible finalizer's preparation wait at three 
     yield* TestClock.adjust("1 millis");
     yield* Fiber.join(fiber);
     expect(stopped).toBe(true);
-  }));
+  }),
+);
