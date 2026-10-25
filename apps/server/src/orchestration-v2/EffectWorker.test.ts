@@ -804,6 +804,8 @@ it.effect("uses durable deadlines, notifications, and a slow liveness poll", () 
     );
     const worker = EffectWorker.OrchestrationEffectWorkerV2.of({
       awaitWork: Queue.take(available),
+      runActionOnce: Effect.die("A single worker must remain mixed."),
+      nextActionClaimableAt: Effect.die("A single worker must use mixed deadlines."),
       runRecoveryOnce: Effect.succeed(false),
       runOnce: Effect.gen(function* () {
         const count = yield* Ref.updateAndGet(attempts, (current) => current + 1);
@@ -855,6 +857,8 @@ it.effect("does not hot-loop when a claim fails", () =>
     const now = yield* DateTime.now;
     const worker = EffectWorker.OrchestrationEffectWorkerV2.of({
       awaitWork: Effect.never,
+      runActionOnce: Effect.die("A single worker must remain mixed."),
+      nextActionClaimableAt: Effect.die("A single worker must use mixed deadlines."),
       runRecoveryOnce: Effect.succeed(false),
       runOnce: Ref.update(attempts, (count) => count + 1).pipe(
         Effect.andThen(
@@ -890,6 +894,8 @@ it.effect("backs off briefly when a due deadline loses a claim race", () =>
     const now = yield* DateTime.now;
     const worker = EffectWorker.OrchestrationEffectWorkerV2.of({
       awaitWork: Effect.never,
+      runActionOnce: Effect.die("A single worker must remain mixed."),
+      nextActionClaimableAt: Effect.die("A single worker must use mixed deadlines."),
       runRecoveryOnce: Effect.succeed(false),
       runOnce: Ref.update(attempts, (count) => count + 1).pipe(Effect.as(false)),
       nextClaimableAt: Effect.succeed(Option.some(now)),

@@ -32,6 +32,7 @@ import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
 import { findSteerFailure } from "../jones/orchestration/LateSteer.ts";
+import { makeActionWorkerAdmission } from "../jones/orchestration/actionWorkerAdmission.ts";
 import { continueRestartedRun } from "./RestartContinuation.ts";
 
 export class OrchestrationEffectExecutionError extends Schema.TaggedError<OrchestrationEffectExecutionError>()(
@@ -651,8 +652,13 @@ const isOrchestrationEffectWorkerError = Schema.is(OrchestrationEffectWorkerErro
 export interface OrchestrationEffectWorkerV2Shape {
   readonly awaitWork: Effect.Effect<void>;
   readonly runOnce: Effect.Effect<boolean, OrchestrationEffectWorkerError>;
+  readonly runActionOnce: Effect.Effect<boolean, OrchestrationEffectWorkerError>;
   readonly runRecoveryOnce: Effect.Effect<boolean, OrchestrationEffectWorkerError>;
   readonly nextClaimableAt: Effect.Effect<
+    Option.Option<DateTime.Utc>,
+    OrchestrationEffectWorkerError
+  >;
+  readonly nextActionClaimableAt: Effect.Effect<
     Option.Option<DateTime.Utc>,
     OrchestrationEffectWorkerError
   >;
@@ -775,10 +781,15 @@ export const layerWithOptions = (
           ? requeueClaim(effect, cause)
           : terminalizeClaim(effect, cause);
 
-      const runOnce = (excludeRestartContinuations = false) =>
+      const runOnce = (excludeRestartContinuations = false, excludeTitleGeneration = false) =>
         Effect.gen(function* () {
           const claimExit = yield* Effect.exit(
-            outbox.claimNext({ workerId, leaseDurationMs, excludeRestartContinuations }),
+            outbox.claimNext({
+              workerId,
+              leaseDurationMs,
+              excludeRestartContinuations,
+              excludeTitleGeneration,
+            }),
           );
           yield* increment(orchestrationEffectClaimsTotal, {
             result: Exit.isFailure(claimExit)
@@ -904,11 +915,8 @@ export const layerWithOptions = (
           ),
         );
 
-      return OrchestrationEffectWorkerV2.of({
-        awaitWork: outbox.awaitAvailable,
-        runOnce: runOnce(),
-        runRecoveryOnce: runOnce(true),
-        nextClaimableAt: outbox.nextClaimableAt.pipe(
+      const nextClaimableAt = (excludeTitleGeneration = false) =>
+        outbox.nextClaimableAt({ excludeTitleGeneration }).pipe(
           Effect.mapError(
             (cause) =>
               new OrchestrationEffectWorkerError({
@@ -916,7 +924,15 @@ export const layerWithOptions = (
                 cause,
               }),
           ),
-        ),
+        );
+
+      return OrchestrationEffectWorkerV2.of({
+        awaitWork: outbox.awaitAvailable,
+        runOnce: runOnce(),
+        runActionOnce: runOnce(false, true),
+        runRecoveryOnce: runOnce(true),
+        nextClaimableAt: nextClaimableAt(),
+        nextActionClaimableAt: nextClaimableAt(true),
         drain: (maxEffects = Number.MAX_SAFE_INTEGER) =>
           Effect.gen(function* () {
             let completed = 0;
@@ -952,12 +968,25 @@ export const runDaemonWithOptions = (options: OrchestrationEffectDaemonOptions =
       const livenessPollIntervalMs = Number.isFinite(requestedLivenessPollIntervalMs)
         ? Math.max(1, Math.floor(requestedLivenessPollIntervalMs))
         : DEFAULT_EFFECT_WORKER_LIVENESS_POLL_INTERVAL_MS;
+      const admission =
+        concurrency >= 2 ? yield* makeActionWorkerAdmission(worker.awaitWork) : undefined;
       // Post-commit notifications are the low-latency path. `availableAt` is the
       // durable retry schedule, and the long liveness poll only recovers from a
       // missed in-process notification or work inserted by another process.
-      const runWorker = Effect.gen(function* () {
+      const runWorker = Effect.fnUntraced(function* (index: number) {
+        const reserved = admission !== undefined && index === 0;
+        const runOnce = reserved ? worker.runActionOnce : worker.runOnce;
+        const readNextClaimableAt = reserved
+          ? worker.nextActionClaimableAt
+          : worker.nextClaimableAt;
+        const awaitWork =
+          admission === undefined
+            ? worker.awaitWork
+            : reserved
+              ? admission.awaitActionWork
+              : admission.awaitMixedWork;
         while (true) {
-          const outcome = yield* worker.runOnce.pipe(
+          const outcome = yield* runOnce.pipe(
             Effect.map((worked) => (worked ? ("worked" as const) : ("idle" as const))),
             Effect.catchCause((cause) =>
               Effect.logWarning("Orchestration effect worker failed", cause).pipe(
@@ -977,7 +1006,7 @@ export const runDaemonWithOptions = (options: OrchestrationEffectDaemonOptions =
             continue;
           }
 
-          const nextClaimableAt = yield* worker.nextClaimableAt.pipe(
+          const nextClaimableAt = yield* readNextClaimableAt.pipe(
             Effect.catchCause((cause) =>
               Effect.logWarning(
                 "Failed to read the next orchestration effect deadline",
@@ -994,14 +1023,14 @@ export const runDaemonWithOptions = (options: OrchestrationEffectDaemonOptions =
             },
           });
           yield* Effect.raceFirst(
-            worker.awaitWork.pipe(Effect.as("notified" as const)),
+            awaitWork.pipe(Effect.as("notified" as const)),
             Effect.sleep(Duration.millis(sleepMs)).pipe(Effect.as("scheduled" as const)),
           );
         }
       });
 
       return yield* Effect.all(
-        Array.from({ length: concurrency }, () => runWorker),
+        Array.from({ length: concurrency }, (_, index) => runWorker(index)),
         {
           concurrency: "unbounded",
           discard: true,
