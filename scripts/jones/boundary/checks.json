@@ -337,11 +337,13 @@
       "id": "jones-environment-sidebar-filters",
       "tests": [
         "apps/web/src/jones/environmentFilters/environmentFilters.test.ts",
-        "apps/web/src/components/sidebar/SidebarDraftBlock.browser.test.tsx"
+        "apps/web/src/components/sidebar/SidebarDraftBlock.browser.test.tsx",
+        "apps/web/src/jones/environmentFilters/SidebarEnvironmentFilters.sizing.browser.test.tsx"
       ],
       "commands": [
         "vp test run apps/web/src/jones/environmentFilters/environmentFilters.test.ts",
-        "vp test run --root apps/web --config vite.config.ts --project browser src/components/sidebar/SidebarDraftBlock.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
+        "vp test run --root apps/web --config vite.config.ts --project browser src/components/sidebar/SidebarDraftBlock.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/web --config vite.config.ts --project browser src/jones/environmentFilters/SidebarEnvironmentFilters.browser.test.tsx src/jones/environmentFilters/SidebarEnvironmentFilters.sizing.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {

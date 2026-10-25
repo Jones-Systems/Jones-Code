@@ -1938,6 +1938,7 @@
     "apps/web/src/jones/remoteAdmission/useEvaluatorProviders.ts": "jones-owned",
     "packages/client-runtime/src/jones/remoteAdmission/index.test.ts": "jones-owned",
     "apps/server/src/provider/Drivers/ClaudeDriver.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/jones/environmentFilters/SidebarEnvironmentFilters.sizing.browser.test.tsx": "jones-owned",
     "packages/client-runtime/src/jones/projectGroupTitle.ts": "jones-owned",
     "packages/client-runtime/src/jones/projectGroupTitle.test.ts": "jones-owned",
     "scripts/jones/boundary/fragments/project-group-title.json": "jones-owned",
