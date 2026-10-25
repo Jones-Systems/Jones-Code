@@ -51,6 +51,8 @@ import { SettlementRestoreHandlersLive } from "../jones/mcp/settlementRestore/ha
 import { SettlementRestoreToolkit } from "../jones/mcp/settlementRestore/tools.ts";
 import * as SettlementRestore from "../jones/settlementRestore/SettlementRestore.ts";
 import * as ProjectionStoreV2 from "../orchestration-v2/ProjectionStore.ts";
+import * as TaskContinuation from "../jones/taskContinuation/TaskContinuation.ts";
+import * as TaskContinuationStore from "../jones/taskContinuation/TaskContinuationStore.ts";
 import * as OrganizationMetadata from "../jones/mcp/organizationMetadata/OrganizationMetadataMcpService.ts";
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
@@ -843,6 +845,7 @@ const registerHtmlPreview = Effect.fn("McpHttpServer.registerHtmlPreview")(funct
  * steer it, or move context into it. Their events name the receiving agent too.
  */
 const HANDOFF_TOOLS: ReadonlySet<string> = new Set([
+  "t3_task_continue",
   "delegate_task",
   "create_threads",
   "t3_thread_launch",
@@ -1090,6 +1093,12 @@ export const layerOrchestratorToolkit = toolkitRegistration(
   OrchestratorToolkit,
   OrchestratorHandlers.layer,
 ).pipe(
+  Layer.provide(
+    TaskContinuation.layer.pipe(
+      Layer.provide(TaskContinuationStore.layer),
+      Layer.provide(ProjectionStoreV2.layer),
+    ),
+  ),
   Layer.provide(OrchestratorMcpService.layer),
   Layer.provide(ThreadMetadataMcpService.layer),
   Layer.provide(GoalControl.layer.pipe(Layer.provide(GoalStartDispatch.layer))),
