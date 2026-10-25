@@ -156,3 +156,44 @@ Keyboard move/cancel and arrow behavior have focused browser-test coverage.
 Draft-picker and Run-on integration are source/typecheck covered; full live
 multi-checkout Run-on and disconnected/reconnected journeys remain unverified.
 Native mobile uses separate preferences and is outside this renderer feature.
+
+### Jones build downloads
+
+Affected shared renderer: [JonesBuildStatus](../../apps/web/src/jones/updates/JonesBuildStatus.tsx),
+through [JonesUpdateControls](../../apps/web/src/jones/updates/JonesUpdateControls.tsx).
+Reach the inline saved-host rows and This machine row layout through Settings
+→ Connections. ServerUpdateAction also consumes the inline layout when its
+existing host-update entry is shown. Disabled saved environments retain their
+parent rule and omit the entire update section. The same renderer is used in desktop;
+this journey does not qualify the desktop shell, installation or remote hosts.
+The loopback-only [environment updates fixture](../../apps/web/src/jones/updates/fixtures/environment-updates.html)
+provides synthetic host states and an action receipt list without host requests.
+Its entry module names the owning fixtures; the primary verification owner owns
+its launch, captures and cleanup under the common recipe.
+
+Begin with a host waiting for its laptop's installed build and no offered build.
+Download remains visible and disabled. Hover it, then focus Check and press Tab
+to focus Download: both paths must explain the laptop hold. Click Download and
+press Enter and Space while it is focused; no download request or fixture receipt
+should result. Repeat with loading, stale, unsupported, pending, building,
+checking/downloading, missing provenance, capability refusal and failed states;
+the explanation must describe the current blocker. A stale host's earlier build
+must not become downloadable. When a fresh qualified build becomes available,
+Download sends its exact artifact and source identity. A staged build replaces
+Download with Install and retains its existing installation gates. Do not use
+installation as a verification fixture. Reset by remounting only the synthetic
+fixture; do not modify a saved environment's enabled state to bypass its parent.
+
+Source check: **2026-10-24**, candidate based on
+`6472e98b0c0cf6d3b566a2dc2cf64d7a737fe622`; canonical Frontend guidance read at
+`b3ef4fb3ee399562483d430c9d8bbfe34860cb71`. The focused
+[JonesBuildStatus browser regressions](../../apps/web/src/jones/updates/JonesBuildStatus.browser.test.tsx)
+cover these states, explanations, blocked activation and exact enabled routing.
+Execution is **blocked** locally: dependencies are absent, installed Node differs
+from the required version, and available storage is below the documented install
+admission. These tests have no passing result recorded here. Manual runtime
+verification is **blocked** because T3 Browser Preview tools are unavailable;
+[test-t3-app](../../.agents/skills/test-t3-app/SKILL.md) forbids an automation
+fallback. Build, viewport/text-size evidence, before/after captures and exercised
+live entry points: **none**. Connections, ServerUpdateAction, hosted/direct/relay/tunnel
+variants and packaged desktop remain `unverified` for this change.
