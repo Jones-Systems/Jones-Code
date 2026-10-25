@@ -51,7 +51,7 @@ function EnvironmentNotifications({
 
   useEffect(() => {
     if (!snapshot) return;
-    const groups = groupAdmissions(actionableAdmissions(state));
+    const groups = groupAdmissions(loadFailed ? [] : actionableAdmissions(state));
     const active = new Set<string>();
     for (const category of ["Request review", "Evaluator service failure"]) {
       const matching = groups.filter((group) => group.category === category);
@@ -127,6 +127,7 @@ function EnvironmentNotifications({
       }
       if (
         !loadFailed &&
+        !state.loading &&
         hasDesktopNotifications(mode) &&
         osSeen.current.get(category) !== fingerprint &&
         (document.visibilityState !== "visible" || !document.hasFocus()) &&

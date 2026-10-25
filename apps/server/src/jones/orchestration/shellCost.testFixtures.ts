@@ -1,8 +1,10 @@
+import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
 import * as Clock from "effect/Clock";
 import type * as Duration from "effect/Duration";
 import * as Tracer from "effect/Tracer";
 import * as Statement from "effect/sql/Statement";
+import * as SqlClient from "effect/sql/SqlClient";
 import {
   EventId,
   MessageId,
@@ -16,7 +18,13 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 
-export type Query = { text: string; parameters?: ReadonlyArray<unknown> };
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+
+export type Query = {
+  text: string;
+  parameters?: ReadonlyArray<unknown>;
+  spanMilliseconds?: number;
+};
 export type Measurement = { operation: string; milliseconds: number; statements: Query[] };
 
 export function measure<A, E, R>(
@@ -34,6 +42,7 @@ export function measure<A, E, R>(
     };
     const tracer = Tracer.make({
       span(options) {
+        const started = performance.now();
         const span = new Tracer.NativeSpan(options);
         const end = span.end.bind(span);
         span.end = (endTime, exit) => {
@@ -41,7 +50,10 @@ export function measure<A, E, R>(
           const text = span.attributes.get("db.query.text");
           if (typeof text === "string") {
             const captured = bindings.get(span);
-            statements.push(captured?.text === text ? captured : { text });
+            statements.push({
+              ...(captured?.text === text ? captured : { text }),
+              spanMilliseconds: performance.now() - started,
+            });
           }
         };
         return span;
@@ -59,6 +71,64 @@ export function measure<A, E, R>(
     );
   });
 }
+
+// Replays are outside all measured phases. Cardinality is returned rows, not
+// SQLite row visits; SQL spans include driver work and cannot isolate row copy.
+export const queryEvidence = Effect.fn("shellCost.queryEvidence")(function* (
+  measurements: ReadonlyArray<Measurement>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const distinct = new Map<
+    string,
+    { query: Query; occurrences: Array<{ operation: string; spanMilliseconds: number | null }> }
+  >();
+  for (const { operation, statements } of measurements) {
+    for (const query of statements) {
+      const key = encodeJson([query.text, query.parameters]);
+      const entry = distinct.get(key) ?? { query, occurrences: [] };
+      entry.occurrences.push({ operation, spanMilliseconds: query.spanMilliseconds ?? null });
+      distinct.set(key, entry);
+    }
+  }
+  return yield* Effect.forEach([...distinct.values()], ({ query, occurrences }) =>
+    Effect.gen(function* () {
+      const evidence = {
+        text: query.text,
+        parameters: query.parameters,
+        occurrences,
+        timingScope: "instrumented SQL span; admission/execution/transfer may overlap",
+        driverExecutionMilliseconds: null,
+        rowCopyMilliseconds: null,
+        unavailable: "driver execution and row-copy timing are not independently exposed",
+      };
+      if (!/^\s*SELECT\b/i.test(query.text) || query.parameters === undefined) {
+        return { ...evidence, observation: "not replayed: non-SELECT or bindings unavailable" };
+      }
+      const started = performance.now();
+      const rows = yield* sql.unsafe(query.text, query.parameters);
+      const replayMilliseconds = performance.now() - started;
+      const plan = yield* sql.unsafe(`EXPLAIN QUERY PLAN ${query.text}`, query.parameters);
+      const hypotheses = [
+        ...(query.text.includes("AS item_count") ? ["H1:item-counts"] : []),
+        ...(query.text.includes("latest_user_authored_message_at")
+          ? ["H2:latest-user-authored"]
+          : []),
+        ...(query.text.includes("completed_at IS NULL DESC") ? ["H3:blocked-run-ordering"] : []),
+        ...(query.text.includes("failure_payload_json") ? ["H4:failure-lookups"] : []),
+        ...(query.text.includes("owning_provider_instance_id") ? ["H6:pending-items"] : []),
+      ];
+      return {
+        ...evidence,
+        hypotheses,
+        observation:
+          "post-timing replay; replay includes SQL/driver/row transfer, excludes shell decode",
+        replayMilliseconds,
+        resultCardinality: rows.length,
+        plan,
+      };
+    }),
+  );
+});
 
 // Owns each diagnostic phase origin so observations use the same native monotonic clock.
 export class NativeTimeline {

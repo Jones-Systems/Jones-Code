@@ -7,6 +7,7 @@ import { extractJsonObject } from "@t3tools/shared/schemaJson";
 
 import {
   buildRemoteRequestEvaluationPrompt,
+  RemoteRequestEvaluationResult,
   remoteRequestEvaluationUnsupported,
 } from "./jones/remoteRequestEvaluation.ts";
 export { remoteRequestEvaluationUnsupported } from "./jones/remoteRequestEvaluation.ts";
@@ -93,12 +94,22 @@ export function fromRunner(
       return yield* remoteRequestEvaluationUnsupported(name);
     }
     const prompt = yield* buildRemoteRequestEvaluationPrompt(input);
-    return yield* run({
+    const generated = yield* run({
       operation: "evaluateRemoteRequest",
       cwd: input.cwd,
       modelSelection: input.modelSelection,
       ...prompt,
     });
+    return yield* Schema.decodeUnknownEffect(RemoteRequestEvaluationResult)(generated).pipe(
+      Effect.mapError(
+        (cause) =>
+          new TextGenerationError({
+            operation: "evaluateRemoteRequest",
+            detail: `${name} returned invalid structured output.`,
+            cause,
+          }),
+      ),
+    );
   });
 
   const generateCommitMessage: ProviderTextGeneration["generateCommitMessage"] = Effect.fn(

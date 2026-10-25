@@ -1,5 +1,6 @@
 import type { RemoteAdmissionDecision, RemoteAdmissionPolicyUpdate } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Data from "effect/Data";
 import type { ConnectionCatalogEntry } from "../../connection/catalog.ts";
 import { ConnectionResolver } from "../../connection/resolver.ts";
 import { connectionRoutes, routeEntry } from "../../connection/routes.ts";
@@ -12,7 +13,49 @@ export type RemoteAdmissionRequest =
   | { readonly action: "policy"; readonly input: RemoteAdmissionPolicyUpdate }
   | { readonly action: "decide"; readonly input: RemoteAdmissionDecision };
 
-export const requestRemoteAdmission = Effect.fn("clientRuntime.remoteAdmission.request")(function* (
+export type RemoteAdmissionFailureKind = "unauthorized" | "unsupported" | "transient" | "other";
+
+const failureMessages: Record<RemoteAdmissionFailureKind, string> = {
+  unauthorized: "Owner access is unavailable for this session.",
+  unsupported: "Remote request review is unsupported by this receiving environment.",
+  transient: "Remote request review could not be reached.",
+  other: "Remote request review could not be loaded.",
+};
+
+export class RemoteAdmissionError extends Data.TaggedError("RemoteAdmissionError")<{
+  readonly kind: RemoteAdmissionFailureKind;
+  readonly message: string;
+}> {
+  constructor(kind: RemoteAdmissionFailureKind) {
+    super({ kind, message: failureMessages[kind] });
+  }
+}
+
+export function normalizeRemoteAdmissionError(error: unknown): RemoteAdmissionError {
+  if (error instanceof RemoteAdmissionError) return new RemoteAdmissionError(error.kind);
+  if (typeof error !== "object" || error === null) return new RemoteAdmissionError("other");
+  const tag = "_tag" in error ? error._tag : undefined;
+  if (
+    tag === "EnvironmentAuthInvalidError" ||
+    tag === "EnvironmentScopeRequiredError" ||
+    tag === "EnvironmentOperationForbiddenError"
+  )
+    return new RemoteAdmissionError("unauthorized");
+  if (tag === "EnvironmentResourceNotFoundError") return new RemoteAdmissionError("unsupported");
+  if (tag === "RemoteEnvironmentAuthUndeclaredStatusError" && "status" in error) {
+    if (error.status === 401 || error.status === 403)
+      return new RemoteAdmissionError("unauthorized");
+    if (error.status === 404 || error.status === 405)
+      return new RemoteAdmissionError("unsupported");
+    if (typeof error.status === "number" && (error.status === 429 || error.status >= 500))
+      return new RemoteAdmissionError("transient");
+  }
+  if (tag === "RemoteEnvironmentAuthFetchError" || tag === "RemoteEnvironmentAuthTimeoutError")
+    return new RemoteAdmissionError("transient");
+  return new RemoteAdmissionError("other");
+}
+
+const request = Effect.fn("clientRuntime.remoteAdmission.request")(function* (
   entry: ConnectionCatalogEntry,
   input: RemoteAdmissionRequest,
 ) {
@@ -52,3 +95,8 @@ export const requestRemoteAdmission = Effect.fn("clientRuntime.remoteAdmission.r
     },
   });
 });
+
+export const requestRemoteAdmission = (
+  entry: ConnectionCatalogEntry,
+  input: RemoteAdmissionRequest,
+) => request(entry, input).pipe(Effect.mapError(normalizeRemoteAdmissionError));

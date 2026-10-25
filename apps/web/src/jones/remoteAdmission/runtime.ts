@@ -2,10 +2,12 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import { EnvironmentRegistry } from "@t3tools/client-runtime/connection";
 import {
   requestRemoteAdmission,
+  normalizeRemoteAdmissionError,
   type RemoteAdmissionRequest,
 } from "@t3tools/client-runtime/jones/remote-admission";
 import { createRuntimeCommand, runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import * as Effect from "effect/Effect";
+import * as Cause from "effect/Cause";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
@@ -37,7 +39,6 @@ export async function remoteAdmissionRequest(
     { environmentId, request },
     { reportFailure: false, reportDefect: false },
   );
-  if (result._tag !== "Success")
-    throw new Error("Remote request review is unavailable for this session.");
+  if (result._tag !== "Success") throw normalizeRemoteAdmissionError(Cause.squash(result.cause));
   return result.value;
 }
