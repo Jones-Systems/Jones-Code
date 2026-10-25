@@ -1,3 +1,4 @@
+import { beforeCleanupPath } from "../workspaceLifecycle/NativeBoundary.ts";
 import { assert, it } from "@effect/vitest";
 import { ProjectId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -5,6 +6,8 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import type { ExecuteGitInput, ExecuteGitResult } from "../../vcs/GitVcsDriver.ts";
+import { LifecycleError } from "../workspaceLifecycle/Protocol.ts";
+import { WorkspaceLifecycle } from "../workspaceLifecycle/WorkspaceLifecycle.ts";
 import * as Removal from "./DeletionWorktreeRemoval.ts";
 import type { DeletionWorktreeRemovalStartV1 } from "./DeletionWorktreeRemovalTypes.ts";
 
@@ -273,6 +276,43 @@ it.effect("same owner qualifies the original observation after one captured invo
       ),
     );
   }),
+);
+
+it.effect(
+  "a lifecycle preservation veto prevents qualified deletion and observation qualification",
+  () =>
+    Effect.gen(function* () {
+      const f = fixture();
+      let qualified = false;
+      const owner = deletionOwner({
+        readDeletionWorktreeRemovalStart: () => Effect.succeed({ start, ordinal: 3 }),
+        revalidateDeletionWorktreeRemovalStart: () =>
+          beforeCleanupPath(start.target.path).pipe(
+            Effect.mapError((cause) => new EventSink.EventSinkWriteError({ eventCount: 0, cause })),
+          ),
+        qualifyDeletionWorktreeRemovalObservation: () =>
+          Effect.sync(() => {
+            qualified = true;
+          }),
+      });
+      yield* Effect.gen(function* () {
+        const service = yield* Removal.QualifiedDeletionWorktreeRemoval;
+        const error = yield* service.execute(start.effectId).pipe(Effect.flip);
+        assert.strictEqual(error.reason, "recorded_start_revalidation_failed");
+        assert.strictEqual(f.removals().length, 0);
+        assert.isFalse(qualified);
+      }).pipe(
+        Effect.provide([
+          Removal.layer.pipe(
+            Layer.provide(f.layer),
+            Layer.provide(Layer.succeed(EventSink.EventSinkV2, owner)),
+          ),
+          Layer.mock(WorkspaceLifecycle)({
+            cleanupPathVeto: () => Effect.fail(new LifecycleError({ reason: "preserve" })),
+          }),
+        ]),
+      );
+    }),
 );
 
 it.effect("wrong original effect cannot substitute another owner start", () =>

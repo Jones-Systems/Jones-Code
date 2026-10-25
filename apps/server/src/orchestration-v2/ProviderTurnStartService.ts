@@ -1,5 +1,8 @@
 import { goalResumeNeedsNativeThread } from "../jones/goals/preserveGoalConversation.ts";
+import { WorkspaceLifecycle as WorkspaceLifecycleService } from "../jones/workspaceLifecycle/WorkspaceLifecycle.ts";
+import { withOperation } from "../jones/workspaceLifecycle/NativeOperation.ts";
 import * as ProviderSwitchService from "./ProviderSwitchService.ts";
+import * as WorkspaceLifecycle from "../jones/workspaceLifecycle/NativeBoundary.ts";
 import { prepareExecutionSession } from "../jones/threadConfiguration/prepareExecutionSession.ts";
 import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
 import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
@@ -600,6 +603,11 @@ export const layer: Layer.Layer<
             cause: "Native verified workspace disappeared; ordinary recreation is unavailable.",
           });
         if (!exists && (yield* isManagedWorktreePath(worktreePath))) {
+          yield* WorkspaceLifecycle.beforeUse({
+            threadId: input.threadId,
+            boundary: "recreate",
+            fallback: { id: `turn-start:${runId}`, request: { runId, threadId: input.threadId } },
+          }).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
           const project = yield* projects.getById(projection.thread.projectId).pipe(
             Effect.map(Option.getOrUndefined),
             Effect.orElseSucceed(() => undefined),
@@ -611,6 +619,16 @@ export const layer: Layer.Layer<
               branch,
             });
             yield* gitWorkflow.pruneWorktrees({ cwd: project.workspaceRoot }).pipe(
+              Effect.andThen(
+                WorkspaceLifecycle.beforeUse({
+                  threadId: input.threadId,
+                  boundary: "recreate",
+                  fallback: {
+                    id: `turn-start:${runId}`,
+                    request: { runId, threadId: input.threadId },
+                  },
+                }),
+              ),
               Effect.andThen(
                 gitWorkflow.createWorktree({
                   cwd: project.workspaceRoot,
@@ -631,6 +649,11 @@ export const layer: Layer.Layer<
           }
         }
       }
+      yield* WorkspaceLifecycle.beforeUse({
+        threadId: input.threadId,
+        boundary: "start",
+        fallback: { id: `turn-start:${runId}`, request: { runId, threadId: input.threadId } },
+      }).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
       const selectInheritedBackgroundItems = (
         current: ProjectionStore.ProjectionRuntimeRecoveryState,
       ): ReturnType<typeof RunExecutionService.selectInheritedBackgroundTurnItems> =>
@@ -1549,7 +1572,9 @@ export const layer: Layer.Layer<
                 providerThreadId: providerThread.id,
                 ...(loadedProviderThread.runtimeIdentity?.runtimeGeneration === undefined
                   ? {}
-                  : { runtimeGeneration: loadedProviderThread.runtimeIdentity.runtimeGeneration }),
+                  : {
+                      runtimeGeneration: loadedProviderThread.runtimeIdentity.runtimeGeneration,
+                    }),
               });
           }).pipe(
             Effect.mapError(
@@ -1746,14 +1771,72 @@ export const layer: Layer.Layer<
       });
     });
 
+    const attestStart = Effect.fn("ProviderTurnStartService.attestWorkspaceStart")(function* <
+      A,
+      E,
+      R,
+    >(
+      input: {
+        readonly threadId: ThreadId;
+        readonly runId: RunId;
+        readonly guard?: NativeProvider.NativeProviderExecutionGuard;
+      },
+      effect: Effect.Effect<A, E, R>,
+    ) {
+      if (Option.isNone(yield* Effect.serviceOption(WorkspaceLifecycleService)))
+        return yield* effect;
+      const admitted = yield* projectionStore.getTurnStartContext(input.threadId, input.runId);
+      const originalAttempt = admitted.runs.find((run) => run.id === input.runId)?.activeAttemptId;
+      return yield* withOperation(
+        {
+          id: `run:${input.runId}`,
+          kind: input.guard ? "native-start" : "provider-start",
+          threadId: input.threadId,
+          boundaries: ["start", "resume", "recreate"],
+          sqlOnly: input.guard === undefined,
+          check: Effect.gen(function* () {
+            if (input.guard)
+              yield* NativeProvider.assertNativeProviderStartOperation(
+                input.guard,
+                input.threadId,
+                input.runId,
+              );
+            const current = yield* projectionStore.getTurnStartContext(input.threadId, input.runId);
+            const active = current.runs.find((run) => run.id === input.runId);
+            if (
+              !active ||
+              !["starting", "running"].includes(active.status) ||
+              !active.activeAttemptId ||
+              (originalAttempt !== undefined && originalAttempt !== active.activeAttemptId) ||
+              !current.attempts.some(
+                (attempt) => attempt.id === active.activeAttemptId && attempt.runId === active.id,
+              ) ||
+              !current.nodes.some((node) => node.id === active.rootNodeId)
+            )
+              return yield* new ProviderTurnStartError({
+                runId: input.runId,
+                cause: "Native run ownership changed before workspace use.",
+              });
+          }),
+        },
+        effect,
+      );
+    });
+
     return ProviderTurnStartServiceV2.of({
       startNative: Effect.fn("ProviderTurnStartService.startNative")(
         function* (input) {
-          yield* start({
+          yield* NativeProvider.assertNativeProviderStartOperation(
+            input.guard,
+            input.threadId,
+            input.runId,
+          );
+          const providerTurn = yield* start({
             threadId: input.threadId,
             runId: input.runId,
             nativeCreationGuard: input.guard,
           });
+          if (providerTurn !== undefined) yield* providerTurn;
           const evidence = NativeProvider.readNativeProviderAcknowledgement(input.guard);
           if (evidence === undefined)
             return yield* new ProviderTurnStartError({
@@ -1763,7 +1846,14 @@ export const layer: Layer.Layer<
           return evidence;
         },
         (effect, input) =>
-          effect.pipe(
+          attestStart(
+            input,
+            WorkspaceLifecycle.inheritOriginalTransition(
+              `turn-start:${input.runId}`,
+              { runId: input.runId, threadId: input.threadId },
+              effect,
+            ),
+          ).pipe(
             Effect.mapError((cause) =>
               isProviderTurnStartError(cause)
                 ? cause
@@ -1782,7 +1872,14 @@ export const layer: Layer.Layer<
           if (providerTurn !== undefined) yield* providerTurn;
         },
         (effect, input) =>
-          effect.pipe(
+          attestStart(
+            input,
+            WorkspaceLifecycle.inheritOriginalTransition(
+              `turn-start:${input.runId}`,
+              { runId: input.runId, threadId: input.threadId },
+              effect,
+            ),
+          ).pipe(
             Effect.mapError((cause) =>
               isProviderTurnStartError(cause)
                 ? cause

@@ -55,6 +55,8 @@ import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import * as WorkspaceLifecycle from "../jones/workspaceLifecycle/WorkspaceLifecycle.ts";
+import { LifecycleError } from "../jones/workspaceLifecycle/Protocol.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 
@@ -82,6 +84,7 @@ function startWithMissingWorktree(
     [managedWorktreesDir]: managedWorktreesDir,
     [`${managedWorktreesDir}/project`]: `${managedWorktreesDir}/project`,
   },
+  lifecycleLayer?: Layer.Layer<WorkspaceLifecycle.WorkspaceLifecycle>,
 ) {
   const threadId = ThreadId.make("thread_provider_turn_start_projection_failure");
   const runId = RunId.make("run_provider_turn_start_projection_failure");
@@ -222,7 +225,7 @@ function startWithMissingWorktree(
     return yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2)
       .start({ threadId, runId })
       .pipe(Effect.flip);
-  }).pipe(Effect.provide(layer), Effect.runPromise);
+  }).pipe(Effect.provide([layer, lifecycleLayer ?? Layer.empty]), Effect.runPromise);
   return {
     start,
     pruneWorktrees,
@@ -232,6 +235,17 @@ function startWithMissingWorktree(
     projectionReads: () => projectionReadCount,
   };
 }
+
+it("holds managed missing-checkout recreation before prune or creation when registry invalidation is unavailable", async () => {
+  const hold = Layer.mock(WorkspaceLifecycle.WorkspaceLifecycle)({
+    resume: () => Effect.fail(new LifecycleError({ reason: "unavailable" })),
+  });
+  const harness = startWithMissingWorktree(`${managedWorktreesDir}/project/held`, undefined, hold);
+  await harness.start;
+  expect(harness.pruneWorktrees).not.toHaveBeenCalled();
+  expect(harness.createWorktree).not.toHaveBeenCalled();
+  expect(harness.startRootRun).not.toHaveBeenCalled();
+});
 
 it.each([
   {
@@ -982,6 +996,28 @@ function makeLocalCommandHarness(input: {
     }).pipe(Effect.provide(layer)),
   };
 }
+
+effectIt.effect.each(["Continue", "/goal resume"])(
+  "holds provider start before opening a native session when registry invalidation is unknown: %s",
+  (text) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({ text });
+      harness.tryHandlePromptCommand.mockReturnValue(Effect.succeed(false));
+      const result = yield* Effect.exit(
+        harness.start.pipe(
+          Effect.provide(
+            Layer.mock(WorkspaceLifecycle.WorkspaceLifecycle)({
+              resume: () => Effect.fail(new LifecycleError({ reason: "unknown" })),
+            }),
+          ),
+        ),
+      );
+      expect(result._tag).toBe("Failure");
+      expect(harness.open).not.toHaveBeenCalled();
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+      expect(harness.dispatched).toEqual([]);
+    }),
+);
 
 effectIt.effect("recovers an abandoned failed turn before continuing its native conversation", () =>
   Effect.gen(function* () {

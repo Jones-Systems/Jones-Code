@@ -26,6 +26,7 @@ export interface GitCheckout {
   readonly commonIdentity: Target["directoryIdentity"];
   readonly directoryIdentity: Target["directoryIdentity"];
   readonly branch: string | null;
+  readonly head?: string;
   readonly registeredWorktrees: readonly string[];
 }
 
