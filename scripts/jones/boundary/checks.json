@@ -2,6 +2,15 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-experimental-typecheck",
+      "tests": ["scripts/jones/experimental-typecheck/runner.test.mjs"],
+      "commands": [
+        "vp test run scripts/jones/experimental-typecheck/runner.test.mjs --maxWorkers=1 --no-file-parallelism",
+        "vp lint scripts/jones/experimental-typecheck/*.mjs",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-cross-environment-model-selection",
       "tests": [
         "apps/web/src/jones/settings/modelSelectionCorrespondence.test.ts",
@@ -2786,6 +2795,16 @@
         "vp test run --root apps/web --config vite.config.ts src/jones/remoteAgentLineage/ThreadRelationships.browser.test.tsx src/jones/remoteAgentLineage/MachineIdentity.browser.test.tsx --project browser --maxWorkers=1 --no-file-parallelism",
         "vp lint apps/web/src/jones/linkedThreads apps/web/src/jones/remoteAgentLineage apps/web/src/components/ChatView.tsx apps/web/src/components/chat/ChatHeader.tsx apps/web/src/components/chat/ThreadRelationshipsControl.tsx apps/web/src/components/BranchToolbar.tsx",
         "vp run --filter @t3tools/web typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-incremental-typecheck",
+      "tests": ["scripts/jones/incremental-typecheck/incrementalTypecheck.node-test.mjs"],
+      "commands": [
+        "node --test --test-concurrency=1 scripts/jones/incremental-typecheck/*.node-test.mjs",
+        "vp lint scripts/jones/incremental-typecheck/cli.ts scripts/jones/incremental-typecheck/incrementalTypecheck.ts scripts/jones/incremental-typecheck/incrementalTypecheck.node-test.mjs",
+        "vp run --filter @t3tools/scripts typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
     },

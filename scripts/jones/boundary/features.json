@@ -4,6 +4,11 @@
   "baseline": "05b697f6a2012497ae790425e197fbd1fcef7de7",
   "features": [
     {
+      "id": "experimental-typecheck",
+      "tests": ["scripts/jones/experimental-typecheck/runner.test.mjs"],
+      "scope": "Explicit opt-in tsrs TypeScript-only checking; existing authoritative checks retain Effect diagnostics. The Jones runner discovers pnpm workspaces, validates the existing noEmit script shape, uses the pinned local compiler serially, and owns signal forwarding and isolated build-info cleanup. Root package script and exact dependency/lock entries are minimal shared integration; development documents narrower coverage."
+    },
+    {
       "id": "cross-environment-model-selection",
       "tests": [
         "apps/web/src/jones/settings/modelSelectionCorrespondence.test.ts",
@@ -1713,6 +1718,11 @@
         "apps/web/src/jones/remoteAgentLineage/MachineIdentity.browser.test.tsx"
       ],
       "scope": "Jones-owned scoped parent resolution and bounded machine presentation shared by header, timeline and Linked. The shared relationship panel combines local and remote rows before its existing group/window rendering; Jones-owned wrappers fold ancestry and delegated tasks into one default-closed Linked section that resets on thread selection. BranchToolbar changes only its panel presentation; project icons and toolbar controls remain owned by their existing components. Existing browser harness exceptions exercise mixed history pagination, status transitions, remote navigation, unavailable parents, collapse and task controls. No server, schema, authentication or lifecycle changes in this UI fold."
+    },
+    {
+      "id": "incremental-typecheck",
+      "tests": ["scripts/jones/incremental-typecheck/incrementalTypecheck.node-test.mjs"],
+      "scope": "Opt-in serial native incremental checking for explicitly selected workspaces whose normal script is tsc-rs --noEmit. Every invocation runs the installed checker and preserves TypeScript and Effect diagnostics. Invocation-private buildinfo and atomic identity/payload publication isolate concurrent writers; fresh mode bypasses retained state. Root commands, editor preparation, emit and APIs keep existing behavior. Root package.json adds the command and scripts/package.json registers focused Node tests; maintainer guidance explains scope and cache lifetime."
     },
     {
       "id": "vcs-cache-efficiency",
