@@ -32,14 +32,16 @@ export class ThreadMetadataReads extends Context.Service<
     readonly listIds: (
       query?: ThreadMetadataQuery,
     ) => Effect.Effect<ReadonlyArray<ThreadId>, ThreadMetadataReadError>;
-    readonly list: (query?: ThreadMetadataQuery) => Effect.Effect<
+    readonly list: (
+      query?: ThreadMetadataQuery,
+    ) => Effect.Effect<
       { readonly snapshotSequence: number; readonly threads: ReadonlyArray<ThreadMetadata> },
       ThreadMetadataReadError
     >;
     readonly count: Effect.Effect<number, ThreadMetadataReadError>;
     readonly watermark: Effect.Effect<number, ThreadMetadataReadError>;
   }
->()("t3/jones/orchestration/ThreadMetadataReads") {}
+>()("t3/jones/orchestration/threadMetadataReads") {}
 
 const decodeThread = Schema.decodeUnknownEffect(Schema.fromJsonString(RecordedAppThreadJson));
 
@@ -127,22 +129,22 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError((cause) => new ThreadMetadataReadError({ cause })),
   );
-  const count = Effect.fn("jones.orchestration.threadMetadataReads.count")(
-    function* () {
-      const rows = yield* sql.withTransaction(sql<{ readonly count: number }>`
+  const count = Effect.gen(function* () {
+    const rows = yield* sql.withTransaction(sql<{ readonly count: number }>`
         SELECT COUNT(*) AS count FROM orchestration_v2_projection_threads t
         WHERE t.deleted_at IS NULL
       `);
-      const count = rows[0]?.count ?? 0;
-      yield* annotate({}, count);
-      return count;
-    },
+    const count = rows[0]?.count ?? 0;
+    yield* annotate({}, count);
+    return count;
+  }).pipe(
     Effect.mapError((cause) => new ThreadMetadataReadError({ cause })),
-  )();
-  const watermark = Effect.fn("jones.orchestration.threadMetadataReads.watermark")(
-    () => sql.withTransaction(readWatermark),
+    Effect.withSpan("jones.orchestration.threadMetadataReads.count"),
+  );
+  const watermark = sql.withTransaction(readWatermark).pipe(
     Effect.mapError((cause) => new ThreadMetadataReadError({ cause })),
-  )();
+    Effect.withSpan("jones.orchestration.threadMetadataReads.watermark"),
+  );
   return ThreadMetadataReads.of({ listIds, list, count, watermark });
 });
 

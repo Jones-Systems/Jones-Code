@@ -86,21 +86,46 @@ it.effect.each([
       const sql = yield* SqlClient.SqlClient;
       const dependencies = Layer.mergeAll(
         Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({
-          count: scenario === "count-failure"
-            ? Effect.fail(new ThreadMetadataReads.ThreadMetadataReadError({ cause: "synthetic count failure" }))
-            : Effect.succeed(7),
-          list: (query = {}) => Effect.sync(() => {
-            queries.push(query);
-            return { snapshotSequence: 0, threads:
-              scenario === "existing-root" || scenario === "subagent-only" ? [
-                { id: subagentId, lineage: { parentThreadId: existingId,
-                    rootThreadId: existingId, relationshipToParent: "subagent" as const } },
-                ...(scenario === "existing-root" ? [{ id: existingId, lineage: {
-                  parentThreadId: null, rootThreadId: existingId, relationshipToParent: null,
-                } }] : []),
-              ] : [],
-            };
-          }),
+          count:
+            scenario === "count-failure"
+              ? Effect.fail(
+                  new ThreadMetadataReads.ThreadMetadataReadError({
+                    cause: "synthetic count failure",
+                  }),
+                )
+              : Effect.succeed(7),
+          list: (query = {}) =>
+            Effect.sync(() => {
+              queries.push(query);
+              return {
+                snapshotSequence: 0,
+                threads:
+                  scenario === "existing-root" || scenario === "subagent-only"
+                    ? [
+                        {
+                          id: subagentId,
+                          lineage: {
+                            parentThreadId: existingId,
+                            rootThreadId: existingId,
+                            relationshipToParent: "subagent" as const,
+                          },
+                        },
+                        ...(scenario === "existing-root"
+                          ? [
+                              {
+                                id: existingId,
+                                lineage: {
+                                  parentThreadId: null,
+                                  rootThreadId: existingId,
+                                  relationshipToParent: null,
+                                },
+                              },
+                            ]
+                          : []),
+                      ]
+                    : [],
+              };
+            }),
         }),
         NodeCrypto.layer,
         Path.layer,
@@ -253,11 +278,13 @@ it.effect.each([
         }),
         Layer.mock(GitVcsDriver.GitVcsDriver)({}),
         Layer.mock(AnalyticsService.AnalyticsService)({
-          record: (event, properties) => event === "server.boot.heartbeat"
-            ? Deferred.succeed(heartbeat, {
-                threadCount: Number(properties?.threadCount), projectCount: Number(properties?.projectCount),
-              }).pipe(Effect.asVoid)
-            : Effect.void,
+          record: (event, properties) =>
+            event === "server.boot.heartbeat"
+              ? Deferred.succeed(heartbeat, {
+                  threadCount: Number(properties?.threadCount),
+                  projectCount: Number(properties?.projectCount),
+                }).pipe(Effect.asVoid)
+              : Effect.void,
           recordOwners: () => Effect.void,
         }),
         // No provider logins or Connect link, so startup records no owners.
@@ -283,7 +310,8 @@ it.effect.each([
           assert.isDefined(welcome);
           if (welcome?.type === "welcome") {
             assert.equal(welcome.payload.bootstrapProjectId, projectId);
-            if (scenario === "existing-root") assert.equal(welcome.payload.bootstrapThreadId, existingId);
+            if (scenario === "existing-root")
+              assert.equal(welcome.payload.bootstrapThreadId, existingId);
             else assert.isUndefined(welcome.payload.bootstrapThreadId);
           }
         }
@@ -291,7 +319,10 @@ it.effect.each([
           assert.deepEqual(queries, [{ projectId, location: "active" }]);
           assert.equal(launchCalls, scenario === "existing-root" ? 0 : 1);
           const counts = yield* Deferred.await(heartbeat);
-          assert.deepEqual(counts, { threadCount: scenario === "count-failure" ? 0 : 7, projectCount: 0 });
+          assert.deepEqual(counts, {
+            threadCount: scenario === "count-failure" ? 0 : 7,
+            projectCount: 0,
+          });
         }
       }).pipe(
         Effect.provide(ServerRuntimeStartup.layerWithOptions().pipe(Layer.provide(dependencies))),
