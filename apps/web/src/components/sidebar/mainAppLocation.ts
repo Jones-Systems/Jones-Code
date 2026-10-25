@@ -10,6 +10,7 @@ export function isSidebarUtilityPage(pathname: string) {
     pathname === "/voice-review" ||
     pathname === "/pull-requests" ||
     pathname === "/work-queue" ||
+    pathname === "/requests" ||
     pathname === "/conversations"
   );
 }

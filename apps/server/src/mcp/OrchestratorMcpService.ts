@@ -3084,12 +3084,14 @@ const make = Effect.gen(function* () {
         .pipe(
           Effect.provideService(IncomingLinkedMessage, scope.client?.linked === true),
           Effect.mapError((error) =>
-            isThreadManagementError(error)
-              ? threadManagementFailure(error)
-              : failure(
-                  "orchestration_error",
-                  `Unable to send to thread ${input.threadId}: ${userFacingDispatchErrorMessage(error) ?? errorMessage(error)}`,
-                ),
+            error._tag === "OrchestratorThreadMessagesBlockedError"
+              ? failure("thread_not_sendable", error.message)
+              : isThreadManagementError(error)
+                ? threadManagementFailure(error)
+                : failure(
+                    "orchestration_error",
+                    `Unable to send to thread ${input.threadId}: ${userFacingDispatchErrorMessage(error) ?? errorMessage(error)}`,
+                  ),
           ),
         );
       return {

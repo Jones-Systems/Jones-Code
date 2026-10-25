@@ -9,6 +9,7 @@ import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as ThreadTitleLinks from "./ThreadTitleLinks.ts";
+import { resolveRemoteEvaluationModel } from "./jones/remoteEvaluationModel.ts";
 
 export type {
   BranchNameGenerationInput,
@@ -61,8 +62,9 @@ export const make = Effect.gen(function* () {
   const sourceControl = yield* SourceControlProviderRegistry.SourceControlProviderRegistry;
   return TextGeneration.of({
     evaluateRemoteRequest: (input) =>
-      resolveInstance(registry, "evaluateRemoteRequest", input.modelSelection.instanceId).pipe(
-        Effect.flatMap((textGeneration) => textGeneration.evaluateRemoteRequest(input)),
+      resolveRemoteEvaluationModel(input.modelSelection).pipe(
+        Effect.provideService(ProviderInstanceRegistry.ProviderInstanceRegistry, registry),
+        Effect.flatMap((instance) => instance.textGeneration.evaluateRemoteRequest(input)),
       ),
     generateCommitMessage: (input) =>
       resolveInstance(registry, "generateCommitMessage", input.modelSelection.instanceId).pipe(
