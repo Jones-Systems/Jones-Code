@@ -2335,12 +2335,16 @@
         "apps/server/src/textGeneration/jones/remoteEvaluationModel.test.ts",
         "apps/web/src/jones/remoteAdmission/store.test.ts",
         "apps/web/src/jones/remoteAdmission/RequestsPage.browser.test.tsx",
-        "apps/web/src/jones/remoteAdmission/RemoteAdmissionNotifications.browser.test.tsx"
+        "apps/web/src/jones/remoteAdmission/RemoteAdmissionNotifications.browser.test.tsx",
+        "apps/server/src/jones/remoteAdmission/evaluationDiagnostic.test.ts",
+        "apps/web/src/jones/remoteAdmission/runtime.test.ts",
+        "packages/client-runtime/src/jones/remoteAdmission/index.test.ts"
       ],
       "commands": [
         "vp test run apps/web/src/reactCompilerCoverage.test.ts -t \"compiles apps/web/src/jones/remoteAdmission/useAdmission.ts\" --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/server/src/jones/remoteAdmission/RemoteAdmission.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/remoteAdmissionIntegration/RemoteAdmissionIntake.test.ts apps/server/src/jones/remoteAdmissionIntegration/http.test.ts apps/server/src/jones/remoteAdmissionIntegration/target.test.ts apps/web/src/jones/remoteAdmission/presentation.test.ts apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts apps/server/src/jones/remoteAdmissionIntegration/owner.test.ts apps/server/src/textGeneration/jones/CodexRemoteRequestEvaluation.test.ts apps/server/src/textGeneration/jones/remoteEvaluationModel.test.ts apps/web/src/jones/remoteAdmission/store.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run --root apps/web --config vite.config.ts --project browser src/jones/remoteAdmission/RemoteAdmissionSettings.browser.test.tsx src/jones/remoteAdmission/RequestsPage.browser.test.tsx src/jones/remoteAdmission/RemoteAdmissionNotifications.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
+        "vp test run --root apps/web --config vite.config.ts --project browser src/jones/remoteAdmission/RemoteAdmissionSettings.browser.test.tsx src/jones/remoteAdmission/RequestsPage.browser.test.tsx src/jones/remoteAdmission/RemoteAdmissionNotifications.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/jones/remoteAdmission/evaluationDiagnostic.test.ts apps/web/src/jones/remoteAdmission/runtime.test.ts packages/client-runtime/src/jones/remoteAdmission/index.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -2401,11 +2405,15 @@
         "apps/server/src/jones/providers/TextGeneration.test.ts",
         "apps/server/src/textGeneration/ClaudeTextGeneration.test.ts",
         "apps/server/src/textGeneration/CodexTextGeneration.test.ts",
-        "apps/server/src/git/GitManager.test.ts"
+        "apps/server/src/git/GitManager.test.ts",
+        "apps/server/src/textGeneration/jones/claudeEvaluatorLaunch.test.ts",
+        "apps/server/src/provider/Drivers/ClaudeDriver.test.ts",
+        "apps/server/src/textGeneration/jones/CodexRemoteRequestEvaluation.test.ts"
       ],
       "commands": [
         "vp test run packages/provider-core/src/server/jones/remoteRequestEvaluation.test.ts packages/provider-core/src/server/textGenerationPrompts.test.ts apps/server/src/jones/providers/TextGeneration.test.ts apps/server/src/textGeneration/ClaudeTextGeneration.test.ts apps/server/src/textGeneration/CodexTextGeneration.test.ts apps/server/src/git/GitManager.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp run --filter @t3tools/provider-core --filter @t3tools/provider-acp-registry --filter @t3tools/provider-muse --filter @t3tools/provider-opencode --filter t3 --concurrency-limit 1 typecheck"
+        "vp run --filter @t3tools/provider-core --filter @t3tools/provider-acp-registry --filter @t3tools/provider-muse --filter @t3tools/provider-opencode --filter t3 --concurrency-limit 1 typecheck",
+        "vp test run apps/server/src/textGeneration/jones/claudeEvaluatorLaunch.test.ts apps/server/src/provider/Drivers/ClaudeDriver.test.ts apps/server/src/textGeneration/jones/CodexRemoteRequestEvaluation.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {

@@ -4,6 +4,7 @@ import {
   type ProviderTextGeneration,
 } from "@t3tools/provider-core/server/textGeneration";
 import { buildRemoteRequestEvaluationPrompt } from "@t3tools/provider-core/server/textGenerationOperations";
+import { toJsonSchemaObject } from "@t3tools/provider-core/server/textGenerationUtils";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -151,22 +152,6 @@ const readStream = Effect.fn("CodexRemoteRequestEvaluation.readStream")(function
   return completed;
 });
 
-// Responses strict schemas require an object root. The domain decoder below
-// additionally enforces the pass/none and hold/risk category pairing.
-const outputSchema = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    verdict: { type: "string", enum: ["pass", "hold"] },
-    category: {
-      type: "string",
-      enum: ["none", "malicious", "ridiculous", "risky", "out_of_scope"],
-    },
-    reason: { type: "string", maxLength: 600 },
-  },
-  required: ["verdict", "category", "reason"],
-};
-
 export const makeCodexRemoteRequestEvaluation = Effect.fn("makeCodexRemoteRequestEvaluation")(
   function* <E>(options: {
     readonly instanceId: ProviderInstanceId;
@@ -200,7 +185,7 @@ export const makeCodexRemoteRequestEvaluation = Effect.fn("makeCodexRemoteReques
           seen.add(option.id);
           effort = option.value;
         }
-        const { prompt } = yield* buildRemoteRequestEvaluationPrompt(input);
+        const { prompt, outputSchema } = yield* buildRemoteRequestEvaluationPrompt(input);
         const credentials = yield* options.access.pipe(
           Effect.mapError(
             (cause) =>
@@ -232,7 +217,7 @@ export const makeCodexRemoteRequestEvaluation = Effect.fn("makeCodexRemoteReques
                     type: "json_schema",
                     name: "remote_request_evaluation",
                     strict: true,
-                    schema: outputSchema,
+                    schema: toJsonSchemaObject(outputSchema),
                   },
                 },
               }),
@@ -251,7 +236,7 @@ export const makeCodexRemoteRequestEvaluation = Effect.fn("makeCodexRemoteReques
         if (response.status !== 200)
           return yield* new TextGenerationError({
             operation: "evaluateRemoteRequest",
-            detail: "The managed Codex evaluator did not return a successful response.",
+            detail: `The managed Codex evaluator did not return a successful response (HTTP ${response.status}).`,
           });
         if (
           response.headers["content-type"]?.split(";")[0]?.trim().toLowerCase() !==

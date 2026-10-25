@@ -312,25 +312,37 @@ ends, as for any delegated task. It keeps following the task across restarts.
 If the other machine revokes the link, or the link is removed here, the task
 fails with that reason.
 
-### Jones Code: review incoming requests on your laptop
+### Jones Code: evaluate and review incoming requests
 
-On the receiving laptop, open **Settings → Connections → Remote request
-review**, choose the local evaluator provider and model, and enable evaluation.
-This is a setting on that environment. Leave it disabled on the VPS, Mini and
-other environments that should run remote requests directly.
+On the receiving machine, open **Settings → Connections → Background remote
+evaluation**. Choose the provider account, model and options, then enable
+evaluation. Each environment has its own selection; it runs independently of
+the model used by a conversation.
 
 Passing requests run as ordinary Jones Code tasks with the receiving
 workspace's normal tools, permissions and provider settings. A request that
-needs review waits for your decision. Open the sidebar's needs-input indicator
-or the review section in Connections, inspect the request, then **Approve** or
+needs review waits for your decision. Open **Requests** from the sidebar or a
+request notification, expand the request, then **Approve** or
 **Deny**. An approval releases that exact request. Linked agents and MCP
 question-response tools cannot approve these holds. New remote instructions
 are evaluated separately; cancellation remains available while a request waits.
 
-The evaluator runs without tools. If it is unavailable, unsupported, times out,
-or returns an invalid answer, the request waits for your review. The initial
-adapter supports Claude evaluation; choosing another adapter currently holds
-requests until reviewed. Screening is a heuristic, and does not change normal
+The evaluator runs without task tools. Qualified Claude instances and managed
+Codex instances with ChatGPT authorization support evaluation. CLI-backed Codex
+instances are excluded because their public integration cannot disable all task
+tools. An existing CLI login does not automatically authorize managed Codex.
+
+If evaluation fails or is interrupted, the request remains held as an evaluator
+service failure. New failures include a reason such as a timeout, account-access
+problem or invalid response. Older holds may contain only a generic reason;
+changing the evaluator does not retry or release them.
+
+Review requires an owner session on the receiving environment. A working linked
+connection does not grant that permission. If a linked environment says owner
+access is required, use that machine's own Jones Code app or signed-in browser.
+This warning does not establish that the machine has no evaluator providers.
+
+Screening is a heuristic, and does not change normal
 execution after a pass or the link's underlying access grant. Revoke the link
 in Connections to remove its access.
 

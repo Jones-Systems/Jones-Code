@@ -19,8 +19,11 @@ receiving server must authorize the session as owner and support the endpoint.
 Use synthetic owner, non-owner and unsupported endpoint fixtures independently.
 Loading environments, no connected environment, loading requests, no pending
 requests and inaccessible owner review are distinct states. Inaccessible
-sections retry automatically; a retained snapshot is explicitly last known and
-its decisions are blocked. Never treat an inaccessible section as an empty inbox.
+sections distinguish owner-only access, unsupported endpoints and transient
+connection errors. Owner-only and unsupported states wait for an explicit
+refresh; transient errors retry with backoff. A retained snapshot is explicitly
+last known and its decisions are blocked. Never treat an inaccessible section
+as an empty inbox.
 
 The [shared store](../../apps/web/src/jones/remoteAdmission/store.ts) and
 [subscription hook](../../apps/web/src/jones/remoteAdmission/useAdmission.ts)
@@ -28,7 +31,9 @@ feed the inbox, sidebar count/attention, configuration and
 [global notifications](../../apps/web/src/jones/remoteAdmission/RemoteAdmissionNotifications.tsx).
 Visible documents refresh on a ten-second interval and visibility changes.
 Check cross-surface consistency rather than counting each mount as independent
-state. A sidebar `?` means some environments are loading or unavailable; a capped
+state. A sidebar `?` means some environments are loading or have transient
+failures; known owner-only and unsupported environments do not add uncertainty
+to that count. A capped
 count is a lower bound, not the complete queue size.
 
 ## Synthetic journeys
@@ -40,7 +45,9 @@ fixture; do not approve real tasks, change live settings or authenticate provide
 1. Seed held risk findings from two senders and a separate evaluator failure.
    Verify grouping by sender identity/link and review category. Request review
    and **Evaluator service failure** must remain distinct: failure means the
-   evaluator could not complete, not that the content was found unsafe.
+   evaluator could not complete, not that the content was found unsafe. New
+   failures show a bounded failure reason; old generic holds are not backfilled
+   or automatically retried.
 2. Expand a request, then its **Full bound request and evaluator configuration**.
    Inspect sender/client, operation, target, modes, category, full message,
    evaluator reason and bound envelope. Long summaries and nested details must

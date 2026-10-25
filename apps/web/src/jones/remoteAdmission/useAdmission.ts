@@ -1,6 +1,6 @@
 import { useEffect, useSyncExternalStore } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
-import { actionableAdmissions, createAdmissionStore } from "./store";
+import { admissionAttention, createAdmissionStore } from "./store";
 import { useEnvironmentIds } from "../../state/environments";
 import { remoteAdmissionRequest } from "./runtime";
 
@@ -22,7 +22,7 @@ function watch(store: ReturnType<typeof createAdmissionStore>) {
   let watcher = watchers.get(store);
   if (!watcher) {
     const refresh = () => {
-      if (document.visibilityState !== "hidden") void store.refresh();
+      if (document.visibilityState !== "hidden") void store.refreshWhenDue();
     };
     const interval = window.setInterval(refresh, 10_000);
     document.addEventListener("visibilitychange", refresh);
@@ -67,10 +67,10 @@ export function useAdmissionOverview() {
       let unknown = 0;
       let capped = false;
       for (const store of entries) {
-        const state = store.getSnapshot();
-        held += actionableAdmissions(state).length;
-        if (state.loadFailed || !state.snapshot) unknown++;
-        capped = capped || state.atLimit;
+        const attention = admissionAttention(store.getSnapshot());
+        held += attention.held;
+        if (attention.unknown) unknown++;
+        capped = capped || attention.capped;
       }
       return `${held}:${unknown}:${capped ? 1 : 0}`;
     },
