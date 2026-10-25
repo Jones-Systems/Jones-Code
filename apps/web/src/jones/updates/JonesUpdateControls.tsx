@@ -1,9 +1,17 @@
 import { jonesUpdateActionError, compareJonesSource } from "@t3tools/client-runtime/jones/updates";
-import type { EnvironmentId } from "@t3tools/contracts";
+import {
+  AuthOrchestrationOperateScope,
+  sessionGrantsScope,
+  type EnvironmentId,
+} from "@t3tools/contracts";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import * as Effect from "effect/Effect";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { appAtomRegistry } from "../../rpc/atomRegistry";
+import { requestConfirmDialog } from "../../confirmDialog";
+import { performConfirmedInstall } from "./ExactSourceUpdateAction";
+import { ProductionExactSourceUpdateAction } from "./ProductionExactSourceUpdateAction";
 import { jonesUpdates } from "./jonesUpdates";
 import {
   JonesBuildStatus,
@@ -84,7 +92,7 @@ export function JonesUpdateControls({
 }: {
   readonly environmentId: EnvironmentId;
   readonly layout?: JonesBuildStatusLayout;
-  /** Badges this host's installed, offered, or staged build against this laptop's installed source. */
+  /** Compares this host with the verified laptop build and offers an explicit matching download. */
   readonly compareWithLaptop?: boolean;
 }) {
   const observation = useAtomValue(jonesUpdates.observation(environmentId));
@@ -107,16 +115,45 @@ export function JonesUpdateControls({
       : ("loading" as const);
   const action = useAtomCommand(jonesUpdates.action, { reportFailure: false });
   const [pending, setPending] = useState(false);
+  const inFlight = useRef(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const run = async (input: JonesBuildRequest) => {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setPending(true);
     setActionError(null);
     await (async () => {
+      if (input.action === "install") {
+        setActionError(
+          await performConfirmedInstall({
+            input: input.input,
+            label: "this host",
+            host: {
+              confirm: async (message) => (await requestConfirmDialog(message)) ?? false,
+              readLatest: () => {
+                const session = appAtomRegistry.get(
+                  environmentSession.sessionStateAtom(environmentId),
+                );
+                return {
+                  observation: appAtomRegistry.get(jonesUpdates.observation(environmentId)),
+                  canOperate:
+                    session._tag === "Success" &&
+                    session.value.authenticated &&
+                    sessionGrantsScope(session.value, AuthOrchestrationOperateScope),
+                };
+              },
+              run: (request) => action({ environmentId, input: request }),
+            },
+          }),
+        );
+        return;
+      }
       setActionError(jonesUpdateActionError(await action({ environmentId, input })));
       // Check is the explicit refresh: retry an ancestry this laptop's server could not prove.
       if (input.action === "check" && pair !== undefined && ancestry === undefined)
         refreshAncestry();
     })().finally(() => {
+      inFlight.current = false;
       setPending(false);
     });
   };
@@ -129,6 +166,17 @@ export function JonesUpdateControls({
   const installedComparison = compareWithLaptop
     ? installedComparisonFor({ host: hostInstalledSource, laptop: laptop?.source, ancestry })
     : null;
+  const showMatch =
+    compareWithLaptop &&
+    isElectron &&
+    environmentId !== laptop?.environmentId &&
+    !(laptop !== undefined && hostInstalledSource?.sha === laptop.source.sha) &&
+    !(
+      laptop !== undefined &&
+      observation.freshness === "fresh" &&
+      observation.state?.stagedHandle !== undefined &&
+      observation.state.provenance?.sourceSha === laptop.source.sha
+    );
   return (
     <JonesBuildStatus
       environmentId={environmentId}
@@ -140,6 +188,25 @@ export function JonesUpdateControls({
       pending={pending}
       actionError={actionError}
       layout={layout}
+      extraAction={
+        showMatch ? (
+          <ProductionExactSourceUpdateAction
+            environmentId={environmentId}
+            label="this host"
+            targetSource={laptop?.source.sha ?? ""}
+            readTargetSource={() => {
+              const latest = appAtomRegistry.get(laptopInstalledSourceAtom);
+              return latest !== undefined && latest.environmentId === laptop?.environmentId
+                ? latest.source.sha
+                : undefined;
+            }}
+            subject="this laptop"
+            allowInstall={false}
+            buttonLabel="Match laptop"
+            compact
+          />
+        ) : undefined
+      }
       onRequest={(request) => void run(request)}
     />
   );

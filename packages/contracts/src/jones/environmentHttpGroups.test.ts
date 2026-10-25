@@ -156,6 +156,42 @@ it("selects an exact source by full commit only and keeps older capability shape
   );
 });
 
+it("requires the complete immutable binding for an optional staged replacement", () => {
+  const decode = Schema.decodeUnknownSync(JonesUpdateExactInput);
+  const replace = {
+    stagedHandle: "retained-stage",
+    sourceSha: "b".repeat(40),
+    operationId: "11111111-1111-4111-8111-111111111111",
+    environmentId: "synthetic-host",
+    currentVersion: "0.1.0-preview.1",
+    expectedInstalledSource: "c".repeat(40),
+  };
+  const input = { targetSource: "a".repeat(40), replace };
+  expect(decode(input)).toEqual(input);
+  for (const field of Object.keys(replace)) {
+    const incomplete: Record<string, unknown> = { ...replace };
+    delete incomplete[field];
+    expect(() => decode({ ...input, replace: incomplete })).toThrow();
+  }
+  for (const patch of [
+    { sourceSha: "b".repeat(39) },
+    { expectedInstalledSource: "C".repeat(40) },
+    { operationId: "11111111-1111-5111-8111-111111111111" },
+    { stagedHandle: "" },
+    { environmentId: "" },
+    { currentVersion: "" },
+  ])
+    expect(() => decode({ ...input, replace: { ...replace, ...patch } })).toThrow();
+  const capability = {
+    check: true,
+    download: true,
+    install: false,
+    exactSource: true,
+    replaceStaged: true,
+  };
+  expect(Schema.decodeUnknownSync(JonesUpdateCapability)(capability)).toEqual(capability);
+});
+
 it("accepts both explicitly versioned registration responses on the local HTTP boundary", () => {
   const responseSchema = [
     ...EnvironmentHttpApi.groups.workstreams.endpoints.registrationContext.success,

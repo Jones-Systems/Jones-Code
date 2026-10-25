@@ -198,6 +198,33 @@ fallback. Build, viewport/text-size evidence, before/after captures and exercise
 live entry points: **none**. Connections, ServerUpdateAction, hosted/direct/relay/tunnel
 variants and packaged desktop remain `unverified` for this change.
 
+### Match laptop
+
+Electron Connections rows for remote hosts offer **Match laptop** beside Check
+and Download or Install. The target comes from the fresh installed source on
+the verified desktop-managed laptop connection. The choice stays visible with
+an explanation when the laptop source, remote observation, permission or host
+capability is unavailable; it disappears once that source is installed or staged.
+Hosted web and mobile have no verified laptop observation and omit this choice.
+
+With a different download already staged, confirm replacement of that exact
+handle/source. The host checks target availability before retiring the old
+selection. Matching only downloads; Install has its own confirmation and fresh
+binding check. A stale selection refuses without replacement. A partial failure
+or lost response requires reading current host status and explicitly downloading
+again if the old selection is gone.
+
+The existing environment updates fixture now includes a synthetic Connections
+row and the mismatch notice backed by the same exact-source controller.
+Exercise ordinary matching, confirmed replacement, cancellation, legacy refusal,
+waiting/unsupported states and the separate Install dialog. Inspect the action
+receipts for the full target, old handle/source and original host binding; no
+fixture request may reach a real host or desktop updater. The focused
+[exact-source browser regressions](../../apps/web/src/jones/updates/ExactSourceUpdateAction.browser.test.tsx)
+and [Preview qualification](../../scripts/jones/updates/install-preview-qualification.mjs)
+cover these interactions. The PR records current execution evidence and its
+limits; source inspection alone does not qualify installed desktop behavior.
+
 ### Background remote evaluation
 
 [Connections](../../apps/web/src/components/settings/ConnectionsSettings.tsx)

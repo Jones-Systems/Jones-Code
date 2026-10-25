@@ -1,5 +1,7 @@
 import {
   jonesExactSourceResultError,
+  jonesInstallRefusal,
+  jonesUpdateActionError,
   resolveJonesExactSourceAction,
   shortJonesSource,
   type JonesAction,
@@ -11,9 +13,14 @@ import {
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
-import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
-import { useRef, useState } from "react";
+import type {
+  JonesUpdateInstallInput,
+  JonesUpdateState,
+} from "@t3tools/contracts/jones/jonesUpdates";
+import { useId, useRef, useState } from "react";
 import { Button } from "../../components/ui/button";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
+import { randomUUID } from "../../lib/utils";
 
 /** The host an exact-source notice acts on: what it shows now and how it asks for changes. */
 export interface ExactSourceHost {
@@ -34,8 +41,15 @@ interface ExactSourceSnapshot {
 export interface ExactSourceTarget {
   readonly environmentId: EnvironmentId;
   readonly label: string;
-  /** The running app's own full source commit; the only source this action moves a host toward. */
+  /** The verified installed source this action moves a host toward. */
   readonly targetSource: string;
+  /** A laptop target must still come from the same fresh, verified local connection. */
+  readonly readTargetSource?: (() => string | undefined) | undefined;
+  readonly allowReplace?: boolean | undefined;
+  readonly allowInstall?: boolean | undefined;
+  readonly subject?: "this app" | "this laptop" | undefined;
+  readonly buttonLabel?: string | undefined;
+  readonly compact?: boolean | undefined;
 }
 
 /** An install whose response was lost, bound to the host state it was sent against. */
@@ -47,9 +61,9 @@ interface UnresolvedInstall {
 type ExactSourceOutcome =
   | { readonly kind: "done"; readonly message: string }
   | { readonly kind: "cancelled" }
-  /** The host or the latest state refused; nothing was changed for this request. */
+  /** The latest state refused the action, or the host reported a refusal or partial failure. */
   | { readonly kind: "refused"; readonly message: string }
-  /** A download request that did not finish. Downloads are idempotent, so retrying is safe. */
+  /** A download or replacement with no acknowledged result; the next click resolves fresh state. */
   | { readonly kind: "failed"; readonly message: string }
   /** An install request whose response was lost. It must be reconciled, never re-sent. */
   | {
@@ -58,10 +72,15 @@ type ExactSourceOutcome =
       readonly unresolvedInstall: UnresolvedInstall;
     };
 
-function request(step: JonesExactSourceStep): JonesAction {
+function request(step: JonesExactSourceStep, operationId: string): JonesAction {
   switch (step.kind) {
     case "download-exact":
       return { action: "downloadExact", input: { targetSource: step.targetSource } };
+    case "replace-exact":
+      return {
+        action: "downloadExact",
+        input: { targetSource: step.targetSource, replace: { ...step.replace, operationId } },
+      };
     case "download":
       return { action: "download", input: step.input };
     case "install":
@@ -72,7 +91,20 @@ function request(step: JonesExactSourceStep): JonesAction {
 function sameStep(left: JonesExactSourceStep, right: JonesExactSourceStep) {
   if (left.kind !== right.kind) return false;
   if (left.kind === "install" && right.kind === "install")
-    return left.input.stagedHandle === right.input.stagedHandle;
+    return (
+      left.input.stagedHandle === right.input.stagedHandle &&
+      left.input.environmentId === right.input.environmentId &&
+      left.input.currentVersion === right.input.currentVersion
+    );
+  if (left.kind === "replace-exact" && right.kind === "replace-exact")
+    return (
+      left.targetSource === right.targetSource &&
+      left.replace.stagedHandle === right.replace.stagedHandle &&
+      left.replace.sourceSha === right.replace.sourceSha &&
+      left.replace.environmentId === right.replace.environmentId &&
+      left.replace.currentVersion === right.replace.currentVersion &&
+      left.replace.expectedInstalledSource === right.replace.expectedInstalledSource
+    );
   if (left.kind === "download" && right.kind === "download")
     return left.input.artifactId === right.input.artifactId;
   return true;
@@ -86,11 +118,17 @@ export async function performExactSourceStep({
   environmentId,
   label,
   targetSource,
+  readTargetSource,
+  allowReplace,
+  allowInstall,
+  subject,
   step,
+  operationId = randomUUID(),
   unresolvedInstall,
   host,
 }: ExactSourceTarget & {
   readonly step: JonesExactSourceStep;
+  readonly operationId?: string | undefined;
   readonly unresolvedInstall?: UnresolvedInstall | undefined;
   readonly host: Pick<ExactSourceHost, "readLatest" | "run" | "confirm">;
 }): Promise<ExactSourceOutcome> {
@@ -100,12 +138,26 @@ export async function performExactSourceStep({
       `Install source ${short} on ${label}? The host restarts to apply it and disconnects briefly.`,
     );
     if (!confirmed) return { kind: "cancelled" };
+  } else if (step.kind === "replace-exact") {
+    const confirmed = await host.confirm(
+      `Replace downloaded source ${shortJonesSource(step.replace.sourceSha)} on ${label} with ${short}? The old download is retired; its files are retained. Nothing installs until you choose Install.`,
+    );
+    if (!confirmed) return { kind: "cancelled" };
   }
+  if (readTargetSource !== undefined && readTargetSource() !== targetSource)
+    return {
+      kind: "refused",
+      message:
+        "Nothing was sent: the laptop's verified installed build changed or is unavailable. Review its current build and try again.",
+    };
   const latest = host.readLatest();
   const fresh = resolveJonesExactSourceAction({
     environmentId,
     ...latest,
     targetSource,
+    allowReplace,
+    allowInstall,
+    subject,
     unresolvedInstall,
   });
   if (fresh.status !== "ready")
@@ -115,13 +167,16 @@ export async function performExactSourceStep({
       kind: "refused",
       message: `Nothing was sent: ${label} changed while this was pending. Review the notice and try again.`,
     };
-  const result = await host.run(request(fresh.step)).catch(() => null);
+  const result = await host.run(request(fresh.step, operationId)).catch(() => null);
   if (result === null || result._tag === "Failure") {
     if (result !== null && isAtomCommandInterrupted(result)) return { kind: "cancelled" };
     if (fresh.step.kind !== "install")
       return {
         kind: "failed",
-        message: "The download request did not finish. Check the host's status and try again.",
+        message:
+          fresh.step.kind === "replace-exact"
+            ? "The replacement request was sent but no response arrived. Its effect is unknown. Check the host's current status before trying again; nothing is resent automatically."
+            : "The download request did not finish. Check the host's status and try again.",
       };
     return {
       kind: "unknown",
@@ -144,6 +199,29 @@ export async function performExactSourceStep({
   };
 }
 
+/** Confirms a Connections install and revalidates its host binding before sending. */
+export async function performConfirmedInstall({
+  input,
+  host,
+  label,
+}: {
+  readonly input: JonesUpdateInstallInput;
+  readonly label: string;
+  readonly host: Pick<ExactSourceHost, "readLatest" | "run" | "confirm">;
+}): Promise<string | null> {
+  if (
+    !(await host.confirm(
+      `Install the downloaded build on ${label}? The host restarts and disconnects briefly.`,
+    ))
+  )
+    return null;
+  const latest = host.readLatest();
+  const refusal = jonesInstallRefusal(input, latest.observation);
+  if (refusal !== undefined || !latest.canOperate)
+    return `Nothing was sent. ${refusal ?? "Your session can no longer change updates on this host."}`;
+  return jonesUpdateActionError(await host.run({ action: "install", input }));
+}
+
 type Report = { readonly tone: "error" | "info"; readonly text: string };
 
 /**
@@ -160,7 +238,7 @@ async function releaseAfter(work: () => Promise<void>, release: () => void): Pro
 }
 
 /**
- * The notice's action toward this app's exact source commit. Download and Install are separate
+ * An action toward a verified installed source commit. Download and Install are separate
  * explicit steps; the notice stays mounted through every host transition so progress, refusals
  * and lost responses stay visible instead of the action disappearing.
  */
@@ -168,16 +246,26 @@ export function ExactSourceUpdateAction({
   environmentId,
   label,
   targetSource,
+  readTargetSource,
+  allowReplace = false,
+  allowInstall = true,
+  subject,
+  buttonLabel,
+  compact = false,
   host,
 }: ExactSourceTarget & { readonly host: ExactSourceHost }) {
   const [working, setWorking] = useState<"download" | "install" | null>(null);
   const [report, setReport] = useState<Report | null>(null);
   const [unresolvedInstall, setUnresolvedInstall] = useState<UnresolvedInstall | undefined>();
   const inFlight = useRef(false);
+  const replacementIds = useRef(new Map<string, string>());
   const decision = resolveJonesExactSourceAction({
     environmentId,
     ...host.snapshot,
     targetSource,
+    allowReplace,
+    allowInstall,
+    subject,
     unresolvedInstall,
   });
   const short = shortJonesSource(targetSource);
@@ -185,6 +273,12 @@ export function ExactSourceUpdateAction({
   const start = async () => {
     if (decision.status !== "ready" || inFlight.current) return;
     const step = decision.step;
+    let operationId: string | undefined;
+    if (step.kind === "replace-exact") {
+      const key = JSON.stringify([environmentId, step]);
+      operationId = replacementIds.current.get(key) ?? randomUUID();
+      replacementIds.current.set(key, operationId);
+    }
     inFlight.current = true;
     setWorking(step.kind === "install" ? "install" : "download");
     setReport(null);
@@ -194,6 +288,11 @@ export function ExactSourceUpdateAction({
           environmentId,
           label,
           targetSource,
+          readTargetSource,
+          allowReplace,
+          allowInstall,
+          subject,
+          operationId,
           step,
           unresolvedInstall,
           host,
@@ -220,7 +319,7 @@ export function ExactSourceUpdateAction({
           : report;
   return (
     <>
-      {status ? (
+      {status && (!compact || report !== null) ? (
         <span
           role="status"
           className={
@@ -232,17 +331,64 @@ export function ExactSourceUpdateAction({
           {status.text}
         </span>
       ) : null}
-      {working !== null || decision.status === "ready" ? (
-        <Button size="xs" variant="ghost" disabled={working !== null} onClick={() => void start()}>
-          {working === "install"
-            ? "Installing…"
-            : working === "download"
-              ? "Downloading…"
-              : decision.status === "ready" && decision.step.kind === "install"
-                ? `Install ${short}`
-                : `Download ${short}`}
-        </Button>
+      {working !== null || decision.status === "ready" || buttonLabel !== undefined ? (
+        <ExactActionButton
+          reason={
+            working !== null
+              ? "An update request is in progress."
+              : decision.status === "unavailable"
+                ? decision.message
+                : undefined
+          }
+          onClick={() => void start()}
+          label={
+            working === "install"
+              ? "Installing…"
+              : working === "download"
+                ? "Downloading…"
+                : (buttonLabel ??
+                  (decision.status === "ready" && decision.step.kind === "install"
+                    ? `Install ${short}`
+                    : decision.status === "ready" && decision.step.kind === "replace-exact"
+                      ? `Replace with ${short}`
+                      : `Download ${short}`))
+          }
+        />
       ) : null}
     </>
+  );
+}
+
+function ExactActionButton({
+  reason,
+  label,
+  onClick,
+}: {
+  readonly reason: string | undefined;
+  readonly label: string;
+  readonly onClick: () => void;
+}) {
+  const reasonId = useId();
+  return (
+    <Tooltip disabled={reason === undefined}>
+      <TooltipTrigger
+        render={
+          <Button
+            size="xs"
+            variant="outline"
+            aria-disabled={reason === undefined ? undefined : true}
+            aria-describedby={reason === undefined ? undefined : reasonId}
+            onClick={() => {
+              if (reason === undefined) onClick();
+            }}
+          >
+            {label}
+          </Button>
+        }
+      />
+      <TooltipPopup side="top" role="tooltip" id={reasonId}>
+        {reason}
+      </TooltipPopup>
+    </Tooltip>
   );
 }
