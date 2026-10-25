@@ -1,0 +1,8 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "client-vcs-denial-efficiency",
+  "jonesOwnedPaths": [],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": []
+}
