@@ -19,6 +19,43 @@ import * as Admission from "../remoteAdmission/RemoteAdmission.ts";
 import * as Intake from "./RemoteAdmissionIntake.ts";
 import { isRemoteAdmissionOwner } from "./owner.ts";
 import { screensRemoteOperation } from "./operations.ts";
+import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegistry.ts";
+import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
+
+const providers = Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
+  getInstance: (id) =>
+    Effect.succeed(
+      id === "claude"
+        ? ({
+            enabled: true,
+            snapshot: {
+              getSnapshot: Effect.succeed({
+                enabled: true,
+                supportsRemoteRequestEvaluation: true,
+                models: [
+                  {
+                    slug: "synthetic",
+                    capabilities: {
+                      optionDescriptors: [
+                        {
+                          id: "reasoningEffort",
+                          type: "select",
+                          label: "Effort",
+                          options: [
+                            { id: "medium", label: "Medium" },
+                            { id: "high", label: "High" },
+                          ],
+                        },
+                      ],
+                    },
+                  },
+                ],
+              }),
+            },
+          } as unknown as ProviderInstance)
+        : undefined,
+    ),
+} as ProviderInstanceRegistry.ProviderInstanceRegistry["Service"]);
 
 const invocation: McpInvocationScope = {
   environmentId: EnvironmentId.make("receiver"),
@@ -43,8 +80,9 @@ const sessions = Layer.succeed(EnvironmentAuth.EnvironmentAuth, {
   listSessions: () =>
     Effect.succeed([{ sessionId: AuthSessionId.make("remote") } as AuthClientSession]),
 } as unknown as EnvironmentAuth.EnvironmentAuth["Service"]);
-const fixture = (evaluate: Admission.RemoteAdmissionEvaluator) =>
+const fixture = <E>(evaluate: Admission.RemoteAdmissionEvaluator<E>) =>
   Intake.layer.pipe(
+    Layer.provide(providers),
     Layer.provideMerge(Admission.layerWithEvaluator(evaluate)),
     Layer.provide(sessions),
     Layer.provideMerge(memory),
@@ -62,6 +100,94 @@ const input = {
   prompt: "Implement a synthetic change",
   runtimeMode: "full-access",
 };
+
+it.effect(
+  "enabled policy rejects unsupported instance/model without changing the saved selection",
+  () =>
+    Effect.gen(function* () {
+      const intake = yield* Intake.RemoteAdmissionIntake;
+      const saved = yield* enable(intake);
+      for (const modelSelection of [
+        { instanceId: ProviderInstanceId.make("codex-cli"), model: "gpt-6.1-sol" },
+        { instanceId: ProviderInstanceId.make("claude"), model: "missing-model" },
+        {
+          instanceId: ProviderInstanceId.make("claude"),
+          model: "synthetic",
+          options: [{ id: "reasoningEffort", value: "unsupported" }],
+        },
+      ]) {
+        yield* intake
+          .updatePolicy({ enabled: true, expectedRevision: saved.policy.revision, modelSelection })
+          .pipe(Effect.flip);
+        expect((yield* intake.snapshot()).policy).toEqual(saved.policy);
+      }
+      const selected = {
+        ...saved.policy.modelSelection!,
+        options: [{ id: "reasoningEffort", value: "high" }],
+      };
+      const updated = yield* intake.updatePolicy({
+        enabled: true,
+        expectedRevision: saved.policy.revision,
+        modelSelection: selected,
+      });
+      expect(updated.policy.modelSelection).toEqual(selected);
+      const disabled = yield* intake.updatePolicy({
+        enabled: false,
+        expectedRevision: updated.policy.revision,
+        modelSelection: updated.policy.modelSelection,
+      });
+      expect(disabled.policy.modelSelection).toEqual(selected);
+    }).pipe(Effect.provide(fixture(() => Effect.succeed(pass)))),
+);
+
+it.effect(
+  "attention counts only actionable held requests across every request lifecycle status",
+  () =>
+    Effect.gen(function* () {
+      const intake = yield* Intake.RemoteAdmissionIntake;
+      const sql = yield* SqlClient.SqlClient;
+      yield* enable(intake);
+      intake.register("t3_thread_launch", () => Effect.die("held request cannot dispatch"), target);
+      yield* intake.invoke("t3_thread_launch", input, invocation).pipe(Effect.ignore);
+      const record = (yield* intake.snapshot()).pending[0]!;
+      for (const status of [
+        "held",
+        "evaluating",
+        "passed",
+        "approved",
+        "denied",
+        "cancelled",
+        "dispatching",
+        "dispatched",
+      ]) {
+        const commandId = ["dispatching", "dispatched"].includes(status)
+          ? "synthetic-command"
+          : null;
+        yield* sql`UPDATE jones_remote_admissions SET status = ${status}, command_id = ${commandId} WHERE id = ${record.id}`;
+        expect((yield* intake.attention()).count).toBe(status === "held" ? 1 : 0);
+      }
+    }).pipe(Effect.provide(fixture(() => Effect.succeed(hold)))),
+);
+
+it.effect(
+  "evaluator failure stays held and actionable without dispatch or risk misclassification",
+  () =>
+    Effect.gen(function* () {
+      const intake = yield* Intake.RemoteAdmissionIntake;
+      yield* enable(intake);
+      intake.register(
+        "t3_thread_launch",
+        () => Effect.die("failed evaluation cannot dispatch"),
+        target,
+      );
+      yield* intake.invoke("t3_thread_launch", input, invocation).pipe(Effect.ignore);
+      expect((yield* intake.snapshot()).pending[0]).toMatchObject({
+        status: "held",
+        category: "evaluation_unavailable",
+      });
+      expect((yield* intake.attention()).count).toBe(1);
+    }).pipe(Effect.provide(fixture(() => Effect.fail("Synthetic evaluation failure")))),
+);
 
 it.effect.each(["browser-session-cookie", "bearer-access-token"] as const)(
   "held launch rejects agent approval, then %s owner dispatches original once",
@@ -206,7 +332,7 @@ it.effect(
 it.effect("restart resumes approved work with stored scope exactly once", () =>
   Effect.gen(function* () {
     const admissions = yield* Admission.RemoteAdmission;
-    const firstLayer = Intake.layer.pipe(Layer.provide(sessions));
+    const firstLayer = Intake.layer.pipe(Layer.provide(sessions), Layer.provide(providers));
     const id = yield* Effect.gen(function* () {
       const intake = yield* Intake.RemoteAdmissionIntake;
       yield* enable(intake);
@@ -237,7 +363,7 @@ it.effect("restart resumes approved work with stored scope exactly once", () =>
       yield* intake.resumeApproved();
       expect((yield* admissions.get(id))?.status).toBe("dispatched");
       expect(calls).toBe(1);
-    }).pipe(Effect.provide(Intake.layer.pipe(Layer.provide(sessions))));
+    }).pipe(Effect.provide(Intake.layer.pipe(Layer.provide(sessions), Layer.provide(providers))));
   }).pipe(
     Effect.provide(
       Admission.layerWithEvaluator(() => Effect.succeed(hold)).pipe(Layer.provideMerge(memory)),

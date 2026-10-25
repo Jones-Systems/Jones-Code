@@ -1,12 +1,21 @@
 import * as NodePath from "@effect/platform-node/NodePath";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
+  EventId,
+  ProviderInstanceId,
   ThreadId,
   ProjectId,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -17,6 +26,8 @@ import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { OrchestratorProjectionError } from "../../../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
+import * as ProjectionStore from "../../../orchestration-v2/ProjectionStore.ts";
+import { runMigrations } from "../../../persistence/Migrations.ts";
 import * as Metadata from "./OrganizationMetadataMcpService.ts";
 
 const encodeJsonText = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -379,3 +390,159 @@ it.effect("maps read failures without projecting the cause", () => {
     expect(encodeJsonText(error)).not.toContain("synthetic read failure");
   }).pipe(Effect.provide(h.layer));
 });
+
+it.effect("reads real WAL metadata at one committed watermark while the writer is held", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "jones-metadata-reader-" });
+    const filename = path.join(directory, "state.sqlite");
+    yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`PRAGMA journal_mode = WAL`;
+      yield* runMigrations();
+      yield* Effect.gen(function* () {
+        const store = yield* ProjectionStore.ProjectionStoreV2;
+        const providerInstanceId = ProviderInstanceId.make("codex");
+        for (const [id, overrides] of [
+          ["a-archived", { archivedAt: timestamp }],
+          ["b-active", { pinnedAt: timestamp, pinOrderKey: "a1", activeOrderKey: "a2" }],
+          ["c-deleted", { deletedAt: timestamp }],
+        ] as const) {
+          const threadId = ThreadId.make(id);
+          yield* store.apply({
+            id: EventId.make(`event:${id}:created`),
+            type: "thread.created",
+            threadId,
+            occurredAt: timestamp,
+            payload: {
+              createdBy: "user",
+              creationSource: "web",
+              id: threadId,
+              projectId: ProjectId.make("project-1"),
+              title: id,
+              providerInstanceId,
+              modelSelection: { instanceId: providerInstanceId, model: "gpt-5.4" },
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: null,
+              activeProviderThreadId: null,
+              lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+              forkedFrom: null,
+              createdAt: timestamp,
+              updatedAt: timestamp,
+              archivedAt: null,
+              settledOverride: null,
+              settledAt: null,
+              lastVisitedAt: null,
+              deletedAt: null,
+              ...overrides,
+            },
+          });
+        }
+        const recordSequence = (sequence: number) => sql`
+          INSERT INTO orchestration_events (
+            sequence, event_id, aggregate_kind, stream_id, stream_version, event_type,
+            occurred_at, actor_kind, payload_json, metadata_json, application_event_version
+          ) VALUES (
+            ${sequence}, ${`metadata-watermark:${sequence}`}, 'thread', 'b-active', ${sequence},
+            'thread.updated', ${DateTime.formatIso(timestamp)}, 'server', '{}', '{}', 2
+          )
+        `;
+        yield* recordSequence(7);
+        // ThreadManagement delegates this read directly to the real SQL projection store.
+        const dependencies = Layer.mergeAll(
+          configLayer,
+          Layer.mock(HttpServer.HttpServer)({
+            address: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 43123),
+          }),
+          Layer.mock(ThreadManagement.ThreadManagementService)({
+            getShellSnapshot: (input) =>
+              store
+                .getShellSnapshot(input)
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestratorProjectionError({ threadId: caller.threadId, cause }),
+                  ),
+                ),
+          }),
+        );
+        yield* Effect.gen(function* () {
+          const service = yield* Metadata.OrganizationMetadataMcpService;
+          const before = yield* service.listThreadMetadata(environmentId, {});
+          expect(before).toMatchObject({
+            snapshotSequence: 7,
+            nextOffset: null,
+            threads: [
+              { threadId: "a-archived", archivedAt: DateTime.formatIso(timestamp) },
+              { threadId: "b-active", pinOrderKey: "a1", activeOrderKey: "a2" },
+            ],
+          });
+          const held = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          const writer = yield* Effect.forkChild(
+            sql.withTransaction(
+              Effect.gen(function* () {
+                yield* sql`
+                  UPDATE orchestration_v2_projection_threads
+                  SET title = 'uncommitted', payload_json = json_set(payload_json, '$.title', 'uncommitted')
+                  WHERE thread_id = 'b-active'
+                `;
+                yield* recordSequence(8);
+                yield* Deferred.succeed(held, undefined);
+                yield* Deferred.await(release);
+              }),
+            ),
+            { startImmediately: true },
+          );
+          yield* Deferred.await(held);
+          yield* Effect.gen(function* () {
+            const duringRead = yield* Effect.forkChild(
+              service.listThreadMetadata(environmentId, {}),
+              { startImmediately: true },
+            );
+            // This reader fence completes after earlier reader work. A metadata
+            // read queued on the held writer stays pending and fails this check.
+            yield* sql`SELECT 1`.pipe(NodeSqliteClient.readOnly);
+            yield* Effect.yieldNow;
+            expect(duringRead.pollUnsafe()).toBeDefined();
+            const during = yield* Fiber.join(duringRead);
+            expect(during.snapshotSequence).toBe(before.snapshotSequence);
+            expect(during.threads).toEqual(before.threads);
+            expect(during.nextOffset).toEqual(before.nextOffset);
+            const first = yield* service.listThreadMetadata(environmentId, { limit: 1 });
+            const second = yield* service.listThreadMetadata(environmentId, {
+              offset: first.nextOffset!,
+              limit: 1,
+              expectedSnapshotSequence: 7,
+            });
+            expect([...first.threads, ...second.threads]).toEqual(before.threads);
+            expect(second.nextOffset).toBeNull();
+            expect(
+              (yield* service.listThreadMetadata(environmentId, { pinned: true })).threads,
+            ).toEqual([before.threads[1]]);
+          }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)));
+          yield* Fiber.join(writer);
+          const after = yield* service.listThreadMetadata(environmentId, {});
+          expect(after.snapshotSequence).toBe(8);
+          expect(after.threads[1]?.title).toBe("uncommitted");
+          expect(
+            yield* service
+              .listThreadMetadata(environmentId, { expectedSnapshotSequence: 7 })
+              .pipe(Effect.flip),
+          ).toMatchObject({
+            reason: "snapshot-sequence-changed",
+            expectedSnapshotSequence: 7,
+            snapshotSequence: 8,
+          });
+        }).pipe(Effect.provide(Metadata.layer.pipe(Layer.provide(dependencies))));
+      }).pipe(Effect.provide(ProjectionStore.layer));
+    }).pipe(
+      Effect.provide(
+        NodeSqliteClient.layer({ filename, readerWorker: true, readerFailureMode: "fail" }),
+      ),
+    );
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);

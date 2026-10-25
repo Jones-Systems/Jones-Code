@@ -6,6 +6,7 @@ import * as Stream from "effect/Stream";
 import * as Option from "effect/Option";
 import { ChildProcessSpawner } from "effect/process";
 import { makeCodexTextGeneration } from "../../textGeneration/CodexTextGeneration.ts";
+import { makeCodexRemoteRequestEvaluation } from "../../textGeneration/jones/CodexRemoteRequestEvaluation.ts";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import { chatGptModels } from "../CodexChatGptModels.ts";
 import { makeCodexManagedRuntime } from "../CodexManagedRuntime.ts";
@@ -62,6 +63,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
         models: [],
         setup,
         runtimePaths,
+        supportsRemoteRequestEvaluation: true,
       }),
     ),
   );
@@ -156,6 +158,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
           })),
           setup,
           runtimePaths,
+          supportsRemoteRequestEvaluation: true,
           ...(draft.slashCommands
             ? {
                 slashCommands: draft.slashCommands.filter((command) => command.name !== "feedback"),
@@ -258,9 +261,13 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
           }),
       ),
     );
+  const evaluateRemoteRequest = yield* makeCodexRemoteRequestEvaluation({
+    instanceId,
+    access: runtime.auth.access,
+  });
   const textGeneration: ProviderInstance["textGeneration"] = {
     evaluateRemoteRequest: (value) =>
-      protect("evaluateRemoteRequest", nativeGeneration.evaluateRemoteRequest(value)),
+      protect("evaluateRemoteRequest", evaluateRemoteRequest(value)),
     generateCommitMessage: (value) =>
       protect("generateCommitMessage", nativeGeneration.generateCommitMessage(value)),
     generatePrContent: (value) =>
