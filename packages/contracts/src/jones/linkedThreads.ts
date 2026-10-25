@@ -173,6 +173,7 @@ const ToolEndpoint = Schema.Struct({
 });
 export const ThreadLinkToolInput = Schema.Struct({
   action: Schema.Literals(["link", "unlink", "accept", "recover"]),
+  basis: Schema.optionalKey(Schema.Literal("handoff")),
   kind: Schema.optional(Schema.Literals(["continuation", "peer"])),
   from: Schema.optional(ToolEndpoint),
   to: Schema.optional(ToolEndpoint),

@@ -21,6 +21,7 @@ import * as Links from "./LinkedThreads.ts";
 import * as Handoff from "./handoff.ts";
 import { actorFromCaller } from "./authorization.ts";
 import { mirrorLink } from "./mirror.ts";
+import { sameEndpoint } from "./identity.ts";
 
 const dependencies = [
   Invocation.McpInvocationContext,
@@ -129,13 +130,24 @@ export const threadLinkHandler = Access.writesThreads(
       if (input.action === "link") {
         if (input.kind === undefined || input.from === undefined || input.to === undefined)
           return yield* invalid("Link requires kind, from and to.");
+        if (
+          input.basis === "handoff" &&
+          (input.kind !== "continuation" ||
+            actor.type !== "linked" ||
+            actor.origin === null ||
+            !sameEndpoint(actor.origin, endpoint(input.from)))
+        )
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "A mirrored handoff requires its authenticated origin thread.",
+          });
         const remoteTitle = caller.scope.client?.remoteOrigin?.thread?.title;
         result = yield* links
           .link(actor, {
             kind: input.kind,
             from: endpoint(input.from),
             to: endpoint(input.to),
-            basis: "manual",
+            basis: input.basis ?? "manual",
             ...(actor.type === "linked"
               ? {
                   remote: {
