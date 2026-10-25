@@ -176,11 +176,14 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
                   ...indexes,
                   get: (key) =>
                     failure === "create" && key === failedKey
-                      ? Layer.fail(
-                          new WorkspaceSearchIndex.WorkspaceSearchIndexCreateFailed({
-                            cwd,
-                            reason: "test acquisition failure",
-                          }),
+                      ? Layer.effect(
+                          WorkspaceSearchIndex.WorkspaceSearchIndex,
+                          Effect.fail(
+                            new WorkspaceSearchIndex.WorkspaceSearchIndexCreateFailed({
+                              cwd,
+                              reason: "test acquisition failure",
+                            }),
+                          ),
                         )
                       : indexes.get(key),
                 }),
