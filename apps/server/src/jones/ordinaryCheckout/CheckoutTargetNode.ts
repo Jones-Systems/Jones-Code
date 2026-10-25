@@ -125,6 +125,15 @@ const make = Effect.gen(function* () {
       )
         return yield* new CheckoutError({ reason: "unavailable" });
       const registrations = yield* checked(cwd, ["worktree", "list", "--porcelain", "-z"]);
+      const revision = yield* read(cwd, ["rev-parse", "--verify", "HEAD^{commit}"]);
+      const head = revision.exitCode === 0 ? revision.stdout.trim() : undefined;
+      if (
+        revision.stdoutTruncated ||
+        revision.stderrTruncated ||
+        (head !== undefined && !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(head)) ||
+        (revision.exitCode !== 0 && revision.exitCode !== 128)
+      )
+        return yield* new CheckoutError({ reason: "unavailable" });
       const registeredWorktrees: string[] = [];
       for (const item of registrations.split("\0")) {
         if (!item.startsWith("worktree ")) continue;
@@ -140,6 +149,7 @@ const make = Effect.gen(function* () {
         commonIdentity: common.identity,
         directoryIdentity: gitDir.identity,
         branch: symbolic.exitCode === 1 ? null : symbolic.stdout.trim(),
+        ...(head === undefined ? {} : { head }),
         registeredWorktrees,
       };
     }),

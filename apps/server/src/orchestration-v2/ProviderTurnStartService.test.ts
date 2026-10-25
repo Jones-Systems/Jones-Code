@@ -55,6 +55,8 @@ import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import * as WorkspaceLifecycle from "../jones/workspaceLifecycle/WorkspaceLifecycle.ts";
+import { LifecycleError } from "../jones/workspaceLifecycle/Protocol.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 
@@ -82,6 +84,7 @@ function startWithMissingWorktree(
     [managedWorktreesDir]: managedWorktreesDir,
     [`${managedWorktreesDir}/project`]: `${managedWorktreesDir}/project`,
   },
+  lifecycleLayer?: Layer.Layer<WorkspaceLifecycle.WorkspaceLifecycle>,
 ) {
   const threadId = ThreadId.make("thread_provider_turn_start_projection_failure");
   const runId = RunId.make("run_provider_turn_start_projection_failure");
@@ -222,7 +225,7 @@ function startWithMissingWorktree(
     return yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2)
       .start({ threadId, runId })
       .pipe(Effect.flip);
-  }).pipe(Effect.provide(layer), Effect.runPromise);
+  }).pipe(Effect.provide([layer, lifecycleLayer ?? Layer.empty]), Effect.runPromise);
   return {
     start,
     pruneWorktrees,
@@ -232,6 +235,17 @@ function startWithMissingWorktree(
     projectionReads: () => projectionReadCount,
   };
 }
+
+it("holds managed missing-checkout recreation before prune or creation when registry invalidation is unavailable", async () => {
+  const hold = Layer.mock(WorkspaceLifecycle.WorkspaceLifecycle)({
+    resume: () => Effect.fail(new LifecycleError({ reason: "unavailable" })),
+  });
+  const harness = startWithMissingWorktree(`${managedWorktreesDir}/project/held`, undefined, hold);
+  await harness.start;
+  expect(harness.pruneWorktrees).not.toHaveBeenCalled();
+  expect(harness.createWorktree).not.toHaveBeenCalled();
+  expect(harness.startRootRun).not.toHaveBeenCalled();
+});
 
 it.each([
   {
@@ -298,6 +312,7 @@ function makeLocalCommandHarness(input: {
   readonly keepWarm?: boolean;
   readonly liveKeepWarmSession?: boolean;
   readonly plannedResume?: "same" | "changed";
+  readonly nativeResume?: "same" | "changed" | "missing";
   readonly handoffRecovery?: {
     readonly compact?: ProviderAdapter.ProviderAdapterV2SessionRuntime["compactForContextHandoff"];
     readonly usedTokens?: number;
@@ -366,7 +381,8 @@ function makeLocalCommandHarness(input: {
     appThreadId: threadId,
     ownerNodeId: null,
     nativeThreadRef:
-      input.plannedResume === undefined
+      input.plannedResume === undefined &&
+      (input.nativeResume === undefined || input.nativeResume === "missing")
         ? null
         : {
             driver: ProviderDriverKind.make("codex"),
@@ -674,6 +690,7 @@ function makeLocalCommandHarness(input: {
     ensureThread: vi.fn(() => Effect.succeed(providerThread)),
   };
   const dispatched: Array<ProviderAdapter.ProviderAdapterV2TurnInput> = [];
+  const successEnsure = vi.fn(() => Effect.succeed(providerThread));
   const open = vi.fn(
     (
       _openInput: Parameters<ProviderSessionManager.ProviderSessionManagerV2["Service"]["open"]>[0],
@@ -701,7 +718,8 @@ function makeLocalCommandHarness(input: {
               : input.failReadsAfterRunning === true ||
                   input.effortProof !== undefined ||
                   input.previousTurn !== undefined ||
-                  input.plannedResume !== undefined
+                  input.plannedResume !== undefined ||
+                  input.nativeResume !== undefined
                 ? Effect.succeed({
                     driver: providerThread.driver,
                     providerSession: {
@@ -716,7 +734,7 @@ function makeLocalCommandHarness(input: {
                       updatedAt: now,
                       lastError: null,
                     },
-                    ensureThread: () => Effect.succeed(providerThread),
+                    ensureThread: successEnsure,
                     resumeThread: () =>
                       Effect.succeed(
                         input.previousTurn !== undefined
@@ -726,7 +744,8 @@ function makeLocalCommandHarness(input: {
                               nativeThreadRef: {
                                 driver: providerThread.driver,
                                 nativeId:
-                                  input.plannedResume === "changed"
+                                  input.plannedResume === "changed" ||
+                                  input.nativeResume === "changed"
                                     ? "different-native-thread"
                                     : "planned-native-thread",
                                 strength: "strong" as const,
@@ -767,6 +786,7 @@ function makeLocalCommandHarness(input: {
         })
       : input.failReadsAfterRunning === true ||
           input.plannedResume !== undefined ||
+          input.nativeResume !== undefined ||
           input.previousTurn !== undefined
         ? Effect.suspend(() =>
             providerBusy ? Effect.die("The previous provider turn is still running.") : Effect.void,
@@ -951,6 +971,7 @@ function makeLocalCommandHarness(input: {
     createWorktree,
     open,
     fallbackEnsure: resumeFallbackSession.ensureThread,
+    successEnsure,
     unknownResumeFailure,
     writeIfRunCurrent,
     startRootRun,
@@ -975,6 +996,28 @@ function makeLocalCommandHarness(input: {
     }).pipe(Effect.provide(layer)),
   };
 }
+
+effectIt.effect.each(["Continue", "/goal resume"])(
+  "holds provider start before opening a native session when registry invalidation is unknown: %s",
+  (text) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({ text });
+      harness.tryHandlePromptCommand.mockReturnValue(Effect.succeed(false));
+      const result = yield* Effect.exit(
+        harness.start.pipe(
+          Effect.provide(
+            Layer.mock(WorkspaceLifecycle.WorkspaceLifecycle)({
+              resume: () => Effect.fail(new LifecycleError({ reason: "unknown" })),
+            }),
+          ),
+        ),
+      );
+      expect(result._tag).toBe("Failure");
+      expect(harness.open).not.toHaveBeenCalled();
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+      expect(harness.dispatched).toEqual([]);
+    }),
+);
 
 effectIt.effect("recovers an abandoned failed turn before continuing its native conversation", () =>
   Effect.gen(function* () {
@@ -1486,6 +1529,72 @@ effectIt.effect("keep-warm does not reopen an expired provider session", () =>
     expect(harness.open).not.toHaveBeenCalled();
     expect(harness.startRootRun).not.toHaveBeenCalled();
     expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+  }),
+);
+
+effectIt.effect.each(["/goal resume", "  /goal   RESUME  "])(
+  "goal resume preserves its native conversation after a resume failure: %s",
+  (text) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text,
+        historyReadFailureAfterFallback: new Error("must not reach fallback history"),
+      });
+      harness.tryHandlePromptCommand.mockReturnValue(Effect.succeed(false));
+      const originalRef = harness.projection().providerThreads.at(-1)?.nativeThreadRef;
+      const result = yield* harness.start.pipe(Effect.result);
+      expect(harness.fallbackEnsure).not.toHaveBeenCalled();
+      expect(result._tag).toBe("Success");
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+      expect(harness.dispatched).toHaveLength(0);
+      expect(harness.projection().providerThreads.at(-1)?.nativeThreadRef).toEqual(originalRef);
+      expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+      expect(harness.projection().contextHandoffs).toHaveLength(0);
+    }),
+);
+
+effectIt.effect.each(["same", "changed", "missing"] as const)(
+  "goal resume requires the original native identity: %s",
+  (nativeResume) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({ text: "/goal resume", nativeResume });
+      harness.tryHandlePromptCommand.mockReturnValue(Effect.succeed(false));
+      const originalRef = harness.projection().providerThreads.at(-1)?.nativeThreadRef;
+      yield* harness.start;
+      expect(harness.successEnsure).not.toHaveBeenCalled();
+      expect(harness.projection().providerThreads.at(-1)?.nativeThreadRef).toEqual(originalRef);
+      expect(harness.startRootRun).toHaveBeenCalledTimes(nativeResume === "same" ? 1 : 0);
+      expect(harness.projection().runs.at(-1)?.status).toBe(
+        nativeResume === "same" ? "running" : "failed",
+      );
+    }),
+);
+
+effectIt.effect(
+  "retryable goal resume returns the original failure without creating a conversation",
+  () =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "/goal resume",
+        historyReadFailureAfterFallback: new Error("must not reach fallback history"),
+      });
+      harness.tryHandlePromptCommand.mockReturnValue(Effect.succeed(false));
+      const result = yield* harness.startWithRetry.pipe(Effect.result);
+      expect(result._tag).toBe("Failure");
+      expect(harness.fallbackEnsure).not.toHaveBeenCalled();
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+      expect(harness.events).toHaveLength(0);
+    }),
+);
+
+effectIt.effect("ordinary chat retains fresh-conversation fallback after a resume failure", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue once",
+      historyReadFailureAfterFallback: new Error("stop after fallback"),
+    });
+    yield* harness.start.pipe(Effect.result);
+    expect(harness.fallbackEnsure).toHaveBeenCalledOnce();
   }),
 );
 
