@@ -15,6 +15,7 @@ import * as Lifecycle from "./WorkspaceLifecycle.ts";
 import * as Registry from "./RegistryCli.ts";
 import { LifecycleError, type InventoryEntry } from "./Protocol.ts";
 import * as Store from "./TransitionStore.ts";
+import migration from "../persistence/Migrations/123_JonesWorkspaceLifecycle.ts";
 
 const native = {
   transitionId: "effect:original",
@@ -40,7 +41,7 @@ const seed = Effect.gen(function* () {
   yield* sql`INSERT INTO projection_projects VALUES('project','/repo',${createdAt},NULL)`;
   yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES('thread',${canonical(thread)})`;
   yield* sql`INSERT INTO orchestration_events VALUES('birth',1,${canonical(thread)},2,'thread','thread','thread.created')`;
-  yield* Store.migration;
+  yield* migration;
 });
 
 const fixture = (qualifiedOwner = true) => {

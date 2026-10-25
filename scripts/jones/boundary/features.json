@@ -1904,9 +1904,14 @@
         "apps/server/src/jones/settlementRestore/SettlementRestore.integration.test.ts",
         "apps/server/src/jones/cleanup/DeletionAdmission.test.ts",
         "apps/server/src/jones/cleanup/DeletionWorktreeRemoval.test.ts",
-        "apps/server/src/storageCleanup.test.ts"
+        "apps/server/src/storageCleanup.test.ts",
+        "apps/server/src/jones/workspaceLifecycle/RuntimeIntegration.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts"
       ],
-      "scope": "Source-only W1 lifecycle core and native consumer fences. The canonical V3 registry retains semantic assessments and its separate CAS generation. Jones stores sparse original-transition identities, observes physical checkout/Git identities, native thread birth and fresh HEAD, fences uncertain writes and reconciles without replay. Optional native hooks preserve unconfigured runtimes and hold explicitly configured integrations on unavailable registry/source evidence. Registry I/O precedes command commit; EventSink revalidates only SQL ownership inside its transaction. Cleanup assessments only veto existing native cleanup/deletion authorities. The native ownership evidence port has no default issuer. Production configuration, migration registration and native-owner qualification remain unallocated; this partial source candidate installs no external executable, registry or runtime. Shared provider-start tests retain their existing consumer harness to prove pre-effect refusal."
+      "scope": "Source-only W1 lifecycle core and native consumer fences. The canonical V3 registry retains semantic assessments and its separate CAS generation. Jones stores sparse original-transition identities, observes physical checkout/Git identities, native thread birth and fresh HEAD, fences uncertain writes and reconciles without replay. Optional native hooks preserve unconfigured runtimes and hold explicitly configured integrations on unavailable registry/source evidence. Registry I/O precedes command commit; EventSink revalidates only SQL ownership inside its transaction. Cleanup assessments only veto existing native cleanup/deletion authorities. The native ownership evidence port has no default issuer. Explicit server configuration and the production composition are registered, including Jones migration 123. The existing server environment identity must match configuration. Only selected projects' linked worktrees are managed; root checkouts and unselected projects retain their existing behavior. Native-owner issuance/qualification and full positive managed consumer acceptance remain open; this partial source candidate installs no external executable, registry or runtime. Shared provider-start tests retain their existing consumer harness to prove pre-effect refusal."
     }
   ]
 }

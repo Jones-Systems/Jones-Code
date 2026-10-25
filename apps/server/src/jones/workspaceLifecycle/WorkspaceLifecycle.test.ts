@@ -9,6 +9,7 @@ import { LifecycleError, type Binding, type InventoryEntry } from "./Protocol.ts
 import * as Lifecycle from "./WorkspaceLifecycle.ts";
 import * as Registry from "./RegistryCli.ts";
 import * as Store from "./TransitionStore.ts";
+import migration from "../persistence/Migrations/123_JonesWorkspaceLifecycle.ts";
 
 const input: Lifecycle.NativeTransition = {
   transitionId: "original-effect",
@@ -16,6 +17,12 @@ const input: Lifecycle.NativeTransition = {
   boundary: "start",
   requestDigest: "original-request-digest",
 };
+const seed = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE orchestration_v2_projection_threads(thread_id TEXT PRIMARY KEY)`;
+  yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES('thread')`;
+  yield* migration;
+});
 const original: Lifecycle.NativeSource = {
   binding: {
     environment_id: "environment",
@@ -134,7 +141,7 @@ it.effect(
   () =>
     program(
       Effect.gen(function* () {
-        yield* Store.migration;
+        yield* seed;
         const { state, layer } = fixture();
         state.loseResponse = true;
         const first = yield* Effect.flatMap(Lifecycle.WorkspaceLifecycle, (s) =>
@@ -163,7 +170,7 @@ it.effect(
   () =>
     program(
       Effect.gen(function* () {
-        yield* Store.migration;
+        yield* seed;
         const { state, layer } = fixture();
         state.loseResponse = true;
         yield* Effect.flatMap(Lifecycle.WorkspaceLifecycle, (s) => s.resume(input)).pipe(
@@ -189,7 +196,7 @@ it.effect(
   () =>
     program(
       Effect.gen(function* () {
-        yield* Store.migration;
+        yield* seed;
         const { state, layer } = fixture();
         state.changeDuringResume = true;
         expect(
@@ -220,7 +227,7 @@ it.effect(
 it.effect("unavailable inventory and caller transactions perform no registry write", () =>
   program(
     Effect.gen(function* () {
-      yield* Store.migration;
+      yield* seed;
       const { state, layer } = fixture();
       state.unavailable = true;
       const sql = yield* SqlClient.SqlClient;
@@ -237,11 +244,30 @@ it.effect("unavailable inventory and caller transactions perform no registry wri
 );
 
 it.effect(
+  "a pruned upstream thread cannot acquire sparse transition metadata or write the registry",
+  () =>
+    program(
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DELETE FROM orchestration_v2_projection_threads WHERE thread_id='thread'`;
+        const { state, layer } = fixture();
+        const result = yield* Effect.flatMap(Lifecycle.WorkspaceLifecycle, (service) =>
+          service.resume(input),
+        ).pipe(Effect.provide(layer), Effect.exit);
+        expect(Exit.isFailure(result)).toBe(true);
+        expect(state.calls).toBe(0);
+        expect(yield* sql`SELECT * FROM jones_workspace_lifecycle_transitions`).toEqual([]);
+      }),
+    ),
+);
+
+it.effect(
   "a current native-bound cleanup candidate only clears the semantic veto; preserve, unfinished and racing assessments hold",
   () =>
     program(
       Effect.gen(function* () {
-        yield* Store.migration;
+        yield* seed;
         const { state, layer } = fixture();
         const run = <A, E>(effect: Effect.Effect<A, E, Lifecycle.WorkspaceLifecycle>) =>
           effect.pipe(Effect.provide(layer));

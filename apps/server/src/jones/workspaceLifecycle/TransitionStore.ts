@@ -35,42 +35,17 @@ export class TransitionStore extends Context.Service<
   }
 >()("t3/jones/workspaceLifecycle/TransitionStore") {}
 
-// This schema belongs to the Jones migration loader. Merely constructing the store never creates or migrates it.
-export const migration = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient;
-  yield* sql`CREATE TABLE jones_workspace_lifecycle_transitions (
-    transition_id TEXT PRIMARY KEY NOT NULL,
-    worktree TEXT NOT NULL,
-    source_json TEXT NOT NULL,
-    binding_json TEXT NOT NULL CHECK(json_valid(binding_json)),
-    expected_generation TEXT,
-    confirmed_generation TEXT,
-    state TEXT NOT NULL CHECK(state IN ('prepared','invoking','confirmed')),
-    CHECK((state='confirmed')=(confirmed_generation IS NOT NULL))
-  )`;
-  yield* sql`CREATE UNIQUE INDEX jones_workspace_lifecycle_pending ON jones_workspace_lifecycle_transitions(worktree) WHERE state!='confirmed'`;
-  yield* sql`CREATE TABLE jones_workspace_lifecycle_bindings (
-    worktree TEXT PRIMARY KEY NOT NULL,
-    transition_id TEXT NOT NULL REFERENCES jones_workspace_lifecycle_transitions(transition_id)
-  )`;
-  yield* sql`CREATE TRIGGER jones_workspace_lifecycle_identity BEFORE UPDATE ON jones_workspace_lifecycle_transitions
-    WHEN NEW.transition_id IS NOT OLD.transition_id OR NEW.worktree IS NOT OLD.worktree OR
-      NEW.source_json IS NOT OLD.source_json OR NEW.binding_json IS NOT OLD.binding_json OR
-      NEW.expected_generation IS NOT OLD.expected_generation OR
-      (OLD.state='confirmed' AND (NEW.state IS NOT OLD.state OR NEW.confirmed_generation IS NOT OLD.confirmed_generation)) OR
-      (OLD.state='invoking' AND NEW.state='prepared')
-    BEGIN SELECT RAISE(ABORT,'Workspace lifecycle transition identity is immutable'); END`;
-  yield* sql`CREATE TRIGGER jones_workspace_lifecycle_no_delete BEFORE DELETE ON jones_workspace_lifecycle_transitions
-    BEGIN SELECT RAISE(ABORT,'Workspace lifecycle transitions must be retained'); END`;
-  yield* sql`CREATE TRIGGER jones_workspace_lifecycle_no_replace BEFORE INSERT ON jones_workspace_lifecycle_transitions
-    WHEN EXISTS(SELECT 1 FROM jones_workspace_lifecycle_transitions WHERE transition_id=NEW.transition_id)
-    BEGIN SELECT RAISE(IGNORE); END`;
-});
-
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const storageError = (cause: unknown) =>
     isLifecycleError(cause) ? cause : new LifecycleError({ reason: "storage", cause });
+  const assertThread = Effect.fn("WorkspaceLifecycleTransitionStore.assertThread")(function* (
+    transition: Transition,
+  ) {
+    const rows =
+      yield* sql`SELECT thread_id FROM orchestration_v2_projection_threads WHERE thread_id=${transition.binding.thread_id}`;
+    if (rows.length !== 1) return yield* new LifecycleError({ reason: "identity" });
+  });
   const read = Effect.fn("WorkspaceLifecycleTransitionStore.read")(function* (id: string) {
     const rows = yield* sql<{
       transition_id: string;
@@ -130,6 +105,7 @@ const make = Effect.gen(function* () {
       return yield* sql
         .withTransaction(
           Effect.gen(function* () {
+            yield* assertThread(transition);
             const prior = yield* read(transition.id);
             if (prior !== null) return yield* original(transition);
             if (transition.state !== "prepared" || transition.generation !== null)
@@ -149,6 +125,7 @@ const make = Effect.gen(function* () {
       yield* sql
         .withTransaction(
           Effect.gen(function* () {
+            yield* assertThread(transition);
             if ((yield* original(transition)).state !== "prepared")
               return yield* new LifecycleError({ reason: "unknown" });
             yield* sql`UPDATE jones_workspace_lifecycle_transitions SET state='invoking' WHERE transition_id=${transition.id} AND state='prepared'`;
@@ -161,6 +138,7 @@ const make = Effect.gen(function* () {
         return yield* sql
           .withTransaction(
             Effect.gen(function* () {
+              yield* assertThread(transition);
               const prior = yield* original(transition);
               if (
                 prior.state === "prepared" ||
@@ -169,8 +147,8 @@ const make = Effect.gen(function* () {
                 return yield* new LifecycleError({ reason: "conflict" });
               if (prior.state === "confirmed") return prior;
               yield* sql`UPDATE jones_workspace_lifecycle_transitions SET state='confirmed',confirmed_generation=${generation} WHERE transition_id=${transition.id}`;
-              yield* sql`INSERT INTO jones_workspace_lifecycle_bindings VALUES (${transition.binding.worktree},${transition.id})
-          ON CONFLICT(worktree) DO UPDATE SET transition_id=excluded.transition_id`;
+              yield* sql`INSERT INTO jones_workspace_lifecycle_bindings (worktree,transition_id,thread_id) VALUES (${transition.binding.worktree},${transition.id},${transition.binding.thread_id})
+          ON CONFLICT(worktree) DO UPDATE SET transition_id=excluded.transition_id,thread_id=excluded.thread_id`;
               return { ...prior, state: "confirmed" as const, generation };
             }),
           )

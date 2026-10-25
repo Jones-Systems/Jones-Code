@@ -11,7 +11,10 @@
     "apps/server/src/jones/workspaceLifecycle/RegistryCli.ts",
     "apps/server/src/jones/workspaceLifecycle/TransitionStore.ts",
     "apps/server/src/jones/workspaceLifecycle/WorkspaceLifecycle.test.ts",
-    "apps/server/src/jones/workspaceLifecycle/WorkspaceLifecycle.ts"
+    "apps/server/src/jones/workspaceLifecycle/WorkspaceLifecycle.ts",
+    "apps/server/src/jones/workspaceLifecycle/Configuration.ts",
+    "apps/server/src/jones/workspaceLifecycle/RuntimeIntegration.ts",
+    "apps/server/src/jones/workspaceLifecycle/RuntimeIntegration.test.ts"
   ],
   "hookPaths": [],
   "tombstones": [],
@@ -51,6 +54,14 @@
     {
       "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
       "to": "apps/server/src/jones/workspaceLifecycle/Protocol.ts"
+    },
+    {
+      "from": "apps/server/src/config.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/Configuration.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/RuntimeIntegration.ts"
     }
   ]
 }
