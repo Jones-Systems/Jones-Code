@@ -1902,9 +1902,7 @@
     },
     {
       "id": "mobile-feed-cache-acceptance",
-      "tests": [
-        "apps/mobile/src/lib/threadActivity.test.ts"
-      ],
+      "tests": ["apps/mobile/src/lib/threadActivity.test.ts"],
       "scope": "Focused acceptance of the existing mobile feed and presentation caches at 30, 300 and 3000 projected rows: cached and fresh displayed-value equivalence through streaming, append and prepend; bounded historical regrouping/presentation property reads with retained full-array scans; independent consumers and thread/cache switching. The existing upstream fixture is shared to preserve its projection identity and turn-boundary harness. These source tests do not qualify device lifecycle or elapsed-time performance."
     }
   ]

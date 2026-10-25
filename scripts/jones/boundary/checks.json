@@ -3030,9 +3030,7 @@
     },
     {
       "id": "jones-mobile-feed-cache-acceptance",
-      "tests": [
-        "apps/mobile/src/lib/threadActivity.test.ts"
-      ],
+      "tests": ["apps/mobile/src/lib/threadActivity.test.ts"],
       "commands": [
         "vp run --filter @t3tools/mobile test src/lib/threadActivity.test.ts",
         "vp run --filter @t3tools/mobile typecheck",
