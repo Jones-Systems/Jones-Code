@@ -309,7 +309,7 @@ describe("persistent settlement notification", () => {
       await act(async () => {
         await state.controller!.flush();
       });
-      expect(JSON.parse((await store.loadInbox())!).acknowledged).toEqual(
+      expect(JSON.parse((await store.loadInbox())!).acknowledged.sort()).toEqual(
         saved.map((row) => row.id).sort(),
       );
     } finally {
