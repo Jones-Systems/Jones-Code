@@ -4,6 +4,11 @@
   "baseline": "05b697f6a2012497ae790425e197fbd1fcef7de7",
   "features": [
     {
+      "id": "queue-removal",
+      "tests": ["apps/web/src/jones/queue/QueuedRunRemoval.browser.test.tsx"],
+      "scope": "Web and desktop queue header Clear All cancels the saved click snapshot through existing per-run commands. Independent removals reserve only their own IDs; failures retain authoritative rows and report unconfirmed removals. Send, steer, edit, reorder and imported-history review remain fenced during cancellation and until accepted cancellations leave the projection. Active queued drafts and unsaved optimistic rows disable Clear All. No server, wire, provider, mobile, MCP or scheduled-task behavior changes. QueuedRunsControl retains narrow presentation and safety hooks into Jones-owned removal logic."
+    },
+    {
       "id": "project-group-title",
       "tests": ["packages/client-runtime/src/jones/projectGroupTitle.test.ts"],
       "scope": "Shared saved project names take precedence over repository labels when every checkout agrees, including names equal to the repository short name. Mixed titles retain the repository fallback; group identity, environment membership and persistence stay unchanged. One shared-client hook covers web, desktop and mobile."
@@ -892,9 +897,10 @@
         "packages/client-runtime/src/jones/rpcObservationCompatibility.test.ts",
         "packages/client-runtime/src/jones/commandPermissionCompatibility.test.ts",
         "apps/server/src/ws.test.ts",
-        "apps/server/src/relay/AgentAwarenessRelay.test.ts"
+        "apps/server/src/relay/AgentAwarenessRelay.test.ts",
+        "packages/client-runtime/src/jones/connection/routeAttemptBudget.test.ts"
       ],
-      "scope": "Bounded serial delivery per ACK-capable RPC stream keeps unrelated unary replies and health traffic responsive while preserving ordered chunks, acknowledgments, cancellation and terminal flow-control windows. Non-ACK transports preserve synchronous backpressure. Shared dependency patch and existing virtual WebSocket integration harness are the lifecycle owners; no wire or installed-runtime change."
+      "scope": "Bounded serial delivery per ACK-capable RPC stream keeps unrelated unary replies and health traffic responsive while preserving ordered chunks, acknowledgments, cancellation and terminal flow-control windows. Non-ACK transports preserve synchronous backpressure. Shared dependency patch and existing virtual WebSocket integration harness are the lifecycle owners; no wire or installed-runtime change. Preferred-route preparation and connection share a 15-second allowance, followed by 75 seconds for readiness, when a fallback remains. The final actual route retains the existing aggregate supervisor bound; timeout cleanup completes before fallback."
     },
     {
       "id": "queue-hold-isolation",
@@ -1994,7 +2000,7 @@
         "apps/server/integration/transferBudgetV2.integration.test.ts",
         "apps/server/src/orchestration-v2/LegacyBootstrapWireTransport.test.ts"
       ],
-      "scope": "Environment-owned shared shell materialization uses committed snapshot versions, per-subscription monotonic floors, bounded newest-success retention and cancellation isolation. Narrow WS/server hooks and existing harness adaptations preserve replay, resend, freshness and reader routing; dedicated Jones tests cover fanout and file-backed snapshot interleaving."
+      "scope": "Environment-owned shared shell materialization uses committed snapshot versions, per-subscription monotonic floors, bounded newest-success retention and cancellation isolation. Narrow WS/server hooks and existing harness adaptations preserve replay, resend, freshness and reader routing; dedicated Jones tests cover fanout and file-backed snapshot interleaving. Opt-in file-backed synthetic cost diagnostics vary history, forks, archive, provider and pending-payload dimensions on a qualified host. SQL-span and replay evidence distinguish combined lookup costs from non-additive probes and deferred decode; driver execution and row-copy timing remain unavailable. Large fixtures require both explicit opt-ins."
     },
     {
       "id": "action-worker-efficiency",

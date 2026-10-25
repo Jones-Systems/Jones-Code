@@ -1,0 +1,21 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "queue-removal",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/queue/QueuedClearAction.tsx",
+    "apps/web/src/jones/queue/QueuedRunRemoval.browser.test.tsx",
+    "apps/web/src/jones/queue/useQueuedRunRemoval.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/chat/QueuedRunsControl.tsx",
+      "to": "apps/web/src/jones/queue/QueuedClearAction.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/QueuedRunsControl.tsx",
+      "to": "apps/web/src/jones/queue/useQueuedRunRemoval.ts"
+    }
+  ]
+}

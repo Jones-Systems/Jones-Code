@@ -2,6 +2,17 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-queue-removal",
+      "tests": ["apps/web/src/jones/queue/QueuedRunRemoval.browser.test.tsx"],
+      "commands": [
+        "vp test run apps/web/src/jones/queue/QueuedRunRemoval.browser.test.tsx apps/web/src/jones/queue/QueuedSteerBatch.browser.test.tsx apps/web/src/components/chat/QueuedRunsControl.browser.test.tsx apps/web/src/jones/queue/queuedRunAdmission.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/web/src/jones/queue/QueuedClearAction.tsx apps/web/src/jones/queue/useQueuedRunRemoval.ts apps/web/src/jones/queue/QueuedRunRemoval.browser.test.tsx apps/web/src/components/chat/QueuedRunsControl.tsx",
+        "vp run --filter @t3tools/web typecheck",
+        "vp test run apps/web/src/reactCompilerCoverage.test.ts -t \"QueuedRunsControl|useQueuedRunRemoval|QueuedClearAction\" --maxWorkers=1",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-project-group-title",
       "tests": [
         "packages/client-runtime/src/jones/projectGroupTitle.test.ts",
@@ -1618,7 +1629,8 @@
         "packages/client-runtime/src/jones/rpcObservationCompatibility.test.ts",
         "packages/client-runtime/src/jones/commandPermissionCompatibility.test.ts",
         "apps/server/src/ws.test.ts",
-        "apps/server/src/relay/AgentAwarenessRelay.test.ts"
+        "apps/server/src/relay/AgentAwarenessRelay.test.ts",
+        "packages/client-runtime/src/jones/connection/routeAttemptBudget.test.ts"
       ],
       "commands": [
         "cd packages/client-runtime && vp test run src/rpc/session.test.ts src/rpc/client.test.ts src/connection/outdatedHostUpdate.test.ts src/connection/supervisor.test.ts --maxWorkers=1",
@@ -1629,7 +1641,9 @@
         "node scripts/jones/check-boundary.ts --strict",
         "vp test run packages/client-runtime/src/jones/commandPermissionCompatibility.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/server/src/ws.test.ts apps/server/src/relay/AgentAwarenessRelay.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run packages/client-runtime/src/jones/rpcObservationCompatibility.test.ts --maxWorkers=1 --no-file-parallelism"
+        "vp test run packages/client-runtime/src/jones/rpcObservationCompatibility.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run packages/client-runtime/src/jones/connection/routeAttemptBudget.test.ts packages/client-runtime/src/connection/supervisor.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint packages/client-runtime/src/connection/driver.ts packages/client-runtime/src/jones/connection/routeAttemptBudget.ts packages/client-runtime/src/jones/connection/routeAttemptBudget.test.ts"
       ]
     },
     {
@@ -3162,7 +3176,7 @@
       ],
       "commands": [
         "vp test run apps/server/src/jones/orchestration/shellMaterialization.test.ts apps/server/src/jones/orchestration/shellMaterialization.snapshot.test.ts apps/server/src/jones/orchestration/shellFanout.test.ts apps/server/src/jones/orchestration/shellCost.diagnostic.test.ts apps/server/src/ws.test.ts apps/server/src/jones/requestEconomy/foregroundReads.test.ts apps/server/src/orchestration-v2/ShellStream.test.ts apps/server/integration/transferBudgetV2.integration.test.ts apps/server/src/orchestration-v2/LegacyBootstrapWireTransport.test.ts",
-        "vp lint apps/server/src/jones/orchestration/shellMaterialization.ts apps/server/src/jones/orchestration/shellMaterialization.test.ts apps/server/src/jones/orchestration/shellMaterialization.snapshot.test.ts apps/server/src/jones/orchestration/shellFanout.test.ts apps/server/src/jones/orchestration/shellCost.diagnostic.test.ts apps/server/src/ws.ts apps/server/src/server.ts apps/server/src/ws.test.ts apps/server/src/jones/requestEconomy/foregroundReads.test.ts apps/server/src/jones/orchestration/shellCost.testFixtures.ts apps/server/integration/transferBudgetV2.integration.test.ts apps/server/src/orchestration-v2/LegacyBootstrapWireTransport.test.ts",
+        "vp lint apps/server/src/jones/orchestration/shellMaterialization.ts apps/server/src/jones/orchestration/shellMaterialization.test.ts apps/server/src/jones/orchestration/shellMaterialization.snapshot.test.ts apps/server/src/jones/orchestration/shellFanout.test.ts apps/server/src/jones/orchestration/shellCost.diagnostic.test.ts apps/server/src/ws.ts apps/server/src/server.ts apps/server/src/ws.test.ts apps/server/src/jones/requestEconomy/foregroundReads.test.ts apps/server/src/jones/orchestration/shellCost.testFixtures.ts apps/server/src/jones/orchestration/shellCost.diagnosticFixtures.ts apps/server/integration/transferBudgetV2.integration.test.ts apps/server/src/orchestration-v2/LegacyBootstrapWireTransport.test.ts",
         "vp run --filter t3 typecheck",
         "knip --workspace apps/server --exports --preprocessor ./scripts/knip-schemas.ts --no-config-hints",
         "node scripts/jones/check-boundary.ts --strict"

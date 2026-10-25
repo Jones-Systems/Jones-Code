@@ -1,3 +1,5 @@
+import { QueuedClearAction } from "../../jones/queue/QueuedClearAction";
+import { useQueuedRunRemoval } from "../../jones/queue/useQueuedRunRemoval";
 import { canDispatchQueuedRun } from "../../jones/queue/queuedRunAdmission";
 import { QueuedSteerBatchAction } from "../../jones/queue/QueuedSteerBatchAction";
 import { useQueuedSteerBatch } from "../../jones/queue/useQueuedSteerBatch";
@@ -102,7 +104,6 @@ export function QueuedRunsControl({
   const reorder = useAtomCommand(threadEnvironment.reorderQueuedRun);
   const promote = useAtomCommand(threadEnvironment.promoteQueuedRun);
   const resume = useAtomCommand(threadEnvironment.resumeThreadQueue);
-  const cancel = useAtomCommand(threadEnvironment.cancelQueuedRun);
   const reviewImportedHistory = useAtomCommand(importedHistoryCommands.review, {
     reportFailure: false,
   });
@@ -130,6 +131,12 @@ export function QueuedRunsControl({
   );
   const workflow = projection ? deriveThreadQueueWorkflowState(projection) : null;
   const queued = workflow?.queuedRuns ?? [];
+  const removals = useQueuedRunRemoval({
+    environmentId: props.environmentId,
+    threadId: props.threadId,
+    queuedRunIds: queued.map(({ run }) => run.id),
+    blocked: () => busyRunId !== null || steerInFlightRef.current,
+  });
   const currentQueueRef = useRef({
     environmentId: props.environmentId,
     threadId: props.threadId,
@@ -151,6 +158,7 @@ export function QueuedRunsControl({
       !importedEligible ||
       !onImportedHistoryChoice ||
       busyRunId !== null ||
+      removals.isBusy() ||
       steerInFlightRef.current
     )
       return;
@@ -219,10 +227,10 @@ export function QueuedRunsControl({
     projection,
     editing: props.editingRunId !== null,
     hasUnsavedMessages: optimisticQueued.length > 0,
-    busy: busyRunId !== null || dragState !== null,
+    busy: busyRunId !== null || removals.busy || dragState !== null,
     mutationLock: {
       acquire: () => {
-        if (steerInFlightRef.current) return false;
+        if (steerInFlightRef.current || removals.isBusy()) return false;
         steerInFlightRef.current = true;
         return true;
       },
@@ -231,7 +239,8 @@ export function QueuedRunsControl({
       },
     },
   });
-  const queueBusy = busyRunId !== null || batch.pending;
+  const queueBusy = busyRunId !== null || batch.pending || removals.busy;
+  const removalBlocked = busyRunId !== null || batch.pending;
   const canSend = canDispatchQueuedRun({
     busy: queueBusy,
     importedHistory: importedEligible,
@@ -275,7 +284,7 @@ export function QueuedRunsControl({
   ];
 
   const move = async (runId: RunId, beforeRunId: RunId | null) => {
-    if (queueBusy || steerInFlightRef.current) return;
+    if (queueBusy || steerInFlightRef.current || removals.isBusy()) return;
     steerInFlightRef.current = true;
     setBusyRunId(runId);
     await Promise.resolve()
@@ -294,7 +303,7 @@ export function QueuedRunsControl({
   const completeDrag = (runId: RunId, insertIndex: number | null) => {
     setDragState(null);
     dragArmedRunIdRef.current = null;
-    if (insertIndex === null || queueBusy || steerInFlightRef.current) return;
+    if (insertIndex === null || queueBusy || steerInFlightRef.current || removals.isBusy()) return;
     const draggedIndex = queued.findIndex(({ run }) => run.id === runId);
     if (draggedIndex === -1) return;
     if (insertIndex === draggedIndex || insertIndex === draggedIndex + 1) return;
@@ -302,7 +311,7 @@ export function QueuedRunsControl({
   };
 
   const sendQueuedMessage = async (queuedRunId: RunId) => {
-    if (!canSend || steerInFlightRef.current) return;
+    if (!canSend || steerInFlightRef.current || removals.isBusy()) return;
     steerInFlightRef.current = true;
     setBusyRunId(queuedRunId);
     await (async () => {
@@ -334,7 +343,13 @@ export function QueuedRunsControl({
     // moving the caret inside that draft.
     editLatest(repeat) {
       const latest = queued.at(-1);
-      if (!latest || props.editingRunId !== null || queueBusy || steerInFlightRef.current)
+      if (
+        !latest ||
+        props.editingRunId !== null ||
+        queueBusy ||
+        steerInFlightRef.current ||
+        removals.isBusy()
+      )
         return false;
       if (!repeat) {
         setExpanded(true);
@@ -350,23 +365,6 @@ export function QueuedRunsControl({
   }));
 
   if (items.length === 0) return null;
-
-  const remove = async (runId: RunId) => {
-    if (queueBusy || steerInFlightRef.current) return;
-    steerInFlightRef.current = true;
-    setBusyRunId(runId);
-    await Promise.resolve()
-      .then(() =>
-        cancel({
-          environmentId: props.environmentId,
-          input: { threadId: props.threadId, runId },
-        }),
-      )
-      .finally(() => {
-        steerInFlightRef.current = false;
-        setBusyRunId(null);
-      });
-  };
 
   return (
     <>
@@ -384,6 +382,19 @@ export function QueuedRunsControl({
             </ComposerBanner.Icon>
             <ComposerBanner.Content className="text-muted-foreground">
               Queued
+              <QueuedClearAction
+                disabled={
+                  removalBlocked ||
+                  props.editingRunId !== null ||
+                  optimisticQueued.length > 0 ||
+                  !queued.some(({ run }) => !removals.isRemoving(run.id))
+                }
+                onClear={() => {
+                  if (props.editingRunId !== null || optimisticQueued.length > 0) return;
+                  void removals.remove(queued.map(({ run }) => run.id));
+                }}
+                failedCount={removals.failedCount}
+              />
             </ComposerBanner.Content>
             <ComposerBanner.Actions>
               <QueuedSteerBatchAction batch={batch} />
@@ -482,7 +493,7 @@ export function QueuedRunsControl({
                             dragArmedRunIdRef.current = rowRunId;
                           }}
                           onKeyDown={(event) => {
-                            if (queueBusy || steerInFlightRef.current) return;
+                            if (queueBusy || steerInFlightRef.current || removals.isBusy()) return;
                             if (event.key === "ArrowUp" && rowServerIndex > 0) {
                               event.preventDefault();
                               void move(rowRunId, queued[rowServerIndex - 1]?.run.id ?? null);
@@ -562,7 +573,7 @@ export function QueuedRunsControl({
                           aria-label="Cancel editing queued message"
                           disabled={queueBusy}
                           onClick={() => {
-                            if (queueBusy || steerInFlightRef.current) return;
+                            if (queueBusy || steerInFlightRef.current || removals.isBusy()) return;
                             props.onCancelEdit();
                           }}
                         >
@@ -579,7 +590,8 @@ export function QueuedRunsControl({
                                   aria-label="Edit queued message"
                                   disabled={item.runId === null || queueBusy}
                                   onClick={() => {
-                                    if (queueBusy || steerInFlightRef.current) return;
+                                    if (queueBusy || steerInFlightRef.current || removals.isBusy())
+                                      return;
                                     if (item.runId !== null && item.messageId !== null) {
                                       props.onEditQueuedRun({
                                         runId: item.runId,
@@ -623,9 +635,13 @@ export function QueuedRunsControl({
                               render={
                                 <ComposerBanner.Dismiss
                                   aria-label="Remove queued message"
-                                  disabled={item.runId === null || queueBusy}
+                                  disabled={
+                                    item.runId === null ||
+                                    removalBlocked ||
+                                    removals.isRemoving(item.runId)
+                                  }
                                   onClick={() => {
-                                    if (item.runId !== null) void remove(item.runId);
+                                    if (item.runId !== null) void removals.remove([item.runId]);
                                   }}
                                 />
                               }
