@@ -11,6 +11,7 @@ import {
   type OrchestrationV2Run,
   type OrchestrationV2RuntimeRequest,
   type OrchestrationV2ThreadProjection,
+  ProviderDriverKind,
   ProviderInstanceId,
   RunId,
   RuntimeRequestId,
@@ -26,6 +27,7 @@ import type { McpThreadInvocationScope } from "../../mcp/McpInvocationContext.ts
 import { idleThreadProjection, liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import * as OrchestratorMcpService from "../../mcp/OrchestratorMcpService.ts";
 import * as ProviderAdapterRegistry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
+import type { ProjectionRecordField } from "../../orchestration-v2/ProjectionStore.ts";
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import * as RemoteDelegation from "../../peer/RemoteDelegation.ts";
@@ -61,7 +63,7 @@ const task: OrchestrationV2Subagent = {
   parentNodeId: NodeId.make("node:task-reads-parent"),
   origin: "app_owned",
   createdBy: "agent",
-  driver: "codex",
+  driver: ProviderDriverKind.make("codex"),
   providerInstanceId,
   providerThreadId: null,
   childThreadId: null,
@@ -135,8 +137,9 @@ const serviceLayer = (
 const parent = idleThreadProjection(liveThreadShell(parentId));
 
 describe("MCP task read selection", () => {
-  for (const scenario of ["siblings", "completion", "question", "undecodable"] as const) {
-    it.effect(`filters parent wake events: ${scenario}`, () =>
+  it.effect.each(["siblings", "completion", "question", "undecodable"] as const)(
+    "filters parent wake events: %s",
+    (scenario) =>
       Effect.gen(function* () {
         let reads = 0;
         const parentFields: Array<ReadonlyArray<string>> = [];
@@ -209,7 +212,7 @@ describe("MCP task read selection", () => {
         const result = yield* Effect.gen(function* () {
           const service = yield* OrchestratorMcpService.OrchestratorMcpService;
           return yield* service.delegateTask(scope, {
-            prompt: "Synthetic task",
+            task: "Synthetic task",
             mode: "wait",
             timeoutMs: 1_000,
             target: { environmentId: remoteChild.environmentId },
@@ -227,17 +230,17 @@ describe("MCP task read selection", () => {
           scenario === "completion" || scenario === "undecodable" ? "completed" : "running",
         );
       }),
-    );
-  }
+  );
 
-  for (const scenario of [
+  it.effect.each([
     "run.updated",
     "subagent.updated",
     "provider-thread.updated",
     "runtime-request.updated",
     "approval",
-  ] as const) {
-    it.effect(`keeps child activity wakeups: ${scenario}`, () =>
+  ] as const)(
+    "keeps child activity wakeups: %s",
+    (scenario) =>
       Effect.gen(function* () {
         const eventType = scenario === "approval" ? "runtime-request.updated" : scenario;
         const pendingQuestion = scenario === "runtime-request.updated";
@@ -256,7 +259,11 @@ describe("MCP task read selection", () => {
             Effect.sync(() => {
               if (threadId === parentId) {
                 parentReads += 1;
-                assert.deepEqual(fields, ["runs", "subagents", "contextTransfers"]);
+                assert.deepEqual<ReadonlyArray<ProjectionRecordField>>(fields, [
+                  "runs",
+                  "subagents",
+                  "contextTransfers",
+                ]);
                 return {
                   ...parent,
                   subagents: [
@@ -273,7 +280,7 @@ describe("MCP task read selection", () => {
               }
               assert.equal(threadId, childId);
               if (fields.some((field) => field === "runs")) {
-                assert.deepEqual(fields, [
+                assert.deepEqual<ReadonlyArray<ProjectionRecordField>>(fields, [
                   "runs",
                   "messages",
                   "contextTransfers",
@@ -285,7 +292,10 @@ describe("MCP task read selection", () => {
                 assert.deepEqual(options, { messageRoles: ["user"], omitSettledLeafNodes: true });
                 controlReads += 1;
               } else {
-                assert.deepEqual(fields, ["messages", "turnItems"]);
+                assert.deepEqual<ReadonlyArray<ProjectionRecordField>>(fields, [
+                  "messages",
+                  "turnItems",
+                ]);
                 resultReads += 1;
               }
               const finished = controlReads > 1;
@@ -340,7 +350,7 @@ describe("MCP task read selection", () => {
         const result = yield* Effect.gen(function* () {
           const service = yield* OrchestratorMcpService.OrchestratorMcpService;
           return yield* service.delegateTask(scope, {
-            prompt: "Synthetic task",
+            task: "Synthetic task",
             mode: "wait",
             timeoutMs: 1_000,
             target: { environmentId: remoteChild.environmentId },
@@ -362,11 +372,11 @@ describe("MCP task read selection", () => {
         assert.equal(controlReads, 2);
         assert.equal(resultReads, 2);
       }),
-    );
-  }
+  );
 
-  for (const followupStatus of ["running", "completed"] as const) {
-    it.effect(`reads local original and followup results: ${followupStatus}`, () =>
+  it.effect.each(["running", "completed"] as const)(
+    "reads local original and followup results: %s",
+    (followupStatus) =>
       Effect.gen(function* () {
         const childId = ThreadId.make("thread:task-reads-followup");
         const originalId = RunId.make("run:task-reads-original");
@@ -427,8 +437,7 @@ describe("MCP task read selection", () => {
         );
         assert.equal(result.hasPendingChildRuns, followupStatus === "running");
       }),
-    );
-  }
+  );
 
   it.effect(
     "remote acknowledgement reads fresh runs only and retries with a fresh command id",

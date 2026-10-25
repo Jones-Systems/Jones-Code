@@ -45,6 +45,7 @@ import {
   OrchestratorThreadAboveModeLimitError,
 } from "../orchestration-v2/Orchestrator.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
+import type { ProjectionRecordField } from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -270,7 +271,11 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId, fields) => {
             if (threadId === parentThreadId) {
-              assert.deepEqual(fields, ["runs", "subagents", "contextTransfers"]);
+              assert.deepEqual<ReadonlyArray<ProjectionRecordField>>(fields, [
+                "runs",
+                "subagents",
+                "contextTransfers",
+              ]);
             }
             return Effect.succeed(
               threadId === parentThreadId
@@ -402,7 +407,11 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId, fields) => {
             if (threadId === parentThreadId) {
-              assert.deepEqual(fields, ["runs", "subagents", "contextTransfers"]);
+              assert.deepEqual<ReadonlyArray<ProjectionRecordField>>(fields, [
+                "runs",
+                "subagents",
+                "contextTransfers",
+              ]);
             }
             return Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection);
           },
