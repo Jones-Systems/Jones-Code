@@ -655,7 +655,10 @@ export async function readQualifiedRuntimeReceipt(
     return blocked("integrity-mismatch", "Qualified runtime payload changed.");
   if ((await qualifiedPayloadFingerprint(directory, receipt, options?.signal)) !== fingerprint)
     return blocked("integrity-mismatch", "Qualified runtime changed during verification.");
-  if (options?.retainVerification !== false)
+  if (
+    options?.retainVerification === true ||
+    (options?.mode === "receipt" && options.retainVerification !== false)
+  )
     await retainQualifiedVerification(baseDir, receipt, fingerprint, timing);
   return receipt;
 }

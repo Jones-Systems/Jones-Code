@@ -89,6 +89,7 @@ async function runJob(
       receipt: await readQualifiedRuntimeReceipt(request.baseDir, job.version, job.host, {
         signal,
         mode: "full",
+        retainVerification: true,
         eventLoop: "worker",
       }),
     };

@@ -849,6 +849,7 @@ it("refuses a serving-loop digest and delegates a missing receipt to the bounded
         assert.deepEqual(input, { baseDir: base, version: baseline, host: fixtureHost });
         return readQualifiedRuntimeReceipt(base, baseline, fixtureHost, {
           mode: "full",
+          retainVerification: true,
           eventLoop: "worker",
         });
       },
