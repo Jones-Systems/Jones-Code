@@ -2427,6 +2427,18 @@
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-client-projection-efficiency",
+      "tests": [
+        "packages/client-runtime/src/state/orchestrationV2Projection.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/client-runtime/src/state/orchestrationV2Projection.test.ts",
+        "vp lint packages/client-runtime/src/state/orchestrationV2Projection.ts packages/client-runtime/src/state/orchestrationV2Projection.test.ts",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }

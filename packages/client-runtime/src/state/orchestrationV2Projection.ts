@@ -152,7 +152,7 @@ function upsertVisibleTurnItem(
   latestLocalTurnOrdinal: number | null | undefined,
 ): OrchestrationV2ThreadProjection["visibleTurnItems"] {
   const rows = projection.visibleTurnItems;
-  const index = rows.findIndex((row) => row.sourceItemId === item.id);
+  const index = rows.findLastIndex((row) => row.sourceItemId === item.id);
   const next = {
     position: 0,
     visibility: "local" as const,
@@ -176,6 +176,31 @@ function upsertVisibleTurnItem(
     shouldDropMissingPartialTurnItem(projection, item, latestLocalTurnOrdinal)
   ) {
     return rows;
+  }
+  if (
+    previous !== undefined &&
+    item.type !== "run_interrupt_request" &&
+    previous.item.type !== "run_interrupt_request" &&
+    previous.visibility === "local" &&
+    previous.sourceThreadId === item.threadId &&
+    previous.item.ordinal === item.ordinal &&
+    previous.position === index
+  ) {
+    let earlierIndex = index - 1;
+    while (earlierIndex >= 0 && rows[earlierIndex]!.visibility !== "local") {
+      earlierIndex -= 1;
+    }
+    const earlier = rows[earlierIndex];
+    const following = rows[index + 1];
+    if (
+      (earlier === undefined || earlier.item.ordinal < item.ordinal) &&
+      (following === undefined ||
+        (following.visibility === "local" && following.item.ordinal > item.ordinal))
+    ) {
+      const updated = [...rows];
+      updated[index] = { ...next, position: index };
+      return updated;
+    }
   }
   const updated = index === -1 ? [...rows] : [...rows.slice(0, index), ...rows.slice(index + 1)];
   const insertionIndex = updated.findIndex(

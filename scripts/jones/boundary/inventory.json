@@ -1565,7 +1565,9 @@
     "apps/server/src/jones/provider/codex/CodexHandoffCompaction.ts": "jones-owned",
     "apps/server/src/jones/provider/codex/CodexHandoffCompaction.test.ts": "jones-owned",
     "apps/server/src/jones/provider/codex/ContextHandoffRecovery.ts": "jones-owned",
-    "scripts/jones/boundary/fragments/context-handoff-recovery.json": "jones-owned"
+    "scripts/jones/boundary/fragments/context-handoff-recovery.json": "jones-owned",
+    "packages/client-runtime/src/state/orchestrationV2Projection.ts": "accepted-shared",
+    "scripts/jones/boundary/fragments/client-projection-efficiency.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

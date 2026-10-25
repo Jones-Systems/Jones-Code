@@ -470,6 +470,187 @@ describe("applyOrchestrationV2ProjectionEvent", () => {
   });
 });
 
+describe("stable local item replacement", () => {
+  type Rows = OrchestrationV2ThreadProjection["visibleTurnItems"];
+  const rowOf = (item: OrchestrationV2TurnItem, position: number): Rows[number] => ({
+    item,
+    position,
+    visibility: "local",
+    sourceThreadId: item.threadId,
+    sourceItemId: item.id,
+  });
+  const eventOf = (payload: OrchestrationV2TurnItem): OrchestrationV2DomainEvent => ({
+    id: EventId.make(`replacement-${payload.id}`),
+    type: "turn-item.updated",
+    threadId,
+    occurredAt: now,
+    payload,
+  });
+  const oldVisibleUpsert = (rows: Rows, item: OrchestrationV2TurnItem): Rows => {
+    const index = rows.findIndex((row) => row.sourceItemId === item.id);
+    const previous = rows[index];
+    if (
+      previous?.visibility === "local" &&
+      previous.sourceThreadId === item.threadId &&
+      previous.item === item
+    ) {
+      return rows;
+    }
+    const updated = index === -1 ? [...rows] : [...rows.slice(0, index), ...rows.slice(index + 1)];
+    const insertionIndex = updated.findIndex(
+      (row) =>
+        row.visibility === "local" &&
+        (row.item.ordinal > item.ordinal ||
+          (row.item.ordinal === item.ordinal &&
+            String(row.item.id).localeCompare(String(item.id)) > 0)),
+    );
+    updated.splice(insertionIndex === -1 ? updated.length : insertionIndex, 0, rowOf(item, 0));
+    return updated.map((row, position) => (row.position === position ? row : { ...row, position }));
+  };
+
+  it("matches the old structural reducer for seeded replacements, ties, moves and insertions", () => {
+    let seed = 0xa2c11e17;
+    const random = (limit: number) => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return Math.floor((seed / 0x1_0000_0000) * limit);
+    };
+    const inherited = {
+      ...rowOf(commandItem("inherited", "history", 500), 0),
+      visibility: "inherited" as const,
+      sourceThreadId: ThreadId.make("source-thread"),
+    };
+    let reference: Rows = [inherited];
+    let projection: OrchestrationV2ThreadProjection = {
+      ...emptyProjection,
+      runs: [run],
+      visibleTurnItems: reference,
+    };
+    for (let step = 0; step < 240; step += 1) {
+      const id = TurnItemId.make(`seeded-${random(24)}`);
+      const previous = projection.turnItems.find((item) => item.id === id);
+      const item =
+        previous !== undefined && random(4) !== 0
+          ? { ...previous, title: `revision-${step}` }
+          : commandItem(id, `revision-${step}`, random(16));
+      reference = oldVisibleUpsert(reference, item);
+      const before = projection;
+      projection = applyOrchestrationV2ProjectionEvent(projection, eventOf(item))!;
+      expect(projection.visibleTurnItems).toEqual(reference);
+      expect(projection.visibleTurnItems.map((row) => row.position)).toEqual(
+        projection.visibleTurnItems.map((_, index) => index),
+      );
+      expect(projection.visibleTurnItems[0]).toBe(inherited);
+      for (const row of projection.visibleTurnItems) {
+        const unchanged = before.visibleTurnItems[row.position];
+        if (unchanged?.sourceItemId === row.sourceItemId && row.sourceItemId !== item.id) {
+          expect(row).toBe(unchanged);
+        }
+      }
+      expect(
+        applyOrchestrationV2ProjectionEvent(projection, eventOf(item))?.visibleTurnItems,
+      ).toBe(projection.visibleTurnItems);
+    }
+  });
+
+  it.each([
+    "inherited",
+    "synthetic",
+    "inherited target",
+    "source",
+    "position",
+    "interrupt",
+  ] as const)(
+    "preserves structural fallback for %s rows",
+    (kind) => {
+      const first = commandItem("first", "before", 1);
+      const target =
+        kind === "interrupt"
+          ? {
+              ...commandItem("target", "before", 2),
+              type: "run_interrupt_request" as const,
+              message: "Stop",
+            }
+          : commandItem("target", "before", 2);
+      const last = commandItem("last", "before", 3);
+      const rows = [rowOf(first, 0), rowOf(target, 1), rowOf(last, 2)];
+      if (kind === "inherited" || kind === "synthetic") {
+        rows[2] = { ...rows[2]!, visibility: kind };
+      }
+      if (kind === "inherited target") rows[1] = { ...rows[1]!, visibility: "inherited" };
+      if (kind === "source") rows[1] = { ...rows[1]!, sourceThreadId: ThreadId.make("other") };
+      if (kind === "position") rows[1] = { ...rows[1]!, position: 7 };
+      const item = { ...target, title: "updated" };
+      const projection = {
+        ...emptyProjection,
+        runs: [run],
+        turnItems: [first, target, last],
+        visibleTurnItems: rows,
+      };
+      const next = applyOrchestrationV2ProjectionEvent(projection, eventOf(item));
+      expect(next?.visibleTurnItems).toEqual(oldVisibleUpsert(rows, item));
+    },
+  );
+
+  it.each([1, 2])("checks the nearest earlier local ordinal %s across inherited rows", (ordinal) => {
+    const first = commandItem("z-first", "before", ordinal);
+    const inherited = commandItem("inherited", "before", 100);
+    const target = commandItem("a-target", "before", 2);
+    const last = commandItem("last", "before", 3);
+    const rows: Rows = [
+      rowOf(first, 0),
+      { ...rowOf(inherited, 1), visibility: "inherited", sourceThreadId: ThreadId.make("source") },
+      rowOf(target, 2),
+      rowOf(last, 3),
+    ];
+    const item = { ...target, title: "updated" };
+    const projection = {
+      ...emptyProjection,
+      runs: [run],
+      turnItems: [first, target, last],
+      visibleTurnItems: rows,
+    };
+    expect(applyOrchestrationV2ProjectionEvent(projection, eventOf(item))?.visibleTurnItems).toEqual(
+      oldVisibleUpsert(rows, item),
+    );
+  });
+
+  it("bounds row inspection for a tail replacement while preserving untouched rows", () => {
+    let identityReads = 0;
+    let positionReads = 0;
+    let ordinalReads = 0;
+    const items = Array.from({ length: 1000 }, (_, index) => ({
+      ...commandItem(`tail-${index}`, "before", index),
+      get ordinal() {
+        ordinalReads += 1;
+        return index;
+      },
+    }));
+    const rows = items.map((item, index) => ({
+      ...rowOf(item, index),
+      get sourceItemId() {
+        identityReads += 1;
+        return item.id;
+      },
+      get position() {
+        positionReads += 1;
+        return index;
+      },
+    }));
+    const projection = { ...emptyProjection, runs: [run], turnItems: items, visibleTurnItems: rows };
+    const item = commandItem("tail-999", "after", 999);
+    const next = applyOrchestrationV2ProjectionEvent(projection, eventOf(item))!;
+    expect(identityReads).toBeLessThanOrEqual(4);
+    expect(positionReads).toBeLessThanOrEqual(1);
+    expect(ordinalReads).toBeLessThanOrEqual(2);
+    expect(next.visibleTurnItems).not.toBe(rows);
+    expect(next.visibleTurnItems[999]?.item).toBe(item);
+    for (let index = 0; index < 999; index += 1) {
+      expect(next.visibleTurnItems[index]).toBe(rows[index]);
+    }
+    expect(rows[999]?.item).toBe(items[999]);
+  });
+});
+
 it("does not scan every row against every run for a streaming item update", () => {
   let runReads = 0;
   const runs = Array.from({ length: 100 }, (_, index) => ({
