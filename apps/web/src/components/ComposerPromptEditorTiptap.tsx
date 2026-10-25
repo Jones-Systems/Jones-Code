@@ -53,6 +53,7 @@ import {
   isCollapsedCursorAdjacentToInlineToken,
   pastedPathQueryLength,
 } from "~/composer-logic";
+import { createEditorSerializationCache } from "~/jones/composer/editorSerializationCache";
 import { useStableCallback } from "~/hooks/useStableCallback";
 import {
   collectComposerPromptInlineTokens,
@@ -999,9 +1000,20 @@ function ComposerPromptEditorTiptapInner(props: ComposerPromptEditorProps) {
     onSubmitAndSend: onCitationSubmitAndSend ?? (() => {}),
   };
 
+  const serializationRef = useRef<{
+    editor: TiptapEditor;
+    read: ReturnType<typeof createEditorSerializationCache>;
+  } | null>(null);
+  const readEditorDoc = (current: TiptapEditor) => {
+    if (serializationRef.current?.editor !== current) {
+      serializationRef.current = { editor: current, read: createEditorSerializationCache() };
+    }
+    return serializationRef.current.read(current.state.doc);
+  };
+
   const handleEditorChange = (updated: TiptapEditor) => {
-    const map = serializeEditorDoc(updated.state.doc);
-    const contextIds = literalText ? [] : map.contextIds;
+    const map = readEditorDoc(updated);
+    const contextIds = literalText ? [] : [...map.contextIds];
     const { from, to } = updated.state.selection;
     const fromFlat = pmToFlat(map, from);
     const toFlat = pmToFlat(map, to);
@@ -1441,14 +1453,14 @@ function ComposerPromptEditorTiptapInner(props: ComposerPromptEditorProps) {
   const readSnapshot = () => {
     const snapshot = snapshotRef.current;
     if (!editor) return snapshot;
-    const map = serializeEditorDoc(editor.state.doc);
+    const map = readEditorDoc(editor);
     const { from, to } = editor.state.selection;
     const fromFlat = pmToFlat(map, from);
     const next: typeof snapshot = {
       value: map.value,
       cursor: clampEditorCursor(map.value, flatToCollapsed(map, fromFlat)),
       expandedCursor: Math.max(0, Math.min(map.value.length, flatToMarkdown(map, fromFlat))),
-      contextIds: literalText ? [] : map.contextIds,
+      contextIds: literalText ? [] : [...map.contextIds],
     };
     const toFlat = pmToFlat(map, to);
     selectionRangeRef.current = {
@@ -1489,7 +1501,7 @@ function ComposerPromptEditorTiptapInner(props: ComposerPromptEditorProps) {
         })
         .setMeta("addToHistory", false),
     );
-    onCitationDraftSave(replacedValue, serializeEditorDoc(current.state.doc).value);
+    onCitationDraftSave(replacedValue, readEditorDoc(current).value);
   });
 
   useLayoutEffect(() => {
@@ -1533,7 +1545,7 @@ function ComposerPromptEditorTiptapInner(props: ComposerPromptEditorProps) {
         },
       );
     }
-    const map = serializeEditorDoc(editor.state.doc);
+    const map = readEditorDoc(editor);
     const flat = collapsedToFlat(map, normalizedCursor);
     editor.commands.setTextSelection(flatToPm(map, flat));
     if (isFocused) scrollTiptapCaretIntoView(editor);
@@ -1580,7 +1592,7 @@ function ComposerPromptEditorTiptapInner(props: ComposerPromptEditorProps) {
     editor.view.focus();
     if (snapshotRef.current.value !== latestValueRef.current) return;
     const boundedCursor = clampEditorCursor(snapshotRef.current.value, nextCursor);
-    const map = serializeEditorDoc(editor.state.doc);
+    const map = readEditorDoc(editor);
     const flat = collapsedToFlat(map, boundedCursor);
     editor.commands.setTextSelection(flatToPm(map, flat));
     scrollTiptapCaretIntoView(editor);
@@ -1628,7 +1640,7 @@ function ComposerPromptEditorTiptapInner(props: ComposerPromptEditorProps) {
       requestCitationComment: (request) => {
         citationRequestRef.current = request;
         if (!editor) return;
-        const map = serializeEditorDoc(editor.state.doc);
+        const map = readEditorDoc(editor);
         if (map.value !== request.value) return;
         const target = map.runs.find(
           (run) =>

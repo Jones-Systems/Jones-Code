@@ -1483,6 +1483,17 @@
         "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts"
       ],
       "scope": "One confirmed Codex maintenance compaction after a local reclaimable handoff budget rejection; never attributes the unsent request to maintenance. Shared adapter replay and turn-start test exceptions exercise existing native and orchestration harnesses. ProviderAdapter adds an optional server-only capability; session hooks preserve activity. Other providers and explicit /compact retain existing paths. Session-manager integration tests prove the scoped maintenance activity lease survives delivery and clears on failure without clearing an accepted prompt lease. Jones recovery imports the existing upstream ContextHandoffDelivery helper to preserve budget selection and persistence semantics."
+    },
+    {
+      "id": "editor-serialization-efficiency",
+      "tests": [
+        "apps/web/src/jones/composer/editorSerializationCache.test.ts",
+        "apps/web/src/jones/composer/editorSerializationCache.browser.test.tsx",
+        "apps/web/src/components/ComposerPromptEditorTiptap.navigation.browser.test.tsx",
+        "apps/web/src/components/ComposerPromptEditorTiptap.citationDraft.browser.test.tsx",
+        "apps/web/src/composer-rich-text-doc.test.ts"
+      ],
+      "scope": "One editor-lifetime cache reuses readonly rich-document serialization by immutable document identity while selection coordinates recompute. Jones helper and compiler-enabled browser tests use a narrow component hook; shared readonly signatures avoid duplicate conversion machinery and retain controlled values, trigger and mode semantics."
     }
   ]
 }
