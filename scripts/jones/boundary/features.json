@@ -2103,6 +2103,14 @@
       "id": "workspace-content-search-slicing",
       "tests": ["apps/server/src/jones/workspace/contentSearchPages.test.ts"],
       "scope": "Enforced small native grep pages yield a cancellable Node macrotask between continuations, preserving zero-hit discovery, the original deadline after native hits, cursor/limit/truncation/fallback semantics and finder ownership. The Jones integration test imports the upstream service to prove its real mapping and typed error hook."
+    },
+    {
+      "id": "terminal-history-urgent-flush",
+      "tests": [
+        "apps/server/src/jones/terminal/TerminalHistoryWorker.test.ts",
+        "apps/server/src/terminal/Manager.test.ts"
+      ],
+      "scope": "One terminal history writer prioritizes explicit flushes over queued debounce waits, preserves the global background cadence and latest per-terminal coalescing, and keeps drains pending through active/latest writes and cancelled waiters. Manager remains an accepted-shared integration hook."
     }
   ]
 }

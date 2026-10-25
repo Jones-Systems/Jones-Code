@@ -1971,7 +1971,10 @@
     "apps/server/src/jones/workspace/contentSearchPages.ts": "jones-owned",
     "apps/server/src/jones/workspace/contentSearchPages.test.ts": "jones-owned",
     "apps/server/src/workspace/WorkspaceSearchIndex.ts": "hook",
-    "scripts/jones/boundary/fragments/workspace-content-search-slicing.json": "jones-owned"
+    "scripts/jones/boundary/fragments/workspace-content-search-slicing.json": "jones-owned",
+    "scripts/jones/boundary/fragments/terminal-history-urgent-flush.json": "jones-owned",
+    "apps/server/src/jones/terminal/TerminalHistoryWorker.ts": "jones-owned",
+    "apps/server/src/jones/terminal/TerminalHistoryWorker.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -2683,6 +2686,10 @@
     {
       "from": "apps/web/src/routes/settings.jones-code.tsx",
       "to": "apps/web/src/jones/workstreams/WorkstreamsSetupStatus.tsx"
+    },
+    {
+      "from": "apps/server/src/terminal/Manager.ts",
+      "to": "apps/server/src/jones/terminal/TerminalHistoryWorker.ts"
     }
   ]
 }
