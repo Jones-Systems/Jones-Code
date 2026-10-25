@@ -2024,9 +2024,11 @@
         "apps/server/src/jones/orchestration/actionWorkerAdmission.test.ts",
         "apps/server/src/jones/orchestration/FoundationPersistence.jones.test.ts",
         "apps/server/src/serverRuntimeStartup.autoPull.test.ts",
-        "apps/server/src/jones/orchestration/effectClaimTiming.test.ts"
+        "apps/server/src/jones/orchestration/effectClaimTiming.test.ts",
+        "apps/server/src/jones/orchestration/ThreadStallRecovery.integration.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts"
       ],
-      "scope": "At concurrency of at least three, reserve one existing worker for urgent interrupt, delegated-stop and request-response effects, and another for non-title work. The default four-worker budget leaves three ordinary slots and at most two title slots, trading ordinary throughput for urgent admission without adding an executor. Two-worker action reservation and one-worker serial behavior remain unchanged; same-thread predecessors still apply. Shared claim/deadline predicates and scoped wake relay retain leases, recovery and ordering. Jones policy/tests use narrow worker hooks; existing outbox/worker harness edits and typed mock adaptations retain private core machinery. Existing execution spans also report effect availability, claim time and queue wait before the durable cancellation read."
+      "scope": "At concurrency of at least three, reserve one existing worker for urgent interrupt, delegated-stop and request-response effects, and another for non-title work. The default four-worker budget leaves three ordinary slots and at most two title slots, trading ordinary throughput for urgent admission without adding an executor. Two-worker action reservation and one-worker serial behavior remain unchanged; same-thread predecessors still apply. Shared claim/deadline predicates and scoped wake relay retain leases, recovery and ordering. Jones policy/tests use narrow worker hooks; existing outbox/worker harness edits and typed mock adaptations retain private core machinery. Existing execution spans also report effect availability, claim time and queue wait before the durable cancellation read. The stall fixture declares four ordinary slots explicitly; MCP fanout waits for the matching provider attempt before advancing its synthetic completion gate."
     },
     {
       "id": "workspace-refresh-efficiency",
