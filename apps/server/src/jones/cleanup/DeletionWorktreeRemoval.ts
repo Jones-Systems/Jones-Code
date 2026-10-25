@@ -488,7 +488,15 @@ export const layer = Layer.effect(
         }
         const observed = execute
           ? yield* producer.executeStarted(admitted.start, admitted.ordinal, (start, ordinal) =>
-              revalidate(start, ordinal, currentRules, currentLive),
+              revalidate(start, ordinal, currentRules, currentLive).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new DeletionWorktreeRemovalPreconditionError({
+                      reason: "workspace_preservation_hold",
+                      cause,
+                    }),
+                ),
+              ),
             )
           : yield* producer.observeStarted(admitted.start, admitted.ordinal);
         yield* qualify(observed);
