@@ -8,6 +8,7 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 import * as SqlitePersistence from "./Sqlite.ts";
 
@@ -49,6 +50,36 @@ it.effect("drops planner statistics a database already has", () => {
       );
     }).pipe(Effect.provide(persistence()));
   }).pipe(
+    Effect.ensuring(Effect.sync(() => NodeFS.rmSync(tempDir, { recursive: true, force: true }))),
+  );
+});
+
+it.effect("fails marked reads when the persistent server reader cannot open", () => {
+  const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-sqlite-strict-reader-"));
+  const dbPath = NodePath.join(tempDir, "state.sqlite");
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`CREATE TABLE reader_policy_probe(value TEXT NOT NULL)`;
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* sql`INSERT INTO reader_policy_probe VALUES ('uncommitted')`;
+        assert.deepEqual(
+          yield* sql`SELECT value FROM reader_policy_probe`.pipe(NodeSqliteClient.readOnly),
+          [{ value: "uncommitted" }],
+        );
+      }),
+    );
+    // The writer keeps its open handle, but a new read-only worker cannot open this path.
+    yield* Effect.sync(() => NodeFS.unlinkSync(dbPath));
+    const error = yield* sql`SELECT value FROM reader_policy_probe`.pipe(
+      NodeSqliteClient.readOnly,
+      Effect.flip,
+    );
+    assert.equal(error._tag, "SqlError");
+    assert.equal(error.reason.operation, "open");
+    assert.deepEqual(yield* sql`SELECT value FROM reader_policy_probe`, [{ value: "uncommitted" }]);
+  }).pipe(
+    Effect.provide(SqlitePersistence.layerFromPath(dbPath).pipe(Layer.provide(NodeServices.layer))),
     Effect.ensuring(Effect.sync(() => NodeFS.rmSync(tempDir, { recursive: true, force: true }))),
   );
 });

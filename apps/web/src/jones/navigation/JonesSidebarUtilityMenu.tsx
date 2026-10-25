@@ -3,6 +3,7 @@ import {
   BookOpenIcon,
   ChartNoAxesColumnIcon,
   MicIcon,
+  InboxIcon,
   SettingsIcon,
 } from "lucide-react";
 import { useLocation, useNavigate } from "@tanstack/react-router";
@@ -19,6 +20,8 @@ import { PullRequestGlyph } from "../../components/pullRequest/pullRequestIcons"
 import { readPullRequestListPreferences } from "../../components/pullRequest/pullRequestListPreferences";
 import { useNavigateToMainApp } from "../../components/sidebar/mainAppLocation";
 import { SidebarUpdatePill } from "../../components/sidebar/SidebarUpdatePill";
+
+import { RemoteAdmissionCount } from "../remoteAdmission/RemoteAdmissionAttention";
 
 const destinations = [
   {
@@ -44,6 +47,12 @@ const destinations = [
     label: "Prompts",
     icon: MicIcon,
     description: "Review pending, queued and sent prompts",
+  },
+  {
+    path: "/requests",
+    label: "Requests",
+    icon: InboxIcon,
+    description: "Review incoming remote tasks",
   },
   {
     path: "/conversations",
@@ -92,6 +101,7 @@ export const JonesSidebarUtilityMenu = memo(function JonesSidebarUtilityMenu() {
                     }}
                   >
                     {active ? <ArrowLeftIcon /> : <Icon />}
+                    {path === "/requests" ? <RemoteAdmissionCount /> : null}
                   </SidebarMenuButton>
                 }
               />
