@@ -1,3 +1,4 @@
+import { beforeCleanup } from "./jones/workspaceLifecycle/NativeBoundary.ts";
 import * as DeletionWorktreeRemoval from "./jones/cleanup/DeletionWorktreeRemoval.ts";
 import * as EventSink from "./orchestration-v2/EventSink.ts";
 import {
@@ -1078,6 +1079,13 @@ const make = Effect.gen(function* () {
           if (yield* fs.exists(worktreePath)) return keep("qualified deletion removal is pending");
         } else {
           // Clean only untracked files. Ordinary worktrees retain Git's final tracked-edit check.
+          const semanticVeto = yield* beforeCleanup({
+            threadId: thread.id,
+            boundary: "cleanup",
+            id: `cleanup:${thread.id}`,
+          }).pipe(Effect.result);
+          if (semanticVeto._tag === "Failure")
+            return keep("workspace preservation assessment is unavailable or changed");
           if (settings.worktreeKeepWhen === "tracked-changes")
             yield* cleanupGit(worktreePath, ["clean", "-ffdx"], "git clean");
           const submodules = yield* submoduleRemoval(worktreePath, settings);
@@ -1086,6 +1094,13 @@ const make = Effect.gen(function* () {
             const changes = yield* localChangesReason(worktreePath, settings);
             if (changes !== null) return keep(changes);
           }
+          const finalSemanticVeto = yield* beforeCleanup({
+            threadId: thread.id,
+            boundary: "cleanup",
+            id: `cleanup:${thread.id}`,
+          }).pipe(Effect.result);
+          if (finalSemanticVeto._tag === "Failure")
+            return keep("workspace preservation assessment is unavailable or changed");
           yield* removeLinkedWorktree({
             operation: "StorageCleanup.cleanupGit",
             cwd: project.workspaceRoot,

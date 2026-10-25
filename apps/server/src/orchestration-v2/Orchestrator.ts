@@ -11,6 +11,7 @@ import {
 } from "../jones/orchestration/QueuedSteerBatch.ts";
 import { planQueuedSteerBatch } from "@t3tools/shared/jones/queuedSteerBatch";
 import * as CheckoutIntent from "../jones/ordinaryCheckout/CheckoutIntent.ts";
+import { beforeCommand as beforeWorkspaceLifecycleCommand } from "../jones/workspaceLifecycle/NativeBoundary.ts";
 import { makeJonesTablePresence } from "../jones/persistence/JonesTablePresence.ts";
 import {
   checkSettlementRestoreReplay,
@@ -14177,6 +14178,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       return { sequence: resultSequence, storedEvents: [] } satisfies OrchestratorV2DispatchResult;
     }
     const acceptedAt = plan.events.at(-1)?.occurredAt ?? (yield* DateTime.now);
+    yield* beforeWorkspaceLifecycleCommand(command, plan.events).pipe(mapDispatchError(command));
     const committed = yield* eventSink
       .commitCommand({
         commandId: command.commandId,

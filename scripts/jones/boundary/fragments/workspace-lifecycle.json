@@ -1,0 +1,56 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "workspace-lifecycle",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/workspaceLifecycle/CheckoutSource.ts",
+    "apps/server/src/jones/workspaceLifecycle/NativeBoundary.ts",
+    "apps/server/src/jones/workspaceLifecycle/NativeSource.test.ts",
+    "apps/server/src/jones/workspaceLifecycle/NativeSource.ts",
+    "apps/server/src/jones/workspaceLifecycle/Protocol.ts",
+    "apps/server/src/jones/workspaceLifecycle/RegistryCli.test.ts",
+    "apps/server/src/jones/workspaceLifecycle/RegistryCli.ts",
+    "apps/server/src/jones/workspaceLifecycle/TransitionStore.ts",
+    "apps/server/src/jones/workspaceLifecycle/WorkspaceLifecycle.test.ts",
+    "apps/server/src/jones/workspaceLifecycle/WorkspaceLifecycle.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/NativeBoundary.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/NativeBoundary.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/NativeBoundary.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/NativeBoundary.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/NativeBoundary.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadSettlementService.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/NativeBoundary.ts"
+    },
+    {
+      "from": "apps/server/src/storageCleanup.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/NativeBoundary.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/WorkspaceLifecycle.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/Protocol.ts"
+    }
+  ]
+}

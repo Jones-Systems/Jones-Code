@@ -7,6 +7,7 @@
   },
   "baseline": "05b697f6a2012497ae790425e197fbd1fcef7de7",
   "paths": {
+    "scripts/jones/boundary/fragments/workspace-lifecycle.json": "jones-owned",
     "scripts/jones/test-scratch/vitest-cleanup.node-test.mjs": "jones-owned",
     "scripts/jones/test-scratch/vitest-cleanup-worker.mjs": "jones-owned",
     "scripts/jones/boundary/fragments/vitest-scratch-cleanup.json": "jones-owned",

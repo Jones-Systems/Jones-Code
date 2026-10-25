@@ -1882,6 +1882,31 @@
         "apps/web/src/jones/remoteAgentLineage/MachineIdentity.browser.test.tsx"
       ],
       "scope": "Sparse Jones-owned navigation links join ordinary launch parent/child relationships, offered and receiver-accepted continuations, and manual peers. Existing fork and delegated-task lineage folds into one default-collapsed Linked section with scoped deduplication, connected-environment discovery, truthful incomplete/offline coverage, existing task controls and portable origin/return-address text. Automatic launch claims preserve creation receipts, retry fences and first-message rejection semantics. Authenticated remote origins retain current endpoint and access checks; link copies grant no connection or task authority. Soft removal prevents automatic retry resurrection. Existing toolkit embeddings without the application layers retain lineage-only behavior. Tests cover storage, migration, launch hooks, forwarding, handoff delivery, RPC/MCP registration, presentation and UI interactions; component tests do not establish installed cross-machine runtime availability."
+    },
+    {
+      "id": "workspace-lifecycle",
+      "tests": [
+        "apps/server/src/jones/workspaceLifecycle/NativeSource.test.ts",
+        "apps/server/src/jones/workspaceLifecycle/RegistryCli.test.ts",
+        "apps/server/src/jones/workspaceLifecycle/WorkspaceLifecycle.test.ts",
+        "apps/server/src/jones/ordinaryCheckout/CheckoutTarget.test.ts",
+        "apps/server/src/jones/ordinaryCheckout/CheckoutTargetNode.test.ts",
+        "apps/server/src/jones/ordinaryCheckout/OrdinaryCheckout.test.ts",
+        "apps/server/src/jones/ordinaryCheckout/CheckoutIntent.integration.test.ts",
+        "apps/server/src/jones/ordinaryCheckout/CheckoutConflictIntegration.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/orchestration-v2/EffectWorker.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationProviderExecutor.test.ts",
+        "apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts",
+        "apps/server/src/orchestration-v2/ProjectionSettlement.test.ts",
+        "apps/server/src/orchestration-v2/ThreadSettlementService.test.ts",
+        "apps/server/src/jones/settlementRestore/SettlementRestore.integration.test.ts",
+        "apps/server/src/jones/cleanup/DeletionAdmission.test.ts",
+        "apps/server/src/jones/cleanup/DeletionWorktreeRemoval.test.ts",
+        "apps/server/src/storageCleanup.test.ts"
+      ],
+      "scope": "Source-only W1 lifecycle core and native consumer fences. The canonical V3 registry retains semantic assessments and its separate CAS generation. Jones stores sparse original-transition identities, observes physical checkout/Git identities, native thread birth and fresh HEAD, fences uncertain writes and reconciles without replay. Optional native hooks preserve unconfigured runtimes and hold explicitly configured integrations on unavailable registry/source evidence. Registry I/O precedes command commit; EventSink revalidates only SQL ownership inside its transaction. Cleanup assessments only veto existing native cleanup/deletion authorities. The native ownership evidence port has no default issuer. Production configuration, migration registration and native-owner qualification remain unallocated; this partial source candidate installs no external executable, registry or runtime. Shared provider-start tests retain their existing consumer harness to prove pre-effect refusal."
     }
   ]
 }

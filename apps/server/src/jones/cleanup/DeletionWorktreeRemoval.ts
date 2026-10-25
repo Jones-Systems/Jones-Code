@@ -18,6 +18,7 @@ import type { DeletionPolicyRead, DeletionLiveRead } from "./DeletionAdmission.t
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import type { ExecuteGitInput, ExecuteGitResult } from "../../vcs/GitVcsDriver.ts";
 import * as GitDriver from "../../vcs/GitVcsDriver.ts";
+import { beforeCleanupPath } from "../workspaceLifecycle/NativeBoundary.ts";
 
 export interface DeletionWorktreeRegistrationEntryV1 {
   readonly path: string;
@@ -488,7 +489,16 @@ export const layer = Layer.effect(
         }
         const observed = execute
           ? yield* producer.executeStarted(admitted.start, admitted.ordinal, (start, ordinal) =>
-              revalidate(start, ordinal, currentRules, currentLive),
+              beforeCleanupPath(start.target.path).pipe(
+                Effect.andThen(revalidate(start, ordinal, currentRules, currentLive)),
+                Effect.mapError(
+                  (cause) =>
+                    new DeletionWorktreeRemovalPreconditionError({
+                      reason: "workspace_preservation_hold",
+                      cause,
+                    }),
+                ),
+              ),
             )
           : yield* producer.observeStarted(admitted.start, admitted.ordinal);
         yield* qualify(observed);

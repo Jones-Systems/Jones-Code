@@ -4,6 +4,7 @@ import {
   isGoalNotificationNotDelivered,
 } from "../jones/goals/GoalNotificationDelivery.ts";
 import * as RuntimeStopStore from "../jones/runtime/RuntimeStopSqlite.ts";
+import { withOriginalTransition } from "../jones/workspaceLifecycle/NativeBoundary.ts";
 import * as RuntimeStop from "../jones/runtime/RuntimeStop.ts";
 import { executeNativeProviderEffect } from "../jones/nativeCreation/NativeCreationProviderExecution.ts";
 import { CommandId } from "@t3tools/contracts";
@@ -879,7 +880,19 @@ export const layerWithOptions = (
 
           const execution = executor
             .execute(effect, { willRetry: effect.attemptCount < maxAttempts })
-            .pipe(Effect.as("executed" as const));
+            .pipe(
+              (execution) =>
+                withOriginalTransition(
+                  `effect:${effect.id}`,
+                  {
+                    commandId: effect.commandId,
+                    threadId: effect.threadId,
+                    request: effect.request,
+                  },
+                  execution,
+                ),
+              Effect.as("executed" as const),
+            );
           const exit = yield* Effect.exit(Effect.raceFirst(execution, cancellation)).pipe(
             Effect.ensuring(outbox.clearCancellation(effect.id)),
           );

@@ -1,3 +1,4 @@
+import * as WorkspaceLifecycle from "../jones/workspaceLifecycle/NativeBoundary.ts";
 import * as RuntimeOperation from "../jones/runtime/RuntimeOperationPermit.ts";
 import * as PhysicalRuntimeEvidence from "../jones/runtime/PhysicalRuntimeEvidence.ts";
 import { PhysicalProcessObservation } from "@t3tools/contracts";
@@ -449,6 +450,7 @@ export const layerWithOptions = (
               const reservation = reservations.get(runtimeGeneration);
               if (reservation === undefined)
                 return yield* protocolError("The launch reservation was lost.");
+              yield* WorkspaceLifecycle.beforeUse({ threadId, boundary: "resume" });
               const rows = yield* projectionStore.getThreadRecords(threadId, ["providerThreads"]);
               for (const thread of rows.providerThreads) {
                 if (
@@ -2238,6 +2240,18 @@ export const layerWithOptions = (
                 providerInstanceId: runtime.instanceId,
               }),
             ).pipe(
+              Effect.andThen(
+                WorkspaceLifecycle.beforeUse({ threadId: input.threadId, boundary: "resume" }).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderAdapter.ProviderAdapterEnsureThreadError({
+                        driver: runtime.driver,
+                        threadId: input.threadId,
+                        cause,
+                      }),
+                  ),
+                ),
+              ),
               Effect.andThen(runtime.ensureThread(input)),
               Effect.tap((providerThread) =>
                 markProviderThreadLoaded({
@@ -2282,7 +2296,20 @@ export const layerWithOptions = (
                 isProviderThreadLoaded({ providerSessionId, threadId, providerThreadKey }),
               ),
               Effect.flatMap((loaded) =>
-                loaded ? Effect.succeed(input.providerThread) : runtime.resumeThread(input),
+                WorkspaceLifecycle.beforeUse({ threadId, boundary: "resume" }).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderAdapter.ProviderAdapterResumeThreadError({
+                        driver: runtime.driver,
+                        providerSessionId,
+                        providerThreadId: input.providerThread.id,
+                        cause,
+                      }),
+                  ),
+                  Effect.andThen(
+                    loaded ? Effect.succeed(input.providerThread) : runtime.resumeThread(input),
+                  ),
+                ),
               ),
               Effect.tap((providerThread) =>
                 markProviderThreadLoaded({
@@ -2907,6 +2934,19 @@ export const layerWithOptions = (
               yield* NativeProvider.revalidateNativeProviderGuard(input.nativeCreationGuard, {
                 threadId: input.threadId,
                 cwd: input.runtimePolicy.cwd,
+              }).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderSessionOpenError({
+                      instanceId: input.modelSelection.instanceId,
+                      providerSessionId: input.providerSessionId,
+                      cause,
+                    }),
+                ),
+              );
+              yield* WorkspaceLifecycle.beforeUse({
+                threadId: input.threadId,
+                boundary: "resume",
               }).pipe(
                 Effect.mapError(
                   (cause) =>

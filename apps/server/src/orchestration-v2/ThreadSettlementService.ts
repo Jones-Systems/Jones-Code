@@ -20,6 +20,7 @@ import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import * as GitManager from "../git/GitManager.ts";
+import { beforeCleanup } from "../jones/workspaceLifecycle/NativeBoundary.ts";
 import { workModeSettlementActivity } from "../jones/workMode/Settlement.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
@@ -564,6 +565,11 @@ export const make = Effect.gen(function* () {
       if (thread.settledOverride !== "settled") return;
       const settledAtMs = toMillis(thread.settledAt);
       if (settledAtMs === null || settleActionRunAt.get(threadId) === settledAtMs) return;
+      yield* beforeCleanup({
+        threadId,
+        boundary: "settle-script",
+        id: `settle:${threadId}:${settledAtMs}`,
+      });
       const run = yield* projectScripts.runForThread({
         threadId,
         projectId: thread.projectId,

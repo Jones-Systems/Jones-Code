@@ -1,4 +1,5 @@
 import * as ProviderSwitchService from "./ProviderSwitchService.ts";
+import * as WorkspaceLifecycle from "../jones/workspaceLifecycle/NativeBoundary.ts";
 import { prepareExecutionSession } from "../jones/threadConfiguration/prepareExecutionSession.ts";
 import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
 import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
@@ -599,6 +600,11 @@ export const layer: Layer.Layer<
             cause: "Native verified workspace disappeared; ordinary recreation is unavailable.",
           });
         if (!exists && (yield* isManagedWorktreePath(worktreePath))) {
+          yield* WorkspaceLifecycle.beforeUse({
+            threadId: input.threadId,
+            boundary: "recreate",
+            fallback: { id: `turn-start:${runId}`, request: { runId, threadId: input.threadId } },
+          }).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
           const project = yield* projects.getById(projection.thread.projectId).pipe(
             Effect.map(Option.getOrUndefined),
             Effect.orElseSucceed(() => undefined),
@@ -630,6 +636,11 @@ export const layer: Layer.Layer<
           }
         }
       }
+      yield* WorkspaceLifecycle.beforeUse({
+        threadId: input.threadId,
+        boundary: "start",
+        fallback: { id: `turn-start:${runId}`, request: { runId, threadId: input.threadId } },
+      }).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
       const selectInheritedBackgroundItems = (
         current: ProjectionStore.ProjectionRuntimeRecoveryState,
       ): ReturnType<typeof RunExecutionService.selectInheritedBackgroundTurnItems> =>
@@ -1528,7 +1539,9 @@ export const layer: Layer.Layer<
                 providerThreadId: providerThread.id,
                 ...(loadedProviderThread.runtimeIdentity?.runtimeGeneration === undefined
                   ? {}
-                  : { runtimeGeneration: loadedProviderThread.runtimeIdentity.runtimeGeneration }),
+                  : {
+                      runtimeGeneration: loadedProviderThread.runtimeIdentity.runtimeGeneration,
+                    }),
               });
           }).pipe(
             Effect.mapError(
@@ -1742,7 +1755,11 @@ export const layer: Layer.Layer<
           return evidence;
         },
         (effect, input) =>
-          effect.pipe(
+          WorkspaceLifecycle.inheritOriginalTransition(
+            `turn-start:${input.runId}`,
+            { runId: input.runId, threadId: input.threadId },
+            effect,
+          ).pipe(
             Effect.mapError((cause) =>
               isProviderTurnStartError(cause)
                 ? cause
@@ -1761,7 +1778,11 @@ export const layer: Layer.Layer<
           if (providerTurn !== undefined) yield* providerTurn;
         },
         (effect, input) =>
-          effect.pipe(
+          WorkspaceLifecycle.inheritOriginalTransition(
+            `turn-start:${input.runId}`,
+            { runId: input.runId, threadId: input.threadId },
+            effect,
+          ).pipe(
             Effect.mapError((cause) =>
               isProviderTurnStartError(cause)
                 ? cause
