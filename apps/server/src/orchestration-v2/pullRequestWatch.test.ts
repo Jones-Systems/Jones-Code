@@ -92,6 +92,59 @@ describe("evaluatePullRequestWatch", () => {
     assert.deepEqual(evaluatePullRequestWatch(watch(), plain, noRemarks).changes, []);
   });
 
+  it("waits through skipped advisories and wakes when a later required check passes", () => {
+    const skipped = ["native", "native changes", "desktop"].map((name) => ({
+      ...check(name, "skipped"),
+      required: false,
+    }));
+    const incomplete = detail({ checks: skipped });
+    const first = evaluatePullRequestWatch(watch(), incomplete, noRemarks);
+    assert.deepEqual(first.changes, []);
+    assert.equal(first.next.headSha, incomplete.headSha);
+    assert.isFalse(first.next.passed);
+    assert.deepEqual(first.next.passedChecks, []);
+    const repeated = evaluatePullRequestWatch(first.next, incomplete, noRemarks);
+    assert.deepEqual(repeated.changes, []);
+
+    const required = (status: PullRequestCheck["status"]) => ({
+      ...check("qualification gate", status),
+      required: true,
+    });
+    const pending = evaluatePullRequestWatch(
+      repeated.next,
+      detail({ checks: [...skipped, required("pending")] }),
+      noRemarks,
+    );
+    assert.deepEqual(pending.changes, []);
+    assert.isFalse(pending.next.passed);
+    const green = detail({ checks: [...skipped, required("success")] });
+    const passed = evaluatePullRequestWatch(pending.next, green, noRemarks);
+    assert.deepEqual(passed.changes, [{ kind: "checks-passed", count: 1, required: true }]);
+    assert.deepEqual(passed.next.passedChecks, ["qualification gate"]);
+    assert.deepEqual(evaluatePullRequestWatch(passed.next, green, noRemarks).changes, []);
+
+    const pushed = evaluatePullRequestWatch(
+      passed.next,
+      detail({ headSha: "bbbbbbbbbb", checks: skipped }),
+      noRemarks,
+    );
+    assert.deepEqual(pushed.changes, []);
+    assert.isFalse(pushed.next.passed);
+    assert.deepEqual(pushed.next.passedChecks, []);
+  });
+
+  it("allows skipped jobs alongside a successful required classifier", () => {
+    const classified = detail({
+      checks: [
+        { ...check("change classifier", "success"), required: true },
+        { ...check("selected out", "skipped"), required: true },
+        check("advisory", "pending"),
+      ],
+    });
+    const passed = evaluatePullRequestWatch(watch(), classified, noRemarks);
+    assert.deepEqual(passed.changes, [{ kind: "checks-passed", count: 2, required: true }]);
+  });
+
   it("reports passed again when a required check shows up already passed", () => {
     const required = (name: string, status: PullRequestCheck["status"]) => ({
       ...check(name, status),

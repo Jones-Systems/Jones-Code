@@ -490,6 +490,7 @@ it.effect("requeues a claim when a pre-execution worker check fails", () =>
     >([]);
     const executionCount = yield* Ref.make(0);
     const layerOutbox = Layer.mock(EffectOutbox.EffectOutboxV2)({
+      nextClaimableAt: () => Effect.succeed(Option.none()),
       claimNext: () => Effect.succeed(Option.some(claimedEffect)),
       get: () =>
         Effect.fail(
@@ -557,6 +558,7 @@ it.effect("arms cancellation before the durable pre-execution check", () =>
     const executionCount = yield* Ref.make(0);
     const settlementCount = yield* Ref.make(0);
     const layerOutbox = Layer.mock(EffectOutbox.EffectOutboxV2)({
+      nextClaimableAt: () => Effect.succeed(Option.none()),
       claimNext: () => Effect.succeed(Option.some(claimedEffect)),
       awaitCancellation: () => {
         cancellationArmed = true;
@@ -624,6 +626,7 @@ it.effect("terminalizes a process-bound claim when success settlement fails", ()
     const terminalErrors = yield* Ref.make<ReadonlyArray<string>>([]);
     const executionCount = yield* Ref.make(0);
     const layerOutbox = Layer.mock(EffectOutbox.EffectOutboxV2)({
+      nextClaimableAt: () => Effect.succeed(Option.none()),
       claimNext: () => Effect.succeed(Option.some(claimedEffect)),
       get: () => Effect.succeed(Option.some(claimedEffect)),
       awaitCancellation: () => Effect.never,
