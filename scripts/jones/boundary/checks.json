@@ -2,6 +2,19 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-project-group-title",
+      "tests": [
+        "packages/client-runtime/src/jones/projectGroupTitle.test.ts",
+        "packages/client-runtime/src/state/projectGrouping.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/client-runtime/src/jones/projectGroupTitle.test.ts packages/client-runtime/src/state/projectGrouping.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "vp lint packages/client-runtime/src/jones/projectGroupTitle.ts packages/client-runtime/src/jones/projectGroupTitle.test.ts packages/client-runtime/src/state/projectGrouping.ts",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-experimental-typecheck",
       "tests": ["scripts/jones/experimental-typecheck/runner.test.mjs"],
       "commands": [
