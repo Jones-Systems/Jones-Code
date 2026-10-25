@@ -1,3 +1,4 @@
+import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
 import {
   CommandId,
   type OrchestrationProjectShell,
@@ -156,6 +157,7 @@ export const make = Effect.gen(function* () {
   const projectEnrichment = yield* ProjectEnrichmentService.ProjectEnrichmentService;
   const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
   const threadProjections = yield* ProjectionStore.ProjectionStoreV2;
+  const metadata = yield* ThreadMetadataReads.ThreadMetadataReads;
   const eventSink = yield* EventSink.EventSinkV2;
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const legacyImporter = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
@@ -456,25 +458,22 @@ export const make = Effect.gen(function* () {
     input: ProjectDeleteInput,
   ) {
     const { projectId } = input;
-    const snapshot = yield* threadProjections
-      .getShellSnapshot()
+    const projectThreads = yield* metadata
+      .listIds({ projectId })
       .pipe(
         Effect.mapError(
           (cause) => new ProjectOperationError({ operation: "list-threads", projectId, cause }),
         ),
       );
-    const projectThreads = [...snapshot.threads, ...snapshot.archivedThreads].filter(
-      (thread) => thread.projectId === projectId,
-    );
     if (projectThreads.length > 0 && input.force !== true) {
       return yield* new ProjectNotEmptyError({ projectId });
     }
     // Delete children durably before the project so a failed cascade can be retried.
     yield* Effect.forEach(
       projectThreads,
-      (thread) =>
+      (threadId) =>
         threadCommands
-          .withLock(thread.id, deleteChildThread(input, thread.id))
+          .withLock(threadId, deleteChildThread(input, threadId))
           .pipe(
             Effect.mapError(
               (cause) =>

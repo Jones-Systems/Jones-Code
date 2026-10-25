@@ -1,3 +1,5 @@
+import * as ThreadMetadataReads from "./jones/orchestration/threadMetadataReads.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Option from "effect/Option";
 import * as PlannedUpdateContinuity from "./jones/updates/PlannedUpdateContinuityService.ts";
 import { activatePlannedUpdateContinuity } from "./jones/updates/plannedContinuityStartup.ts";
@@ -41,7 +43,6 @@ import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 import * as ProviderRuntimeRecovery from "./orchestration-v2/ProviderRuntimeRecoveryService.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadLaunch from "./orchestration-v2/ThreadLaunchService.ts";
-import * as ThreadManagement from "./orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "./project/ProjectService.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
@@ -173,15 +174,15 @@ export const makeCommandGate = Effect.gen(function* () {
 const recordStartupHeartbeat = Effect.gen(function* () {
   const analytics = yield* AnalyticsService.AnalyticsService;
   const projects = yield* ProjectService.ProjectService;
-  const threads = yield* ThreadManagement.ThreadManagementService;
+  const metadata = yield* ThreadMetadataReads.ThreadMetadataReads;
 
   const { threadCount, projectCount } = yield* Effect.all({
     projects: projects.snapshot,
-    threads: threads.getShellSnapshot(),
+    threads: metadata.count.pipe(NodeSqliteClient.readOnly),
   }).pipe(
-    Effect.map(({ projects: projectSnapshot, threads: shellSnapshot }) => ({
+    Effect.map(({ projects: projectSnapshot, threads: threadCount }) => ({
       projectCount: projectSnapshot.projects.length,
-      threadCount: shellSnapshot.threads.length + shellSnapshot.archivedThreads.length,
+      threadCount,
     })),
     Effect.catch((cause) =>
       Effect.logWarning("failed to gather V2 startup counts for telemetry", {
@@ -288,7 +289,7 @@ const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
   const randomUUID = crypto.randomUUIDv4();
   const serverConfig = yield* ServerConfig.ServerConfig;
   const projects = yield* ProjectService.ProjectService;
-  const threads = yield* ThreadManagement.ThreadManagementService;
+  const metadata = yield* ThreadMetadataReads.ThreadMetadataReads;
   const threadLaunch = yield* ThreadLaunch.ThreadLaunchService;
   const path = yield* Path.Path;
 
@@ -303,10 +304,9 @@ const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
       title: path.basename(serverConfig.cwd) || "project",
       workspaceRoot: serverConfig.cwd,
     });
-    const shell = yield* threads.getShellSnapshot();
-    const existingThread = shell.threads.find(
-      (thread) =>
-        thread.projectId === project.id && thread.lineage.relationshipToParent !== "subagent",
+    const snapshot = yield* metadata.list({ projectId: project.id, location: "active" });
+    const existingThread = snapshot.threads.find(
+      (thread) => thread.lineage.relationshipToParent !== "subagent",
     );
     if (existingThread === undefined) {
       const serverSettings = yield* ServerSettings.ServerSettingsService;

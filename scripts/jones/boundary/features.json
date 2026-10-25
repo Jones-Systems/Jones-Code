@@ -4,11 +4,6 @@
   "baseline": "05b697f6a2012497ae790425e197fbd1fcef7de7",
   "features": [
     {
-      "id": "queue-removal",
-      "tests": ["apps/web/src/jones/queue/QueuedRunRemoval.browser.test.tsx"],
-      "scope": "Web and desktop queue header Clear All cancels the saved click snapshot through existing per-run commands. Independent removals reserve only their own IDs; failures retain authoritative rows and report unconfirmed removals. Send, steer, edit, reorder and imported-history review remain fenced during cancellation and until accepted cancellations leave the projection. Active queued drafts and unsaved optimistic rows disable Clear All. No server, wire, provider, mobile, MCP or scheduled-task behavior changes. QueuedRunsControl retains narrow presentation and safety hooks into Jones-owned removal logic."
-    },
-    {
       "id": "project-group-title",
       "tests": ["packages/client-runtime/src/jones/projectGroupTitle.test.ts"],
       "scope": "Shared saved project names take precedence over repository labels when every checkout agrees, including names equal to the repository short name. Mixed titles retain the repository fallback; group identity, environment membership and persistence stay unchanged. One shared-client hook covers web, desktop and mobile."
@@ -2078,6 +2073,29 @@
       "id": "pele-lifecycle-acceptance",
       "tests": ["apps/web/src/jones/markdown/MermaidDiagram.browser.test.tsx"],
       "scope": "Focused browser acceptance of existing Pele integration: commit-only mounting, balanced cleanup through source changes, navigation and source toggle, unchanged rerenders, chunk-load retry, invalid-source recovery, and real SVG/MathML sanitization. The real components and DOMPurify run against a controlled Pele engine; navigation uses content replacement and native core-import rejection, parsing/layout, device behavior and live performance remain unqualified. No production behavior is changed."
+    },
+    {
+      "id": "thread-metadata-reads-efficiency",
+      "tests": [
+        "apps/server/src/jones/orchestration/threadMetadataReads.test.ts",
+        "apps/server/src/jones/orchestration/ThreadLaunchService.jones.test.ts",
+        "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+        "apps/server/src/orchestration-v2/LegacyBootstrapWireTransport.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+        "apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts",
+        "apps/server/src/project/ProjectService.test.ts",
+        "apps/server/src/project/ProjectService.deletion.test.ts",
+        "apps/server/src/serverRuntimeStartup.test.ts",
+        "apps/server/src/serverRuntimeStartup.autoPull.test.ts",
+        "apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts",
+        "apps/server/src/jones/mcp/delegatedTaskWorkspace/DelegatedTaskWorkspace.test.ts"
+      ],
+      "scope": "Narrow threads-only ID, metadata, count and watermark reads replace full-shell work for rename discovery, startup selection/counting and project deletion. Standalone rename/count reads select the reader; bootstrap/deletion retain writer read-your-writes. Rows and event watermark share a transaction, decode follows commit, deleted rows are excluded, and active-before-archived order is preserved. Existing integration harness exceptions retain production locking, cascade ordering and startup behavior; no database schema or installed-runtime change."
+    },
+    {
+      "id": "queue-removal",
+      "tests": ["apps/web/src/jones/queue/QueuedRunRemoval.browser.test.tsx"],
+      "scope": "Web and desktop queue header Clear All cancels the saved click snapshot through existing per-run commands. Independent removals reserve only their own IDs; failures retain authoritative rows and report unconfirmed removals. Send, steer, edit, reorder and imported-history review remain fenced during cancellation and until accepted cancellations leave the projection. Active queued drafts and unsaved optimistic rows disable Clear All. No server, wire, provider, mobile, MCP or scheduled-task behavior changes. QueuedRunsControl retains narrow presentation and safety hooks into Jones-owned removal logic."
     },
     {
       "id": "workspace-content-search-slicing",
