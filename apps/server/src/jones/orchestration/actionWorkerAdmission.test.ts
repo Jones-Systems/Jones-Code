@@ -108,7 +108,10 @@ it.effect("CORE-A4 reserves one of four workers for actions while three titles a
       assert.equal(Option.getOrThrow(yield* f.outbox.get(effect.id)).status, "running");
     }
     assert.equal(Option.getOrThrow(yield* f.outbox.get(titles[3]!.id)).attemptCount, 0);
-  }).pipe(Effect.scoped, Effect.provide(layerOutbox), Effect.provide(TestClock.layer())),
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(layerOutbox.pipe(Layer.provideMerge(TestClock.layer()))),
+  ),
 );
 
 it.effect("CORE-A4 admits four concurrent actions without adding workers", () =>
@@ -134,7 +137,10 @@ it.effect("CORE-A4 admits four concurrent actions without adding workers", () =>
     for (const action of actions.slice(1)) {
       assert.equal(Option.getOrThrow(yield* f.outbox.get(action.id)).status, "running");
     }
-  }).pipe(Effect.scoped, Effect.provide(layerOutbox), Effect.provide(TestClock.layer())),
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(layerOutbox.pipe(Layer.provideMerge(TestClock.layer()))),
+  ),
 );
 
 it.effect("CORE-A4 wakes a mixed worker promptly when the reserved worker is already waiting", () =>
@@ -151,7 +157,10 @@ it.effect("CORE-A4 wakes a mixed worker promptly when the reserved worker is alr
     assert.equal(Option.getOrThrow(yield* f.outbox.get(title.id)).status, "running");
     assert.equal(yield* Queue.take(f.started), title.id);
     assert.equal(yield* Ref.get(f.attempts).pipe(Effect.map((counts) => counts.action)), 2);
-  }).pipe(Effect.scoped, Effect.provide(layerOutbox), Effect.provide(TestClock.layer())),
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(layerOutbox.pipe(Layer.provideMerge(TestClock.layer()))),
+  ),
 );
 
 it.effect("CORE-A4 does not poll claims for due titles on the reserved worker", () =>
@@ -169,7 +178,10 @@ it.effect("CORE-A4 does not poll claims for due titles on the reserved worker", 
     assert.equal(Option.getOrThrow(yield* f.outbox.get(titles[1]!.id)).attemptCount, 0);
     yield* TestClock.adjust("1 millis");
     assert.deepEqual(yield* Ref.get(f.attempts), { action: 2, mixed: 1 });
-  }).pipe(Effect.scoped, Effect.provide(layerOutbox), Effect.provide(TestClock.layer())),
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(layerOutbox.pipe(Layer.provideMerge(TestClock.layer()))),
+  ),
 );
 
 it.effect(
@@ -227,7 +239,10 @@ it.effect(
         Option.getOrThrow(yield* outbox.claimNext({ workerId, leaseDurationMs: 30_000 })).id,
         laterTitle.id,
       );
-    }).pipe(Effect.scoped, Effect.provide(layerOutbox), Effect.provide(TestClock.layer())),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(layerOutbox.pipe(Layer.provideMerge(TestClock.layer()))),
+    ),
 );
 
 it.effect("CORE-A4 keeps one worker mixed and serial at concurrency one", () =>
@@ -246,7 +261,10 @@ it.effect("CORE-A4 keeps one worker mixed and serial at concurrency one", () =>
     yield* f.outbox.awaitCompletion([title.id]);
     assert.equal(yield* Queue.take(f.started), action.id);
     assert.deepEqual(yield* Ref.get(f.attempts), { action: 0, mixed: 2 });
-  }).pipe(Effect.scoped, Effect.provide(layerOutbox), Effect.provide(TestClock.layer())),
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(layerOutbox.pipe(Layer.provideMerge(TestClock.layer()))),
+  ),
 );
 
 it.effect("CORE-A4 runs an action at its durable deadline while a title is held", () =>
@@ -266,7 +284,10 @@ it.effect("CORE-A4 runs an action at its durable deadline while a title is held"
     assert.equal(Option.getOrThrow(yield* f.outbox.get(action.id)).status, "running");
     assert.equal(yield* Queue.take(f.started), action.id);
     assert.equal(Option.getOrThrow(yield* f.outbox.get(title.id)).status, "running");
-  }).pipe(Effect.scoped, Effect.provide(layerOutbox), Effect.provide(TestClock.layer())),
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(layerOutbox.pipe(Layer.provideMerge(TestClock.layer()))),
+  ),
 );
 
 it.effect("CORE-A4 retains future title deadlines for mixed workers", () =>
@@ -284,7 +305,10 @@ it.effect("CORE-A4 retains future title deadlines for mixed workers", () =>
     assert.equal(Option.getOrThrow(yield* f.outbox.get(title.id)).status, "running");
     assert.equal(yield* Queue.take(f.started), title.id);
     assert.equal(yield* Ref.get(f.attempts).pipe(Effect.map((counts) => counts.action)), 1);
-  }).pipe(Effect.scoped, Effect.provide(layerOutbox), Effect.provide(TestClock.layer())),
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(layerOutbox.pipe(Layer.provideMerge(TestClock.layer()))),
+  ),
 );
 
 it.effect("CORE-A4 stops the notification relay with the daemon scope", () =>
@@ -301,5 +325,8 @@ it.effect("CORE-A4 stops the notification relay with the daemon scope", () =>
     );
     yield* TestClock.adjust("0 millis");
     assert.isTrue(yield* Deferred.isDone(received));
-  }).pipe(Effect.scoped, Effect.provide(layerOutbox), Effect.provide(TestClock.layer())),
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(layerOutbox.pipe(Layer.provideMerge(TestClock.layer()))),
+  ),
 );
