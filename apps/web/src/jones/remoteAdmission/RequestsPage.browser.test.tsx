@@ -1,0 +1,112 @@
+import { act, render } from "../../../test/render";
+import { expect, it, vi } from "vite-plus/test";
+import { EnvironmentId } from "@t3tools/contracts";
+import { TooltipProvider } from "../../components/ui/tooltip";
+import { EnvironmentRequests, RequestsPage } from "./RequestsPage";
+import { admissionFixture, admissionSnapshot } from "./testFixtures";
+
+const request = vi.hoisted(() => vi.fn());
+vi.mock("./runtime", () => ({ remoteAdmissionRequest: request }));
+vi.mock("../../state/environments", () => ({
+  useEnvironmentIds: () => [],
+  useEnvironments: () => ({
+    isReady: true,
+    environments: [
+      { environmentId: EnvironmentId.make("requests-linked"), label: "Linked receiver" },
+      { environmentId: EnvironmentId.make("requests-primary"), label: "Primary receiver" },
+    ],
+  }),
+}));
+
+it("reviews exact bound requests inline and never restores approval after a failed refresh", async () => {
+  const environmentId = EnvironmentId.make("requests-decision");
+  const held = admissionFixture();
+  let decided = false;
+  request.mockReset().mockImplementation(async (_environmentId, input) => {
+    if (input.action === "decide") {
+      decided = true;
+      return { ...held, status: "approved" };
+    }
+    if (decided) throw new Error("offline private-detail");
+    return admissionSnapshot();
+  });
+  await using screen = await render(
+    <TooltipProvider>
+      <EnvironmentRequests environmentId={environmentId} label="Synthetic receiver" />
+    </TooltipProvider>,
+  );
+  expect(screen.container.textContent).toContain("1 need review");
+  await act(async () => screen.container.querySelector("summary")!.click());
+  expect(screen.container.querySelector("details")!.open).toBe(true);
+  const approve = [...screen.container.querySelectorAll("button")].find(
+    (button) => button.textContent === "Approve",
+  )!;
+  await act(async () => approve.click());
+  expect(request).toHaveBeenCalledWith(environmentId, {
+    action: "decide",
+    input: { id: held.id, bindingDigest: held.bindingDigest, decision: "approve" },
+  });
+  expect(screen.container.textContent).toContain("Approved · awaiting dispatch");
+  expect(screen.container.textContent).toContain("last known state");
+  expect(screen.container.textContent).not.toContain("private-detail");
+  expect(
+    [...screen.container.querySelectorAll("button")].some(
+      (button) => button.textContent === "Approve",
+    ),
+  ).toBe(false);
+});
+
+it("includes authorized linked receivers and shows inaccessible ones without asserting no requests", async () => {
+  request.mockReset().mockImplementation(async (environmentId) => {
+    if (environmentId === "requests-primary") throw new Error("forbidden");
+    return admissionSnapshot([
+      admissionFixture({ category: "evaluation_unavailable" }),
+      admissionFixture({ id: "waiting", status: "dispatching" }),
+    ]);
+  });
+  await using screen = await render(
+    <TooltipProvider>
+      <RequestsPage />
+    </TooltipProvider>,
+  );
+  const linked = screen.container.querySelector('[aria-label="Requests on Linked receiver"]')!;
+  const primary = screen.container.querySelector('[aria-label="Requests on Primary receiver"]')!;
+  expect(linked.textContent).toContain("1 need review");
+  expect(linked.textContent).toContain("Evaluator service failure");
+  expect(linked.textContent).toContain("not a finding of unsafe content");
+  expect(linked.textContent).toContain("Dispatch outcome unknown");
+  expect(primary.textContent).toContain("inaccessible");
+  expect(primary.textContent).not.toContain("No pending requests");
+  expect(request.mock.calls.map(([id]) => id)).toContain("requests-linked");
+});
+
+it("bounds collapsed previews, discloses the cap and leaves full payload available", async () => {
+  const long = "Synthetic long content ".repeat(100);
+  request.mockReset().mockResolvedValue(
+    admissionSnapshot(
+      Array.from({ length: 200 }, (_, index) => {
+        const record = admissionFixture({ id: `cap-${index}` });
+        return {
+          ...record,
+          envelope: {
+            ...record.envelope,
+            payload: { params: { title: `Request ${index}`, message: long } },
+          },
+        };
+      }),
+    ),
+  );
+  await using screen = await render(
+    <TooltipProvider>
+      <EnvironmentRequests
+        environmentId={EnvironmentId.make("requests-cap")}
+        label="Capped receiver"
+      />
+    </TooltipProvider>,
+  );
+  expect(screen.container.textContent).toContain("Showing at most 200");
+  const summary = screen.container.querySelector("summary")!;
+  expect(summary.textContent!.length).toBeLessThan(500);
+  await act(async () => summary.click());
+  expect(summary.parentElement!.textContent).toContain(long);
+});

@@ -10,6 +10,7 @@ import {
   remoteRequestEvaluationUnsupported,
 } from "./jones/remoteRequestEvaluation.ts";
 export { remoteRequestEvaluationUnsupported } from "./jones/remoteRequestEvaluation.ts";
+export { buildRemoteRequestEvaluationPrompt } from "./jones/remoteRequestEvaluation.ts";
 
 import type { ProviderTextGeneration } from "./textGeneration.ts";
 import {

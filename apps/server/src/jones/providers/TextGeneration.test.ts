@@ -5,7 +5,7 @@ import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import { describe, expect } from "vite-plus/test";
 
-import { ProviderInstanceId, TextGenerationError } from "@t3tools/contracts";
+import { ProviderInstanceId, TextGenerationError, type ServerProvider } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
@@ -42,7 +42,14 @@ const makeStubInstance = (
     },
     displayName: undefined,
     enabled: true,
-    snapshot: {} as ProviderInstance["snapshot"],
+    snapshot: {
+      getSnapshot: Effect.succeed({
+        instanceId,
+        enabled: true,
+        supportsRemoteRequestEvaluation: true,
+        models: [{ slug: "synthetic-model" }],
+      } as unknown as ServerProvider),
+    } as ProviderInstance["snapshot"],
     orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
     textGeneration,
   }) satisfies ProviderInstance;
@@ -116,7 +123,7 @@ describe("Jones remote evaluation routing", () => {
           if (Result.isFailure(result)) {
             expect(result.failure.operation).toBe("evaluateRemoteRequest");
             expect(result.failure.detail).toContain(
-              outcome === "missing" ? "No provider instance" : "Unsupported synthetic",
+              outcome === "missing" ? "does not support tool-free" : "Unsupported synthetic",
             );
           }
         } else {
