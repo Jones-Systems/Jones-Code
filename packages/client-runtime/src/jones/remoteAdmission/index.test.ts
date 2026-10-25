@@ -35,14 +35,21 @@ describe("remote admission failure normalization", () => {
     ["EnvironmentResourceNotFoundError", "unsupported"],
     ["EnvironmentInternalError", "other"],
   ] as const)("preserves the declared %s classification without its payload", (_tag, kind) => {
-    const error = normalizeRemoteAdmissionError({ _tag, message: privateDetail, reason: privateDetail });
+    const error = normalizeRemoteAdmissionError({
+      _tag,
+      message: privateDetail,
+      reason: privateDetail,
+    });
     expect(error.kind).toBe(kind);
     expect(JSON.stringify(error)).not.toContain(privateDetail);
   });
 
   it("keeps transport failures retryable and unknown failures bounded", () => {
     for (const failure of [
-      new RemoteEnvironmentAuthFetchError({ message: privateDetail, cause: { payload: privateDetail } }),
+      new RemoteEnvironmentAuthFetchError({
+        message: privateDetail,
+        cause: { payload: privateDetail },
+      }),
       new RemoteEnvironmentAuthTimeoutError(`https://${privateDetail}.invalid`, 45_000),
     ]) {
       const error = normalizeRemoteAdmissionError(failure);

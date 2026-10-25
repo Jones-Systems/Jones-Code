@@ -39,7 +39,6 @@ export async function remoteAdmissionRequest(
     { environmentId, request },
     { reportFailure: false, reportDefect: false },
   );
-  if (result._tag !== "Success")
-    throw normalizeRemoteAdmissionError(Cause.squash(result.cause));
+  if (result._tag !== "Success") throw normalizeRemoteAdmissionError(Cause.squash(result.cause));
   return result.value;
 }

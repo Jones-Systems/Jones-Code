@@ -60,27 +60,29 @@ it.layer(layerTest)("ClaudeDriver evaluator capability", (it) => {
     { launchArgs: "--tools Read Bash --setting-sources user,local", supported: true },
     { launchArgs: "--settings=private-settings-value", supported: false },
     { launchArgs: "--unknown-account-flag private-account-value", supported: false },
-  ])("reports evaluator support=$supported without rejecting the provider (case %#)", ({ launchArgs, supported }) =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const homePath = yield* fs.makeTempDirectoryScoped({ prefix: "claude-evaluator-home-" });
-      const instance = yield* ClaudeDriver.create({
-        instanceId: ProviderInstanceId.make("synthetic-claude-evaluator"),
-        displayName: "Synthetic Claude evaluator",
-        environment: [],
-        enabled: false,
-        config: { ...ClaudeDriver.defaultConfig(), enabled: false, homePath, launchArgs },
-      }).pipe(
-        Effect.provideService(
-          ChildProcessSpawner.ChildProcessSpawner,
-          ChildProcessSpawner.make(() => Effect.die("Capability classification must not spawn")),
-        ),
-      );
-      const snapshot = yield* instance.snapshot.getSnapshot;
-      expect(snapshot.supportsRemoteRequestEvaluation).toBe(supported);
-      expect(snapshot.status).toBe("warning");
-      expect(instance.orchestrationAdapter).toBeDefined();
-      expect(instance.textGeneration).toBeDefined();
-    }).pipe(Effect.scoped),
+  ])(
+    "reports evaluator support=$supported without rejecting the provider (case %#)",
+    ({ launchArgs, supported }) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const homePath = yield* fs.makeTempDirectoryScoped({ prefix: "claude-evaluator-home-" });
+        const instance = yield* ClaudeDriver.create({
+          instanceId: ProviderInstanceId.make("synthetic-claude-evaluator"),
+          displayName: "Synthetic Claude evaluator",
+          environment: [],
+          enabled: false,
+          config: { ...ClaudeDriver.defaultConfig(), enabled: false, homePath, launchArgs },
+        }).pipe(
+          Effect.provideService(
+            ChildProcessSpawner.ChildProcessSpawner,
+            ChildProcessSpawner.make(() => Effect.die("Capability classification must not spawn")),
+          ),
+        );
+        const snapshot = yield* instance.snapshot.getSnapshot;
+        expect(snapshot.supportsRemoteRequestEvaluation).toBe(supported);
+        expect(snapshot.status).toBe("warning");
+        expect(instance.orchestrationAdapter).toBeDefined();
+        expect(instance.textGeneration).toBeDefined();
+      }).pipe(Effect.scoped),
   );
 });

@@ -116,32 +116,39 @@ it("bounds collapsed previews, discloses the cap and leaves full payload availab
 it.each([
   [403, "Owner access is unavailable"],
   [404, "unsupported on Older receiver"],
-])("keeps HTTP %s distinct from an empty inbox and recovers with Refresh", async (status, message) => {
-  const environmentId = EnvironmentId.make(`requests-access-${status}`);
-  request.mockReset().mockRejectedValue({
-    _tag: "RemoteEnvironmentAuthUndeclaredStatusError",
-    status,
-    message: "synthetic private response",
-  });
-  await using screen = await render(
-    <TooltipProvider>
-      <EnvironmentRequests environmentId={environmentId} label="Older receiver" />
-    </TooltipProvider>,
-  );
-  expect(screen.container.textContent).toContain(message);
-  expect(screen.container.textContent).not.toContain("No pending requests");
-  expect(screen.container.textContent).not.toContain("Retrying automatically");
-  expect(screen.container.textContent).not.toContain("synthetic private response");
-  if (status === 403) {
-    expect(screen.container.textContent).toContain("from Older receiver's own Jones Code app or signed-in browser");
-    expect(screen.container.textContent).toContain("Settings → Connections");
-  }
-  request.mockResolvedValue(admissionSnapshot([]));
-  const refresh = [...screen.container.querySelectorAll("button")].find((button) => button.textContent === "Refresh")!;
-  await act(async () => refresh.click());
-  expect(screen.container.textContent).toContain("No pending requests on this environment");
-  expect(screen.container.querySelector('[role="alert"]')).toBeNull();
-});
+])(
+  "keeps HTTP %s distinct from an empty inbox and recovers with Refresh",
+  async (status, message) => {
+    const environmentId = EnvironmentId.make(`requests-access-${status}`);
+    request.mockReset().mockRejectedValue({
+      _tag: "RemoteEnvironmentAuthUndeclaredStatusError",
+      status,
+      message: "synthetic private response",
+    });
+    await using screen = await render(
+      <TooltipProvider>
+        <EnvironmentRequests environmentId={environmentId} label="Older receiver" />
+      </TooltipProvider>,
+    );
+    expect(screen.container.textContent).toContain(message);
+    expect(screen.container.textContent).not.toContain("No pending requests");
+    expect(screen.container.textContent).not.toContain("Retrying automatically");
+    expect(screen.container.textContent).not.toContain("synthetic private response");
+    if (status === 403) {
+      expect(screen.container.textContent).toContain(
+        "from Older receiver's own Jones Code app or signed-in browser",
+      );
+      expect(screen.container.textContent).toContain("Settings → Connections");
+    }
+    request.mockResolvedValue(admissionSnapshot([]));
+    const refresh = [...screen.container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Refresh",
+    )!;
+    await act(async () => refresh.click());
+    expect(screen.container.textContent).toContain("No pending requests on this environment");
+    expect(screen.container.querySelector('[role="alert"]')).toBeNull();
+  },
+);
 
 it("keeps owner-only receivers out of unknown attention and restores counts after Refresh", async () => {
   const environmentId = EnvironmentId.make("requests-attention-owner");
@@ -150,14 +157,18 @@ it("keeps owner-only receivers out of unknown attention and restores counts afte
   try {
     await using screen = await render(
       <TooltipProvider>
-        <div data-attention><RemoteAdmissionCount /></div>
+        <div data-attention>
+          <RemoteAdmissionCount />
+        </div>
         <EnvironmentRequests environmentId={environmentId} label="Owner receiver" />
       </TooltipProvider>,
     );
     const attention = screen.container.querySelector("[data-attention]")!;
     expect(attention.textContent).toBe("");
     expect(screen.container.textContent).toContain("owner access required");
-    const refresh = [...screen.container.querySelectorAll("button")].find((button) => button.textContent === "Refresh")!;
+    const refresh = [...screen.container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Refresh",
+    )!;
     request.mockResolvedValue(admissionSnapshot());
     await act(async () => refresh.click());
     expect(attention.textContent).toBe("1");

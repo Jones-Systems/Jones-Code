@@ -9,9 +9,7 @@
     "apps/server/src/textGeneration/jones/claudeEvaluatorLaunch.ts",
     "apps/server/src/textGeneration/jones/claudeEvaluatorLaunch.test.ts"
   ],
-  "hookPaths": [
-    "apps/server/src/provider/Drivers/ClaudeDriver.ts"
-  ],
+  "hookPaths": ["apps/server/src/provider/Drivers/ClaudeDriver.ts"],
   "tombstones": [],
   "allowedImports": [
     {

@@ -90,34 +90,42 @@ it("closes stale inline actions while owner review is inaccessible", async () =>
   expect(store.getSnapshot().snapshot?.pending).toHaveLength(1);
 });
 
-it.each([403, 404])("closes in-app and native cues for terminal HTTP %s and restores them after owner recovery", async (status) => {
-  vi.clearAllMocks();
-  mocks.add.mockReturnValue("owner-toast");
-  const native: { close: ReturnType<typeof vi.fn> }[] = [];
-  using _notification = stubGlobal("Notification", class {
-    static permission = "granted";
-    close = vi.fn();
-    addEventListener = vi.fn();
-    constructor() { native.push(this); }
-  });
-  const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
-  notificationMode = "notifications";
-  try {
-    const request = vi.fn().mockResolvedValue(admissionSnapshot());
-    store = createAdmissionStore(request);
-    await store.refresh();
-    await using _screen = await render(<RemoteAdmissionNotifications />);
-    expect(native).toHaveLength(1);
-    request.mockRejectedValue({ _tag: "RemoteEnvironmentAuthUndeclaredStatusError", status });
-    await act(async () => store.refresh());
-    expect(mocks.close).toHaveBeenCalledWith("owner-toast");
-    expect(native[0]!.close).toHaveBeenCalledTimes(1);
-    expect(mocks.add).toHaveBeenCalledTimes(1);
-    request.mockResolvedValue(admissionSnapshot());
-    await act(async () => store.refresh());
-    expect(mocks.add).toHaveBeenCalledTimes(2);
-  } finally {
-    notificationMode = "off";
-    focus.mockRestore();
-  }
-});
+it.each([403, 404])(
+  "closes in-app and native cues for terminal HTTP %s and restores them after owner recovery",
+  async (status) => {
+    vi.clearAllMocks();
+    mocks.add.mockReturnValue("owner-toast");
+    const native: { close: ReturnType<typeof vi.fn> }[] = [];
+    using _notification = stubGlobal(
+      "Notification",
+      class {
+        static permission = "granted";
+        close = vi.fn();
+        addEventListener = vi.fn();
+        constructor() {
+          native.push(this);
+        }
+      },
+    );
+    const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    notificationMode = "notifications";
+    try {
+      const request = vi.fn().mockResolvedValue(admissionSnapshot());
+      store = createAdmissionStore(request);
+      await store.refresh();
+      await using _screen = await render(<RemoteAdmissionNotifications />);
+      expect(native).toHaveLength(1);
+      request.mockRejectedValue({ _tag: "RemoteEnvironmentAuthUndeclaredStatusError", status });
+      await act(async () => store.refresh());
+      expect(mocks.close).toHaveBeenCalledWith("owner-toast");
+      expect(native[0]!.close).toHaveBeenCalledTimes(1);
+      expect(mocks.add).toHaveBeenCalledTimes(1);
+      request.mockResolvedValue(admissionSnapshot());
+      await act(async () => store.refresh());
+      expect(mocks.add).toHaveBeenCalledTimes(2);
+    } finally {
+      notificationMode = "off";
+      focus.mockRestore();
+    }
+  },
+);

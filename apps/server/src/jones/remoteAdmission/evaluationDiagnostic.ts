@@ -17,7 +17,8 @@ export type EvaluationFailureKind =
   | "interrupted";
 
 const templates: Record<EvaluationFailureKind, string> = {
-  timeout: "Evaluation timed out. Check provider availability before retrying or review this request.",
+  timeout:
+    "Evaluation timed out. Check provider availability before retrying or review this request.",
   auth_access:
     "Evaluator authentication or access is unavailable. Check the selected provider account and its access.",
   provider_limit:
@@ -41,7 +42,10 @@ const knownDetails = new Map<string, EvaluationFailureKind>([
     "The selected provider instance does not support tool-free remote request evaluation.",
     "unsupported_selection",
   ],
-  ["The selected evaluator model is unavailable on this provider instance.", "unsupported_selection"],
+  [
+    "The selected evaluator model is unavailable on this provider instance.",
+    "unsupported_selection",
+  ],
   [
     "The selected evaluator options are unsupported by this exact model and instance.",
     "unsupported_selection",
@@ -99,8 +103,7 @@ export const classifyEvaluationFailure = (cause: Cause.Cause<unknown>): Evaluati
       /^Claude remote request evaluation does not support the configured --[a-zA-Z][a-zA-Z0-9-]{0,63} launch flag\.$/.exec(
         error.detail,
       );
-    if (launchFailure && launchFailure[0] === error.detail)
-      return "unsupported_selection";
+    if (launchFailure && launchFailure[0] === error.detail) return "unsupported_selection";
 
     // CLI failures may contain arbitrary stderr. Recognize only failure classes;
     // neither their text nor their nested cause is ever rendered or logged here.
@@ -147,9 +150,10 @@ export const evaluationDiagnostic = (
     failureKind,
     instanceId,
     model,
-    reason: `Evaluator instance=${instanceId}, model=${model} (${failureKind}): ${templates[failureKind]} Owner review is required.`.slice(
-      0,
-      600,
-    ),
+    reason:
+      `Evaluator instance=${instanceId}, model=${model} (${failureKind}): ${templates[failureKind]} Owner review is required.`.slice(
+        0,
+        600,
+      ),
   };
 };

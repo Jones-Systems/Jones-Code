@@ -84,7 +84,7 @@ function claudeErrorResult(stdout: string): string | undefined {
   const errors = messages.filter(isClaudeErrorResult);
   return (
     errors
-      .map((message) => typeof message.result === "string" ? message.result.trim() : "")
+      .map((message) => (typeof message.result === "string" ? message.result.trim() : ""))
       .findLast((result) => result.length > 0) ??
     (errors.length > 0 ? "Claude CLI reported an error without details." : undefined)
   );
@@ -283,9 +283,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       if (exitCode !== 0 || reportedError !== undefined) {
         const stderrDetail = stderr.trim();
         const stdoutDetail = stdout.trim();
-        const detail =
-          reportedError ??
-          (stderrDetail.length > 0 ? stderrDetail : stdoutDetail);
+        const detail = reportedError ?? (stderrDetail.length > 0 ? stderrDetail : stdoutDetail);
         return yield* new TextGenerationError({
           operation,
           detail:

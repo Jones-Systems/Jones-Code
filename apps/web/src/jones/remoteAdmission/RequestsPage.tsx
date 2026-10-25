@@ -77,7 +77,9 @@ export function EnvironmentRequests({
           reason={
             state.busy
               ? "A decision or settings change is in progress."
-              : loading ? "Loading requests…" : null
+              : loading
+                ? "Loading requests…"
+                : null
           }
         >
           <Button

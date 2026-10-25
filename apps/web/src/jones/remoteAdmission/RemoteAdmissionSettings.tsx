@@ -74,11 +74,11 @@ function EvaluatorConfiguration({ environmentId }: { readonly environmentId: Env
     : undefined;
   const available = Boolean(
     providersKnown &&
-      activeEntry?.enabled &&
-      activeEntry.isAvailable &&
-      activeEntry.status === "ready" &&
-      selectedModel &&
-      !selectedModel.isUnavailable,
+    activeEntry?.enabled &&
+    activeEntry.isAvailable &&
+    activeEntry.status === "ready" &&
+    selectedModel &&
+    !selectedModel.isUnavailable,
   );
   const blocked = busy
     ? "Saving evaluator settings…"
@@ -244,7 +244,9 @@ function EvaluatorConfiguration({ environmentId }: { readonly environmentId: Env
         </Tooltip>
         <UnavailableControl
           label="Refresh"
-          reason={busy ? "Saving evaluator settings…" : loading ? "Loading evaluator settings…" : null}
+          reason={
+            busy ? "Saving evaluator settings…" : loading ? "Loading evaluator settings…" : null
+          }
         >
           <Button
             variant="outline"

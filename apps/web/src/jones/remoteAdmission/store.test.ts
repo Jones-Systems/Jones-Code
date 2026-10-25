@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vite-plus/test";
-import { actionableAdmissions, admissionAttention, admissionBindingKey, createAdmissionStore } from "./store";
+import {
+  actionableAdmissions,
+  admissionAttention,
+  admissionBindingKey,
+  createAdmissionStore,
+} from "./store";
 import { admissionFixture, admissionSnapshot } from "./testFixtures";
 
 describe("owner request state", () => {
@@ -124,27 +129,46 @@ it.each([
   [403, "unauthorized"],
   [404, "unsupported"],
   [503, "transient"],
-] as const)("retains HTTP %s classification, blocks stale policy and permits explicit recovery", async (status, kind) => {
-  const snapshot = admissionSnapshot();
-  const request = vi.fn().mockResolvedValue(snapshot);
-  const store = createAdmissionStore(request);
-  await store.refresh();
-  request.mockRejectedValueOnce({
-    _tag: "RemoteEnvironmentAuthUndeclaredStatusError",
-    status,
-    message: "synthetic private response",
-  });
-  await store.refresh();
-  expect(store.getSnapshot()).toMatchObject({ loadFailed: true, loadFailure: kind, loading: false });
-  expect(store.getSnapshot().snapshot).toEqual(snapshot);
-  await store.savePolicy({ enabled: false, expectedRevision: snapshot.policy.revision, modelSelection: null });
-  expect(request).toHaveBeenCalledTimes(2);
-  await store.refresh();
-  expect(store.getSnapshot()).toMatchObject({ loadFailed: false, loadFailure: null, loading: false });
-  request.mockResolvedValue({ ...snapshot, policy: { ...snapshot.policy, enabled: false } });
-  await store.savePolicy({ enabled: false, expectedRevision: snapshot.policy.revision, modelSelection: null });
-  expect(store.getSnapshot().snapshot?.policy.enabled).toBe(false);
-});
+] as const)(
+  "retains HTTP %s classification, blocks stale policy and permits explicit recovery",
+  async (status, kind) => {
+    const snapshot = admissionSnapshot();
+    const request = vi.fn().mockResolvedValue(snapshot);
+    const store = createAdmissionStore(request);
+    await store.refresh();
+    request.mockRejectedValueOnce({
+      _tag: "RemoteEnvironmentAuthUndeclaredStatusError",
+      status,
+      message: "synthetic private response",
+    });
+    await store.refresh();
+    expect(store.getSnapshot()).toMatchObject({
+      loadFailed: true,
+      loadFailure: kind,
+      loading: false,
+    });
+    expect(store.getSnapshot().snapshot).toEqual(snapshot);
+    await store.savePolicy({
+      enabled: false,
+      expectedRevision: snapshot.policy.revision,
+      modelSelection: null,
+    });
+    expect(request).toHaveBeenCalledTimes(2);
+    await store.refresh();
+    expect(store.getSnapshot()).toMatchObject({
+      loadFailed: false,
+      loadFailure: null,
+      loading: false,
+    });
+    request.mockResolvedValue({ ...snapshot, policy: { ...snapshot.policy, enabled: false } });
+    await store.savePolicy({
+      enabled: false,
+      expectedRevision: snapshot.policy.revision,
+      modelSelection: null,
+    });
+    expect(store.getSnapshot().snapshot?.policy.enabled).toBe(false);
+  },
+);
 
 it("blocks policy changes while a current snapshot is loading", async () => {
   const snapshot = admissionSnapshot();
@@ -152,10 +176,19 @@ it("blocks policy changes while a current snapshot is loading", async () => {
   const store = createAdmissionStore(request);
   await store.refresh();
   let resolve!: (value: typeof snapshot) => void;
-  request.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+  request.mockImplementationOnce(
+    () =>
+      new Promise((done) => {
+        resolve = done;
+      }),
+  );
   const reading = store.refresh();
   expect(store.getSnapshot().loading).toBe(true);
-  await store.savePolicy({ enabled: false, expectedRevision: snapshot.policy.revision, modelSelection: null });
+  await store.savePolicy({
+    enabled: false,
+    expectedRevision: snapshot.policy.revision,
+    modelSelection: null,
+  });
   expect(request).toHaveBeenCalledTimes(2);
   resolve(snapshot);
   await reading;
@@ -193,21 +226,32 @@ it("backs off transient reads from ten seconds to five minutes, permits Refresh,
   }
 });
 
-it.each([403, 404])("excludes terminal HTTP %s from attention and automatic retries until Refresh recovers", async (status) => {
-  const request = vi.fn().mockResolvedValue(admissionSnapshot());
-  const store = createAdmissionStore(request);
-  await store.refresh();
-  expect(admissionAttention(store.getSnapshot()).held).toBe(1);
-  request.mockRejectedValue({ _tag: "RemoteEnvironmentAuthUndeclaredStatusError", status });
-  await store.refresh();
-  expect(admissionAttention(store.getSnapshot())).toEqual({ held: 0, unknown: false, capped: false });
-  expect(actionableAdmissions(store.getSnapshot())).toEqual([]);
-  await store.refreshWhenDue();
-  expect(request).toHaveBeenCalledTimes(2);
-  request.mockResolvedValue(admissionSnapshot());
-  await store.refresh();
-  expect(admissionAttention(store.getSnapshot())).toEqual({ held: 1, unknown: false, capped: false });
-  request.mockRejectedValue({ _tag: "RemoteEnvironmentAuthFetchError" });
-  await store.refresh();
-  expect(admissionAttention(store.getSnapshot()).unknown).toBe(true);
-});
+it.each([403, 404])(
+  "excludes terminal HTTP %s from attention and automatic retries until Refresh recovers",
+  async (status) => {
+    const request = vi.fn().mockResolvedValue(admissionSnapshot());
+    const store = createAdmissionStore(request);
+    await store.refresh();
+    expect(admissionAttention(store.getSnapshot()).held).toBe(1);
+    request.mockRejectedValue({ _tag: "RemoteEnvironmentAuthUndeclaredStatusError", status });
+    await store.refresh();
+    expect(admissionAttention(store.getSnapshot())).toEqual({
+      held: 0,
+      unknown: false,
+      capped: false,
+    });
+    expect(actionableAdmissions(store.getSnapshot())).toEqual([]);
+    await store.refreshWhenDue();
+    expect(request).toHaveBeenCalledTimes(2);
+    request.mockResolvedValue(admissionSnapshot());
+    await store.refresh();
+    expect(admissionAttention(store.getSnapshot())).toEqual({
+      held: 1,
+      unknown: false,
+      capped: false,
+    });
+    request.mockRejectedValue({ _tag: "RemoteEnvironmentAuthFetchError" });
+    await store.refresh();
+    expect(admissionAttention(store.getSnapshot()).unknown).toBe(true);
+  },
+);

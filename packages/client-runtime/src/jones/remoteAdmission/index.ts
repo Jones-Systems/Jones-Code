@@ -43,8 +43,10 @@ export function normalizeRemoteAdmissionError(error: unknown): RemoteAdmissionEr
     return new RemoteAdmissionError("unauthorized");
   if (tag === "EnvironmentResourceNotFoundError") return new RemoteAdmissionError("unsupported");
   if (tag === "RemoteEnvironmentAuthUndeclaredStatusError" && "status" in error) {
-    if (error.status === 401 || error.status === 403) return new RemoteAdmissionError("unauthorized");
-    if (error.status === 404 || error.status === 405) return new RemoteAdmissionError("unsupported");
+    if (error.status === 401 || error.status === 403)
+      return new RemoteAdmissionError("unauthorized");
+    if (error.status === 404 || error.status === 405)
+      return new RemoteAdmissionError("unsupported");
     if (typeof error.status === "number" && (error.status === 429 || error.status >= 500))
       return new RemoteAdmissionError("transient");
   }
@@ -94,5 +96,7 @@ const request = Effect.fn("clientRuntime.remoteAdmission.request")(function* (
   });
 });
 
-export const requestRemoteAdmission = (entry: ConnectionCatalogEntry, input: RemoteAdmissionRequest) =>
-  request(entry, input).pipe(Effect.mapError(normalizeRemoteAdmissionError));
+export const requestRemoteAdmission = (
+  entry: ConnectionCatalogEntry,
+  input: RemoteAdmissionRequest,
+) => request(entry, input).pipe(Effect.mapError(normalizeRemoteAdmissionError));

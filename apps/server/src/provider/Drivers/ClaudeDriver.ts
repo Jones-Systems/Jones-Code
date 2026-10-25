@@ -172,8 +172,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     const stampIdentity: typeof stamp = (draft) =>
       stamp({
         ...draft,
-        supportsRemoteRequestEvaluation: classifyClaudeEvaluatorLaunchArgs(effectiveConfig.launchArgs)
-          .qualified,
+        supportsRemoteRequestEvaluation: classifyClaudeEvaluatorLaunchArgs(
+          effectiveConfig.launchArgs,
+        ).qualified,
       });
 
     const scopedLimitNames = yield* makeClaudeScopedLimitNames;

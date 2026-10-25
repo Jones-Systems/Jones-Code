@@ -145,10 +145,11 @@ function setup(name: string) {
   return {
     snapshot,
     visibility,
-    poll: () => act(async () => {
-      now += 10_000;
-      tick();
-    }),
+    poll: () =>
+      act(async () => {
+        now += 10_000;
+        tick();
+      }),
     [Symbol.dispose]() {
       clock.mockRestore();
       clear.mockRestore();
@@ -271,48 +272,53 @@ it("keeps a safe load error and unsaved effort, disables writes, then recovers w
 it.each([
   [403, "Owner access is unavailable"],
   [404, "unsupported on Synthetic receiver"],
-])("pauses polling after HTTP %s and recovers only after explicit Refresh", async (status, message) => {
-  using fixture = setup(`settings-terminal-${status}`);
-  providers = [];
-  request.mockRejectedValue({
-    _tag: "RemoteEnvironmentAuthUndeclaredStatusError",
-    status,
-    message: "private synthetic-detail",
-  });
-  await using screen = await render(<RemoteAdmissionSettings environmentId={environmentId} />);
-  expect(screen.container.textContent).toContain(message);
-  expect(screen.container.textContent).toContain("Evaluator policy is unknown");
-  expect(screen.container.textContent).toContain("Evaluator provider availability is unknown");
-  expect(screen.container.textContent).not.toContain("No providers advertise");
-  expect(screen.container.textContent).not.toContain("synthetic-detail");
-  expect(screen.container.textContent).not.toContain("Retrying automatically");
-  expect(screen.container.querySelector('[aria-label="Evaluate remote requests"]')).toBeNull();
-  expect(screen.container.querySelector('[aria-label="Evaluator model"]')).toBeNull();
-  if (status === 403) {
-    expect(screen.container.textContent).toContain("from Synthetic receiver's own Jones Code app or signed-in browser");
-    expect(screen.container.textContent).toContain("Settings → Connections");
-  }
-  await fixture.poll();
-  await act(async () => document.dispatchEvent(new Event("visibilitychange")));
-  expect(request).toHaveBeenCalledTimes(1);
-  providers = [provider];
-  request.mockResolvedValue({
-    ...fixture.snapshot,
-    policy: { ...fixture.snapshot.policy, enabled: false },
-  });
-  await act(async () => button(screen.container, "Refresh").click());
-  expect(screen.container.textContent).toContain("Evaluator policy is disabled");
-  expect(screen.container.querySelector('[role="alert"]')).toBeNull();
-  await act(async () => button(screen.container, "Save model").click());
-  expect(request).toHaveBeenCalledWith(environmentId, {
-    action: "policy",
-    input: { enabled: false, expectedRevision: "synthetic-policy", modelSelection: selection },
-  });
-  const beforePoll = request.mock.calls.length;
-  await fixture.poll();
-  expect(request).toHaveBeenCalledTimes(beforePoll + 1);
-  expect(request).toHaveBeenLastCalledWith(environmentId, { action: "snapshot" });
-});
+])(
+  "pauses polling after HTTP %s and recovers only after explicit Refresh",
+  async (status, message) => {
+    using fixture = setup(`settings-terminal-${status}`);
+    providers = [];
+    request.mockRejectedValue({
+      _tag: "RemoteEnvironmentAuthUndeclaredStatusError",
+      status,
+      message: "private synthetic-detail",
+    });
+    await using screen = await render(<RemoteAdmissionSettings environmentId={environmentId} />);
+    expect(screen.container.textContent).toContain(message);
+    expect(screen.container.textContent).toContain("Evaluator policy is unknown");
+    expect(screen.container.textContent).toContain("Evaluator provider availability is unknown");
+    expect(screen.container.textContent).not.toContain("No providers advertise");
+    expect(screen.container.textContent).not.toContain("synthetic-detail");
+    expect(screen.container.textContent).not.toContain("Retrying automatically");
+    expect(screen.container.querySelector('[aria-label="Evaluate remote requests"]')).toBeNull();
+    expect(screen.container.querySelector('[aria-label="Evaluator model"]')).toBeNull();
+    if (status === 403) {
+      expect(screen.container.textContent).toContain(
+        "from Synthetic receiver's own Jones Code app or signed-in browser",
+      );
+      expect(screen.container.textContent).toContain("Settings → Connections");
+    }
+    await fixture.poll();
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    expect(request).toHaveBeenCalledTimes(1);
+    providers = [provider];
+    request.mockResolvedValue({
+      ...fixture.snapshot,
+      policy: { ...fixture.snapshot.policy, enabled: false },
+    });
+    await act(async () => button(screen.container, "Refresh").click());
+    expect(screen.container.textContent).toContain("Evaluator policy is disabled");
+    expect(screen.container.querySelector('[role="alert"]')).toBeNull();
+    await act(async () => button(screen.container, "Save model").click());
+    expect(request).toHaveBeenCalledWith(environmentId, {
+      action: "policy",
+      input: { enabled: false, expectedRevision: "synthetic-policy", modelSelection: selection },
+    });
+    const beforePoll = request.mock.calls.length;
+    await fixture.poll();
+    expect(request).toHaveBeenCalledTimes(beforePoll + 1);
+    expect(request).toHaveBeenLastCalledWith(environmentId, { action: "snapshot" });
+  },
+);
 
 it("keeps provider absence unknown until a current provider source succeeds", async () => {
   using fixture = setup("settings-provider-source");
@@ -330,7 +336,9 @@ it("keeps provider absence unknown until a current provider source succeeds", as
   providers = [];
   providerDataKnown = true;
   await fixture.poll();
-  expect(screen.container.textContent).toContain("No providers advertise remote evaluation support");
+  expect(screen.container.textContent).toContain(
+    "No providers advertise remote evaluation support",
+  );
 });
 
 it("shows retained policy as last known and blocks settings during a current read", async () => {
@@ -338,10 +346,15 @@ it("shows retained policy as last known and blocks settings during a current rea
   await using screen = await render(<RemoteAdmissionSettings environmentId={environmentId} />);
   let resolve!: (value: typeof fixture.snapshot) => void;
   request.mockImplementationOnce(
-    () => new Promise((done) => { resolve = done; }),
+    () =>
+      new Promise((done) => {
+        resolve = done;
+      }),
   );
   await fixture.poll();
-  expect(screen.container.textContent).toContain("Current evaluator policy is unknown. Last known: enabled");
+  expect(screen.container.textContent).toContain(
+    "Current evaluator policy is unknown. Last known: enabled",
+  );
   await act(async () => button(screen.container, "Save model").click());
   expect(request).toHaveBeenCalledTimes(2);
   await act(async () => resolve(fixture.snapshot));
@@ -385,10 +398,14 @@ it("explains the CLI Codex limitation without offering its unsupported integrati
     policy: { ...fixture.snapshot.policy, enabled: false, modelSelection: null },
   });
   await using screen = await render(<RemoteAdmissionSettings environmentId={environmentId} />);
-  expect(screen.container.textContent).toContain("This Codex CLI integration cannot disable all task tools");
+  expect(screen.container.textContent).toContain(
+    "This Codex CLI integration cannot disable all task tools",
+  );
   expect(screen.container.textContent).toContain("Managed Codex (ChatGPT authorization)");
   expect(screen.container.textContent).toContain("qualified Claude integrations");
-  expect(screen.container.textContent).toContain("No providers advertise remote evaluation support");
+  expect(screen.container.textContent).toContain(
+    "No providers advertise remote evaluation support",
+  );
   expect(screen.container.querySelector('[aria-label="Evaluator model"]')).toBeNull();
   await act(async () => button(screen.container, "Save model").click());
   expect(request).toHaveBeenCalledTimes(1);

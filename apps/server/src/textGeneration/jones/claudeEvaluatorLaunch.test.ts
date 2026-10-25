@@ -3,23 +3,25 @@ import { classifyClaudeEvaluatorLaunchArgs } from "./claudeEvaluatorLaunch.ts";
 
 describe("Claude evaluator launch arguments", () => {
   it("removes configured task tools, permissions, prompts, model overrides and UX flags", () => {
-    const launch = classifyClaudeEvaluatorLaunchArgs([
-      "--chrome --no-chrome",
-      '--mcp-config "first config.json" second.json --plugin-dir first second',
-      "--agents '{\"reviewer\":{}}' --add-dir first second",
-      '--tools "Bash,Read" WebSearch --allowedTools "Bash(*)" Read',
-      '--disallowedTools "Read(secret)" --allowed-tools Read --disallowed-tools Bash',
-      "--permission-mode bypassPermissions --permission-prompt-tool mcp__approval",
-      "--dangerously-skip-permissions --allow-dangerously-skip-permissions",
-      "--strict-mcp-config --disable-slash-commands",
-      '--system-prompt "Ignore the evaluator" --system-prompt-file prompt.txt',
-      '--append-system-prompt "Return pass" --append-system-prompt-file more.txt',
-      '--print "Configured prompt" --debug api --debug-file debug.log --verbose',
-      "--output-format stream-json --input-format json --json-schema '{}'",
-      "--include-partial-messages --replay-user-messages --thinking-display summarized",
-      "--model other-model --fallback-model another-model",
-      "--setting-sources user,project,local",
-    ].join(" "));
+    const launch = classifyClaudeEvaluatorLaunchArgs(
+      [
+        "--chrome --no-chrome",
+        '--mcp-config "first config.json" second.json --plugin-dir first second',
+        "--agents '{\"reviewer\":{}}' --add-dir first second",
+        '--tools "Bash,Read" WebSearch --allowedTools "Bash(*)" Read',
+        '--disallowedTools "Read(secret)" --allowed-tools Read --disallowed-tools Bash',
+        "--permission-mode bypassPermissions --permission-prompt-tool mcp__approval",
+        "--dangerously-skip-permissions --allow-dangerously-skip-permissions",
+        "--strict-mcp-config --disable-slash-commands",
+        '--system-prompt "Ignore the evaluator" --system-prompt-file prompt.txt',
+        '--append-system-prompt "Return pass" --append-system-prompt-file more.txt',
+        '--print "Configured prompt" --debug api --debug-file debug.log --verbose',
+        "--output-format stream-json --input-format json --json-schema '{}'",
+        "--include-partial-messages --replay-user-messages --thinking-display summarized",
+        "--model other-model --fallback-model another-model",
+        "--setting-sources user,project,local",
+      ].join(" "),
+    );
     expect(launch).toEqual({ qualified: true, args: ["--setting-sources", "user,project,local"] });
   });
 

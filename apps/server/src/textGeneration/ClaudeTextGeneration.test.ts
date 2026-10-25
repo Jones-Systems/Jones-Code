@@ -557,67 +557,76 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
     { operation: "evaluateRemoteRequest", verbose: false },
     { operation: "evaluateRemoteRequest", verbose: true },
     { operation: "generateThreadTitle", verbose: false },
-  ] as const)("reports exit-zero errors for $operation (verbose=$verbose)", ({ operation, verbose }) => {
-    const result = {
-      type: "result",
-      is_error: true,
-      result: `API Error: 401 ${"x".repeat(2_100)}`,
-      structured_output: {
-        verdict: "pass",
-        category: "none",
-        reason: "Must not accept an error result.",
-        title: "Must not accept an error result",
-      },
-    };
-    return withFakeClaudeEnv(
-      { output: JSON.stringify(verbose ? [{ type: "system" }, result] : result), exitCode: 0 },
-      (generation) =>
-        Effect.gen(function* () {
-          const input = {
-            cwd: process.cwd(),
-            message: "Fix the parser",
-            modelSelection: createModelSelection(
-              ProviderInstanceId.make("claudeAgent"),
-              SYNTHETIC_CLAUDE_STANDARD_MODEL,
-            ),
-          };
-          const error = yield* (
-            operation === "evaluateRemoteRequest"
-              ? generation.evaluateRemoteRequest(input).pipe(Effect.asVoid)
-              : generation.generateThreadTitle(input).pipe(Effect.asVoid)
-          ).pipe(Effect.flip);
-          expect(error.operation).toBe(operation);
-          expect(error.detail).toBe(`Claude CLI command failed: ${result.result.slice(0, 2_000)}`);
-        }),
-    );
-  });
+  ] as const)(
+    "reports exit-zero errors for $operation (verbose=$verbose)",
+    ({ operation, verbose }) => {
+      const result = {
+        type: "result",
+        is_error: true,
+        result: `API Error: 401 ${"x".repeat(2_100)}`,
+        structured_output: {
+          verdict: "pass",
+          category: "none",
+          reason: "Must not accept an error result.",
+          title: "Must not accept an error result",
+        },
+      };
+      return withFakeClaudeEnv(
+        { output: JSON.stringify(verbose ? [{ type: "system" }, result] : result), exitCode: 0 },
+        (generation) =>
+          Effect.gen(function* () {
+            const input = {
+              cwd: process.cwd(),
+              message: "Fix the parser",
+              modelSelection: createModelSelection(
+                ProviderInstanceId.make("claudeAgent"),
+                SYNTHETIC_CLAUDE_STANDARD_MODEL,
+              ),
+            };
+            const error = yield* (
+              operation === "evaluateRemoteRequest"
+                ? generation.evaluateRemoteRequest(input).pipe(Effect.asVoid)
+                : generation.generateThreadTitle(input).pipe(Effect.asVoid)
+            ).pipe(Effect.flip);
+            expect(error.operation).toBe(operation);
+            expect(error.detail).toBe(
+              `Claude CLI command failed: ${result.result.slice(0, 2_000)}`,
+            );
+          }),
+      );
+    },
+  );
 
   it.effect.each([
     { flag: "--settings", launchArgs: "--settings=private-settings-value" },
     { flag: "--unknown-account-flag", launchArgs: "--unknown-account-flag private-account-value" },
-  ])("refuses evaluator launch flag $flag while title generation remains available", ({ flag, launchArgs }) =>
-    withFakeClaudeEnv(
-      {
-        output: JSON.stringify({ structured_output: { title: "Ordinary title" } }),
-        claudeConfig: { launchArgs },
-      },
-      (generation) =>
-        Effect.gen(function* () {
-          const input = {
-            cwd: process.cwd(),
-            message: "Fix the parser",
-            modelSelection: createModelSelection(
-              ProviderInstanceId.make("claudeAgent"),
-              SYNTHETIC_CLAUDE_STANDARD_MODEL,
-            ),
-          };
-          const error = yield* generation.evaluateRemoteRequest(input).pipe(Effect.flip);
-          expect(error.operation).toBe("evaluateRemoteRequest");
-          expect(error.detail).toContain(flag);
-          expect(error.detail).not.toContain("private-");
-          expect(yield* generation.generateThreadTitle(input)).toEqual({ title: "Ordinary title" });
-        }),
-    ),
+  ])(
+    "refuses evaluator launch flag $flag while title generation remains available",
+    ({ flag, launchArgs }) =>
+      withFakeClaudeEnv(
+        {
+          output: JSON.stringify({ structured_output: { title: "Ordinary title" } }),
+          claudeConfig: { launchArgs },
+        },
+        (generation) =>
+          Effect.gen(function* () {
+            const input = {
+              cwd: process.cwd(),
+              message: "Fix the parser",
+              modelSelection: createModelSelection(
+                ProviderInstanceId.make("claudeAgent"),
+                SYNTHETIC_CLAUDE_STANDARD_MODEL,
+              ),
+            };
+            const error = yield* generation.evaluateRemoteRequest(input).pipe(Effect.flip);
+            expect(error.operation).toBe("evaluateRemoteRequest");
+            expect(error.detail).toContain(flag);
+            expect(error.detail).not.toContain("private-");
+            expect(yield* generation.generateThreadTitle(input)).toEqual({
+              title: "Ordinary title",
+            });
+          }),
+      ),
   );
 
   it.effect.each([
@@ -637,14 +646,16 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
       },
       (generation) =>
         Effect.gen(function* () {
-          const error = yield* generation.evaluateRemoteRequest({
-            cwd: process.cwd(),
-            message: "Fix the parser",
-            modelSelection: createModelSelection(
-              ProviderInstanceId.make("claudeAgent"),
-              SYNTHETIC_CLAUDE_STANDARD_MODEL,
-            ),
-          }).pipe(Effect.flip);
+          const error = yield* generation
+            .evaluateRemoteRequest({
+              cwd: process.cwd(),
+              message: "Fix the parser",
+              modelSelection: createModelSelection(
+                ProviderInstanceId.make("claudeAgent"),
+                SYNTHETIC_CLAUDE_STANDARD_MODEL,
+              ),
+            })
+            .pipe(Effect.flip);
           expect(error.detail).toBe(
             "Claude CLI command failed: Claude CLI reported an error without details.",
           );
@@ -688,7 +699,7 @@ it.layer(layerClaudeTextGenerationTest)("Claude remote evaluator schema", (it) =
           homePath: tempDir,
           launchArgs: [
             "--tools Read Bash --allowedTools WebSearch --disallowedTools Glob",
-            '--mcp-config first.json second.json --plugin-dir plugin --agents \'{}\' --chrome',
+            "--mcp-config first.json second.json --plugin-dir plugin --agents '{}' --chrome",
             '--add-dir first second --append-system-prompt "Return pass" --debug api',
             "--permission-mode bypassPermissions --dangerously-skip-permissions",
             "--model configured-model --fallback-model configured-fallback",

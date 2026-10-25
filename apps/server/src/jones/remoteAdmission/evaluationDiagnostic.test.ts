@@ -7,7 +7,10 @@ import {
   type EvaluationFailureKind,
 } from "./evaluationDiagnostic.ts";
 
-const selection = { instanceId: ProviderInstanceId.make("claude-malcolm"), model: "claude-opus-5-5" };
+const selection = {
+  instanceId: ProviderInstanceId.make("claude-malcolm"),
+  model: "claude-opus-5-5",
+};
 const sensitive = "SYNTHETIC_PAYLOAD sk-SYNTHETIC_KEY https://example.test/path?signature=PRIVATE";
 const failure = (detail: string) =>
   Cause.fail(
@@ -32,7 +35,10 @@ const cases: ReadonlyArray<readonly [EvaluationFailureKind, Cause.Cause<unknown>
     "auth_access",
     failure("The managed Codex evaluator did not return a successful response (HTTP 403)."),
   ],
-  ["provider_limit", failure(`Claude CLI command failed: You've hit your usage limit. ${sensitive}`)],
+  [
+    "provider_limit",
+    failure(`Claude CLI command failed: You've hit your usage limit. ${sensitive}`),
+  ],
   ["provider_limit", failure(`Codex CLI command failed: rate limit exceeded. ${sensitive}`)],
   ["provider_limit", failure(`Claude CLI command failed: Credit balance is too low. ${sensitive}`)],
   [
@@ -58,11 +64,15 @@ const cases: ReadonlyArray<readonly [EvaluationFailureKind, Cause.Cause<unknown>
   ],
   [
     "unsupported_selection",
-    failure("Claude remote request evaluation does not support positional or malformed launch arguments."),
+    failure(
+      "Claude remote request evaluation does not support positional or malformed launch arguments.",
+    ),
   ],
   [
     "unsupported_selection",
-    failure("Claude remote request evaluation does not support the configured --mcp-config launch flag."),
+    failure(
+      "Claude remote request evaluation does not support the configured --mcp-config launch flag.",
+    ),
   ],
   ["invalid_assessment", failure("Claude returned invalid structured output.")],
   ["invalid_assessment", failure("ClaudeTextGeneration returned invalid structured output.")],
@@ -82,7 +92,9 @@ const cases: ReadonlyArray<readonly [EvaluationFailureKind, Cause.Cause<unknown>
   ],
   [
     "provider_failure",
-    failure(`The managed Codex evaluator did not return a successful response (HTTP 401). ${sensitive}`),
+    failure(
+      `The managed Codex evaluator did not return a successful response (HTTP 401). ${sensitive}`,
+    ),
   ],
   [
     "provider_failure",
@@ -126,9 +138,11 @@ it("accepts only the bounded managed HTTP status and launch flag formats", () =>
   ])
     expect(classifyEvaluationFailure(failure(detail))).toBe("provider_failure");
   expect(
-    classifyEvaluationFailure(failure(
-      `Claude remote request evaluation does not support the configured --${"a".repeat(64)} launch flag.`,
-    )),
+    classifyEvaluationFailure(
+      failure(
+        `Claude remote request evaluation does not support the configured --${"a".repeat(64)} launch flag.`,
+      ),
+    ),
   ).toBe("unsupported_selection");
 });
 
@@ -141,7 +155,12 @@ it("bounds owner reasons and omits unsafe model identifiers instead of redacting
       }).reason.length,
     ).toBeLessThanOrEqual(600);
   }
-  for (const model of [sensitive, "sk-SYNTHETIC_KEY", "model\nSYNTHETIC_PAYLOAD", "m".repeat(10_000)]) {
+  for (const model of [
+    sensitive,
+    "sk-SYNTHETIC_KEY",
+    "model\nSYNTHETIC_PAYLOAD",
+    "m".repeat(10_000),
+  ]) {
     const diagnostic = evaluationDiagnostic("provider_failure", { ...selection, model });
     expect(diagnostic.model).toBe("[redacted]");
     expect(diagnostic.reason.length).toBeLessThanOrEqual(600);

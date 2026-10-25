@@ -272,73 +272,83 @@ it.effect("the default budget cancels provider work and holds before the sender 
   }).pipe(Effect.provide(memory)),
 );
 
-it.effect("provider failure diagnostics preserve binding and public privacy without logging error text", () => {
-  const privateText = "SYNTHETIC_PAYLOAD sk-SYNTHETIC_KEY https://example.test/?signature=PRIVATE";
-  const logs: Array<{
-    readonly message: unknown;
-    readonly level: string;
-    readonly cause: Cause.Cause<unknown>;
-    readonly annotations: Readonly<Record<string, unknown>>;
-  }> = [];
-  const logger = Logger.make(({ fiber, message, logLevel, cause }) => {
-    logs.push({
-      message,
-      level: logLevel,
-      cause,
-      annotations: fiber.getRef(References.CurrentLogAnnotations),
+it.effect(
+  "provider failure diagnostics preserve binding and public privacy without logging error text",
+  () => {
+    const privateText =
+      "SYNTHETIC_PAYLOAD sk-SYNTHETIC_KEY https://example.test/?signature=PRIVATE";
+    const logs: Array<{
+      readonly message: unknown;
+      readonly level: string;
+      readonly cause: Cause.Cause<unknown>;
+      readonly annotations: Readonly<Record<string, unknown>>;
+    }> = [];
+    const logger = Logger.make(({ fiber, message, logLevel, cause }) => {
+      logs.push({
+        message,
+        level: logLevel,
+        cause,
+        annotations: fiber.getRef(References.CurrentLogAnnotations),
+      });
     });
-  });
-  let calls = 0;
-  return Effect.gen(function* () {
-    const service = yield* Admission.RemoteAdmission;
-    const captured = { ...request, envelope: { ...envelope, payload: { message: privateText } } };
-    const record = yield* service.request(captured);
-    expect(record).toMatchObject({ status: "held", category: "evaluation_unavailable" });
-    expect(record.envelope).toEqual(captured.envelope);
-    expect(record.reason).toContain("auth_access");
-    expect(record.reason).toContain("instance=claude, model=synthetic");
-    expect(record.reason!.length).toBeLessThanOrEqual(600);
-    expect(record.bindingDigest).toMatch(/^[a-f0-9]{64}$/);
-    expect(yield* service.request(captured)).toEqual(record);
-    expect(calls).toBe(1);
-    const publicStatus = publicRemoteAdmission(record);
-    expect(publicStatus).toMatchObject({
-      id: record.id,
-      bindingDigest: record.bindingDigest,
-      status: "held",
-    });
-    expect(publicStatus).not.toHaveProperty("reason");
-    expect(publicStatus).not.toHaveProperty("category");
-    expect(publicStatus).not.toHaveProperty("envelope");
-    const warnings = logs.filter(({ level }) => level === "Warn");
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]!.cause.reasons).toEqual([]);
-    expect(warnings[0]!.annotations).toEqual({
-      id: record.id,
-      instanceId: "claude",
-      model: "synthetic",
-      elapsedMs: 0,
-      failureKind: "auth_access",
-    });
-    const visible = JSON.stringify({ reason: record.reason, logs, publicStatus });
-    for (const secret of ["SYNTHETIC_PAYLOAD", "sk-SYNTHETIC_KEY", "https://", "signature=", "PRIVATE"])
-      expect(visible).not.toContain(secret);
-  }).pipe(
-    Effect.provide(
-      Admission.layerWithEvaluator(() => {
-        calls++;
-        return Effect.fail(
-          new TextGenerationError({
-            operation: "evaluateRemoteRequest",
-            detail: `Claude CLI command failed: Not logged in. ${privateText}`,
-            cause: new Error(privateText),
-          }),
-        );
-      }).pipe(Layer.provideMerge(memory)),
-    ),
-    Effect.provide(Logger.layer([logger], { mergeWithExisting: false })),
-  );
-});
+    let calls = 0;
+    return Effect.gen(function* () {
+      const service = yield* Admission.RemoteAdmission;
+      const captured = { ...request, envelope: { ...envelope, payload: { message: privateText } } };
+      const record = yield* service.request(captured);
+      expect(record).toMatchObject({ status: "held", category: "evaluation_unavailable" });
+      expect(record.envelope).toEqual(captured.envelope);
+      expect(record.reason).toContain("auth_access");
+      expect(record.reason).toContain("instance=claude, model=synthetic");
+      expect(record.reason!.length).toBeLessThanOrEqual(600);
+      expect(record.bindingDigest).toMatch(/^[a-f0-9]{64}$/);
+      expect(yield* service.request(captured)).toEqual(record);
+      expect(calls).toBe(1);
+      const publicStatus = publicRemoteAdmission(record);
+      expect(publicStatus).toMatchObject({
+        id: record.id,
+        bindingDigest: record.bindingDigest,
+        status: "held",
+      });
+      expect(publicStatus).not.toHaveProperty("reason");
+      expect(publicStatus).not.toHaveProperty("category");
+      expect(publicStatus).not.toHaveProperty("envelope");
+      const warnings = logs.filter(({ level }) => level === "Warn");
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]!.cause.reasons).toEqual([]);
+      expect(warnings[0]!.annotations).toEqual({
+        id: record.id,
+        instanceId: "claude",
+        model: "synthetic",
+        elapsedMs: 0,
+        failureKind: "auth_access",
+      });
+      const visible = JSON.stringify({ reason: record.reason, logs, publicStatus });
+      for (const secret of [
+        "SYNTHETIC_PAYLOAD",
+        "sk-SYNTHETIC_KEY",
+        "https://",
+        "signature=",
+        "PRIVATE",
+      ])
+        expect(visible).not.toContain(secret);
+    }).pipe(
+      Effect.provide(
+        Admission.layerWithEvaluator(() => {
+          calls++;
+          return Effect.fail(
+            new TextGenerationError({
+              operation: "evaluateRemoteRequest",
+              detail: `Claude CLI command failed: Not logged in. ${privateText}`,
+              cause: new Error(privateText),
+            }),
+          );
+        }).pipe(Layer.provideMerge(memory)),
+      ),
+      Effect.provide(Logger.layer([logger], { mergeWithExisting: false })),
+    );
+  },
+);
 
 it.effect.each(["evaluating", "cancelled"] as const)(
   "request interruption durably holds only an evaluating row and preserves %s state",

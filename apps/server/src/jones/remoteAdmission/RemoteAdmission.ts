@@ -293,7 +293,7 @@ const make = Effect.fn("RemoteAdmission.make")(function* <E>(
               Effect.catchCause((cause) => {
                 if (Cause.hasInterrupts(cause))
                   return Effect.failCause(
-                    Cause.fromReasons(cause.reasons.filter(Cause.isInterruptReason)),
+                    Cause.fromReasons<never>(cause.reasons.filter(Cause.isInterruptReason)),
                   );
                 const failureKind =
                   selection === null ? "unsupported_selection" : classifyEvaluationFailure(cause);
