@@ -1883,7 +1883,8 @@
     "apps/server/src/jones/orchestration/threadReferenceExcerpt.ts": "jones-owned",
     "apps/server/src/jones/orchestration/threadReferenceExcerpt.test.ts": "jones-owned",
     "apps/server/src/jones/orchestration/threadReferenceCoherent.test.ts": "jones-owned",
-    "scripts/jones/boundary/fragments/coherent-reference-reads.json": "jones-owned"
+    "scripts/jones/boundary/fragments/coherent-reference-reads.json": "jones-owned",
+    "apps/server/src/jones/goals/preserveGoalConversation.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
