@@ -53,6 +53,11 @@ import {
 } from "../git/remoteRefs.ts";
 import * as ServerConfig from "../config.ts";
 import { admitGitProcess } from "../jones/git/backgroundGitAdmission.ts";
+import {
+  recordWorktreeProcessTime,
+  withGitExecutionTiming,
+  withGitPermitTiming,
+} from "../jones/git/gitTiming.ts";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const gitProcesses = Semaphore.makeUnsafe(8);
@@ -1007,6 +1012,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
                 }),
             ),
           );
+        yield* recordWorktreeProcessTime(input.operation, "spawn");
 
         const [stdout, stderr, exitCode] = yield* Effect.all(
           [
@@ -1027,6 +1033,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
               input.keepLineCallbacksAfterTruncation,
             ),
             child.exitCode.pipe(
+              Effect.tap(() => recordWorktreeProcessTime(input.operation, "exit")),
               Effect.mapError(
                 (cause) =>
                   new GitCommandError({
@@ -1104,17 +1111,22 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           operation: input.operation,
         },
       }),
+      withGitExecutionTiming,
       (execution) =>
         input.timeoutMs === null || (input.timeoutMs ?? DEFAULT_TIMEOUT_MS) > DEFAULT_TIMEOUT_MS
           ? execution
           : // Background work waits before taking any of the shared Git permits.
-            admitGitProcess(gitProcesses.withPermits(1)(execution)),
+            admitGitProcess(
+              withGitPermitTiming(execution, gitProcesses, "git.shared_permit_wait_ms"),
+            ),
       Effect.withSpan(input.operation, {
         kind: "client",
         attributes: {
           "git.operation": input.operation,
           "git.cwd": input.cwd,
           "git.args_count": input.args.length,
+          "git.background_gate_wait_ms": 0,
+          "git.shared_permit_wait_ms": 0,
         },
       }),
     );
