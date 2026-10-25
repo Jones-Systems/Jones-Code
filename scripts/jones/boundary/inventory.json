@@ -1860,7 +1860,11 @@
     "apps/server/src/jones/orchestration/threadReferenceExcerpt.ts": "jones-owned",
     "apps/server/src/jones/orchestration/threadReferenceExcerpt.test.ts": "jones-owned",
     "apps/server/src/jones/orchestration/threadReferenceCoherent.test.ts": "jones-owned",
-    "scripts/jones/boundary/fragments/coherent-reference-reads.json": "jones-owned"
+    "scripts/jones/boundary/fragments/coherent-reference-reads.json": "jones-owned",
+    "apps/server/src/orchestration-v2/threadHistoryPaging.ts": "accepted-shared",
+    "apps/server/src/jones/orchestration/historyPaging.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/historyPaging.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/bounded-history-paging-efficiency.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

@@ -1893,6 +1893,15 @@
         "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts"
       ],
       "scope": "Read ordered reference message/activity selections from one canonical index and union payload transaction after writer-side transcript hydration. Preserve global snapshot provenance, source/ancestor visibility, cancellation, missing/deleted errors, exact excerpts and existing wire/history contracts. Existing relay/control test doubles implement the internal read service API."
+    },
+    {
+      "id": "bounded-history-paging-efficiency",
+      "tests": [
+        "apps/server/src/jones/orchestration/historyPaging.test.ts",
+        "apps/server/src/orchestration-v2/threadHistoryPaging.test.ts",
+        "apps/server/src/orchestration-v2/ProjectionStore.test.ts"
+      ],
+      "scope": "Select eligible local older history with bounded keyset metadata chunks and lazy run facts; preserve exact pages and cursors, hidden-row anchor correction, human-turn and 150 raw-turn limits, and the original fallback for forks, filters, missing anchors or foreign cursors. One covering-index prefix count remains O(N). Shared paging-budget extraction keeps the existing full path equivalent. Direct SQL work and query-plan tests qualify source behavior, not installed latency."
     }
   ]
 }
