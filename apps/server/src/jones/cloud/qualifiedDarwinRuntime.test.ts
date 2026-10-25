@@ -12,7 +12,7 @@ import {
   type DarwinStageCommand,
   type DarwinStageRunner,
 } from "./qualifiedDarwinRuntime.ts";
-import { QualifiedRuntimeBlockedError } from "./qualifiedRuntime.ts";
+import { QualifiedRuntimeBlockedError, recentQualifiedDigestTimings } from "./qualifiedRuntime.ts";
 
 const version = "0.0.44-preview.20261002.100.1";
 const source = "a".repeat(40);
@@ -170,60 +170,73 @@ it("checks packed ASAR version/source and its headless server entry without laun
   });
 });
 
-it("stages a readonly DMG app and exact Electron Node wrapper while preserving native home state", async () => {
-  await fixture(async (root) => {
-    const home = NodePath.join(root, "home");
-    const destination = NodePath.join(root, "payload");
-    await NodeFSP.mkdir(NodePath.join(home, "runtime"), { recursive: true });
-    await NodeFSP.mkdir(destination);
-    await NodeFSP.writeFile(NodePath.join(home, "native-state"), "unchanged");
-    const calls: string[] = [];
-    const artifact = stagedArtifact(root);
-    await extractQualifiedDarwinRuntime({
-      artifact,
-      destination,
-      baseDir: home,
-      run: async ({ command, args }) => {
-        calls.push(command);
-        if (command === "/usr/bin/hdiutil" && args[0] === "attach") {
-          assert.include(args, "-readonly");
-          assert.include(args, "-nobrowse");
-          const mount = args[args.indexOf("-mountpoint") + 1]!;
-          const app = NodePath.join(mount, "T3 Code (Alpha).app");
-          await NodeFSP.mkdir(NodePath.join(app, "Contents", "MacOS"), { recursive: true });
-          await NodeFSP.mkdir(NodePath.join(app, "Contents", "Resources"));
-          await NodeFSP.writeFile(
-            NodePath.join(app, "Contents", "MacOS", "T3 Code (Alpha)"),
-            "native executable fixture",
-            { mode: 0o700 },
-          );
-          await NodeFSP.writeFile(NodePath.join(app, "Contents", "Resources", "app.asar"), asar());
-          await NodeFSP.writeFile(NodePath.join(app, "Contents", "Info.plist"), "plist fixture");
-        } else if (command === "/usr/bin/ditto")
-          await NodeFSP.cp(args[2]!, args[3]!, { recursive: true });
-        else if (command === "/usr/bin/plutil")
-          return {
-            code: 0,
-            stdout: args[1] === "CFBundleExecutable" ? "T3 Code (Alpha)" : version,
-          };
-        else if (command === "/usr/bin/lipo") return { code: 0, stdout: "arm64" };
-        return { code: 0, stdout: "" };
-      },
+it.each(["extraction", "staging"] as const)(
+  "stages a readonly DMG with %s verification and preserves native home state",
+  async (payloadVerification) => {
+    await fixture(async (root) => {
+      const home = NodePath.join(root, "home");
+      const destination = NodePath.join(root, "payload");
+      await NodeFSP.mkdir(NodePath.join(home, "runtime"), { recursive: true });
+      await NodeFSP.mkdir(destination);
+      await NodeFSP.writeFile(NodePath.join(home, "native-state"), "unchanged");
+      const calls: string[] = [];
+      const artifact = stagedArtifact(root);
+      const before = recentQualifiedDigestTimings();
+      await extractQualifiedDarwinRuntime({
+        artifact,
+        payloadVerification,
+        destination,
+        baseDir: home,
+        run: async ({ command, args }) => {
+          calls.push(command);
+          if (command === "/usr/bin/hdiutil" && args[0] === "attach") {
+            assert.include(args, "-readonly");
+            assert.include(args, "-nobrowse");
+            const mount = args[args.indexOf("-mountpoint") + 1]!;
+            const app = NodePath.join(mount, "T3 Code (Alpha).app");
+            await NodeFSP.mkdir(NodePath.join(app, "Contents", "MacOS"), { recursive: true });
+            await NodeFSP.mkdir(NodePath.join(app, "Contents", "Resources"));
+            await NodeFSP.writeFile(
+              NodePath.join(app, "Contents", "MacOS", "T3 Code (Alpha)"),
+              "native executable fixture",
+              { mode: 0o700 },
+            );
+            await NodeFSP.writeFile(
+              NodePath.join(app, "Contents", "Resources", "app.asar"),
+              asar(),
+            );
+            await NodeFSP.writeFile(NodePath.join(app, "Contents", "Info.plist"), "plist fixture");
+          } else if (command === "/usr/bin/ditto")
+            await NodeFSP.cp(args[2]!, args[3]!, { recursive: true });
+          else if (command === "/usr/bin/plutil")
+            return {
+              code: 0,
+              stdout: args[1] === "CFBundleExecutable" ? "T3 Code (Alpha)" : version,
+            };
+          else if (command === "/usr/bin/lipo") return { code: 0, stdout: "arm64" };
+          return { code: 0, stdout: "" };
+        },
+      });
+      const measured = recentQualifiedDigestTimings().filter((timing) => !before.includes(timing));
+      assert.equal(measured.length, payloadVerification === "extraction" ? 1 : 0);
+      assert.equal(
+        await NodeFSP.readFile(NodePath.join(home, "native-state"), "utf8"),
+        "unchanged",
+      );
+      const wrapper = await NodeFSP.readFile(NodePath.join(destination, "t3"), "utf8");
+      assert.include(wrapper, "ELECTRON_RUN_AS_NODE=1");
+      assert.include(wrapper, "app.asar/apps/server/dist/bin.mjs");
+      assert.isTrue(calls.every((command) => command.startsWith("/usr/bin/")));
+      assert.isFalse(calls.some((command) => command.includes("Contents/MacOS")));
+      assert.deepEqual(
+        (await NodeFSP.readdir(NodePath.join(home, "runtime"))).filter((name) =>
+          name.startsWith(".jones-dmg-mount-"),
+        ),
+        [],
+      );
     });
-    assert.equal(await NodeFSP.readFile(NodePath.join(home, "native-state"), "utf8"), "unchanged");
-    const wrapper = await NodeFSP.readFile(NodePath.join(destination, "t3"), "utf8");
-    assert.include(wrapper, "ELECTRON_RUN_AS_NODE=1");
-    assert.include(wrapper, "app.asar/apps/server/dist/bin.mjs");
-    assert.isTrue(calls.every((command) => command.startsWith("/usr/bin/")));
-    assert.isFalse(calls.some((command) => command.includes("Contents/MacOS")));
-    assert.deepEqual(
-      (await NodeFSP.readdir(NodePath.join(home, "runtime"))).filter((name) =>
-        name.startsWith(".jones-dmg-mount-"),
-      ),
-      [],
-    );
-  });
-});
+  },
+);
 
 it("detaches the owned mount after the job is cancelled and preserves the cancellation", async () => {
   await fixture(async (root) => {

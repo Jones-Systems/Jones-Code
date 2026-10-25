@@ -3,6 +3,7 @@ import { assert, it } from "@effect/vitest";
 import { onTestFinished, vi } from "vite-plus/test";
 import type { JonesStagedArtifact } from "@t3tools/shared/jones/jonesActions";
 import * as NodeAssert from "node:assert/strict";
+import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -20,6 +21,7 @@ import {
   qualifiedRuntimeArtifactFromJonesStage,
   qualifiedPayloadDigest,
   recentQualifiedDigestTimings,
+  retainQualifiedAttemptTimings,
   readQualifiedRuntimeReceipt,
   stageQualifiedRuntime,
   verifyStagedQualifiedRuntime,
@@ -731,5 +733,170 @@ it("isolates a rejected asynchronous timing sink", async () => {
       },
     });
     assert.equal(digest, "4e64a35abb1beb78d6a649a9fc06f586e186486c28bac6079d6756075811916b");
+  });
+});
+
+it("transfers an owned stage with one content digest and reuses its identity-bound receipt", async () => {
+  await fixture(async (base, payload, artifact) => {
+    const binding = await currentQualifiedRuntimeBinding(base, baseline, fixtureHost);
+    const measured: QualifiedDigestTiming[] = [];
+    const staged = await stageQualifiedRuntime({
+      artifact,
+      binding,
+      host: fixtureHost,
+      consumePayload: true,
+      validate: async () => {},
+      options: {
+        onDigestTiming: (timing) => {
+          measured.push(timing);
+        },
+      },
+    });
+    assert.equal(measured.filter((row) => row.runtime === candidateVersion).length, 1);
+    await NodeAssert.rejects(NodeFSP.lstat(payload), { code: "ENOENT" });
+    const reads: QualifiedDigestTiming[] = [];
+    const options = {
+      mode: "receipt" as const,
+      onDigestTiming: (row: QualifiedDigestTiming) => {
+        reads.push(row);
+      },
+    };
+    assert.deepEqual(
+      await verifyStagedQualifiedRuntime(base, baseline, staged.stagedHandle, fixtureHost, options),
+      staged,
+    );
+    assert.equal(reads.length, 0);
+    // Activation always performs a fresh full content verification, even with an exact cache hit.
+    assert.deepEqual(
+      await readQualifiedRuntimeReceipt(base, candidateVersion, fixtureHost, {
+        ...options,
+        mode: "full",
+        role: "launcher-activation",
+      }),
+      staged.receipt,
+    );
+    assert.equal(reads.length, 1);
+  });
+});
+
+it("falls back on changed metadata and refuses same-size tampering with restored mtime", async () => {
+  await fixture(async (base, _payload, artifact) => {
+    const binding = await currentQualifiedRuntimeBinding(base, baseline, fixtureHost);
+    await stageQualifiedRuntime({
+      artifact,
+      binding,
+      host: fixtureHost,
+      consumePayload: true,
+      validate: async () => {},
+    });
+    const file = NodePath.join(
+      base,
+      "runtime",
+      "versions",
+      candidateVersion,
+      "client",
+      "index.html",
+    );
+    const prior = await NodeFSP.stat(file);
+    await NodeFSP.utimes(file, prior.atimeMs / 1000, prior.mtimeMs / 1000 - 1);
+    const readings: QualifiedDigestTiming[] = [];
+    const options = {
+      mode: "receipt" as const,
+      onDigestTiming: (row: QualifiedDigestTiming) => {
+        readings.push(row);
+      },
+    };
+    await readQualifiedRuntimeReceipt(base, candidateVersion, fixtureHost, options);
+    assert.equal(readings.length, 1);
+    await readQualifiedRuntimeReceipt(base, candidateVersion, fixtureHost, options);
+    assert.equal(readings.length, 1);
+    const unchangedTimes = await NodeFSP.stat(file);
+    await NodeFSP.writeFile(file, "changed");
+    await NodeFSP.utimes(file, unchangedTimes.atime, unchangedTimes.mtime);
+    await NodeAssert.rejects(
+      readQualifiedRuntimeReceipt(base, candidateVersion, fixtureHost, options),
+      /payload changed/,
+    );
+    await NodeAssert.rejects(
+      readQualifiedRuntimeReceipt(base, candidateVersion, fixtureHost, { mode: "full" }),
+      /payload changed/,
+    );
+  });
+});
+
+it("refuses a serving-loop digest and delegates a missing receipt to the bounded worker seam", async () => {
+  await fixture(async (base) => {
+    await NodeAssert.rejects(
+      readQualifiedRuntimeReceipt(base, baseline, fixtureHost, {
+        mode: "full",
+        eventLoop: "shared",
+      }),
+      /preparation worker or launcher/,
+    );
+    await NodeAssert.rejects(
+      readQualifiedRuntimeReceipt(base, baseline, fixtureHost, {
+        mode: "receipt",
+        eventLoop: "shared",
+      }),
+      /preparation worker or launcher/,
+    );
+    let delegated = 0;
+    const observed = await readQualifiedRuntimeReceipt(base, baseline, fixtureHost, {
+      mode: "receipt",
+      eventLoop: "shared",
+      fullVerification: async (input) => {
+        delegated += 1;
+        assert.deepEqual(input, { baseDir: base, version: baseline, host: fixtureHost });
+        return readQualifiedRuntimeReceipt(base, baseline, fixtureHost, {
+          mode: "full",
+          eventLoop: "worker",
+        });
+      },
+    });
+    assert.equal(observed.version, baseline);
+    assert.equal(delegated, 1);
+    await readQualifiedRuntimeReceipt(base, baseline, fixtureHost, {
+      mode: "receipt",
+      eventLoop: "shared",
+    });
+    assert.equal(delegated, 1);
+  });
+});
+
+it("persists attempt timings exclusively and retains only the newest 64 owned records", async () => {
+  await fixture(async (base) => {
+    const id = NodeCrypto.randomUUID();
+    const timing: QualifiedDigestTiming = {
+      schema: 1,
+      role: "launcher-activation",
+      runtime: candidateVersion,
+      files: 2,
+      bytes: 14,
+      wallMs: 1,
+      cpuMs: 1,
+      eventLoopDelayP99Ms: null,
+      result: "match",
+      at: "2026-10-25T00:00:00Z",
+    };
+    await retainQualifiedAttemptTimings(base, id, [timing]);
+    const directory = NodePath.join(base, "runtime", "jones-update-timing");
+    const first = await NodeFSP.readFile(NodePath.join(directory, `${id}.json`), "utf8");
+    await retainQualifiedAttemptTimings(base, id, []);
+    assert.equal(await NodeFSP.readFile(NodePath.join(directory, `${id}.json`), "utf8"), first);
+    await NodeFSP.writeFile(NodePath.join(directory, "unowned.txt"), "preserve");
+    for (let index = 0; index < 65; index++)
+      await retainQualifiedAttemptTimings(base, NodeCrypto.randomUUID(), [timing]);
+    assert.equal(
+      (await NodeFSP.readdir(directory)).filter((name) => name.endsWith(".json")).length,
+      64,
+    );
+    assert.equal(
+      await NodeFSP.readFile(NodePath.join(directory, "unowned.txt"), "utf8"),
+      "preserve",
+    );
+    await NodeAssert.rejects(
+      retainQualifiedAttemptTimings(base, "../escape", []),
+      /Invalid bounded/,
+    );
   });
 });

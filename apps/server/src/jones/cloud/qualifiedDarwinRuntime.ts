@@ -132,6 +132,8 @@ export async function readQualifiedAsarMetadata(
 export async function extractQualifiedDarwinRuntime(input: {
   readonly artifact: JonesStagedArtifact;
   readonly destination: string;
+  /** The preparation worker transfers this owned tree to staging, which performs the full digest. */
+  readonly payloadVerification?: "extraction" | "staging";
   readonly baseDir: string;
   readonly run: DarwinStageRunner;
   readonly signal?: AbortSignal;
@@ -226,7 +228,8 @@ export async function extractQualifiedDarwinRuntime(input: {
       flag: "wx",
       mode: 0o700,
     });
-    await qualifiedPayloadDigest(input.destination, "darwin");
+    if (input.payloadVerification !== "staging")
+      await qualifiedPayloadDigest(input.destination, "darwin");
   } catch (cause) {
     stagingFailed = true;
     stagingFailure = cause;

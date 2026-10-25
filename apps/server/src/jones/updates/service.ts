@@ -54,12 +54,13 @@ import {
 import {
   makePreparationSupervisor,
   resolvePreparationWorkerCommand,
+  readPreparedRuntimeReceipt,
+  preparedVerificationOptions,
 } from "./preparation/supervisor.ts";
 import { adoptPreparedStage, adoptVerifiedStage } from "./preparation/rebind.ts";
 import * as UpdateAdmissionFence from "./UpdateAdmissionFence.ts";
 import { awaitHandoffOutcome } from "./handoffOutcome.ts";
 import { createFleetHostStore } from "../fleetUpdates/store.ts";
-import { readQualifiedRuntimeReceipt } from "../cloud/qualifiedRuntime.ts";
 import * as ServerConfig from "../../config.ts";
 import * as SelfUpdate from "../../cloud/selfUpdate.ts";
 import * as Launcher from "../../cloud/serviceLauncherClient.ts";
@@ -157,11 +158,54 @@ export const layer = Layer.effect(
         launcherRefresh: "recommended" as const,
         launcherRefreshReason: "settlement-unsupported" as const,
       });
+    const preparationHost =
+      (platform === "linux" || platform === "darwin") &&
+      (architecture === "x64" || architecture === "arm64")
+        ? { platform, architecture }
+        : undefined;
+    const cacheRoot = NodePath.join(config.baseDir, "runtime", "jones-actions");
+    // Download, archive and tree hashes, extraction and validation run in a low-priority worker
+    // started from this server's own build, one at a time per host; this process only
+    // supervises it and rebinds its bounded result.
+    const preparationCommand = resolvePreparationWorkerCommand({
+      isExecutable: yield* HostProcess.IsExecutable,
+      execPath: yield* HostProcess.ExecutablePath,
+      entryPath: (yield* HostProcess.Arguments)[1],
+    });
+    const preparation =
+      preparationCommand === undefined
+        ? undefined
+        : makePreparationSupervisor({
+            baseDir: config.baseDir,
+            cacheRoot,
+            command: preparationCommand,
+            env: yield* HostProcess.Environment,
+            observe: (exit) =>
+              void run(
+                Effect.logInfo("Jones update preparation worker exited", {
+                  jobId: exit.jobId,
+                  kind: exit.kind,
+                  pid: exit.pid,
+                  priority: exit.priority,
+                  code: exit.code,
+                  signal: exit.signal,
+                  stopped: exit.stopped,
+                  reaped: exit.reaped,
+                  durationMs: exit.durationMs,
+                }),
+              ),
+          });
+
     const currentBuildStartedAt = readCurrentJonesBuildStartedAt(packageJson, version);
     const receiptStarted = yield* Clock.currentTimeMillis;
     const runtimeReceipt = isPreviewRuntime(version)
       ? yield* Effect.tryPromise(() =>
-          readQualifiedRuntimeReceipt(config.baseDir, version, { platform, architecture }),
+          readPreparedRuntimeReceipt(
+            config.baseDir,
+            version,
+            { platform, architecture },
+            preparation,
+          ),
         ).pipe(Effect.catch(() => Effect.succeed(undefined)))
       : undefined;
     yield* Effect.logInfo("Qualified startup timing", {
@@ -468,43 +512,6 @@ export const layer = Layer.effect(
     const supported =
       (platform === "linux" && (architecture === "x64" || architecture === "arm64")) ||
       (platform === "darwin" && architecture === "arm64");
-    const preparationHost =
-      (platform === "linux" || platform === "darwin") &&
-      (architecture === "x64" || architecture === "arm64")
-        ? { platform, architecture }
-        : undefined;
-    const cacheRoot = NodePath.join(config.baseDir, "runtime", "jones-actions");
-    // Download, archive and tree hashes, extraction and validation run in a low-priority worker
-    // started from this server's own build, one at a time per host; this process only
-    // supervises it and rebinds its bounded result.
-    const preparationCommand = resolvePreparationWorkerCommand({
-      isExecutable: yield* HostProcess.IsExecutable,
-      execPath: yield* HostProcess.ExecutablePath,
-      entryPath: (yield* HostProcess.Arguments)[1],
-    });
-    const preparation =
-      preparationCommand === undefined
-        ? undefined
-        : makePreparationSupervisor({
-            baseDir: config.baseDir,
-            cacheRoot,
-            command: preparationCommand,
-            env: yield* HostProcess.Environment,
-            observe: (exit) =>
-              void run(
-                Effect.logInfo("Jones update preparation worker exited", {
-                  jobId: exit.jobId,
-                  kind: exit.kind,
-                  pid: exit.pid,
-                  priority: exit.priority,
-                  code: exit.code,
-                  signal: exit.signal,
-                  stopped: exit.stopped,
-                  reaped: exit.reaped,
-                  durationMs: exit.durationMs,
-                }),
-              ),
-          });
     const preparationUnavailable = () =>
       new Error(
         "bootstrap-required: This installation cannot start its update preparation worker.",
@@ -550,7 +557,12 @@ export const layer = Layer.effect(
     const restoreStarted = yield* Clock.currentTimeMillis;
     const restored = yield* Effect.tryPromise({
       try: () =>
-        restoreStagedSelection(config.baseDir, launcher.currentVersion ?? packageJson.version),
+        restoreStagedSelection(
+          config.baseDir,
+          launcher.currentVersion ?? packageJson.version,
+          { platform, architecture },
+          preparedVerificationOptions(preparation),
+        ),
       catch: (cause) =>
         cause instanceof Error ? cause.message : "Native staging requires reconciliation.",
     }).pipe(
@@ -677,9 +689,11 @@ export const layer = Layer.effect(
       installedSource: async () =>
         runtimeReceipt?.sourceSha ??
         (
-          await readQualifiedRuntimeReceipt(
+          await readPreparedRuntimeReceipt(
             config.baseDir,
             launcher.currentVersion ?? packageJson.version,
+            { platform, architecture },
+            preparation,
           )
         ).sourceSha,
       prepare: async (candidate, { signal, onVerifying }) => {

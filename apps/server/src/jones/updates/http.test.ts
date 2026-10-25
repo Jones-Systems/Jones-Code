@@ -35,7 +35,11 @@ import { jonesUpdatesHttpApiLayer } from "./http.ts";
 import * as JonesUpdates from "./service.ts";
 import * as UpdateAdmissionFence from "./UpdateAdmissionFence.ts";
 import * as SourceRelation from "./sourceRelation.ts";
-import { QUALIFIED_RUNTIME_RECEIPT, qualifiedPayloadDigest } from "../cloud/qualifiedRuntime.ts";
+import {
+  QUALIFIED_RUNTIME_RECEIPT,
+  qualifiedPayloadDigest,
+  readQualifiedRuntimeReceipt,
+} from "../cloud/qualifiedRuntime.ts";
 import {
   reserveUpdateOperation,
   publishUpdateOperationSettlement,
@@ -92,6 +96,9 @@ it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
             architecture: "x64",
             payloadSha256: yield* Effect.promise(() => qualifiedPayloadDigest(active)),
           }),
+        );
+        yield* Effect.promise(() =>
+          readQualifiedRuntimeReceipt(baseDir, version, { platform: "linux", architecture: "x64" }),
         );
         const operationId = "11111111-1111-4111-8111-111111111111";
         const input = { operationId, requestId: "22222222-2222-4222-8222-222222222222" };
