@@ -218,7 +218,7 @@ export function JonesBuildStatus({
       ? "An update request is in progress. Wait for it to finish."
       : presentation.busy
         ? presentation.message
-        : followerHold ??
+        : (followerHold ??
           (!state.capability.download
             ? DOWNLOAD_CAPABILITY_REASONS[state.capability.reason ?? "blocked"]
             : state.phase !== "available"
@@ -230,7 +230,7 @@ export function JonesBuildStatus({
                     : "Check for an available build before downloading."))
               : provenance === undefined
                 ? "No qualified build is available to download."
-                : undefined));
+                : undefined)));
 
   const builds = hasBuilds ? (
     <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
@@ -573,10 +573,12 @@ function DownloadAction({
   readonly reason: string | undefined;
   readonly onDownload: () => void;
 }) {
+  const reasonId = useId();
   const button = (
     <Button
       size={size}
       aria-disabled={reason === undefined ? undefined : true}
+      aria-describedby={reason === undefined ? undefined : reasonId}
       onClick={() => {
         if (reason !== undefined) return;
         onDownload();
@@ -588,7 +590,9 @@ function DownloadAction({
   return (
     <Tooltip disabled={reason === undefined}>
       <TooltipTrigger render={button} />
-      <TooltipPopup side="top">{reason}</TooltipPopup>
+      <TooltipPopup side="top" role="tooltip" id={reasonId}>
+        {reason}
+      </TooltipPopup>
     </Tooltip>
   );
 }

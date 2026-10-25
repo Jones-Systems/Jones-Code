@@ -439,7 +439,8 @@ describe("Jones build status", () => {
           policy: { role: "follower", leaderSource: installedSha },
         },
       },
-      reason: "This host follows its laptop and installs only the laptop's installed source d994dd4.",
+      reason:
+        "This host follows its laptop and installs only the laptop's installed source d994dd4.",
     },
     {
       name: "failed update",
@@ -476,7 +477,11 @@ describe("Jones build status", () => {
     const blocked = buttonNamed(container, "Download");
     expect(blocked.getAttribute("aria-disabled")).toBe("true");
     await act(async () => blocked.focus());
-    await vi.waitFor(() => expect(blocked.getAttribute("aria-describedby")).not.toBeNull());
+    await vi.waitFor(() =>
+      expect(document.querySelector('[role="tooltip"]')?.id).toBe(
+        blocked.getAttribute("aria-describedby"),
+      ),
+    );
     await screen.rerender(statusUi({ state, actionError: "Previous request failed." }, onRequest));
     const download = buttonNamed(container, "Download");
     expect(download).toBe(blocked);
