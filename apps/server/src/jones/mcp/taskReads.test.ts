@@ -238,140 +238,138 @@ describe("MCP task read selection", () => {
     "provider-thread.updated",
     "runtime-request.updated",
     "approval",
-  ] as const)(
-    "keeps child activity wakeups: %s",
-    (scenario) =>
-      Effect.gen(function* () {
-        const eventType = scenario === "approval" ? "runtime-request.updated" : scenario;
-        const pendingQuestion = scenario === "runtime-request.updated";
-        const pendingApproval = scenario === "approval";
-        const childId = ThreadId.make("thread:task-reads-local-child");
-        const childRunId = RunId.make("run:task-reads-local");
-        const approvalNodeId = NodeId.make("node:task-reads-approval");
-        const approvalRequestId = RuntimeRequestId.make("request:task-reads-approval");
-        const child = idleThreadProjection(liveThreadShell(childId));
-        let parentReads = 0;
-        let controlReads = 0;
-        let resultReads = 0;
-        const layer = serviceLayer({
-          getThreadEventSequence: () => Effect.succeed(41),
-          getThreadRecords: (threadId, fields, options) =>
-            Effect.sync(() => {
-              if (threadId === parentId) {
-                parentReads += 1;
-                assert.deepEqual<ReadonlyArray<ProjectionRecordField>>(fields, [
-                  "runs",
-                  "subagents",
-                  "contextTransfers",
-                ]);
-                return {
-                  ...parent,
-                  subagents: [
-                    {
-                      ...task,
-                      childThreadId: childId,
-                      completionDelivery: {
-                        state: pendingApproval ? ("acknowledged" as const) : ("disposed" as const),
-                        observedByRunId: null,
-                      },
-                    },
-                  ],
-                };
-              }
-              assert.equal(threadId, childId);
-              if (fields.some((field) => field === "runs")) {
-                assert.deepEqual<ReadonlyArray<ProjectionRecordField>>(fields, [
-                  "runs",
-                  "messages",
-                  "contextTransfers",
-                  "subagents",
-                  "providerThreads",
-                  "runtimeRequests",
-                  "nodes",
-                ]);
-                assert.deepEqual(options, { messageRoles: ["user"], omitSettledLeafNodes: true });
-                controlReads += 1;
-              } else {
-                assert.deepEqual<ReadonlyArray<ProjectionRecordField>>(fields, [
-                  "messages",
-                  "turnItems",
-                ]);
-                resultReads += 1;
-              }
-              const finished = controlReads > 1;
+  ] as const)("keeps child activity wakeups: %s", (scenario) =>
+    Effect.gen(function* () {
+      const eventType = scenario === "approval" ? "runtime-request.updated" : scenario;
+      const pendingQuestion = scenario === "runtime-request.updated";
+      const pendingApproval = scenario === "approval";
+      const childId = ThreadId.make("thread:task-reads-local-child");
+      const childRunId = RunId.make("run:task-reads-local");
+      const approvalNodeId = NodeId.make("node:task-reads-approval");
+      const approvalRequestId = RuntimeRequestId.make("request:task-reads-approval");
+      const child = idleThreadProjection(liveThreadShell(childId));
+      let parentReads = 0;
+      let controlReads = 0;
+      let resultReads = 0;
+      const layer = serviceLayer({
+        getThreadEventSequence: () => Effect.succeed(41),
+        getThreadRecords: (threadId, fields, options) =>
+          Effect.sync(() => {
+            if (threadId === parentId) {
+              parentReads += 1;
+              assert.deepEqual<ReadonlyArray<ProjectionRecordField>>(fields, [
+                "runs",
+                "subagents",
+                "contextTransfers",
+              ]);
               return {
-                ...child,
-                runs: [
+                ...parent,
+                subagents: [
                   {
-                    id: childRunId,
-                    delegatedTaskId: taskId,
-                    ordinal: 1,
-                    status:
-                      finished && eventType !== "runtime-request.updated" ? "completed" : "running",
-                    startedAt: now,
-                    completedAt: finished && eventType !== "runtime-request.updated" ? now : null,
-                  } as OrchestrationV2Run,
+                    ...task,
+                    childThreadId: childId,
+                    completionDelivery: {
+                      state: pendingApproval ? ("acknowledged" as const) : ("disposed" as const),
+                      observedByRunId: null,
+                    },
+                  },
                 ],
-                nodes:
-                  finished && pendingApproval
-                    ? [
-                        {
-                          id: approvalNodeId,
-                          runId: childRunId,
-                        } as OrchestrationV2ThreadProjection["nodes"][number],
-                      ]
-                    : [],
-                runtimeRequests:
-                  finished && (pendingQuestion || pendingApproval)
-                    ? [
-                        {
-                          id: approvalRequestId,
-                          nodeId: approvalNodeId,
-                          kind: pendingApproval ? "command" : "user_input",
-                          status: "pending",
-                          responseCapability: { type: "live" },
-                          createdAt: now,
-                        } as OrchestrationV2RuntimeRequest,
-                      ]
-                    : [],
               };
-            }),
-          delegatedTaskResultPending: () => Effect.succeed(false),
-          streamStoredEventsFrom: (input) => {
-            assert.equal(input?.afterSequence, 41);
-            if (input?.threadId !== childId || input.eventType !== eventType) return Stream.empty;
-            const event = storedUpdate(NodeId.make("nested-child-task"));
-            return Stream.succeed({
-              ...event,
-              event: { ...event.event, threadId: childId, type: eventType },
-            } as OrchestrationV2StoredEvent);
-          },
+            }
+            assert.equal(threadId, childId);
+            if (fields.some((field) => field === "runs")) {
+              assert.deepEqual<ReadonlyArray<ProjectionRecordField>>(fields, [
+                "runs",
+                "messages",
+                "contextTransfers",
+                "subagents",
+                "providerThreads",
+                "runtimeRequests",
+                "nodes",
+              ]);
+              assert.deepEqual(options, { messageRoles: ["user"], omitSettledLeafNodes: true });
+              controlReads += 1;
+            } else {
+              assert.deepEqual<ReadonlyArray<ProjectionRecordField>>(fields, [
+                "messages",
+                "turnItems",
+              ]);
+              resultReads += 1;
+            }
+            const finished = controlReads > 1;
+            return {
+              ...child,
+              runs: [
+                {
+                  id: childRunId,
+                  delegatedTaskId: taskId,
+                  ordinal: 1,
+                  status:
+                    finished && eventType !== "runtime-request.updated" ? "completed" : "running",
+                  startedAt: now,
+                  completedAt: finished && eventType !== "runtime-request.updated" ? now : null,
+                } as OrchestrationV2Run,
+              ],
+              nodes:
+                finished && pendingApproval
+                  ? [
+                      {
+                        id: approvalNodeId,
+                        runId: childRunId,
+                      } as OrchestrationV2ThreadProjection["nodes"][number],
+                    ]
+                  : [],
+              runtimeRequests:
+                finished && (pendingQuestion || pendingApproval)
+                  ? [
+                      {
+                        id: approvalRequestId,
+                        nodeId: approvalNodeId,
+                        kind: pendingApproval ? "command" : "user_input",
+                        status: "pending",
+                        responseCapability: { type: "live" },
+                        createdAt: now,
+                      } as OrchestrationV2RuntimeRequest,
+                    ]
+                  : [],
+            };
+          }),
+        delegatedTaskResultPending: () => Effect.succeed(false),
+        streamStoredEventsFrom: (input) => {
+          assert.equal(input?.afterSequence, 41);
+          if (input?.threadId !== childId || input.eventType !== eventType) return Stream.empty;
+          const event = storedUpdate(NodeId.make("nested-child-task"));
+          return Stream.succeed({
+            ...event,
+            event: { ...event.event, threadId: childId, type: eventType },
+          } as OrchestrationV2StoredEvent);
+        },
+      });
+      const result = yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        return yield* service.delegateTask(scope, {
+          task: "Synthetic task",
+          mode: "wait",
+          timeoutMs: 1_000,
+          target: { environmentId: remoteChild.environmentId },
         });
-        const result = yield* Effect.gen(function* () {
-          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-          return yield* service.delegateTask(scope, {
-            task: "Synthetic task",
-            mode: "wait",
-            timeoutMs: 1_000,
-            target: { environmentId: remoteChild.environmentId },
-          });
-        }).pipe(Effect.provide(layer));
-        assert.equal(
-          result.status,
-          eventType === "runtime-request.updated" ? "running" : "completed",
-        );
-        assert.equal(result.hasPendingQuestion, pendingQuestion);
-        assert.deepEqual(
-          result.pendingApproval,
-          pendingApproval
-            ? { requestId: approvalRequestId, kind: "command", runId: childRunId }
-            : null,
-        );
-        assert.isFalse(result.waitTimedOut);
-        assert.equal(parentReads, 2);
-        assert.equal(controlReads, 2);
-        assert.equal(resultReads, 2);
-      }),
+      }).pipe(Effect.provide(layer));
+      assert.equal(
+        result.status,
+        eventType === "runtime-request.updated" ? "running" : "completed",
+      );
+      assert.equal(result.hasPendingQuestion, pendingQuestion);
+      assert.deepEqual(
+        result.pendingApproval,
+        pendingApproval
+          ? { requestId: approvalRequestId, kind: "command", runId: childRunId }
+          : null,
+      );
+      assert.isFalse(result.waitTimedOut);
+      assert.equal(parentReads, 2);
+      assert.equal(controlReads, 2);
+      assert.equal(resultReads, 2);
+    }),
   );
 
   it.effect.each(["running", "completed"] as const)(
