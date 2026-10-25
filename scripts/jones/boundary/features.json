@@ -1923,6 +1923,7 @@
         "apps/server/src/jones/cleanup/DeletionWorktreeRemoval.test.ts",
         "apps/server/src/storageCleanup.test.ts",
         "apps/server/src/jones/workspaceLifecycle/RuntimeIntegration.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
         "apps/server/src/jones/persistence/Migrations.test.ts",
         "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
         "apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts",

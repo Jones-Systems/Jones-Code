@@ -1750,60 +1750,57 @@ export const layer: Layer.Layer<
       });
     });
 
-    const attestStart = <A, E, R>(
+    const attestStart = Effect.fn("ProviderTurnStartService.attestWorkspaceStart")(function* <
+      A,
+      E,
+      R,
+    >(
       input: {
         readonly threadId: ThreadId;
         readonly runId: RunId;
         readonly guard?: NativeProvider.NativeProviderExecutionGuard;
       },
       effect: Effect.Effect<A, E, R>,
-    ) => {
-      return Effect.gen(function* () {
-        if (Option.isNone(yield* Effect.serviceOption(WorkspaceLifecycleService)))
-          return yield* effect;
-        const admitted = yield* projectionStore.getTurnStartContext(input.threadId, input.runId);
-        const originalAttempt = admitted.runs.find(
-          (run) => run.id === input.runId,
-        )?.activeAttemptId;
-        return yield* withOperation(
-          {
-            id: `run:${input.runId}`,
-            kind: input.guard ? "native-start" : "provider-start",
-            threadId: input.threadId,
-            boundaries: ["start", "resume", "recreate"],
-            sqlOnly: input.guard === undefined,
-            check: Effect.gen(function* () {
-              if (input.guard)
-                yield* NativeProvider.assertNativeProviderStartOperation(
-                  input.guard,
-                  input.threadId,
-                  input.runId,
-                );
-              const current = yield* projectionStore.getTurnStartContext(
+    ) {
+      if (Option.isNone(yield* Effect.serviceOption(WorkspaceLifecycleService)))
+        return yield* effect;
+      const admitted = yield* projectionStore.getTurnStartContext(input.threadId, input.runId);
+      const originalAttempt = admitted.runs.find((run) => run.id === input.runId)?.activeAttemptId;
+      return yield* withOperation(
+        {
+          id: `run:${input.runId}`,
+          kind: input.guard ? "native-start" : "provider-start",
+          threadId: input.threadId,
+          boundaries: ["start", "resume", "recreate"],
+          sqlOnly: input.guard === undefined,
+          check: Effect.gen(function* () {
+            if (input.guard)
+              yield* NativeProvider.assertNativeProviderStartOperation(
+                input.guard,
                 input.threadId,
                 input.runId,
               );
-              const active = current.runs.find((run) => run.id === input.runId);
-              if (
-                !active ||
-                !["starting", "running"].includes(active.status) ||
-                !active.activeAttemptId ||
-                (originalAttempt !== undefined && originalAttempt !== active.activeAttemptId) ||
-                !current.attempts.some(
-                  (attempt) => attempt.id === active.activeAttemptId && attempt.runId === active.id,
-                ) ||
-                !current.nodes.some((node) => node.id === active.rootNodeId)
-              )
-                return yield* new ProviderTurnStartError({
-                  runId: input.runId,
-                  cause: "Native run ownership changed before workspace use.",
-                });
-            }),
-          },
-          effect,
-        );
-      });
-    };
+            const current = yield* projectionStore.getTurnStartContext(input.threadId, input.runId);
+            const active = current.runs.find((run) => run.id === input.runId);
+            if (
+              !active ||
+              !["starting", "running"].includes(active.status) ||
+              !active.activeAttemptId ||
+              (originalAttempt !== undefined && originalAttempt !== active.activeAttemptId) ||
+              !current.attempts.some(
+                (attempt) => attempt.id === active.activeAttemptId && attempt.runId === active.id,
+              ) ||
+              !current.nodes.some((node) => node.id === active.rootNodeId)
+            )
+              return yield* new ProviderTurnStartError({
+                runId: input.runId,
+                cause: "Native run ownership changed before workspace use.",
+              });
+          }),
+        },
+        effect,
+      );
+    });
 
     return ProviderTurnStartServiceV2.of({
       startNative: Effect.fn("ProviderTurnStartService.startNative")(

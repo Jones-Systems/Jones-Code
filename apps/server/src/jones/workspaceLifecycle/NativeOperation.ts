@@ -36,37 +36,36 @@ export const sameOperationRequest = (left: unknown, right: unknown) =>
   canonical(left) === canonical(right);
 
 // Only native effect owners call this wrapper. Neither persisted provenance nor configuration can recreate its live handle.
-export const withOperation = <A, E, R, C>(
+export const withOperation = Effect.fn("NativeOperation.withOperation")(function* <A, E, R, C>(
   operation: Omit<Operation, "check"> & { readonly check: Effect.Effect<void, C> },
   effect: Effect.Effect<A, E, R>,
-) =>
-  Effect.gen(function* () {
-    const parent = yield* Effect.serviceOption(CurrentOperation);
-    const handle = {};
-    const ancestor = Option.getOrUndefined(parent);
-    const state = {
-      operation: {
-        ...operation,
-        check: operation.check.pipe(
-          Effect.mapError((cause) => new LifecycleError({ reason: "stale", cause })),
-        ),
-      },
-      parent:
-        operation.inherit === false || ancestor === undefined || !issued.get(ancestor)?.active
-          ? undefined
-          : ancestor,
-      active: true,
-    };
-    issued.set(handle, state);
-    return yield* effect.pipe(
-      Effect.provideService(CurrentOperation, handle),
-      Effect.ensuring(
-        Effect.sync(() => {
-          state.active = false;
-        }),
+) {
+  const parent = yield* Effect.serviceOption(CurrentOperation);
+  const handle = {};
+  const ancestor = Option.getOrUndefined(parent);
+  const state = {
+    operation: {
+      ...operation,
+      check: operation.check.pipe(
+        Effect.mapError((cause) => new LifecycleError({ reason: "stale", cause })),
       ),
-    );
-  });
+    },
+    parent:
+      operation.inherit === false || ancestor === undefined || !issued.get(ancestor)?.active
+        ? undefined
+        : ancestor,
+    active: true,
+  };
+  issued.set(handle, state);
+  return yield* effect.pipe(
+    Effect.provideService(CurrentOperation, handle),
+    Effect.ensuring(
+      Effect.sync(() => {
+        state.active = false;
+      }),
+    ),
+  );
+});
 
 const assert = Effect.fn("NativeOperation.assert")(function* (
   input: NativeTransition,

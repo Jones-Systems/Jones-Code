@@ -29,6 +29,15 @@ import {
 } from "../nativeCreation/NativeCreationPreparation.ts";
 import { projectId, selection, type fixture } from "./ManagedConsumer.testkit.ts";
 
+const decodePreparationBinding = Schema.decodeUnknownEffect(NativePreparationBinding);
+const decodeHistoricalBinding = Schema.decodeUnknownEffect(NativeCreationHistoricalBinding);
+const decodeCommand = Schema.decodeUnknownEffect(OrchestrationV2Command);
+const decodeExecutionReference = Schema.decodeUnknownEffect(NativeCreationExecutionReferenceV2);
+const decodeSession = Schema.decodeUnknownEffect(AuthSessions.AuthSessionRecord);
+const encodeEffectPayload = Schema.encodeEffect(
+  Schema.fromJsonString(Outbox.NativeOrchestrationEffectPayloadV2),
+);
+
 // Fixture-only grant/binding resolvers; production NativeCreationAuthority, durable native100 repository and private guard remain real.
 export const nativeStartFixture = (f: Effect.Success<typeof fixture>) =>
   Effect.gen(function* () {
@@ -39,7 +48,7 @@ export const nativeStartFixture = (f: Effect.Success<typeof fixture>) =>
     const repository = yield* Repository.NativeCreationRepository.pipe(
       Effect.provide(RepositorySqlite.layer),
     );
-    const binding = yield* Schema.decodeUnknownEffect(NativePreparationBinding)({
+    const binding = yield* decodePreparationBinding({
       backend_instance: "sql-fixture-backend",
       environment_id: "synthetic-environment",
       project_id: projectId,
@@ -73,7 +82,7 @@ export const nativeStartFixture = (f: Effect.Success<typeof fixture>) =>
         }),
       ),
     );
-    const historical = yield* Schema.decodeUnknownEffect(NativeCreationHistoricalBinding)({
+    const historical = yield* decodeHistoricalBinding({
       backendInstance: binding.backend_instance,
       environmentId: binding.environment_id,
       projectId: binding.project_id,
@@ -126,7 +135,7 @@ export const nativeStartFixture = (f: Effect.Success<typeof fixture>) =>
       Effect.succeed(historical),
     );
     yield* sql`INSERT INTO native_creation_automation_enrollments(session_id,enrolled_at) VALUES(${actor},${now})`;
-    const command = yield* Schema.decodeUnknownEffect(OrchestrationV2Command)({
+    const command = yield* decodeCommand({
       type: "prepared-run.release",
       commandId: `${prepared.commandId}:native:v2:message`,
       threadId: prepared.threadId,
@@ -138,7 +147,7 @@ export const nativeStartFixture = (f: Effect.Success<typeof fixture>) =>
       prepared.commandId,
       command.commandId,
     ]);
-    const normalized = yield* Schema.decodeUnknownEffect(OrchestrationV2Command)({
+    const normalized = yield* decodeCommand({
       type: "message.dispatch",
       createdBy: "user",
       creationSource: "server",
@@ -152,7 +161,7 @@ export const nativeStartFixture = (f: Effect.Success<typeof fixture>) =>
     });
     yield* repository.recordNormalizedCommand(claimId, normalized);
     yield* repository.reserveCommand(claimId, command);
-    const reference = yield* Schema.decodeUnknownEffect(NativeCreationExecutionReferenceV2)({
+    const reference = yield* decodeExecutionReference({
       version: 2,
       claimId,
       stageCommandId: command.commandId,
@@ -184,16 +193,14 @@ export const nativeStartFixture = (f: Effect.Success<typeof fixture>) =>
         }),
       );
     const enqueue = Effect.gen(function* () {
-      const payload = yield* Schema.encodeEffect(
-        Schema.fromJsonString(Outbox.NativeOrchestrationEffectPayloadV2),
-      )({
+      const payload = yield* encodeEffectPayload({
         request: { type: "provider-turn.start", runId: command.runId },
         nativeCreationExecutionReference: reference,
       });
       yield* sql`INSERT INTO orchestration_v2_effect_outbox(effect_id,command_id,thread_id,effect_type,payload_json,status,attempt_count,available_at,lease_owner,lease_expires_at,created_at,updated_at)
       VALUES(${reference.effectId},${command.commandId},${command.threadId},'provider-turn.start',${payload},'running',1,${now},'sql-worker',${deadline},${now},${now})`;
     });
-    const session = yield* Schema.decodeUnknownEffect(AuthSessions.AuthSessionRecord)({
+    const session = yield* decodeSession({
       sessionId: actor,
       subject: "Synthetic native actor",
       scopes: ["orchestration:operate"],

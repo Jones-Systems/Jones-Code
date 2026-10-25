@@ -15,6 +15,14 @@ import * as Adapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Boundary from "./NativeBoundary.ts";
 import { fixture, threadId, selection } from "./ManagedConsumer.testkit.ts";
 
+const decodeOriginalInput = Schema.decodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      input: Schema.Struct({ transitionId: Schema.String, requestDigest: Schema.String }),
+    }),
+  ),
+);
+
 it.effect(
   "real command precommit issues present and removed unsettle/restore attestations; registry I/O stays outside SQL transactions",
   () =>
@@ -328,13 +336,7 @@ it.effect(
             expected_generation: string | null;
           }>`SELECT transition_id,source_json,expected_generation FROM jones_workspace_lifecycle_transitions WHERE state='invoking'`;
           expect(rows).toHaveLength(1);
-          const { input } = yield* Schema.decodeEffect(
-            Schema.fromJsonString(
-              Schema.Struct({
-                input: Schema.Struct({ transitionId: Schema.String, requestDigest: Schema.String }),
-              }),
-            ),
-          )(rows[0]!.source_json);
+          const { input } = yield* decodeOriginalInput(rows[0]!.source_json);
           expect(
             Exit.isFailure(
               yield* Effect.exit(

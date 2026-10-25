@@ -49,6 +49,8 @@ const recordLineage = Effect.fnUntraced(function* (f: Effect.Success<typeof fixt
   });
 });
 
+const decodeCleanupRules = Schema.decodeUnknownEffect(WorktreeCleanupRules);
+
 it.effect.each(["matching", "missing", "head-changed", "successor", "native-changed"] as const)(
   "real settle-script owner checks preservation (%s), without resume or a live provider",
   (mode) =>
@@ -147,7 +149,7 @@ it.effect.each(["matching", "missing", "head-changed", "native-policy"] as const
           const sql = yield* SqlClient.SqlClient;
           // Synthetic native cleanup receipts: no provider or pending native effect remains.
           yield* sql`UPDATE orchestration_v2_effect_outbox SET status='succeeded' WHERE thread_id=${threadId}`;
-          const rules = yield* Schema.decodeUnknownEffect(WorktreeCleanupRules)({
+          const rules = yield* decodeCleanupRules({
             ...resolveWorktreeCleanup(DEFAULT_SERVER_SETTINGS, null),
             worktreeOnDelete: mode !== "native-policy",
           });

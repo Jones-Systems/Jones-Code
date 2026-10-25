@@ -57,6 +57,7 @@ export const selection: ModelSelection = {
 export const threadId = ThreadId.make("managed-thread");
 export const projectId = ProjectId.make("managed-project");
 const driver = ProviderDriverKind.make("codex");
+const decodeBinding = Schema.decodeEffect(Schema.fromJsonString(Binding));
 
 // All durable native state and physical Git targets are synthetic and scope-owned.
 // Only provider/registry effects are fixtures; production native issuers and consumers stay real.
@@ -152,9 +153,7 @@ export const fixture = Effect.gen(function* () {
           state.resumes++;
           view = {
             ...view,
-            binding: yield* Schema.decodeEffect(Schema.fromJsonString(Binding))(input.stdin!).pipe(
-              Effect.orDie,
-            ),
+            binding: yield* decodeBinding(input.stdin!).pipe(Effect.orDie),
             generation: `cas:${state.resumes}`,
             assessment: null,
             assessment_status: "stale",

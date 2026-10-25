@@ -2238,13 +2238,13 @@ export const layerWithOptions = (
         );
       });
 
-      const withSessionInvocation = <A, E, R, C>(
-        threadId: ThreadId,
-        providerSessionId: ProviderSessionId,
-        effect: Effect.Effect<A, E, R>,
-        allocationError: (cause: unknown) => C,
-      ) =>
-        Effect.gen(function* () {
+      const withSessionInvocation = Effect.fn("ProviderSessionManager.withWorkspaceInvocation")(
+        function* <A, E, R, C>(
+          threadId: ThreadId,
+          providerSessionId: ProviderSessionId,
+          effect: Effect.Effect<A, E, R>,
+          allocationError: (cause: unknown) => C,
+        ) {
           if (
             Option.isNone(yield* Effect.serviceOption(WorkspaceLifecycleService)) ||
             Option.isSome(yield* Effect.serviceOption(WorkspaceLifecycle.OriginalNativeTransition))
@@ -2258,7 +2258,8 @@ export const layerWithOptions = (
             { threadId, providerSessionId },
             effect,
           );
-        });
+        },
+      );
 
       const decorateRuntime = (
         runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime,

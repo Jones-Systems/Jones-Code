@@ -259,38 +259,39 @@ export const makeDeletionAdmission = Effect.gen(function* () {
       return yield* failure("current_cleanup_owner_or_live_prerequisites_changed");
     yield* validateBinding(binding);
   });
-  const readBinding = (input: DeletionAdmissionInput) =>
-    Effect.gen(function* () {
-      const deletions = yield* sql<{
-        readonly event_id: string;
-        readonly sequence: number;
-        readonly command_id: string | null;
-        readonly payload_json: string;
-      }>`SELECT event_id,sequence,command_id,payload_json FROM orchestration_events WHERE stream_id=${input.threadId} AND application_event_version=2 AND aggregate_kind='thread' AND event_type='thread.deleted' ORDER BY sequence DESC LIMIT 1`;
-      const births = yield* sql<{
-        readonly event_id: string;
-        readonly sequence: number;
-      }>`SELECT event_id,sequence FROM orchestration_events WHERE stream_id=${input.threadId} AND application_event_version=2 AND aggregate_kind='thread' AND event_type='thread.created' ORDER BY sequence DESC LIMIT 1`;
-      if (deletions.length !== 1 || births.length !== 1 || deletions[0]!.command_id === null)
-        return yield* failure("original_birth_or_deletion_command_unavailable");
-      const deletion = deletions[0]!;
-      const binding: Binding = {
-        actor: "storage-cleanup-policy",
-        threadId: input.threadId,
-        birthEventId: births[0]!.event_id,
-        birthSequence: births[0]!.sequence,
-        deletionEventId: deletion.event_id,
-        deletionSequence: deletion.sequence,
-        commandId: CommandId.make(deletion.command_id!),
-        deletionPayload: deletion.payload_json,
-        target: input.target,
-        rules: input.rules,
-      };
-      yield* checkCurrent(binding, input.currentRules, input.currentLive);
-      return binding;
-    });
-  const start = (input: DeletionAdmissionInput) =>
-    Effect.gen(function* () {
+  const readBinding = Effect.fn("DeletionAdmission.readBinding")(function* (
+    input: DeletionAdmissionInput,
+  ) {
+    const deletions = yield* sql<{
+      readonly event_id: string;
+      readonly sequence: number;
+      readonly command_id: string | null;
+      readonly payload_json: string;
+    }>`SELECT event_id,sequence,command_id,payload_json FROM orchestration_events WHERE stream_id=${input.threadId} AND application_event_version=2 AND aggregate_kind='thread' AND event_type='thread.deleted' ORDER BY sequence DESC LIMIT 1`;
+    const births = yield* sql<{
+      readonly event_id: string;
+      readonly sequence: number;
+    }>`SELECT event_id,sequence FROM orchestration_events WHERE stream_id=${input.threadId} AND application_event_version=2 AND aggregate_kind='thread' AND event_type='thread.created' ORDER BY sequence DESC LIMIT 1`;
+    if (deletions.length !== 1 || births.length !== 1 || deletions[0]!.command_id === null)
+      return yield* failure("original_birth_or_deletion_command_unavailable");
+    const deletion = deletions[0]!;
+    const binding: Binding = {
+      actor: "storage-cleanup-policy",
+      threadId: input.threadId,
+      birthEventId: births[0]!.event_id,
+      birthSequence: births[0]!.sequence,
+      deletionEventId: deletion.event_id,
+      deletionSequence: deletion.sequence,
+      commandId: CommandId.make(deletion.command_id!),
+      deletionPayload: deletion.payload_json,
+      target: input.target,
+      rules: input.rules,
+    };
+    yield* checkCurrent(binding, input.currentRules, input.currentLive);
+    return binding;
+  });
+  const start = Effect.fn("DeletionAdmission.start")(
+    function* (input: DeletionAdmissionInput) {
       const binding = yield* readBinding(input);
       yield* withOperation(
         {
@@ -338,18 +339,18 @@ export const makeDeletionAdmission = Effect.gen(function* () {
           return { status: "start_now" as const, start: captured, ordinal: 0 };
         }),
       );
-    }).pipe(
-      Effect.map((result) => {
-        // Lost responses and process recovery cannot recreate this fresh invocation permit.
-        if (result.status === "start_now") newlyIssuedStarts.add(result.start.effectId);
-        return result;
-      }),
-      Effect.mapError((cause) =>
-        Schema.is(DeletionAdmissionError)(cause)
-          ? cause
-          : new DeletionAdmissionError({ reason: "deletion_admission_failed", cause }),
-      ),
-    );
+    },
+    Effect.map((result) => {
+      // Lost responses and process recovery cannot recreate this fresh invocation permit.
+      if (result.status === "start_now") newlyIssuedStarts.add(result.start.effectId);
+      return result;
+    }),
+    Effect.mapError((cause) =>
+      Schema.is(DeletionAdmissionError)(cause)
+        ? cause
+        : new DeletionAdmissionError({ reason: "deletion_admission_failed", cause }),
+    ),
+  );
   const read = (effectId: string) =>
     load(effectId).pipe(
       Effect.map((row) => (row === null ? null : { start: row.start, ordinal: 0 })),
@@ -378,13 +379,13 @@ export const makeDeletionAdmission = Effect.gen(function* () {
         : new DeletionAdmissionError({ reason: "original_target_read_failed", cause }),
     ),
   );
-  const revalidate = (
-    captured: DeletionWorktreeRemovalStartV1,
-    ordinal: number,
-    rules?: DeletionPolicyRead,
-    live?: DeletionLiveRead,
-  ) =>
-    Effect.gen(function* () {
+  const revalidate = Effect.fn("DeletionAdmission.revalidate")(
+    function* (
+      captured: DeletionWorktreeRemovalStartV1,
+      ordinal: number,
+      rules?: DeletionPolicyRead,
+      live?: DeletionLiveRead,
+    ) {
       const check = Effect.gen(function* () {
         const original = yield* load(captured.effectId);
         if (
@@ -425,13 +426,13 @@ export const makeDeletionAdmission = Effect.gen(function* () {
           ),
         ),
       );
-    }).pipe(
-      Effect.mapError((cause) =>
-        Schema.is(DeletionAdmissionError)(cause)
-          ? cause
-          : new DeletionAdmissionError({ reason: "original_start_revalidation_failed", cause }),
-      ),
-    );
+    },
+    Effect.mapError((cause) =>
+      Schema.is(DeletionAdmissionError)(cause)
+        ? cause
+        : new DeletionAdmissionError({ reason: "original_start_revalidation_failed", cause }),
+    ),
+  );
   const qualify = (input: DeletionWorktreeRemovalObservationV1) =>
     sql
       .withTransaction(
