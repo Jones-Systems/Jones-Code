@@ -101,6 +101,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
+import { readLocalHistoryPage } from "../jones/orchestration/historyPaging.ts";
 
 import { MCP_APP_OUTPUT_KEY } from "@t3tools/shared/mcpApp";
 import { threadHtmlRenderAttachmentIds } from "../attachmentStore.ts";
@@ -6087,8 +6088,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       sql
         .withTransaction(
           Effect.gen(function* () {
-            const index = yield* readTimelineIndex(threadId, new Set());
-            if (index.records.thread.deletedAt !== null)
+            const { thread } = yield* getThreadRecords(threadId, []);
+            if (thread.deletedAt !== null)
               return yield* new ProjectionStoreThreadNotFoundError({ threadId });
             const revisions = yield* sql<{
               sequence: number;
@@ -6096,25 +6097,39 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           FROM orchestration_events WHERE application_event_version = 2
           AND aggregate_kind = 'thread' AND stream_id = ${threadId}`;
             const snapshotSequence = revisions[0]?.sequence ?? 0;
-            const page = yield* Effect.try({
-              try: () =>
-                selectHistoryPageFromCursor({
-                  items: index.visible.map((row, position) => ({
-                    ...row,
-                    position,
-                    canonicalPosition: position,
-                  })),
-                  cursor,
-                  snapshotSequence,
-                  rowEncodedBytes: () => 0,
-                  throughEntryId,
-                }),
-              catch: (cause) => new ProjectionStoreReadError({ threadId, cause }),
-            });
-            const end = (page.items.at(-1)?.canonicalPosition ?? -1) + 1;
-            const hasUserTurns = index.visible
-              .slice(0, end)
-              .some((row) => isThreadHistoryUserTurn(row.item));
+            const local =
+              thread.forkedFrom === null && throughEntryId === undefined
+                ? yield* readLocalHistoryPage(threadId, cursor, snapshotSequence).pipe(
+                    Effect.provideService(SqlClient.SqlClient, sql),
+                  )
+                : null;
+            const { page, hasUserTurns } =
+              local ??
+              (yield* Effect.gen(function* () {
+                const index = yield* readTimelineIndex(threadId, new Set());
+                const page = yield* Effect.try({
+                  try: () =>
+                    selectHistoryPageFromCursor({
+                      items: index.visible.map((row, position) => ({
+                        ...row,
+                        position,
+                        canonicalPosition: position,
+                      })),
+                      cursor,
+                      snapshotSequence,
+                      rowEncodedBytes: () => 0,
+                      throughEntryId,
+                    }),
+                  catch: (cause) => new ProjectionStoreReadError({ threadId, cause }),
+                });
+                const end = (page.items.at(-1)?.canonicalPosition ?? -1) + 1;
+                return {
+                  page,
+                  hasUserTurns: index.visible
+                    .slice(0, end)
+                    .some((row) => isThreadHistoryUserTurn(row.item)),
+                };
+              }));
             const materialized =
               conversationOnly && hasUserTurns
                 ? page.items.filter((row) => isConversationHistoryItem(row.item))

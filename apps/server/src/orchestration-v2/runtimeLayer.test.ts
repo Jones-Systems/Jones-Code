@@ -32,6 +32,7 @@ import { SourceControlProviderKind } from "@t3tools/contracts";
 import { limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
+import { PullRequestProviderError } from "@t3tools/source-control-core/server/PullRequestProvider";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
@@ -2773,6 +2774,215 @@ it.layer(layerTest)("RuntimeLayer.layer lifecycle", (it) => {
       assert.deepEqual(yield* summaries, ["#12: checks passed", "#12: checks passed"]);
       yield* watch(false, "end");
     }),
+  );
+
+  it.effect.each(["complete", "cancel"] as const)(
+    "processes watch fingerprints in completion order with four detail permits: %s",
+    (mode) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const projectId = ProjectId.make(`pr-watch-scheduling-${mode}`);
+        const threadId = ThreadId.make(`pr-watch-scheduling-${mode}`);
+        yield* seedProject({
+          projectId,
+          title: "Watch scheduling",
+          workspaceRoot: `/workspace/watch-scheduling-${mode}`,
+          defaultModelSelection: null,
+          createdAt: "2026-10-01T00:00:00.000Z",
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`create:${threadId}`),
+          threadId,
+          projectId,
+          title: "Watch scheduling",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+        });
+        const numbers = [1, 2, 3, 4, 5, 6, 7];
+        const watch = (number: number, watching: boolean) =>
+          orchestrator.dispatch({
+            type: "thread.pull-request.watch",
+            commandId: CommandId.make(`watch:${threadId}:${number}:${watching}`),
+            threadId,
+            host: "github.com",
+            repository: "pingdotgg/t3code",
+            number,
+            watching,
+            link: { url: `https://github.com/pingdotgg/t3code/pull/${number}`, source: "agent" },
+          });
+        for (const number of numbers) yield* watch(number, true);
+        yield* Effect.gen(function* () {
+          const allFingerprintsStarted = yield* Deferred.make<void>();
+          const releaseFingerprint = yield* Deferred.make<void>();
+          const fourDetailsStarted = yield* Deferred.make<void>();
+          const fifthDetailStarted = yield* Deferred.make<void>();
+          const fifthActivityStarted = yield* Deferred.make<void>();
+          const firstUpdate = yield* Deferred.make<void>();
+          const detailGates = yield* Effect.forEach(numbers, () => Deferred.make<void>());
+          const fingerprintReads: number[] = [];
+          const detailReads: number[] = [];
+          const activityReads: number[] = [];
+          const invalidations: number[] = [];
+          let activeDetails = 0;
+          let peakDetails = 0;
+          let activeFingerprints = 0;
+          let firstReleased: number | undefined;
+          const reactor = yield* PullRequestWatchReactor.make.pipe(
+            Effect.provide(
+              Layer.mergeAll(
+                NodeServices.layer,
+                Layer.succeed(ProjectionStore.ProjectionStoreV2, {
+                  ...projections,
+                  getThreadsWithPullRequests: () =>
+                    projections
+                      .getThreadsWithPullRequests()
+                      .pipe(
+                        Effect.map((threads) => threads.filter((thread) => thread.id === threadId)),
+                      ),
+                }),
+                Layer.succeed(Orchestrator.OrchestratorV2, {
+                  ...orchestrator,
+                  dispatch: (command) =>
+                    orchestrator
+                      .dispatch(command)
+                      .pipe(
+                        Effect.tap(() =>
+                          command.type === "thread.pull-request-watch.sync" &&
+                          command.number === firstReleased
+                            ? Deferred.succeed(firstUpdate, undefined)
+                            : Effect.void,
+                        ),
+                      ),
+                }),
+                Layer.mock(PullRequestService.PullRequestService)({
+                  watchFingerprint: ({ number }) =>
+                    Effect.gen(function* () {
+                      fingerprintReads.push(number);
+                      activeFingerprints += 1;
+                      if (fingerprintReads.length === numbers.length) {
+                        yield* Deferred.succeed(allFingerprintsStarted, undefined);
+                      }
+                      if (number === 7) yield* Deferred.await(releaseFingerprint);
+                      if (number === 6) {
+                        return yield* Effect.fail(
+                          new PullRequestOperationError({
+                            operation: "watchFingerprint",
+                            detail: "paused",
+                            cause: new PullRequestProviderError({
+                              provider: SourceControlProviderKind.make("github"),
+                              operation: "getChangeRequestWatchFingerprint",
+                              reason: "rate-limited",
+                              detail: "paused",
+                            }),
+                          }),
+                        );
+                      }
+                      return number === 5 ? null : { status: "OPEN settled", remarks: "0" };
+                    }).pipe(
+                      Effect.ensuring(
+                        Effect.sync(() => {
+                          activeFingerprints -= 1;
+                        }),
+                      ),
+                    ),
+                  invalidate: ({ reference }) =>
+                    Effect.sync(() => {
+                      assert.isDefined(reference);
+                      invalidations.push(reference!.number);
+                    }),
+                  detail: ({ number }) =>
+                    Effect.gen(function* () {
+                      detailReads.push(number);
+                      activeDetails += 1;
+                      peakDetails = Math.max(peakDetails, activeDetails);
+                      if (detailReads.length === 4) {
+                        yield* Deferred.succeed(fourDetailsStarted, undefined);
+                      }
+                      if (detailReads.length === 5) {
+                        yield* Deferred.succeed(fifthDetailStarted, undefined);
+                      }
+                      yield* Deferred.await(detailGates[number - 1]!);
+                      return watchedPullRequestDetail({
+                        projectId,
+                        number,
+                        at: "2026-10-02T12:00:00.000Z",
+                      });
+                    }).pipe(
+                      Effect.ensuring(
+                        Effect.sync(() => {
+                          activeDetails -= 1;
+                        }),
+                      ),
+                    ),
+                  activity: ({ number }) =>
+                    Effect.gen(function* () {
+                      activityReads.push(number);
+                      if (activityReads.length === 5) {
+                        yield* Deferred.succeed(fifthActivityStarted, undefined);
+                      }
+                      return {
+                        comments: [],
+                        commentCount: 0,
+                        commentsTruncated: false,
+                        reviewThreads: [],
+                        commits: [],
+                      };
+                    }),
+                }),
+              ),
+            ),
+          );
+          const sweep = yield* reactor.sweep.pipe(Effect.forkScoped);
+          yield* Deferred.await(allFingerprintsStarted);
+          yield* Deferred.await(fourDetailsStarted);
+          assert.equal(activeDetails, 4);
+          assert.equal(activeFingerprints, 1);
+          firstReleased = detailReads[0]!;
+          yield* Deferred.succeed(detailGates[firstReleased - 1]!, undefined);
+          yield* Deferred.await(firstUpdate);
+          const thread = yield* orchestrator.getThreadShell(threadId);
+          assert.deepEqual(
+            thread?.pullRequests?.find((link) => link.number === firstReleased)?.watch
+              ?.failedChecks,
+            ["lint"],
+          );
+          assert.equal(activeFingerprints, 1);
+          yield* Deferred.await(fifthDetailStarted);
+          yield* Deferred.await(fifthActivityStarted);
+          assert.isFalse(detailReads.includes(6));
+          assert.isFalse(detailReads.includes(7));
+          if (mode === "cancel") {
+            yield* Fiber.interrupt(sweep);
+            assert.equal(activeFingerprints, 0);
+            assert.equal(activeDetails, 0);
+          }
+          for (const gate of detailGates) yield* Deferred.succeed(gate, undefined);
+          yield* Deferred.succeed(releaseFingerprint, undefined);
+          if (mode === "complete") yield* Fiber.join(sweep);
+          else yield* Fiber.await(sweep);
+          assert.equal(peakDetails, 4);
+          assert.deepEqual(fingerprintReads.toSorted(), numbers);
+          const expectedReads = mode === "complete" ? [1, 2, 3, 4, 5, 7] : [1, 2, 3, 4, 5];
+          assert.deepEqual(detailReads.toSorted(), expectedReads);
+          assert.deepEqual(activityReads.toSorted(), expectedReads);
+          assert.deepEqual(
+            invalidations.toSorted(),
+            expectedReads.filter((number) => number !== 5),
+          );
+        }).pipe(
+          Effect.scoped,
+          Effect.ensuring(
+            Effect.forEach(numbers, (number) => watch(number, false)).pipe(Effect.orDie),
+          ),
+        );
+      }),
   );
 
   // regression: #21155 watching a pull request again repeated news the thread already got
