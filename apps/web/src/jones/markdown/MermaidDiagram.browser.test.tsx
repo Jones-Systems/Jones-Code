@@ -214,11 +214,13 @@ describe("real MermaidDiagram acceptance", () => {
     const invalidSource = "not a diagram";
     using fixture = setup({ invalidSource });
     await using screen = await render(pendingDiagram(invalidSource), { router: false });
-    await vi.waitFor(() => expect(screen.container.textContent).toContain("Invalid diagram source"));
+    await vi.waitFor(() =>
+      expect(screen.container.textContent).toContain("Invalid diagram source"),
+    );
     expect(screen.container.querySelector("pre")?.textContent).toBe(invalidSource);
     expect(
-      [...screen.container.querySelectorAll("button")].some((button) =>
-        button.textContent?.trim() === "Retry",
+      [...screen.container.querySelectorAll("button")].some(
+        (button) => button.textContent?.trim() === "Retry",
       ),
     ).toBe(false);
     expect(
@@ -296,11 +298,11 @@ describe("real MermaidDiagram acceptance", () => {
     expect(
       screen.container.querySelector("[data-markdown-copy]")?.getAttribute("data-markdown-copy"),
     ).toContain(firstSource);
-    await act(() => screen.getByRole("button", { name: "Show code", exact: true }).click());
+    await screen.getByRole("button", { name: "Show code", exact: true }).click();
     expect(fixture.instances[0]!.destroy).toHaveBeenCalledTimes(1);
     expect(screen.container.querySelector("[data-markdown-mermaid]")).toBeNull();
     expect(screen.container.querySelector("pre")?.textContent).toBe(firstSource);
-    await act(() => screen.getByRole("button", { name: "Show diagram", exact: true }).click());
+    await screen.getByRole("button", { name: "Show diagram", exact: true }).click();
     await vi.waitFor(() => expect(fixture.instances).toHaveLength(2));
     expect(screen.container.querySelector("pre")).toBeNull();
     expect(screen.container.querySelector("[data-markdown-mermaid] svg")).not.toBeNull();
