@@ -155,10 +155,12 @@ export const make = Effect.gen(function* () {
       const normalizedCwd = yield* normalizeWorkspaceRoot(cwd).pipe(
         Effect.orElseSucceed(() => cwd),
       );
-      for (const variant of WorkspaceSearchIndex.WORKSPACE_SEARCH_INDEX_VARIANTS) {
+      const refreshVariant = Effect.fn(function* (
+        variant: WorkspaceSearchIndex.WorkspaceSearchIndexVariant,
+      ) {
         const indexKey = WorkspaceSearchIndex.workspaceSearchIndexKey(normalizedCwd, variant);
         if (!(yield* RcMap.has(workspaceSearchIndexes.rcMap, indexKey))) {
-          continue;
+          return;
         }
         const recoverRefreshFailure = (
           cause:
@@ -185,7 +187,11 @@ export const make = Effect.gen(function* () {
             WorkspaceSearchIndexRefreshFailed: recoverRefreshFailure,
           }),
         );
-      }
+      });
+      yield* Effect.forEach(WorkspaceSearchIndex.WORKSPACE_SEARCH_INDEX_VARIANTS, refreshVariant, {
+        concurrency: 2,
+        discard: true,
+      });
     },
   );
 

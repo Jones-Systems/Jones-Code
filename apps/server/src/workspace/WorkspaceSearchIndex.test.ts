@@ -9,6 +9,7 @@ import { afterEach, expect, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import { vi } from "vite-plus/test";
 
 import * as WorkspaceSearchIndex from "./WorkspaceSearchIndex.ts";
@@ -414,3 +415,38 @@ it.effect("continues whole-word searches after a filtered grep page", () =>
     }),
   ),
 );
+
+for (const variant of WorkspaceSearchIndex.WORKSPACE_SEARCH_INDEX_VARIANTS) {
+  it.effect(`waits for ${variant} index readiness after refresh scans`, () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const started = Promise.withResolvers<void>();
+        const ready = Promise.withResolvers<Awaited<ReturnType<FileFinder["waitForIndexReady"]>>>();
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            ready.resolve({ ok: true, value: true });
+          }),
+        );
+        const waitForIndexReady = vi.fn<FileFinder["waitForIndexReady"]>(async () => ({
+          ok: true,
+          value: true,
+        }));
+        const scanFiles = vi.fn(() => ({ ok: true as const, value: undefined }));
+        const finder = { destroy: vi.fn(), waitForIndexReady, scanFiles } as unknown as FileFinder;
+        vi.spyOn(FileFinder, "create").mockReturnValueOnce({ ok: true, value: finder });
+        const index = yield* WorkspaceSearchIndex.make("/workspace/project", variant);
+        waitForIndexReady.mockImplementationOnce(() => {
+          started.resolve();
+          return ready.promise;
+        });
+
+        const refreshing = yield* index.refresh().pipe(Effect.forkChild);
+        yield* Effect.promise(() => started.promise);
+        expect(scanFiles).toHaveBeenCalledTimes(1);
+        expect(refreshing.pollUnsafe()).toBeUndefined();
+        ready.resolve({ ok: true, value: true });
+        yield* Fiber.join(refreshing);
+      }),
+    ),
+  );
+}
