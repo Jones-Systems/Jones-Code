@@ -95,7 +95,7 @@
         "apps/server/src/jones/workstreams/enrollment/bearerRoute.test.ts",
         "packages/shared/src/jones/checkpointContention.test.ts"
       ],
-      "scope": "Bounded startup lock contention in the private upstream SQLite checkpoint worker and fail-fast test barriers on worker errors, exits and interruption. A small generic shared repair avoids duplicating the client; real-worker regressions remain in its existing mock harness. Preserves WAL setup order, checkpoint thresholds, fallback warnings and shutdown ownership. No schema, wire, migration or runtime activation changes; historical CI timeout causality remains unproved."
+      "scope": "Bounded startup lock contention in the private upstream SQLite checkpoint worker and fail-fast test barriers on worker errors, exits and interruption. Timed-out reader workers recover on later demand after termination and a capped cooldown; the file-backed server opts into read failure rather than synchronous fallback while its reader is unavailable. Other consumers retain fallback compatibility. A small generic shared repair avoids duplicating the client's private lifecycle machinery; real-worker recovery, retirement and serving-loop progress regressions remain in its existing mock harness. Preserves WAL setup order, transaction affinity, checkpoint thresholds and shutdown ownership. No schema, wire, migration or runtime activation changes; historical CI timeout causality remains unproved."
     },
     {
       "id": "usage",
@@ -437,7 +437,7 @@
         "apps/server/src/jones/mcp/organizationMetadata/handlers.test.ts",
         "packages/contracts/src/jones/organizationMetadata.test.ts"
       ],
-      "scope": "Native authenticated MCP invocation context and bounded organization thread metadata service, toolkit handlers, and Jones contract schemas; registration is provided by McpHttpServer."
+      "scope": "Native authenticated MCP invocation context and bounded organization thread metadata service, toolkit handlers, and Jones contract schemas; registration is provided by McpHttpServer. Metadata listing uses the reader for its complete transaction, retaining committed rows and sequence watermark while the writer is occupied; its real WAL regression exercises the existing projection and migration harness."
     },
     {
       "id": "settlement-restore",

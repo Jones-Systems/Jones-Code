@@ -1,3 +1,4 @@
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { ProviderRequestKind } from "@t3tools/contracts";
 import type { EnvironmentId, ThreadId, OrchestrationV2ThreadShell } from "@t3tools/contracts";
 import type {
@@ -120,6 +121,7 @@ const make = Effect.gen(function* () {
         const snapshot = yield* snapshots
           .getShellSnapshot()
           .pipe(
+            NodeSqliteClient.readOnly,
             Effect.mapError(
               () => new OrganizationMetadataError({ reason: "local-operation-failed" }),
             ),
