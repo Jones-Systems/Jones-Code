@@ -1,9 +1,10 @@
 import type { ServerProviderSkill } from "@t3tools/contracts";
 import type { Editor } from "@tiptap/core";
 import { closeHistory } from "@tiptap/pm/history";
-import { act, createRef, useState } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import { createRef, useImperativeHandle, useState } from "react";
+import { expect, it, vi } from "vite-plus/test";
+
+import { act, render } from "../../../test/render.tsx";
 
 import { serializeEditorDoc } from "~/composer-rich-text-doc";
 import {
@@ -32,38 +33,19 @@ vi.mock(import("./editorSerializationCache"), async (original) => {
   };
 });
 
-let root: Root;
-let container: HTMLDivElement;
-
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
-
-afterEach(async () => {
-  try {
-    await act(async () => root.unmount());
-  } finally {
-    container.remove();
-    vi.unstubAllGlobals();
-    vi.clearAllMocks();
-  }
-});
-
-async function mount(initial: string, options: Partial<ComposerPromptEditorProps> = {}) {
+function createHarness(initial: string, options: Partial<ComposerPromptEditorProps> = {}) {
   const editorRef = createRef<ComposerPromptEditorHandle>();
   const changed = vi.fn<ComposerPromptEditorProps["onChange"]>();
   const visibleSelection = vi.fn();
-  let replace: (value: string) => void = () => {};
-  let replaceSkills: (skills: ReadonlyArray<ServerProviderSkill>) => void = () => {};
+  const controlsRef = createRef<{
+    replace: (value: string) => void;
+    replaceSkills: (skills: ReadonlyArray<ServerProviderSkill>) => void;
+  }>();
   function Harness() {
     const [value, setValue] = useState(initial);
     const [cursor, setCursor] = useState(0);
     const [skills, setSkills] = useState(options.skills ?? []);
-    replace = setValue;
-    replaceSkills = setSkills;
+    useImperativeHandle(controlsRef, () => ({ replace: setValue, replaceSkills: setSkills }), []);
     return (
       <ComposerPromptEditor
         editorRef={editorRef}
@@ -86,25 +68,38 @@ async function mount(initial: string, options: Partial<ComposerPromptEditorProps
       />
     );
   }
-  await act(async () => root.render(<Harness />));
-  const element = container.querySelector<HTMLElement & { editor: Editor }>(".tiptap");
-  if (!element) throw new Error("Composer did not mount");
+  const controls = () => {
+    if (!controlsRef.current) throw new Error("Composer harness did not commit");
+    return controlsRef.current;
+  };
   return {
-    editor: element.editor,
+    ui: <Harness />,
     editorRef,
     changed,
     visibleSelection,
-    replace: (value: string) => replace(value),
-    replaceSkills: (skills: ReadonlyArray<ServerProviderSkill>) => replaceSkills(skills),
+    replace: (value: string) => controls().replace(value),
+    replaceSkills: (skills: ReadonlyArray<ServerProviderSkill>) => controls().replaceSkills(skills),
+    [Symbol.dispose]() {
+      vi.clearAllMocks();
+    },
   };
+}
+
+function readMountedEditor(container: HTMLElement): Editor {
+  const element = container.querySelector<HTMLElement & { editor: Editor }>(".tiptap");
+  if (!element) throw new Error("Composer did not mount");
+  return element.editor;
 }
 
 it.each([true, false])(
   "reuses serialization for selection and focus with rich text %s",
   async (richTextEnabled) => {
-    const { editor, editorRef, changed, visibleSelection } = await mount("hello world", {
+    using harness = createHarness("hello world", {
       richTextEnabled,
     });
+    await using screen = await render(harness.ui, { router: false });
+    const { editorRef, changed, visibleSelection } = harness;
+    const editor = readMountedEditor(screen.container);
     await act(async () => editorRef.current?.focusAt(0));
     expect(counts.serialize).toHaveBeenCalled();
     counts.serialize.mockClear();
@@ -124,7 +119,10 @@ it.each([true, false])(
 );
 
 it("invalidates for content, marks, skill chips, undo, redo and controlled replacement", async () => {
-  const { editor, editorRef, changed, replace } = await mount("hello world", { skills: [review] });
+  using harness = createHarness("hello world", { skills: [review] });
+  await using screen = await render(harness.ui, { router: false });
+  const { editorRef, changed, replace } = harness;
+  const editor = readMountedEditor(screen.container);
   async function changesDoc(change: () => unknown, expected: string) {
     const before = editor.state.doc;
     counts.serialize.mockClear();
@@ -165,7 +163,10 @@ it("invalidates for content, marks, skill chips, undo, redo and controlled repla
 });
 
 it("keeps literal mode trigger suppression with a reused map", async () => {
-  const { editor, changed } = await mount("$review **plain**", { literalText: true });
+  using harness = createHarness("$review **plain**", { literalText: true });
+  await using screen = await render(harness.ui, { router: false });
+  const { changed } = harness;
+  const editor = readMountedEditor(screen.container);
   counts.serialize.mockClear();
   await act(async () => {
     editor.commands.setTextSelection(4);
@@ -175,7 +176,10 @@ it("keeps literal mode trigger suppression with a reused map", async () => {
 });
 
 it("recomputes chip and Markdown cursor coordinates from the cached map", async () => {
-  const { editor, editorRef, changed } = await mount("$review **bold**", { skills: [review] });
+  using harness = createHarness("$review **bold**", { skills: [review] });
+  await using screen = await render(harness.ui, { router: false });
+  const { editorRef, changed } = harness;
+  const editor = readMountedEditor(screen.container);
   counts.serialize.mockClear();
   await act(async () => {
     editor.commands.setTextSelection(2);
@@ -193,12 +197,15 @@ it("isolates callback and snapshot context arrays from a warmed cache", async ()
   const contextId = "file_cache-test";
   const value = `See ${formatInlineContextReference({ kind: "file", contextId, label: "notes.txt" })} now`;
   const received: string[][] = [];
-  const { editor, editorRef } = await mount(value, {
+  using harness = createHarness(value, {
     onChange: (_value, _cursor, _expandedCursor, _suppressTrigger, contextIds) => {
       received.push([...contextIds]);
       contextIds.splice(0, contextIds.length, "callback-mutation");
     },
   });
+  await using screen = await render(harness.ui, { router: false });
+  const { editorRef } = harness;
+  const editor = readMountedEditor(screen.container);
   await act(async () => editorRef.current?.focusAt(0));
   const cachedDoc = editor.state.doc;
   counts.serialize.mockClear();
@@ -227,7 +234,10 @@ it("isolates callback and snapshot context arrays from a warmed cache", async ()
 
 it("invalidates a warmed cache when provider skills reconcile text and chips", async () => {
   const value = "$review tail";
-  const { editor, editorRef, changed, replaceSkills } = await mount(value);
+  using harness = createHarness(value);
+  await using screen = await render(harness.ui, { router: false });
+  const { editorRef, changed, replaceSkills } = harness;
+  const editor = readMountedEditor(screen.container);
   await act(async () => editorRef.current?.focusAt(0));
   const textDoc = editor.state.doc;
   expect(textDoc.textContent).toBe(value);
@@ -262,7 +272,10 @@ it("invalidates a warmed cache when provider skills reconcile text and chips", a
 
 it("preserves code-block trigger suppression on selection cache hits", async () => {
   const value = "```\ncode\n```";
-  const { editor, changed } = await mount(value);
+  using harness = createHarness(value);
+  await using screen = await render(harness.ui, { router: false });
+  const { changed } = harness;
+  const editor = readMountedEditor(screen.container);
   counts.serialize.mockClear();
   await act(async () => {
     editor.commands.setTextSelection(3);
