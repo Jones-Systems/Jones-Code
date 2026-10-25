@@ -166,14 +166,15 @@ it("keeps owner-only receivers out of unknown attention and restores counts afte
     const attention = screen.container.querySelector("[data-attention]")!;
     expect(attention.textContent).toBe("");
     expect(screen.container.textContent).toContain("owner access required");
-    const refresh = [...screen.container.querySelectorAll("button")].find(
-      (button) => button.textContent === "Refresh",
-    )!;
+    const refresh = () =>
+      [...screen.container.querySelectorAll("button")].find(
+        (button) => button.textContent === "Refresh",
+      )!;
     request.mockResolvedValue(admissionSnapshot());
-    await act(async () => refresh.click());
+    await act(async () => refresh().click());
     expect(attention.textContent).toBe("1");
     request.mockRejectedValue({ _tag: "RemoteEnvironmentAuthFetchError" });
-    await act(async () => refresh.click());
+    await act(async () => refresh().click());
     expect(attention.textContent).toBe("1?");
   } finally {
     overviewIds = [];

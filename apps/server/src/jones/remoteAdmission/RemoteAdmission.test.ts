@@ -334,18 +334,20 @@ it.effect(
         expect(visible).not.toContain(secret);
     }).pipe(
       Effect.provide(
-        Admission.layerWithEvaluator(() => {
-          calls++;
-          return Effect.fail(
-            new TextGenerationError({
-              operation: "evaluateRemoteRequest",
-              detail: `Claude CLI command failed: Not logged in. ${privateText}`,
-              cause: new Error(privateText),
-            }),
-          );
-        }).pipe(Layer.provideMerge(memory)),
+        Layer.mergeAll(
+          Logger.layer([logger], { mergeWithExisting: false }),
+          Admission.layerWithEvaluator(() => {
+            calls++;
+            return Effect.fail(
+              new TextGenerationError({
+                operation: "evaluateRemoteRequest",
+                detail: `Claude CLI command failed: Not logged in. ${privateText}`,
+                cause: new Error(privateText),
+              }),
+            );
+          }).pipe(Layer.provideMerge(memory)),
+        ),
       ),
-      Effect.provide(Logger.layer([logger], { mergeWithExisting: false })),
     );
   },
 );

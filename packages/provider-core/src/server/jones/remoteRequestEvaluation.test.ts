@@ -42,7 +42,7 @@ describe("remote request evaluation", () => {
           required: ["verdict", "category", "reason"],
         });
         expect(toJsonSchemaObject(outputSchema)).not.toHaveProperty("anyOf");
-      expect(Schema.is(outputSchema)({ ...pass, reason: " " })).toBe(false);
+        expect(Schema.is(outputSchema)({ ...pass, reason: " " })).toBe(false);
         const mismatched = { verdict: "pass", category: "risky", reason: "Invalid pairing." };
         expect(Schema.is(outputSchema)(mismatched)).toBe(true);
         expect(Schema.is(RemoteRequestEvaluationResult)(mismatched)).toBe(false);
