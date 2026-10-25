@@ -199,11 +199,7 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
           expect(yield* RcMap.has(indexes.rcMap, failedKey)).toBe(false);
           expect(yield* RcMap.has(indexes.rcMap, siblingKey)).toBe(true);
           yield* indexes.contextEffect(failedKey);
-          expect(lookup.mock.calls.map(([key]) => key)).toEqual([
-            failedKey,
-            siblingKey,
-            failedKey,
-          ]);
+          expect(lookup.mock.calls.map(([key]) => key)).toEqual([failedKey, siblingKey, failedKey]);
         }),
     );
   });
