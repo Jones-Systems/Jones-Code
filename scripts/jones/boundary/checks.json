@@ -2758,8 +2758,8 @@
       ],
       "commands": [
         "vp test run --root apps/web --config vite.config.ts src/jones/remoteAgentLineage/model.test.ts --project unit --maxWorkers=1 --no-file-parallelism",
-        "vp test run --root apps/web --config vite.config.ts src/components/chat/ThreadRelationshipsControl.agents.browser.test.tsx src/components/BranchToolbar.panel.browser.test.tsx --project browser --maxWorkers=1 --no-file-parallelism",
-        "vp lint apps/web/src/jones/remoteAgentLineage apps/web/src/components/ChatView.tsx apps/web/src/components/chat/ChatHeader.tsx apps/web/src/components/chat/ThreadRelationshipsControl.tsx apps/web/src/components/BranchToolbar.tsx",
+        "vp test run --root apps/web --config vite.config.ts src/jones/remoteAgentLineage/ThreadRelationships.browser.test.tsx src/jones/remoteAgentLineage/MachineIdentity.browser.test.tsx --project browser --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/web/src/jones/linkedThreads apps/web/src/jones/remoteAgentLineage apps/web/src/components/ChatView.tsx apps/web/src/components/chat/ChatHeader.tsx apps/web/src/components/chat/ThreadRelationshipsControl.tsx apps/web/src/components/BranchToolbar.tsx",
         "vp run --filter @t3tools/web typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
@@ -2972,6 +2972,34 @@
       "commands": [
         "vp run test:ui-evidence",
         "node --test --test-concurrency=1 scripts/jones/e2e/acp-stub/agent.node-test.mjs",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-linked-threads",
+      "tests": [
+        "packages/contracts/src/jones/linkedThreads.test.ts",
+        "packages/shared/src/jones/linkedThreads/handoffText.test.ts",
+        "packages/client-runtime/src/jones/linkedThreads/model.test.ts",
+        "apps/server/src/jones/linkedThreads/LinkedThreads.test.ts",
+        "apps/server/src/jones/linkedThreads/forwarding.test.ts",
+        "apps/server/src/jones/linkedThreads/handoff.test.ts",
+        "apps/server/src/jones/linkedThreads/launch.test.ts",
+        "apps/server/src/jones/linkedThreads/mirror.test.ts",
+        "apps/server/src/jones/linkedThreads/registration.test.ts",
+        "apps/server/src/jones/persistence/Migrations/122_JonesThreadLinks.test.ts",
+        "apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts",
+        "packages/shared/src/t3McpToolPresentation.test.ts",
+        "packages/provider-core/src/jones/orchestrationInstructions.test.ts",
+        "apps/web/src/jones/linkedThreads/LinkedThreads.browser.test.tsx",
+        "apps/web/src/jones/remoteAgentLineage/ThreadRelationships.browser.test.tsx",
+        "apps/web/src/jones/remoteAgentLineage/MachineIdentity.browser.test.tsx"
+      ],
+      "commands": [
+        "vp test run packages/contracts/src/jones/linkedThreads.test.ts packages/shared/src/jones/linkedThreads/handoffText.test.ts packages/client-runtime/src/jones/linkedThreads/model.test.ts apps/server/src/jones/linkedThreads/LinkedThreads.test.ts apps/server/src/jones/linkedThreads/forwarding.test.ts apps/server/src/jones/linkedThreads/handoff.test.ts apps/server/src/jones/linkedThreads/launch.test.ts apps/server/src/jones/linkedThreads/mirror.test.ts apps/server/src/jones/linkedThreads/registration.test.ts apps/server/src/jones/persistence/Migrations/122_JonesThreadLinks.test.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts packages/shared/src/t3McpToolPresentation.test.ts packages/provider-core/src/jones/orchestrationInstructions.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/web/src/jones/linkedThreads/LinkedThreads.browser.test.tsx apps/web/src/jones/remoteAgentLineage/ThreadRelationships.browser.test.tsx apps/web/src/jones/remoteAgentLineage/MachineIdentity.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/server/src/jones/linkedThreads apps/server/src/jones/persistence/Migrations/122_JonesThreadLinks.ts apps/server/src/jones/persistence/Migrations/122_JonesThreadLinks.test.ts packages/contracts/src/jones/linkedThreads.ts packages/contracts/src/jones/linkedThreadsRpc.ts packages/contracts/src/jones/linkedThreadsCapability.ts packages/contracts/src/jones/linkedThreads.test.ts packages/shared/src/jones/linkedThreads packages/client-runtime/src/jones/linkedThreads apps/web/src/jones/linkedThreads apps/web/src/components/chat/ThreadRelationshipsControl.tsx",
+        "vp run --filter @t3tools/contracts --filter @t3tools/shared --filter @t3tools/provider-core --filter @t3tools/client-runtime --filter t3 --filter @t3tools/web --concurrency-limit 1 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
     }

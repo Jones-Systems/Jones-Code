@@ -851,6 +851,8 @@
     "docs/user/composer.md": "policy",
     "docs/user/devices.md": "accepted-shared",
     "docs/user/install.md": "policy",
+    "docs/user/linked-threads.md": "jones-owned",
+    "docs/user/portable-handoffs.md": "jones-owned",
     "docs/user/providers-codex.md": "policy",
     "docs/user/remote-access.md": "accepted-shared",
     "docs/user/thread-sidebar.md": "policy",
