@@ -24,7 +24,7 @@ that each setting or external integration works.
 | `scheduled-tasks`        | [Scheduled Tasks](../../apps/web/src/routes/settings.scheduled-tasks.tsx)           | Scope-derived target; execution and scheduler effects need separate authorization/fixtures.            |
 | `source-control`         | [Source Control](../../apps/web/src/routes/settings.source-control.tsx)             | Host/provider settings and repository context; do not run external Git effects to prove navigation.    |
 | `storage`                | [Storage](../../apps/web/src/routes/settings.storage.tsx)                           | Environment state; destructive cleanup is outside a navigation check.                                  |
-| `connections`            | [Connections](../../apps/web/src/routes/settings.connections.tsx)                   | Device-only route; administration requires suitable scopes and isolated endpoints.                     |
+| `connections`            | [Connections](../../apps/web/src/routes/settings.connections.tsx)                   | Device-only connection management; background evaluation configuration targets each receiving environment and requires owner authorization.                     |
 | `archived`               | [Archive](../../apps/web/src/routes/settings.archived.tsx)                          | Synthetic archived threads for restore checks.                                                         |
 | `jones-code`             | [Jones Code](../../apps/web/src/routes/settings.jones-code.tsx)                     | Device-only prompt defaults, sidebar activity windows, and project/environment order.                  |
 | `diagnostics`            | [Diagnostics](../../apps/web/src/routes/settings.diagnostics.tsx)                   | Environment-specific view; reachable from General/search, excluded from ordinary section navigation.   |
@@ -197,3 +197,35 @@ verification is **blocked** because T3 Browser Preview tools are unavailable;
 fallback. Build, viewport/text-size evidence, before/after captures and exercised
 live entry points: **none**. Connections, ServerUpdateAction, hosted/direct/relay/tunnel
 variants and packaged desktop remain `unverified` for this change.
+
+### Background remote evaluation
+
+[Connections](../../apps/web/src/components/settings/ConnectionsSettings.tsx)
+mounts [evaluator configuration](../../apps/web/src/jones/remoteAdmission/RemoteAdmissionSettings.tsx)
+for each registered environment. Request review lives in the separate
+[Requests inbox and global notifications](requests.md); Connections does not
+contain the inbox. The route's device scope does not make evaluator policy a
+device preference: each card names its receiving environment.
+
+Using only a synthetic owner-authorized endpoint, follow Requests → Configure
+background evaluation, then verify the receiving-environment label, exact
+provider account/instance, model and supported options. Only providers advertising
+remote evaluation support enter the picker. Choose a different account/model:
+options are cleared on that change; same-selection options remain. Save model
+and inspect policy readback, then restore the fixture's original policy. The
+background service uses this selection independently of a chat's model or modes.
+Disabling evaluation must leave existing held requests in Requests.
+
+Exercise loading, save-in-progress, inaccessible/non-owner session, missing
+capability, unavailable saved account/model and unsupported options separately.
+Blocked controls explain their reason; an unavailable saved selection stays
+visible rather than silently saving a fallback. An enabled policy can still be
+disabled when its model becomes unavailable. Provider capability and exact
+model/option validation also apply on the server; picker visibility alone is
+not evidence of successful provider execution.
+
+Source inspected at `2af74a87e5db90ca5cf7d3e2421d9a7f444fe6b2`.
+The [settings browser regressions](../../apps/web/src/jones/remoteAdmission/RemoteAdmissionSettings.browser.test.tsx)
+name the focused checks; this documentation lane did not run them. Synthetic UI
+proof belongs to the primary verification owner. Runtime, live account acceptance,
+mobile and packaged notification delivery remain **unverified** here.
