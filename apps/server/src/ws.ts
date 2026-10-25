@@ -1,3 +1,4 @@
+import * as LinkedThreads from "./jones/linkedThreads/LinkedThreads.ts";
 import * as ThreadReferenceExcerpts from "./jones/orchestration/threadReferenceExcerpt.ts";
 import * as RuntimeStop from "./jones/runtime/RuntimeStop.ts";
 import * as SettlementOrigins from "./jones/settlementOrigins/SettlementOrigins.ts";
@@ -1308,6 +1309,9 @@ export const layerWsRpc = (
       const threadReferenceExcerpts = yield* ThreadReferenceExcerpts.ThreadReferenceExcerpts.pipe(
         Effect.provide(ThreadReferenceExcerpts.layer),
       );
+      const linkedThreads = yield* LinkedThreads.LinkedThreads.pipe(
+        Effect.provide(LinkedThreads.layer),
+      );
       const queueCompatibility = yield* QueueCompatibility.QueueCompatibility;
       const intakeContext = yield* Effect.context<
         | ThreadManagementService.ThreadManagementService
@@ -1926,6 +1930,14 @@ export const layerWsRpc = (
       });
 
       const handlers: ServerWsRpcHandlers = {
+        [ORCHESTRATION_V2_WS_METHODS.listLinkedThreads]: (input) =>
+          linkedThreads.list({ type: "user" }, input),
+        [ORCHESTRATION_V2_WS_METHODS.linkThreads]: (input) =>
+          linkedThreads.link({ type: "user" }, { ...input, basis: "manual" }),
+        [ORCHESTRATION_V2_WS_METHODS.unlinkThreads]: (input) =>
+          linkedThreads.unlink({ type: "user" }, input),
+        [ORCHESTRATION_V2_WS_METHODS.acceptThreadHandoff]: (input) =>
+          linkedThreads.accept({ type: "user" }, input),
         [ORCHESTRATION_V2_WS_METHODS.getThreadReferenceExcerpt]: (input) =>
           threadReferenceExcerpts.capture(input),
         [ORCHESTRATION_V2_WS_METHODS.previewProviderConversationReselection]: (input) =>

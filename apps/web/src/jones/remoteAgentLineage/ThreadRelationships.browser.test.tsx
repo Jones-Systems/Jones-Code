@@ -21,6 +21,31 @@ const state = vi.hoisted(() => ({
   toast: vi.fn(),
 }));
 
+vi.mock(import("../linkedThreads/useLinkedThreads"), () => ({
+  useLinkedThreads: () => ({
+    links: [],
+    relations: [],
+    snapshots: new Map(),
+    environments: [],
+    errors: [],
+    offline: [],
+    answering: new Set(),
+    shells: [],
+    loading: false,
+    incomplete: false,
+    truncated: false,
+    visible: false,
+    canLink: false,
+    canCopy: false,
+    hasSuccessor: false,
+    canAccept: () => false,
+    canUnlink: () => false,
+    onExpand: () => {},
+    link: async () => false,
+    unlink: async () => false,
+    accept: async () => false,
+  }),
+}));
 vi.mock(import("@tanstack/react-router"), async (original) => ({
   ...(await original()),
   useNavigate: (() => state.navigate) as never,
@@ -231,13 +256,17 @@ it("shows the matching child agent details and refreshes them when the agent set
     ],
   };
   await update();
-  expect(heading()).toBe("Linked");
+  expect(heading()).toBe("Linked (1)");
   expect(text()).toContain("Previous agents (1)");
   expect(text()).not.toContain("Checker");
   await click(sectionToggle(false));
   expect(text()).toContain("Checker");
-  expect(text()).toContain("Checker on VPS · Done");
-  expect(text()).not.toContain("(1)");
+  const previousGroup = container.querySelector('[data-linked-group="previous"]')!;
+  const previousRow = previousGroup.querySelector("li")!;
+  expect(previousRow.textContent).toContain("Checker");
+  expect(previousRow.textContent).toContain("Delegated task on VPS · Done");
+  expect(previousGroup.querySelector("button")?.textContent?.trim()).toBe("Previous agents");
+  expect(heading()).toBe("Linked (1)");
   expect(text()).toContain("Done");
   expect(text()).not.toContain("running");
   expect(text()).not.toContain("Worker");
@@ -327,7 +356,13 @@ it("keeps fork ancestry navigable inside Linked and closes Linked when the selec
   expect(container.querySelectorAll("li")).toHaveLength(0);
   await click(linkedToggle());
   expect(textNodes(" ")).toContain("Forked from");
-  expect(textNodes(" ")).toContain("Forks");
+  expect(
+    container
+      .querySelector('[data-linked-group="children"] button')
+      ?.textContent?.replace(/\s+/g, " ")
+      .trim(),
+  ).toBe("Children (1)");
+  await click(buttons().find((button) => button.textContent?.includes("Children"))!);
   expect(textNodes(" ")).not.toContain("Delegated tasks");
   const sourceButton = buttons().find((button) =>
     button.textContent?.includes("Source conversation"),
@@ -427,7 +462,7 @@ it("combines remote and local history before collapse and pagination, then resto
     ],
   };
   await update();
-  expect(heading()).toBe("Linked · 1 running");
+  expect(heading()).toBe("Linked · 1 running (7)");
   await click(sectionToggle(true));
   expect(textNodes(" ").replace(/\s+/g, " ")).toContain("Previous agents (6)");
   expect(container.querySelectorAll("li")).toHaveLength(1);

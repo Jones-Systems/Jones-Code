@@ -2,8 +2,6 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "remote-agent-lineage",
   "jonesOwnedPaths": [
-    "apps/web/src/jones/linkedThreads/LinkedThreadsSection.tsx",
-    "apps/web/src/jones/linkedThreads/LinkedLineageGroups.tsx",
     "apps/web/src/jones/remoteAgentLineage/MachineIdentity.tsx",
     "apps/web/src/jones/remoteAgentLineage/model.test.ts",
     "apps/web/src/jones/remoteAgentLineage/model.ts",
@@ -18,14 +16,6 @@
     "apps/web/src/components/chat/ThreadRelationshipsControl.agents.browser.test.tsx"
   ],
   "allowedImports": [
-    {
-      "from": "apps/web/src/components/chat/ThreadRelationshipsControl.tsx",
-      "to": "apps/web/src/jones/linkedThreads/LinkedThreadsSection.tsx"
-    },
-    {
-      "from": "apps/web/src/components/chat/ThreadRelationshipsControl.tsx",
-      "to": "apps/web/src/jones/linkedThreads/LinkedLineageGroups.tsx"
-    },
     {
       "from": "apps/web/src/components/ChatView.tsx",
       "to": "apps/web/src/jones/remoteAgentLineage/useParentLink.ts"

@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./jones/linked-threads": {
+      "types": "./src/jones/linkedThreads/index.ts",
+      "default": "./src/jones/linkedThreads/index.ts"
+    },
     "./jones/workstreams/operations": {
       "types": "./src/jones/workstreams/operations.ts",
       "default": "./src/jones/workstreams/operations.ts"
