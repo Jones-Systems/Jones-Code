@@ -363,6 +363,186 @@ else:
     print(json.dumps({'phase': journal['phase'], 'events': events, 'state': state}))
 `;
 
+const manualInstallSetup = String.raw`
+manual_fault = sys.argv[3]
+launch_services_available = lambda: manual_fault != 'launch-unavailable'
+# A completed old transaction remains historical; manual adoption creates no warm transaction.
+durable(tx / 'journal.json', {'intent': intent, 'phase': 'resumed'}, True)
+installed = dict(expected, version='old-13', sourceSha='3' * 40, sourceTree='4' * 40,
+                 bundleIdentifier='com.jones.code')
+candidate = dict(staged, version='new-16', bundleIdentifier='com.jones.code')
+for value in (installed, candidate):
+    app = pathlib.Path(value['appPath'])
+    with open(app / 'Contents/Info.plist', 'wb') as stream:
+        plistlib.dump({'CFBundleIdentifier': value['bundleIdentifier'], 'CFBundleExecutable': 'Jones',
+                      'CFBundleShortVersionString': value['version']}, stream)
+    payload = json.dumps({'version': value['version'], 'jonesSource': {
+        'repository': 'Jones-Systems/Jones-Code', 'sha': value['sourceSha'], 'tree': value['sourceTree']}}).encode()
+    header = json.dumps({'files': {'package.json': {'offset': '0', 'size': len(payload)}}}).encode()
+    (app / 'Contents/Resources/app.asar').write_bytes(
+        struct.pack('<IIII', 4, len(header) + 8, len(header) + 4, len(header)) + header + payload)
+    value['appDigest'] = app_digest(app)
+plan = {'protocol': 1, 'restart': 'ordinary', 'expectedManifestSha256': digest(manifest_path),
+        'installed': installed, 'candidate': candidate,
+        'artifact': {'path': str(root / 'native.dmg'), 'sha256': digest(root / 'native.dmg')},
+        'processes': [{'pid': 123, 'identity': 'captured-old-process'}]}
+plan_path = root / 'manual-plan.json'
+`;
+
+const cloneRequiredManualScenario = String.raw`
+import ctypes, errno
+from types import SimpleNamespace
+for suffix in ('-wal', '-shm'): pathlib.Path(str(database) + suffix).write_bytes(('previous' + suffix).encode())
+originals = {path.name: path.read_bytes() for path in [database, pathlib.Path(str(database) + '-wal'), pathlib.Path(str(database) + '-shm'), home / 'settings.json']}
+plan['stateRecovery'] = 'clone-required'
+clone_required = manual_fault != 'plan-only'
+if manual_fault == 'flag-only': del plan['stateRecovery']
+if manual_fault == 'unknown-policy': plan['stateRecovery'] = 'copy-allowed'
+durable(plan_path, plan, True)
+plan_hash = digest(plan_path)
+original_manifest = manifest_path.read_bytes()
+events, clone_calls = [], []
+process_identity = lambda pid: None
+stop_exact = lambda proofs: events.append('stopped')
+prove_quiescence = lambda active: events.append('quiescent')
+native_run, native_copy2 = subprocess.run, shutil.copy2
+def no_fallback_run(command, *args, **kwargs):
+    assert command[:3] != ['/bin/cp', '-c', '-p'], 'Strict recovery used cp fallback'
+    return native_run(command, *args, **kwargs)
+def no_recovery_copy(source, target, *args, **kwargs):
+    assert 'previous-pair' not in pathlib.Path(target).parts, 'Strict recovery copied a file'
+    return native_copy2(source, target, *args, **kwargs)
+subprocess.run, shutil.copy2 = no_fallback_run, no_recovery_copy
+failures = {'enotsup': ('state.sqlite', errno.ENOTSUP), 'exdev': ('state.sqlite-wal', errno.EXDEV),
+            'enospc-shm': ('state.sqlite-shm', errno.ENOSPC), 'enospc-settings': ('settings.json', errno.ENOSPC)}
+def fake_clonefile(source, target, flags):
+    source, target = pathlib.Path(os.fsdecode(source)), pathlib.Path(os.fsdecode(target))
+    assert flags == 1
+    clone_calls.append(source.name)
+    if manual_fault in failures and source.name == failures[manual_fault][0]:
+        ctypes.set_errno(failures[manual_fault][1])
+        return -1
+    shutil.copyfile(source, target)
+    return 0
+darwin_clonefile = lambda: fake_clonefile
+if manual_fault == 'clonefile-unavailable':
+    def darwin_clonefile(): raise AttributeError('Synthetic absent clonefile')
+if manual_fault == 'cross-volume':
+    native_stat = pathlib.Path.stat
+    def cross_volume_stat(path, *args, **kwargs):
+        info = native_stat(path, *args, **kwargs)
+        if path == home:
+            values = list(info); values[2] += 1
+            return os.stat_result(values)
+        return info
+    pathlib.Path.stat = cross_volume_stat
+budget = RECOVERY_HEADROOM + tree_storage_size(candidate['appPath'])
+os.statvfs = lambda path: SimpleNamespace(f_bavail=budget - (1 if manual_fault == 'low-space' else 0), f_frsize=1)
+if manual_fault == 'success':
+    try: storage_preflight(expected, candidate, tx)
+    except RuntimeError: pass
+    else: raise AssertionError('Default recovery omitted its full-copy budget')
+native_reserve = reserve_recovery_capacity
+def observed_reserve(active, transaction, storage):
+    if manual_fault == 'reserve-denied': raise OSError(errno.ENOSPC, 'Synthetic reserve refused')
+    reserves = native_reserve(active, transaction, storage)
+    events.append('reserved')
+    return reserves
+reserve_recovery_capacity = observed_reserve
+native_release = release_recovery_reserve
+def observed_release(reserves, purpose=None):
+    if purpose is None and manual_fault in ('cleanup-held', 'cleanup-record-failed'):
+        raise OSError('Synthetic cleanup held')
+    return native_release(reserves, purpose)
+release_recovery_reserve = observed_release
+native_durable = durable
+def cleanup_record_failure(path, value, exclusive=False):
+    if manual_fault == 'cleanup-record-failed' and pathlib.Path(path).name == 'receipt.json' and value.get('recoveryReserveCleanup') == 'held':
+        raise OSError('Synthetic cleanup evidence write failed')
+    return native_durable(path, value, exclusive)
+durable = cleanup_record_failure
+manual_root = manifest_path.parent / 'jones-manual-installs'
+def manual_launch(active, descriptor=None):
+    receipt = read(next(manual_root.glob('*/receipt.json')))
+    assert receipt['phase'] == 'launch-intent'
+    assert all(pathlib.Path(reserve['path']).exists() for reserve in receipt['recoveryReserves'])
+    assert read(manifest_path) == receipt['nextActive'] == active
+    pair = pathlib.Path(receipt['pairedState'])
+    assert read(pair / 'pair.json')['recovery']['method'] == 'clone'
+    assert receipt['recovery']['method'] == 'clone'
+    for name, content in originals.items(): assert (pair / name).read_bytes() == content
+    events.append('launched')
+    if manual_fault == 'launch-unknown': raise RuntimeError('Synthetic unknown launch effect')
+    return {'pid': 456, 'identity': 'captured-new-process'}
+launch = manual_launch
+refused = ('flag-only', 'plan-only', 'unknown-policy', 'clonefile-unavailable', 'cross-volume')
+if manual_fault in refused:
+    for apply in (False, True):
+        try: manual_install(plan_path, plan_hash, apply=apply, clone_required=clone_required)
+        except RuntimeError: pass
+        else: raise AssertionError('Strict recovery policy or capability was ignored')
+    assert events == [] and clone_calls == [] and not manual_root.exists()
+    assert manifest_path.read_bytes() == original_manifest
+    assert (previous_app / 'Contents/MacOS/Jones').read_text() == 'previous-executable'
+else:
+    inspected = manual_install(plan_path, plan_hash, clone_required=True)
+    assert inspected['status'] == 'ready' and inspected['stateRecovery'] == 'clone-required'
+    assert not manual_root.exists() and not events
+    try: result = manual_install(plan_path, plan_hash, apply=True, clone_required=True)
+    except (RuntimeError, OSError) as error:
+        assert manual_fault in failures or manual_fault in ('reserve-denied', 'low-space', 'launch-unknown'), str(error)
+        if manual_fault in failures: assert error.errno == failures[manual_fault][1]
+    else:
+        assert manual_fault in ('success', 'cleanup-held', 'cleanup-record-failed')
+        assert result['status'] == 'launched' and result['stateRecovery'] == 'clone-required'
+    receipt_path = next(manual_root.glob('*/receipt.json'))
+    receipt = read(receipt_path)
+    directory = receipt_path.parent
+    assert receipt['stateRecovery'] == 'clone-required'
+    if manual_fault != 'low-space':
+        assert receipt['storage']['requiredBytes'] == budget
+        assert receipt['storage']['stateBytes'] == sum(map(len, originals.values()))
+        assert receipt['storage']['stateRecovery'] == 'clone-required'
+    if manual_fault in failures or manual_fault in ('reserve-denied', 'low-space'):
+        assert receipt['phase'] == 'held' and receipt['stoppedAt'] == 'preparing'
+        assert not (directory / 'previous-pair' / 'pair.json').exists()
+        assert not list(root.glob('previous.app.jones-*'))
+        assert manifest_path.read_bytes() == original_manifest
+        assert (previous_app / 'Contents/MacOS/Jones').read_text() == 'previous-executable'
+        if manual_fault in failures:
+            assert events == ['reserved', 'stopped', 'quiescent', 'quiescent']
+            assert not (directory / 'previous-pair' / failures[manual_fault][0]).exists()
+            assert not (directory / 'recovery-journal-reserve.bin').exists()
+            for reserve in receipt['recoveryReserves']:
+                if reserve['purpose'] == 'recovery':
+                    info = pathlib.Path(reserve['path']).stat()
+                    assert (str(info.st_dev), str(info.st_ino), info.st_size) == (reserve['device'], reserve['inode'], reserve['bytes'])
+        else:
+            assert events == [] and clone_calls == []
+            assert not list(directory.glob('*reserve.bin'))
+    else:
+        assert events.index('reserved') < events.index('stopped') < events.index('quiescent') < events.index('launched')
+        assert clone_calls == list(originals)
+        assert read(manifest_path) == receipt['nextActive']
+        assert (directory / 'previous-pair' / 'pair.json').exists()
+        if manual_fault == 'launch-unknown':
+            assert receipt['phase'] == 'held' and receipt['stoppedAt'] == 'launch-intent'
+            assert not (directory / 'recovery-journal-reserve.bin').exists()
+            assert (directory / 'recovery-reserve.bin').exists()
+        else:
+            assert receipt['phase'] == 'launched'
+            if manual_fault == 'success': assert not list(directory.glob('*reserve.bin'))
+            else:
+                assert (directory / 'recovery-reserve.bin').exists()
+                assert (receipt.get('recoveryReserveCleanup') == 'held') == (manual_fault == 'cleanup-held')
+    previous_events = list(events)
+    try: manual_install(plan_path, plan_hash, apply=True, clone_required=True)
+    except RuntimeError: pass
+    else: raise AssertionError('The same manual operation replayed')
+    assert events == previous_events
+print(json.dumps({'case': manual_fault, 'passed': True}))
+`;
+
 describe("Jones native helper", () => {
   it("seeds equivalent private records and restores real durability before activation", async () => {
     const f = await fixture();
@@ -1306,6 +1486,76 @@ assert launch_services_available() is False and len(calls) == 1
     expect(() => new Function(script)).not.toThrow();
   });
 
+  it("rejects strict flags in older parsers and non-manual actions before any effect", async () => {
+    const f = await fixture();
+    try {
+      const flag = "parser.add_argument('--require-clone', action='store_true')\n";
+      const guard =
+        "if args.require_clone and not (args.inspect_manual_install or args.manual_install): parser.error('--require-clone requires a manual installation action')\n";
+      expect(jonesNativeHelperSource.split(flag)).toHaveLength(2);
+      expect(jonesNativeHelperSource.split(guard)).toHaveLength(2);
+      const older = jonesNativeHelperSource.replace(flag, "").replace(guard, "");
+      const manifest = NodePath.join(f.directory, "runtime", "absent.json");
+      for (const [source, arguments_, message] of [
+        [
+          older,
+          ["--inspect-manual-install", "plan.json", "--plan-sha256", "0".repeat(64), "--require-clone"],
+          "unrecognized arguments: --require-clone",
+        ],
+        [
+          jonesNativeHelperSource,
+          ["--require-clone", "--launch"],
+          "--require-clone requires a manual installation action",
+        ],
+      ] as const) {
+        const result = NodeChildProcess.spawnSync(
+          "python3",
+          ["-I", "-", "--manifest", manifest, ...arguments_],
+          { input: source, encoding: "utf8", timeout: 10_000 },
+        );
+        expect(result.status).toBe(2);
+        expect(result.stderr).toContain(message);
+        expect(await NodeFSP.readdir(f.directory)).toEqual([]);
+      }
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it.each([
+    "success",
+    "flag-only",
+    "plan-only",
+    "unknown-policy",
+    "clonefile-unavailable",
+    "cross-volume",
+    "enotsup",
+    "exdev",
+    "enospc-shm",
+    "enospc-settings",
+    "reserve-denied",
+    "low-space",
+    "launch-unknown",
+    "cleanup-held",
+    "cleanup-record-failed",
+  ])("runs clone-required manual installation with %s", async (fault) => {
+    const f = await fixture();
+    try {
+      const nativeFunctions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const setup = activationScenario.split("\nevents = []")[0];
+      const result = JSON.parse(
+        runPython(
+          nativeFunctions + "\n" + setup + "\n" + manualInstallSetup + "\n" + cloneRequiredManualScenario,
+          [f.directory, "success", fault],
+          { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10_000 },
+        ),
+      ) as { passed: boolean };
+      expect(result.passed).toBe(true);
+    } finally {
+      await f.cleanup();
+    }
+  });
+
   it.each([
     "success",
     "stale-admission",
@@ -1325,29 +1575,7 @@ assert launch_services_available() is False and len(calls) == 1
         )[0];
         const setup = activationScenario.split("\nevents = []")[0];
         const scenario = String.raw`
-manual_fault = sys.argv[3]
-launch_services_available = lambda: manual_fault != 'launch-unavailable'
-# A completed old transaction remains historical; manual adoption creates no warm transaction.
-durable(tx / 'journal.json', {'intent': intent, 'phase': 'resumed'}, True)
-installed = dict(expected, version='old-13', sourceSha='3' * 40, sourceTree='4' * 40,
-                 bundleIdentifier='com.jones.code')
-candidate = dict(staged, version='new-16', bundleIdentifier='com.jones.code')
-for value in (installed, candidate):
-    app = pathlib.Path(value['appPath'])
-    with open(app / 'Contents/Info.plist', 'wb') as stream:
-        plistlib.dump({'CFBundleIdentifier': value['bundleIdentifier'], 'CFBundleExecutable': 'Jones',
-                      'CFBundleShortVersionString': value['version']}, stream)
-    payload = json.dumps({'version': value['version'], 'jonesSource': {
-        'repository': 'Jones-Systems/Jones-Code', 'sha': value['sourceSha'], 'tree': value['sourceTree']}}).encode()
-    header = json.dumps({'files': {'package.json': {'offset': '0', 'size': len(payload)}}}).encode()
-    (app / 'Contents/Resources/app.asar').write_bytes(
-        struct.pack('<IIII', 4, len(header) + 8, len(header) + 4, len(header)) + header + payload)
-    value['appDigest'] = app_digest(app)
-plan = {'protocol': 1, 'restart': 'ordinary', 'expectedManifestSha256': digest(manifest_path),
-        'installed': installed, 'candidate': candidate,
-        'artifact': {'path': str(root / 'native.dmg'), 'sha256': digest(root / 'native.dmg')},
-        'processes': [{'pid': 123, 'identity': 'captured-old-process'}]}
-plan_path = root / 'manual-plan.json'
+${manualInstallSetup}
 if manual_fault == 'wrong-bundle': plan['installed']['sourceSha'] = '9' * 40
 if manual_fault == 'wrong-artifact': plan['artifact']['sha256'] = '0' * 64
 if manual_fault == 'missing-bundle-identity':
