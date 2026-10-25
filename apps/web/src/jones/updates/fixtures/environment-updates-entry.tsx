@@ -6,6 +6,7 @@ import { EnvironmentId, type EnvironmentMachineKind } from "@t3tools/contracts";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import { AUTH_SCOPE_OPTIONS } from "@t3tools/shared/authScopeOptions";
 import "../../../index.css";
+import { ConfirmDialogHost } from "../../../components/ConfirmDialogHost";
 import { EnvironmentRow } from "../../../components/settings/EnvironmentRow";
 import { SettingsGroup } from "../../../components/settings/SettingsGroup";
 import { Button } from "../../../components/ui/button";
@@ -549,6 +550,7 @@ function FixtureScreen() {
     <ToastProvider>
       <AnchoredToastProvider>
         <TooltipProvider>
+          <ConfirmDialogHost />
           <main className="mx-auto max-w-4xl space-y-6 p-6 text-foreground">
             <header className="space-y-1">
               <h1 className="text-xl font-semibold">Jones environment updates fixture</h1>

@@ -477,17 +477,21 @@ export function ExactSourcePreview({ runId }: { readonly runId: string }) {
           state={state}
           freshness={snapshot.freshness}
           extraAction={
-            <ExactSourceUpdateAction
-              environmentId={environmentId}
-              label="Mac Mini"
-              targetSource={APP_SOURCE_SHA ?? ""}
-              subject="this laptop"
-              allowReplace
-              allowInstall={false}
-              buttonLabel="Match laptop"
-              compact
-              host={store.hostFor(snapshot, environmentId)}
-            />
+            state?.installedSource?.sha === APP_SOURCE_SHA ||
+            (state?.stagedHandle !== undefined &&
+              state.provenance?.sourceSha === APP_SOURCE_SHA) ? undefined : (
+              <ExactSourceUpdateAction
+                environmentId={environmentId}
+                label="Mac Mini"
+                targetSource={APP_SOURCE_SHA ?? ""}
+                subject="this laptop"
+                allowReplace
+                allowInstall={false}
+                buttonLabel="Match laptop"
+                compact
+                host={store.hostFor(snapshot, environmentId)}
+              />
+            )
           }
           onRequest={(request) => {
             if (request.action !== "install") {
