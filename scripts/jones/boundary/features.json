@@ -13,9 +13,7 @@
     },
     {
       "id": "vitest-scratch-cleanup",
-      "tests": [
-        "scripts/jones/test-scratch/vitest-cleanup.node-test.mjs"
-      ],
+      "tests": ["scripts/jones/test-scratch/vitest-cleanup.node-test.mjs"],
       "scope": "Serial real Vitest pass/fail fixtures resolve through installed VitePlus, positively observe transformed SHA1 modules with filesystem caching disabled, and require removal after context close and child exit. Exact owned disk fixtures are removed only after consumers close. The scripts package registration is an accepted shared edit; no app, dependency, lockfile or runtime changes."
     },
     {
@@ -48,9 +46,7 @@
     },
     {
       "id": "workstreams-sidebar-assignment",
-      "tests": [
-        "apps/web/src/jones/workstreams/Sidebar.assignment.browser.test.tsx"
-      ],
+      "tests": ["apps/web/src/jones/workstreams/Sidebar.assignment.browser.test.tsx"],
       "scope": "Renderer integration mounts production Sidebar and WorkstreamNativeSidebar with synthetic environment/controller boundaries. Real row context menus exercise assignment-ref lookup and selected-action dispatch for ordinary and pinned threads; refreshed grouping, pin retention, control-thread isolation, and denied/unknown controller outcomes are checked. Native shell menus, transport, enrollment, persistence, and pointer dragging are outside this slice."
     },
     {
@@ -201,9 +197,7 @@
     },
     {
       "id": "provider-restart-identity",
-      "tests": [
-        "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts"
-      ],
+      "tests": ["apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts"],
       "scope": "Exact committed restart replacements interrupt the old runtime with its session and instance identity while preserving native references and the replacement projection. The small shared service edit avoids duplicating control-target validation; the existing service integration harness is retained as a Jones test exception to cover same-instance parity and stale replacement rejection."
     },
     {
@@ -274,16 +268,12 @@
     },
     {
       "id": "work-queue-preview",
-      "tests": [
-        "apps/web/src/components/workQueue/WorkQueuePage.browser.test.tsx"
-      ],
+      "tests": ["apps/web/src/components/workQueue/WorkQueuePage.browser.test.tsx"],
       "scope": "Explicit sample preview components remain covered by WorkQueuePage.test.tsx. Ordinary Prompts navigation uses UnifiedQueuePage with genuine voice review and read-only durable queue metadata; integration coverage belongs to work-queue-metadata."
     },
     {
       "id": "boundary-inventory",
-      "tests": [
-        "scripts/jones/check-boundary.test.ts"
-      ]
+      "tests": ["scripts/jones/check-boundary.test.ts"]
     },
     {
       "id": "provider-settlement",
@@ -473,9 +463,7 @@
     },
     {
       "id": "mcp-pin-placement",
-      "tests": [
-        "apps/server/src/jones/mcp/pinPlacement/pinPlacement.test.ts"
-      ],
+      "tests": ["apps/server/src/jones/mcp/pinPlacement/pinPlacement.test.ts"],
       "scope": "t3_thread_organize pin placement (top, bottom, above or below a pinned anchor) computes pin order keys with the sidebar's own sort and planner, keeps same-key groups together, materializes keyless neighbors as reorders, applies the target's mode check to the anchor and rewritten neighbors, and returns key readback. The pure pinned-order helpers moved verbatim from client-runtime threadSort.ts to packages/shared/src/jones/pinOrder.ts so the server can share them; threadSort.ts re-exports them and keeps its upstream tests. The upstream thread toolkit keeps small schema and handler hooks."
     },
     {
@@ -858,9 +846,7 @@
     },
     {
       "id": "codex-late-subagent-reader",
-      "tests": [
-        "apps/server/src/jones/provider/codex/CodexLateSubagentStart.test.ts"
-      ],
+      "tests": ["apps/server/src/jones/provider/codex/CodexLateSubagentStart.test.ts"],
       "scope": "A late child turn after ancestor terminalization schedules only its interrupt RPC in the captured producer scope, retaining mutation admission, stale-producer fencing, cancellation, the ten-second timeout and warnings. The small accepted shared adapter edit reuses private producer ownership rather than duplicating it in a Jones service. The Jones regression reuses the real replay client and protocol reader with inert filesystem dependencies: interrupt ACK and unrelated model-list response must drain without clock advancement, descendants stay terminal, and terminal ordering is preserved. No protocol-reader rewrite or global timeout change. Existing upstream tests are unchanged."
     },
     {
@@ -1112,9 +1098,7 @@
     },
     {
       "id": "runtime-operation-permit",
-      "tests": [
-        "apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts"
-      ]
+      "tests": ["apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts"]
     },
     {
       "id": "provider-conversation-reselection",
@@ -1568,16 +1552,12 @@
     },
     {
       "id": "markdown-table-interactions",
-      "tests": [
-        "apps/web/src/components/chat/MarkdownTable.browser.test.tsx"
-      ],
+      "tests": ["apps/web/src/components/chat/MarkdownTable.browser.test.tsx"],
       "scope": "Jones markdown table expand/collapse controls retain accessible state and bounded scrolling through the extracted upstream leaf."
     },
     {
       "id": "composer-attachment-capacity",
-      "tests": [
-        "apps/web/src/jones/composer/attachmentCapacity.test.ts"
-      ],
+      "tests": ["apps/web/src/jones/composer/attachmentCapacity.test.ts"],
       "scope": "Composer stash and context attachments reserve the actual remaining attachment capacity before import, preserving existing drafts and bounded attachment limits."
     },
     {
@@ -1606,9 +1586,7 @@
     },
     {
       "id": "ci-dependency-setup",
-      "tests": [
-        "scripts/jones/ci/chromium-setup.node-test.mjs"
-      ],
+      "tests": ["scripts/jones/ci/chromium-setup.node-test.mjs"],
       "scope": "CI resolves Chromium from each workspace, checks a real headless launch before installing system dependencies, and verifies a single repair attempt. Browser caching follows the upstream versioned key; native compiler and libsecret package setup is consolidated without changing tests or server sharding."
     },
     {
@@ -1738,16 +1716,12 @@
     },
     {
       "id": "vcs-cache-efficiency",
-      "tests": [
-        "apps/server/src/vcs/VcsStatusBroadcaster.test.ts"
-      ],
+      "tests": ["apps/server/src/vcs/VcsStatusBroadcaster.test.ts"],
       "scope": "VCS status cache updates mutate the private directory map synchronously while replacing snapshot values, preserving deduplication, remote ordering and existing retention. A small accepted shared-file edit and colocated regression preserve private cache ownership without adding an extraction interface."
     },
     {
       "id": "timeline-payload-batching",
-      "tests": [
-        "apps/server/src/jones/orchestration/threadReferenceTail.test.ts"
-      ],
+      "tests": ["apps/server/src/jones/orchestration/threadReferenceTail.test.ts"],
       "scope": "Batch selected canonical timeline payloads into one query while retaining history wire projection, page ordering, synthetic rows and missing/decode errors. One private helper stays beside its shared SQL types and transaction callers; Jones tests cover query counts and existing tail/fork behavior."
     },
     {
@@ -1765,9 +1739,7 @@
     },
     {
       "id": "ci-registry-search-timers",
-      "tests": [
-        "apps/web/src/components/settings/AcpRegistrySearchStep.browser.test.tsx"
-      ],
+      "tests": ["apps/web/src/components/settings/AcpRegistrySearchStep.browser.test.tsx"],
       "scope": "Accepted shared test-only CI repair: control the existing registry-search debounce clock so the first Enter submits before debounce and the second Enter refreshes. Preserve every assertion and all eight test cases; production behavior is unchanged. The existing upstream browser harness requires this direct one-line edit rather than a duplicated Jones harness."
     },
     {
@@ -1838,9 +1810,7 @@
     },
     {
       "id": "ci-registry-search-timers",
-      "tests": [
-        "apps/web/src/components/settings/AcpRegistrySearchStep.browser.test.tsx"
-      ],
+      "tests": ["apps/web/src/components/settings/AcpRegistrySearchStep.browser.test.tsx"],
       "scope": "Accepted shared test-only CI repair: control the existing registry-search debounce clock so the first Enter submits before debounce and the second Enter refreshes. Preserve every assertion and all eight test cases; production behavior is unchanged. The existing upstream browser harness requires this direct one-line edit rather than a duplicated Jones harness."
     },
     {
@@ -1981,9 +1951,7 @@
     },
     {
       "id": "pr-watch-efficiency",
-      "tests": [
-        "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
-      ],
+      "tests": ["apps/server/src/orchestration-v2/runtimeLayer.test.ts"],
       "scope": "Process ready watch fingerprints independently while retaining the full fingerprint cohort for host batching and four detail permits. Small shared scheduler edit and existing persisted-runtime test harness preserve grouping, rate pauses, watermarks, generation, settlement and cancellation."
     }
   ]
