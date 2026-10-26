@@ -53,7 +53,8 @@
     }
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "vp run tsrs:typecheck",
+    "typecheck:native": "node ../../scripts/jones/tsrs/typecheck.ts --noEmit",
     "test": "vp test run --config ../../vite.config.ts --dir ."
   },
   "dependencies": {

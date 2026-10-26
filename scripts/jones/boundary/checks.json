@@ -26,15 +26,6 @@
       ]
     },
     {
-      "id": "jones-experimental-typecheck",
-      "tests": ["scripts/jones/experimental-typecheck/runner.test.mjs"],
-      "commands": [
-        "vp test run scripts/jones/experimental-typecheck/runner.test.mjs --maxWorkers=1 --no-file-parallelism",
-        "vp lint scripts/jones/experimental-typecheck/*.mjs",
-        "node scripts/jones/check-boundary.ts --strict"
-      ]
-    },
-    {
       "id": "jones-cross-environment-model-selection",
       "tests": [
         "apps/web/src/jones/settings/modelSelectionCorrespondence.test.ts",
@@ -3495,6 +3486,25 @@
         "node scripts/jones/check-boundary.ts --strict",
         "node --test apps/desktop/scripts/ui-evidence/thread-monitor-provider.test.mjs",
         "vp test run apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts -t \"publishes approval artifacts before a consumer\" --maxWorkers=1 --no-file-parallelism"
+      ]
+    },
+    {
+      "id": "jones-tsrs-typecheck",
+      "tests": [
+        "scripts/jones/tsrs/identity.node-test.mjs",
+        "scripts/jones/tsrs/build-info.node-test.mjs",
+        "packages/client-runtime/src/jones/sync/commandIsolation.test.ts",
+        "packages/client-runtime/src/state/fileMetadata.test.ts",
+        "packages/client-runtime/src/state/projectCommands.test.ts",
+        "packages/client-runtime/src/state/threadCommands.test.ts"
+      ],
+      "commands": [
+        "node --test --test-concurrency=1 scripts/jones/tsrs/*.node-test.mjs",
+        "vp test run packages/client-runtime/src/jones/sync/commandIsolation.test.ts packages/client-runtime/src/state/fileMetadata.test.ts packages/client-runtime/src/state/projectCommands.test.ts packages/client-runtime/src/state/threadCommands.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint scripts/jones/tsrs",
+        "vp run --filter @t3tools/scripts typecheck",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
       ]
     }
   ]

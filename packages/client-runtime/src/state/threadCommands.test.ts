@@ -25,6 +25,7 @@ import * as Scope from "effect/Scope";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { Atom, AtomRegistry } from "effect/reactivity";
 
+import { BearerConnectionTarget } from "../connection/model.ts";
 import * as EnvironmentRegistry from "../connection/registry.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import type { RpcSession } from "../rpc/session.ts";
@@ -95,7 +96,11 @@ const makeHarness = Effect.fn("TestThreadCommands.makeHarness")(function* (optio
   }>();
   const reconciled = yield* Queue.unbounded<ThreadId>();
   const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
-    target: { environmentId: ENVIRONMENT_ID },
+    target: new BearerConnectionTarget({
+      environmentId: ENVIRONMENT_ID,
+      label: "Thread commands environment",
+      connectionId: "thread-commands-connection",
+    }),
     session: yield* SubscriptionRef.make(
       Option.some({
         client: {

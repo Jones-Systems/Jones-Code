@@ -1,3 +1,5 @@
+import { typecheckTask } from "../../scripts/jones/tsrs/task-cache.ts";
+import packageJson from "./package.json" with { type: "json" };
 import { defineConfig } from "vite-plus";
 import "vite-plus/test/config";
 
@@ -23,6 +25,7 @@ const reactTests = [
 ];
 
 export default defineConfig({
+  run: { tasks: { "tsrs:typecheck": typecheckTask(packageJson.scripts["typecheck:native"]) } },
   test: {
     hookTimeout: 60_000,
     testTimeout: 60_000,
