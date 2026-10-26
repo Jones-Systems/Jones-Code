@@ -1,8 +1,8 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { MaximizeIcon, MinusIcon, PlusIcon, ScanIcon } from "lucide-react";
 import { ExpandedImageDialog } from "~/components/chat/ExpandedImageDialog";
-import { observeResize } from "~/lib/observeResize";
-import { AttachmentImage } from "../media/AttachmentImage";
+import { ZoomableImage, type ZoomableImageHandle } from "../chat/ZoomableImage";
+import { Input } from "../ui/input";
 import { FileSurfaceAction, FileSurfaceFailure } from "./fileSurfaceChrome";
 
 export default function PreviewImageContent(props: {
@@ -14,26 +14,16 @@ export default function PreviewImageContent(props: {
   const [failed, setFailed] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [natural, setNatural] = useState({ width: 0, height: 0 });
-  const [viewport, setViewport] = useState({ width: 0, height: 0 });
-  const [zoom, setZoom] = useState<number | null>(null);
-  const ref = useRef<HTMLDivElement>(null);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Measure the image viewport before paint and observe resizes to keep fit-to-view scaling accurate.
-  useLayoutEffect(() => {
-    const node = ref.current;
-    if (!node) return;
-    const update = () => setViewport({ width: node.clientWidth, height: node.clientHeight });
-    update();
-    return observeResize(node, update);
-  }, []);
-  const fit = natural.width
-    ? Math.min(
-        1,
-        Math.max(1, viewport.width - 32) / natural.width,
-        Math.max(1, viewport.height - 32) / natural.height,
-      )
-    : 1;
-  const scale = zoom ?? fit;
-  const changeZoom = (factor: number) => setZoom(Math.max(0.05, Math.min(8, scale * factor)));
+  const viewer = useRef<ZoomableImageHandle>(null);
+  const [view, setView] = useState({ width: 0, height: 0, zoom: 1, fit: 1 });
+  const [percent, setPercent] = useState("100");
+  const scale = view.fit * view.zoom;
+  const commitPercent = () => {
+    const value = Number(percent.trim());
+    if (percent.trim() && Number.isFinite(value) && value >= 60 && value <= 800)
+      viewer.current?.zoomTo(value / 100);
+    else setPercent(String(Math.round(view.zoom * 100)));
+  };
   if (failed) return <FileSurfaceFailure message="Unable to load image." />;
   return (
     <>
@@ -46,73 +36,75 @@ export default function PreviewImageContent(props: {
         <div className="flex items-center gap-1">
           <FileSurfaceAction
             label="Zoom out"
-            disabled={!natural.width || scale <= 0.05}
-            onPress={() => changeZoom(1 / 1.25)}
+            disabled={!natural.width || view.zoom <= 0.6}
+            onPress={() => viewer.current?.zoomTo(view.zoom - 0.1)}
           >
             <MinusIcon className="size-3.5" />
           </FileSurfaceAction>
-          <span className="min-w-10 text-center tabular-nums">{Math.round(scale * 100)}%</span>
+          <label className="flex items-center gap-1">
+            <Input
+              size="compact"
+              font="mono"
+              nativeInput
+              aria-label="Zoom percentage"
+              inputMode="decimal"
+              className="w-16"
+              value={percent}
+              onChange={(event) => setPercent(event.target.value)}
+              onBlur={commitPercent}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  commitPercent();
+                }
+              }}
+            />
+            <span aria-hidden>%</span>
+          </label>
           <FileSurfaceAction
             label="Zoom in"
-            disabled={!natural.width || scale >= 8}
-            onPress={() => changeZoom(1.25)}
+            disabled={!natural.width || view.zoom >= 8}
+            onPress={() => viewer.current?.zoomTo(view.zoom + 0.1)}
           >
             <PlusIcon className="size-3.5" />
           </FileSurfaceAction>
           <FileSurfaceAction
             label="Fit image"
-            pressed={zoom === null}
-            onPress={() => setZoom(null)}
+            pressed={view.zoom === 1}
+            onPress={() => viewer.current?.zoomTo(1)}
           >
             <ScanIcon className="size-3.5" />
           </FileSurfaceAction>
           <FileSurfaceAction
             label="Actual image size"
-            pressed={zoom === 1}
-            onPress={() => setZoom(1)}
+            pressed={scale === 1}
+            onPress={() => viewer.current?.actualSize()}
           >
+            <MaximizeIcon className="size-3.5" />
+          </FileSurfaceAction>
+          <FileSurfaceAction label="Expand image" onPress={() => setExpanded(true)}>
             <MaximizeIcon className="size-3.5" />
           </FileSurfaceAction>
         </div>
       </div>
-      <div ref={ref} className="min-h-0 flex-1 overflow-auto">
-        <div
-          className="flex min-h-full min-w-full items-center justify-center p-4"
-          style={{
-            width: natural.width ? natural.width * scale + 32 : undefined,
-            height: natural.height ? natural.height * scale + 32 : undefined,
+      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden p-4">
+        <ZoomableImage
+          ref={viewer}
+          layout="panel"
+          controls={false}
+          src={props.src}
+          name={props.name}
+          mimeType={props.mimeType}
+          onError={() => {
+            setFailed(true);
+            props.onError?.();
           }}
-        >
-          <button
-            type="button"
-            aria-label={`Zoom ${props.name}`}
-            className="shrink-0 cursor-zoom-in"
-            onClick={() => setExpanded(true)}
-          >
-            <AttachmentImage
-              name={props.name}
-              mimeType={props.mimeType}
-              src={props.src}
-              alt={props.name}
-              className="block max-w-none"
-              style={
-                natural.width
-                  ? { width: natural.width * scale, height: natural.height * scale }
-                  : { maxWidth: "100%" }
-              }
-              onLoad={(event) =>
-                setNatural({
-                  width: event.currentTarget.naturalWidth,
-                  height: event.currentTarget.naturalHeight,
-                })
-              }
-              onError={() => {
-                setFailed(true);
-                props.onError?.();
-              }}
-            />
-          </button>
-        </div>
+          onViewChange={(next) => {
+            setView(next);
+            setNatural({ width: next.width, height: next.height });
+            setPercent(String(Math.round(next.zoom * 100)));
+          }}
+        />
       </div>
       {expanded ? (
         <ExpandedImageDialog

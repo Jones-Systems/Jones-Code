@@ -1,3 +1,10 @@
+import {
+  ImportedHistoryLockUnavailable,
+  decodeImportedHistoryCorrelation,
+  encodeImportedHistoryCorrelation,
+  type ImportedHistoryCorrelationStorage,
+} from "@t3tools/client-runtime/jones/imported-history/continuation";
+import { DraftId } from "./draftId";
 import { stripInlineContextReferences } from "./lib/composerContextReferences";
 import { composerFileAttachmentMimeType } from "./components/chat/composerAttachmentFiles";
 import { elementContextToPreviewAnnotation } from "./lib/elementContext";
@@ -106,8 +113,7 @@ const COMPOSER_DRAFT_STORAGE_VERSION = 9;
 const DraftThreadEnvModeSchema = Schema.Literals(["local", "worktree"]);
 export type DraftThreadEnvMode = typeof DraftThreadEnvModeSchema.Type;
 
-export const DraftId = Schema.String.pipe(Schema.brand("DraftId"));
-export type DraftId = typeof DraftId.Type;
+export { DraftId } from "./draftId";
 
 const COMPOSER_PERSIST_DEBOUNCE_MS = 300;
 
@@ -649,6 +655,15 @@ function modelSelectionByProviderToOptions(
   return Object.keys(result).length > 0 ? result : null;
 }
 
+function modelOptionsForSelection(
+  selection: ModelSelection | null | undefined,
+  model: string,
+): ReadonlyArray<ProviderOptionSelection> | undefined {
+  return selection?.model === model
+    ? selection.options
+    : selection?.options?.filter((option) => option.id !== "reasoningEffort");
+}
+
 function cloneModelSelection(selection: ModelSelection): DeepMutable<ModelSelection> {
   return {
     ...selection,
@@ -1140,11 +1155,31 @@ export function deriveEffectiveComposerModelState(input: {
         activeSelection.model,
       ))
     : baseModel;
-  const modelOptions =
-    modelSelectionByProviderToOptions(input.draft?.modelSelectionByProvider) ??
-    providerSelectionsFromModelSelection(input.threadModelSelection) ??
-    providerSelectionsFromModelSelection(input.projectModelSelection) ??
-    null;
+  const fallbackSelection = input.threadModelSelection ?? input.projectModelSelection;
+  const selectionsForOptions = activeSelection
+    ? {
+        ...input.draft?.modelSelectionByProvider,
+        [activeSelection.instanceId]: createModelSelection(
+          activeSelection.instanceId,
+          selectedModel,
+          modelOptionsForSelection(activeSelection, selectedModel),
+        ),
+      }
+    : input.draft?.modelSelectionByProvider;
+  // An optionless draft is an inherited selection, so do not restore the
+  // previous thread/project effort. Catalog fallback also changes its owner.
+  const modelOptions = activeSelection
+    ? modelSelectionByProviderToOptions(selectionsForOptions)
+    : (modelSelectionByProviderToOptions(selectionsForOptions) ??
+      providerSelectionsFromModelSelection(
+        fallbackSelection
+          ? createModelSelection(
+              fallbackSelection.instanceId,
+              selectedModel,
+              modelOptionsForSelection(fallbackSelection, selectedModel),
+            )
+          : null,
+      ));
 
   return {
     selectedModel,
@@ -2788,11 +2823,17 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               return state;
             }
             const current = state.stickyModelSelectionByProvider[normalized.instanceId];
-            // Model-only updates omit options; preserve sticky traits across model switches and new chats.
+            // Model-only picker updates inherit effort for a new model while
+            // preserving instance-wide speed settings, including Fast/Normal
+            // across Composer 2 → 2.5 and new chats.
             const nextSelection =
               normalized.options !== undefined
                 ? normalized
-                : createModelSelection(normalized.instanceId, normalized.model, current?.options);
+                : createModelSelection(
+                    normalized.instanceId,
+                    normalized.model,
+                    modelOptionsForSelection(current, normalized.model),
+                  );
             const nextMap: Partial<Record<ProviderInstanceId, ModelSelection>> = {
               ...state.stickyModelSelectionByProvider,
               [normalized.instanceId]: nextSelection,
@@ -2917,7 +2958,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 nextMap[normalized.instanceId] = createModelSelection(
                   normalized.instanceId,
                   normalized.model,
-                  current?.options,
+                  modelOptionsForSelection(current, normalized.model),
                 );
               }
             }
@@ -4350,4 +4391,48 @@ export function finalizePromotedDraftThreadByRef(threadRef: ScopedThreadRef): vo
     }
   }
   clearBackgroundDraftSubmissionByRef(threadRef);
+}
+
+export function importedHistoryCorrelationStorage(
+  ref: ScopedThreadRef,
+): ImportedHistoryCorrelationStorage {
+  const key = `jones:imported-history-choice:v1:${scopedThreadKey(ref)}`;
+  const storage = () => {
+    if (typeof localStorage === "undefined")
+      throw new Error("Durable imported history storage is unavailable.");
+    return localStorage;
+  };
+  const read = () => {
+    const raw = storage().getItem(key);
+    if (raw === null) return null;
+    const value = decodeImportedHistoryCorrelation(raw);
+    if (value.environmentId !== ref.environmentId || value.command.threadId !== ref.threadId)
+      throw new Error("Imported history storage target changed.");
+    return value;
+  };
+  return {
+    withLock<A>(operation: () => Promise<A>): Promise<A> {
+      if (typeof navigator === "undefined" || navigator.locks === undefined)
+        return Promise.reject(new ImportedHistoryLockUnavailable());
+      return navigator.locks.request(key, { mode: "exclusive" }, operation);
+    },
+    read,
+    reserve(value) {
+      composerDebouncedStorage.flush();
+      if (read() !== null)
+        throw new Error("An imported history choice already awaits observation.");
+      const encoded = encodeImportedHistoryCorrelation(value);
+      storage().setItem(key, encoded);
+      if (storage().getItem(key) !== encoded)
+        throw new Error("Imported history reservation was not persisted.");
+    },
+    remove(value) {
+      const current = read();
+      if (
+        current !== null &&
+        encodeImportedHistoryCorrelation(current) === encodeImportedHistoryCorrelation(value)
+      )
+        storage().removeItem(key);
+    },
+  };
 }

@@ -12,4 +12,6 @@ function JonesCodeSettings() {
   );
 }
 
-export const Route = createFileRoute("/settings/jones-code")({ component: JonesCodeSettings });
+export const Route = createFileRoute("/_chat/settings/jones-code")({
+  component: JonesCodeSettings,
+});

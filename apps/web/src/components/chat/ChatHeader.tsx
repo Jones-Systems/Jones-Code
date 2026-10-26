@@ -1,3 +1,5 @@
+import { MachineRouteBadge } from "../../jones/remoteAgentLineage/MachineIdentity";
+import { GlobalHostStatusIndicators } from "../../jones/hostStatus/GlobalHostStatusIndicators";
 import {
   AuthOrchestrationOperateScope,
   type EnvironmentId,
@@ -47,7 +49,12 @@ interface ChatHeaderProps {
   activeThreadTitle: string;
   isServerThread: boolean;
   activeProject: EnvironmentProject | null;
-  parentThreadLink: { threadId: ThreadId; title: string } | null;
+  parentThreadLink: {
+    threadId: ThreadId;
+    title: string;
+    open?: (() => void) | undefined;
+    unavailableReason?: string | undefined;
+  } | null;
   onOpenThread: (threadId: ThreadId) => void;
   rightPanelOpen: boolean;
   onNewThreadInProject: () => void;
@@ -278,7 +285,7 @@ export const ChatHeader = memo(function ChatHeader({
     >
       <WorkspaceBreadcrumb
         ariaLabel="Thread breadcrumb"
-        className="flex-1 overflow-clip [overflow-clip-margin:2px]"
+        className="flex-initial overflow-clip [overflow-clip-margin:2px]"
       >
         {activeProject ? (
           <>
@@ -316,7 +323,13 @@ export const ChatHeader = memo(function ChatHeader({
                     <button
                       type="button"
                       aria-label={`Open parent thread: ${parentThreadLink.title}`}
-                      onClick={() => onOpenThread(parentThreadLink.threadId)}
+                      disabled={Boolean(parentThreadLink.unavailableReason)}
+                      aria-description={parentThreadLink.unavailableReason}
+                      onClick={() =>
+                        parentThreadLink.open
+                          ? parentThreadLink.open()
+                          : onOpenThread(parentThreadLink.threadId)
+                      }
                       className="inline-flex min-w-0 max-w-full cursor-pointer items-center rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                     />
                   }
@@ -333,7 +346,9 @@ export const ChatHeader = memo(function ChatHeader({
                     </span>
                   ) : null}
                 </TooltipTrigger>
-                <TooltipPopup side="top">{parentThreadLink.title}</TooltipPopup>
+                <TooltipPopup side="top">
+                  {parentThreadLink.unavailableReason ?? parentThreadLink.title}
+                </TooltipPopup>
               </Tooltip>
             </WorkspaceBreadcrumbItem>
             <WorkspaceBreadcrumbSeparator>
@@ -406,9 +421,16 @@ export const ChatHeader = memo(function ChatHeader({
               <TooltipPopup side="top">{activeThreadTitle}</TooltipPopup>
             </Tooltip>
           )}
+          {renamingTitle === null ? (
+            <MachineRouteBadge
+              environmentId={activeThreadEnvironmentId}
+              threadId={activeThreadId}
+            />
+          ) : null}
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
       {isServerThread ? <GuestShareIndicator threadRef={activeThreadRef} /> : null}
+      <GlobalHostStatusIndicators />
     </div>
   );
 });

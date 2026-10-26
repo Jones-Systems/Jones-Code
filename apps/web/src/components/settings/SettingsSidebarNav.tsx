@@ -1,3 +1,5 @@
+import { SidebarUtilityMenu } from "../sidebar/SidebarChrome";
+import { SidebarEnvironmentFilters } from "../../jones/environmentFilters/SidebarEnvironmentFilters";
 import {
   lazy,
   Suspense,
@@ -89,6 +91,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/connections": Link2Icon,
   "/settings/beta": FlaskConicalIcon,
   "/settings/archived": ArchiveIcon,
+  "/settings/jones-code": Settings2Icon,
 };
 
 const SETTINGS_NAV_ITEMS: ReadonlyArray<{
@@ -381,9 +384,15 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
         <Suspense fallback={null}>
           <T3ConnectSidebarSignIn />
         </Suspense>
-        <Suspense fallback={null}>
-          <T3ConnectSidebarAvatar />
-        </Suspense>
+        <SidebarEnvironmentFilters />
+        <div className="flex items-center gap-1">
+          <div className="min-w-0 flex-1">
+            <SidebarUtilityMenu />
+          </div>
+          <Suspense fallback={null}>
+            <T3ConnectSidebarAvatar />
+          </Suspense>
+        </div>
       </SidebarFooter>
     </nav>
   );

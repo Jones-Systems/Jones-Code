@@ -44,6 +44,8 @@ import { readLocalApi } from "~/localApi";
 import { cn } from "~/lib/utils";
 import { primaryServerKeybindingsAtom, serverEnvironment } from "~/state/server";
 
+const PdfPreview = lazy(() => import("./PdfPreview"));
+
 /**
  * The page reports the keys, and a page script can report any key it likes,
  * so only commands that change what the reader sees are here, never one that
@@ -73,7 +75,11 @@ export const isPdfPreviewFile = (path: string): boolean =>
 
 const PdfViewer = lazy(() => import("./PdfViewer"));
 
-function PdfDocument(props: { src: string; title: string }) {
+function PdfDocument(props: {
+  src: string;
+  title: string;
+  onRetry?: (() => void | Promise<void>) | undefined;
+}) {
   const [src] = useState(props.src);
   // The Electron shell does not enable PDF plugins. WebKit embeds on iOS
   // expose only the first page, even when pdfViewerEnabled reports support.
@@ -82,6 +88,12 @@ function PdfDocument(props: { src: string; title: string }) {
     navigator.pdfViewerEnabled &&
     !/iPad|iPhone|iPod/.test(navigator.userAgent) &&
     !(navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  if (props.onRetry)
+    return (
+      <Suspense fallback={<FileSurfaceLoading />}>
+        <PdfPreview src={props.src} title={props.title} onRetry={props.onRetry} />
+      </Suspense>
+    );
   return native ? (
     // oxlint-disable-next-line react/iframe-missing-sandbox -- Chromium's PDF plugin requires an unsandboxed frame; src is an exact-file asset grant.
     <iframe
@@ -105,13 +117,14 @@ export function BrowserDocumentFrame(props: {
   readonly title: string;
   readonly pdf: boolean;
   readonly htmlRender?: boolean;
+  readonly onRetry?: () => void | Promise<void>;
   readonly threadRef?: ScopedThreadRef | undefined;
   /** Stable resource identity and revision; defaults to src for callers that reload on URL changes. */
   readonly documentKey?: string | undefined;
 }) {
   const key = props.documentKey ?? props.src;
   return props.pdf ? (
-    <PdfDocument key={key} src={props.src} title={props.title} />
+    <PdfDocument key={key} src={props.src} title={props.title} onRetry={props.onRetry} />
   ) : props.htmlRender ? (
     <HtmlRenderDocument
       key={key}
@@ -133,7 +146,7 @@ function FileDocument(props: { readonly src: string; readonly title: string }) {
       src={src}
       title={props.title}
       className="min-h-0 flex-1 border-0 bg-white"
-      sandbox="allow-scripts allow-forms allow-popups allow-downloads"
+      sandbox="allow-scripts allow-forms allow-popups allow-downloads allow-modals"
     />
   );
 }
