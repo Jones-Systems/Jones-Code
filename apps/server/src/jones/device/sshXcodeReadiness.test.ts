@@ -1,10 +1,10 @@
 // @effect-diagnostics nodeBuiltinImport:off - Exercises the generated host program with synthetic filesystem and process services.
 import { describe, expect, it } from "@effect/vitest";
-import { createRequire } from "node:module";
-import * as VM from "node:vm";
+import * as NodeModule from "node:module";
+import * as NodeVM from "node:vm";
 import { remoteDeviceScript } from "../../device/sshDeviceScript.ts";
 
-const nodeRequire = createRequire(import.meta.url);
+const nodeRequire = NodeModule.createRequire(import.meta.url);
 
 const invoke = async (
   mode: Parameters<typeof remoteDeviceScript>[1],
@@ -69,7 +69,7 @@ const invoke = async (
       return nodeRequire(name);
     },
   };
-  await VM.runInNewContext(
+  await NodeVM.runInNewContext(
     remoteDeviceScript("test-owner", mode, { hostId: "mini", generation: "test-generation" }),
     context,
   );
