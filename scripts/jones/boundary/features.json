@@ -2113,6 +2113,19 @@
         "apps/server/src/terminal/Manager.test.ts"
       ],
       "scope": "One terminal history writer prioritizes explicit flushes over queued debounce waits, preserves the global background cadence and latest per-terminal coalescing, and keeps drains pending through active/latest writes and cancelled waiters. Manager remains an accepted-shared integration hook."
+    },
+    {
+      "id": "upstream-24589-long-turn-history-caps",
+      "tests": [
+        "apps/server/src/jones/orchestration/historyPaging.test.ts",
+        "apps/server/src/orchestration-v2/threadHistoryPaging.test.ts",
+        "apps/server/src/orchestration-v2/ProjectionStore.test.ts",
+        "apps/server/src/orchestration-v2/ThreadStream.test.ts",
+        "apps/server/src/orchestration-v2/ThreadFind.test.ts",
+        "apps/server/integration/transferBudgetV2.integration.test.ts",
+        "packages/client-runtime/src/platform/orchestrationCache.test.ts"
+      ],
+      "scope": "Targeted upstream backport 553203c57b780cef9fb30ad835d759befe0dcb7c (#24589): cap every long-turn snapshot and history page by row and encoded-byte budgets, preserve cursor/interrupt dependencies, remove unused full-projection overflow encoding, and expire old thread caches. Jones keyset selection retains its extracted budget and keyed interrupt lookup; no contracts, schema or migrations change. No full upstream import."
     }
   ]
 }

@@ -23,6 +23,7 @@ import {
   decodeThreadHistoryCursor,
   encodeThreadHistoryCursor,
   projectedRowEncodedBytes,
+  isThreadHistoryUserTurn,
   THREAD_HISTORY_PAGE_POLICY,
 } from "../../orchestration-v2/threadHistoryPaging.ts";
 import { projectTurnItemForWire } from "../../orchestration-v2/WireProjection.ts";
@@ -87,6 +88,7 @@ const selectionMetadata = (queries: ReadonlyArray<ObservedQuery>) =>
 const seedHistory = Effect.fn("historyPaging.test.seedHistory")(function* (
   suffix: string,
   mode: "human" | "notification" | "tools",
+  shape: { turns?: number; rowsPerTurn?: number } = {},
 ) {
   const store = yield* ProjectionStore.ProjectionStoreV2;
   const sql = yield* SqlClient.SqlClient;
@@ -127,7 +129,7 @@ const seedHistory = Effect.fn("historyPaging.test.seedHistory")(function* (
   });
   const runId = (run: number) => `run:history-page:${suffix}:${run}`;
   const itemId = (ordinal: number) => `item:history-page:${suffix}:${ordinal}`;
-  const runs = Array.from({ length: 260 }, (_, index) => ({
+  const runs = Array.from({ length: shape.turns ?? 260 }, (_, index) => ({
     id: runId(index),
     threadId,
     ordinal: index + 1,
@@ -169,8 +171,8 @@ const seedHistory = Effect.fn("historyPaging.test.seedHistory")(function* (
       json_extract(value, '$.providerThreadId'), NULL, 'completed', value
     FROM json_each(${JSON.stringify(attempts)})`;
   const items = runs.flatMap((run, index) =>
-    Array.from({ length: 4 }, (_, part) => {
-      const ordinal = index * 4 + part + 1;
+    Array.from({ length: shape.rowsPerTurn ?? 4 }, (_, part) => {
+      const ordinal = index * (shape.rowsPerTurn ?? 4) + part + 1;
       const user = mode !== "tools" && part === 1 && (mode === "human" || index === 0);
       const notification = mode === "notification" && index > 0 && (part === 1 || part === 2);
       return {
@@ -242,37 +244,42 @@ it.layer(layer)("direct history-page metadata selection", (it) => {
         const initial = buildBoundedThreadProjection(snapshot);
         assert.isAtMost(initial.projection.visibleTurnItems.length, 75);
         assert.isNotNull(initial.historyCursor);
-        let cursor = initial.historyCursor;
-        let ids = initial.projection.visibleTurnItems.map((row) => String(row.sourceItemId));
+        let cursor: string | null = initial.historyCursor;
+        const idPages = [
+          initial.projection.visibleTurnItems.map((row) => String(row.sourceItemId)),
+        ];
         let pages = 0;
         while (cursor !== null) {
           const observation = observeMetadata();
-          const page = yield* store
+          const page: Effect.Success<ReturnType<typeof store.getThreadHistoryPage>> = yield* store
             .getThreadHistoryPage(threadId, cursor)
             .pipe(observation.observe);
           const fallback = yield* store.getThreadHistoryPage(threadId, cursor, "entry:absent");
           assert.strictEqual(JSON.stringify(page), JSON.stringify(fallback));
-          assert.isAtMost(page.items.length, 75);
+          assert.isAtMost(
+            page.items.length,
+            page.items.some((row) => isThreadHistoryUserTurn(row.item)) ? 500 : 75,
+          );
           assert.isAtMost(
             selectionMetadata(observation.queries).filter(({ query }) =>
               query.includes("ORDER BY ordinal DESC"),
             ).length,
             7,
           );
-          ids = [...page.items.map((row) => String(row.sourceItemId)), ...ids];
+          idPages.push(page.items.map((row) => String(row.sourceItemId)));
           cursor = page.nextCursor;
           pages += 1;
           assert.isAtMost(pages, 20);
         }
         assert.deepEqual(
-          ids,
+          idPages.toReversed().flat(),
           Array.from({ length: 1040 }, (_, index) => itemId(index + 1)),
         );
       }),
   );
 
   it.effect(
-    "bounds metadata from a relative snapshot cursor and preserves the 150 raw-turn ceiling",
+    "bounds metadata from a relative snapshot cursor while preserving all raw turns through paging",
     () =>
       Effect.gen(function* () {
         const store = yield* ProjectionStore.ProjectionStoreV2;
@@ -288,13 +295,13 @@ it.layer(layer)("direct history-page metadata selection", (it) => {
         // An absent through-entry keeps selection unchanged and forces the original full-index path.
         const fallback = yield* store.getThreadHistoryPage(threadId, cursor, "entry:absent");
         assert.strictEqual(JSON.stringify(page), JSON.stringify(fallback));
-        assert.lengthOf(page.items, 150 * 4);
+        assert.lengthOf(page.items, 75);
         assert.isAbove(decodeThreadHistoryCursor(page.nextCursor!).p, 0);
         const metadata = selectionMetadata(observation.queries);
         // Count materialized rows before inspecting SQL shape so the unchanged full-index path fails here.
         assert.isAtMost(
           metadata.reduce((sum, query) => sum + (query.rows ?? 0), 0),
-          1 + 8 * 77,
+          1 + 7 * 77,
         );
         const chunks = metadata.filter(({ query }) => query.includes("ORDER BY ordinal DESC"));
         assert.isNotEmpty(chunks);
@@ -382,18 +389,25 @@ it.layer(layer)("direct history-page metadata selection", (it) => {
 
         const decoded = decodeThreadHistoryCursor(cursor);
         assert.notEqual(decoded.si, itemId(1));
-        const older = yield* store.getThreadHistoryPage(threadId, page.nextCursor!);
-        const olderFallback = yield* store.getThreadHistoryPage(
-          threadId,
-          page.nextCursor!,
-          "entry:absent",
-        );
-        assert.strictEqual(JSON.stringify(older), JSON.stringify(olderFallback));
-        assert.isFalse(older.hasMoreHistory);
+        let next = page.nextCursor;
+        const olderIdPages: string[][] = [];
+        while (next !== null) {
+          const older = yield* store.getThreadHistoryPage(threadId, next);
+          const olderFallback = yield* store.getThreadHistoryPage(threadId, next, "entry:absent");
+          assert.strictEqual(JSON.stringify(older), JSON.stringify(olderFallback));
+          assert.isAtMost(
+            older.items.length,
+            older.items.some((row) => isThreadHistoryUserTurn(row.item)) ? 500 : 75,
+          );
+          olderIdPages.push(older.items.map((row) => String(row.sourceItemId)));
+          next = older.nextCursor;
+        }
         assert.deepEqual(
-          [...older.items, ...page.items, ...initial.projection.visibleTurnItems].map((row) =>
-            String(row.sourceItemId),
-          ),
+          [
+            ...olderIdPages.toReversed().flat(),
+            ...page.items.map((row) => String(row.sourceItemId)),
+            ...initial.projection.visibleTurnItems.map((row) => String(row.sourceItemId)),
+          ],
           Array.from({ length: 1040 }, (_, index) => itemId(index + 1)),
         );
         yield* sql`INSERT INTO orchestration_v2_projection_turn_items
@@ -408,6 +422,31 @@ it.layer(layer)("direct history-page metadata selection", (it) => {
           JSON.stringify(page),
         );
       }),
+  );
+
+  it.effect("keeps ten ordinary forty-row turns together and matches fallback selection", () =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const { threadId, itemId } = yield* seedHistory("normal-turns", "human", {
+        turns: 10,
+        rowsPerTurn: 40,
+      });
+      const cursor = encodeThreadHistoryCursor({
+        snapshotSequence: 0,
+        sourceThreadId: threadId,
+        sourceItemId: itemId(400),
+        position: 399,
+      });
+      const page = yield* store.getThreadHistoryPage(threadId, cursor);
+      const fallback = yield* store.getThreadHistoryPage(threadId, cursor, "entry:absent");
+      assert.strictEqual(JSON.stringify(page), JSON.stringify(fallback));
+      assert.lengthOf(page.items, 399);
+      assert.lengthOf(
+        page.items.filter((row) => row.item.type === "user_message"),
+        10,
+      );
+      assert.isFalse(page.hasMoreHistory);
+    }),
   );
 
   it.effect(
@@ -461,6 +500,17 @@ it.layer(layer)("direct history-page metadata selection", (it) => {
           payload_json = json_set(payload_json, '$.type', 'run_interrupt_request',
             '$.runId', ${runId(230)}, '$.message', 'Interrupt requested')
         WHERE turn_item_id = ${itemId(20)}`;
+        // A rolled-back result must not pull its older request into the visible page.
+        yield* sql`UPDATE orchestration_v2_projection_turn_items
+          SET type = 'run_interrupt_request',
+            payload_json = json_set(payload_json, '$.type', 'run_interrupt_request',
+              '$.message', 'Hidden request')
+          WHERE turn_item_id = ${itemId(12)}`;
+        yield* sql`UPDATE orchestration_v2_projection_turn_items
+          SET type = 'run_interrupt_result', run_id = ${runId(2)},
+            payload_json = json_set(payload_json, '$.type', 'run_interrupt_result',
+              '$.runId', ${runId(2)}, '$.message', 'Hidden result')
+          WHERE turn_item_id = ${itemId(960)}`;
         // Put one peer on the anchor ordinal so keyset comparison must include the item ID.
         yield* sql`UPDATE orchestration_v2_projection_turn_items
         SET ordinal = 1001, payload_json = json_set(payload_json, '$.ordinal', 1001)
@@ -485,6 +535,10 @@ it.layer(layer)("direct history-page metadata selection", (it) => {
             conversationOnly,
           );
           assert.strictEqual(JSON.stringify(page), JSON.stringify(fallback));
+          assert.lengthOf(
+            page.items.filter((row) => row.sourceItemId === itemId(20)),
+            1,
+          );
           const oldest = decodeThreadHistoryCursor(page.nextCursor!);
           const projection = yield* store.getThreadProjection(threadId);
           assert.strictEqual(
@@ -494,6 +548,7 @@ it.layer(layer)("direct history-page metadata selection", (it) => {
           assert.isFalse(
             page.items.some((row) => [runId(244), runId(2)].includes(String(row.item.runId))),
           );
+          assert.isFalse(page.items.some((row) => row.sourceItemId === itemId(12)));
           assert.isFalse(page.items.some((row) => row.sourceItemId === itemId(982)));
           assert.isFalse(page.items.some((row) => row.sourceItemId === itemId(931)));
           assert.isTrue(page.items.some((row) => row.sourceItemId === itemId(923)));
@@ -504,6 +559,15 @@ it.layer(layer)("direct history-page metadata selection", (it) => {
         assert.isAtMost(
           selectionMetadata(observation.queries).reduce((sum, query) => sum + (query.rows ?? 0), 0),
           1 + 2 * 77,
+        );
+        assert.isAtMost(
+          observation.queries.filter(
+            ({ query }) =>
+              query.includes("type = 'run_interrupt_request'") &&
+              query.includes("run_id IN (SELECT value FROM json_each") &&
+              !query.includes("wanted.value AS run_id"),
+          ).length,
+          1,
         );
         const selects = observation.queries.filter(({ query }) =>
           /^\s*(SELECT|WITH)\b/i.test(query),
