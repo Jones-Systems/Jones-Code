@@ -46,7 +46,8 @@ export const serveLinkedMcpProbe = <E, R>(
       Layer.provide(intakeLayer),
       Layer.provide(
         Layer.mock(McpSessionRegistry.McpSessionRegistry)({
-          resolve: () => Effect.void,
+          // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
+          resolve: () => Effect.succeed(undefined),
         }),
       ),
       Layer.provide(
