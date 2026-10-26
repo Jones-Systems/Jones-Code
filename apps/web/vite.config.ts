@@ -11,6 +11,11 @@ import "vite-plus/test/config";
 import { defineConfig, type Connect, type Plugin } from "vite-plus";
 import * as Hash from "effect/Hash";
 import pkg from "./package.json" with { type: "json" };
+import serverPackage from "../server/package.json" with { type: "json" };
+import {
+  readJonesBuildSource,
+  readJonesBuildStartedAt,
+} from "@t3tools/contracts/jones/fleet-updates";
 import pdfjsPkg from "pdfjs-dist/package.json" with { type: "json" };
 
 import {
@@ -45,6 +50,12 @@ const configuredHostedAppChannel = process.env.VITE_HOSTED_APP_CHANNEL?.trim() |
 const configuredReleaseChannel =
   process.env.T3CODE_BUILT_DEV === "1" ? "dev" : process.env.VITE_RELEASE_CHANNEL?.trim() || "";
 const configuredAppVersion = process.env.APP_VERSION?.trim() || pkg.version;
+const configuredBuildStartedAt =
+  serverPackage.version === configuredAppVersion
+    ? readJonesBuildStartedAt(serverPackage)
+    : undefined;
+const configuredSource =
+  serverPackage.version === configuredAppVersion ? readJonesBuildSource(serverPackage) : undefined;
 const configuredDesktopUpdateRepository =
   process.env.T3CODE_DESKTOP_UPDATE_REPOSITORY?.trim() ||
   process.env.GITHUB_REPOSITORY?.trim() ||
@@ -293,6 +304,8 @@ export default defineConfig(() => {
       ),
       "import.meta.env.VITE_RELEASE_CHANNEL": JSON.stringify(configuredReleaseChannel),
       "import.meta.env.APP_VERSION": JSON.stringify(configuredAppVersion),
+      "import.meta.env.APP_SOURCE_SHA": JSON.stringify(configuredSource),
+      "import.meta.env.APP_BUILD_STARTED_AT": JSON.stringify(configuredBuildStartedAt),
     },
     resolve: {
       tsconfigPaths: true,
