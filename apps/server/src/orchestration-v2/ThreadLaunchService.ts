@@ -571,7 +571,7 @@ const make = Effect.gen(function* () {
         "fail-run",
         threadId,
       )("Workspace-failure policy changed; retain the shell.");
-    const control = yield* Schema.decodeUnknownEffect(LegacyNoTerminalControl)({
+    const control = yield* Schema.decodeEffect(LegacyNoTerminalControl)({
       version: 1,
       type: "no_control",
       policy: receivingPolicy,
@@ -617,7 +617,7 @@ const make = Effect.gen(function* () {
     const validated =
       deletion === undefined
         ? undefined
-        : yield* Schema.decodeUnknownEffect(LegacyFailureDeletionProvenance)(deletion).pipe(
+        : yield* Schema.decodeEffect(LegacyFailureDeletionProvenance)(deletion).pipe(
             Effect.mapError(mapError(input, "fail-run", threadId)),
           );
     const { deletion: _oldDeletion, ...original } = decision;
@@ -924,6 +924,7 @@ const make = Effect.gen(function* () {
     input: PreparationInput,
     threadId: ThreadId,
     runId: RunId,
+    lifetime: Scope.Scope,
   ) {
     const journal = yield* legacyPreparationJournal(input, threadId, runId);
     const { bound, persist, intent, outcome } = journal;
@@ -948,6 +949,7 @@ const make = Effect.gen(function* () {
     };
     const captured = bound.setup.status === "resolved" ? bound.setup.definition : undefined;
     const hooks: ProjectSetupScriptRunner.LegacySetupPreparationHooks = {
+      lifetime,
       binding,
       ...(captured === undefined ? {} : { capturedDefinition: captured }),
       noScript: () =>
@@ -1163,6 +1165,7 @@ const make = Effect.gen(function* () {
     runId: RunId | null,
     observeExistingSetup = false,
   ) {
+    const lifetime = yield* Effect.scope;
     const project = yield* projects.getById(input.projectId).pipe(
       Effect.mapError(mapError(input, "resolve-project", threadId)),
       Effect.flatMap(
@@ -1575,7 +1578,7 @@ const make = Effect.gen(function* () {
       yield* setupTracker.stageStatus(threadId, "setup-script", "running");
       const legacyPreparation =
         input.legacyBootstrap !== undefined && runId !== null
-          ? yield* legacySetupHooks(input, threadId, runId)
+          ? yield* legacySetupHooks(input, threadId, runId, lifetime)
           : undefined;
       const cwd = worktreePath ?? project.workspaceRoot;
       const setup = yield* (
@@ -1616,7 +1619,7 @@ const make = Effect.gen(function* () {
               cause.operation !== "openTerminal" ||
               !isTerminalInputValidationError(cause.cause)
             )
-              return yield* Effect.fail(mapError(input, "run-setup-script", threadId)(cause));
+              return yield* mapError(input, "run-setup-script", threadId)(cause);
             const proof = cause.cause;
             const current = yield* threads
               .getThreadRecords(threadId, ["runs"], { runIds: [runId] })
@@ -1719,6 +1722,9 @@ const make = Effect.gen(function* () {
       let awaitAsyncSetup = Effect.void;
       if (setup.status === "started") {
         setupTerminalId = setup.terminalId;
+        yield* setup.writeCompletion.pipe(
+          Effect.mapError(mapError(input, "run-setup-script", threadId)),
+        );
         yield* setupTracker.update(threadId, (snapshot) => ({
           ...snapshot,
           setupScript: {
@@ -1938,7 +1944,7 @@ const make = Effect.gen(function* () {
         }),
       ),
     );
-  });
+  }, Effect.scoped);
 
   const failPreparedRun = (
     input: Pick<PreparationInput, "commandId">,

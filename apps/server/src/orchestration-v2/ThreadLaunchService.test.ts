@@ -267,7 +267,7 @@ function makeHarness(options: HarnessOptions = {}) {
               ? Option.some(otherProject)
               : Option.none(),
         ),
-      getByWorkspaceRoot: () => Effect.succeed(Option.some(boundProject)),
+      getByWorkspaceRoot: () => Effect.succeedSome(boundProject),
       snapshot: Effect.die("unused"),
       getShell: () => Effect.die("unused"),
       listShells: () => Effect.die("unused"),
@@ -608,7 +608,8 @@ class LegacyLauncherPty implements PtyAdapter.PtyProcess {
     this.kills.push(signal);
     for (const exit of this.exits) exit({ exitCode: 0, signal: 15 });
   }
-  onData(_callback: (data: string) => void) {
+  onData(callback: (data: string) => void) {
+    callback("\x1b[?2004h");
     return () => {};
   }
   onExit(callback: (event: PtyAdapter.PtyExitEvent) => void) {
@@ -681,10 +682,30 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
             ),
           ),
         );
+        const writePending = yield* Deferred.make<void>();
+        const allowWriteReadback = yield* Deferred.make<void>();
         const harness = makeHarness({
           workspaceRoot,
           projectScripts: scripts,
-          ...(scenario === "started_setup" ? { runSetup: runner.runForThread } : {}),
+          ...(scenario === "started_setup"
+            ? {
+                runSetup: (request: ProjectSetupScriptRunner.ProjectSetupScriptRunnerInput) => {
+                  const hooks = request.legacyPreparation;
+                  if (hooks === undefined) return Effect.die("Missing owned legacy preparation.");
+                  return runner.runForThread({
+                    ...request,
+                    legacyPreparation: {
+                      ...hooks,
+                      afterWrite: (result, count) =>
+                        Deferred.succeed(writePending, undefined).pipe(
+                          Effect.andThen(Deferred.await(allowWriteReadback)),
+                          Effect.andThen(hooks.afterWrite(result, count)),
+                        ),
+                    },
+                  });
+                },
+              }
+            : {}),
           privateDUnavailable: scenario === "missing_method",
           terminalOwner: Layer.succeed(TerminalManager.TerminalManager, manager),
         });
@@ -781,9 +802,28 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                     ),
                   )
               : undefined;
-          const result = yield* layerLaunch
-            .launch(input)
-            .pipe(Effect.result, Effect.ensuring(Effect.sync(() => lostReply?.mockRestore())));
+          const launch = yield* layerLaunch.launch(input).pipe(Effect.result, Effect.forkChild);
+          if (scenario === "started_setup") {
+            yield* Effect.gen(function* () {
+              yield* Deferred.await(writePending);
+              assert.isUndefined(launch.pollUnsafe());
+              assert.isTrue(Option.isNone(yield* layerReceipts.getByCommandId(base.commandId)));
+              const pending = yield* threads.getThreadProjection(base.threadId);
+              assert.deepEqual(
+                pending.runs[0]!.legacyPreparation?.steps.map((step) => [
+                  step.effect.kind,
+                  step.state,
+                ]),
+                [
+                  ["setup.open", "known_succeeded"],
+                  ["setup.write", "intent"],
+                ],
+              );
+            }).pipe(Effect.ensuring(Deferred.succeed(allowWriteReadback, undefined)));
+          }
+          const result = yield* Fiber.join(launch).pipe(
+            Effect.ensuring(Effect.sync(() => lostReply?.mockRestore())),
+          );
           assert.equal(result._tag, "Failure");
           if (result._tag === "Failure") {
             assert.isTrue(Schema.is(ThreadLaunch.ThreadLaunchError)(result.failure));
@@ -1117,7 +1157,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                 .mockImplementation((id) =>
                   (!renameCase || renameStage) &&
                   id.endsWith(scenario.includes("intent_readback_lost") ? ":intent" : ":outcome")
-                    ? Effect.succeed(Option.none())
+                    ? Effect.succeedNone
                     : actualReceipt(id),
                 )
             : undefined;
@@ -3242,6 +3282,7 @@ it.effect("leaves a top-level existing-worktree setup running in the background 
         Effect.sync(() => observed.push(input.observeCompletion !== undefined)).pipe(
           Effect.as({
             status: "started" as const,
+            writeCompletion: Effect.void,
             async: false,
             scriptId: "setup",
             scriptName: "Setup",
@@ -3349,6 +3390,7 @@ it.effect.each([0, 1])("releases an async setup before its completion with exit 
       runSetup: () =>
         Effect.succeed({
           status: "started" as const,
+          writeCompletion: Effect.void,
           async: true,
           scriptId: "setup",
           scriptName: "Setup",
@@ -3598,7 +3640,7 @@ it.effect("replays an accepted send after the project disables the instance", ()
 it.effect("replays an accepted message.dispatch after the project disables the instance", () => {
   const harness = makeHarness();
   const layerFiles = ServerConfig.layerTest(process.cwd(), { prefix: "t3-dispatch-retry-" }).pipe(
-    Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
   );
   return Effect.gen(function* () {
     const launches = yield* ThreadLaunch.ThreadLaunchService;
@@ -3705,6 +3747,7 @@ it.effect.each(
           cancelSetup
             ? Effect.succeed({
                 status: "started" as const,
+                writeCompletion: Effect.void,
                 async: cancelAsync,
                 scriptId: "setup",
                 scriptName: "Setup",
@@ -4441,6 +4484,7 @@ it.effect("enqueues provider work only after setup has been initiated", () =>
           Effect.andThen(Deferred.await(allowSetup)),
           Effect.as({
             status: "started" as const,
+            writeCompletion: Effect.void,
             async: false,
             scriptId: "setup",
             scriptName: "Setup",

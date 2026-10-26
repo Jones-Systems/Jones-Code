@@ -118,9 +118,7 @@ const make = Effect.gen(function* () {
     const history = yield* repository.readWorkspaceClaim(input.claimId);
     if (history.intent.claimId !== input.claimId)
       return yield* denied("conflict", "Workspace claim authority differs");
-    const actorSessionId = yield* Schema.decodeEffect(AuthSessionId)(
-      history.intent.actorSessionId,
-    );
+    const actorSessionId = yield* Schema.decodeEffect(AuthSessionId)(history.intent.actorSessionId);
     const guard = yield* Schema.decodeEffect(NativeCreationGuard)({
       schema: "t3.native-creation-guard/v1",
       grantId: history.intent.grantId,
@@ -343,6 +341,7 @@ const make = Effect.gen(function* () {
       yield* repository.recordWorkspaceVerified!(verified);
       return verified;
     },
+    Effect.scoped,
     Effect.mapError((cause) =>
       Schema.is(NativeWorkspaceError)(cause)
         ? cause

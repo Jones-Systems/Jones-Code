@@ -6,6 +6,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import type { TerminalEvent } from "@t3tools/contracts";
 import { LegacyOwnedTerminalControl } from "../../../orchestration-v2/RecordedTypes.ts";
 import { legacyBootstrapCreateCommandId } from "../../../orchestration-v2/LegacyBootstrap.ts";
 
@@ -18,6 +19,11 @@ import * as ProjectService from "../../../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../../../project/ProjectSetupScriptRunner.ts";
 
 it.effect("resolves setup scripts through the standalone project service", () => {
+  const listeners = new Set<
+    Parameters<TerminalManager.TerminalManager["Service"]["subscribe"]>[0]
+  >();
+  const emit = (event: TerminalEvent) =>
+    Effect.forEach([...listeners], (listener) => listener(event), { discard: true });
   const open = vi.fn((input: Parameters<TerminalManager.TerminalManager["Service"]["open"]>[0]) =>
     Effect.succeed({
       threadId: input.threadId,
@@ -31,7 +37,16 @@ it.effect("resolves setup scripts through the standalone project service", () =>
       exitSignal: null,
       label: "Shell",
       updatedAt: "2026-06-20T00:00:00.000Z",
-    }),
+    }).pipe(
+      Effect.tap(() =>
+        emit({
+          type: "output",
+          threadId: input.threadId,
+          terminalId: input.terminalId,
+          data: "\x1b[?2004h",
+        }),
+      ),
+    ),
   );
   const write = vi.fn(
     (_input: Parameters<TerminalManager.TerminalManager["Service"]["write"]>[0]) => Effect.void,
@@ -39,12 +54,12 @@ it.effect("resolves setup scripts through the standalone project service", () =>
   const closeIdle = vi.fn(
     (_input: Parameters<TerminalManager.TerminalManager["Service"]["closeIdle"]>[0]) => Effect.void,
   );
-  const listeners: Array<Parameters<TerminalManager.TerminalManager["Service"]["subscribe"]>[0]> =
-    [];
   const subscribe: TerminalManager.TerminalManager["Service"]["subscribe"] = (listener) =>
     Effect.sync(() => {
-      listeners.push(listener);
-      return () => undefined;
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
     });
   const projectId = ProjectId.make("project:setup-runner-v2");
   const project = {
@@ -120,7 +135,9 @@ it.effect("resolves setup scripts through the standalone project service", () =>
       projectId,
       worktreePath: "/repo-worktree",
     });
-    assert.deepEqual(result, {
+    if (result.status !== "started") return yield* Effect.die("Expected started setup.");
+    const { writeCompletion, ...started } = result;
+    assert.deepEqual(started, {
       status: "started",
       async: true,
       scriptId: "setup",
@@ -137,6 +154,7 @@ it.effect("resolves setup scripts through the standalone project service", () =>
       NO_COLOR: "1",
       FORCE_COLOR: "0",
     });
+    yield* writeCompletion;
     assert.equal(write.mock.calls[0]?.[0].data, " vp install\r");
     const lines: string[] = [];
     const observed = yield* runner.runForThread({
@@ -151,15 +169,16 @@ it.effect("resolves setup scripts through the standalone project service", () =>
       },
     });
     assert.equal(observed.status, "started");
-    const listener = listeners[0]!;
-    yield* listener({
+    if (observed.status !== "started") return yield* Effect.die("Expected observed setup.");
+    yield* observed.writeCompletion;
+    yield* emit({
       type: "output",
       threadId: "thread-1",
       terminalId: "setup-setup",
       data: "Downloading 10%\rDownloading 20%\r\nDone\n",
     });
     assert.deepEqual(lines, ["Downloading 10%", "Downloading 20%", "Done"]);
-    yield* listener({ type: "closed", threadId: "thread-1", terminalId: "setup-setup" });
+    yield* emit({ type: "closed", threadId: "thread-1", terminalId: "setup-setup" });
 
     const settle = yield* runner.runForThread({
       threadId: "thread-1",
@@ -167,7 +186,9 @@ it.effect("resolves setup scripts through the standalone project service", () =>
       worktreePath: "/repo-worktree",
       trigger: "settle",
     });
-    const settleTerminalId = settle.status === "started" ? settle.terminalId : "";
+    if (settle.status !== "started") return yield* Effect.die("Expected settle setup.");
+    yield* settle.writeCompletion;
+    const settleTerminalId = settle.terminalId;
     assert.match(settleTerminalId, /^settle-clean-/);
     assert.equal(write.mock.calls.at(-1)?.[0].data, " cargo clean\r");
 
@@ -178,16 +199,18 @@ it.effect("resolves setup scripts through the standalone project service", () =>
       trigger: "settle",
       observeCompletion: {},
     });
-    const observedTerminalId = observedSettle.status === "started" ? observedSettle.terminalId : "";
+    if (observedSettle.status !== "started")
+      return yield* Effect.die("Expected observed settle setup.");
+    yield* observedSettle.writeCompletion;
+    const observedTerminalId = observedSettle.terminalId;
     assert.notEqual(observedTerminalId, settleTerminalId);
     const token = /__T3_SETUP_DONE___(\w+):/.exec(write.mock.calls.at(-1)?.[0].data ?? "")?.[1];
-    const settleListener = listeners.at(-1)!;
     const completion = yield* Effect.forkChild(
       observedSettle.status === "started" && observedSettle.completion
         ? observedSettle.completion
         : Effect.die("no completion"),
     );
-    yield* settleListener({
+    yield* emit({
       type: "output",
       threadId: "thread-1",
       terminalId: observedTerminalId,
@@ -195,7 +218,7 @@ it.effect("resolves setup scripts through the standalone project service", () =>
     });
     yield* Effect.yieldNow;
     assert.equal(closeIdle.mock.calls.length, 0);
-    yield* settleListener({
+    yield* emit({
       type: "output",
       threadId: "thread-1",
       terminalId: observedTerminalId,
@@ -228,7 +251,7 @@ it.effect("resolves setup scripts through the standalone project service", () =>
       worktreePath: "/repo-worktree",
     });
     assert.equal(trusted.status, "started");
-  }).pipe(Effect.provide(layer));
+  }).pipe(Effect.scoped, Effect.provide(layer));
 });
 
 it.effect(
@@ -287,6 +310,11 @@ it.effect(
     let definition:
       | NonNullable<ProjectSetupScriptRunner.LegacySetupPreparationHooks["capturedDefinition"]>
       | undefined;
+    const listeners = new Set<
+      Parameters<TerminalManager.TerminalManager["Service"]["subscribe"]>[0]
+    >();
+    const emit = (event: TerminalEvent) =>
+      Effect.forEach([...listeners], (listener) => listener(event), { discard: true });
     let spawns = 0;
     const writes: string[] = [];
     const milestones: string[] = [];
@@ -316,6 +344,12 @@ it.effect(
           binding: hooks.binding,
           shell: "/usr/bin/fish",
           shellArgs: ["-l"],
+        });
+        yield* emit({
+          type: "output",
+          threadId: input.threadId,
+          terminalId: input.terminalId,
+          data: "\x1b[?2004h",
         });
         return {
           threadId: input.threadId,
@@ -371,9 +405,15 @@ it.effect(
     const terminal = Layer.mock(TerminalManager.TerminalManager)({
       open,
       write,
-      subscribe: () => Effect.succeed(() => undefined),
+      subscribe: (listener) =>
+        Effect.sync(() => {
+          listeners.add(listener);
+          return () => {
+            listeners.delete(listener);
+          };
+        }),
     });
-    const hooks: ProjectSetupScriptRunner.LegacySetupPreparationHooks = {
+    const hooks: Omit<ProjectSetupScriptRunner.LegacySetupPreparationHooks, "lifetime"> = {
       binding,
       noScript: () => Effect.die("A setup definition exists."),
       beforeSpawn: (selected) =>
@@ -428,13 +468,16 @@ it.effect(
     );
     return Effect.gen(function* () {
       const runner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
+      const lifetime = yield* Effect.scope;
       const result = yield* runner.runForThread({
         threadId,
         projectId,
         worktreePath: "/owned",
-        legacyPreparation: hooks,
+        legacyPreparation: { ...hooks, lifetime },
       });
       assert.equal(result.status, "started");
+      if (result.status !== "started") return yield* Effect.die("Expected legacy setup.");
+      yield* result.writeCompletion;
       assert.deepEqual(milestones, [
         "open-intent",
         "spawn",
@@ -458,6 +501,7 @@ it.effect(
           worktreePath: "/owned",
           legacyPreparation: {
             ...hooks,
+            lifetime,
             capturedDefinition,
             beforeSpawn: (same) =>
               Effect.gen(function* () {
@@ -478,14 +522,14 @@ it.effect(
           threadId,
           projectId,
           worktreePath: "/replacement",
-          legacyPreparation: { ...hooks, capturedDefinition },
+          legacyPreparation: { ...hooks, lifetime, capturedDefinition },
         })
         .pipe(Effect.result);
       assert.equal(changed._tag, "Failure");
       assert.equal(spawns, 1);
       assert.lengthOf(writes, 1);
       assert.equal(settingsReads, 1);
-    }).pipe(Effect.provide(layer));
+    }).pipe(Effect.scoped, Effect.provide(layer));
   },
 );
 
@@ -513,9 +557,11 @@ it.effect(
     };
     const order: string[] = [];
     let token: string | undefined;
-    let listener:
-      | Parameters<TerminalManager.TerminalManager["Service"]["subscribe"]>[0]
-      | undefined;
+    const listeners = new Set<
+      Parameters<TerminalManager.TerminalManager["Service"]["subscribe"]>[0]
+    >();
+    const emit = (event: TerminalEvent) =>
+      Effect.forEach([...listeners], (listener) => listener(event), { discard: true });
     const layer = ProjectSetupScriptRunner.layer.pipe(
       Layer.provide(NodeCrypto.layer),
       Layer.provide(
@@ -537,6 +583,12 @@ it.effect(
                 yield* hooks.beforeSpawn(plan);
                 order.push("spawn");
                 yield* hooks.afterSpawn({ ...plan, pid: 123 });
+                yield* emit({
+                  type: "output",
+                  threadId: input.threadId,
+                  terminalId: input.terminalId,
+                  data: "\x1b[?2004h",
+                });
                 return {
                   threadId: input.threadId,
                   terminalId: input.terminalId,
@@ -566,7 +618,7 @@ it.effect(
                 order.push("write");
                 assert.isDefined(token);
                 assert.isTrue(input.data.includes(`__T3_SETUP_DONE___${token}`));
-                yield* listener!({
+                yield* emit({
                   type: "output",
                   threadId: input.threadId,
                   terminalId: input.terminalId,
@@ -591,8 +643,10 @@ it.effect(
               }),
             subscribe: (callback) =>
               Effect.sync(() => {
-                listener = callback;
-                return () => undefined;
+                listeners.add(callback);
+                return () => {
+                  listeners.delete(callback);
+                };
               }),
             open: () => Effect.die("native setup must not use ordinary open"),
             write: () => Effect.die("native setup must not use ordinary write"),
@@ -612,6 +666,7 @@ it.effect(
           scripts: [script],
         },
         nativePreparation: {
+          lifetime: yield* Effect.scope,
           control,
           script,
           beforeSpawn: (plan) =>
@@ -639,6 +694,7 @@ it.effect(
       assert.equal(result.status, "started");
       if (result.status === "started") {
         assert.equal(result.terminalId, control.terminalId);
+        yield* result.writeCompletion;
         assert.equal((yield* result.completion!).exitCode, 0);
       }
       assert.deepEqual(order, [
@@ -649,6 +705,6 @@ it.effect(
         "write",
         "completion-proof",
       ]);
-    }).pipe(Effect.provide(layer));
+    }).pipe(Effect.scoped, Effect.provide(layer));
   },
 );
