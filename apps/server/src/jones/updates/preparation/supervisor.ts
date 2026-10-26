@@ -8,7 +8,11 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { ownedScratchRemover } from "../../cloud/ownedScratch.ts";
-import { withQualifiedRuntimeLock } from "../../cloud/qualifiedRuntime.ts";
+import {
+  readQualifiedRuntimeReceipt,
+  type QualifiedDigestOptions,
+  withQualifiedRuntimeLock,
+} from "../../cloud/qualifiedRuntime.ts";
 import {
   decodePreparationEvent,
   decodePreparationResult,
@@ -114,7 +118,12 @@ export const DEFAULT_PREPARATION_LIMITS: PreparationLimits = {
   heartbeatTimeoutMs: 60_000,
   graceMs: 30_000,
   reapMs: 10_000,
-  deadlineMs: { stage: 60 * 60_000, verify: 15 * 60_000, sweep: 5 * 60_000 },
+  deadlineMs: {
+    stage: 60 * 60_000,
+    verify: 15 * 60_000,
+    "verify-runtime": 15 * 60_000,
+    sweep: 5 * 60_000,
+  },
 };
 
 /** One finished worker, as observed by the parent. */
@@ -447,4 +456,44 @@ export function makePreparationSupervisor(options: {
     },
     sweep,
   };
+}
+
+/** Receipt misses run in the server's own worker; the serving loop never hashes payload content. */
+export function preparedVerificationOptions(
+  preparation: PreparationSupervisor | undefined,
+): QualifiedDigestOptions {
+  return {
+    mode: "receipt",
+    eventLoop: "shared",
+    fullVerification: async ({ baseDir, version, host }) => {
+      if (
+        preparation === undefined ||
+        (host.platform !== "linux" && host.platform !== "darwin") ||
+        (host.architecture !== "x64" && host.architecture !== "arm64")
+      )
+        throw new PreparationWorkerError("spawn-failed");
+      const outcome = await preparation.run({
+        kind: "verify-runtime",
+        baseDir,
+        version,
+        host: { platform: host.platform, architecture: host.architecture },
+      });
+      return outcome.receipt;
+    },
+  };
+}
+
+/** Caller supplies its existing same-build worker and queue, including during startup. */
+export function readPreparedRuntimeReceipt(
+  baseDir: string,
+  version: string,
+  host: { readonly platform: string; readonly architecture: string },
+  preparation: PreparationSupervisor | undefined,
+) {
+  return readQualifiedRuntimeReceipt(
+    baseDir,
+    version,
+    host,
+    preparedVerificationOptions(preparation),
+  );
 }

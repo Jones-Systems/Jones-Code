@@ -8,7 +8,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as ServerSecretStore from "../../../../auth/ServerSecretStore.ts";
-import migration from "../../../persistence/Migrations/124_JonesWorkstreamsNative.ts";
+import migration from "../../../persistence/Migrations/125_JonesWorkstreamsNative.ts";
 import * as KeyProvider from "../crypto/keyProvider.ts";
 import * as Envelope from "../crypto/envelope.ts";
 import * as IdentityIndex from "../crypto/identityIndex.ts";

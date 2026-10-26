@@ -7,7 +7,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { migrationManifest, runMigrations } from "../../../persistence/Migrations.ts";
 import { jonesMigrationEntries } from "../JonesMigrations.ts";
 import { runJonesMigrations } from "../JonesMigrationGuard.ts";
-import migration, { nativeTableNames } from "./124_JonesWorkstreamsNative.ts";
+import migration, { nativeTableNames } from "./125_JonesWorkstreamsNative.ts";
 
 const scope = { registry_instance_id: "registry", owner_id: "owner" };
 const hash = "a".repeat(64);
@@ -495,7 +495,7 @@ it.effect(
     }).pipe(Effect.provide(memory)),
 );
 
-it.effect("the real Jones loader applies 124 without changing upstream schema or its ledger", () =>
+it.effect("the real Jones loader applies 125 without changing upstream schema or its ledger", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* runMigrations({ toMigrationInclusive: migrationManifest.at(-1)![0] });
@@ -513,8 +513,8 @@ it.effect("the real Jones loader applies 124 without changing upstream schema or
       ).toEqual([object]);
     expect(yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`).toEqual(ledger);
     expect(
-      yield* sql`SELECT migration_id,name FROM jones_sql_migrations WHERE migration_id = 124`,
-    ).toEqual([{ migration_id: 124, name: "WorkstreamsNative" }]);
+      yield* sql`SELECT migration_id,name FROM jones_sql_migrations WHERE migration_id = 125`,
+    ).toEqual([{ migration_id: 125, name: "WorkstreamsNative" }]);
     for (const table of nativeTableNames)
       expect(yield* sql.unsafe(`PRAGMA foreign_key_list(${table})`)).toEqual([]);
   }).pipe(Effect.provide(memory)),

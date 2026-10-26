@@ -41,7 +41,7 @@ import {
   CodexSettings,
   ProviderInstanceId,
 } from "@t3tools/contracts";
-import { makeKeyedCoalescingWorker } from "@t3tools/shared/KeyedCoalescingWorker";
+import { makeTerminalHistoryWorker } from "../jones/terminal/TerminalHistoryWorker.ts";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -389,11 +389,6 @@ interface TerminalSessionState {
   legacyOwnedControl?: LegacyOwnedTerminalControl;
   legacyOwnedProcess?: PtyAdapter.PtyProcess;
   legacyExitObserved?: boolean;
-}
-
-interface PersistHistoryRequest {
-  history: BoundedTerminalHistory;
-  immediate: boolean;
 }
 
 type PendingProcessEvent =
@@ -1889,37 +1884,23 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     yield* registerKillFiber(process, fiber);
   });
 
-  const persistWorker = yield* makeKeyedCoalescingWorker<
-    string,
-    PersistHistoryRequest,
-    never,
-    never
-  >({
-    merge: (current, next) => ({
-      history: next.history,
-      immediate: current.immediate || next.immediate,
-    }),
-    process: Effect.fn("terminal.persistHistoryWorker")(function* (sessionKey, request) {
-      if (!request.immediate) {
-        yield* Effect.sleep(DEFAULT_PERSIST_DEBOUNCE_MS);
-      }
-
+  const persistWorker = yield* makeTerminalHistoryWorker<BoundedTerminalHistory>({
+    debounceMs: DEFAULT_PERSIST_DEBOUNCE_MS,
+    process: Effect.fn("terminal.persistHistoryWorker")(function* (sessionKey, history) {
       const [threadId, terminalId] = sessionKey.split("\u0000");
       if (!threadId || !terminalId) {
         return;
       }
 
-      yield* fileSystem
-        .writeFileString(historyPath(threadId, terminalId), request.history.value())
-        .pipe(
-          Effect.catch((error) =>
-            Effect.logWarning("failed to persist terminal history", {
-              threadId,
-              terminalId,
-              error,
-            }),
-          ),
-        );
+      yield* fileSystem.writeFileString(historyPath(threadId, terminalId), history.value()).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("failed to persist terminal history", {
+            threadId,
+            terminalId,
+            error,
+          }),
+        ),
+      );
     }),
   });
 

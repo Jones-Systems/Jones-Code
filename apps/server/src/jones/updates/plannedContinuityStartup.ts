@@ -2,6 +2,12 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as Effect from "effect/Effect";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import {
+  makePreparationSupervisor,
+  resolvePreparationWorkerCommand,
+  preparedVerificationOptions,
+} from "./preparation/supervisor.ts";
 import type { ServiceLauncherClient } from "../../cloud/serviceLauncherClient.ts";
 import { parseServiceState } from "../../cloud/serviceProtocol.ts";
 import { currentQualifiedRuntimeBinding } from "../cloud/qualifiedRuntime.ts";
@@ -30,6 +36,20 @@ export const activatePlannedUpdateContinuity = Effect.fn(
   )
     return;
   const version = input.launcher.currentVersion;
+  const command = resolvePreparationWorkerCommand({
+    isExecutable: yield* HostProcess.IsExecutable,
+    execPath: yield* HostProcess.ExecutablePath,
+    entryPath: (yield* HostProcess.Arguments)[1],
+  });
+  const preparation =
+    command === undefined
+      ? undefined
+      : makePreparationSupervisor({
+          baseDir: input.baseDir,
+          cacheRoot: NodePath.join(input.baseDir, "runtime", "jones-actions"),
+          command,
+          env: yield* HostProcess.Environment,
+        });
   const proof = yield* Effect.tryPromise({
     try: async (): Promise<PlannedUpdateProof> => {
       const baseDir = await NodeFSP.realpath(input.baseDir);
@@ -47,7 +67,12 @@ export const activatePlannedUpdateContinuity = Effect.fn(
       const native = await reconcileUpdateOperation(baseDir, outcome.id, update);
       if (native.state !== outcome.status)
         throw new Error("Native operation outcome is not proven.");
-      const current = await currentQualifiedRuntimeBinding(baseDir, version);
+      const current = await currentQualifiedRuntimeBinding(
+        baseDir,
+        version,
+        undefined,
+        preparedVerificationOptions(preparation),
+      );
       if (current.dbPath !== (await NodeFSP.realpath(input.dbPath)))
         throw new Error("Running database differs from planned update binding.");
       return {

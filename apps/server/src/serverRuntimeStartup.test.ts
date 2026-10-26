@@ -16,6 +16,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { HttpServer } from "effect/http";
 import * as NetAddress from "effect/net/NetAddress";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -74,6 +75,21 @@ it.effect.each([
       const existingId = ThreadId.make("bootstrap-existing-root");
       const subagentId = ThreadId.make("bootstrap-subagent");
       const queries: ThreadMetadataReads.ThreadMetadataQuery[] = [];
+      const metadataDefaults: Omit<ThreadMetadataReads.ThreadMetadata, "id" | "lineage"> = {
+        projectId,
+        branch: null,
+        worktreePath: null,
+        pullRequests: [],
+        archivedAt: null,
+        settledOverride: null,
+        settledAt: null,
+        createdAt: DateTime.makeUnsafe("2026-10-01T00:00:00Z"),
+        pinnedAt: null,
+        pinOrderKey: null,
+        deletedAt: null,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+      };
       let launchCalls = 0;
       const recovery = {
         terminalizedRuns: 0,
@@ -103,6 +119,7 @@ it.effect.each([
                   scenario === "existing-root" || scenario === "subagent-only"
                     ? [
                         {
+                          ...metadataDefaults,
                           id: subagentId,
                           lineage: {
                             parentThreadId: existingId,
@@ -113,6 +130,7 @@ it.effect.each([
                         ...(scenario === "existing-root"
                           ? [
                               {
+                                ...metadataDefaults,
                                 id: existingId,
                                 lineage: {
                                   parentThreadId: null,
