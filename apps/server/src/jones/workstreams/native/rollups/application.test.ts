@@ -533,9 +533,9 @@ it.effect(
 it.effect(
   "stores all protected text encrypted in SQLite and WAL, with no plaintext disk cache",
   () => {
-    const root = NodeFS.mkdtempSync(
-        NodePath.resolve(process.env.TMPDIR ?? "node_modules/.cache", "nw-j8-at-rest-"),
-      ),
+    const scratch = NodePath.resolve(process.env.TMPDIR ?? "node_modules/.cache");
+    NodeFS.mkdirSync(scratch, { recursive: true });
+    const root = NodeFS.mkdtempSync(NodePath.join(scratch, "nw-j8-at-rest-")),
       filename = NodePath.join(root, "state.sqlite");
     return Effect.gen(function* () {
       yield* publish;
@@ -727,9 +727,9 @@ it.effect("missing synthetic content keys fail closed on an already published su
 it.effect(
   "durable leases and unknown provider outcomes remain quarantined after database reopen",
   () => {
-    const root = NodeFS.mkdtempSync(
-        NodePath.resolve(process.env.TMPDIR ?? "node_modules/.cache", "nw-j8-reopen-"),
-      ),
+    const scratch = NodePath.resolve(process.env.TMPDIR ?? "node_modules/.cache");
+    NodeFS.mkdirSync(scratch, { recursive: true });
+    const root = NodeFS.mkdtempSync(NodePath.join(scratch, "nw-j8-reopen-")),
       filename = NodePath.join(root, "state.sqlite");
     return Effect.gen(function* () {
       const claim = yield* Effect.gen(function* () {

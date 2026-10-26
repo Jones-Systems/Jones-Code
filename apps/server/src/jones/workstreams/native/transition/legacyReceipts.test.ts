@@ -11,6 +11,7 @@ import {
 } from "@t3tools/contracts/jones/workstreamsLegacyReceipts";
 import vectors from "./fixtures/v1/vectors.json" with { type: "json" };
 import migration from "../../../persistence/Migrations/125_JonesWorkstreamsNative.ts";
+import rollupMigration from "../../../persistence/Migrations/127_JonesWorkstreamsRollupAttempts.ts";
 import { testLayer, pending } from "../store/sql.testkit.ts";
 import * as Receipts from "../store/receiptStore.ts";
 import * as Archive from "../store/archiveStore.ts";
@@ -39,6 +40,7 @@ const prepare = (
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* migration;
+    yield* rollupMigration;
     yield* sql`INSERT INTO jones_workstreams_keys(key_id,registry_instance_id,scope,state,created_at) VALUES ('synthetic-transition-key',${registry},'home','active','2026-10-25T12:00:00.000Z')`;
     const header = parseSnapshot(text).header;
     return yield* plan({
