@@ -364,7 +364,10 @@ describe("Jones Actions qualification", () => {
         reason: "unavailable",
       });
       expect(calls.filter((endpoint) => endpoint.startsWith(`${ROOT}/actions/runs/`))).toEqual([]);
-      expect(calls).toHaveLength(5);
+      expect(
+        calls.filter((endpoint) => endpoint.includes(`/actions/workflows/${workflow}/runs?`)),
+      ).toHaveLength(platform === "darwin" ? 6 : 3);
+      expect(calls).toHaveLength(platform === "darwin" ? 8 : 5);
     },
   );
   it("retains pending-build reporting for an installed-source rerun", async () => {
@@ -518,6 +521,393 @@ describe("Jones Actions qualification", () => {
   });
 });
 
+describe("Jones Actions bounded event discovery", () => {
+  async function discoveryFixture() {
+    const f = fixture({ platform: "darwin" });
+    const baseRun = (await f.transport.api(`${ROOT}/actions/runs/101`)) as Record<string, unknown>;
+    const ci = (await f.transport.api(`${ROOT}/actions/runs/99`)) as Record<string, unknown>;
+    const calls: string[] = [];
+    const run = (id: number, event: string, extra: Record<string, unknown> = {}) => ({
+      ...baseRun,
+      id,
+      event,
+      created_at: new Date(NOW + id * 1000).toISOString(),
+      ...extra,
+    });
+    const artifact = (id: number) => ({
+      ...f.artifact,
+      name: `desktop-mac-arm64-${id}-2--0.0.0-preview.20261002.${id}.2`,
+      workflow_run: { ...f.artifact.workflow_run, id },
+    });
+    const client = (api: JonesActionsTransport["api"]) =>
+      new JonesActionsClient({
+        now: () => NOW,
+        transport: {
+          ...f.transport,
+          async api(endpoint) {
+            calls.push(endpoint);
+            return api(endpoint);
+          },
+        },
+      });
+    const listing = (endpoint: string) =>
+      endpoint.includes("/actions/workflows/artifact-desktop-mac.yml/runs?");
+    return { f, ci, calls, run, artifact, client, listing };
+  }
+
+  it.each(["push", "schedule"])(
+    "finds a %s Mac build without spending its budget on 150 manual runs",
+    async (event) => {
+      const d = await discoveryFixture();
+      const accepted = fixture({ platform: "darwin", run: { event }, receipt: { event } });
+      expect((await check(accepted.client, "darwin")).state).toBe("available");
+      const client = d.client(async (endpoint) => {
+        if (d.listing(endpoint)) {
+          const query = new URLSearchParams(endpoint.split("?")[1]);
+          const page = Number(query.get("page"));
+          if (query.has("event"))
+            return { workflow_runs: query.get("event") === event ? [d.run(101, event)] : [] };
+          return {
+            workflow_runs:
+              page <= 3
+                ? Array.from({ length: 50 }, (_, index) =>
+                    d.run(1000 + page * 50 + index, "workflow_dispatch"),
+                  )
+                : [d.run(101, event)],
+          };
+        }
+        return accepted.transport.api(endpoint);
+      });
+      expect(await check(client, "darwin")).toMatchObject({
+        state: "available",
+        candidate: { runId: 101 },
+      });
+      expect(
+        d.calls
+          .filter(d.listing)
+          .map((endpoint) => new URLSearchParams(endpoint.split("?")[1]).get("event")),
+      ).toEqual(["push", "schedule"]);
+      expect(
+        d.calls.filter((endpoint) => /^repos\/.*\/actions\/runs\/\d+$/.test(endpoint)),
+      ).toEqual([`${ROOT}/actions/runs/101`]);
+    },
+  );
+
+  it.each(["push", "schedule"])(
+    "refills the %s page frontier before choosing an older build from the other event",
+    async (leadingEvent) => {
+      const d = await discoveryFixture();
+      const otherEvent = leadingEvent === "push" ? "schedule" : "push";
+      const client = d.client(async (endpoint) => {
+        if (d.listing(endpoint)) {
+          const query = new URLSearchParams(endpoint.split("?")[1]);
+          if (query.get("event") !== leadingEvent)
+            return { workflow_runs: [d.run(101, otherEvent)] };
+          return {
+            workflow_runs:
+              query.get("page") === "1"
+                ? Array.from({ length: 50 }, (_, index) =>
+                    d.run(300 - index, leadingEvent, { head_sha: OLD }),
+                  )
+                : [d.run(201, leadingEvent)],
+          };
+        }
+        if (endpoint === `${ROOT}/actions/runs/201`) return d.run(201, leadingEvent);
+        if (endpoint.includes("/actions/runs/201/artifacts?"))
+          return { artifacts: [d.artifact(201)] };
+        return d.f.transport.api(endpoint);
+      });
+      expect(await check(client, "darwin")).toMatchObject({
+        state: "available",
+        candidate: { runId: 201 },
+      });
+      expect(
+        d.calls.filter(d.listing).map((endpoint) => {
+          const query = new URLSearchParams(endpoint.split("?")[1]);
+          return [query.get("event"), query.get("page")];
+        }),
+      ).toEqual([
+        ["push", "1"],
+        ["schedule", "1"],
+        [leadingEvent, "2"],
+      ]);
+      expect(
+        d.calls.filter((endpoint) => /^repos\/.*\/actions\/runs\/\d+$/.test(endpoint)),
+      ).toEqual([`${ROOT}/actions/runs/201`]);
+    },
+  );
+
+  it.each([
+    ["2026-10-02T12:00:00Z", 102],
+    ["2026-10-02T11:00:00Z", 101],
+  ] as const)(
+    "orders event streams by creation time %s with run-ID ties, selecting %s",
+    async (scheduledAt, expectedRunId) => {
+      const d = await discoveryFixture();
+      const client = d.client(async (endpoint) => {
+        if (d.listing(endpoint)) {
+          const event = new URLSearchParams(endpoint.split("?")[1]).get("event")!;
+          return {
+            workflow_runs: [
+              d.run(event === "push" ? 101 : 102, event, {
+                created_at: event === "push" ? "2026-10-02T12:00:00Z" : scheduledAt,
+              }),
+            ],
+          };
+        }
+        if (endpoint === `${ROOT}/actions/runs/102`) return d.run(102, "schedule");
+        if (endpoint.includes("/actions/runs/102/artifacts?"))
+          return { artifacts: [d.artifact(102)] };
+        return d.f.transport.api(endpoint);
+      });
+      expect(await check(client, "darwin")).toMatchObject({
+        state: "available",
+        candidate: { runId: expectedRunId },
+      });
+    },
+  );
+
+  it("qualifies each run ID once across duplicate pages and event streams", async () => {
+    const d = await discoveryFixture();
+    const client = d.client(async (endpoint) => {
+      if (d.listing(endpoint)) {
+        const query = new URLSearchParams(endpoint.split("?")[1]);
+        if (query.get("event") === "schedule") return { workflow_runs: [d.run(110, "schedule")] };
+        return {
+          workflow_runs:
+            query.get("page") === "1"
+              ? Array.from({ length: 50 }, () => d.run(110, "push"))
+              : [d.run(110, "push"), d.run(101, "push")],
+        };
+      }
+      if (endpoint === `${ROOT}/actions/runs/110`) return d.run(110, "push");
+      if (endpoint.includes("/actions/runs/110/artifacts?")) return { artifacts: [] };
+      return d.f.transport.api(endpoint);
+    });
+    expect(await check(client, "darwin")).toMatchObject({
+      state: "available",
+      candidate: { runId: 101 },
+    });
+    expect(d.calls.filter((endpoint) => endpoint === `${ROOT}/actions/runs/110`)).toHaveLength(1);
+    expect(
+      d.calls.filter((endpoint) => endpoint.includes("/actions/runs/110/artifacts?")),
+    ).toHaveLength(1);
+    expect(
+      d.calls.filter((endpoint) => endpoint.includes("/actions/workflows/ci.yml/runs?")),
+    ).toHaveLength(1);
+  });
+
+  it.each([false, true])(
+    "keeps the exact target on all six bounded pages and preserves pending=%s at exhaustion",
+    async (pending) => {
+      const d = await discoveryFixture();
+      const client = d.client(async (endpoint) => {
+        if (d.listing(endpoint)) {
+          const query = new URLSearchParams(endpoint.split("?")[1]);
+          const page = Number(query.get("page"));
+          const event = query.get("event")!;
+          return {
+            workflow_runs: Array.from({ length: 50 }, (_, index) =>
+              d.run((event === "push" ? 2000 : 1000) - page * 50 - index, event, {
+                head_sha: index === 0 ? OLD : CURRENT,
+                status: pending && page === 3 && index === 49 ? "in_progress" : "completed",
+                conclusion: index === 0 ? "success" : "failure",
+              }),
+            ),
+          };
+        }
+        return d.f.transport.api(endpoint);
+      });
+      expect(
+        await client.check({
+          installedSource: OLD,
+          targetSource: CURRENT,
+          platform: "darwin",
+          architecture: "arm64",
+        }),
+      ).toEqual(
+        pending
+          ? { state: "building", retryAfterMs: 240000 }
+          : { state: "blocked", reason: "unavailable", retryAfterMs: 240000 },
+      );
+      const queries = d.calls
+        .filter(d.listing)
+        .map((endpoint) => new URLSearchParams(endpoint.split("?")[1]));
+      expect(queries.map((query) => [query.get("event"), query.get("page")])).toEqual([
+        ["push", "1"],
+        ["schedule", "1"],
+        ["push", "2"],
+        ["push", "3"],
+        ["schedule", "2"],
+        ["schedule", "3"],
+      ]);
+      for (const query of queries) {
+        expect(query.get("branch")).toBe("main");
+        expect(query.get("head_sha")).toBe(CURRENT);
+      }
+      expect(d.calls.some((endpoint) => endpoint.startsWith(`${ROOT}/actions/runs/`))).toBe(false);
+    },
+  );
+
+  it("refuses manual runs even if an event-filtered response includes them", async () => {
+    const d = await discoveryFixture();
+    const client = d.client(async (endpoint) =>
+      d.listing(endpoint)
+        ? {
+            workflow_runs: [
+              d.run(101, "workflow_dispatch"),
+              d.run(102, "workflow_dispatch", { status: "in_progress" }),
+            ],
+          }
+        : d.f.transport.api(endpoint),
+    );
+    expect(await check(client, "darwin")).toMatchObject({
+      state: "blocked",
+      reason: "unavailable",
+    });
+    expect(
+      d.calls.some(
+        (endpoint) =>
+          endpoint.startsWith(`${ROOT}/actions/runs/`) || endpoint.includes("/ci.yml/runs?"),
+      ),
+    ).toBe(false);
+  });
+
+  it("shares source CI within one check and refreshes success, missing, pending and errors between checks", async () => {
+    const d = await discoveryFixture();
+    let observation = "success";
+    let liveArtifact = false;
+    const client = d.client(async (endpoint) => {
+      if (d.listing(endpoint)) {
+        const event = new URLSearchParams(endpoint.split("?")[1]).get("event")!;
+        return { workflow_runs: [d.run(event === "push" ? 102 : 101, event)] };
+      }
+      if (endpoint === `${ROOT}/actions/runs/102`) return d.run(102, "push");
+      if (endpoint.includes("/actions/workflows/ci.yml/runs?")) {
+        if (observation === "error") throw new JonesActionsError("rate-limited");
+        return {
+          workflow_runs:
+            observation === "missing"
+              ? []
+              : [
+                  {
+                    ...d.ci,
+                    ...(observation === "pending"
+                      ? { status: "in_progress", conclusion: null }
+                      : {}),
+                  },
+                ],
+        };
+      }
+      if (/\/actions\/runs\/10[12]\/artifacts\?/.test(endpoint))
+        return { artifacts: liveArtifact ? [d.artifact(102)] : [] };
+      return d.f.transport.api(endpoint);
+    });
+    for (const state of ["success", "pending", "missing", "error", "success"]) {
+      observation = state;
+      d.calls.splice(0);
+      const result = await check(client, "darwin");
+      expect(result).toMatchObject(
+        state === "pending" || state === "missing"
+          ? { state: "building" }
+          : { state: "blocked", reason: state === "error" ? "rate-limited" : "unavailable" },
+      );
+      expect(
+        d.calls.filter((endpoint) => endpoint.includes("/actions/workflows/ci.yml/runs?")),
+      ).toEqual([
+        `${ROOT}/actions/workflows/ci.yml/runs?branch=main&event=push&head_sha=${CURRENT}&per_page=100&page=1`,
+      ]);
+      expect(d.calls.filter((endpoint) => endpoint.includes("/artifacts?"))).toHaveLength(
+        state === "success" ? 2 : 0,
+      );
+    }
+    liveArtifact = true;
+    expect(await check(client, "darwin")).toMatchObject({
+      state: "available",
+      candidate: { runId: 102 },
+    });
+  });
+
+  it("keeps different sources' CI observations separate within the same check", async () => {
+    const d = await discoveryFixture();
+    const other = "d".repeat(40);
+    const client = d.client(async (endpoint) => {
+      if (d.listing(endpoint)) {
+        const event = new URLSearchParams(endpoint.split("?")[1]).get("event")!;
+        return {
+          workflow_runs: [
+            event === "push" ? d.run(102, event, { head_sha: other }) : d.run(101, event),
+          ],
+        };
+      }
+      if (endpoint === `${ROOT}/actions/runs/102`) return d.run(102, "push", { head_sha: other });
+      if (endpoint === `${ROOT}/compare/${OLD}...${other}?per_page=1`)
+        return { status: "ahead", merge_base_commit: { sha: OLD } };
+      if (endpoint === `${ROOT}/compare/${other}...${CURRENT}?per_page=1`)
+        return { status: "ahead", merge_base_commit: { sha: other } };
+      if (
+        endpoint.includes("/actions/workflows/ci.yml/runs?") &&
+        endpoint.includes(`head_sha=${other}`)
+      )
+        return {
+          workflow_runs: [
+            { ...d.ci, id: 199, head_sha: other, status: "in_progress", conclusion: null },
+          ],
+        };
+      return d.f.transport.api(endpoint);
+    });
+    expect(await check(client, "darwin")).toMatchObject({
+      state: "available",
+      candidate: { runId: 101, source: CURRENT, ciRunId: 99 },
+    });
+    expect(
+      d.calls.filter((endpoint) => endpoint.includes("/actions/workflows/ci.yml/runs?")),
+    ).toEqual(
+      [other, CURRENT].map(
+        (source) =>
+          `${ROOT}/actions/workflows/ci.yml/runs?branch=main&event=push&head_sha=${source}&per_page=100&page=1`,
+      ),
+    );
+    expect(d.calls.some((endpoint) => endpoint.includes("/actions/runs/102/artifacts?"))).toBe(
+      false,
+    );
+  });
+
+  it("refreshes the candidate's exact CI run at stage time after a successful check", async () => {
+    const f = fixture();
+    let pending = false;
+    let downloads = 0;
+    const client = new JonesActionsClient({
+      now: () => NOW,
+      transport: {
+        ...f.transport,
+        async api(endpoint) {
+          const result = await f.transport.api(endpoint);
+          return endpoint === `${ROOT}/actions/runs/99` && pending
+            ? { ...(result as object), status: "in_progress", conclusion: null }
+            : result;
+        },
+        async download(id, destination) {
+          downloads++;
+          await f.transport.download(id, destination);
+        },
+      },
+    });
+    const candidate = await available(client);
+    pending = true;
+    const root = await cache();
+    await expect(client.stage(candidate, root)).rejects.toMatchObject({ reason: "unqualified" });
+    expect(downloads).toBe(0);
+    pending = false;
+    expect((await client.stage(candidate, root)).candidate).toEqual(candidate);
+    expect(downloads).toBe(1);
+    expect(f.calls.filter((endpoint) => endpoint === `${ROOT}/actions/runs/99`)).toHaveLength(2);
+    expect(
+      f.calls.filter((endpoint) => endpoint.includes("/actions/workflows/ci.yml/runs?")),
+    ).toHaveLength(1);
+  });
+});
+
 describe("Jones Actions ancestry memo", () => {
   const compareOf = (calls: readonly string[]) =>
     calls.filter((call) => call.includes("/compare/"));
@@ -646,9 +1036,11 @@ describe("Jones desktop producer events", () => {
       expect(
         await validateJonesStagedArtifact(NodePath.dirname(staged.payloadPath), candidate),
       ).toEqual(staged);
-      expect(f.calls.find((call) => call.includes("artifact-desktop-mac.yml/runs?"))).not.toContain(
-        "event=",
-      );
+      expect(
+        f.calls
+          .filter((call) => call.includes("artifact-desktop-mac.yml/runs?"))
+          .map((call) => new URLSearchParams(call.split("?")[1]).get("event")),
+      ).toEqual(["push", "schedule"]);
       expect(f.calls.find((call) => call.includes("ci.yml/runs?"))).toContain(
         `event=push&head_sha=${CURRENT}`,
       );

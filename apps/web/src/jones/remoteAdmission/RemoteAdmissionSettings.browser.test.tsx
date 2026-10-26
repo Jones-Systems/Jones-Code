@@ -29,9 +29,12 @@ vi.mock("../../state/server", () => ({ EMPTY_SERVER_PROVIDERS: [] }));
 vi.mock("../../hooks/useSettings", () => ({
   useEnvironmentSettings: () => ({
     ...DEFAULT_UNIFIED_SETTINGS,
-    providerInstances: {
-      [instanceId]: { driver: ProviderDriverKind.make("codex"), enabled: true },
-    },
+    providerInstances: Object.fromEntries(
+      providers.map((entry) => [
+        entry.instanceId,
+        { driver: entry.driver, enabled: entry.enabled },
+      ]),
+    ),
   }),
 }));
 vi.mock("../../components/chat/ProviderModelPicker", () => ({
@@ -87,8 +90,8 @@ vi.mock("../../components/chat/TraitsPicker", () => ({
 const instanceId = ProviderInstanceId.make("synthetic-codex");
 let environmentId: EnvironmentId;
 let providerDataKnown: boolean;
-let providers: readonly (ServerProvider & { supportsRemoteRequestEvaluation?: boolean })[];
-const provider: ServerProvider & { supportsRemoteRequestEvaluation?: boolean } = {
+let providers: readonly ServerProvider[];
+const provider: ServerProvider = {
   instanceId,
   driver: ProviderDriverKind.make("codex"),
   displayName: "Synthetic Codex account",
@@ -391,7 +394,7 @@ it("explains unavailable owner controls on hover and focus and guards keyboard a
   expect(request).toHaveBeenCalledTimes(1);
 });
 
-it("explains the CLI Codex limitation without offering its unsupported integration", async () => {
+it("explains missing remote evaluation support without inferring an integration or offering it", async () => {
   using fixture = setup("settings-cli-explanation");
   providers = [{ ...provider, supportsRemoteRequestEvaluation: false }];
   request.mockResolvedValue({
@@ -400,14 +403,117 @@ it("explains the CLI Codex limitation without offering its unsupported integrati
   });
   await using screen = await render(<RemoteAdmissionSettings environmentId={environmentId} />);
   expect(screen.container.textContent).toContain(
-    "This Codex CLI integration cannot disable all task tools",
+    "Only provider instances that advertise tool-free remote evaluation can be selected.",
   );
-  expect(screen.container.textContent).toContain("Managed Codex (ChatGPT authorization)");
-  expect(screen.container.textContent).toContain("qualified Claude integrations");
+  expect(screen.container.textContent).toContain("Does not advertise remote evaluation support.");
+  expect(screen.container.textContent).not.toContain("This Codex CLI integration");
+  expect(screen.container.textContent).not.toContain("Managed Codex (ChatGPT authorization)");
+  expect(screen.container.textContent).not.toContain("qualified Claude integrations");
   expect(screen.container.textContent).toContain(
     "No providers advertise remote evaluation support",
   );
   expect(screen.container.querySelector('[aria-label="Evaluator model"]')).toBeNull();
   await act(async () => button(screen.container, "Save model").click());
   expect(request).toHaveBeenCalledTimes(1);
+});
+
+it("lists only rejected instances with their first snapshot-supported reason once provider data is known", async () => {
+  using fixture = setup("settings-instance-reasons");
+  const cases: readonly [string, Partial<ServerProvider>, string][] = [
+    [
+      "Plain Codex",
+      {
+        supportsRemoteRequestEvaluation: false,
+        availability: "unavailable",
+        unavailableReason: "Lower priority unavailable reason",
+        enabled: false,
+        installed: false,
+      },
+      "Does not advertise remote evaluation support.",
+    ],
+    [
+      "Unqualified Claude",
+      { driver: ProviderDriverKind.make("claudeAgent"), supportsRemoteRequestEvaluation: false },
+      "Does not advertise remote evaluation support.",
+    ],
+    [
+      "Older instance",
+      { supportsRemoteRequestEvaluation: undefined },
+      "Does not advertise remote evaluation support.",
+    ],
+    [
+      "Unavailable instance",
+      {
+        availability: "unavailable",
+        unavailableReason: "Reported instance is unavailable.",
+        installed: false,
+        enabled: false,
+      },
+      "Unavailable. Reported instance is unavailable.",
+    ],
+    [
+      "Unavailable without detail",
+      { availability: "unavailable", installed: false, enabled: false },
+      "Unavailable.",
+    ],
+    [
+      "Disabled instance",
+      {
+        enabled: false,
+        auth: { status: "unauthenticated" },
+        status: "disabled",
+        message: "Lower priority sign-in reason",
+      },
+      "Not enabled.",
+    ],
+    [
+      "Managed Codex",
+      {
+        auth: { status: "unauthenticated" },
+        status: "warning",
+        message: "Sign in with ChatGPT to use Codex.",
+      },
+      "Not signed in. Sign in with ChatGPT to use Codex.",
+    ],
+    [
+      "Signed out without detail",
+      { auth: { status: "unauthenticated" }, status: "warning" },
+      "Not signed in.",
+    ],
+    [
+      "Not ready instance",
+      { status: "error", message: "Reported probe failed.", models: [] },
+      "Status: error. Reported probe failed.",
+    ],
+    ["Not ready without detail", { status: "warning" }, "Status: warning."],
+    ["No model instance", { models: [] }, "No available models reported."],
+  ];
+  providers = [
+    provider,
+    ...cases.map(([name, overrides]) => ({
+      ...provider,
+      instanceId: ProviderInstanceId.make(name.toLowerCase().replaceAll(" ", "-")),
+      displayName: name,
+      ...overrides,
+    })),
+  ];
+  providerDataKnown = false;
+  await using screen = await render(<RemoteAdmissionSettings environmentId={environmentId} />);
+  const list = () =>
+    screen.container.querySelector(
+      '[aria-label="Provider instances unavailable for remote evaluation"]',
+    );
+  expect(list()).toBeNull();
+  providerDataKnown = true;
+  await fixture.poll();
+  const rows = [...list()!.querySelectorAll("li")].map((row) => row.textContent);
+  expect(rows).toHaveLength(cases.length);
+  for (const [name, , reason] of cases) {
+    expect(rows).toContain(`${name} · ${name.toLowerCase().replaceAll(" ", "-")}: ${reason}`);
+  }
+  expect(list()!.textContent).not.toContain("Synthetic Codex account");
+  expect(screen.container.textContent).not.toContain("This Codex CLI integration");
+  providerDataKnown = false;
+  await fixture.poll();
+  expect(list()).toBeNull();
 });
