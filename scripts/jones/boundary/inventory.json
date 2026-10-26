@@ -7,6 +7,15 @@
   },
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "paths": {
+    "apps/web/src/jones/composer/ComposerQuickControls.tsx": "jones-owned",
+    "apps/web/src/jones/composer/ComposerQuickControls.browser.test.tsx": "jones-owned",
+    "scripts/jones/boundary/fragments/composer-quick-controls.json": "jones-owned",
+    "apps/server/src/jones/device/xcodeReadiness.ts": "jones-owned",
+    "apps/server/src/jones/device/xcodeReadiness.test.ts": "jones-owned",
+    "apps/server/src/jones/device/sshXcodeReadiness.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/xcode-device-readiness.json": "jones-owned",
+    "apps/server/src/device/LocalDeviceHost.ts": "accepted-shared",
+    "apps/server/src/device/LocalDeviceHost.test.ts": "jones-tests-in-upstream",
     "apps/desktop/src/updates/DesktopUpdates.test.ts": "jones-tests-in-upstream",
     "scripts/jones/incremental-typecheck/cli.ts": "jones-owned",
     "scripts/jones/incremental-typecheck/incrementalTypecheck.ts": "jones-owned",
@@ -1699,6 +1708,9 @@
     "packages/provider-core/src/server/jones/ShellDestinationInstructions.test.ts": "jones-owned",
     "scripts/jones/boundary/fragments/shell-destination.json": "jones-owned",
     "apps/web/src/components/ThreadTerminalDrawer.tsx": "hook",
+    "apps/web/src/components/chat/MessageCopyButton.tsx": "accepted-shared",
+    "apps/web/src/terminal/ghostty/core.ts": "accepted-shared",
+    "apps/web/src/terminal/ghostty/surface.ts": "accepted-shared",
     "apps/web/src/jones/shellDestination/terminalAttachment.browser.test.tsx": "jones-owned",
     "apps/web/src/components/chat/ThreadActivityBanners.browser.test.tsx": "jones-tests-in-upstream",
     "apps/web/src/components/chat/TimelineAssistantRows.tsx": "hook",
@@ -2112,7 +2124,41 @@
     "scripts/jones/boundary/fragments/shell-publication-batching.json": "jones-owned",
     "packages/client-runtime/src/jones/shellPublication/batchedPublication.test.ts": "jones-owned",
     "packages/client-runtime/src/jones/shellPublication/batchedPublication.ts": "jones-owned",
-    "packages/client-runtime/src/jones/shellPublication/shellPublication.test.ts": "jones-owned"
+    "packages/client-runtime/src/jones/shellPublication/shellPublication.test.ts": "jones-owned",
+    "apps/server/src/jones/codexFailover/CodexFailover.test.ts": "jones-owned",
+    "apps/server/src/jones/codexFailover/CodexFailover.ts": "jones-owned",
+    "apps/server/src/jones/codexFailover/CodexFailoverAdmission.test.ts": "jones-owned",
+    "apps/server/src/jones/codexFailover/CodexFailoverAdmission.ts": "jones-owned",
+    "apps/server/src/jones/codexFailover/CodexFailoverEligibility.test.ts": "jones-owned",
+    "apps/server/src/jones/codexFailover/CodexFailoverEligibility.ts": "jones-owned",
+    "apps/server/src/jones/codexFailover/CodexFailoverEvidence.adapter.test.ts": "jones-owned",
+    "apps/server/src/jones/codexFailover/CodexFailoverNativeEvidence.test.ts": "jones-owned",
+    "apps/server/src/jones/codexFailover/CodexFailoverNativeEvidence.ts": "jones-owned",
+    "apps/server/src/jones/threadConfiguration/selectionAdmission.ts": "jones-owned",
+    "apps/server/src/jones/threadConfiguration/selectionAdmission.test.ts": "jones-owned",
+    "apps/server/src/jones/codexFailover/CodexFailover.integration.test.ts": "jones-owned",
+    "apps/server/src/jones/codexFailover/CodexFailoverEvidence.ts": "jones-owned",
+    "apps/server/src/jones/codexFailover/CodexFailoverEvidence.test.ts": "jones-owned",
+    "apps/server/src/jones/persistence/Migrations/129_JonesCodexFailover.ts": "jones-owned",
+    "apps/server/src/jones/codexFailover/CodexFailoverStore.ts": "jones-owned",
+    "apps/server/src/jones/codexFailover/CodexFailoverStore.test.ts": "jones-owned",
+    "apps/server/src/jones/persistence/Migrations/129_JonesCodexFailover.test.ts": "jones-owned",
+    "apps/server/src/jones/provider/codex/CodexFailoverFailure.ts": "jones-owned",
+    "apps/server/src/jones/provider/codex/CodexFailoverFailure.test.ts": "jones-owned",
+    "apps/server/src/jones/provider/codex/CodexFailoverSelection.ts": "jones-owned",
+    "apps/server/src/jones/provider/codex/CodexFailoverSelection.test.ts": "jones-owned",
+    "apps/server/src/jones/provider/codex/CodexFailoverPeer.integration.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/codex-failover.json": "jones-owned",
+    "scripts/jones/e2e/codex-failover/peer.mjs": "jones-owned",
+    "scripts/jones/ci/codex-failover.node-test.mjs": "jones-owned",
+    "apps/mobile/src/jones/threadConfiguration/modelSelection.ts": "jones-owned",
+    "apps/mobile/src/jones/threadConfiguration/queuedFollowUp.ts": "jones-owned",
+    "apps/mobile/src/state/use-composer-drafts.ts": "hook",
+    "apps/mobile/src/state/use-composer-drafts.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/codexFailover/CodexFailoverLineage.ts": "jones-owned",
+    "apps/server/src/jones/taskContinuation/provenance.ts": "jones-owned",
+    "apps/server/src/jones/taskContinuation/provenance.test.ts": "jones-owned",
+    "packages/contracts/src/jones/delegatedTaskNativeSession.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -2207,6 +2253,18 @@
     "scripts/jones/boundary/fragments/experimental-typecheck.json"
   ],
   "allowedImports": [
+    {
+      "from": "apps/server/src/device/LocalDeviceHost.ts",
+      "to": "apps/server/src/jones/device/xcodeReadiness.ts"
+    },
+    {
+      "from": "apps/server/src/device/DeviceService.ts",
+      "to": "apps/server/src/jones/device/xcodeReadiness.ts"
+    },
+    {
+      "from": "apps/server/src/device/sshDeviceScript.ts",
+      "to": "apps/server/src/jones/device/xcodeReadiness.ts"
+    },
     {
       "from": "apps/server/src/config.ts",
       "to": "apps/server/src/jones/workspaceLifecycle/Configuration.ts"
