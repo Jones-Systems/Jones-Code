@@ -6,13 +6,10 @@ import { serverEnvironment } from "../../state/server";
 import { useEvaluatorProviders } from "./useEvaluatorProviders";
 
 vi.mock("../../state/server", async () => {
-  const Atom = await import("effect/unstable/reactivity/Atom");
+  const { Atom } = await import("effect/reactivity");
   const Stream = await import("effect/Stream");
   const projection = Atom.make(
-    Stream.concat(
-      Stream.make({ source: "live", config: { providers: [] } }),
-      Stream.never,
-    ),
+    Stream.concat(Stream.make({ source: "live", config: { providers: [] } }), Stream.never),
   );
   return { serverEnvironment: { configProjection: () => projection } };
 });
