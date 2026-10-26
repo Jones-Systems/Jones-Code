@@ -1,5 +1,9 @@
 # Workstreams activation
 
+This page describes legacy Control Plane activation. See
+[native Workstreams](./workstreams-native.md) for the explicit native home and key
+provider contract. Selecting native mode does not reuse legacy enrollment.
+
 The server reads one activation snapshot at startup for both Workstreams and
 registration-context requests. Existing shell/environment configuration remains
 supported: if any required activation variable or the optional registration

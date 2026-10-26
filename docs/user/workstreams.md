@@ -16,6 +16,12 @@ Assigning through the thread menu preserves its repository, project, pinning, sn
 
 If a thread menu cannot check access, it shows that status and attempts a bounded fresh check when opened. **Refresh** also rechecks access for the relevant connected environments. Signing out or lacking thread-operation permission keeps the actions disabled. A verification failure can include a specific source, build or generation mismatch; that environment must be current before assignment can proceed. While a change is saving or reconciling, the thread stays in its last confirmed group. Reopening the app resumes observation. Use **Retry** after an unavailable result or lost reply; the app retains the same request so creation is not duplicated. If another change moved the thread, the picker shows its observed placement and requires an explicit retry. Older servers keep the receipt-based Refresh flow.
 
+A server can use a Jones-owned native registry with one home for your Workstreams.
+The thread's environment still checks access and verifies its identity. If the
+home or source is unavailable, retain the operation ID and repair the reported
+connection before retrying. Refresh observes the result; it does not create a
+registry, change its home or enroll a source.
+
 Settings → **Jones Code** → **Workstreams setup** shows read-only diagnosis and links to the relevant setup guide. It distinguishes missing configuration, offline registry access and native source availability; Refresh does not configure, enroll or authenticate a server. Older servers may not support this diagnosis.
 
 If the app reports that its build is not enrolled for Workstreams, the Workstreams connection still identifies a different app build. This can happen after an update. The connection needs to be renewed for the running build before either dragging or **Assign thread** can work. **Refresh** checks whether that repair has finished; it does not renew the connection itself. The message is about the app connection, rather than access to a particular Workstream.
