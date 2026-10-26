@@ -100,9 +100,10 @@ without accepting it. The launcher records such an operation as `rejected`: befo
 it answers the refusing request, before another request or stage retirement, and at
 startup. A rejected operation never starts and does not block the next one. Receipts
 are published whole, through an exclusive hard link from a temporary file. A failed
-outcome, or a receipt store that is malformed, unreadable or over 4,096 entries,
-still blocks any further replacement until reconciled. Readback of an operation and
-observation of the currently installed source are separate checks.
+outcome without a valid no-effect settlement blocks further replacement. A
+malformed, unreadable or over-4,096-entry receipt store also refuses replacement.
+Readback of an operation and observation of the currently installed source are
+separate checks.
 
 A timeout or missing reply proves nothing about a handoff: the launcher can still
 be finishing the reservation's durability writes when the server stops waiting.
@@ -123,6 +124,32 @@ the client commits that token only after receiving it. Otherwise backend shutdow
 could lose the only successful RPC result. The client must then observe the
 prepared version after reconnecting. If installation fails, desktop restarts the
 stopped backends and replays the failure for the same token.
+
+## Settling failed attempts
+
+A failed attempt remains failed. A digest-bound `launcher-recorded` or
+`legacy-reconciled` no-effect settlement can permit a **new** attempt; it never
+reuses the old ID or rewrites its outcome. Settlement and bounded, redacted cause
+evidence live beside the [operation ledger](../../apps/server/src/jones/updates/launcherOperation.ts),
+so older receipt readers and historical `reconciliation.state` retain their
+meaning. A rolled-back trial and an unknown handoff are not no-effect evidence.
+
+For a proved pre-trial failure, launcher recovery records the failed outcome,
+removes only its owned pre-trial recovery payload, publishes settlement, then
+records native failure. Interrupted recovery repeats these steps idempotently
+under the same ownership checks. Restore evidence or uncertain state keeps the
+attempt held; settlement is not a shortcut around rollback.
+
+The client offers **Reconcile** only for an unsettled attempt with an ID and a
+launcher advertising `updateSettlementProtocol: 1`. The
+[reconciliation endpoint](../../apps/server/src/jones/updates/http.ts),
+`/api/jones-updates/reconcile`, requires `orchestration:operate`; its typed refusals distinguish missing records,
+changed active state, trial or restore evidence, and failure to save settlement.
+Without launcher support, the client recommends a launcher refresh rather than
+performing one. Retired attempts use the separate operator-only
+`/api/jones-updates/record-retired` endpoint requiring `environment:maintain`, not the normal UI. Its
+`retired-exception` tombstone binds the retained retirement evidence and reserves
+the old ID permanently. Deleting a receipt would destroy that replay protection.
 
 ## Admission fence
 
@@ -192,9 +219,13 @@ the lowest scheduling priority; that is not a CPU cap.
 The parent never trusts the worker's report on its own. It
 [rereads](../../apps/server/src/jones/updates/preparation/rebind.ts) the bounded
 durable stage receipt, requires it to equal that report, and checks the receipt's
-home, database, active runtime and candidate provenance. Tree hashes stay in the
-worker: Install verifies the stage again in a verify job, and the launcher verifies
-it again at activation. Staging refuses a Linux candidate that cannot answer
+home, database, active runtime and candidate provenance. A matching qualified
+verification receipt, metadata fingerprint and ownership binding allow receipt-mode
+verification without repeating the full payload hash. A miss or changed fingerprint
+requires full verification; a serving caller delegates that work to its same-build
+worker. This is not a general cache bypass: staging still detects copy or tamper
+changes, and the launcher fully verifies the candidate at activation. Staging
+refuses a Linux candidate that cannot answer
 `__jones-preparation-worker --protocol`, since an installed host could not prepare
 its next update without it. Darwin candidates are never launched while staging, so
 only the desktop artifact smoke proves their packaged worker.
@@ -208,6 +239,21 @@ at startup and after every failed job removes what a killed worker left. It take
 a job directory only when its owner lock is free, and it also removes unpublished
 Actions attempts and abandoned `.jones-stage-*` runtime copies. It keeps only the
 two newest completed downloads, so failing candidates do not accumulate.
+
+### Verification cost evidence
+
+[Verification receipts](../../apps/server/src/jones/cloud/qualifiedRuntime.ts)
+at `runtime/jones-verification/<version>.json` bind the matching fingerprint and
+receipt to staging timing. Timing distinguishes the executing role, file and byte
+counts, wall time, process CPU, result and event-loop delay; dedicated workers
+report no event-loop delay (`null`). These observations explain where work ran;
+they do not establish a fixed speedup or number of saved hashes.
+
+The in-process timing ring holds 32 records. The launcher also emits JSON timing
+to stderr and exclusively creates `runtime/jones-update-timing/<operationId>.json`,
+retaining the newest 64 files. A timing-write failure must not replace the original
+error or turn an already committed update into a failure. These diagnostics do not
+change database backup receipts.
 
 ## Desktop background preparation
 
@@ -229,6 +275,36 @@ preparation names it, and it removes the completion index before the tree. Two
 unremoved handles pause replacement with a visible reason while the prepared build
 stays installable. A hard kill can leave an unindexed attempt that nothing reuses or
 sweeps.
+
+## Desktop activation and startup refusal
+
+A helper failure proved to precede state pairing and app swap can return
+`rolled-back` with `preEffect` evidence: the original app and state are unchanged.
+This is distinct from rollback after a trial. Relaunching the previous app is safe
+only after every recorded process is proved exited within the 30-second bound;
+otherwise relaunch is skipped. An uncertain exit cannot authorize a second writer.
+
+[Native startup](../../apps/desktop/src/jones/updates/jonesNativeStartup.ts)
+checks the [writer fence](../../packages/shared/src/jones/nativeWriterFence.ts)
+before opening application state. Refusals carry a code and, when known, a
+transaction ID. For an exactly settleable interrupted activation, startup
+synchronously materializes the **current app's** embedded helper using its
+hash-derived filename, exclusive creation and file/directory durability. It invokes
+`--settle-interrupted-activation` once; the helper owns the nonblocking activation
+lock and compare-and-swap checks. Only a closed protocol-1 `settled` result permits
+one fresh fence check.
+
+This journal-only settlement requires matching manifest and transaction evidence
+in intent/preparing/quiescent state, or a matching intent alone, before any state
+pairing or app swap. Trial, cold, paired, swapped, blocked, legacy and unknown states
+are not eligible. A valid candidate trial or later paired rollback still follows
+its existing path. No automatic broad repair or artifact deletion is implied.
+
+If the fence still refuses, startup reports **Jones Code could not start safely**
+with the code, optional transaction ID and the
+[user recovery reference](../user/updating.md#if-an-update-fails), preserves the
+bounded stderr diagnostic and exits with status 1 before opening state, even if
+dialog reporting fails.
 
 ## Recovering interrupted threads
 
