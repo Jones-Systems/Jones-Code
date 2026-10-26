@@ -1,6 +1,8 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
+  CommandId,
+  ProviderTurnId,
   RunId,
   RuntimeRequestId,
   type OrchestrationV2RuntimeRequest,
@@ -26,6 +28,7 @@ import * as Threads from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Harness from "../../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import { TaskContinuationCommit } from "./commitContext.ts";
 import { TaskContinuationError } from "./sourceBinding.ts";
+import { requirementFor } from "./guard.ts";
 import * as Continuation from "./TaskContinuation.ts";
 import * as Store from "./TaskContinuationStore.ts";
 import { fixture } from "./testkit.ts";
@@ -102,6 +105,7 @@ const scenario = <E>(
             f.event("run.created", f.child.thread.id, f.run),
             f.event("run-attempt.created", f.child.thread.id, f.attempt),
             f.event("provider-turn.updated", f.child.thread.id, f.child.providerTurns[0]!),
+            f.event("context-transfer.created", f.child.thread.id, f.child.contextTransfers[0]!),
           ],
         });
         let dispatches = 0;
@@ -150,11 +154,11 @@ const scenario = <E>(
                   ]);
                   const task = parent.subagents.find((task) => task.id === taskId)!;
                   assert.isDefined(task);
-                  const child = yield* projections.getThreadRecords(f.child.thread.id, ["runs"]);
+                  const child = yield* projections.getThreadRecords(task.childThreadId!, ["runs"]);
                   const run = child.runs.findLast((run) => run.delegatedTaskId === taskId)!;
                   return {
                     taskId,
-                    childThreadId: f.child.thread.id,
+                    childThreadId: task.childThreadId,
                     childRunId: run.id,
                     childNodeId: taskId,
                     status: task.result === null ? ("running" as const) : ("completed" as const),
@@ -201,6 +205,7 @@ it.effect("accepts one new task in the same child and replays before mutable idl
       assert.notEqual(first.taskId, f.task.id);
       assert.equal(first.childThreadId, f.child.thread.id);
       assert.equal(first.continuation.nativeSessionId, "original-native");
+      assert.equal(first.continuation.sourceAttemptId, f.attempt.id);
       assert.equal(first.continuation.verification, "pending");
       // The admitted run makes the child busy; replay still returns the committed task.
       const replay = yield* service.continue(
@@ -227,6 +232,188 @@ it.effect("accepts one new task in the same child and replays before mutable idl
       assert.equal(dispatchCount(), 1);
     }),
   ),
+);
+
+it.effect(
+  "continues a real untagged delegate launch and its tagged follow-up without changing the native conversation",
+  () =>
+    scenario("production-launch", ({ f, dispatchCount }) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const sink = yield* Sink.EventSinkV2;
+        const projections = yield* Projections.ProjectionStoreV2;
+        const service = yield* Continuation.TaskContinuation;
+        const store = yield* Store.TaskContinuationStore;
+        const parentRun = f.parent.runs[0]!;
+        yield* sink.write({
+          events: [
+            f.event("node.updated", f.parent.thread.id, {
+              id: parentRun.rootNodeId!,
+              threadId: f.parent.thread.id,
+              runId: parentRun.id,
+              parentNodeId: null,
+              rootNodeId: parentRun.rootNodeId!,
+              kind: "root_turn",
+              status: "running",
+              countsForRun: true,
+              providerThreadId: null,
+              providerTurnId: null,
+              nativeItemRef: null,
+              runtimeRequestId: null,
+              checkpointScopeId: null,
+              startedAt: f.now,
+              completedAt: null,
+            }),
+          ],
+        });
+        yield* orchestrator.dispatch({
+          type: "delegated_task.request",
+          commandId: CommandId.make("production-launch"),
+          createdBy: "agent",
+          creationSource: "mcp",
+          parentThreadId: f.parent.thread.id,
+          parentRunId: parentRun.id,
+          parentNodeId: parentRun.rootNodeId!,
+          task: "Production-shaped planner",
+          modelSelection: f.run.modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          completionWake: "always",
+        });
+        const parent = yield* projections.getThreadRecords(f.parent.thread.id, ["subagents"]);
+        const task = parent.subagents.find((task) => task.prompt === "Production-shaped planner")!;
+        const child = yield* projections.getThreadRecords(task.childThreadId!, [
+          "runs",
+          "attempts",
+          "providerThreads",
+          "contextTransfers",
+        ]);
+        const run = child.runs[0]!;
+        const attempt = child.attempts.find((attempt) => attempt.id === run.activeAttemptId)!;
+        const provider = child.providerThreads.find(
+          (provider) => provider.id === run.providerThreadId,
+        )!;
+        assert.isUndefined(run.delegatedTaskId);
+        assert.isTrue(
+          child.contextTransfers.some(
+            (transfer) =>
+              transfer.type === "subagent_spawn" &&
+              transfer.status === "consumed" &&
+              transfer.targetRunId === run.id,
+          ),
+        );
+        const turn = {
+          ...f.child.providerTurns[0]!,
+          id: ProviderTurnId.make("production-turn"),
+          providerThreadId: provider.id,
+          runAttemptId: attempt.id,
+          nodeId: run.rootNodeId!,
+        };
+        yield* sink.write({
+          events: [
+            f.event("thread.updated", child.thread.id, {
+              ...child.thread,
+              activeProviderThreadId: provider.id,
+            }),
+            f.event("provider-thread.updated", child.thread.id, {
+              ...provider,
+              nativeThreadRef: f.provider.nativeThreadRef,
+              status: "idle",
+              firstRunOrdinal: run.ordinal,
+              lastRunOrdinal: run.ordinal,
+            }),
+            f.event("run-attempt.updated", child.thread.id, {
+              ...attempt,
+              status: "completed",
+              nativeThreadId: "original-native",
+              providerTurnId: turn.id,
+              startedAt: f.now,
+              completedAt: f.now,
+            }),
+            f.event("provider-turn.updated", child.thread.id, turn),
+            f.event("run.updated", child.thread.id, {
+              ...run,
+              status: "completed",
+              completedAt: f.now,
+            }),
+            f.event("subagent.updated", f.parent.thread.id, {
+              ...task,
+              status: "completed",
+              result: "Immutable planner result",
+              completedAt: f.now,
+            }),
+          ],
+        });
+        const input = {
+          taskId: task.id,
+          message: "Reconcile the original plan",
+          clientRequestId: "production-reconcile",
+        };
+        const accepted = yield* service.continue(f.scope, input);
+        assert.equal(accepted.continuation.sourceRunId, run.id);
+        assert.equal(accepted.continuation.sourceAttemptId, attempt.id);
+        assert.equal(accepted.continuation.nativeSessionId, "original-native");
+        const continued = yield* projections.getThreadRecords(child.thread.id, [
+          "runs",
+          "attempts",
+          "providerThreads",
+        ]);
+        const followup = continued.runs.find((run) => run.id === accepted.childRunId)!;
+        const followupAttempt = continued.attempts.find(
+          (attempt) => attempt.id === followup.activeAttemptId,
+        )!;
+        assert.equal(followup.delegatedTaskId, accepted.taskId);
+        const requirement = yield* requirementFor(store, continued, followup, followupAttempt);
+        assert.equal(requirement?.nativeSessionId, "original-native");
+        assert.equal((yield* service.continue(f.scope, input)).taskId, accepted.taskId);
+        const busy = yield* Effect.result(
+          service.continue(f.scope, { ...input, clientRequestId: "production-busy" }),
+        );
+        assert.equal(busy._tag, "Failure");
+        if (busy._tag === "Failure") assert.include(busy.failure.message, "[child_busy]");
+        assert.equal(dispatchCount(), 1);
+        const parentAfter = yield* projections.getThreadRecords(f.parent.thread.id, ["subagents"]);
+        const followupTask = parentAfter.subagents.find((task) => task.id === accepted.taskId)!;
+        const followupTurn = {
+          ...turn,
+          id: ProviderTurnId.make("production-followup-turn"),
+          runAttemptId: followupAttempt.id,
+          nodeId: followup.rootNodeId!,
+        };
+        yield* sink.write({
+          events: [
+            f.event("run.updated", child.thread.id, {
+              ...followup,
+              status: "completed",
+              completedAt: f.now,
+            }),
+            f.event("run-attempt.updated", child.thread.id, {
+              ...followupAttempt,
+              status: "completed",
+              nativeThreadId: "original-native",
+              providerTurnId: followupTurn.id,
+              completedAt: f.now,
+            }),
+            f.event("provider-turn.updated", child.thread.id, followupTurn),
+            f.event("subagent.updated", f.parent.thread.id, {
+              ...followupTask,
+              status: "completed",
+              result: "Reconciled",
+              completedAt: f.now,
+            }),
+          ],
+        });
+        const next = yield* service.continue(f.scope, {
+          taskId: accepted.taskId,
+          message: "One more clarification",
+          clientRequestId: "production-followup",
+          expectedNativeSessionId: "original-native",
+        });
+        assert.equal(next.continuation.sourceRunId, followup.id);
+        assert.equal(next.continuation.nativeSessionId, "original-native");
+        assert.equal(dispatchCount(), 2);
+      }),
+    ),
 );
 
 it.effect("reconciles an accepted command after its dispatch response is lost", () =>

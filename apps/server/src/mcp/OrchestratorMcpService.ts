@@ -1,5 +1,6 @@
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as LinkedThreads from "../jones/linkedThreads/LinkedThreads.ts";
+import { readTaskNativeSession } from "../jones/taskContinuation/provenance.ts";
 import {
   CommandId,
   type RunId,
@@ -1579,7 +1580,11 @@ const make = Effect.gen(function* () {
         instanceId: task.providerInstanceId,
         model: task.model,
       };
+    const nativeSession = yield* readTaskNativeSession(task, childControls).pipe(
+      Effect.mapError(threadManagementFailure),
+    );
     const result = {
+      ...(nativeSession === undefined ? {} : { nativeSession }),
       taskId: task.id,
       childThreadId: task.childThreadId,
       link: formatThreadLink(task.childThreadId, childControls.thread.title),
