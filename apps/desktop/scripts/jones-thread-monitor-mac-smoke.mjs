@@ -54,6 +54,13 @@ export function privateBootLauncher(bootPath) {
     "",
   ].join("\n");
 }
+export function monitorRouteMatches(href, environmentId, threadId) {
+  const url = new URL(href);
+  // Electron uses hash history; web/dev routes use browser history.
+  const path = url.hash.startsWith("#/") ? new URL(url.hash.slice(1), url).pathname : url.pathname;
+  const route = path.split("/").filter(Boolean).map(decodeURIComponent);
+  return route.at(-2) === environmentId && route.at(-1) === threadId;
+}
 async function until(read, accepts, reason, limit = timeout) {
   const deadline = performance.now() + limit;
   while (performance.now() < deadline) {
@@ -794,18 +801,10 @@ export async function runSmoke() {
               name: "Open in Jones Code",
             })
             .click();
-          await main.waitForFunction(
-            ({ environmentId, threadId }) => {
-              const route = new URL(location.href).pathname
-                .split("/")
-                .filter(Boolean)
-                .map(decodeURIComponent);
-              return route.at(-2) === environmentId && route.at(-1) === threadId;
-            },
-            {
-              environmentId,
-              threadId,
-            },
+          await until(
+            () => main.url(),
+            (href) => monitorRouteMatches(href, environmentId, threadId),
+            "Open did not route to the exact environment and thread",
           );
           await until(
             () => nativeState(mainWindow),

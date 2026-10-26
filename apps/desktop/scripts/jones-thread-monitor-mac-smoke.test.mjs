@@ -2,7 +2,11 @@ import * as NodeAssert from "node:assert/strict";
 import * as NodePath from "node:path";
 import * as NodeTest from "node:test";
 import * as NodeVM from "node:vm";
-import { childEnvironment, privateBootLauncher } from "./jones-thread-monitor-mac-smoke.mjs";
+import {
+  childEnvironment,
+  privateBootLauncher,
+  monitorRouteMatches,
+} from "./jones-thread-monitor-mac-smoke.mjs";
 NodeTest.test(
   "native smoke child receives only private storage and an explicit environment allowlist",
   () => {
@@ -89,3 +93,19 @@ NodeTest.test(
     NodeAssert.throws(() => privateBootLauncher("relative/boot.cjs"), /must be absolute/);
   },
 );
+
+NodeTest.test("native route readback matches exact hash/browser routes, not stray IDs", () => {
+  for (const href of [
+    "t3code://app/#/env%3Aone/thread%3Atwo",
+    "t3code://app/#/env%3Aone/thread%3Atwo?panel=files",
+    "http://127.0.0.1:3773/env%3Aone/thread%3Atwo",
+  ])
+    NodeAssert.equal(monitorRouteMatches(href, "env:one", "thread:two"), true);
+  for (const href of [
+    "t3code://app/#/env%3Aother/thread%3Atwo",
+    "t3code://app/#/env%3Aone/thread%3Aother",
+    "t3code://app/#/settings?environment=env%3Aone&thread=thread%3Atwo",
+    "http://127.0.0.1:3773/settings#env:one/thread:two",
+  ])
+    NodeAssert.equal(monitorRouteMatches(href, "env:one", "thread:two"), false);
+});
