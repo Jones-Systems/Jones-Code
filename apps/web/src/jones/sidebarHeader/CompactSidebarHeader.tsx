@@ -6,6 +6,7 @@ export function CompactSidebarHeader({ children }: { children: ReactNode }) {
   const availableRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Measure mounted sidebar header DOM and subscribe to geometry changes for density fitting.
   useLayoutEffect(() => {
     const available = availableRef.current;
     const content = contentRef.current;

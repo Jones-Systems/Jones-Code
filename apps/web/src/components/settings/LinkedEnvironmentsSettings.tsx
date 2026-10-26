@@ -30,18 +30,16 @@ import { Input } from "../ui/input";
 import { RadioGroup } from "../ui/radio-group";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { ITEM_ROW_CLASSNAME, ITEM_ROW_INNER_CLASSNAME } from "./itemRows";
-import { SettingsRow, SettingsSection, useRelativeTimeTick } from "./settingsLayout";
+import { SettingsRow, SettingsSection } from "./settingsLayout";
+import { useNowMinute } from "../../hooks/useNowMinute";
 import { searchableSetting } from "./settingsSearch";
 
 const failureToast = (title: string, description: string) =>
   toastManager.add(stackedThreadToast({ type: "error", title, description }));
 
 /**
- * Other environments this one links to, so its agents can work there. Each
- * link is an outside agent session on the other environment, revoked from
- * that environment's own Connections. `environmentLabel` names the linking
- * environment when several are listed; only the first section is the search
- * target.
+ * Outgoing links let agents work in other environments as external sessions revoked from that target's Connections.
+ * environmentLabel distinguishes the source environment across grouped lists; only the first section is a search target.
  */
 export function LinkedEnvironmentsSettings({
   environmentId,
@@ -90,7 +88,7 @@ function LinkedEnvironmentRow({
   readonly environmentId: EnvironmentId;
   readonly link: PeerLinkSummary;
 }) {
-  const nowMs = useRelativeTimeTick(60_000);
+  const nowMs = Date.parse(useNowMinute());
   const health = peerLinkHealth(link, DateTime.makeUnsafe(nowMs));
   const unlink = useAtomCommand(peerLinkEnvironment.unlink, { label: "unlink environment" });
   const canUnlink = useAtomValue(peerLinkEnvironment.unlink.permissionAtom(environmentId));

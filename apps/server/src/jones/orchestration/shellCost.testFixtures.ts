@@ -25,7 +25,19 @@ export type Query = {
   parameters?: ReadonlyArray<unknown>;
   spanMilliseconds?: number;
 };
-export type Measurement = { operation: string; milliseconds: number; statements: Query[] };
+export type DatabaseSpan = {
+  name: string;
+  startedMilliseconds: number;
+  endedMilliseconds: number;
+  milliseconds: number;
+  attributes: Record<string, unknown>;
+};
+export type Measurement = {
+  operation: string;
+  milliseconds: number;
+  statements: Query[];
+  databaseSpans: DatabaseSpan[];
+};
 
 export function measure<A, E, R>(
   operation: string,
@@ -34,6 +46,7 @@ export function measure<A, E, R>(
 ): Effect.Effect<A, E, R> {
   return Effect.suspend(() => {
     const statements: Query[] = [];
+    const databaseSpans: DatabaseSpan[] = [];
     const bindings = new WeakMap<Tracer.Span, Query>();
     const capture: Statement.Transformer = (statement, _sql, _fiber, span) => {
       const [text, parameters] = statement.compile();
@@ -47,12 +60,27 @@ export function measure<A, E, R>(
         const end = span.end.bind(span);
         span.end = (endTime, exit) => {
           end(endTime, exit);
+          const ended = performance.now();
+          const attributes = Object.fromEntries(
+            [...span.attributes].filter(([key]) => key.startsWith("db.")),
+          );
+          // Transaction spans may have no query text. Retain them independently;
+          // lock_wait_ms is application connection admission, not SQLite busy time.
+          if (Object.keys(attributes).length > 0 || /sql.*transaction/i.test(span.name)) {
+            databaseSpans.push({
+              name: span.name,
+              startedMilliseconds: started,
+              endedMilliseconds: ended,
+              milliseconds: ended - started,
+              attributes,
+            });
+          }
           const text = span.attributes.get("db.query.text");
           if (typeof text === "string") {
             const captured = bindings.get(span);
             statements.push({
               ...(captured?.text === text ? captured : { text }),
-              spanMilliseconds: performance.now() - started,
+              spanMilliseconds: ended - started,
             });
           }
         };
@@ -65,7 +93,12 @@ export function measure<A, E, R>(
       Effect.withTracer(tracer),
       Effect.ensuring(
         Effect.sync(() => {
-          measurements.push({ operation, milliseconds: performance.now() - start, statements });
+          measurements.push({
+            operation,
+            milliseconds: performance.now() - start,
+            statements,
+            databaseSpans,
+          });
         }),
       ),
     );
@@ -115,6 +148,9 @@ export const queryEvidence = Effect.fn("shellCost.queryEvidence")(function* (
           : []),
         ...(query.text.includes("completed_at IS NULL DESC") ? ["H3:blocked-run-ordering"] : []),
         ...(query.text.includes("failure_payload_json") ? ["H4:failure-lookups"] : []),
+        ...(query.text.includes("orchestration_v2_projection_provider_session_bindings")
+          ? ["H4:own-session-bindings"]
+          : []),
         ...(query.text.includes("owning_provider_instance_id") ? ["H6:pending-items"] : []),
       ];
       return {

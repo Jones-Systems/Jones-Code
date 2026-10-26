@@ -3,7 +3,7 @@ import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
+
 import * as Schema from "effect/Schema";
 import * as Invocation from "../../mcp/McpInvocationContext.ts";
 import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
@@ -46,11 +46,11 @@ it.effect(
       Layer.mock(Threads.ThreadManagementService)({
         getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),
       }),
-      Layer.mock(PeerLinks.PeerLinks)({ get: () => Effect.succeed(Option.none()) }),
+      Layer.mock(PeerLinks.PeerLinks)({ get: () => Effect.succeedNone }),
       Layer.mock(Peers.PeerMcpClient)({
         call: (input) => {
           calls.push(input);
-          return Schema.decodeUnknownEffect(input.success)({
+          return Schema.decodeEffect(input.success)({
             threadId: destination,
             projectId: liveThreadShell(destination).projectId,
             modelSelection: liveThreadShell(destination).modelSelection,

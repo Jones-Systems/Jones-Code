@@ -18,11 +18,9 @@ import {
 NodeTest.test("MCP connection comes only from app-issued thread configuration", () => {
   const params = {
     config: {
-      mcp_servers: {
-        "t3-code": {
-          url: "http://127.0.0.1:43773/mcp",
-          http_headers: { Authorization: "Bearer synthetic" },
-        },
+      "mcp_servers.t3-code": {
+        url: "http://127.0.0.1:43773/mcp",
+        http_headers: { Authorization: "Bearer synthetic" },
       },
     },
   };
@@ -35,17 +33,32 @@ NodeTest.test("MCP connection comes only from app-issued thread configuration", 
     { endpoint: "http://127.0.0.1:1/mcp" },
     {
       config: {
-        mcp_servers: {
-          "t3-code": {
-            url: "http://example.test/mcp",
-            http_headers: { Authorization: "Bearer synthetic" },
-          },
+        "mcp_servers.t3-code": {
+          url: "http://example.test/mcp",
+          http_headers: { Authorization: "Bearer synthetic" },
         },
       },
     },
-    { config: { mcp_servers: { "t3-code": { url: "http://127.0.0.1:1/mcp" } } } },
+    { config: { "mcp_servers.t3-code": { url: "http://127.0.0.1:1/mcp" } } },
   ])
     NodeAssert.throws(() => issuedConnection(value), /MCP connection/);
+});
+
+NodeTest.test("MCP connection rejects the old nested thread configuration", () => {
+  NodeAssert.throws(
+    () =>
+      issuedConnection({
+        config: {
+          mcp_servers: {
+            "t3-code": {
+              url: "http://127.0.0.1:43773/mcp",
+              http_headers: { Authorization: "Bearer synthetic" },
+            },
+          },
+        },
+      }),
+    /MCP connection missing/,
+  );
 });
 
 NodeTest.test(

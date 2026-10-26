@@ -3,6 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import { jonesNativeHelperSource } from "./jonesNativeHelperSource.ts";
 import { hashMacApp } from "./jonesMacStaging.ts";
@@ -236,7 +237,7 @@ def synthetic_launch(active, descriptor=None):
     durable(tx / 'trial-receipt.json', receipt, True)
     return {'pid': 456, 'identity': 'tracked-native-app'}
 launch = synthetic_launch
-def synthetic_identity(pid):
+def synthetic_identity(pid, deadline=None):
     events.append('identity:' + str(pid))
     if pid == 654:
         if fault == 'dead-backend': return None
@@ -245,7 +246,7 @@ def synthetic_identity(pid):
     if pid == 456: return 'tracked-native-app'
     return None
 process_identity = synthetic_identity
-process_start = lambda pid: ('S', '')
+process_start = lambda pid, deadline=None: ('S', '')
 native_durable = durable
 syncing_marker = None
 def synthetic_durable(destination, value, exclusive=False):
@@ -289,7 +290,7 @@ else:
     journal = read(tx / 'journal.json')
     with sqlite3.connect(database) as db: state = db.execute('SELECT value FROM identity').fetchone()[0]
     if fault in ('storage-refused', 'reserve-denied'):
-        assert events == ['storage-preflight']
+        assert events == ['storage-preflight', 'identity:123', 'restart-previous']
         assert state == 'previous-state'
         assert read(manifest_path) == expected
         assert not (tx / 'previous-pair').exists()
@@ -325,7 +326,7 @@ else:
         assert (home / 'settings.json').read_text() == 'previous-settings'
         assert (profile / 'opaque').read_text() == ('advanced-profile' if 'candidate-launch' in events else 'same-host-profile')
         assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
-        if fault not in ('snapshot-failed', 'snapshot-restart-refused', 'state-grew'):
+        if 'preEffect' not in journal and fault not in ('snapshot-failed', 'snapshot-restart-refused', 'state-grew'):
             with sqlite3.connect(tx / 'advanced-state' / 'state.sqlite') as db:
                 assert db.execute('SELECT value FROM identity').fetchone()[0] == ('previous-state' if fault.startswith('bundle-') else 'advanced-state')
         else:
@@ -334,7 +335,7 @@ else:
         assert journal['phase'] == 'rolled-back', journal
         assert events.count('restart-previous') == 1
         assert journal['relaunch'] == 'failed'
-        assert 'Jones Code was not reopened automatically: Synthetic relaunch refusal' in journal['message']
+        assert ('Jones Code was not reopened automatically: Native reopen could not be proved.' if 'preEffect' in journal else 'Jones Code was not reopened automatically: Synthetic relaunch refusal') in journal['message']
     if journal['phase'] == 'blocked' and 'candidate-launch' in events:
         assert state == ('previous-state' if fault in ('authority-retention-sync', 'authority-advance-failed', 'authority-advance-lost') else 'advanced-state')
         assert (tx / 'previous-pair' / 'state.sqlite').exists() == (fault not in ('authority-retention-sync', 'authority-advance-failed', 'authority-advance-lost'))
@@ -2716,9 +2717,9 @@ assert sorted(path.name for path in root.iterdir()) == ['jones-activation.lock',
     ["missing-backendProcess", "rolled-back"],
     ["candidate-stop", "blocked"],
     ["snapshot-failed", "rolled-back"],
-    ["old-quiescence", "blocked"],
-    ["storage-refused", "blocked"],
-    ["reserve-denied", "blocked"],
+    ["old-quiescence", "rolled-back"],
+    ["storage-refused", "rolled-back"],
+    ["reserve-denied", "rolled-back"],
     ["reserve-release-failed", "blocked"],
     ["recovery-space-missing", "blocked"],
     ["recovery-lease-busy", "blocked"],
@@ -3362,4 +3363,638 @@ else:
       await f.cleanup();
     }
   });
+});
+
+it("settles pre-effect exit-wait failures without replacing native app or state", async () => {
+  const f = await fixture();
+  try {
+    const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+    const runtime = activationScenario.split("\nif fault in ('interrupted-trial'")[0];
+    const scenario = String.raw`
+stop_exact = actual_stop_exact
+observations = 0
+def inspection(pid, deadline=None):
+    global observations
+    assert pid == 123
+    observations += 1
+    if observations == 1: return 'owned-native-process'
+    if observations == 2: raise RuntimeError('Synthetic exit-wait inspection failure /private/fixture')
+    return None
+process_identity = inspection
+os.kill = lambda pid, sig: events.append('synthetic-stop')
+activate(tx / 'intent.json')
+journal = read(tx / 'journal.json')
+assert journal['phase'] == 'rolled-back', journal
+assert journal['preEffect']['phase'] == 'preparing'
+assert journal['preEffect']['step'] == 'stop-processes'
+assert journal['preEffect']['relaunch'] == 'started'
+assert observations >= 3 and events.count('restart-previous') == 1
+assert 'pair' not in events and 'candidate-launch' not in events
+assert not (tx / 'previous-pair' / 'pair.json').exists()
+assert all(not pathlib.Path(reserve['path']).exists() for reserve in journal['recoveryReserves'])
+assert read(manifest_path) == expected
+assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
+assert (home / 'settings.json').read_text() == 'previous-settings'
+assert (profile / 'opaque').read_text() == 'same-host-profile'
+assert '/private/' not in json.dumps(journal['preEffect'])
+assert len(json.dumps(journal['preEffect'].get('diagnostics', {})).encode()) <= 1024
+print(json.dumps({'phase': journal['phase'], 'preEffect': journal['preEffect']}))
+`;
+    runPython(
+      definitions + "\nactual_stop_exact = stop_exact\n" + runtime + "\n" + scenario,
+      [f.directory, "success"],
+      { encoding: "utf8", timeout: 10000 },
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+it.each([
+  "storage-refused",
+  "reserve-denied",
+  "bundle-error",
+  "snapshot-failed",
+  "alive",
+  "identity-unknown",
+  "pair-present",
+  "manifest-changed",
+])("keeps pre-effect recovery bounded and conservative for %s", async (mode) => {
+  const f = await fixture();
+  try {
+    const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+    const runtime = activationScenario.split("\nif fault in ('interrupted-trial'")[0];
+    const scenario = String.raw`
+mode = sys.argv[3]
+clock = [0.0]
+if mode == 'alive':
+    time.monotonic = lambda: clock[0]
+    time.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    def still_alive(pid, deadline=None):
+        assert deadline <= 30
+        return 'owned-native-process'
+    process_identity = still_alive
+if mode == 'identity-unknown':
+    def unknown_identity(pid, deadline=None): raise OSError('Synthetic unavailable identity /private/fixture')
+    process_identity = unknown_identity
+if mode in ('bundle-error', 'alive', 'identity-unknown'):
+    def failed_bundle(*args): raise PermissionError('Synthetic copy failure /private/fixture')
+    prepare_bundle = failed_bundle
+if mode in ('pair-present', 'manifest-changed'):
+    def failed_pair(*args):
+        if mode == 'pair-present': seed_record(tx / 'previous-pair' / 'pair.json', {'unknown': True}, True)
+        else: seed_record(manifest_path, dict(expected, generation='foreign'))
+        raise RuntimeError('Synthetic incomplete state evidence')
+    pair_state = failed_pair
+activate(tx / 'intent.json')
+journal = read(tx / 'journal.json')
+if mode in ('pair-present', 'manifest-changed'):
+    assert journal['phase'] == 'blocked' and journal['phaseBeforeBlock'] == 'quiescent', journal
+    assert 'preEffect' not in journal and 'restart-previous' not in events
+else:
+    assert journal['phase'] == 'rolled-back' and journal['preEffect']['reason'] == 'preparation-failed', journal
+    skipped = mode in ('alive', 'identity-unknown')
+    assert journal['preEffect']['relaunch'] == ('skipped' if skipped else 'started')
+    assert events.count('restart-previous') == (0 if skipped else 1)
+    assert not (tx / 'previous-pair' / 'pair.json').exists()
+    assert all(not pathlib.Path(reserve['path']).exists() for reserve in journal.get('recoveryReserves', []))
+    assert read(manifest_path) == expected
+    assert len(json.dumps(journal['preEffect']['diagnostics']).encode()) <= 1024
+    assert '/private/' not in json.dumps(journal['preEffect'])
+assert clock[0] <= 30
+assert 'candidate-launch' not in events
+assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
+assert (home / 'settings.json').read_text() == 'previous-settings'
+assert (profile / 'opaque').read_text() == 'same-host-profile'
+`;
+    runPython(definitions + "\n" + runtime + "\n" + scenario, [f.directory, mode, mode], {
+      encoding: "utf8",
+      timeout: 10000,
+    });
+  } finally {
+    await f.cleanup();
+  }
+});
+
+it.each([
+  "intent",
+  "preparing",
+  "quiescent",
+  "intent-only",
+  "blocked",
+  "trial",
+  "pair",
+  "previous",
+  "manifest",
+  "cold",
+  "trial-descriptor",
+  "unknown-record",
+  "intent-mismatch",
+  "journal-mismatch",
+  "manifest-race",
+  "journal-race",
+  "publication-unknown",
+  "busy",
+])("settles only proved interrupted activations through the real command for %s", async (mode) => {
+  const f = await fixture();
+  try {
+    const [definitions, parser] = jonesNativeHelperSource.split(
+      "\nparser = argparse.ArgumentParser()",
+    );
+    const setup = activationScenario.split("\nevents = []")[0];
+    const scenario = String.raw`
+import contextlib, io
+mode = sys.argv[3]
+phase = mode if mode in ('intent', 'preparing', 'quiescent', 'blocked', 'trial') else 'preparing'
+journal = {'intent': intent, 'phase': phase}
+if mode == 'cold': intent['kind'] = 'cold-first-transition'
+if mode == 'intent-mismatch': intent['transactionId'] = '0' * 64
+seed_record(tx / 'intent.json', intent)
+if mode != 'intent-only':
+    if mode == 'journal-mismatch': journal['intent'] = dict(intent, listener='changed')
+    seed_record(tx / 'journal.json', journal, True)
+(tx / 'recovery-reserve.bin').write_text('retained-reserve')
+if mode == 'pair': seed_record(tx / 'previous-pair' / 'pair.json', {'unknown': True}, True)
+if mode == 'previous': previous_app.with_name(previous_app.name + '.jones-previous-' + expected['generation']).mkdir()
+if mode == 'manifest': seed_record(manifest_path, dict(expected, generation='changed'))
+if mode == 'trial-descriptor': seed_record(tx / 'trial-descriptor.json', {'unknown': True}, True)
+if mode == 'unknown-record': (tx / 'unknown').write_text('retained')
+before = (tx / 'journal.json').read_bytes() if (tx / 'journal.json').exists() else None
+before_intent = (tx / 'intent.json').read_bytes()
+native_bounded = bounded_native_json
+manifest_reads = journal_reads = 0
+def racing_read(path, limit=1024*1024):
+    global manifest_reads, journal_reads
+    if pathlib.Path(path) == manifest_path:
+        manifest_reads += 1
+        if mode == 'manifest-race' and manifest_reads == 2:
+            native_durable(manifest_path, dict(expected, generation='raced'))
+    if pathlib.Path(path) == tx / 'journal.json':
+        journal_reads += 1
+        if mode == 'journal-race' and journal_reads == 2:
+            native_durable(tx / 'journal.json', dict(journal, phase='trial'))
+    return native_bounded(path, limit)
+bounded_native_json = racing_read
+publication_count = [0]
+native_durable = durable
+def publish(path, value, exclusive=False):
+    if pathlib.Path(path) == tx / 'journal.json':
+        publication_count[0] += 1
+        native_durable(path, value, exclusive)
+        if mode == 'publication-unknown': raise OSError('Synthetic lost publication acknowledgement')
+    else: raise AssertionError('Settlement wrote outside its journal')
+durable = publish
+held_activation_lock = None
+if mode == 'busy':
+    lock_path = manifest_path.with_name('jones-activation.lock')
+    lock_path.write_text('jones-activation-lock-v1\n')
+    held_activation_lock = open(lock_path, 'r+')
+    fcntl.flock(held_activation_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+sys.platform = 'darwin'
+sys.argv = ['helper', '--manifest', str(manifest_path), '--settle-interrupted-activation', transaction_id]
+output = io.StringIO()
+try:
+    with contextlib.redirect_stdout(output):
+        try: exec(PARSER_SOURCE)
+        except SystemExit as exited: assert exited.code == 0
+finally:
+    if held_activation_lock is not None: held_activation_lock.close()
+result = json.loads(output.getvalue())
+assert type(result['protocol']) is int and result['protocol'] == 1
+assert set(result) <= {'protocol', 'status', 'reason'}
+if mode in ('intent', 'preparing', 'quiescent', 'intent-only'):
+    assert result == {'protocol': 1, 'status': 'settled'}, result
+    terminal = read(tx / 'journal.json')
+    assert terminal['phase'] == 'rolled-back' and terminal['intent'] == intent
+    assert terminal['legacySettlement']['basis'] == ('unstarted-activation' if mode == 'intent-only' else 'interrupted-preparation')
+    assert terminal['legacySettlement']['settledBy'] == 'startup'
+    assert publication_count[0] == 1
+elif mode == 'publication-unknown':
+    assert result == {'protocol': 1, 'status': 'uncertain'}, result
+    assert read(tx / 'journal.json')['phase'] == 'rolled-back' and publication_count[0] == 1
+else:
+    assert result['status'] == 'refused' and publication_count[0] == 0, result
+    if mode == 'busy': assert result['reason'] == 'activation-running'
+    if mode == 'manifest-race': assert result['reason'] == 'manifest-changed'
+    if mode == 'journal-race': assert result['reason'] == 'unknown-state'
+    if mode != 'journal-race': assert (tx / 'journal.json').read_bytes() == before
+assert (tx / 'intent.json').read_bytes() == before_intent
+assert (tx / 'recovery-reserve.bin').read_text() == 'retained-reserve'
+assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
+assert (home / 'settings.json').read_text() == 'previous-settings'
+assert (profile / 'opaque').read_text() == 'same-host-profile'
+`;
+    runPython(
+      definitions +
+        "\n" +
+        setup +
+        "\nPARSER_SOURCE = " +
+        JSON.stringify("parser = argparse.ArgumentParser()" + parser) +
+        "\n" +
+        scenario,
+      [f.directory, "success", mode],
+      { encoding: "utf8", timeout: 10000 },
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+const kernelLibprocFixture = String.raw`
+import ctypes, errno, contextlib, io
+from unittest.mock import patch
+class NativeCall:
+    def __init__(self, invoke): self.invoke = invoke
+    def __call__(self, *args):
+        assert self.restype is ctypes.c_int
+        assert self.argtypes is not None
+        assert ctypes.get_errno() == 0
+        return self.invoke(*args)
+class LibprocFixture:
+    def __init__(self, fault='live'):
+        self.fault, self.calls, self.samples = fault, [], 0
+        self.proc_pidinfo = NativeCall(self.bsd)
+        self.proc_pidpath = NativeCall(self.path)
+    def bsd(self, pid, flavor, arg, target, size):
+        self.calls.append('proc_pidinfo'); self.samples += 1
+        assert (pid, flavor, arg, size) == (4321, 3, 0, 136)
+        assert self.proc_pidinfo.argtypes == [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+        if self.fault in ('bsd-esrch', 'bsd-eperm', 'bsd-io', 'bsd-zero'):
+            ctypes.set_errno({'bsd-esrch':errno.ESRCH, 'bsd-eperm':errno.EPERM, 'bsd-io':errno.EIO, 'bsd-zero':0}[self.fault]); return 0
+        raw = bytearray(136)
+        # Independent header offsets, deliberately not derived from the ctypes type.
+        struct.pack_into('=I', raw, 4, 5 if self.fault == 'zombie' else 2)
+        struct.pack_into('=I', raw, 12, 99 if self.fault == 'wrong-pid' else pid)
+        struct.pack_into('=I', raw, 16, 3210)
+        struct.pack_into('=I', raw, 20, 501)
+        struct.pack_into('=Q', raw, 120, 1234567890 + (1 if self.fault == 'birth-race' and self.samples == 2 else 0))
+        struct.pack_into('=Q', raw, 128, 1000000 if self.fault == 'bad-usec' else 654321)
+        ctypes.memmove(target, bytes(raw), len(raw))
+        return 135 if self.fault == 'short-bsd' else 136
+    def path(self, pid, target, size):
+        self.calls.append('proc_pidpath')
+        assert pid == 4321 and size == 4096
+        assert self.proc_pidpath.argtypes == [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+        if self.fault in ('path-esrch', 'path-eperm'):
+            ctypes.set_errno(errno.ESRCH if self.fault == 'path-esrch' else errno.EPERM); return 0
+        raw = b'/Applications/Jones Code.app/Contents/MacOS/Jones'
+        if self.fault == 'relative': raw = b'relative/Jones'
+        if self.fault == 'utf8': raw = b'/bad-\xff'
+        if self.fault == 'empty': return 0
+        if self.fault == 'truncated': raw = b'/' + b'x' * 4095
+        if self.fault == 'exec-race' and self.calls.count('proc_pidpath') == 2: raw = b'/replacement'
+        ctypes.memmove(target, raw + (b'\0' if len(raw) < size else b''), min(size, len(raw) + 1))
+        return len(raw) + (1 if self.fault == 'wrong-path-size' else 0)
+def library(fault='live'):
+    value = LibprocFixture(fault)
+    def load(name, **kwargs):
+        assert name == '/usr/lib/libSystem.B.dylib' and kwargs == {'use_errno': True}
+        return value
+    return value, load
+`;
+
+function kernelScenario(body: string): string {
+  return `${jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0]}\n${kernelLibprocFixture}\n${body}`;
+}
+
+function kernelCliHarness(): string {
+  return kernelScenario(String.raw`
+parser_source = ${JSON.stringify(jonesNativeHelperSource.slice(jonesNativeHelperSource.indexOf("\nparser = argparse.ArgumentParser()")))}
+def invoke(argv, fault='live', platform='darwin'):
+    lib, load = library(fault)
+    out, err = io.StringIO(), io.StringIO()
+    def forbidden(*a, **kw): raise AssertionError('identity CLI crossed its read-only boundary')
+    with patch.object(sys, 'argv', ['helper.py'] + argv), patch.object(sys, 'platform', platform), patch.object(ctypes, 'CDLL', load), patch.object(pathlib.Path, 'resolve', forbidden), patch.object(os, 'open', forbidden), patch.object(subprocess, 'run', forbidden), patch.object(os, 'kill', forbidden), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try: exec(parser_source, globals().copy()); code = 0
+        except SystemExit as e: code = e.code
+    return code, out.getvalue(), err.getvalue(), lib.calls
+`);
+}
+
+describe("kernel process identity prerequisite", () => {
+  it("emits the closed read-only identity CLI without a manifest", () => {
+    const result = runPython(
+      `${kernelCliHarness()}\ncode, out, err, calls = invoke(['--process-identity', '4321'])\nassert code == 0, (code, err)\nassert not err\nassert out.endswith('\\n') and out.count('\\n') == 1\nassert json.loads(out) == {'pid':4321,'startSec':1234567890,'startUsec':654321,'executable':'/Applications/Jones Code.app/Contents/MacOS/Jones'}\nassert calls == ['proc_pidinfo','proc_pidpath','proc_pidinfo','proc_pidpath']\nprint('closed-kernel-identity')`,
+      [],
+      { encoding: "utf8", timeout: 10000 },
+    );
+    expect(result.trim()).toBe("closed-kernel-identity");
+  });
+
+  it("decodes the complete ABI and refuses errors, malformed buffers and races", () => {
+    const result = runPython(
+      kernelScenario(String.raw`
+for fault, error, call, number in [
+    ('bsd-esrch','process-exited','proc_pidinfo',errno.ESRCH),
+    ('zombie','process-exited','proc_pidinfo',None),
+    ('bsd-eperm','process-inspection-failed','proc_pidinfo',errno.EPERM),
+    ('bsd-io','process-inspection-failed','proc_pidinfo',errno.EIO),
+    ('bsd-zero','process-inspection-failed','proc_pidinfo',None),
+    ('short-bsd','process-inspection-failed','proc_pidinfo',None),
+    ('wrong-pid','process-inspection-failed','proc_pidinfo',None),
+    ('bad-usec','process-inspection-failed','proc_pidinfo',None),
+    ('path-esrch','process-exited','proc_pidpath',errno.ESRCH),
+    ('path-eperm','process-inspection-failed','proc_pidpath',errno.EPERM),
+    ('relative','process-inspection-failed','proc_pidpath',None),
+    ('utf8','process-inspection-failed','proc_pidpath',None),
+    ('empty','process-inspection-failed','proc_pidpath',None),
+    ('truncated','process-inspection-failed','proc_pidpath',None),
+    ('wrong-path-size','process-inspection-failed','proc_pidpath',None),
+    ('birth-race','process-inspection-failed','proc_pidinfo',None),
+    ('exec-race','process-inspection-failed','proc_pidpath',None),
+]:
+    lib, load = library(fault)
+    with patch.object(sys, 'platform', 'darwin'), patch.object(ctypes, 'CDLL', load):
+        try: kernel_process_identity(4321)
+        except KernelProcessError as e: assert e.diagnostic == {'error':error,'call':call,'errno':number}, (fault, e.diagnostic)
+        else: raise AssertionError(fault)
+    assert len(lib.calls) <= 4
+for pid in [True, False, 0, -1, 2147483648, '4321', 1.0, None]:
+    with patch.object(ctypes, 'CDLL', side_effect=AssertionError('invalid pid loaded a library')):
+        try: kernel_process_identity(pid)
+        except KernelProcessError: pass
+        else: raise AssertionError(pid)
+native_sizeof = ctypes.sizeof
+def invalid_process_layout(value):
+    # ctypes itself uses sizeof while creating fields; only corrupt the completed ABI check.
+    return 128 if isinstance(value, type) and value.__name__ == 'ProcBsdinfo' else native_sizeof(value)
+with patch.object(sys, 'platform', 'darwin'), patch.object(ctypes, 'sizeof', side_effect=invalid_process_layout), patch.object(ctypes, 'CDLL', side_effect=AssertionError('invalid ABI loaded a library')):
+    try: kernel_process_identity(4321)
+    except KernelProcessError as e: assert e.diagnostic['call'] == 'proc_bsdinfo-layout'
+    else: raise AssertionError('invalid ABI accepted')
+print('kernel-errors-and-races')
+`),
+      [],
+      { encoding: "utf8", timeout: 10000 },
+    );
+    expect(result.trim()).toBe("kernel-errors-and-races");
+  });
+
+  it("rejects mixed and invalid CLI input before library or state access", () => {
+    const result = runPython(
+      `${kernelCliHarness()}\n` +
+        String.raw`
+for argv in [
+    ['--process-identity','0'], ['--process-identity','-1'], ['--process-identity','2147483648'],
+    ['--process-identity','1.0'], ['--process-identity','+1'], ['--process-identity','１２'],
+    ['--process-identity','4321','--manifest','/unread'], ['--process-identity','4321','--launch'],
+    ['--process-identity','4321','--withdrawable'], ['--process-identity','4321','--quiescent'],
+    ['--process-identity','4321','--transaction','x'], ['--process-identity','4321','--claim-sha256',''],
+    ['--process-identity','4321','--staged-handle','x'], ['--process-identity','4321','--selection','x'],
+    ['--process-identity','4321','--selection-sha256','x'], ['--process-identity','4321','--plan-sha256','x'],
+    ['--process-identity','4321','--require-clone'], ['--process-identity','4321','--','extra'],
+    ['--launch'], ['--activate','/unread'], ['--settle-interrupted-activation','x'],
+]:
+    code, out, err, calls = invoke(argv)
+    assert code == 2 and not out and err and not calls, (argv, code, out, err, calls)
+for fault, platform, error in [('bsd-eperm','darwin','process-inspection-failed'), ('bsd-esrch','darwin','process-exited'), ('live','linux','unsupported-platform')]:
+    code, out, err, calls = invoke(['--process-identity','4321'], fault, platform)
+    assert code == 1 and not out and len(err.encode()) <= 1024
+    diagnostic = json.loads(err)
+    assert set(diagnostic) == {'error','call','errno'} and diagnostic['error'] == error
+    if platform != 'darwin': assert not calls
+print('kernel-cli-refusals')
+`,
+      [],
+      { encoding: "utf8", timeout: 10000 },
+    );
+    expect(result.trim()).toBe("kernel-cli-refusals");
+  });
+
+  it.skipIf(HostProcess.Platform.defaultValue() !== "darwin")(
+    "reads an owned Darwin child through live, zombie and reaped states (libproc requires macOS)",
+    () => {
+      const result = runPython(
+        `${jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0]}\n` +
+          String.raw`
+# Framework Python's launcher can differ from its loaded Mach-O image.
+# The owned child reports dyld's image independently of the libproc helper.
+child_source = '''
+import ctypes, json, os, sys
+image_path = ctypes.CDLL(None)._NSGetExecutablePath
+image_path.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+image_path.restype = ctypes.c_int
+size = ctypes.c_uint32(4096)
+image = ctypes.create_string_buffer(size.value)
+result = image_path(image, ctypes.byref(size))
+if result == -1:
+    assert 4096 < size.value <= 1048576, size.value
+    image = ctypes.create_string_buffer(size.value)
+    result = image_path(image, ctypes.byref(size))
+assert result == 0 and image.value, result
+print(json.dumps({'pid': os.getpid(), 'executable': os.path.realpath(os.fsdecode(image.value))}), flush=True)
+sys.stdin.buffer.read(1)
+'''
+child = subprocess.Popen([sys.executable, '-c', child_source], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+try:
+    ready = json.loads(child.stdout.readline())
+    assert set(ready) == {'pid', 'executable'} and ready['pid'] == child.pid, ready
+    expected_executable = ready['executable']
+    assert os.path.isabs(expected_executable) and os.path.isfile(expected_executable), ready
+    proof = kernel_process_identity(child.pid)
+    assert proof['pid'] == child.pid and proof['startSec'] > 0 and 0 <= proof['startUsec'] < 1000000
+    assert os.path.isabs(proof['executable']) and os.path.samefile(proof['executable'], expected_executable), {'launcherExecutable': sys.executable, 'expectedImage': expected_executable, 'observedExecutable': proof['executable'], 'observedResolved': os.path.realpath(proof['executable'])}
+    assert kernel_process_identity(child.pid) == proof
+    child.stdin.close()
+    deadline = time.monotonic() + 3
+    while True:
+        try: kernel_process_identity(child.pid)
+        except KernelProcessError as e:
+            assert e.diagnostic['error'] == 'process-exited'; break
+        if time.monotonic() >= deadline: raise AssertionError('owned child did not become exited')
+        time.sleep(0.01)
+    assert child.wait(timeout=1) == 0
+    try: kernel_process_identity(child.pid)
+    except KernelProcessError as e: assert e.diagnostic['error'] == 'process-exited'
+    else: raise AssertionError('reaped child remained live')
+finally:
+    if child.stdin and not child.stdin.closed: child.stdin.close()
+    if child.poll() is None: child.kill()
+    child.wait(timeout=1)
+    child.stdout.close()
+print('darwin-owned-child')
+`,
+        [],
+        { encoding: "utf8", timeout: 10000 },
+      );
+      expect(result.trim()).toBe("darwin-owned-child");
+    },
+  );
+});
+
+it("retains original kernel proofs when checking exited or replaced writers", () => {
+  runPython(
+    kernelScenario(String.raw`
+proof = {'pid':4321, 'startSec':1234567890, 'startUsec':654321, 'executable':'/Applications/Jones Code.app/Contents/MacOS/Jones'}
+def forbidden(*args, **kwargs): raise AssertionError('kernel proof reached legacy inspection or signaling')
+process_identity = process_start = forbidden
+with patch('sys.platform', 'darwin'):
+    lib, load = library()
+    with patch('ctypes.CDLL', load): assert alive(proof)
+    for field, replacement in [('startSec', 1), ('startUsec', 1), ('executable', '/replacement')]:
+        changed = dict(proof, **{field:replacement})
+        lib, load = library()
+        with patch('ctypes.CDLL', load), patch.object(os, 'kill', forbidden):
+            assert not alive(changed)
+            assert process_exited(changed)
+            stop_exact([changed])
+    for fault in ['bsd-esrch', 'path-esrch', 'zombie']:
+        lib, load = library(fault)
+        with patch('ctypes.CDLL', load), patch.object(os, 'kill', forbidden):
+            assert not alive(proof)
+            assert process_exited(proof)
+            stop_exact([proof])
+    for fault in ['bsd-eperm', 'bsd-io', 'path-eperm', 'birth-race', 'exec-race']:
+        lib, load = library(fault)
+        with patch('ctypes.CDLL', load), patch.object(os, 'kill', forbidden):
+            try: stop_exact([proof])
+            except KernelProcessError as error: assert error.diagnostic['error'] == 'process-inspection-failed'
+            else: raise AssertionError('inspection failure permitted signaling')
+assert proof == {'pid':4321, 'startSec':1234567890, 'startUsec':654321, 'executable':'/Applications/Jones Code.app/Contents/MacOS/Jones'}
+print('original-kernel-proof-preserved')
+`),
+    [],
+    { encoding: "utf8", timeout: 10000 },
+  );
+});
+
+it("joins original kernel requesters to closed roles and proves the complete helper parentage", () => {
+  runPython(
+    kernelScenario(String.raw`
+main = {'pid': 4321, 'startSec': 12, 'startUsec': 34, 'executable': '/Jones'}
+backend = dict(main, pid=8765, executable='/node')
+roles = [{'pid': 4321, 'role': 'main'}, {'pid': 8765, 'role': 'backend'}]
+prepare = {'processes': [backend, main]}
+originals = original_role_proofs(roles, prepare)
+assert originals == [main, backend] and prepare['processes'] == [backend, main]
+assert valid_process_proofs([main, backend]) and valid_process_proofs([{'pid': 1, 'identity': 'legacy'}])
+assert not valid_process_proofs([main, {'pid': 1, 'identity': 'legacy'}])
+for invalid in ([], roles + [roles[0]], [{'pid': True, 'role': 'main'}], [{'pid': 4321, 'role': 'backend'}], [dict(roles[0], extra=True)], [roles[0], backend]):
+    assert not valid_process_roles(invalid), invalid
+    try: original_role_proofs(invalid, prepare)
+    except SelectionRefused: pass
+    else: raise AssertionError('Invalid roles accepted')
+for invalid in ([dict(main, pid=True)], [dict(main, startUsec=1000000)], [dict(main, startSec=-1)], [dict(main, executable='relative')], [dict(main, extra=1)], [main, main]):
+    assert not valid_kernel_processes(invalid), invalid
+os.getppid = lambda: 4321
+seen = []
+def sample(pid):
+    seen.append(pid)
+    return (main, 1) if pid == 4321 else (backend, 4321)
+kernel_process_sample = sample
+assert capture_activation_processes({'processes': roles}, originals) == originals
+assert seen == [4321, 8765]
+for fault in ('backend-exited', 'backend-reused', 'backend-parent', 'main-reused', 'main-exited', 'inspection'):
+    def observation(pid):
+        if pid == 4321:
+            if fault == 'main-exited': raise KernelProcessError('process-exited', 'proc_pidinfo')
+            return (dict(main, startUsec=35) if fault == 'main-reused' else main), 1
+        if fault == 'backend-exited': raise KernelProcessError('process-exited', 'proc_pidinfo')
+        if fault == 'inspection': raise KernelProcessError('process-inspection-failed', 'proc_pidpath', 1)
+        return (dict(backend, executable='/replacement') if fault == 'backend-reused' else backend), (9 if fault == 'backend-parent' else 4321)
+    kernel_process_sample = observation
+    try: captured = capture_activation_processes({'processes': roles}, originals)
+    except KernelProcessError: assert fault in ('backend-parent', 'main-reused', 'main-exited', 'inspection')
+    else: assert fault in ('backend-exited', 'backend-reused') and captured == originals
+os.getppid = lambda: 999
+try: capture_activation_processes({'processes': roles}, originals)
+except KernelProcessError as error: assert error.diagnostic['call'] == 'helper-parent'
+else: raise AssertionError('Foreign helper parent accepted')
+`),
+    [],
+    { encoding: "utf8", timeout: 10000 },
+  );
+});
+
+it.each(["parent", "main-reused", "inspection"])(
+  "terminalizes kernel capture failure before storage or signals: %s",
+  async (fault) => {
+    const f = await fixture();
+    try {
+      const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const setup = activationScenario.split("\nevents = []")[0];
+      const scenario = String.raw`
+mode = sys.argv[3]
+originals = [{'pid': 123, 'startSec': 10, 'startUsec': 20, 'executable': '/Jones'}, {'pid': 124, 'startSec': 30, 'startUsec': 40, 'executable': '/node'}]
+intent['processes'] = [{'pid': 123, 'role': 'main'}, {'pid': 124, 'role': 'backend'}]
+seed_record(tx / 'intent.json', intent)
+seed_record(tx / 'prepare-request.json', {'protocol': 1, 'transactionId': transaction_id, 'stagedHandle': staged['handle'], 'claimSha256': digest(tx / 'prepare-intent.json'), 'processes': originals}, True)
+intent_raw = (tx / 'intent.json').read_bytes()
+prepare_raw = (tx / 'prepare-request.json').read_bytes()
+os.getppid = lambda: 123
+def observe(pid):
+    if mode == 'inspection': raise KernelProcessError('process-inspection-failed', 'proc_pidinfo', 1)
+    if pid == 123: return dict(originals[0], startUsec=21) if mode == 'main-reused' else originals[0], 1
+    return originals[1], 999
+kernel_process_sample = observe
+def forbidden(*args): raise AssertionError('Incomplete ownership reached native effect')
+storage_preflight = stop_exact = os.kill = launch = forbidden
+activate(tx / 'intent.json')
+journal = read(tx / 'journal.json')
+assert journal['phase'] == 'rolled-back' and journal['intent'] == intent
+assert journal['preEffect']['step'] == 'stop-processes' and journal['preEffect']['relaunch'] == 'skipped'
+assert journal['preEffect']['diagnostics']['error'] == 'process-inspection-failed'
+assert journal['preEffect']['diagnostics']['call'] in ('backend-parent', 'main-identity', 'proc_pidinfo')
+assert 'capturedProcesses' not in journal and not (tx / 'previous-pair').exists()
+assert (tx / 'intent.json').read_bytes() == intent_raw and (tx / 'prepare-request.json').read_bytes() == prepare_raw
+assert read(manifest_path) == expected
+`;
+      runPython(definitions + "\n" + setup + "\n" + scenario, [f.directory, "success", fault], {
+        encoding: "utf8",
+        timeout: 10000,
+      });
+    } finally {
+      await f.cleanup();
+    }
+  },
+);
+
+it("keeps role recovery joined to the original request bytes without recapturing historical PIDs", async () => {
+  const f = await fixture();
+  try {
+    const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+    const setup = activationScenario.split("\nevents = []")[0];
+    const scenario = String.raw`
+originals = [{'pid': 123, 'startSec': 10, 'startUsec': 20, 'executable': '/Jones'}]
+intent['processes'] = [{'pid': 123, 'role': 'main'}]
+(tx / 'intent.json').unlink()
+seed_record(tx / 'activation-request.json', intent, True)
+prepare = {'protocol': 1, 'transactionId': transaction_id, 'stagedHandle': staged['handle'], 'claimSha256': digest(tx / 'prepare-intent.json'), 'processes': originals}
+seed_record(tx / 'prepare-request.json', prepare, True)
+raw = (tx / 'prepare-request.json').read_bytes()
+def forbidden(*args): raise AssertionError('Historical role was recaptured or signaled')
+kernel_process_sample = process_identity = process_start = os.kill = forbidden
+assert original_activation_proofs(intent, tx, claim) == originals
+_, plan, records, evidence = preparation_context(expected, transaction_id, True)
+assert records['prepare-request.json'][1] == raw and plan['records']['prepare-request.json'] == hashlib.sha256(raw).hexdigest()
+assert records['activation-request.json'][0] == intent and evidence is None
+for field, changed in [('claimSha256', '0' * 64), ('processes', [dict(originals[0], pid=999)]), ('processes', [{'pid': 123, 'identity': 'legacy'}])]:
+    seed_record(tx / 'prepare-request.json', dict(prepare, **{field: changed}))
+    try: original_activation_proofs(intent, tx, claim)
+    except SelectionRefused: pass
+    else: raise AssertionError('Role recovered without its original binding')
+seed_record(tx / 'prepare-request.json', prepare)
+for name in ('prepare-dispatched.json', 'continuation.json', 'activation-request.json'): (tx / name).unlink()
+seen = []
+def exited(pid):
+    seen.append(pid)
+    raise KernelProcessError('process-exited', 'proc_pidinfo')
+kernel_process_identity = exited
+_, plan, records, evidence = preparation_context(expected, transaction_id)
+assert evidence == 'requester-exited' and seen == [123]
+assert (tx / 'prepare-request.json').read_bytes() == raw
+seed_record(tx / 'intent.json', intent, True)
+seed_record(tx / 'journal.json', {'intent': intent, 'phase': 'preparing'}, True)
+result = settle_interrupted_activation(transaction_id)
+assert result == {'protocol': 1, 'status': 'settled'}, result
+assert read(tx / 'journal.json')['intent'] == intent and seen == [123]
+assert (tx / 'prepare-request.json').read_bytes() == raw
+`;
+    runPython(definitions + "\n" + setup + "\n" + scenario, [f.directory, "success"], {
+      encoding: "utf8",
+      timeout: 10000,
+    });
+  } finally {
+    await f.cleanup();
+  }
 });

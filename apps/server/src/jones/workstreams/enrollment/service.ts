@@ -255,9 +255,7 @@ export const makeNativeEnrollments = Effect.fn("NativeEnrollments.makeNativeEnro
         return Option.some(deriveNativeEnrollmentBinding(request));
       },
       (effect) =>
-        effect.pipe(
-          Effect.catch(() => Effect.succeed(Option.none<NativeProviderEnrollmentBinding>())),
-        ),
+        effect.pipe(Effect.orElseSucceed(() => Option.none<NativeProviderEnrollmentBinding>())),
     );
     return NativeEnrollments.of({ inspect, inspectExisting, reserve, getBySessionId });
   },

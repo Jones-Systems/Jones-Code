@@ -8,6 +8,7 @@
   "include": [
     "**/*.ts",
     "../vite.config.ts",
+    "../infra/task-cache/src/remoteCache.ts",
     "../apps/server/src/jones/workstreams/enrollment/sqliteRuntimePolicy.ts",
     "../apps/desktop/src/jones/updates/jonesNativeHelperSource.ts",
     "../apps/desktop/src/jones/updates/jonesPairedStateSource.ts",

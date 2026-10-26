@@ -4,7 +4,15 @@ import * as NodeConsole from "node:console";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert } from "@effect/vitest";
-import { EventId, ProjectId, ProviderInstanceId, RunId, ThreadId } from "@t3tools/contracts";
+import {
+  EventId,
+  ProjectId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ProviderSessionId,
+  RunId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -13,6 +21,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
+import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import { workModeCandidate, workModeTiming } from "../workMode/Policy.ts";
 import { measure, queryEvidence, type Measurement } from "./shellCost.testFixtures.ts";
@@ -39,6 +48,8 @@ function integer(name: string, fallback: number, minimum: number, maximum: numbe
 function configuration(large: boolean) {
   const threads = integer("THREADS", 6, 1, 256);
   const itemsPerThread = integer("ITEMS", large ? 10_000 : 16, 2, 10_000);
+  if (itemsPerThread > 1024 && process.env.JONES_SHELL_COST_LARGE !== "1")
+    throw new Error("M1 histories above 1024 require JONES_SHELL_COST_LARGE=1");
   const archiveRatio = Number(process.env.JONES_SHELL_COST_ARCHIVE_RATIO ?? "0.3333333333333333");
   if (!Number.isFinite(archiveRatio) || archiveRatio < 0 || archiveRatio > 1)
     throw new Error("JONES_SHELL_COST_ARCHIVE_RATIO must be in [0, 1]");
@@ -269,6 +280,34 @@ const seed = Effect.fn("shellCost.seedM1")(function* (dimensions: Dimensions) {
           payload_json = json_set(payload_json, '$.activeProviderThreadId', ${providerId(thread, providerHistory - 1)})
         WHERE thread_id = ${id}`;
     }
+    // Adapt ProjectionStore's own-session-binding regression without changing
+    // the six M1 dimensions. Thread 0 has only a session error; failed threads
+    // retain their separate terminal error. The newest unrelated session must
+    // never become another thread's lastError.
+    if (thread % 3 === 0) {
+      const newestSessionThread = Math.floor((threads - 1) / 3) * 3;
+      const updatedAt = thread === newestSessionThread ? DateTime.add(now, { minutes: 1 }) : now;
+      yield* projections.apply({
+        id: EventId.make(`${id}:session-error`),
+        type: "provider-session.attached",
+        threadId: id,
+        driver: ProviderDriverKind.make("codex"),
+        providerInstanceId: instanceId,
+        occurredAt: updatedAt,
+        payload: {
+          id: ProviderSessionId.make(`${id}:error-session`),
+          driver: ProviderDriverKind.make("codex"),
+          providerInstanceId: instanceId,
+          status: "error",
+          cwd: "/synthetic-m1-unused",
+          model: modelSelection.model,
+          capabilities: CodexProviderCapabilitiesV2,
+          createdAt: updatedAt,
+          updatedAt,
+          lastError: `synthetic M1 session failure:${thread}`,
+        },
+      });
+    }
     if (status === "running" && pendingBytes > 0) {
       yield* sql`INSERT INTO orchestration_v2_projection_turn_items ${sql.insert({
         turn_item_id: `${id}:pending`,
@@ -389,6 +428,18 @@ const lookupProbes = Effect.fn("shellCost.lookupProbes")(function* (measurements
         Effect.asVoid,
       ),
     ],
+    [
+      "H4:own-session-bindings",
+      sql`SELECT t.thread_id, (
+        SELECT json_extract(session.payload_json, '$.lastError')
+        FROM orchestration_v2_projection_provider_session_bindings binding
+        JOIN orchestration_v2_projection_provider_sessions session
+          ON session.provider_session_id = binding.provider_session_id
+        WHERE binding.thread_id = t.thread_id AND session.provider_instance_id = t.provider_instance_id
+          AND session.status = 'error'
+        ORDER BY session.updated_at DESC, session.provider_session_id DESC LIMIT 1
+      ) AS session_failure FROM orchestration_v2_projection_threads t`.pipe(Effect.asVoid),
+    ],
   ] as const;
   for (const [hypothesis, query] of probes) {
     yield* measure(`isolated-lookup-probe:${hypothesis}`, query, measurements).pipe(
@@ -408,7 +459,27 @@ export function fileBackedScenario(large: boolean) {
         throw new Error(
           "M1 requires an existing absolute JONES_SHELL_COST_M1_ROOT on approved disk-backed scratch",
         );
-      const storage = yield* Effect.tryPromise(() => NodeFSP.statfs(root, { bigint: true }));
+      const resolvedRoot = yield* fs.realPath(root);
+      const repository = path.resolve(import.meta.dirname, "../../../../..");
+      const tmp = yield* fs.realPath("/tmp");
+      const within = (parent: string, child: string) => {
+        const relative = path.relative(parent, child);
+        return (
+          relative === "" ||
+          (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+        );
+      };
+      if (
+        within(repository, resolvedRoot) ||
+        within(tmp, resolvedRoot) ||
+        /(?:^|\/)(?:\.t3|\.codex|userdata)(?:\/|$)/.test(resolvedRoot)
+      )
+        throw new Error("M1 scratch must be outside the repository, /tmp and application state");
+      const storage = yield* Effect.tryPromise(() =>
+        NodeFSP.statfs(resolvedRoot, { bigint: true }),
+      );
+      if (storage.type === 0x01021994n || storage.type === 0x858458f6n)
+        throw new Error("M1 requires disk-backed scratch, not tmpfs/ramfs");
       const estimatedPeakBytes =
         64 * 1024 * 1024 +
         4 *
@@ -425,7 +496,7 @@ export function fileBackedScenario(large: boolean) {
       // The SQLite layer is nested inside this scope: its connections and workers
       // close before the exact unique directory is removed on all ordinary exits.
       const directory = yield* fs.makeTempDirectoryScoped({
-        directory: root,
+        directory: resolvedRoot,
         prefix: "jones-shell-m1-",
       });
       const database = SqlitePersistence.layerFromPath(path.join(directory, "state.sqlite"));
@@ -459,6 +530,9 @@ export function fileBackedScenario(large: boolean) {
           assert.strictEqual(DateTime.formatIso(shell.latestUserAuthoredMessageAt!), humanIso);
           assert.strictEqual(DateTime.formatIso(shell.latestUserMessageAt!), iso);
           if (thread % 3 === 1) assert.strictEqual(shell.lastError, "synthetic M1 failure");
+          if (thread % 3 === 0)
+            assert.strictEqual(shell.lastError, `synthetic M1 session failure:${thread}`);
+          if (thread % 3 === 2) assert.isNull(shell.lastError);
         }
         const workMode = yield* measure(
           "work-mode:shell-refresh-read-decode",
@@ -498,6 +572,17 @@ export function fileBackedScenario(large: boolean) {
         ).pipe(NodeSqliteClient.readOnly);
         yield* lookupProbes(measurements);
         const queries = yield* queryEvidence(measurements).pipe(NodeSqliteClient.readOnly);
+        const sessionErrors = yield* sql<{ thread_id: string; session_error: string }>`
+          SELECT binding.thread_id, json_extract(session.payload_json, '$.lastError') AS session_error
+          FROM orchestration_v2_projection_provider_session_bindings binding
+          JOIN orchestration_v2_projection_provider_sessions session
+            ON session.provider_session_id = binding.provider_session_id
+          ORDER BY binding.thread_id`.pipe(NodeSqliteClient.readOnly);
+        assert.lengthOf(sessionErrors, Math.ceil(dimensions.threads / 3));
+        for (const row of sessionErrors) {
+          const index = Number(row.thread_id.split(":").at(-1));
+          assert.strictEqual(row.session_error, `synthetic M1 session failure:${index}`);
+        }
         // @effect-diagnostics-next-line globalConsoleInEffect:off -- Caller owns stdout evidence outside the repository.
         NodeConsole.log(
           encodeJson({
@@ -505,6 +590,16 @@ export function fileBackedScenario(large: boolean) {
             large,
             dimensions,
             fixtureCounts: counts,
+            h4: {
+              sessionErrors,
+              terminalErrors: shells
+                .filter((shell) => shell.lastError === "synthetic M1 failure")
+                .map((shell) => shell.id),
+              unrelatedSessionControl:
+                sessionErrors.length > 1
+                  ? "distinct own-session messages; newer unrelated session"
+                  : "unexercised: fewer than two session-error threads",
+            },
             nodeVersion: process.versions.node,
             sqliteVersion,
             storage: {
@@ -521,7 +616,7 @@ export function fileBackedScenario(large: boolean) {
             scope:
               "initial shell is projection read/decode only; excludes projects/global watermark/transport/UI. Work Mode excludes scheduler/admission/dispatch; fork target combines read/decode.",
             attribution:
-              "H1-H4 coexist in the production SELECT; isolated probes are non-additive analogues. H4 probes terminal errors; session-error bindings/attempts/requests are unpopulated. H5 is deferred main-thread schema decode/build. H6 is the production pending-item SELECT.",
+              "H1-H4 coexist in the production SELECT; isolated probes are non-additive analogues. H4 retains distinct terminal and own-bound session errors with newer unrelated-session controls; attempts/requests remain unpopulated. H5 is deferred main-thread schema decode/build. H6 is the production pending-item SELECT.",
             clock:
               "performance.now monotonic milliseconds; tracing/statement compilation included; no latency acceptance threshold",
             workMode: {

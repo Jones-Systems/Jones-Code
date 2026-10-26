@@ -131,7 +131,7 @@ const fixture = Effect.gen(function* () {
   });
   const ports: NativeProviderPorts = {
     authority: makeProviderFixture().ports.authority,
-    build: Effect.succeed(Option.some(binding.build)),
+    build: Effect.succeedSome(binding.build),
     threadExists: (id) =>
       orchestrator.getThreadShell(id).pipe(Effect.map((shell) => shell !== null)),
     engine: orchestrator,
@@ -196,7 +196,7 @@ it.effect(
       const before = yield* f.projections.getThreadProjection(f.threadId);
       const provider = makeWorkstreamsNativeProvider(f.ports);
       const result = yield* provider.settle(binding, request, requestBytesSha256);
-      yield* Schema.decodeUnknownEffect(WorkstreamsNativeSettlementResponse)(result);
+      yield* Schema.decodeEffect(WorkstreamsNativeSettlementResponse)(result);
       assert.strictEqual(result.state, "terminal");
       if (result.state === "terminal") assert.strictEqual(result.result.native_outcome, "denied");
       assert.deepEqual(yield* f.projections.getThreadProjection(f.threadId), before);
@@ -237,7 +237,7 @@ it.effect(
           ),
         );
         const result = yield* provider.settle(binding, input, digest);
-        yield* Schema.decodeUnknownEffect(WorkstreamsNativeSettlementResponse)(result);
+        yield* Schema.decodeEffect(WorkstreamsNativeSettlementResponse)(result);
         assert.strictEqual(result.state, "terminal");
         if (result.state !== "terminal") throw new Error("Expected durable terminal evidence.");
         assert.strictEqual(result.result.native_outcome, "committed");
@@ -329,7 +329,7 @@ it.effect(
       yield* Fiber.interrupt(pending);
       const before = yield* f.sql`SELECT sequence FROM orchestration_events ORDER BY sequence`;
       const recovered = yield* provider.lookup(binding, request, requestBytesSha256);
-      yield* Schema.decodeUnknownEffect(WorkstreamsNativeSettlementResponse)(recovered);
+      yield* Schema.decodeEffect(WorkstreamsNativeSettlementResponse)(recovered);
       assert.strictEqual(recovered.state, "terminal");
       if (recovered.state === "terminal")
         assert.strictEqual(recovered.result.native_outcome, "committed");
@@ -376,7 +376,7 @@ it.effect(
       );
       const provider = makeWorkstreamsNativeProvider(f.ports);
       const result = yield* provider.settle(binding, input, digest);
-      yield* Schema.decodeUnknownEffect(WorkstreamsNativeSettlementResponse)(result);
+      yield* Schema.decodeEffect(WorkstreamsNativeSettlementResponse)(result);
       assert.strictEqual(result.state, "terminal");
       if (result.state !== "terminal") throw new Error("Expected durable terminal evidence.");
       assert.strictEqual(result.result.native_outcome, "committed");
@@ -569,9 +569,11 @@ it.effect.each(
         ? makeWorkstreamsNativeProvider(
             {
               ...ports,
-              build: Effect.succeed(
-                Option.some({ ...binding.build, sha: "c".repeat(40), tree: "d".repeat(40) }),
-              ),
+              build: Effect.succeedSome({
+                ...binding.build,
+                sha: "c".repeat(40),
+                tree: "d".repeat(40),
+              }),
             },
             "v2",
           )
@@ -585,7 +587,7 @@ it.effect.each(
         commandId: CommandId.make("newer-metadata"),
         threadId: f.threadId,
       });
-      const compacted = yield* maintenance.compactEventStore;
+      const compacted = yield* maintenance.compactEventStore();
       assert.isAbove(compacted.deletedEventCount, 0);
       assert.deepEqual(
         yield* f.sql`SELECT event_id FROM orchestration_events WHERE command_id = ${attempt.nativeCommandId}`,

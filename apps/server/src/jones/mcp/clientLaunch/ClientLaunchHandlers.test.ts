@@ -26,6 +26,7 @@ import * as Receipts from "../../../orchestration-v2/CommandReceiptStore.ts";
 import * as EventSink from "../../../orchestration-v2/EventSink.ts";
 import { DispatchModeLimit } from "../../../orchestration-v2/DispatchModeLimit.ts";
 import * as Projects from "../../../project/ProjectService.ts";
+import * as DocumentText from "../../../provider/DocumentText.ts";
 import * as ManagedFolders from "../../../project/ManagedProjectFolders.ts";
 import * as Git from "../../../vcs/GitVcsDriver.ts";
 import * as Invocation from "../../../mcp/McpInvocationContext.ts";
@@ -108,6 +109,7 @@ function harness(
     database,
     NodeCrypto.layer,
     NodeServices.layer,
+    Layer.succeed(DocumentText.DocumentText, { ensure: () => Effect.sync(() => undefined) }),
     ServerSettings.layerTest(),
     ServerConfig.layerTest(process.cwd(), { prefix: "jones-client-launch-" }).pipe(
       Layer.provide(NodeServices.layer),
@@ -134,21 +136,19 @@ function harness(
     }),
     Layer.mock(Projects.ProjectService)({
       getById: () =>
-        Effect.succeed(
-          Option.some({
-            id: projectId,
-            title: "Project",
-            workspaceRoot: "/synthetic",
-            repositoryIdentity: null,
-            faviconPath: null,
-            defaultModelSelection: modelSelection,
-            defaultThreadEnvMode: null,
-            scripts: [],
-            createdAt: "2026-01-01T00:00:00Z",
-            updatedAt: "2026-01-01T00:00:00Z",
-            deletedAt: null,
-          }),
-        ),
+        Effect.succeedSome({
+          id: projectId,
+          title: "Project",
+          workspaceRoot: "/synthetic",
+          repositoryIdentity: null,
+          faviconPath: null,
+          defaultModelSelection: modelSelection,
+          defaultThreadEnvMode: null,
+          scripts: [],
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+          deletedAt: null,
+        }),
     }),
     Layer.mock(Threads.ThreadManagementService)({
       getThreadShell: (id) =>
@@ -205,9 +205,7 @@ function harness(
 
 const execute = <A, E, R>(h: ReturnType<typeof harness>, effect: Effect.Effect<A, E, R>) =>
   effect.pipe(Effect.provide(h.dependencies));
-const tool = Effect.gen(function* () {
-  return yield* ProjectToolkit.pipe(Effect.provide(Access.HandlersLayer.layer(Handlers.layer)));
-});
+const tool = ProjectToolkit.pipe(Effect.provide(Access.HandlersLayer.layer(Handlers.layer)));
 const code = (result: ReadonlyArray<{ readonly result: unknown }>) =>
   (result.at(-1)!.result as { code?: string }).code;
 

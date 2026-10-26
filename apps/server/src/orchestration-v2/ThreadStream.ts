@@ -2,6 +2,7 @@ import { type RecordedThreadProjection as OrchestrationV2ThreadProjection } from
 import type { OrchestrationV2ThreadStreamItem } from "@t3tools/contracts";
 
 import { omitLocalVisibleTurnItems } from "@t3tools/shared/orchestrationV2BoundedSnapshot";
+import { dedupeSnapshotBodies } from "@t3tools/shared/orchestrationV2DedupedBodies";
 
 import {
   buildBoundedThreadProjection,
@@ -13,10 +14,7 @@ export const THREAD_RESUME_MAX_REPLAY_EVENTS = 128;
 
 export const THREAD_RESUME_MAX_REPLAY_ENCODED_BYTES = 1_048_576;
 
-/**
- * Keep the original preflight budget: decoded objects and temporary strings
- * cost more than their stored JSON, even if wire projection shrinks them later.
- */
+/** Decoded objects and temporary strings exceed stored JSON size, even before wire slimming. */
 export const THREAD_RESUME_MAX_RAW_PAYLOAD_BYTES = 1_048_576;
 
 export function isThreadReplayRawPayloadSafe(rawPayloadBytes: number): boolean {
@@ -40,18 +38,22 @@ type ThreadSnapshotStreamItem = Extract<
 export function boundedSnapshotResponseFields(input: {
   readonly bounded: BoundedProjectionResult;
   readonly compactTurnItems: boolean;
+  readonly dedupeBodies: boolean;
+  readonly compactIds: boolean;
 }) {
   const { bounded } = input;
-  const compactProjection = input.compactTurnItems
-    ? omitLocalVisibleTurnItems(bounded.projection)
-    : null;
+  // Dedupe keeps shared items one object, which the compaction's identity check needs.
+  const projection = input.dedupeBodies
+    ? dedupeSnapshotBodies(bounded.projection)
+    : bounded.projection;
+  const compactProjection = input.compactTurnItems ? omitLocalVisibleTurnItems(projection) : null;
   return {
-    projection: compactProjection ?? bounded.projection,
+    projection: compactProjection ?? projection,
     historyCursor: bounded.historyCursor,
     hasMoreHistory: bounded.hasMoreHistory,
     latestLocalTurnOrdinal: bounded.latestLocalTurnOrdinal,
-    payloadBudgetExceeded: bounded.payloadBudgetExceeded,
     ...(compactProjection === null ? {} : { turnItemsOmitLocalVisible: true as const }),
+    ...(input.compactIds ? { idTable: true as const } : {}),
   };
 }
 
@@ -59,6 +61,8 @@ export function buildBoundedThreadStreamSnapshot(input: {
   readonly snapshotSequence: number;
   readonly projection: OrchestrationV2ThreadProjection;
   readonly compactTurnItems?: boolean;
+  readonly dedupeBodies?: boolean;
+  readonly compactIds?: boolean;
 }): ThreadSnapshotStreamItem {
   const bounded = buildBoundedThreadProjection({
     snapshotSequence: input.snapshotSequence,
@@ -70,6 +74,8 @@ export function buildBoundedThreadStreamSnapshot(input: {
     ...boundedSnapshotResponseFields({
       bounded,
       compactTurnItems: input.compactTurnItems === true,
+      dedupeBodies: input.dedupeBodies === true,
+      compactIds: input.compactIds === true,
     }),
   };
 }
@@ -82,10 +88,7 @@ export type ThreadResumePlan =
     }
   | { readonly mode: "snapshot" };
 
-/**
- * Event count limits reducer churn while encoded bytes limit a small number of
- * large updates. Either excess is cheaper to replace with one current snapshot.
- */
+/** Bound event count and encoded bytes; replace excessive replay with one current snapshot. */
 export function decideThreadResume(input: {
   readonly afterSequence: number;
   readonly highWater: number;

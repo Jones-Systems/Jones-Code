@@ -100,13 +100,10 @@ async function retireStaleCompletions(cacheRoot: string): Promise<number> {
 }
 
 /**
- * Removes dead preparation leftovers:
- * - job directories whose owner is gone, each under its owner lock, with their extraction scratch
- *   and worker temporary files;
- * - Actions attempts that no completion index selects, after retiring all but the newest
- *   completed downloads;
- * - runtime copies a killed stage left in `runtime/versions/.jones-stage-*`, under the runtime lock.
- * Live jobs, DMG mounts and adoption or legacy extraction scratch are retained, never removed.
+ * Remove dead-owner job directories under their owner lock, including extraction/worker scratch.
+ * Retire older completed downloads, then remove Actions attempts unselected by any completion index.
+ * Remove killed .jones-stage-* runtime copies under the runtime lock.
+ * Retain live jobs, DMG mounts and adoption/legacy extraction scratch.
  */
 export async function sweepPreparationLeftovers(input: {
   readonly baseDir: string;

@@ -21,12 +21,9 @@ export type WorkstreamActivation =
   | { readonly state: "invalid" }
   | { readonly state: "enabled"; readonly value: ControlPlaneWorkstreamActivation };
 
-// Plain HTTP is accepted only for an IP-literal loopback control plane on the
-// same host. Reaching it through the tailnet HTTPS route would pass Tailscale
-// Serve, which adds Tailscale identity headers to requests from untagged nodes;
-// the control plane refuses those alongside signed requests. HMAC request
-// signing for a selected binding is identical on both transports. `localhost` and other hostnames stay
-// HTTPS-only because name resolution could leave the host.
+// Allow plain HTTP only for same-host IP-literal loopback; hostnames (including localhost) stay HTTPS-only.
+// Tailnet HTTPS traverses Tailscale Serve, whose untagged-node identity headers the control plane rejects
+// alongside signed requests. HMAC signing for the selected binding is identical on either transport.
 function hasCanonicalOrigin(baseUrl: URL): boolean {
   return (
     baseUrl.protocol === "https:" ||

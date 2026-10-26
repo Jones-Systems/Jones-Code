@@ -6,6 +6,13 @@ import { expect, it, vi } from "vite-plus/test";
 
 import "~/index.css";
 
+function expectCollapsedGroup(id: string, label: string, count: number) {
+  const toggle = container.querySelector(`[data-linked-group="${id}"] button`);
+  expect(toggle?.textContent).toContain(label);
+  expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+  expect(toggle?.querySelector(".tabular-nums")?.textContent?.trim()).toBe(String(count));
+}
+
 const state = vi.hoisted(() => ({
   stopWorkflowLabel: "environment-data:orchestration:stop-workflow",
   projection: null as unknown,
@@ -257,7 +264,7 @@ it("shows the matching child agent details and refreshes them when the agent set
   };
   await update();
   expect(heading()).toBe("Linked (1)");
-  expect(text()).toContain("Previous agents (1)");
+  expectCollapsedGroup("previous", "Previous agents", 1);
   expect(text()).not.toContain("Checker");
   await click(sectionToggle(false));
   expect(text()).toContain("Checker");
@@ -275,7 +282,7 @@ it("shows the matching child agent details and refreshes them when the agent set
   expect(text()).not.toContain("Worker");
   await click(sectionToggle(true));
   expect(text()).not.toContain("Checker");
-  expect(text()).toContain("Previous agents (1)");
+  expectCollapsedGroup("previous", "Previous agents", 1);
   await click(sectionToggle(false));
   expect(text()).toContain("Checker");
 
@@ -359,12 +366,7 @@ it("keeps fork ancestry navigable inside Linked and closes Linked when the selec
   expect(container.querySelectorAll("li")).toHaveLength(0);
   await click(linkedToggle());
   expect(textNodes(" ")).toContain("Forked from");
-  expect(
-    container
-      .querySelector('[data-linked-group="children"] button')
-      ?.textContent?.replace(/\s+/g, " ")
-      .trim(),
-  ).toBe("Children (1)");
+  expectCollapsedGroup("children", "Children", 1);
   await click(buttons().find((button) => button.textContent?.includes("Children"))!);
   expect(textNodes(" ")).not.toContain("Delegated tasks");
   const sourceButton = buttons().find((button) =>
@@ -440,7 +442,7 @@ it("combines remote and local history before collapse and pagination, then resto
     />,
   );
   await click(linkedToggle());
-  expect(textNodes(" ").replace(/\s+/g, " ")).toContain("Previous agents (7)");
+  expectCollapsedGroup("previous", "Previous agents", 7);
   expect(textNodes(" ").replace(/\s+/g, " ")).not.toContain("Remote task");
   await click(sectionToggle(false));
   expect(container.querySelectorAll("li")).toHaveLength(6);
@@ -467,7 +469,7 @@ it("combines remote and local history before collapse and pagination, then resto
   await update();
   expect(heading()).toBe("Linked · 1 running (7)");
   await click(sectionToggle(true));
-  expect(textNodes(" ").replace(/\s+/g, " ")).toContain("Previous agents (6)");
+  expectCollapsedGroup("previous", "Previous agents", 6);
   expect(container.querySelectorAll("li")).toHaveLength(1);
   const resumed = buttons().find((button) => button.textContent?.includes("Remote task 0"))!;
   await click(resumed);

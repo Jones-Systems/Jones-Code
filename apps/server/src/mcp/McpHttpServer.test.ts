@@ -135,7 +135,6 @@ const callTool = (name: string, args: Record<string, unknown>) =>
 
 const callSnapshot = (args: Record<string, unknown>) => callTool("preview_snapshot", args);
 
-// Real tool definitions with handlers that record what they decoded.
 const layerRecordingTools = (calls: Array<unknown>) => {
   const RecordingToolkit = Toolkit.make(
     OrchestratorToolkit.tools.delegate_task,
@@ -368,7 +367,6 @@ it.effect("decodes null optional arguments the way it decodes omitted ones", () 
     yield* callTool("t3_thread_read", { ...thread, afterPosition: null, view: null });
     yield* callTool("delegate_task", { task: "Inspect", target: {} });
     yield* callTool("delegate_task", { task: "Inspect", title: null, target: { model: null } });
-    // A null the schema declares keeps its meaning: here it clears the project icon.
     yield* callTool("t3_project_update", { projectId: "project-1", projectIcon: null });
 
     expect(calls).toHaveLength(5);
@@ -425,6 +423,19 @@ it.effect.each(["limit", "runLimit", "maxCharsPerItem"])(
   },
 );
 
+it("preserves Jones child ownership and independent review routing", () => {
+  const description = OrchestratorToolkit.tools.delegate_task.description ?? "";
+  expect(description).toContain("T3-owned child agent/subagent of THIS thread");
+  expect(description).toContain("without copying parent conversation history");
+  expect(description).toContain("own provider session and backing thread");
+  expect(description).toContain(
+    "For every independent T3 delegated review round, call delegate_task again",
+  );
+  expect(description).toContain("childThreadId is backing storage, not the target");
+  expect(description).toContain("another delegated review round through t3_thread_send");
+  expect(description).toContain("end the turn instead of polling or spawning watchers");
+});
+
 it.effect(
   "registers the pull request toolkit and surfaces a missing capability as a tool error",
   () =>
@@ -441,7 +452,8 @@ it.effect(
       const linkTool = server.tools.find(({ tool }) => tool.name === "link_pull_request");
       expect(linkTool?.tool.annotations?.idempotentHint).toBe(true);
       expect(linkTool?.tool.annotations?.openWorldHint).toBe(false);
-      expect(linkTool?.tool.description).toContain("Register every pull request you open");
+      expect(linkTool?.tool.description).toContain("Link a PR to this thread");
+      expect(linkTool?.tool.description).toContain("settles the thread on merge");
 
       const denied = yield* server
         .callTool({ name: "list_thread_pull_requests", arguments: {} })
@@ -536,7 +548,6 @@ it.effect("keeps the snapshot text under the agent's output ceiling", () =>
       expect(parsed.consoleEntries[0]?.text).toBe("entry 60");
       expect(notice?.type === "text" ? notice.text : "").toContain("accessibilityTree");
       expect(notice?.type === "text" ? notice.text : "").toContain("60 older console entries");
-      // Claude Code shows the model structuredContent instead of the text, so it is bounded too.
       expect(snapshot.structuredContent).toEqual({
         ...parsed,
         omitted: expect.arrayContaining(["60 older console entries"]),
@@ -813,6 +824,93 @@ it.effect("admits provider and OAuth client credentials and points only clients 
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+it.effect("lists pull request watch tools only to threads that are not delegated children", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const scopeFor = (
+        token: string,
+        subagent: boolean,
+      ): McpInvocationContext.McpThreadInvocationScope => ({
+        environmentId,
+        requestNamespace: token,
+        thread: {
+          threadId: ThreadId.make(`thread-${token}`),
+          providerSessionId: token,
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          subagent,
+        },
+        client: undefined,
+        capabilities: new Set(["pull-requests"]),
+        issuedAt: 1,
+      });
+      const scopes = new Map([
+        ["parentToken", scopeFor("parentToken", false)],
+        ["childToken", scopeFor("childToken", true)],
+      ]);
+      const serverLayer = McpHttpServer.layerPullRequestsToolkit.pipe(
+        Layer.provideMerge(McpHttpServer.layerMcpTransport),
+        Layer.provide(
+          Layer.mock(McpSessionRegistry.McpSessionRegistry)({
+            resolve: (token) => Effect.succeed(scopes.get(token)),
+          }),
+        ),
+        Layer.provide(
+          Layer.mergeAll(
+            McpToolAccessTestkit.liveThreadsLayer,
+            Layer.mock(ProjectService.ProjectService)({}),
+            Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
+            Layer.mock(Orchestrator.OrchestratorV2)({}),
+            Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
+            NodeServices.layer,
+          ),
+        ),
+      );
+      yield* HttpRouter.serve(serverLayer, { disableListenLog: true, disableLogger: true }).pipe(
+        Layer.build,
+      );
+      const httpClient = yield* HttpClient.HttpClient;
+      const listedTools = (token: string) =>
+        Effect.gen(function* () {
+          const headers = {
+            accept: "application/json, text/event-stream",
+            authorization: `Bearer ${token}`,
+          };
+          const initialize = yield* httpClient.post("/mcp", {
+            headers,
+            body: HttpBody.text(
+              `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"1.0.0"}}}`,
+              "application/json",
+            ),
+          });
+          const listed = yield* httpClient.post("/mcp", {
+            headers: {
+              ...headers,
+              "mcp-session-id": initialize.headers["mcp-session-id"]!,
+              "mcp-protocol-version": "2025-06-18",
+            },
+            body: HttpBody.text(
+              `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`,
+              "application/json",
+            ),
+          });
+          const body = (yield* listed.json) as {
+            readonly result: { readonly tools: ReadonlyArray<{ readonly name: string }> };
+          };
+          return body.result.tools.map((tool) => tool.name);
+        });
+
+      const parentTools = yield* listedTools("parentToken");
+      const childTools = yield* listedTools("childToken");
+      expect(parentTools).toEqual(
+        expect.arrayContaining(["link_pull_request", "watch_pull_request", "unwatch_pull_request"]),
+      );
+      expect(childTools).toContain("link_pull_request");
+      expect(childTools).not.toContain("watch_pull_request");
+      expect(childTools).not.toContain("unwatch_pull_request");
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
 it.effect(
   "narrows an OAuth client's modes to the T3-Mode-Limit it sends, and never widens them",
   () =>
@@ -859,7 +957,7 @@ it.effect(
           Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
           Layer.provide(
             Layer.mock(McpSessionRegistry.McpSessionRegistry)({
-              resolve: () => Effect.succeed(undefined),
+              resolve: () => Effect.undefined,
             }),
           ),
           Layer.provide(

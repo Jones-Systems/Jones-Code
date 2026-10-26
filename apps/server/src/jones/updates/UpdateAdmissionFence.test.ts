@@ -11,7 +11,7 @@ import {
   ThreadId,
   type OrchestrationV2Run,
 } from "@t3tools/contracts";
-import type { ProviderAdapterV2Shape } from "@t3tools/provider-core/server/ProviderAdapter";
+import type { ProviderAdapterV2 } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -224,7 +224,7 @@ describe("fencedInstall", () => {
     Fence.fencedInstall({
       fence,
       mode: options.mode ?? "automatic",
-      finalCheck: options.finalCheck ?? Effect.succeed(undefined),
+      finalCheck: options.finalCheck ?? Effect.undefined,
       handoffOutcome: options.handoffOutcome ?? (() => Effect.succeed("rejected" as const)),
       ...(options.reopened === undefined ? {} : { reopened: options.reopened }),
       install,
@@ -546,7 +546,7 @@ const adapter = {
   getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
   planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
   openSession: () => Effect.die("Admission tests inspect durable start intent without a provider"),
-} as ProviderAdapterV2Shape;
+} as ProviderAdapterV2["Service"];
 const database = SqlitePersistence.layerMemory;
 const orchestration = (fence: Layer.Layer<Fence.UpdateAdmissionFence>) =>
   Layer.mergeAll(

@@ -86,15 +86,13 @@ export const awaitSelectedJonesTrialStartup = <E, R>(input: {
     const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
     const qualified = launcher.requiresQualifiedTrialGate === true;
     if (descriptor && qualified) {
-      return yield* Effect.fail(
-        new JonesTrialGateError({
-          step: "identity",
-          uncertain: false,
-          cause: new Error(
-            "A native descriptor and a qualified launcher trial cannot share startup authority.",
-          ),
-        }),
-      );
+      return yield* new JonesTrialGateError({
+        step: "identity",
+        uncertain: false,
+        cause: new Error(
+          "A native descriptor and a qualified launcher trial cannot share startup authority.",
+        ),
+      });
     }
     if (descriptor) return yield* awaitJonesTrialStartup(input);
     if (!qualified) return;

@@ -3,6 +3,7 @@ import {
   NodeId,
   RunId,
   TurnItemId,
+  type OrchestrationV2ProjectedTurnItem,
   type OrchestrationV2Run,
   type OrchestrationV2TurnItem,
   type OrchestrationV2UserMessageInputIntent,
@@ -10,6 +11,7 @@ import {
 } from "@t3tools/contracts";
 import { createOrchestrationV2TurnItemVisibility } from "@t3tools/shared/orchestrationV2Timeline";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import {
@@ -17,8 +19,8 @@ import {
   decodeThreadHistoryCursor,
   encodeThreadHistoryCursor,
   isThreadHistoryUserTurn,
-  OLDER_THREAD_USER_TURN_LIMIT,
   THREAD_HISTORY_PAGE_POLICY,
+  type ThreadHistoryPagePolicy,
 } from "../../orchestration-v2/threadHistoryPaging.ts";
 
 const encodeIdList = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
@@ -57,13 +59,11 @@ export const readLocalHistoryPage = Effect.fn("ProjectionStore.readLocalHistoryP
   threadId: ThreadId,
   cursor: string,
   snapshotSequence: number,
+  policy: ThreadHistoryPagePolicy,
 ) {
-  let decoded: ReturnType<typeof decodeThreadHistoryCursor>;
-  try {
-    decoded = decodeThreadHistoryCursor(cursor);
-  } catch {
-    return null;
-  }
+  const parsed = yield* Effect.try(() => decodeThreadHistoryCursor(cursor)).pipe(Effect.option);
+  if (Option.isNone(parsed)) return null;
+  const decoded = parsed.value;
   if (decoded.st !== String(threadId)) return null;
   const sql = yield* SqlClient.SqlClient;
   const columns = sql`turn_item_id, ordinal, run_id, node_id, type,
@@ -140,10 +140,7 @@ export const readLocalHistoryPage = Effect.fn("ProjectionStore.readLocalHistoryP
     ) AS has_users`;
   const anchorPosition = (counts[0]?.count ?? 0) - (correction[0]?.hidden_count ?? 0);
   const hasUserTurns = correction[0]?.has_users === 1;
-  const budget = createThreadHistoryPageBudget(
-    { ...THREAD_HISTORY_PAGE_POLICY, maxUserTurns: OLDER_THREAD_USER_TURN_LIMIT },
-    hasUserTurns,
-  );
+  const budget = createThreadHistoryPageBudget(policy, hasUserTurns);
   const facts = new Map<string, RunFacts>();
   const readInputs = new Set<string>();
   const readInterrupts = new Set<string>();
@@ -275,7 +272,9 @@ export const readLocalHistoryPage = Effect.fn("ProjectionStore.readLocalHistoryP
       });
     }
     boundary = rows[rows.length - 1]!;
+    if (rows.length < THREAD_HISTORY_PAGE_POLICY.maxItems + 2) done = true;
   }
+  selected.splice(budget.keep());
   selected.reverse();
   const oldest = selected[0];
   const hasMoreHistory = oldest !== undefined && oldest.canonicalPosition > 0;
@@ -295,4 +294,41 @@ export const readLocalHistoryPage = Effect.fn("ProjectionStore.readLocalHistoryP
       hasMoreHistory,
     },
   };
+});
+
+/** Only call for visible rows from the unforked local keyset path. */
+export const readMissingInterruptRequests = Effect.fn(
+  "ProjectionStore.readMissingInterruptRequests",
+)(function* (
+  threadId: ThreadId,
+  pageItems: ReadonlyArray<Pick<OrchestrationV2ProjectedTurnItem, "item">>,
+) {
+  const runs = new Set<string>();
+  for (const { item } of pageItems) {
+    if (item.type === "run_interrupt_result" && item.runId != null) runs.add(item.runId);
+  }
+  for (const { item } of pageItems) {
+    if (item.type === "run_interrupt_request" && item.runId != null) runs.delete(item.runId);
+  }
+  if (runs.size === 0) return [];
+  const sql = yield* SqlClient.SqlClient;
+  // A visible result rules out a rolled-back run. Requests have no other
+  // visibility exclusions, including on cancelled runs or superseded attempts.
+  const rows = yield* sql<Omit<Metadata, "input_intent" | "created_by" | "message_id">>`
+        SELECT turn_item_id, ordinal, run_id, node_id, type
+        FROM orchestration_v2_projection_turn_items
+        WHERE thread_id = ${threadId} AND type = 'run_interrupt_request'
+          AND run_id IN (SELECT value FROM json_each(${encodeIdList([...runs])}))
+        ORDER BY ordinal, turn_item_id`;
+  return rows.map((row) => ({
+    sourceThreadId: threadId,
+    sourceItemId: TurnItemId.make(row.turn_item_id),
+    visibility: "local" as const,
+    item: metadataItem(threadId, {
+      ...row,
+      input_intent: null,
+      created_by: null,
+      message_id: null,
+    }),
+  }));
 });

@@ -12,11 +12,9 @@ const restartedPastMaxAgeReason =
   "The server restarted before this delivery ran, and it is now older than the task's maximum age.";
 
 /**
- * A webhook delivery is acknowledged before its run starts, and the runs of one task wait in
- * memory behind each other. Neither the sender nor the relay, whose delivery is claimed, sends an
- * acknowledged delivery again. So a delivery is recorded here in the transaction that claims and
- * logs it, before it is acknowledged, and stays recorded until its run settles. A restart, such
- * as an update install, then runs the ones it cut off instead of losing them.
+ * Acknowledge webhook delivery only after recording it in the claim/log transaction; keep it until its run settles.
+ * Runs wait serially in memory, but neither sender nor claimed relay replays an acknowledged delivery.
+ * Durable recording lets restart/update recovery resume interrupted deliveries instead of losing them.
  */
 export interface PendingWebhookRun {
   readonly deliveryId: string;
@@ -96,11 +94,9 @@ export const makePendingWebhookRuns = Effect.gen(function* () {
     );
 
   /**
-   * A scheduler source: runs the deliveries an earlier server recorded but did not settle, in
-   * arrival order. `run` settles each one when it reaches an outcome, and skips it when the task
-   * was paused, replaced or retargeted. The command id of a run is derived from its delivery, so
-   * a run whose dispatch landed before the stop is not dispatched again. A pass that cannot read
-   * the records fails, and the next tick tries again.
+   * Recover unsettled deliveries in arrival order; run settles outcomes and skips paused, replaced or retargeted tasks.
+   * Delivery-derived command ids prevent redispatch when a pre-stop dispatch already landed.
+   * Unreadable records fail this pass and are retried on the next tick.
    */
   const recover = Effect.fn("PendingWebhookRuns.recover")(function* <FindError, RunError>(input: {
     readonly findTask: (id: ScheduledTaskId) => Effect.Effect<ScheduledTask | null, FindError>;

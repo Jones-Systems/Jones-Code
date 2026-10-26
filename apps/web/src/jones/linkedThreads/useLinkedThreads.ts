@@ -75,10 +75,12 @@ export function useLinkedThreads(
     registry.set(atom, registry.get(atom) + 1);
     registry.set(refreshTimes(endpointKey(target)), Date.now());
   });
+  // oxlint-disable-next-line t3code/react-effect-budget -- Refresh linked-thread reads when the selected subject gains new linked environment identities.
   useEffect(() => {
     if (idsKey === "[]") return;
     refresh({ environmentId: subject.environmentId, threadId: subject.threadId });
   }, [subject.environmentId, subject.threadId, idsKey, refresh]);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Observe server run completion transitions and refresh linked threads without losing the prior run watermark.
   useEffect(() => {
     const atom = previousRuns(subjectKey);
     const previous = registry.get(atom);
@@ -86,6 +88,7 @@ export function useLinkedThreads(
       refresh();
     registry.set(atom, { active: runActive, settledKey });
   }, [subjectKey, runActive, settledKey, registry, refresh]);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Retain successful asynchronous linked-thread responses in the subject-scoped registry cache.
   useEffect(() => {
     const atom = cachedResults(subjectKey);
     const previous = registry.get(atom);

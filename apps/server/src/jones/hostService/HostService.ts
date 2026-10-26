@@ -231,7 +231,7 @@ const make = Effect.gen(function* () {
     );
   const readOptional = (filePath: string) =>
     fs.readFileString(filePath).pipe(
-      Effect.map(Option.some),
+      Effect.asSome,
       Effect.catchIf(
         (cause) => cause.reason._tag === "NotFound",
         () => Effect.succeed(Option.none<string>()),

@@ -79,9 +79,7 @@ export interface DesktopBackendStartConfig extends BackendProcessContext {
   readonly jonesDesktopOwner?: () => JonesNativeWriterAdmission;
   readonly args: ReadonlyArray<string>;
   readonly env: Record<string, string | undefined>;
-  // When true the spawner merges the desktop process.env on top of `env`;
-  // when false `env` is passed verbatim. WSL mode opts out so a leaking
-  // T3CODE_HOME can't pin the WSL backend to /mnt/c/...\.t3.
+  /** False passes env verbatim, preventing the Windows T3CODE_HOME from leaking into WSL. */
   readonly extendEnv: boolean;
   readonly bootstrap: DesktopBackendBootstrapValue;
   readonly bootstrapDelivery: DesktopBackendBootstrapDelivery;
@@ -310,11 +308,7 @@ export interface BackendInstanceSpec {
   readonly id: BackendInstanceId;
   readonly label: Effect.Effect<string>;
   readonly configResolve: Effect.Effect<DesktopBackendStartConfig, PlatformError.PlatformError>;
-  // Receives the *resolved* httpBaseUrl of the run that just became
-  // ready. The window service uses this to decide what URL to load
-  // (the WSL backend reports its distro IP, the Windows backend reports
-  // 127.0.0.1). Splitting this off from configResolve avoids races
-  // between "fired onReady" and "currentConfig already advanced".
+  /** Receives the ready run's resolved URL; reading current config could race a subsequent restart. */
   readonly onReady?: (httpBaseUrl: URL) => Effect.Effect<void>;
   readonly onShutdown?: () => Effect.Effect<void>;
   readonly onPreflightFailed?: (failure: PreflightFailure) => Effect.Effect<boolean>;
@@ -524,16 +518,12 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
     cwd: options.cwd,
     env: options.env,
     extendEnv: options.extendEnv,
-    // In Electron main, process.execPath points to the Electron binary.
-    // Run the child in Node mode so this backend process does not become a GUI app instance.
     stdin: options.bootstrapDelivery === "stdin" ? bootstrapStream : "ignore",
     stdout: options.captureOutput ? "pipe" : "inherit",
     stderr: options.captureOutput ? "pipe" : "inherit",
     killSignal: "SIGTERM",
     forceKillAfter: DEFAULT_BACKEND_TERMINATE_GRACE,
-    // wsl.exe drops additional file descriptors when forwarding to the Linux
-    // side, so the WSL spawn path delivers the bootstrap envelope via stdin
-    // (`--bootstrap-fd 0`) instead.
+    // wsl.exe drops extra file descriptors; deliver its bootstrap via stdin.
     ...(options.bootstrapDelivery === "fd3" ? { additionalFds } : {}),
   });
 
@@ -736,12 +726,8 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
         }),
     });
   }
-  // Probe readiness in a loop while the backend process is still alive instead
-  // of giving up after the first budget. A slow cold boot (the WSL bundle
-  // loading across /mnt/c, or a first launch right after an update) can exceed
-  // the initial readiness budget while the backend is about to come up moments
-  // later; a one-shot probe left the app stuck on "Connecting to WSL…" forever
-  // even though the backend kept running and became healthy.
+  // Retry readiness while the backend remains alive: WSL /mnt/c loading or first boot after update
+  // can exceed the initial budget. A single probe left Connecting to WSL stuck even after the backend became healthy.
   const probeReadiness = Effect.fn("desktop.backendProcess.probeReadiness")(() =>
     waitForHttpReady({
       executablePath: options.executablePath,
