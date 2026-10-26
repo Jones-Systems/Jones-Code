@@ -1,6 +1,6 @@
 import type { ResponseStreamingMode } from "@t3tools/contracts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
-import type { ProviderAdapterV2Event } from "@t3tools/provider-core/server/ProviderAdapter";
+
 import * as ProviderEventOrigin from "@t3tools/provider-core/server/jones/ProviderEventOrigin";
 
 // List fences can open at any indentation; closers may be at most three spaces deeper.

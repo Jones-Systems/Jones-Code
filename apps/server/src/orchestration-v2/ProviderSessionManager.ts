@@ -72,10 +72,7 @@ import {
   runtimeBinding,
   unobservedRuntimeIdentity,
   type ProviderRuntimeLifecycle,
-  ProviderAdapterV2RuntimePolicy,
-  type ProviderAdapterV2Error,
   type ProviderAdapterV2Event,
-  type ProviderAdapterV2EventSubscription,
   type ProviderAdapterV2SessionRuntime,
 } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
@@ -776,12 +773,8 @@ export const layerWithOptions = (
           : mcpPrepareLock.withLock(
               threadId,
               Effect.gen(function* () {
-                // Reuse a still-valid credential for this thread instead of
-                // rotating: long-lived provider processes (codex app-server)
-                // build their MCP client once per conversation and keep using
-                // the credential it started with, so a thread that detaches and
-                // re-attaches across a workspace handoff must come back to the
-                // same token or the process's tool calls fail auth.
+                // Reuse a still-valid thread credential across workspace detach/reattach: long-lived providers such as
+                // codex app-server construct MCP clients once per conversation. Rotating the token breaks their later tool auth.
                 const {
                   browser: browserToolsAvailable,
                   device: deviceToolsAvailable,

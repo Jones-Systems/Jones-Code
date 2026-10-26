@@ -277,6 +277,8 @@ const desktopRenders = (tabId: string) => {
   return desktopTabs.has(tabId);
 };
 const releasedDesktopTabs: Array<string> = [];
+let desktopReleased = Promise.withResolvers<void>();
+let desktopDetachSubscribed = Promise.withResolvers<void>();
 const desktopTurns = new NodeEvents.EventEmitter();
 const desktopConnections: Array<{ endpoint: string; context: ReturnType<typeof makeContext> }> = [];
 const testThread = {
@@ -323,6 +325,7 @@ const dependencies = Layer.mergeAll(
           const onDetach = (key: { threadId: string; tabId: string }) =>
             Queue.offerUnsafe(queue, key);
           desktopDetaches.on("detach", onDetach);
+          desktopDetachSubscribed.resolve();
           return onDetach;
         }),
         (onDetach) => Effect.sync(() => desktopDetaches.off("detach", onDetach)),
@@ -348,7 +351,10 @@ const dependencies = Layer.mergeAll(
       ),
     endpoint: (key) =>
       Effect.acquireRelease(Effect.succeed(`ws://desktop/${key.tabId}`), () =>
-        Effect.sync(() => releasedDesktopTabs.push(key.tabId)),
+        Effect.sync(() => {
+          releasedDesktopTabs.push(key.tabId);
+          desktopReleased.resolve();
+        }),
       ),
     pointer: () => Effect.void,
     turn: (threadId, active) => Effect.sync(() => desktopTurns.emit("turn", threadId, active)),
@@ -406,6 +412,8 @@ beforeEach(() => {
   desktopTabs.clear();
   desktopRendersNext = false;
   releasedDesktopTabs.length = 0;
+  desktopReleased = Promise.withResolvers<void>();
+  desktopDetachSubscribed = Promise.withResolvers<void>();
   desktopConnections.length = 0;
 });
 
@@ -1421,7 +1429,7 @@ it.live("drives the desktop's own page for a tab the desktop renders", () =>
         selectedClient: { runtimeIdentity: desktopRuntimeIdentity },
       });
       yield* manager.close({ threadId: scope.thread.threadId, tabId: opened.tabId });
-      while (releasedDesktopTabs.length === 0) yield* Effect.yieldNow;
+      yield* Effect.promise(() => desktopReleased.promise);
       expect(releasedDesktopTabs).toEqual([opened.tabId]);
       expect(page.close).not.toHaveBeenCalled();
     }),
@@ -1438,7 +1446,7 @@ it.live("a desktop page the desktop takes back reconnects instead of closing", (
       const opened = yield* manager.open({ threadId: scope.thread.threadId, runtime: "server" });
       const viewer = yield* browser.attachViewer(viewerInput(opened.tabId, false));
       // The server's listener subscribes in its own fiber; detach once it is there.
-      while (desktopDetaches.listenerCount("detach") === 0) yield* Effect.yieldNow;
+      yield* Effect.promise(() => desktopDetachSubscribed.promise);
       desktopDetaches.emit("detach", { threadId: scope.thread.threadId, tabId: opened.tabId });
       let end = yield* Queue.take(viewer.output);
       while (end._tag !== "reconnect" && end._tag !== "gone")

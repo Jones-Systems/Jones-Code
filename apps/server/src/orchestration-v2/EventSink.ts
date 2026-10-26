@@ -546,13 +546,9 @@ const layerBase: Layer.Layer<
           Effect.andThen(publishLiveEvents(events.filter(isPublicStoredOrchestrationEvent))),
         );
 
-    // Transactions commit one at a time, but each writer publishes after its
-    // commit. If a writer is descheduled in between, a later commit reaches
-    // subscribers first, and clients drop any event at or below the newest
-    // sequence they have applied. So a writer takes this lane as the last step
-    // of its transaction and holds it until it has published. Publishing never
-    // waits, so a writer that holds the transaction while it waits for the
-    // lane is not blocked for long.
+    // Commit order can differ from publication order if a writer is descheduled; clients discard older sequences.
+    // Take this lane last inside the transaction and hold it through publication to preserve that order.
+    // Publication never waits, so a transaction waiting for the lane blocks only briefly.
     const jonesTables = makeJonesTablePresence(sql);
     const runtimeStops = RuntimeStop.makeRuntimeStopMethods(sql, jonesTables);
     const settlementRestores = makeSettlementRestoreStore(sql, jonesTables);

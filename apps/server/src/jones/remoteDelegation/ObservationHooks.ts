@@ -195,7 +195,7 @@ export const make = Effect.fn("RemoteTaskObservation.make")(function* <E>(
                 yield* sql`UPDATE jones_remote_task_observations SET notices_json = ${yield* encodeNotices(notices)} WHERE parent_thread_id = ${parentThreadId} AND task_id = ${taskId}`;
               }),
             );
-          for (const notice of [...notices]) {
+          for (const notice of notices.slice()) {
             if (questions.some((request) => request.requestId === notice.requestId)) continue;
             const key = keyFor(notice);
             const queued = parent.runs.find(

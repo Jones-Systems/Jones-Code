@@ -702,7 +702,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       OpenCodeRuntime.OpenCodeRuntimeError
     > =>
       authority === undefined
-        ? Effect.succeed(undefined)
+        ? Effect.undefined
         : OpenCodeCreationPolicy.adoptSession({
             parent:
               parent.ownedProcess?.incarnation !== undefined &&

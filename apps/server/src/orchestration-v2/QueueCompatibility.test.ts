@@ -77,7 +77,7 @@ const fixture = (
           return Effect.succeed({ sequence: 42, storedEvents: [] });
         },
       }),
-      Layer.mock(Launch.ThreadLaunchService)({ ...(launch === undefined ? {} : { launch }) }),
+      Layer.mock(Launch.ThreadLaunchService)(launch === undefined ? {} : { launch }),
       Layer.mock(Projects.ProjectService)({}),
       Layer.mock(Clones.ProjectCloneTracker)({
         get: () => Effect.succeed(cloning ? ({ phase: "running" } as never) : null),

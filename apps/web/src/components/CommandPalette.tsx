@@ -109,7 +109,7 @@ import { filesystemEnvironment, useFilesystemReadAccess } from "../state/filesys
 import { projectEnvironment } from "../state/projects";
 import { useEnvironmentQuery } from "../state/query";
 import { serverEnvironment } from "../state/server";
-import { threadEnvironment } from "../state/threads";
+
 import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
 import { sourceControlEnvironment } from "../state/sourceControl";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -200,7 +200,6 @@ import {
   selectCommandPaletteClientSettings,
   useEnvironmentLookups,
   useProjectLookups,
-  useSortedProjectGroups,
 } from "./CommandPaletteLookups";
 import {
   buildNewThreadInProjectItems,

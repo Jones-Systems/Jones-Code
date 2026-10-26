@@ -54,12 +54,7 @@ import {
   deriveLockedProvider,
   hasServerAcknowledgedLocalDispatch,
   resolveDraftPromotionNavigationTarget,
-  resolveThreadMetadataUpdateForNextTurn,
-  resolveSendEnvMode,
   resolveFirstSendWorktreePreparation,
-  startNewThreadForProject,
-  shouldShowBranchMismatchBanner,
-  shouldShowPlanFollowUpPrompt,
   waitForRevertedMessage,
 } from "./ChatView.logic";
 

@@ -19,8 +19,7 @@ import * as Latch from "effect/Latch";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
-import * as Result from "effect/Result";
-import * as Schema from "effect/Schema";
+
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
@@ -37,7 +36,7 @@ import * as EnvironmentRegistry from "../connection/registry.ts";
 import { SshConnectionProfile, type ConnectionCatalogEntry } from "../connection/catalog.ts";
 import * as ConnectionProfileStore from "../connection/profileStore.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
-import { EnvironmentRpcUnavailableError } from "../rpc/client.ts";
+
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import type { RpcSession } from "../rpc/session.ts";
 import {

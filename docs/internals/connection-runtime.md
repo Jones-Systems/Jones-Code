@@ -115,6 +115,37 @@ supervisor; an expected domain failure may resubscribe on the same healthy
 session. Reconnection does not automatically replay mutations, whose retry and
 idempotency rules belong to the operation.
 
+## Legacy thread corpus reads
+
+The [thread corpus capability](../../packages/contracts/src/threadCorpusProtocol.ts)
+requires these legacy compatibility semantics:
+
+Required legacy read semantics for compatible shell and thread detail endpoints.
+Advertise only after the receiving server proves these behaviors; the DTO
+schemas alone do not establish runtime compatibility.
+The shell carries global snapshotSequence and updatedAt; projects carry id,
+workspaceRoot and optional nullable repositoryIdentity. Threads join by projectId
+and carry nullable worktreePath/branch, archivedAt/settledAt, latestUserMessageAt,
+updatedAt and nullable latestTurn/session. Optional lifecycle fields retain their
+existing schema defaults; missing activity timestamps do not prove inactivity.
+
+Placement is observed worktreePath, or project workspaceRoot when it is null.
+Neither the path nor repositoryIdentity verifies cwd, enrollment or access grants.
+This advertisement grants no dispatch, creation or provider quota capability.
+
+Detail pagination is opt-in: turnLimit is a positive integer counting user-anchored
+turns. Associated fan-out rides along, subject to the native 150 raw-turn page cap.
+Without turnLimit the full snapshot has no page metadata. With it, page carries
+hasMore, nullable opaque exclusive beforeCursor, snapshotSequence and optional
+threadSequence. A null cursor marks the oldest page; an absent threadSequence is
+unknown. Native malformed or foreign-thread cursors reload the first page, so a
+consumer must check progression instead of assuming each response advances.
+
+Detail messages carry string text without a native character limit or truncation
+flag. turnLimit bounds turns, not bytes; consumer text/response limits must report
+their own incomplete coverage. Page snapshotSequence mirrors the enclosing
+snapshot; threadSequence is the per-thread watermark needed before merging pages.
+
 ## Foreground requests and shared capacity
 
 Opening a thread, loading its messages, sending, and stopping are the requests a

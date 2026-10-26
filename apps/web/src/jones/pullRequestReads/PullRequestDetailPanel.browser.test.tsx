@@ -217,7 +217,7 @@ describe("held pull request during a provider pause", () => {
 
   it("shows a typed pause beside held detail with its original observation time", async () => {
     using _state = setup();
-    await using screen = await renderPaused("rate-limited");
+    await using _screen = await renderPaused("rate-limited");
     const status = document.querySelector('[role="status"]');
     expect(status?.textContent).toContain("paused");
     expect([...status!.querySelectorAll("time")].map((time) => time.dateTime)).toEqual([
@@ -231,13 +231,13 @@ describe("held pull request during a provider pause", () => {
 
   it("does not infer a typed pause from a legacy error message", async () => {
     using _state = setup();
-    await using screen = await renderPaused();
+    await using _screen = await renderPaused();
     expect(document.querySelector('[role="status"]')).toBeNull();
   });
 
   it("keeps manual refresh immediate and invalidates before refreshing", async () => {
     using _state = setup();
-    await using screen = await renderPaused("rate-limited");
+    await using _screen = await renderPaused("rate-limited");
     refresh.mockClear();
     await page.getByRole("button", { name: "More pull request actions", exact: true }).click();
     await page.getByRole("menuitem", { name: "Refresh", exact: true }).click();
@@ -250,7 +250,7 @@ describe("held pull request during a provider pause", () => {
 
   it("keeps title editing available during a read pause", async () => {
     using _state = setup();
-    await using screen = await renderPaused("rate-limited");
+    await using _screen = await renderPaused("rate-limited");
     await page.getByRole("button", { name: "Edit title", exact: true }).click();
     const input = document.querySelector<HTMLInputElement>('[aria-label="Pull request title"]');
     expect(input?.value).toBe(detail.title);

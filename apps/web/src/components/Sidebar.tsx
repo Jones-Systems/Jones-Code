@@ -2906,6 +2906,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       ? selectThreadTerminalUiState(state.terminalUiStateByThreadKey, routeThreadRef).terminalOpen
       : false,
   );
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own the window keyboard listener with the committed shortcut and terminal context.
   useEffect(() => {
     const onWindowKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.repeat || isCommandPaletteOpen() || isModelPickerOpen()) {
@@ -2970,6 +2971,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       },
     },
   );
+  // oxlint-disable-next-line t3code/react-effect-budget -- Publish committed jump-hint visibility to the sidebar hint store.
   useEffect(() => {
     updateThreadJumpHintsVisibility(shouldShowJumpHintsNow);
   }, [shouldShowJumpHintsNow, updateThreadJumpHintsVisibility]);

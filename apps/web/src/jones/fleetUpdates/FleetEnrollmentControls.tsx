@@ -30,6 +30,7 @@ export function FleetEnrollmentControls({
   const [busy, setBusy] = useState(false);
   const [continueThreads, setContinueThreads] = useState(false);
   const supported = window.desktopBridge?.fleetUpdates !== undefined;
+  // oxlint-disable-next-line t3code/react-effect-budget -- Read fleet enrollment status through the desktop bridge and ignore responses after the controls retire.
   useEffect(() => {
     if (!supported) return;
     let cancelled = false;

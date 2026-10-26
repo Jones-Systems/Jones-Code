@@ -342,11 +342,9 @@ const hqProjectRecord = {
 } as const;
 
 /**
- * Real orchestrator, thread management and launch preparation over in-memory
- * SQLite; Git, setup scripts and provider execution are fakes. As with the
- * real runner, setup reports a completion only when preparation observes it;
- * that completion blocks until released so each case observes the prepared
- * child before it starts.
+ * Use real orchestrator, thread management and launch preparation over in-memory SQLite;
+ * Git, setup and providers are fakes. Like production, setup completion is reported only when preparation
+ * observes it; block that completion until each case observes the prepared child before launch.
  */
 function makeHarness(
   listWorktreePaths: GitVcsDriver.GitVcsDriver["Service"]["listWorktreePaths"],

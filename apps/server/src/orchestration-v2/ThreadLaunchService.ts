@@ -2489,12 +2489,9 @@ const make = Effect.gen(function* () {
                 : { legacyBootstrap: input.legacyBootstrap }),
             })
             .pipe(
-              // An agent's launch may land on a thread a replay, or a
-              // concurrent launch with the same key, created with broader modes
-              // than it asks for. The orchestrator refuses the message under
-              // the thread's lock. Preserve a stricter caller limit and its
-              // refusal signal. The user's own clients launch into their
-              // own drafts, whatever modes those hold.
+              // Replay or concurrent launch can select a thread with broader modes than an agent requested.
+              // The orchestrator refuses under the thread lock; preserve the stricter caller limit and refusal signal.
+              // The user's own clients launch into their own drafts using those drafts' modes.
               input.createdBy === "agent"
                 ? Effect.provideService(DispatchModeLimit, {
                     runtimeMode:

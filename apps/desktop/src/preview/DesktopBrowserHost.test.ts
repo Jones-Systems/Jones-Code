@@ -176,68 +176,67 @@ describe("DesktopBrowserHost", () => {
     }).pipe(Effect.scoped),
   );
 
-  for (const revocation of ["assignment", "disconnect", "release", "detach"] as const) {
-    it.effect(
-      `drops commands awaiting focus after ${revocation} without disturbing a fresh relay`,
-      () =>
-        Effect.gen(function* () {
-          const host = yield* DesktopBrowserHost.make;
-          const debuggee = makeDebuggee({ deferFocus: true, focusedFrame: true });
-          const otherKey = { threadId: "thread-2", tabId: "tab-2" };
-          const companion = revocation === "assignment" || revocation === "disconnect";
-          if (companion) host.replaceCompanionAssignments([key, otherKey]);
-          host.attach(key, debuggee.tab);
-          const reader = yield* host.events.pipe(
-            Stream.map((line) => decodeEvent(new TextDecoder().decode(line))),
-            Stream.filter((event) => event.type === "cdp"),
-            Stream.take(1),
-            Stream.runCollect,
-            Effect.forkScoped,
-          );
-          yield* Effect.yieldNow;
-          const painting = yield* watchPainting(host);
+  it.effect.each(["assignment", "disconnect", "release", "detach"] as const)(
+    "drops commands awaiting focus after %s without disturbing a fresh relay",
+    (revocation) =>
+      Effect.gen(function* () {
+        const host = yield* DesktopBrowserHost.make;
+        const debuggee = makeDebuggee({ deferFocus: true, focusedFrame: true });
+        const otherKey = { threadId: "thread-2", tabId: "tab-2" };
+        const companion = revocation === "assignment" || revocation === "disconnect";
+        if (companion) host.replaceCompanionAssignments([key, otherKey]);
+        host.attach(key, debuggee.tab);
+        const reader = yield* host.events.pipe(
+          Stream.map((line) => decodeEvent(new TextDecoder().decode(line))),
+          Stream.filter((event) => event.type === "cdp"),
+          Stream.take(1),
+          Stream.runCollect,
+          Effect.forkScoped,
+        );
+        yield* Effect.yieldNow;
+        const painting = yield* watchPainting(host);
 
-          yield* command(host, 1, "Runtime.evaluate");
-          yield* command(host, 2, "Input.insertText");
-          yield* command(host, 3, "Page.startScreencast");
-          expect(debuggee.sent).toEqual([]);
-          expect(debuggee.focusEmulation).toEqual([true]);
+        yield* command(host, 1, "Runtime.evaluate");
+        yield* command(host, 2, "Input.insertText");
+        yield* command(host, 3, "Page.startScreencast");
+        expect(debuggee.sent).toEqual([]);
+        expect(debuggee.focusEmulation).toEqual([true]);
 
-          if (revocation === "assignment") host.replaceCompanionAssignments([otherKey]);
-          else if (revocation === "disconnect") host.replaceCompanionAssignments([]);
-          else if (revocation === "release") {
-            yield* host.handleCommandLine(encodeJson({ type: "release", ...key }));
-          } else host.detach(key);
+        if (revocation === "assignment") host.replaceCompanionAssignments([otherKey]);
+        else if (revocation === "disconnect") host.replaceCompanionAssignments([]);
+        else if (revocation === "release") {
+          yield* host.handleCommandLine(encodeJson({ type: "release", ...key }));
+        } else host.detach(key);
 
-          if (companion) host.replaceCompanionAssignments([key, otherKey]);
-          host.attach(key, debuggee.tab);
-          yield* command(host, 4, "Page.startScreencast");
-          debuggee.settleFocus();
-          yield* settle;
-          expect(debuggee.sent).toEqual([4]);
-          expect(painting).toEqual([true, false, true]);
+        if (companion) host.replaceCompanionAssignments([key, otherKey]);
+        host.attach(key, debuggee.tab);
+        yield* command(host, 4, "Page.startScreencast");
+        debuggee.settleFocus();
+        yield* settle;
+        expect(debuggee.sent).toEqual([4]);
+        expect(painting).toEqual([true, false, true]);
 
-          debuggee.release();
-          expect(yield* Fiber.join(reader)).toEqual([
-            {
-              type: "cdp",
-              ...key,
-              message: encodeJson({
-                id: 4,
-                result: { method: "Page.startScreencast" },
-                sessionId: "t3-preview-page",
-              }),
-            },
-          ]);
-          yield* TestClock.adjust("1 minute");
-          expect(debuggee.focusEmulation.at(-1)).toBe(true);
-          expect(painting.at(-1)).toBe(true);
-        }).pipe(Effect.scoped),
-    );
-  }
+        debuggee.release();
+        expect(yield* Fiber.join(reader)).toEqual([
+          {
+            type: "cdp",
+            ...key,
+            message: encodeJson({
+              id: 4,
+              result: { method: "Page.startScreencast" },
+              sessionId: "t3-preview-page",
+            }),
+          },
+        ]);
+        yield* TestClock.adjust("1 minute");
+        expect(debuggee.focusEmulation.at(-1)).toBe(true);
+        expect(painting.at(-1)).toBe(true);
+      }).pipe(Effect.scoped),
+  );
 
-  for (const sessionId of ["t3-preview-page-1", "child-frame"] as const) {
-    it.effect(`drops commands from ${sessionId} detached while focus was changing`, () =>
+  it.effect.each(["t3-preview-page-1", "child-frame"] as const)(
+    "drops commands from %s detached while focus was changing",
+    (sessionId) =>
       Effect.gen(function* () {
         const host = yield* DesktopBrowserHost.make;
         const debuggee = makeDebuggee({ deferFocus: true, focusedFrame: true });
@@ -288,8 +287,7 @@ describe("DesktopBrowserHost", () => {
           },
         ]);
       }).pipe(Effect.scoped),
-    );
-  }
+  );
 
   it.effect("sends a page one screenshot at a time", () =>
     Effect.gen(function* () {

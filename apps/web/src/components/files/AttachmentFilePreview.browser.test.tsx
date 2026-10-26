@@ -32,6 +32,34 @@ import BinaryViewer from "./BinaryViewer";
 import { decodeImagePreview } from "./decodeImagePreview";
 import type { BinaryWorkerResult } from "./binaryPreviewProtocol";
 
+function officePreviewState(screen: Screen) {
+  const root = screen.container.querySelector<HTMLElement>(
+    "[data-office-pages], .scrollbar-gutter-both",
+  );
+  return JSON.stringify({
+    text: screen.container.textContent?.slice(0, 300),
+    error: screen.container.querySelector('[role="alert"]')?.textContent,
+    frames: screen.container.querySelectorAll("iframe").length,
+    outputs: screen.container.querySelectorAll("[data-notebook-output]").length,
+    finalPages: [
+      ...screen.container.querySelectorAll<HTMLElement>('[data-office-pages] [role="group"]'),
+    ]
+      .slice(-2)
+      .map((group) => ({
+        text: group.textContent?.slice(0, 100),
+        rect: group.getBoundingClientRect().toJSON(),
+      })),
+    viewport: root
+      ? {
+          rect: root.getBoundingClientRect().toJSON(),
+          height: root.clientHeight,
+          scrollHeight: root.scrollHeight,
+          scrollTop: root.scrollTop,
+        }
+      : null,
+  });
+}
+
 // Real worker imports and WASM initialization can exceed waitFor's default second
 // when the full browser project runs concurrently on CI.
 describe("bounded binary previews", () => {
@@ -1874,23 +1902,44 @@ it.each([60, 100])("renders all %i pages of a table-heavy Word report", async (p
   archive.file("word/media/image.png", new Uint8Array(2_500_000));
   const file = await archive.generateAsync({ type: "blob", compression: "DEFLATE" });
   await using screen = await render(
-    <AttachmentFilePreview
-      name="report.docx"
-      mimeType="application/octet-stream"
-      file={file}
-      sizeBytes={file.size}
-    />,
+    <div style={{ display: "flex", height: 400, width: 600 }}>
+      <AttachmentFilePreview
+        name="report.docx"
+        mimeType="application/octet-stream"
+        file={file}
+        sizeBytes={file.size}
+      />
+    </div>,
   );
   await vi.waitFor(() => expect(screen.container.textContent).toMatch(/\d+ pages/), {
-    timeout: 30_000,
+    timeout: 10_000,
   });
   expect(screen.container.textContent).not.toContain("Preview limited");
   expect(screen.container.querySelector('[role="alert"]')).toBeNull();
   const scroll = screen.container.querySelector<HTMLElement>("[data-office-pages]")!;
-  await act(() => scroll.scrollTo({ top: scroll.scrollHeight }));
-  await vi.waitFor(() => expect(screen.container.textContent).toContain("page " + pages), {
-    timeout: 30_000,
+  const pageCount = Number(/(\d+) pages/.exec(screen.container.textContent!)![1]);
+  // Layout publishes its count before OfficePages finishes mounting placeholder batches.
+  await vi.waitFor(() => {
+    const placeholders = scroll.querySelectorAll<HTMLElement>('[role="group"]');
+    expect(placeholders, officePreviewState(screen)).toHaveLength(pageCount);
+    expect(placeholders[pageCount - 1]!.getBoundingClientRect().height).toBeGreaterThan(0);
   });
+  expect(scroll.clientHeight).toBeGreaterThan(0);
+  expect(scroll.clientHeight).toBeLessThan(scroll.scrollHeight);
+  const finalPages = scroll.querySelectorAll<HTMLElement>('[role="group"]');
+  // The final report label may precede a table that continues onto the last layout page.
+  await act(() =>
+    scroll.scrollTo({ top: finalPages[pageCount - 1]!.offsetTop - scroll.clientHeight / 2 }),
+  );
+  await vi.waitFor(
+    () =>
+      expect(screen.container.textContent, officePreviewState(screen)).toContain("page " + pages),
+    {
+      timeout: 3_000,
+    },
+  );
+  await act(() => scroll.scrollTo({ top: scroll.scrollHeight }));
+  expect(scroll.scrollTop + scroll.clientHeight).toBeGreaterThanOrEqual(scroll.scrollHeight - 1);
 });
 
 describe("standalone Mermaid previews", () => {
@@ -2503,8 +2552,15 @@ it("mounts a bounded set of saved notebook outputs as the reader scrolls", async
       />
     </div>,
   );
+  await vi.waitFor(
+    () => expect(screen.container.textContent, officePreviewState(screen)).toContain("20 cells"),
+    { timeout: 10_000 },
+  );
   await vi.waitFor(() =>
-    expect(screen.container.querySelectorAll("iframe").length).toBeGreaterThan(0),
+    expect(
+      screen.container.querySelectorAll("iframe").length,
+      officePreviewState(screen),
+    ).toBeGreaterThan(0),
   );
   expect(screen.container.querySelectorAll("iframe").length).toBeLessThanOrEqual(16);
   const first = screen.container.querySelector("iframe")!;
@@ -2658,6 +2714,12 @@ it.each(["rtf", "epub", "ods"] as const)(
         />
       </div>,
     );
+    if (kind === "rtf") {
+      await vi.waitFor(
+        () => expect(screen.container.textContent, officePreviewState(screen)).toContain("1 page"),
+        { timeout: 10_000 },
+      );
+    }
     await vi.waitFor(() => {
       if (kind === "ods") {
         expect(screen.container.textContent).toContain("North");
@@ -2667,7 +2729,9 @@ it.each(["rtf", "epub", "ods"] as const)(
         expect(screen.container.textContent).not.toContain("Limited to 500");
       } else {
         const frame = screen.container.querySelector("iframe");
-        expect(frame?.srcdoc).toContain(kind === "rtf" ? "10–20" : "first<br>second<br>third");
+        expect(frame?.srcdoc, officePreviewState(screen)).toContain(
+          kind === "rtf" ? "10–20" : "first<br>second<br>third",
+        );
       }
     });
     expect(screen.container.querySelector('[role="alert"]')).toBeNull();

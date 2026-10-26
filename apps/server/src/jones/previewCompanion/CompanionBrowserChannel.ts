@@ -163,26 +163,25 @@ const make = Effect.gen(function* () {
             ),
         });
       }),
-    turn: (threadId, active) =>
-      Effect.gen(function* () {
-        if (active) activeTurns.add(threadId);
-        else activeTurns.delete(threadId);
-        const hosts = new Map<string, number>();
-        for (const entry of attached.values())
-          if (entry.key.threadId === threadId) hosts.set(entry.hostId, entry.generation);
-        yield* Effect.forEach(
-          hosts,
-          ([hostId, generation]) =>
-            registry
-              .send(
-                hostId,
-                { type: "browser", command: { type: "turn", threadId, active } },
-                generation,
-              )
-              .pipe(Effect.ignore),
-          { discard: true },
-        );
-      }),
+    turn: Effect.fn("CompanionBrowserChannel.turn")(function* (threadId, active) {
+      if (active) activeTurns.add(threadId);
+      else activeTurns.delete(threadId);
+      const hosts = new Map<string, number>();
+      for (const entry of attached.values())
+        if (entry.key.threadId === threadId) hosts.set(entry.hostId, entry.generation);
+      yield* Effect.forEach(
+        hosts,
+        ([hostId, generation]) =>
+          registry
+            .send(
+              hostId,
+              { type: "browser", command: { type: "turn", threadId, active } },
+              generation,
+            )
+            .pipe(Effect.ignore),
+        { discard: true },
+      );
+    }),
     pointer: (key, pointer) =>
       Effect.suspend(() => {
         const entry = attached.get(keyOf(key));

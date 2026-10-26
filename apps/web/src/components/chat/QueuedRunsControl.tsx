@@ -141,6 +141,7 @@ export function QueuedRunsControl({
     importedEligible,
   });
   // Async review guards always compare against the latest committed route and queue.
+  // oxlint-disable-next-line t3code/react-effect-budget -- Publish the committed route and queue to asynchronous imported-run review guards.
   useLayoutEffect(() => {
     currentQueueRef.current = {
       environmentId: props.environmentId,

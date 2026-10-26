@@ -726,12 +726,8 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
         }),
     });
   }
-  // Probe readiness in a loop while the backend process is still alive instead
-  // of giving up after the first budget. A slow cold boot (the WSL bundle
-  // loading across /mnt/c, or a first launch right after an update) can exceed
-  // the initial readiness budget while the backend is about to come up moments
-  // later; a one-shot probe left the app stuck on "Connecting to WSL…" forever
-  // even though the backend kept running and became healthy.
+  // Retry readiness while the backend remains alive: WSL /mnt/c loading or first boot after update
+  // can exceed the initial budget. A single probe left Connecting to WSL stuck even after the backend became healthy.
   const probeReadiness = Effect.fn("desktop.backendProcess.probeReadiness")(() =>
     waitForHttpReady({
       executablePath: options.executablePath,

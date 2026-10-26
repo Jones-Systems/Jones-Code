@@ -38,11 +38,8 @@ const failureToast = (title: string, description: string) =>
   toastManager.add(stackedThreadToast({ type: "error", title, description }));
 
 /**
- * Other environments this one links to, so its agents can work there. Each
- * link is an outside agent session on the other environment, revoked from
- * that environment's own Connections. `environmentLabel` names the linking
- * environment when several are listed; only the first section is the search
- * target.
+ * Outgoing links let agents work in other environments as external sessions revoked from that target's Connections.
+ * environmentLabel distinguishes the source environment across grouped lists; only the first section is a search target.
  */
 export function LinkedEnvironmentsSettings({
   environmentId,

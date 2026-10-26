@@ -95,7 +95,7 @@ __prototype.prepare = function (...args) {
   return { ...actual, Worker: RecordedWorker };
 });
 
-const layer = it.layer(SqliteClient.layer({ filename: ":memory:" }));
+const _layer = it.layer(SqliteClient.layer({ filename: ":memory:" }));
 
 const captureWarnings = () => {
   const warnings: Array<unknown> = [];

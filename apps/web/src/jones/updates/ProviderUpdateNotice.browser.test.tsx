@@ -1,4 +1,4 @@
-import { act, render } from "../../../test/render";
+import { act, render, fakeTimers } from "../../../test/render";
 import "~/index.css";
 import { page } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -11,6 +11,7 @@ import {
 import { collectProviderUpdateCandidates } from "@t3tools/client-runtime/jones/provider-updates";
 import { AsyncResult } from "effect/reactivity";
 import type { useJonesProviderUpdates } from "./useProviderUpdates";
+import { toastManager } from "~/components/ui/toast";
 
 const state = vi.hoisted(() => ({
   updates: null as ReturnType<typeof useJonesProviderUpdates> | null,
@@ -22,7 +23,7 @@ vi.mock("@tanstack/react-router", async (original) => ({
   ...(await original<typeof import("@tanstack/react-router")>()),
   useNavigate: () => state.navigate,
 }));
-import { ProviderUpdateEnvironmentRows } from "./ProviderUpdateNotice";
+import { ProviderUpdateEnvironmentRows, ProviderUpdateNotice } from "./ProviderUpdateNotice";
 
 const wsl = EnvironmentId.make("ui-update-wsl");
 const laptop = EnvironmentId.make("ui-update-laptop");
@@ -90,6 +91,40 @@ function publishGroups(group: ReturnType<typeof useJonesProviderUpdates>["groups
 }
 
 describe("current provider update notice rows", () => {
+  it("gives each new settling period its own grace timer and retires the old timer", async () => {
+    using _timers = fakeTimers();
+    using addToast = vi.spyOn(toastManager, "add").mockReturnValue("provider-update-toast");
+    using closeToast = vi.spyOn(toastManager, "close").mockImplementation(() => {});
+    state.updates = { ...updates(), noticeKey: "grace-first", isAnySettling: true };
+    {
+      await using screen = await render(<ProviderUpdateNotice />);
+      await act(() => vi.advanceTimersByTimeAsync(29_999));
+      expect(addToast).not.toHaveBeenCalled();
+      await act(() => vi.advanceTimersByTimeAsync(1));
+      expect(addToast).toHaveBeenCalledTimes(1);
+
+      state.updates = { ...state.updates!, noticeKey: "", isAnySettling: false };
+      await screen.rerender(<ProviderUpdateNotice />);
+      state.updates = { ...state.updates!, noticeKey: "grace-second", isAnySettling: true };
+      await screen.rerender(<ProviderUpdateNotice />);
+      await act(() => vi.advanceTimersByTimeAsync(29_999));
+      expect(addToast).toHaveBeenCalledTimes(1);
+      await act(() => vi.advanceTimersByTimeAsync(1));
+      expect(addToast).toHaveBeenCalledTimes(2);
+
+      state.updates = { ...state.updates!, noticeKey: "", isAnySettling: false };
+      await screen.rerender(<ProviderUpdateNotice />);
+      state.updates = { ...state.updates!, noticeKey: "grace-cancelled", isAnySettling: true };
+      await screen.rerender(<ProviderUpdateNotice />);
+      await act(() => vi.advanceTimersByTimeAsync(10_000));
+      state.updates = { ...state.updates!, noticeKey: "", isAnySettling: false };
+      await screen.rerender(<ProviderUpdateNotice />);
+      await act(() => vi.advanceTimersByTimeAsync(30_000));
+      expect(addToast).toHaveBeenCalledTimes(2);
+    }
+    expect(closeToast).toHaveBeenCalled();
+  });
+
   it.each(["instance", "version"])(
     "resurfaces current %s targets after a completed attempt while preserving active capture",
     async (change) => {

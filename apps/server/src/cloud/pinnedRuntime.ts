@@ -922,13 +922,10 @@ const hasJonesRuntimeState = Effect.fn("cloud.pinned_runtime.has_jones_state")(f
 });
 
 /**
- * Every update publishes a new immutable runtime, so without pruning they pile up. Removes
- * completed runtimes nothing can start again and keeps: the caller's versions, everything the
- * service state references (active, rollback, pending), and runtimes that a running process
- * executes, a `t3` launcher points at, or `references` (such as the service unit) name, plus
- * anything published within the last hour. Staging directories, symlinks, and unexpected entries
- * are never touched. Jones homes are excluded because their qualified staging and rollback
- * references are outside the upstream service state. Returns the versions removed.
+ * Prune completed immutable runtimes that cannot start again, keeping caller, active/rollback/pending,
+ * running-process, launcher and explicit references, plus versions published within the last hour.
+ * Never touch staging directories, symlinks or unexpected entries. Exclude Jones homes because their
+ * qualified staging/rollback references are outside upstream state. Return removed versions.
  */
 export const prunePinnedRuntimes = Effect.fn("cloud.pinned_runtime.prune")(function* (input: {
   readonly baseDir: string;

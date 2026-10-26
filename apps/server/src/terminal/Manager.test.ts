@@ -1466,7 +1466,7 @@ it.layer(
       for (const [index, p] of ptyAdapter.processes.entries()) {
         p.onKill = () => p.emitExit({ exitCode: 0, signal: 0 });
         const prompt = ptyAdapter.spawnInputs[index]!.env.PROMPT_COMMAND?.match(
-          // oxlint-disable-next-line no-control-regex -- The fixture extracts the actual private OSC marker.
+          // The fixture extracts the actual private OSC marker.
           /\x1b]1337;JonesIdle=[a-f0-9-]+:ready\x07/,
         )?.[0];
         if (prompt) p.emitData(prompt);
@@ -1517,7 +1517,7 @@ it.layer(
       for (const [index, p] of ptyAdapter.processes.entries()) {
         p.onKill = () => p.emitExit({ exitCode: 0, signal: 0 });
         const prompt = ptyAdapter.spawnInputs[index]!.env.PROMPT_COMMAND?.match(
-          // oxlint-disable-next-line no-control-regex -- The fixture extracts the actual private OSC marker.
+          // The fixture extracts the actual private OSC marker.
           /\x1b]1337;JonesIdle=[a-f0-9-]+:ready\x07/,
         )?.[0];
         if (prompt) p.emitData(prompt);
@@ -1547,7 +1547,7 @@ it.layer(
       for (const [index, p] of ptyAdapter.processes.entries()) {
         p.onKill = () => p.emitExit({ exitCode: 0, signal: 0 });
         const prompt = ptyAdapter.spawnInputs[index]!.env.PROMPT_COMMAND?.match(
-          // oxlint-disable-next-line no-control-regex -- The fixture extracts the actual private OSC marker.
+          // The fixture extracts the actual private OSC marker.
           /\x1b]1337;JonesIdle=[a-f0-9-]+:ready\x07/,
         )?.[0];
         if (prompt) p.emitData(prompt);
@@ -1557,7 +1557,7 @@ it.layer(
       ptyAdapter.processes[0]!.emitData(
         "/tmp\n" +
           ptyAdapter.spawnInputs[0]!.env.PROMPT_COMMAND!.match(
-            // oxlint-disable-next-line no-control-regex -- The fixture extracts the actual private OSC marker.
+            // The fixture extracts the actual private OSC marker.
             /\x1b]1337;JonesIdle=[a-f0-9-]+:ready\x07/,
           )![0],
       );
@@ -1601,7 +1601,7 @@ it.layer(
         for (const [index, p] of ptyAdapter.processes.entries()) {
           p.onKill = () => p.emitExit({ exitCode: 0, signal: 0 });
           const prompt = ptyAdapter.spawnInputs[index]!.env.PROMPT_COMMAND?.match(
-            // oxlint-disable-next-line no-control-regex -- The fixture extracts the actual private OSC marker.
+            // The fixture extracts the actual private OSC marker.
             /\x1b]1337;JonesIdle=[a-f0-9-]+:ready\x07/,
           )?.[0];
           if (prompt) p.emitData(prompt);
@@ -1629,7 +1629,7 @@ it.layer(
       const [builtin, unknown] = ptyAdapter.processes;
       for (const p of ptyAdapter.processes) p.onKill = () => p.emitExit({ exitCode: 0, signal: 0 });
       const ready = ptyAdapter.spawnInputs[0]!.env.PROMPT_COMMAND!.match(
-        // oxlint-disable-next-line no-control-regex -- The fixture extracts the actual private OSC marker.
+        // The fixture extracts the actual private OSC marker.
         /\x1b]1337;JonesIdle=[a-f0-9-]+:ready\x07/,
       )![0];
       const busy = ptyAdapter.spawnInputs[0]!.env.PS0!;

@@ -61,7 +61,7 @@ it("records upstream open metadata after the read dwell and uses the latest stre
 
 it("cancels a short or backgrounded view and preserves palette-open deduplication", () => {
   const f = fixture("mobile-background");
-  claimThreadOpen(environmentId, f.ref.threadId, Date.now());
+  claimThreadOpen(environmentId, f.ref.threadId, Date.UTC(2026, 0, 1));
   const release = f.mount();
   vi.advanceTimersByTime(2_000);
   release();

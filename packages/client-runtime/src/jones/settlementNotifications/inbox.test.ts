@@ -1,7 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import { addArrivals, dismiss, mergeInbox, refreshThreads, visibleEntries } from "./inbox.ts";
-import { decodeSettlementInbox, emptyInbox, encodeSettlementInbox } from "./model.ts";
+import {
+  decodeSettlementInbox,
+  emptyInbox,
+  encodeSettlementInbox,
+  settlementRemainingRows,
+} from "./model.ts";
 import { entry, env, otherEnv } from "./testFixtures.ts";
 
 const withEntries = (...entries: ReturnType<typeof entry>[]) => ({ ...emptyInbox(), entries });
@@ -109,4 +114,12 @@ describe("settlement inbox", () => {
       ),
     ).toThrow();
   });
+});
+
+it("keeps duplicate project follow-ups visible with stable keys when another label arrives", () => {
+  const before = settlementRemainingRows(["Follow up", "Follow up"]);
+  const after = settlementRemainingRows(["New work", "Follow up", "Follow up"]);
+  expect(after.map((item) => item.label)).toEqual(["New work", "Follow up", "Follow up"]);
+  expect(new Set(after.map((item) => item.key)).size).toBe(3);
+  expect(after.slice(1).map((item) => item.key)).toEqual(before.map((item) => item.key));
 });

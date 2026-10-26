@@ -899,13 +899,10 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
     return path.isAbsolute(gitDir) ? gitDir : path.resolve(cwd, gitDir);
   });
 
-  // Git renames loose objects and refs into place without fsync by default, so
-  // an unclean restart can leave 0-byte files under refs/t3/** that break every
-  // later fetch and push. Checkpoint writes flush before they are published;
-  // macOS defaults to writeout-only, which does not reach the disk either.
-  // Set fsync first: Git 2.36 ignores unknown batch without resetting the method.
-  // Batch fully flushes refs and equals fsync on macOS HFS+/APFS and Windows NTFS/ReFS.
-  // Keep per-object fsync elsewhere; VcsProcess retries unsupported macOS full flushes with plain fsync.
+  // Unflushed loose objects/refs can become zero-byte refs/t3/** after restart, breaking fetch/push; flush before publish.
+  // Set fsync first because Git 2.36 ignores unknown batch without resetting the method.
+  // Batch fully flushes refs and equals fsync on macOS HFS+/APFS and Windows NTFS/ReFS; macOS writeout-only is insufficient.
+  // Use per-object fsync elsewhere; VcsProcess retries unsupported macOS full flushes with plain fsync.
   const durableWrite = [
     "-c",
     "core.fsync=objects,reference",

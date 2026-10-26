@@ -11,6 +11,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -2120,17 +2121,16 @@ it.layer(
 
         yield* Effect.gen(function* () {
           const registry = yield* ProviderRegistry.ProviderRegistry;
+          const failedProbe = (providers: ReadonlyArray<ServerProvider>) =>
+            providers.find((provider) => provider.instanceId === "codex_personal")?.status ===
+            "error";
+          const update = yield* registry.streamChanges.pipe(
+            Stream.filter(failedProbe),
+            Stream.runHead,
+            Effect.forkScoped({ startImmediately: true }),
+          );
           let providers = yield* registry.getProviders;
-          for (
-            let attempts = 0;
-            attempts < 50 &&
-            providers.find((provider) => provider.instanceId === "codex_personal")?.status !==
-              "error";
-            attempts += 1
-          ) {
-            yield* Effect.yieldNow;
-            providers = yield* registry.getProviders;
-          }
+          if (!failedProbe(providers)) providers = Option.getOrThrow(yield* Fiber.join(update));
           const codexPersonal = providers.find(
             (provider) => provider.instanceId === "codex_personal",
           );

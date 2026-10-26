@@ -12,7 +12,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
+
 import * as AuthSessions from "../../persistence/AuthSessions.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as Outbox from "../../orchestration-v2/EffectOutbox.ts";

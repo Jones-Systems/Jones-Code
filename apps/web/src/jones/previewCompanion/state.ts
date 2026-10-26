@@ -13,7 +13,6 @@ import {
 } from "@t3tools/client-runtime/jones/preview-companion/http";
 import type {
   DesktopCompanionState,
-  EnvironmentId,
   PreviewCompanionThreadSelectionResponse,
   PreviewRenderHostSelection,
   ScopedThreadRef,

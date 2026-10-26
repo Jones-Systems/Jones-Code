@@ -148,6 +148,7 @@ function ThreadLineageGroup(props: {
   const expanded = manuallyExpanded || (hasContinuation && focusRequest > manualFocusRequest);
   const handledFocus = useRef(0);
   const element = useRef<HTMLDivElement>(null);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Focus the continuation control after its asynchronous lineage becomes available for the pending focus request.
   useEffect(() => {
     if (focusRequest <= handledFocus.current || !hasContinuation) return;
     handledFocus.current = focusRequest;

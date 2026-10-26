@@ -1,8 +1,6 @@
 import {
   ProviderAdapterEventStreamError,
   type ProviderAdapterV2Event,
-  ProviderAdapterProtocolError,
-  type ProviderAdapterV2RuntimePolicy,
   type ProviderAdapterV2SessionRuntime,
   type ProviderAdapterV2OpenSessionInput,
   type ProviderRuntimeLifecycle,

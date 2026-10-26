@@ -265,7 +265,7 @@ export function jonesUpdatePresentation(state: JonesUpdateState) {
   );
   const message =
     state.phase === "installing"
-      ? "Installing — server restarting. Waiting for the launcher outcome."
+      ? "Installing. server restarting. Waiting for the launcher outcome."
       : (state.message ?? state.phase);
   const settled =
     state.settlement === "launcher-recorded" || state.settlement === "legacy-reconciled";

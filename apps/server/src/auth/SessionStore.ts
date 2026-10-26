@@ -517,11 +517,8 @@ export const matchesReservedAuthSession = (
 const encodeReservedSessionClaims = Schema.encodeEffect(Schema.fromJsonString(SessionClaims));
 
 /**
- * Jones Workstreams native enrollment hook. Signs a bearer only for an already
- * reserved, unrevoked, current session whose stored record exactly matches the
- * expected reservation; it never creates a session or widens its scopes.
- * Enrollment reads the existing signing key; SessionStore startup still owns
- * key creation.
+ * Sign enrollment bearers only for reserved, unrevoked, current sessions matching the exact reservation.
+ * Never create sessions or widen scopes. Read the existing signing key; SessionStore startup owns creation.
  */
 export const makeReservedBearerSessionMaterializer = Effect.gen(function* () {
   const authSessions = yield* AuthSessions.AuthSessionRepository;

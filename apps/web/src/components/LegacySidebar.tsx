@@ -3568,6 +3568,7 @@ export default function LegacySidebar({ routeReveal }: { routeReveal: SidebarRou
     };
   }, []);
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own the window pointer listener that clears selection only for clicks outside the protected sidebar targets.
   useEffect(() => {
     const onMouseDown = (event: globalThis.MouseEvent) => {
       if (!useThreadSelectionStore.getState().hasSelection()) return;

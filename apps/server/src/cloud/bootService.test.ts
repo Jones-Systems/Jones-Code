@@ -1218,9 +1218,7 @@ it.layer(NodeServices.layer)("qualified boot service setup boundary", (it) => {
         const { makeService, fs, statePath, commands } = yield* makeHarness(
           "linux",
           macInstallerPath,
-          {
-            ...(runtimeMode === undefined ? {} : { runtimeMode }),
-          },
+          runtimeMode === undefined ? {} : { runtimeMode },
         );
         const path = yield* Path.Path;
         const arch = "x64";

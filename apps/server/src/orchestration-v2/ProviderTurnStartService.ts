@@ -74,9 +74,6 @@ import {
   runtimeBinding,
   identityForRequest,
   requestedRuntimeIdentity,
-  type ProviderAdapterV2Error,
-  type ProviderAdapterV2HistoricalContext,
-  type ProviderAdapterV2SessionRuntime,
 } from "@t3tools/provider-core/server/ProviderAdapter";
 
 import * as ProjectionStore from "./ProjectionStore.ts";

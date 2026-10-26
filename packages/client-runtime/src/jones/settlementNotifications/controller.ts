@@ -428,7 +428,7 @@ export function createSettlementNotificationController(deps: {
         do {
           for (const environmentId of [...catalog, ...observations.keys()])
             void loadBaseline(environmentId);
-          await Promise.all([...baselineLoads.values()]);
+          await Promise.all(baselineLoads.values());
         } while ([...observations.keys()].some((id) => !baselines.has(id)));
         hydrated = true;
         for (const environmentId of observations.keys()) processObservation(environmentId);
@@ -483,14 +483,14 @@ export function createSettlementNotificationController(deps: {
     },
     async flush(): Promise<void> {
       await hydrate();
-      while (baselineLoads.size > 0) await Promise.all([...baselineLoads.values()]);
+      while (baselineLoads.size > 0) await Promise.all(baselineLoads.values());
       if (timer !== null) clearTimeout(timer);
       timer = null;
       let observedRevision = changeRevision;
       let pending = requestWrite();
       for (;;) {
         await pending;
-        while (baselineLoads.size > 0) await Promise.all([...baselineLoads.values()]);
+        while (baselineLoads.size > 0) await Promise.all(baselineLoads.values());
         if (pending !== writeTail) {
           pending = writeTail;
         } else if (observedRevision !== changeRevision) {

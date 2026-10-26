@@ -113,7 +113,6 @@ const HANDOFF_DELAY_MS = 2_000;
  * take minutes. A missed window rolls back the database, so the next attempt pays the same cost.
  */
 export const PREPARED_TIMEOUT_MS = 30 * 60_000;
-const TERMINATE_GRACE_MS = 5_000;
 // Matches SERVER_EXIT_CODE_STATE_DIR_OWNED in contracts. The standalone
 // launcher stays independent of the Effect-backed contracts package.
 const STATE_DIR_OWNED_EXIT_CODE = 78;
@@ -991,12 +990,9 @@ export class Launcher {
   async stop(signal: NodeJS.Signals): Promise<void> {
     const alreadyRequested = this.#stopRequested;
     this.#stopRequested = true;
-    // This must happen synchronously at signal receipt. A queued update
-    // transition may already be terminating the active child, and that child
-    // needs to see the marker in its shutdown finalizer. KillMode=mixed also
-    // ensures systemd signals the launcher before the rest of the cgroup, and
-    // launchd signals only the job's main process (this launcher), so the
-    // marker lands before the child sees any signal on both platforms.
+    // Write the stop marker synchronously on signal receipt before the child's shutdown finalizer.
+    // A queued update may already be terminating that child. systemd KillMode=mixed signals the launcher
+    // first; launchd signals only its main process, so both platforms establish the marker before child signals.
     try {
       NodeFS.writeFileSync(stopMarkerPath(this.#baseDir), "", { mode: 0o600 });
     } catch {
@@ -1030,13 +1026,9 @@ export class Launcher {
   }
 
   async #recover(): Promise<void> {
-    // A fresh launcher means servers are running again: any stop marker from
-    // a previous explicit stop is stale and must not make a future update
-    // handoff release its tunnel. A restart deferred by `t3 update` is done
-    // no matter who restarted the service, but only once this launcher is
-    // the version the marker waits for: a launcher that came up between the
-    // CLI writing the marker and writing the new state still runs the old
-    // version, and the marker has to outlive it.
+    // A fresh launcher clears stale explicit-stop markers so later update handoffs retain their tunnel.
+    // A deferred t3 update restart completes only when the launcher reaches the marker's expected version.
+    // A launch between marker creation and new-state publication still runs the old version, so keep its marker.
     await NodeFSP.rm(stopMarkerPath(this.#baseDir), { force: true }).catch(() => undefined);
     // The launcher that reserved an operation it never recorded as pending is gone.
     await settleAbandonedUpdateOperations(this.#baseDir, this.#state.update).catch(

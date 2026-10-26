@@ -1,3 +1,4 @@
+import { settlementRemainingRows } from "@t3tools/client-runtime/jones/settlement-notifications";
 import { useAtomValue } from "@effect/atom-react";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useLinkTo } from "@react-navigation/native";
@@ -50,6 +51,7 @@ function EnvironmentObserver(props: {
     () => (arrivals) => resolveSettlementOrigins(props.environmentId, arrivals),
     [props.environmentId],
   );
+  // oxlint-disable-next-line t3code/react-effect-budget -- Feed committed live thread observations and origin evidence to the settlement notification controller.
   useEffect(() => {
     if (state.status === "live")
       controller.observe(props.environmentId, state, { resolveOrigins, families });
@@ -76,9 +78,9 @@ function SettlementTitle(props: { readonly entry: SettlementEntry }) {
           </AppText>
         ) : null}
       </Pressable>
-      {props.entry.projectRemaining?.map((item, index) => (
-        <AppText key={`${index}:${item}`} textRole="footnote" className="pl-2 pb-1">
-          • {item}
+      {settlementRemainingRows(props.entry.projectRemaining).map((item) => (
+        <AppText key={item.key} textRole="footnote" className="pl-2 pb-1">
+          • {item.label}
         </AppText>
       ))}
     </View>
@@ -149,6 +151,7 @@ function SettlementBanner(props: { readonly entries: readonly SettlementEntry[] 
 export function SettlementNotificationOverlay() {
   const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
   const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Reconcile the persisted notification catalog only after both catalog and persistence are ready.
   useEffect(() => {
     if (catalog.isReady && snapshot.persistence !== "loading") {
       controller.noteCatalog([...catalog.entries.keys()]);

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import {
   createDeviceMediaRouteManager,
@@ -7,6 +7,8 @@ import {
 import type { DeviceHubAccess } from "@t3tools/client-runtime/state/deviceHubAccess";
 import { useDeviceHubAccess, refreshDeviceHubAccess } from "../../state/device";
 import type { DeviceStreamLifecycle } from "../../components/device/deviceStreamSession";
+
+import { useStableCallback } from "../../hooks/useStableCallback";
 
 export function useDeviceStreamRoute(input: {
   readonly environmentId: EnvironmentId;
@@ -36,25 +38,26 @@ export function useDeviceStreamRoute(input: {
   const [selection, setSelection] = useState<{
     owner: typeof owner;
     route: DeviceMediaRoute;
-    manager: ReturnType<typeof createDeviceMediaRouteManager>;
+    lifecycle: DeviceStreamLifecycle | undefined;
   } | null>(null);
   const route = selection?.owner === owner ? selection.route : null;
   const manager = useRef<ReturnType<typeof createDeviceMediaRouteManager> | null>(null);
   const refreshes = useRef<{ configuration: typeof configuration; count: number } | null>(null);
   const streamRetirement = useRef<(() => void) | null>(null);
-  const bindStream = useCallback((stop: () => void) => {
+  const bindStream = useStableCallback((stop: () => void) => {
     streamRetirement.current?.();
     streamRetirement.current = stop;
     return () => {
       if (streamRetirement.current === stop) streamRetirement.current = null;
     };
-  }, []);
+  });
   const retire = useEffectEvent(() => {
     const stop = streamRetirement.current;
     streamRetirement.current = null;
     stop?.();
     input.retire();
   });
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own the visible device media route and retire its stream, tunnel and callbacks when its configuration changes.
   useEffect(() => {
     if (refreshes.current?.configuration !== configuration) {
       refreshes.current = { configuration, count: 0 };
@@ -62,6 +65,8 @@ export function useDeviceStreamRoute(input: {
     const budget = refreshes.current;
     if (!proxy || !input.visible) return;
     let alive = true;
+    let lifecycleAccess: DeviceHubAccess | null = null;
+    let lifecycle: DeviceStreamLifecycle | undefined;
     const bridge = window.desktopBridge;
     const supported = bridge?.openDeviceMediaTunnel && bridge.closeDeviceMediaTunnel;
     const current = createDeviceMediaRouteManager({
@@ -83,7 +88,19 @@ export function useDeviceStreamRoute(input: {
       onRoute: (next) => {
         if (!alive) return;
         if (next.phase === "connected") budget.count = 0;
-        setSelection({ owner, route: next, manager: current });
+        if (next.access !== lifecycleAccess) {
+          lifecycleAccess = next.access;
+          const access = next.access;
+          lifecycle = access
+            ? {
+                bind: bindStream,
+                report: (channel, connected, detail) =>
+                  current.report(access, channel, connected, detail),
+                unauthorized: () => current.unauthorized(access),
+              }
+            : undefined;
+        }
+        setSelection({ owner, route: next, lifecycle });
       },
       refreshAccess: () => {
         if (alive && budget.count++ === 0) refreshDeviceHubAccess(input.environmentId);
@@ -105,6 +122,7 @@ export function useDeviceStreamRoute(input: {
     input.deviceId,
     input.platform,
     input.visible,
+    bindStream,
   ]);
   const report = (
     access: DeviceHubAccess,
@@ -117,19 +135,6 @@ export function useDeviceStreamRoute(input: {
     if (refreshes.current?.configuration === configuration) refreshes.current.count = 0;
     refreshDeviceHubAccess(input.environmentId);
   };
-  const access = route?.access ?? null;
-  const selectedManager = selection?.owner === owner ? selection.manager : null;
-  const lifecycle = useMemo<DeviceStreamLifecycle | undefined>(
-    () =>
-      access && selectedManager
-        ? {
-            bind: bindStream,
-            report: (channel, connected, detail) =>
-              selectedManager.report(access, channel, connected, detail),
-            unauthorized: () => selectedManager.unauthorized(access),
-          }
-        : undefined,
-    [access, bindStream, selectedManager],
-  );
+  const lifecycle = selection?.owner === owner ? selection.lifecycle : undefined;
   return { route, proxy, report, unauthorized, retryAccess, lifecycle };
 }

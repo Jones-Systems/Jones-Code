@@ -99,6 +99,7 @@ export function useSavedTokenAccounting(target: AccountingReadTarget | null, rea
   const setState = (next: AccountingReadState) => setObservation({ key, state: next });
   const lifetime = useRef({ key: null as string | null, attempt: 0, reading: false });
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Fence accounting responses to the mounted panel and connection generation, retiring attempts on unmount.
   useLayoutEffect(() => {
     lifetime.current.key = key;
     lifetime.current.attempt += 1;

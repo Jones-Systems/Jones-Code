@@ -175,6 +175,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
   }, [order, translation]);
 
   const hadQueuedRuns = useRef(queuedRuns.length > 0);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Leave the native queue screen after server activity drains a queue that previously contained runs.
   useEffect(() => {
     if (queuedRuns.length > 0) {
       hadQueuedRuns.current = true;

@@ -108,6 +108,7 @@ export function ShellDestinationCodeBlock({
   const matchingSession = sessions.data?.find(
     (session) => session.threadId === SHELL_RUN_THREAD_ID && session.terminalId === run?.terminalId,
   );
+  // oxlint-disable-next-line t3code/react-effect-budget -- Reconcile shell execution with authoritative session observations before permitting a command send.
   useEffect(() => {
     // Streaming queries keep waiting=true while subscribed, even after a valid snapshot.
     if (!run || !sessions.isSuccess || !sessions.data) return;

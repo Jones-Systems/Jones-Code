@@ -3772,7 +3772,7 @@ try:
     assert child.stdout.readline() == b'ready\n'
     proof = kernel_process_identity(child.pid)
     assert proof['pid'] == child.pid and proof['startSec'] > 0 and 0 <= proof['startUsec'] < 1000000
-    assert os.path.isabs(proof['executable']) and os.path.samefile(proof['executable'], sys.executable)
+    assert os.path.isabs(proof['executable']) and os.path.samefile(proof['executable'], sys.executable), {'expectedExecutable': sys.executable, 'expectedResolved': os.path.realpath(sys.executable), 'observedExecutable': proof['executable'], 'observedResolved': os.path.realpath(proof['executable'])}
     assert kernel_process_identity(child.pid) == proof
     child.stdin.close()
     deadline = time.monotonic() + 3

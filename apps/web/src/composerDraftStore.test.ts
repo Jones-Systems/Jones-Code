@@ -34,10 +34,6 @@ import {
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
-import {
-  collectAssistantCitations,
-  serializeAssistantCitation,
-} from "@t3tools/shared/assistantCitations";
 
 const CODEX_INSTANCE = ProviderInstanceId.make("codex");
 const CODEX_SECONDARY_INSTANCE = ProviderInstanceId.make("codex_secondary");

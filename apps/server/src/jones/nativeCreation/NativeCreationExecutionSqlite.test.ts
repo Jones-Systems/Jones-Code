@@ -55,7 +55,7 @@ import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
+
 import * as TestClock from "effect/testing/TestClock";
 import * as AuthSessions from "../../persistence/AuthSessions.ts";
 import { runMigrations } from "../../persistence/Migrations.ts";

@@ -201,14 +201,8 @@ export interface RunMigrationsOptions {
 }
 
 /**
- * Run all pending migrations.
- *
- * Runs upstream history in effect_sql_migrations, then validates and runs Jones
- * history in jones_sql_migrations. An upstream limit skips the Jones track.
- *
- * Returns array of [id, name] tuples for upstream migrations that were run.
- *
- * @returns Effect containing array of executed upstream migrations
+ * Run upstream effect_sql_migrations before validating/running jones_sql_migrations.
+ * An upstream limit skips the Jones track. Return only executed upstream [id, name] tuples.
  */
 export const runMigrations = Effect.fn("runMigrations")(function* ({
   toMigrationInclusive,

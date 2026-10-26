@@ -312,6 +312,7 @@ export function HostedBrowserWebview(props: {
     return () => window.cancelAnimationFrame(frameId);
   }, [syncContentPresentation]);
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Reset the browser canvas scroll origin when the selected tab or viewport geometry changes.
   useEffect(() => {
     const wrapper = wrapperRef.current;
     if (!wrapper) return;

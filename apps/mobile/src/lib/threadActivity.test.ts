@@ -1,6 +1,5 @@
 import {
   ChatAttachmentId,
-  ContextHandoffId,
   MessageId,
   CheckpointId,
   CheckpointRef,

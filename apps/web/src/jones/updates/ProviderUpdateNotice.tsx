@@ -12,6 +12,8 @@ import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { providerUpdatePresentationAttempt } from "./providerUpdateController";
 import { useJonesProviderUpdates } from "./useProviderUpdates";
 
+const providerUpdateDismissalsSchema = Schema.Struct({ keys: Schema.Array(Schema.String) });
+
 export function ProviderUpdateEnvironmentRows() {
   const updates = useJonesProviderUpdates();
   const navigate = useNavigate();
@@ -128,15 +130,17 @@ export function ProviderUpdateNotice() {
   const [dismissed, setDismissed] = useLocalStorage(
     "t3code:provider-update-dismissals:v1",
     { keys: [] as string[] },
-    Schema.Struct({ keys: Schema.Array(Schema.String) }),
+    providerUpdateDismissalsSchema,
   );
-  const [settleGraceElapsed, setSettleGraceElapsed] = useState(false);
+  const [settleGrace, setSettleGrace] = useState({ settling: isAnySettling, elapsed: false });
+  if (settleGrace.settling !== isAnySettling) {
+    setSettleGrace({ settling: isAnySettling, elapsed: false });
+  }
+  const settleGraceElapsed = settleGrace.settling === isAnySettling && settleGrace.elapsed;
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own the settling grace timer and cancel it when the update group stops settling.
   useEffect(() => {
-    if (!isAnySettling) {
-      setSettleGraceElapsed(false);
-      return;
-    }
-    const timer = setTimeout(() => setSettleGraceElapsed(true), 30_000);
+    if (!isAnySettling) return;
+    const timer = setTimeout(() => setSettleGrace({ settling: true, elapsed: true }), 30_000);
     return () => clearTimeout(timer);
   }, [isAnySettling]);
   const primaryOnly = groups.filter((group) => group.allCandidates.length > 0);
@@ -146,6 +150,7 @@ export function ProviderUpdateNotice() {
       : null;
   const active = useRef<{ key: string; id: string } | null>(null);
   const navigate = useNavigate();
+  // oxlint-disable-next-line t3code/react-effect-budget -- Close the imperative update toast when its mounted notice owner retires.
   useEffect(
     () => () => {
       if (active.current) toastManager.close(active.current.id);
@@ -153,6 +158,7 @@ export function ProviderUpdateNotice() {
     },
     [],
   );
+  // oxlint-disable-next-line t3code/react-effect-budget -- Synchronize the imperative toast manager with committed update groups and dismissal preferences.
   useEffect(() => {
     if (
       (isAnySettling && !settleGraceElapsed) ||

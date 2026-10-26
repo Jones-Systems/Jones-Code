@@ -4,7 +4,7 @@ import { CommandId, ProjectId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
+
 import * as Schema from "effect/Schema";
 import type { TerminalEvent } from "@t3tools/contracts";
 import { LegacyOwnedTerminalControl } from "../../../orchestration-v2/RecordedTypes.ts";

@@ -416,6 +416,7 @@ export function useThreadComposerState() {
 
   const selectedThreadRuns = selectedThreadProjection?.projection.runs;
   const editedRunId = queuedRunEdit?.runId ?? null;
+  // oxlint-disable-next-line t3code/react-effect-budget -- Reconcile an edited queued run after server updates remove its queued status, preserving recoverable drafts.
   useEffect(() => {
     if (selectedThreadKey === null || editedRunId === null || selectedThreadRuns === undefined) {
       return;

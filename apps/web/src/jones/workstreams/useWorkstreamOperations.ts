@@ -41,6 +41,7 @@ export function useWorkstreamOperations(input: {
   const [watchRevision, setWatchRevision] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const refreshRef = useRef(input.refresh);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Publish the committed refresh callback to retained workstream operation completion handlers.
   useEffect(() => {
     refreshRef.current = input.refresh;
   }, [input.refresh]);
@@ -123,6 +124,7 @@ export function useWorkstreamOperations(input: {
     };
   });
   // Each binding, live capability set and explicit retry owns one polling lifetime.
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own one operation watch lifetime per binding, capability set and explicit retry.
   useEffect(() => startWatch(watchKey), [watchKey]);
   const registryFor = async (environmentId: string, signal?: AbortSignal) => {
     const status = await environmentOperationsTransport(environmentId).setup(signal);

@@ -687,7 +687,7 @@ it("renders automatic compaction as one live divider that finishes with its reas
 
 describe("MessagesTimeline attachments", () => {
   it("renders unknown attachment types as inert rows instead of crashing", async () => {
-    await using screen = await renderTimeline([
+    await using _screen = await renderTimeline([
       message("Read the report.", {
         attachments: [
           {
@@ -730,7 +730,7 @@ describe("MessagesTimeline attachments", () => {
     expect(text()).toContain("screenshot.png");
     expect(text()).not.toContain("t3code — Tests");
     await withoutPreview.unmount();
-    await using withPreview = await renderTimeline([
+    await using _withPreview = await renderTimeline([
       snapShot("data:image/png;base64,iVBORw0KGgo="),
     ]);
     expect(text()).toContain("Terminal");
@@ -741,7 +741,7 @@ describe("MessagesTimeline attachments", () => {
 describe("MessagesTimeline history and thread links", () => {
   it("loads earlier turns from a control ahead of the bounded timeline", async () => {
     const onLoadEarlier = vi.fn();
-    await using screen1 = await renderTimeline([message("Recent activity")], {
+    await using _screen1 = await renderTimeline([message("Recent activity")], {
       historyControls: {
         hasMoreHistory: true,
         loading: false,
@@ -756,7 +756,7 @@ describe("MessagesTimeline history and thread links", () => {
   });
 
   it("keeps an empty bounded timeline busy while earlier history loads", async () => {
-    await using screen2 = await renderTimeline([], {
+    await using _screen2 = await renderTimeline([], {
       historyControls: {
         hasMoreHistory: true,
         loading: true,
@@ -771,7 +771,7 @@ describe("MessagesTimeline history and thread links", () => {
 
   it("opens the parent thread from the top of an empty subagent timeline", async () => {
     const open = vi.fn();
-    await using screen3 = await renderTimeline([], {
+    await using _screen3 = await renderTimeline([], {
       parentThreadLink: { title: "Architecture audit", open },
     });
     expect(text()).toContain("Subagent of");
@@ -782,7 +782,7 @@ describe("MessagesTimeline history and thread links", () => {
   });
 
   it("does not render the transient V2 interruption request", async () => {
-    await using screen4 = await renderTimeline([
+    await using _screen4 = await renderTimeline([
       {
         id: "interrupt-request",
         kind: "event",
@@ -799,7 +799,7 @@ describe("MessagesTimeline history and thread links", () => {
 
   it("opens created threads from a lean row", async () => {
     const onOpenThread = vi.fn();
-    await using screen5 = await renderTimeline(
+    await using _screen5 = await renderTimeline(
       [
         {
           id: "thread-created",
@@ -959,7 +959,7 @@ describe("MessagesTimeline subagents", () => {
     "shows $count $status subagents with '$preview', grouping only multiple agents",
     async ({ status, progress, result, preview, count }) => {
       const onOpenThread = vi.fn();
-      await using screen6 = await renderTimeline(
+      await using _screen6 = await renderTimeline(
         Array.from(
           { length: count },
           (_, index) =>
@@ -1172,7 +1172,7 @@ describe("MessagesTimeline scroll position", () => {
         </div>
       );
     }
-    await using screen8 = await renderElement(<Thread />);
+    await using _screen8 = await renderElement(<Thread />);
     const composerState = () => container.querySelector("output")!.textContent;
     const viewport = await waitForList(props);
     await click(button("Collapse"));
@@ -1200,7 +1200,7 @@ describe("MessagesTimeline send anchor", () => {
     const onAnchorReady = vi.fn();
     const sent = message("Newest prompt.", {}, "message-2");
     const props = baseProps();
-    await using screen9 = await renderTimeline(
+    await using _screen9 = await renderTimeline(
       [message("Earlier reply.", { role: "assistant" }), sent],
       {
         ...props,
@@ -1217,7 +1217,7 @@ describe("MessagesTimeline send anchor", () => {
   it("does not anchor a follow-up user message that is not the newest turn", async () => {
     const onAnchorReady = vi.fn();
     const props = baseProps();
-    await using screen10 = await renderTimeline(
+    await using _screen10 = await renderTimeline(
       [message("First prompt."), message("Newest prompt.", {}, "message-2")],
       {
         ...props,
