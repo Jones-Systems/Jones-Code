@@ -252,6 +252,7 @@ import { WORKSTREAM_OPERATIONS_CONTRACT } from "@t3tools/contracts/jones/workstr
 import * as DateTime from "effect/DateTime";
 import * as Recorded from "./recordedCaller.ts";
 import * as NativeRecovery from "./recovery.ts";
+import * as NativeRollupWorker from "./rollupWorker.ts";
 import * as NativeEffects from "../registry/effectRunner.ts";
 import * as NativeSourceEnrollments from "./sourceEnrollment.ts";
 import { NativeHome as Home } from "../mode/authorityMode.ts";
@@ -375,6 +376,7 @@ export const homeServicesLayer = (
     NativeEntry.registrationLayer,
     operations,
     recovery,
+    NativeRollupWorker.layer,
     reads,
   ).pipe(
     Layer.provideMerge(entry),

@@ -22,6 +22,11 @@ import * as Operations from "../../operations/service.ts";
 import * as OperationStore from "../store/operationStore.ts";
 import * as Startup from "./startup.ts";
 import * as Entry from "./entry.ts";
+import * as RollupWorker from "./rollupWorker.ts";
+import * as RollupApplication from "../rollups/application.ts";
+import * as RollupSummary from "../rollups/summaryRead.ts";
+import * as RollupSynthetic from "../rollups/synthetic.ts";
+import * as Deferred from "effect/Deferred";
 import * as Admission from "./admission.ts";
 import * as RegistrationContext from "../../registrationContext/service.ts";
 import * as Schema from "effect/Schema";
@@ -89,7 +94,10 @@ const fresh = () => {
     ),
   };
 };
-const seed = (f: ReturnType<typeof fresh>) =>
+const seed = (
+  f: ReturnType<typeof fresh>,
+  rollupPorts?: Parameters<typeof Startup.homeServicesLayer>[1],
+) =>
   Effect.gen(function* () {
     yield* TestClock.setTime(Date.parse(enrollmentRequest.session.issued_at));
     yield* runMigrations({ toMigrationInclusive: 54 });
@@ -220,7 +228,10 @@ const seed = (f: ReturnType<typeof fresh>) =>
       environmentId: registry.home_environment_id,
     });
     if (selection.home === null) return yield* Effect.die(selection.problem);
-    const services = Startup.homeServicesLayer({ ...selection, home: selection.home }).pipe(
+    const services = Startup.homeServicesLayer(
+      { ...selection, home: selection.home },
+      rollupPorts,
+    ).pipe(
       Layer.provide(Layer.succeed(SourceEnrollment.NativeSourceEnrollments, nativeSources)),
       Layer.provide(Layer.succeed(Runtime.NativeWorkstreamsRuntime, runtime)),
       Layer.provide(Layer.succeed(Authority.NativeStoreAuthority, authority)),
@@ -514,6 +525,53 @@ it.effect(
         expect(cp).not.toHaveBeenCalled();
         expect(egress).not.toHaveBeenCalled();
       }).pipe(Effect.provide(prepared.services));
+    }).pipe(Effect.provide(f.layer));
+  },
+);
+
+it.effect(
+  "native home startup owns one rollup cadence and fences it when the server scope closes",
+  () => {
+    const f = fresh();
+    return Effect.gen(function* () {
+      const first = yield* Deferred.make<void>();
+      const second = yield* Deferred.make<void>();
+      let calls = 0;
+      const fixture = RollupSynthetic.syntheticFixture();
+      // External provider ports and shared admission are synthetic; startup, worker, application and SQL remain real.
+      // Busy inference admission reaches the final application boundary without dispatching providers or claiming work.
+      const ports = Layer.mergeAll(
+        RollupSynthetic.syntheticEvidenceLayer([]),
+        RollupSynthetic.syntheticGenerationLayer(fixture.identity, fixture.result),
+        RollupSummary.unconfiguredAuthorizerLayer,
+        Layer.succeed(RollupApplication.RollupAdmission, {
+          tryAcquire: () =>
+            Effect.gen(function* () {
+              calls++;
+              if (calls === 1) yield* Deferred.succeed(first, undefined);
+              if (calls === 2) yield* Deferred.succeed(second, undefined);
+              return null;
+            }),
+        }),
+      );
+      const prepared = yield* seed(f, ports);
+      const worker = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const worker = yield* RollupWorker.NativeRollupWorker;
+          expect(yield* RollupWorker.NativeRollupWorker).toBe(worker);
+          yield* Deferred.await(first);
+          expect(calls).toBe(1);
+          yield* TestClock.adjust(29_999);
+          expect(calls).toBe(1);
+          yield* TestClock.adjust(1);
+          yield* Deferred.await(second);
+          expect(calls).toBe(2);
+          return worker;
+        }).pipe(Effect.provide(prepared.services)),
+      );
+      yield* TestClock.adjust(90_000);
+      expect(yield* worker.sweep()).toBeNull();
+      expect(calls).toBe(2);
     }).pipe(Effect.provide(f.layer));
   },
 );
