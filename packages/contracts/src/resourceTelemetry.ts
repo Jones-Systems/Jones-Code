@@ -52,6 +52,13 @@ export const ResourceTelemetryProcessIdentity = Schema.Struct({
 });
 export type ResourceTelemetryProcessIdentity = typeof ResourceTelemetryProcessIdentity.Type;
 
+export const ResourceTelemetryProcessOwner = Schema.Struct({
+  kind: Schema.Literal("provider"),
+  threadId: TrimmedNonEmptyString,
+  provider: TrimmedNonEmptyString,
+});
+export type ResourceTelemetryProcessOwner = typeof ResourceTelemetryProcessOwner.Type;
+
 export const ResourceMonitorExternalProcess = Schema.Struct({
   pid: PositiveInt,
   startTimeMs: Schema.optionalKey(NonNegativeInt),
@@ -318,10 +325,17 @@ export const DesktopTelemetrySetHostPowerIntervals = Schema.Struct({
 export type DesktopTelemetrySetHostPowerIntervals =
   typeof DesktopTelemetrySetHostPowerIntervals.Type;
 
-/** Runs check/download/quit-and-install without local confirmation; the remote RPC click supplies consent. */
+/**
+ * Server -> desktop main: legacy release requests prepare an update for a later commit.
+ * Jones requests select a separate Check or fixed-artifact Download action.
+ * Installation still requires the prepared request's explicit commit.
+ */
 export const DesktopTelemetryRequestDesktopUpdate = Schema.Struct({
   version: Schema.Literal(1),
   type: Schema.Literal("requestDesktopUpdate"),
+  action: Schema.optionalKey(Schema.Literals(["check", "download"])),
+  artifactId: Schema.optionalKey(Schema.Number),
+  sourceSha: Schema.optionalKey(Schema.String),
   requestId: TrimmedNonEmptyString,
 });
 export type DesktopTelemetryRequestDesktopUpdate = typeof DesktopTelemetryRequestDesktopUpdate.Type;
@@ -358,6 +372,7 @@ export const ResourceTelemetryProcess = Schema.Struct({
   command: Schema.String,
   status: Schema.String,
   category: ResourceTelemetryProcessCategory,
+  owner: Schema.optionalKey(ResourceTelemetryProcessOwner),
   electronType: Schema.optionalKey(DesktopElectronProcessType),
   electronServiceName: Schema.optionalKey(Schema.String),
   cpuPercent: Schema.Number,

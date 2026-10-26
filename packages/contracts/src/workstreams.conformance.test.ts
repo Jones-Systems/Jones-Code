@@ -260,7 +260,7 @@ describe("frozen accepted Workstream v1 fixtures", () => {
       evidence: null,
     };
     expect(() =>
-      Schema.decodeUnknownSync(WorkstreamRegistrationVerification)(quarantined, options),
+      Schema.decodeSync(WorkstreamRegistrationVerification)(quarantined, options),
     ).not.toThrow();
     expect(() =>
       Schema.decodeUnknownSync(WorkstreamRegistrationVerification)(

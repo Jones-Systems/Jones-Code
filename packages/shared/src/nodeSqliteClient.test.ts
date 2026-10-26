@@ -1,5 +1,5 @@
 import * as NodeSqlite from "node:sqlite";
-import type * as NodeWorkerThreads from "node:worker_threads";
+import * as NodeWorkerThreads from "node:worker_threads";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
@@ -10,18 +10,102 @@ import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Statement from "effect/sql/Statement";
 import type * as Tracer from "effect/Tracer";
+import * as TestClock from "effect/testing/TestClock";
 import { vi } from "vite-plus/test";
 
 import * as SqliteClient from "./nodeSqliteClient.ts";
 
 const startedWorkers = vi.hoisted((): Array<NodeWorkerThreads.Worker> => []);
-const silentWorkers = vi.hoisted(() => ({ on: false, readyOnTerminate: false }));
+const silentWorkers = vi.hoisted(() => ({
+  on: false,
+  readyOnTerminate: false,
+  terminationGate: undefined as Promise<void> | undefined,
+  rejectTermination: false,
+}));
+const readerDiagnostic = vi.hoisted(() => ({
+  port: undefined as NodeWorkerThreads.MessagePort | undefined,
+  gate: undefined as SharedArrayBuffer | undefined,
+}));
+const workerTerminals = vi.hoisted(
+  () =>
+    new WeakMap<
+      NodeWorkerThreads.Worker,
+      {
+        error?: Error;
+        exitCode?: number;
+        terminationRequested: boolean;
+        terminationRequests: number;
+      }
+    >(),
+);
+const checkpointDiagnostic = vi.hoisted(() => ({
+  port: undefined as NodeWorkerThreads.MessagePort | undefined,
+  gate: undefined as SharedArrayBuffer | undefined,
+}));
 const failingWorkers = vi.hoisted(() => ({ message: undefined as string | undefined }));
 
 vi.mock("node:worker_threads", async (importOriginal) => {
   const actual = await importOriginal<typeof NodeWorkerThreads>();
   class RecordedWorker extends actual.Worker {
     constructor(...args: ConstructorParameters<typeof actual.Worker>) {
+      if (checkpointDiagnostic.port) {
+        const [source, options] = args;
+        // Observe the real first prepare on a separate port: parentPort messages acknowledge checks.
+        const prelude = `
+const __diagnostic = require("node:worker_threads").workerData.checkpointDiagnostic;
+const __prototype = require("node:sqlite").DatabaseSync.prototype;
+const __prepare = __prototype.prepare;
+__prototype.prepare = function (...args) {
+  __prototype.prepare = __prepare;
+  __diagnostic.port.postMessage("first-prepare");
+  __diagnostic.port.close();
+  if (__diagnostic.gate) Atomics.wait(new Int32Array(__diagnostic.gate), 0, 0);
+  return Reflect.apply(__prepare, this, args);
+};
+`;
+        args = [
+          prelude + String(source),
+          {
+            ...options,
+            workerData: {
+              ...options?.workerData,
+              checkpointDiagnostic: {
+                port: checkpointDiagnostic.port,
+                gate: checkpointDiagnostic.gate,
+              },
+            },
+            transferList: [...(options?.transferList ?? []), checkpointDiagnostic.port],
+          },
+        ];
+      }
+      if (readerDiagnostic.port) {
+        const [source, options] = args;
+        // Block only the marked statement in the real reader, after its startup handshake.
+        const prelude = `
+const __readerDiagnostic = require("node:worker_threads").workerData.readerDiagnostic;
+const __readerPrototype = require("node:sqlite").DatabaseSync.prototype;
+const __readerPrepare = __readerPrototype.prepare;
+__readerPrototype.prepare = function (sql, ...args) {
+  if (sql.includes("__reader_progress__")) {
+    __readerDiagnostic.port.postMessage("query-start");
+    __readerDiagnostic.port.close();
+    Atomics.wait(new Int32Array(__readerDiagnostic.gate), 0, 0);
+  }
+  return Reflect.apply(__readerPrepare, this, [sql, ...args]);
+};
+`;
+        args = [
+          prelude + String(source),
+          {
+            ...options,
+            workerData: {
+              ...options?.workerData,
+              readerDiagnostic: { port: readerDiagnostic.port, gate: readerDiagnostic.gate },
+            },
+            transferList: [...(options?.transferList ?? []), readerDiagnostic.port],
+          },
+        ];
+      }
       super(
         ...((silentWorkers.on
           ? ["setInterval(() => {}, 1 << 30);", { eval: true }]
@@ -29,12 +113,36 @@ vi.mock("node:worker_threads", async (importOriginal) => {
             ? [`throw new Error(${JSON.stringify(failingWorkers.message)});`, { eval: true }]
             : args) as ConstructorParameters<typeof actual.Worker>),
       );
+      const terminal = { terminationRequested: false, terminationRequests: 0 } as {
+        error?: Error;
+        exitCode?: number;
+        terminationRequested: boolean;
+        terminationRequests: number;
+      };
+      workerTerminals.set(this, terminal);
+      this.on("error", (error) => {
+        terminal.error = error;
+      });
+      this.on("exit", (code) => {
+        terminal.exitCode = code;
+      });
       startedWorkers.push(this);
     }
     override terminate() {
+      const terminal = workerTerminals.get(this)!;
+      terminal.terminationRequested = true;
+      terminal.terminationRequests++;
       // A "ready" already queued when termination starts reaches the parent before "exit".
       if (silentWorkers.readyOnTerminate) this.emit("message", { type: "ready" });
-      return super.terminate();
+      const gate = silentWorkers.terminationGate;
+      const termination =
+        gate === undefined ? super.terminate() : gate.then(() => super.terminate());
+      // The real worker still exits; only the parent's cleanup proof is rejected.
+      return silentWorkers.rejectTermination
+        ? termination.then(() => {
+            throw new Error("synthetic termination rejection");
+          })
+        : termination;
     }
   }
   return { ...actual, Worker: RecordedWorker };
@@ -311,6 +419,10 @@ const withFileClient = <A, E>(
     sql: SqlClient.SqlClient,
     filename: string,
   ) => Effect.Effect<A, E, SqlClient.SqlClient | FileSystem.FileSystem>,
+  options: Pick<
+    SqliteClient.SqliteClientConfig,
+    "readerStartupTimeout" | "readerFailureMode" | "readerWorker"
+  > = {},
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -319,8 +431,321 @@ const withFileClient = <A, E>(
     const filename = path.join(directory, "state.sqlite");
     return yield* Effect.gen(function* () {
       return yield* setup(yield* SqlClient.SqlClient, filename);
-    }).pipe(Effect.provide(SqliteClient.layer({ filename, readerWorker: true })));
+    }).pipe(Effect.provide(SqliteClient.layer({ filename, readerWorker: true, ...options })));
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
+
+it.effect.each([{ readerFailureMode: "fallback" }, { readerFailureMode: "fail" }] as const)(
+  "recovers a timed-out reader after cleanup and coalesces concurrent retries ($readerFailureMode)",
+  ({ readerFailureMode }) =>
+    withFileClient(
+      (sql) =>
+        Effect.gen(function* () {
+          yield* sql`PRAGMA journal_mode = WAL`;
+          yield* sql`CREATE TABLE entries(name TEXT NOT NULL)`;
+          yield* sql`INSERT INTO entries VALUES ('kept')`;
+          const startedBefore = startedWorkers.length;
+          const writerPrepare = vi.spyOn(NodeSqlite.DatabaseSync.prototype, "prepare");
+          const read = sql<{ count: number }>`
+            SELECT COUNT(*) AS count FROM entries /* strict-reader-probe */
+          `;
+          const unavailableRead = read.pipe(
+            SqliteClient.readOnly,
+            Effect.match({
+              onFailure: (error) => {
+                assert.equal(readerFailureMode, "fail");
+                assert.equal(error._tag, "SqlError");
+                assert.equal(error.reason.operation, "open");
+                return undefined;
+              },
+              onSuccess: (rows) => {
+                assert.equal(readerFailureMode, "fallback");
+                return rows[0]?.count;
+              },
+            }),
+          );
+          const assertUnavailableRead = Effect.gen(function* () {
+            assert.equal(yield* unavailableRead, readerFailureMode === "fail" ? undefined : 1);
+            if (readerFailureMode === "fail") {
+              assert.isFalse(
+                writerPrepare.mock.calls.some(([sql]) => sql.includes("strict-reader-probe")),
+              );
+            }
+          });
+          let releaseTermination = () => {};
+          silentWorkers.on = true;
+          silentWorkers.readyOnTerminate = true;
+          silentWorkers.terminationGate = new Promise<void>((resolve) => {
+            releaseTermination = resolve;
+          });
+          yield* Effect.gen(function* () {
+            const reads = yield* Effect.forkChild(
+              Effect.all(
+                Array.from({ length: 8 }, () => unavailableRead),
+                { concurrency: "unbounded" },
+              ),
+              { startImmediately: true },
+            );
+            yield* TestClock.adjust("100 millis");
+            assert.deepEqual(
+              yield* Fiber.join(reads),
+              Array(8).fill(readerFailureMode === "fail" ? undefined : 1),
+            );
+            yield* assertUnavailableRead;
+            yield* sql`INSERT INTO entries VALUES ('writer-progress')`;
+            assert.equal(yield* countEntries(sql), 2);
+            yield* sql`DELETE FROM entries WHERE name = 'writer-progress'`;
+            const retired = startedWorkers.at(-1)!;
+            assert.equal(startedWorkers.length, startedBefore + 1);
+            assert.equal(workerTerminals.get(retired)!.terminationRequests, 1);
+            assert.isUndefined(workerTerminals.get(retired)!.exitCode);
+            silentWorkers.on = false;
+            silentWorkers.readyOnTerminate = false;
+            // Neither a late ready nor demand during termination can start or revive a reader.
+            retired.emit("message", { type: "ready" });
+            yield* assertUnavailableRead;
+            assert.equal(startedWorkers.length, startedBefore + 1);
+            const cancelled = yield* Effect.forkChild(
+              unavailableRead.pipe(Effect.andThen(Effect.never)),
+              {
+                startImmediately: true,
+              },
+            );
+            yield* Fiber.interrupt(cancelled);
+            assert.equal(startedWorkers.length, startedBefore + 1);
+            releaseTermination();
+            yield* Effect.promise(
+              () =>
+                new Promise<void>((resolve) => {
+                  if (workerTerminals.get(retired)!.exitCode !== undefined) resolve();
+                  else retired.once("exit", () => resolve());
+                }),
+            );
+            yield* eventLoopTurn;
+            yield* assertUnavailableRead;
+            assert.equal(startedWorkers.length, startedBefore + 1);
+            yield* TestClock.adjust("1 second");
+            const recovered = yield* Effect.all(
+              Array.from({ length: 8 }, () => countEntries(sql).pipe(SqliteClient.readOnly)),
+              { concurrency: "unbounded" },
+            );
+            assert.deepEqual(recovered, Array(8).fill(1));
+            assert.equal(startedWorkers.length, startedBefore + 2);
+            const error = yield* sql
+              .withTransaction(sql`INSERT INTO entries VALUES ('blocked')`)
+              .pipe(SqliteClient.readOnly, Effect.flip);
+            assert.include(String(error.reason.cause), "readonly database");
+            assert.equal(workerTerminals.get(retired)!.terminationRequests, 1);
+            assert.equal(yield* countEntries(sql), 1);
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                silentWorkers.on = false;
+                silentWorkers.readyOnTerminate = false;
+                silentWorkers.terminationGate = undefined;
+                releaseTermination();
+                writerPrepare.mockRestore();
+              }),
+            ),
+          );
+        }),
+      { readerStartupTimeout: "100 millis", readerFailureMode },
+    ),
+);
+
+it.effect("waits for a retiring reader during scope close even when close is interrupted", () =>
+  Effect.gen(function* () {
+    const started = yield* Deferred.make<void>();
+    const retired = yield* Deferred.make<void>();
+    const startedBefore = startedWorkers.length;
+    let releaseTermination = () => {};
+    silentWorkers.on = true;
+    silentWorkers.terminationGate = new Promise<void>((resolve) => {
+      releaseTermination = resolve;
+    });
+    yield* Effect.gen(function* () {
+      const work = yield* Effect.forkChild(
+        withFileClient(
+          (sql) =>
+            Effect.gen(function* () {
+              yield* sql`PRAGMA journal_mode = WAL`;
+              yield* Deferred.succeed(started, undefined);
+              const error = yield* sql`SELECT 1`.pipe(SqliteClient.readOnly, Effect.flip);
+              assert.equal(error._tag, "SqlError");
+              yield* Deferred.succeed(retired, undefined);
+            }),
+          { readerStartupTimeout: "100 millis", readerFailureMode: "fail" },
+        ),
+        { startImmediately: true },
+      );
+      yield* Deferred.await(started);
+      yield* TestClock.adjust("100 millis");
+      yield* Deferred.await(retired);
+      yield* eventLoopTurn;
+      const reader = startedWorkers.at(-1)!;
+      assert.isUndefined(work.pollUnsafe());
+      assert.equal(workerTerminals.get(reader)!.terminationRequests, 1);
+      const interrupted = yield* Effect.forkChild(Fiber.interrupt(work), {
+        startImmediately: true,
+      });
+      assert.isUndefined(interrupted.pollUnsafe());
+      reader.emit("message", { type: "ready" });
+      assert.equal(startedWorkers.length, startedBefore + 1);
+      releaseTermination();
+      yield* Fiber.join(interrupted);
+      assert.equal(workerTerminals.get(reader)!.terminationRequests, 1);
+      assert.isDefined(workerTerminals.get(reader)!.exitCode);
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          silentWorkers.on = false;
+          silentWorkers.terminationGate = undefined;
+          releaseTermination();
+        }),
+      ),
+    );
+  }),
+);
+
+it.effect("does not replace a reader when termination rejects", () =>
+  withFileClient(
+    (sql) =>
+      Effect.gen(function* () {
+        yield* sql`PRAGMA journal_mode = WAL`;
+        const startedBefore = startedWorkers.length;
+        silentWorkers.on = true;
+        silentWorkers.rejectTermination = true;
+        yield* Effect.gen(function* () {
+          const read = yield* Effect.forkChild(
+            sql`SELECT 1`.pipe(SqliteClient.readOnly, Effect.flip),
+            {
+              startImmediately: true,
+            },
+          );
+          yield* TestClock.adjust("100 millis");
+          assert.equal((yield* Fiber.join(read))._tag, "SqlError");
+          const reader = startedWorkers.at(-1)!;
+          yield* Effect.promise(
+            () =>
+              new Promise<void>((resolve) => {
+                if (workerTerminals.get(reader)!.exitCode !== undefined) resolve();
+                else reader.once("exit", () => resolve());
+              }),
+          );
+          yield* eventLoopTurn;
+          silentWorkers.on = false;
+          yield* TestClock.adjust("1 minute");
+          assert.equal(
+            (yield* sql`SELECT 1`.pipe(SqliteClient.readOnly, Effect.flip))._tag,
+            "SqlError",
+          );
+          assert.equal(startedWorkers.length, startedBefore + 1);
+          assert.equal(workerTerminals.get(reader)!.terminationRequests, 1);
+          assert.deepEqual(yield* sql`SELECT 1 AS value`, [{ value: 1 }]);
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              silentWorkers.on = false;
+              silentWorkers.rejectTermination = false;
+            }),
+          ),
+        );
+      }),
+    { readerStartupTimeout: "100 millis", readerFailureMode: "fail" },
+  ),
+);
+
+it.effect.each([
+  { filename: ":memory:", readerWorker: true },
+  { filename: "", readerWorker: true },
+])("keeps strict reader policy inactive for non-worker databases ($filename)", (options) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const startedBefore = startedWorkers.length;
+    yield* sql`CREATE TABLE entries(name TEXT NOT NULL)`;
+    yield* sql`INSERT INTO entries VALUES ('kept')`;
+    assert.equal(yield* countEntries(sql).pipe(SqliteClient.readOnly), 1);
+    assert.equal(startedWorkers.length, startedBefore);
+  }).pipe(Effect.provide(SqliteClient.layer({ ...options, readerFailureMode: "fail" }))),
+);
+
+it.effect("keeps strict reader policy inactive when the file reader is disabled", () =>
+  withFileClient(
+    (sql) =>
+      Effect.gen(function* () {
+        const startedBefore = startedWorkers.length;
+        yield* sql`CREATE TABLE entries(name TEXT NOT NULL)`;
+        yield* sql`INSERT INTO entries VALUES ('kept')`;
+        assert.equal(yield* countEntries(sql).pipe(SqliteClient.readOnly), 1);
+        assert.equal(startedWorkers.length, startedBefore);
+      }),
+    { readerWorker: false, readerFailureMode: "fail" },
+  ),
+);
+
+it.effect("fails strict reads permanently when the database does not use WAL", () =>
+  withFileClient(
+    (sql) =>
+      Effect.gen(function* () {
+        yield* sql`CREATE TABLE entries(name TEXT NOT NULL)`;
+        yield* sql`INSERT INTO entries VALUES ('kept')`;
+        const startedBefore = startedWorkers.length;
+        const read = countEntries(sql).pipe(SqliteClient.readOnly, Effect.flip);
+        assert.equal((yield* read)._tag, "SqlError");
+        yield* TestClock.adjust("1 minute");
+        assert.equal((yield* read)._tag, "SqlError");
+        assert.equal(startedWorkers.length, startedBefore + 1);
+        assert.equal(yield* countEntries(sql), 1);
+      }),
+    { readerFailureMode: "fail" },
+  ),
+);
+
+it.effect("lets the event loop and writer advance while a reader statement is busy", () =>
+  Effect.gen(function* () {
+    const { port1, port2 } = new NodeWorkerThreads.MessageChannel();
+    const gate = new Int32Array(new SharedArrayBuffer(4));
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        Atomics.store(gate, 0, 1);
+        Atomics.notify(gate, 0);
+        port1.close();
+        port2.close();
+        readerDiagnostic.port = undefined;
+        readerDiagnostic.gate = undefined;
+      }),
+    );
+    readerDiagnostic.port = port2;
+    readerDiagnostic.gate = gate.buffer;
+    const queryStarted = new Promise<void>((resolve) => port1.once("message", () => resolve()));
+    yield* withReaderClient((sql) =>
+      Effect.gen(function* () {
+        const read = yield* Effect.forkChild(
+          sql<{ count: number }>`
+            SELECT COUNT(*) AS count FROM entries /* __reader_progress__ */
+          `.pipe(SqliteClient.readOnly),
+          { startImmediately: true },
+        );
+        yield* Effect.promise(() => queryStarted);
+        yield* eventLoopTurn;
+        yield* sql`INSERT INTO entries VALUES ('writer-progress')`;
+        assert.equal(yield* countEntries(sql), 2);
+        assert.isUndefined(read.pollUnsafe());
+        yield* Effect.sync(() => {
+          Atomics.store(gate, 0, 1);
+          Atomics.notify(gate, 0);
+        });
+        assert.deepEqual(yield* Fiber.join(read), [{ count: 2 }]);
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            Atomics.store(gate, 0, 1);
+            Atomics.notify(gate, 0);
+          }),
+        ),
+      ),
+    );
+  }).pipe(Effect.scoped),
+);
 
 it.effect("uses the writer when the reader cannot open the database", () =>
   withFileClient((sql, filename) =>

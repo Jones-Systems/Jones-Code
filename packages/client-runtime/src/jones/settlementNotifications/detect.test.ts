@@ -33,10 +33,7 @@ describe("settlement detection", () => {
 
   it("ignores live without a snapshot", () => {
     expect(
-      observeEnvironment(
-        baseline(),
-        input({ status: "live", snapshot: Option.none(), error: Option.none() }),
-      ),
+      observeEnvironment(baseline(), input({ ...shell(1, []), snapshot: Option.none() })),
     ).toEqual({ kind: "skip" });
   });
 
@@ -58,7 +55,10 @@ describe("settlement detection", () => {
     const rows = [99, 100, 101].map((createdAt) =>
       thread(`thread-${createdAt}`, 200, { createdAt: DateTime.makeUnsafe(createdAt) }),
     );
-    const result = observeEnvironment(baseline(), input(shell(2, rows)));
+    const result = observeEnvironment(
+      baseline(),
+      input({ ...shell(2, rows), removedAt: new Map([[thread().id, 2]]) }),
+    );
     expect(result.kind).toBe("compare");
     if (result.kind === "compare") {
       expect(result.arrivals.map((arrival) => arrival.threadId)).toEqual([
