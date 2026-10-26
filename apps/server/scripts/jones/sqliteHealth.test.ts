@@ -417,7 +417,7 @@ describe("jones-sqlite-health — closed fixture integration", () => {
     });
   });
 
-  it("uses the receiving V2 offline DELETE producer with separate custody and release pins and refuses a raw report", async () => {
+  it("uses the receiving V2 offline DELETE producer with bounded metadata, separate pins and raw-report refusal", async () => {
     const databaseSource = currentDatabaseSource(worktreePath);
     const binding: PerformanceBinding = {
       repository: "Jones-Systems/Jones-Code",
@@ -513,12 +513,16 @@ describe("jones-sqlite-health — closed fixture integration", () => {
             supervisorRetained: accepted.value.cleanup.supervisorRoot !== null,
           },
         }),
-      ).toBe("completed");
+      ).toBe("partial");
+      expect(accepted.value.reason).toBe("record_limit");
       expect(accepted.value.limits.maxRecords).toBe(512);
-      expect(accepted.value.results.metadata.status).toBe("completed");
-      expect(measuredSchemaRecords).toBeGreaterThan(256);
-      expect(measuredSchemaRecords).toBeLessThanOrEqual(512);
-      expect(accepted.value.results.metadata.data?.schema.length).toBe(measuredSchemaRecords);
+      // Native Workstreams adds enough sparse tables to exceed the fixed diagnostic cap.
+      // Keep the cap and prove honest truncation while all opted-in checks still complete.
+      expect(accepted.value.results.metadata.status).toBe("truncated");
+      expect(accepted.value.results.metadata.reason).toBe("record_limit");
+      expect(measuredSchemaRecords).toBeGreaterThan(512);
+      expect(accepted.value.results.metadata.data?.schema).toHaveLength(512);
+      expect(accepted.value.results.counts.status).toBe("completed");
       const custodyPin = syntheticFixtureReceiptSha256(fixtureCustodyReceipt(accepted.receipt));
       expect(accepted.receipt.schema).toBe("jones-performance-fixture/v2");
       expect(accepted.receiptSha256).not.toBe(custodyPin);
@@ -587,7 +591,8 @@ describe("jones-sqlite-health — closed fixture integration", () => {
       expect((rejected as SyntheticFixtureError).code).toBe("invalid_consumer_outcome");
       expect(evidence?.cleanup.outcome).toBe("retained");
       expect(NodeFS.existsSync(NodePath.join(root, "raw"))).toBe(true);
-      expect(raw.report?.status).toBe("completed");
+      expect(raw.report?.status).toBe("partial");
+      expect(raw.report?.reason).toBe("record_limit");
       expect(raw.report?.results.readonly.data?.unchanged).toBe(true);
       expect(evidence).not.toHaveProperty("value");
       expect(safeToClean).toBe(true);
