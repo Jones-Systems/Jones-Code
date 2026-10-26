@@ -10,6 +10,7 @@ import type {
   WorkstreamReferencePage,
   WorkstreamsRegistrationContextAcceptedResponse,
 } from "@t3tools/contracts";
+import { nativeWorkstreamsMessage } from "@t3tools/client-runtime/state/workstreams";
 import type { LiveT3Placements } from "@t3tools/client-runtime/state/workstreams";
 import type { WorkstreamListView } from "../../state/workstreams";
 import { canEditWorkstreams } from "../../components/workstreams/nativeWorkstreamActions";
@@ -59,9 +60,10 @@ function workstreamActionMessage(reason: WorkstreamActionError["reason"]): strin
 }
 
 export const workstreamFailureMessage = (cause: unknown): string =>
-  cause instanceof WorkstreamActionError
+  nativeWorkstreamsMessage(cause) ??
+  (cause instanceof WorkstreamActionError
     ? cause.message
-    : "Could not complete the action. Refresh before trying again.";
+    : "Could not complete the action. Refresh before trying again.");
 
 const isHttpConflict = Schema.is(EnvironmentHttpConflictError);
 const isInvalidRequest = Schema.is(EnvironmentRequestInvalidError);

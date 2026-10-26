@@ -2068,9 +2068,16 @@
         "packages/contracts/src/jones/workstreamsNativeRead.test.ts",
         "packages/contracts/src/jones/workstreamsNativePlacement.test.ts",
         "packages/contracts/src/jones/workstreamsSnapshot.test.ts",
-        "packages/contracts/src/jones/workstreamsRollups.test.ts"
+        "packages/contracts/src/jones/workstreamsRollups.test.ts",
+        "packages/client-runtime/src/state/workstreams/native.test.ts",
+        "apps/web/src/jones/workstreams/SetupStatusContent.browser.test.tsx",
+        "apps/web/src/jones/workstreams/useWorkstreamOperations.browser.test.tsx",
+        "apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx",
+        "apps/web/src/components/workstreams/WorkstreamNativeSidebar.browser.test.tsx",
+        "apps/mobile/src/features/workstreams/projection.test.ts",
+        "apps/mobile/src/features/workstreams/Controls.operations.test.tsx"
       ],
-      "scope": "Versioned native registry-home, closed forwarding and receipt lookup contracts; coherent read provenance; native placement proofs alongside historical v1; encrypted snapshot framing; rollup source authorization and result preservation. Optional environment capability and explicit package exports are the shared hooks. Contracts only; no runtime authority, migration, client activation, provider configuration or fleet adoption is claimed."
+      "scope": "Versioned native registry-home, closed forwarding and receipt lookup contracts; coherent read provenance; native placement proofs alongside historical v1; encrypted snapshot framing; rollup source authorization and result preservation. Optional environment capability and explicit package exports are the shared hooks. Includes contract-ready client mode/home awareness, generation-isolated grouping, memory-only protected projections, honest native provenance and unchanged legacy fallback. Native transport wiring, forwarding, summary mounts and operational adoption remain integration work."
     }
   ]
 }

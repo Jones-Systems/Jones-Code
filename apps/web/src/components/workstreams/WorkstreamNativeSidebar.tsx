@@ -4,7 +4,12 @@ import {
   operationMessage,
 } from "@t3tools/client-runtime/jones/workstreams/operations";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
-import { workstreamBindingKey } from "@t3tools/client-runtime/state/workstreams";
+import {
+  nativeWorkstreamsLabel,
+  isNativeWorkstreams,
+  nativeWorkstreamReadLabel,
+  workstreamBindingKey,
+} from "@t3tools/client-runtime/state/workstreams";
 import {
   useLayoutEffect,
   useRef,
@@ -494,9 +499,19 @@ export function WorkstreamNativeSidebar({
           Saving Workstream change…
         </p>
       ) : null}
+      {nativeWorkstreamsLabel(controller.nativeCapability) ? (
+        <p role="status" className="px-2 text-xs text-muted-foreground">
+          {nativeWorkstreamsLabel(controller.nativeCapability)}
+          {isNativeWorkstreams(controller.nativeCapability)
+            ? ` · ${nativeWorkstreamReadLabel(controller.nativeRead)}`
+            : ""}
+        </p>
+      ) : null}
       {controller.stale ? (
         <p role="status" className="px-2 text-xs text-muted-foreground">
-          Showing the last loaded Workstreams.{" "}
+          {controller.nativeCapability && controller.nativeCapability.mode !== "legacy"
+            ? "Showing cached Workstreams · Stale · Read-only."
+            : "Showing the last loaded Workstreams."}{" "}
           <button type="button" disabled={controller.loading || busy} onClick={refreshWorkstreams}>
             Refresh
           </button>

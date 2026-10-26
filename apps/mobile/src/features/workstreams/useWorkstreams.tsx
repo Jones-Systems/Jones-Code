@@ -1,5 +1,6 @@
 import {
   WorkstreamOperationsClient,
+  memoryWorkstreamOperationStorage,
   supportsWorkstreamOperations,
   operationSucceeded,
   operationRegistryIdentity,
@@ -14,6 +15,12 @@ import type { MobileOperationActions } from "./actions";
 import { useAtomValue } from "@effect/atom-react";
 import type { PreparedConnection } from "@t3tools/client-runtime/connection";
 import {
+  nativeWorkstreamsCapability,
+  nativeWorkstreamsBlock,
+  nativeWorkstreamsMessage,
+  isNativeWorkstreams,
+  assertNativeWorkstreamBinding,
+  nativeWorkstreamGroupKey,
   validateAppearanceBinding,
   appendWorkstreamDtoPage,
   nativeWorkstreamThreadKey,
@@ -168,16 +175,30 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
     () =>
       [...loaded]
         .filter(([environmentId]) => retained(environmentId))
-        .map(([, snapshot]) =>
-          snapshot.stale ||
-          connections.some(
-            (entry) =>
-              entry.prepared === snapshot.prepared && entry.generation === snapshot.generation,
+        .map(([, original]) => {
+          const capability = nativeWorkstreamsCapability(
+            liveEnvironments.find(
+              (entry) => entry.environmentId === original.prepared.environmentId,
+            )?.config?.environment.capabilities,
+          );
+          const snapshot = capability ? { ...original, nativeCapability: capability } : original;
+          if (
+            snapshot.nativeCapability?.mode === "transition-fenced" ||
+            snapshot.nativeCapability?.mode === "disabled"
           )
-            ? snapshot
-            : { ...snapshot, stale: true },
-        ),
-    [loaded, connections, retained],
+            return null;
+          return snapshot.stale || nativeWorkstreamsBlock(snapshot.nativeCapability) !== null
+            ? { ...snapshot, stale: true }
+            : connections.some(
+                  (entry) =>
+                    entry.prepared === snapshot.prepared &&
+                    entry.generation === snapshot.generation,
+                )
+              ? snapshot
+              : { ...snapshot, stale: true };
+        })
+        .filter((snapshot): snapshot is MobileWorkstreamSnapshot => snapshot !== null),
+    [loaded, connections, retained, liveEnvironments],
   );
   const snapshotsRef = useRef(snapshots);
   useLayoutEffect(() => {
@@ -217,6 +238,13 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       snapshot.data.binding.registryId,
       snapshot.data.binding.ownerId,
       snapshot.data.binding.principalId,
+      ...(snapshot.nativeCapability && snapshot.nativeCapability.mode !== "legacy"
+        ? [
+            nativeWorkstreamGroupKey(snapshot.nativeCapability),
+            snapshot.nativeCapability.registry?.home_environment_id,
+            snapshot.data.binding.authorizationRevision,
+          ]
+        : []),
     ]);
     const connectionKey = `${key}:${snapshot.generation}`;
     let client = mobileOperationClients.get(connectionKey);
@@ -254,16 +282,20 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
               signal ?? new AbortController().signal,
             ),
         },
-        {
-          load: () =>
-            runtime.runPromise(
-              MobileSecureStorage.pipe(Effect.flatMap((store) => store.getItem(storageKey))),
-            ),
-          save: (value) =>
-            runtime.runPromise(
-              MobileSecureStorage.pipe(Effect.flatMap((store) => store.setItem(storageKey, value))),
-            ),
-        },
+        snapshot.nativeCapability && snapshot.nativeCapability.mode !== "legacy"
+          ? memoryWorkstreamOperationStorage()
+          : {
+              load: () =>
+                runtime.runPromise(
+                  MobileSecureStorage.pipe(Effect.flatMap((store) => store.getItem(storageKey))),
+                ),
+              save: (value) =>
+                runtime.runPromise(
+                  MobileSecureStorage.pipe(
+                    Effect.flatMap((store) => store.setItem(storageKey, value)),
+                  ),
+                ),
+            },
         () =>
           runtime.runPromise(Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.randomUUIDv4()))),
       );
@@ -302,7 +334,16 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
     return await (async () => {
       const status = await operationClient(snapshot).transport.setup(abort.signal);
       assertCurrent(snapshot);
-      return operationRegistryIdentity(status, snapshot.data.binding.ownerId);
+      const block = nativeWorkstreamsBlock(snapshot.nativeCapability);
+      if (block) throw new Error(block);
+      assertNativeWorkstreamBinding(snapshot.nativeCapability, snapshot.data.binding);
+      const registry = operationRegistryIdentity(status, snapshot.data.binding.ownerId);
+      if (
+        isNativeWorkstreams(snapshot.nativeCapability) &&
+        registry.registry_id !== snapshot.nativeCapability?.registry?.registry_instance_id
+      )
+        throw new Error("Workstream change rejected: registry_mismatch. Refresh native setup.");
+      return registry;
     })().finally(() => {
       controllers.current.delete(abort);
     });
@@ -497,11 +538,18 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
         > => {
           const environmentId = connection.prepared.environmentId;
           return await (async () => {
+            const capability = nativeWorkstreamsCapability(
+              liveEnvironments.find((entry) => entry.environmentId === environmentId)?.config
+                ?.environment.capabilities,
+            );
+            const block = nativeWorkstreamsBlock(capability);
+            if (block) throw new Error(block);
             const previous = loadedRef.current.get(environmentId);
             const { data, index } = await loadMobileWorkstreamRegistry(
               registryFetchers(connection.prepared),
               { signal: controller.signal, listOnlyFallback: !previous?.index },
             );
+            assertNativeWorkstreamBinding(capability, data.binding);
             let appearance: WorkstreamAppearancePage | null = null;
             await (async () => {
               const items: WorkstreamAppearancePage["items"][number][] = [];
@@ -559,11 +607,12 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
                 kind: "loaded",
                 snapshot: {
                   ...connection,
+                  nativeCapability: capability,
                   appearance,
                   data,
                   placements,
                   index,
-                  stale: false,
+                  stale: data.stale || data.source === "cache",
                   identityKeys: new Set(
                     identities.map((identity) =>
                       nativeWorkstreamThreadKey(
@@ -582,16 +631,25 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       ),
     ).then((outcomes) => {
       // One coherent swap per refresh round; an aborted or superseded round changes nothing.
-      if (!controller.signal.aborted && current.current === connections)
+      if (!controller.signal.aborted && current.current === connections) {
         setLoaded((previous) =>
           settleMobileWorkstreamSnapshots(previous, new Map(outcomes), retainedRef.current),
         );
+        const failure = outcomes.find(([, outcome]) => outcome.kind === "failed")?.[1];
+        if (failure?.kind === "failed")
+          setError(
+            nativeWorkstreamsMessage(failure.cause) ??
+              (failure.cause instanceof Error
+                ? failure.cause.message
+                : "Workstreams unavailable. Restore the home connection and refresh."),
+          );
+      }
     });
     return () => {
       for (const pending of controllers.current) pending.abort();
       controllers.current.clear();
     };
-  }, [connections, context, inventory, revision, request, registryFetchers]);
+  }, [connections, context, inventory, revision, request, registryFetchers, liveEnvironments]);
   const bindingRevision = snapshots
     .map((snapshot) =>
       JSON.stringify([
@@ -688,6 +746,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
         snapshot.data.binding.ownerId,
         snapshot.data.binding.principalId,
         supportsOperations(snapshot.prepared.environmentId),
+        snapshot.nativeCapability,
       ]),
     )
     .join("|");

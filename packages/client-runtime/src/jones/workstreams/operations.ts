@@ -11,6 +11,8 @@ import {
   type WorkstreamSetupStatus,
 } from "@t3tools/contracts/jones/workstreamOperations";
 
+import { nativeWorkstreamsMessage } from "../../state/workstreams/native.ts";
+
 export type OperationResult = WorkstreamOperationResult;
 export interface WorkstreamOperationsTransport {
   submit: (
@@ -26,6 +28,16 @@ export interface WorkstreamOperationsTransport {
 export interface OperationStorage {
   load: () => Promise<string | null>;
   save: (value: string) => Promise<void>;
+}
+/** Native recovery is durable on the server; protected request and result data stay in memory. */
+export function memoryWorkstreamOperationStorage(): OperationStorage {
+  let value: string | null = null;
+  return {
+    load: async () => value,
+    save: async (next) => {
+      value = next;
+    },
+  };
 }
 export interface RetainedOperation {
   readonly key: string;
@@ -67,9 +79,18 @@ export const operationMayReplace = (result: OperationResult | null) =>
 export function operationMessage(result: OperationResult): string {
   if (result.state === "conflict")
     return `Assignment changed. Currently ${result.observed.kind === "primary" ? `in ${result.observed.name}` : "Unassigned"}. Retry to use this placement.`;
-  if (result.state === "reconciling") return "Reconciling Workstream change…";
+  if (result.state === "reconciling")
+    return "Workstream outcome unknown. Reconciling against the original home…";
   if (result.state === "in_progress") return "Saving Workstream change…";
   if (operationSucceeded(result)) return "Workstream change saved.";
+  if (result.state === "unavailable") {
+    const availability =
+      result.detail && "availability" in result.detail ? result.detail.availability : null;
+    const message = nativeWorkstreamsMessage({ code: availability ?? result.reason });
+    if (message) return message;
+    if (availability === "authority_unavailable")
+      return "Workstream authority is unavailable. Check the home route, configured encryption key and import status in Workstreams setup, then retry the retained change.";
+  }
   return `Workstream change ${result.state}: ${result.reason}${result.detail && "availability" in result.detail ? ` (${result.detail.availability})` : ""}. Retry after resolving this condition.`;
 }
 export class WorkstreamOperationError extends Error {

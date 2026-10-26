@@ -3286,9 +3286,21 @@
         "packages/contracts/src/jones/workstreamsNativeRead.test.ts",
         "packages/contracts/src/jones/workstreamsNativePlacement.test.ts",
         "packages/contracts/src/jones/workstreamsSnapshot.test.ts",
-        "packages/contracts/src/jones/workstreamsRollups.test.ts"
+        "packages/contracts/src/jones/workstreamsRollups.test.ts",
+        "packages/client-runtime/src/state/workstreams/native.test.ts",
+        "apps/web/src/jones/workstreams/SetupStatusContent.browser.test.tsx",
+        "apps/web/src/jones/workstreams/useWorkstreamOperations.browser.test.tsx",
+        "apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx",
+        "apps/web/src/components/workstreams/WorkstreamNativeSidebar.browser.test.tsx",
+        "apps/mobile/src/features/workstreams/projection.test.ts",
+        "apps/mobile/src/features/workstreams/Controls.operations.test.tsx"
       ],
       "commands": [
+        "vp test run packages/client-runtime/src/state/workstreams apps/mobile/src/features/workstreams apps/web/src/jones/workstreams apps/web/src/components/workstreams apps/web/src/state/workstreams.test.ts --maxWorkers=1 --no-file-parallelism",
+        "tsc-rs --noEmit -p packages/client-runtime/tsconfig.json",
+        "tsc-rs --noEmit -p apps/web/tsconfig.json",
+        "tsc-rs --noEmit -p apps/mobile/tsconfig.json",
+
         "vp test run packages/contracts/src/jones/workstreamsNative.test.ts packages/contracts/src/jones/workstreamsNativeRead.test.ts packages/contracts/src/jones/workstreamsNativePlacement.test.ts packages/contracts/src/jones/workstreamsSnapshot.test.ts packages/contracts/src/jones/workstreamsRollups.test.ts packages/contracts/src/workstreams.test.ts packages/contracts/src/workstreams.conformance.test.ts packages/contracts/src/jones/workstreamOperations.test.ts packages/contracts/src/jones/workstreamsNativeProvider.test.ts packages/contracts/src/jones/orchestrationCompatibility.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/contracts typecheck",
         "vp lint packages/contracts/src/jones/workstreamsNative.ts packages/contracts/src/jones/workstreamsNativeRead.ts packages/contracts/src/jones/workstreamsNativePlacement.ts packages/contracts/src/jones/workstreamsSnapshot.ts packages/contracts/src/jones/workstreamsRollups.ts packages/contracts/src/jones/workstreamsNative.test.ts packages/contracts/src/jones/workstreamsNativeRead.test.ts packages/contracts/src/jones/workstreamsNativePlacement.test.ts packages/contracts/src/jones/workstreamsSnapshot.test.ts packages/contracts/src/jones/workstreamsRollups.test.ts packages/contracts/src/environment.ts",

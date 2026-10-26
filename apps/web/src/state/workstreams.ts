@@ -24,6 +24,11 @@ import {
   T3_PLACEMENT_MAX_REQUEST_BYTES,
 } from "@t3tools/contracts";
 import {
+  nativeWorkstreamsBlock,
+  nativeWorkstreamsMessage,
+  isNativeWorkstreams,
+  assertNativeWorkstreamBinding,
+  type NativeWorkstreamsCapability,
   appendWorkstreamDtoPage,
   appendWorkstreamListResult,
   LiveWorkstreamMetadataCache,
@@ -115,11 +120,12 @@ const isRestartableCursorStale = (cause: unknown): boolean =>
  * server: retrying cannot succeed, so the sidebar shows ungrouped threads without an error.
  */
 export const workstreamListErrorMessage = (cause: unknown): string | null =>
-  isWorkstreamsNotConfigured(cause)
+  nativeWorkstreamsMessage(cause) ??
+  (isWorkstreamsNotConfigured(cause)
     ? null
     : cause instanceof Error
       ? cause.message
-      : "Workstreams are unavailable.";
+      : "Workstreams are unavailable.");
 
 export interface CursorRestartOptions {
   readonly signal?: AbortSignal;
@@ -336,6 +342,10 @@ export async function loadCompleteWorkstreamDetail(
 }
 
 export interface WorkstreamListView {
+  readonly nativeRead?:
+    | import("@t3tools/contracts/jones/workstreamsNativeRead").WorkstreamsNativeReadEnvelope
+    | null;
+  readonly nativeCapability?: NativeWorkstreamsCapability | null;
   readonly operationEntries?: readonly RetainedOperation[];
   readonly operationsError?: string | null;
   readonly supportsOperations?: (environmentId: string) => boolean;
@@ -714,6 +724,10 @@ export function useWorkstreams(
     setRevision((value) => value + 1);
   });
   const operations = useWorkstreamOperations({ data, primaryEnvironmentId, refresh });
+  const nativeCapability = operations.capability;
+  const nativeBlock = nativeWorkstreamsBlock(nativeCapability);
+  const nativeHidden =
+    nativeCapability?.mode === "transition-fenced" || nativeCapability?.mode === "disabled";
   useWorkstreamsReconnectRefresh(refresh);
   const refreshAccess = useStableCallback(() => {
     setRemoteRefusals(new Map());
@@ -841,9 +855,18 @@ export function useWorkstreams(
     };
     const superseded = () => generation.current !== current || controller.signal.aborted;
     void (async () => {
+      if (nativeHidden) purgeAuthorizedState();
+      if (nativeBlock) throw new Error(nativeBlock);
       let core = await withTransientReadRecovery(loadCore, controller.signal);
+      assertNativeWorkstreamBinding(nativeCapability, core.list.binding);
       let reloadList = false;
       const context = await withTransientReadRecovery(async () => {
+        if (isNativeWorkstreams(nativeCapability))
+          return {
+            value: null,
+            required: false,
+            availability: { state: "ready", reason: null } as AssignmentAvailability,
+          };
         if (reloadList) core = await loadCore();
         // A server without the endpoint keeps its pre-context behavior: no context, no error.
         // Every other failure rejects this load, so no snapshot publishes without its context.
@@ -915,7 +938,10 @@ export function useWorkstreams(
       setPlacementInventory(proofs?.inventory ?? EMPTY_PLACEMENT_INVENTORY);
       setVerificationNow(new Date().toISOString());
       // Without the context a supporting server requires, writes stay blocked until one loads.
-      const readOnly = context.required && context.value === null;
+      const readOnly =
+        (context.required && context.value === null) ||
+        core.list.stale ||
+        core.list.source === "cache";
       staleRef.current = readOnly;
       setStale(readOnly);
       setError(null);
@@ -944,6 +970,9 @@ export function useWorkstreams(
   }, [
     revision,
     placementsEnabled,
+    nativeCapability,
+    nativeBlock,
+    nativeHidden,
     markStale,
     proofBatches,
     purgeAuthorizedState,
@@ -1035,6 +1064,7 @@ export function useWorkstreams(
   const runBindingOperation = async <A>(
     operation: (submit: (command: WorkstreamCommand) => Promise<WorkstreamReceipt>) => Promise<A>,
   ) => {
+    if (nativeBlock) throw new Error(nativeBlock);
     const startedBinding = data?.binding;
     if (startedBinding === undefined) throw new Error("Workstream binding is unavailable.");
     // A stale snapshot is display evidence only; every write refuses before any request.
@@ -1163,6 +1193,7 @@ export function useWorkstreams(
   ) => {
     const started = dataRef.current;
     // Stale stored assignments are display evidence only and never plan a change.
+    if (nativeBlock) throw new Error(nativeBlock);
     if (!started || !placementsEnabled || staleRef.current)
       throw new WorkstreamActionError("stale");
     const authority = actionAuthorityKey(started.binding);
@@ -1380,6 +1411,7 @@ export function useWorkstreams(
     options: { readonly signal?: AbortSignal } = {},
   ) => {
     try {
+      if (nativeBlock) throw new Error(nativeBlock);
       const load = <A, E>(run: (client: PrimaryClient) => Effect.Effect<A, E>) =>
         request(run, options.signal);
       return await loadCompleteWorkstreamDetail(
@@ -1440,6 +1472,7 @@ export function useWorkstreams(
     options: { readonly signal?: AbortSignal } = {},
   ) => {
     try {
+      if (nativeBlock) throw new Error(nativeBlock);
       return await request(
         (client) => client.workstreams.reference({ headers: {}, params: { nativeReferenceId } }),
         options.signal,
@@ -1454,6 +1487,7 @@ export function useWorkstreams(
   const loadActionSnapshot = async (
     options: { readonly signal?: AbortSignal } = {},
   ): Promise<WorkstreamActionSnapshot> => {
+    if (nativeBlock) throw new Error(nativeBlock);
     const started = dataRef.current?.binding;
     if (!started) throw new WorkstreamActionError("stale");
     const live = await loadCompleteWorkstreamList(
@@ -1489,10 +1523,12 @@ export function useWorkstreams(
         ),
       options,
     );
-    const context = await request(
-      (client) => client.workstreams.registrationContext({ headers: {} }),
-      options.signal,
-    );
+    const context = isNativeWorkstreams(nativeCapability)
+      ? null
+      : await request(
+          (client) => client.workstreams.registrationContext({ headers: {} }),
+          options.signal,
+        );
     options.signal?.throwIfAborted();
     if (
       !dataRef.current ||
@@ -1550,7 +1586,15 @@ export function useWorkstreams(
   };
 
   // Edit gates read `data`; a stale snapshot must not look current to them.
-  const view = (() => (data !== null && stale && !data.stale ? { ...data, stale: true } : data))();
+  const view = nativeHidden
+    ? null
+    : data !== null && (stale || nativeBlock !== null)
+      ? {
+          ...data,
+          ...(isNativeWorkstreams(nativeCapability) ? { source: "cache" as const } : {}),
+          stale: true,
+        }
+      : data;
 
   const assignsThroughOwnEnvironment = (environmentId: string) =>
     primaryEnvironmentId !== null && environmentId !== primaryEnvironmentId;
@@ -1559,6 +1603,9 @@ export function useWorkstreams(
     readonly environmentId: string;
     readonly id: string;
   }): AssignmentAvailability => {
+    const blocked =
+      nativeWorkstreamsBlock(operations.capabilityFor(thread.environmentId)) ?? nativeBlock;
+    if (blocked) return { state: "unavailable", reason: blocked };
     if (operations.supports(thread.environmentId)) return { state: "ready", reason: null };
     if (assignsThroughOwnEnvironment(thread.environmentId)) {
       const refusal = remoteRefusals.get(thread.environmentId);
@@ -1574,26 +1621,31 @@ export function useWorkstreams(
   };
 
   return {
+    nativeCapability,
     operationEntries: operations.entries,
     operationsError: operations.error,
     supportsOperations: operations.supports,
     ...(primaryEnvironmentId && operations.supports(primaryEnvironmentId)
       ? { createWorkstream: operations.create }
       : {}),
-    primaryAssignmentAvailability: registrationContextAvailability,
+    primaryAssignmentAvailability: nativeBlock
+      ? { state: "unavailable", reason: nativeBlock }
+      : isNativeWorkstreams(nativeCapability)
+        ? { state: "ready", reason: null }
+        : registrationContextAvailability,
     assignmentAvailability,
     assignsThroughOwnEnvironment,
     assignNativeThread: assignThread,
     registrationContext,
     loadActionSnapshot,
     retry,
-    placementInventory,
-    placements,
-    assignmentIndex,
-    stale,
+    placementInventory: nativeHidden ? EMPTY_PLACEMENT_INVENTORY : placementInventory,
+    placements: nativeHidden ? null : placements,
+    assignmentIndex: nativeHidden ? null : assignmentIndex,
+    stale: stale || nativeBlock !== null,
     verificationNow,
     data: view,
-    error,
+    error: nativeBlock ?? error,
     loading,
     refresh: refreshFromUser,
     submit,

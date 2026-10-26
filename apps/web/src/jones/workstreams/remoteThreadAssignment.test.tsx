@@ -1,5 +1,10 @@
 vi.mock("./useWorkstreamOperations", () => ({
-  useWorkstreamOperations: () => ({ entries: [], error: null, supports: () => false }),
+  useWorkstreamOperations: () => ({
+    entries: [],
+    error: null,
+    supports: () => false,
+    capabilityFor: () => null,
+  }),
 }));
 import { act } from "../testing/nodeRenderer";
 import { RegistryContext } from "@effect/atom-react";

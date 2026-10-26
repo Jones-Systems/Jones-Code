@@ -1,7 +1,10 @@
 {
   "schema": "jones.boundary-fragment/v1",
   "feature": "workstreams-native-authority",
-  "jonesOwnedPaths": [],
+  "jonesOwnedPaths": [
+    "packages/client-runtime/src/state/workstreams/native.ts",
+    "packages/client-runtime/src/state/workstreams/native.test.ts"
+  ],
   "hookPaths": [],
   "tombstones": [],
   "allowedImports": [
