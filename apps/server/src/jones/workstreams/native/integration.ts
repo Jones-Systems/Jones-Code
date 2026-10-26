@@ -1,3 +1,6 @@
+import * as DurableEntries from "./operations/durableEntries.ts";
+import * as HomeExecutor from "./operations/homeExecutor.ts";
+import { ExecutionContext } from "../operations/ports.ts";
 import * as Layer from "effect/Layer";
 import * as KeyProvider from "./crypto/keyProvider.ts";
 import * as Envelope from "./crypto/envelope.ts";
@@ -40,3 +43,18 @@ export const nativeSourceProvidersLayer = Layer.merge(
   LocalAttestation.layer,
   LocalSettlement.layer,
 ).pipe(Layer.provide(sourceProviderLayer), Layer.provide(Attempts.NativeProviderAttemptsLive));
+
+export const nativeOperationsLayer = Layer.mergeAll(DurableEntries.layer, HomeExecutor.layer).pipe(
+  Layer.provideMerge(nativePersistenceLayer),
+);
+
+export const nativeOperationsExecutionLayer = Layer.effect(
+  ExecutionContext,
+  Effect.gen(function* () {
+    return {
+      mode: "native" as const,
+      entries: yield* DurableEntries.DurableEntries,
+      executor: yield* HomeExecutor.HomeExecutor,
+    };
+  }),
+).pipe(Layer.provideMerge(nativeOperationsLayer));
