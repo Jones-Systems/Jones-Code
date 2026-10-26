@@ -144,7 +144,7 @@ describe("OrchestratorMcpService", () => {
                 parentFields.push(fields);
                 return parent;
               }),
-            readRemoteTaskObservation: () => Effect.succeed(undefined),
+            readRemoteTaskObservation: () => Effect.undefined,
             dispatch: (command) =>
               Effect.sync(() => {
                 assert.equal(command.type, "delegated_task.completion-delivery.acknowledge");

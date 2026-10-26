@@ -441,7 +441,7 @@ function ownedControl(generation = "terminal-generation:one") {
   const threadId = ThreadId.make("thread-1");
   const releaseCommandId = CommandId.make("legacy-terminal:C");
   const createCommandId = legacyBootstrapCreateCommandId(threadId, releaseCommandId);
-  return Schema.decodeUnknownSync(LegacyOwnedTerminalControl)({
+  return Schema.decodeSync(LegacyOwnedTerminalControl)({
     version: 1,
     threadId,
     runId: "legacy-terminal:run",
@@ -861,6 +861,51 @@ it.layer(
           .pipe(Effect.result);
         assert.equal(replacement._tag, "Failure");
         assert.deepEqual(ptyAdapter.processes[1]!.writes, []);
+      }),
+  );
+  it.effect(
+    "cancellation after a legacy write enters still awaits its durable outcome readback",
+    () =>
+      Effect.gen(function* () {
+        const { manager, ptyAdapter } = yield* createManager();
+        const binding = ownedControl();
+        yield* manager.open(openInput({ terminalId: binding.terminalId }), ownedOpenHooks(binding));
+        const enteredReadback = yield* Deferred.make<void>();
+        const releaseReadback = yield* Deferred.make<void>();
+        const outcomes: Array<{ outcome: string; count: number }> = [];
+        const writer = yield* manager
+          .write(
+            {
+              threadId: binding.threadId,
+              terminalId: binding.terminalId,
+              data: "captured script\r",
+            },
+            {
+              legacyOwnedControl: binding,
+              beforeWrite: () => Effect.void,
+              afterWrite: (outcome, count) =>
+                Deferred.succeed(enteredReadback, undefined).pipe(
+                  Effect.andThen(Deferred.await(releaseReadback)),
+                  Effect.andThen(
+                    Effect.sync(() => {
+                      outcomes.push({ outcome, count });
+                    }),
+                  ),
+                ),
+            },
+          )
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(enteredReadback);
+        const cancellation = yield* Fiber.interrupt(writer).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Effect.yieldNow;
+        assert.deepEqual(ptyAdapter.processes[0]!.writes, ["captured script\r"]);
+        assert.deepEqual(outcomes, []);
+        yield* Deferred.succeed(releaseReadback, undefined);
+        yield* Fiber.join(cancellation);
+        assert.deepEqual(outcomes, [{ outcome: "accepted", count: 1 }]);
+        assert.deepEqual(ptyAdapter.processes[0]!.writes, ["captured script\r"]);
       }),
   );
   it.effect("legacy owned control guard runs a pure body with the exact current generation", () =>

@@ -201,7 +201,7 @@ export const startServer = (
       Layer.provide(McpOAuth.layerMcpClientAuthenticator),
       Layer.provide(
         Layer.mock(McpSessionRegistry.McpSessionRegistry)({
-          resolve: () => Effect.succeed(undefined),
+          resolve: () => Effect.undefined,
         }),
       ),
       Layer.provide(Layer.mock(ThreadLaunch.ThreadLaunchService)({})),

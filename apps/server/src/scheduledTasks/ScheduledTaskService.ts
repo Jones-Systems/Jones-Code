@@ -39,9 +39,12 @@ import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
+
+import { makeFifoPermit, type FifoPermit } from "../jones/scheduledTasks/fifoPermit.ts";
+import { hasQueuedWake, queuedWakeSkipReason } from "../jones/scheduledTasks/queuedWake.ts";
+import { makePendingWebhookRuns } from "../jones/scheduledTasks/webhookRunRecovery.ts";
 
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
@@ -143,6 +146,7 @@ export type WebhookDeliveryOutcome =
   | "expired"
   | "filtered"
   | "not_found"
+  | "unavailable"
   | "error";
 
 export type WebhookTriggerResult =
@@ -158,7 +162,9 @@ export type WebhookTriggerResult =
       readonly _tag: "rate_limited";
       readonly outcome: "rate_limited" | "queue_full";
     }
-  | { readonly _tag: "expired" };
+  | { readonly _tag: "expired" }
+  /** Jones: the delivery could not be recorded, so nothing was claimed and a retry can run it. */
+  | { readonly _tag: "unavailable" };
 
 const webhookFilters = (filters: ReadonlyArray<ScheduledTaskWebhookFilter> | undefined) =>
   filters?.length ? { filters } : {};
@@ -401,10 +407,10 @@ export const layer = Layer.effect(
     const secretRequests = yield* SecretRequests.SecretRequests;
     const scheduler = yield* Scheduler.Scheduler;
     const readWebhookOrigin = yield* ScheduledTaskWebhookOrigin;
-    const webhookPermits = yield* Ref.make<ReadonlyMap<ScheduledTaskId, Semaphore.Semaphore>>(
-      new Map(),
-    );
-    // Include creation time so late deliveries cannot decrement a recreated task's count.
+    // Jones hook: a FIFO permit, so a delivery arriving as a run ends cannot overtake a waiting one.
+    const webhookPermits = yield* Ref.make<ReadonlyMap<ScheduledTaskId, FifoPermit>>(new Map());
+    // Keyed by task id and creation time, so deliveries of a deleted task that
+    // finish late release their own count, never a recreated task's.
     const webhookQueued = yield* Ref.make<ReadonlyMap<string, number>>(new Map());
     const webhookRateWindows = yield* Ref.make<ReadonlyMap<ScheduledTaskId, RateWindow>>(new Map());
     const webhookRejectedRateWindows = yield* Ref.make<ReadonlyMap<ScheduledTaskId, RateWindow>>(
@@ -781,6 +787,29 @@ export const layer = Layer.effect(
           if (reason !== null) return yield* new WebhookDeliverySkipped({ reason });
         }
 
+        if (
+          trigger === "scheduled" &&
+          (yield* hasQueuedWake(active).pipe(
+            Effect.provideService(
+              ThreadManagementService.ThreadManagementService,
+              threadManagement,
+            ),
+            Effect.mapError((cause) =>
+              taskError("Could not check queued schedule task runs.", { taskId: active.id, cause }),
+            ),
+          ))
+        ) {
+          yield* rescheduleSkippedRun(active, startedAt, queuedWakeSkipReason);
+          return {
+            task: {
+              ...active,
+              nextRunAt: nextRunAt(active, startedAt),
+              lastRunError: queuedWakeSkipReason,
+            },
+            threadId: null,
+          };
+        }
+
         if (webhook === undefined) yield* markRunning(active.id, startedAtIso);
         else
           yield* sql
@@ -916,12 +945,13 @@ export const layer = Layer.effect(
       );
     });
 
-    const rescheduleMissedRun = Effect.fn("ScheduledTaskService.rescheduleMissedRun")(function* (
+    const rescheduleSkippedRun = Effect.fn("ScheduledTaskService.rescheduleSkippedRun")(function* (
       task: ScheduledTask,
       now: DateTime.DateTime,
+      reason?: string,
     ) {
       const next = nextRunAt(task, now);
-      yield* Effect.logInfo("Skipping missed schedule task run", {
+      yield* Effect.logInfo(reason ?? "Skipping missed schedule task run", {
         taskId: task.id,
         missedRunAt: task.nextRunAt,
         rescheduledTo: next,
@@ -929,6 +959,7 @@ export const layer = Layer.effect(
       yield* sql`
         UPDATE scheduled_tasks
         SET next_run_at = ${next},
+            last_run_error = COALESCE(${reason ?? null}, last_run_error),
             updated_at = ${iso(now)}
         WHERE task_id = ${task.id}
       `.pipe(
@@ -952,7 +983,7 @@ export const layer = Layer.effect(
         ({ task, dueAt }) =>
           Effect.suspend(() =>
             isMissedFixedTimeRun(task.schedule, dueAt, now)
-              ? rescheduleMissedRun(task, now)
+              ? rescheduleSkippedRun(task, now)
               : runTask(task, "scheduled"),
           ).pipe(
             Effect.catch((cause) =>
@@ -1535,7 +1566,7 @@ export const layer = Layer.effect(
     ) {
       const existing = (yield* Ref.get(webhookPermits)).get(id);
       if (existing !== undefined) return existing;
-      const created = yield* Semaphore.make(1);
+      const created = yield* makeFifoPermit;
       return yield* Ref.modify(webhookPermits, (permits) => {
         const raced = permits.get(id);
         return raced === undefined
@@ -1545,6 +1576,7 @@ export const layer = Layer.effect(
     });
 
     const serviceScope = yield* Effect.scope;
+    const pendingWebhookRuns = yield* makePendingWebhookRuns;
 
     const releaseFailedDelivery = Effect.fn("ScheduledTaskService.releaseFailedDelivery")(
       function* (deliveryId: string) {
@@ -1561,7 +1593,7 @@ export const layer = Layer.effect(
       (effect) => sql.withTransaction(effect).pipe(Effect.mapError(dedupeError)),
     );
 
-    const runWebhookDelivery = Effect.fn("ScheduledTaskService.runWebhookDelivery")(function* (
+    const dispatchWebhookDelivery = Effect.fn("ScheduledTaskService.runWebhookDelivery")(function* (
       task: ScheduledTask,
       deliveryId: string,
       prompt: string,
@@ -1592,6 +1624,7 @@ export const layer = Layer.effect(
         // Dispatch success owns the replay key even if later bookkeeping fails.
         Effect.catchCause((cause) =>
           Effect.gen(function* () {
+            if (Cause.hasInterruptsOnly(cause)) return yield* Effect.failCause(cause);
             const started = yield* Ref.get(dispatched);
             yield* Effect.logWarning("Webhook dispatch failed", { taskId: task.id, cause });
             yield* runOutcome(started ? "started" : "failed");
@@ -1622,6 +1655,18 @@ export const layer = Layer.effect(
         ),
       );
     });
+
+    const runWebhookDelivery = Effect.fn("ScheduledTaskService.runAcceptedWebhookDelivery")(
+      function* (task: ScheduledTask, deliveryId: string, prompt: string) {
+        const permit = yield* webhookPermit(task.id);
+        yield* dispatchWebhookDelivery(task, deliveryId, prompt).pipe(
+          Effect.flatMap((settled) =>
+            settled ? pendingWebhookRuns.settle(deliveryId) : Effect.void,
+          ),
+          permit.withPermit,
+        );
+      },
+    );
 
     // Delivery attributes belong to the enclosing triggerWebhook span.
     const observeDelivery = Effect.fnUntraced(function* (
@@ -1714,13 +1759,21 @@ export const layer = Layer.effect(
       // held on the relay, so it must give up its claim or the next pass
       // would treat it as already delivered.
       let claimAcquired = false;
+      let acceptedRun:
+        | { readonly prompt: string; readonly release: Effect.Effect<void> }
+        | undefined;
       const releaseClaim = <A>(result: A) =>
         !claimAcquired || request.relayDeliveryId === undefined
           ? Effect.succeed(result)
           : sql`
                 DELETE FROM scheduled_task_webhook_relay_deliveries
                 WHERE relay_delivery_id = ${request.relayDeliveryId}
-              `.pipe(Effect.ignore, Effect.as(result));
+              `.pipe(
+              Effect.mapError((cause) =>
+                taskError("Could not release webhook delivery.", { taskId: task.id, cause }),
+              ),
+              Effect.as(result),
+            );
       // From the claim until the run is forked nothing may interrupt: a
       // request dropped in between (the relay hangs up after its timeout)
       // would leave a claimed delivery that never runs, or a queue slot that
@@ -2017,26 +2070,38 @@ export const layer = Layer.effect(
               outcome: "duplicate",
             } as const);
           }
-          yield* observe("accepted");
-          const permit = yield* webhookPermit(task.id);
-          yield* runWebhookDelivery(task, deliveryId, rendered.prompt).pipe(
-            permit.withPermits(1),
-            Effect.ensuring(release),
-            Effect.forkIn(serviceScope),
-          );
-          // Dispatch owns the accepted delivery now; retries must keep its claim.
-          claimAcquired = false;
+          acceptedRun = { prompt: rendered.prompt, release };
+          yield* pendingWebhookRuns.record({
+            deliveryId,
+            taskId: task.id,
+            taskCreatedAt: task.createdAt,
+            receivedAt: iso(receivedAt),
+            prompt: rendered.prompt,
+          });
           return { _tag: "accepted" as const, deliveryId, outcome: "accepted" as const };
         }).pipe(
-          Effect.onError(() =>
-            Effect.all([
-              releaseClaim(undefined),
-              (request.relayDeliveryId === undefined || claimAcquired
-                ? releaseReplay(deliveryId)
-                : Effect.void
-              ).pipe(Effect.ignore),
-            ]),
-          ),
+          sql.withTransaction,
+          Effect.onError(() => acceptedRun?.release ?? Effect.void),
+          Effect.matchEffect({
+            onFailure: (cause) =>
+              Effect.logWarning("Could not record webhook delivery; asking for a retry").pipe(
+                Effect.annotateLogs({ taskId: task.id }),
+                Effect.andThen(Effect.logDebug("Webhook delivery record failure", { cause })),
+                Effect.andThen(observe("unavailable")),
+                Effect.as({ _tag: "unavailable" as const }),
+              ),
+            onSuccess: (result) =>
+              Effect.gen(function* () {
+                if (acceptedRun !== undefined) {
+                  yield* observe("accepted");
+                  yield* runWebhookDelivery(task, deliveryId, acceptedRun.prompt).pipe(
+                    Effect.ensuring(acceptedRun.release),
+                    Effect.forkIn(serviceScope),
+                  );
+                }
+                return result;
+              }),
+          }),
         ),
       );
     });
@@ -2104,14 +2169,14 @@ export const layer = Layer.effect(
                   yield* releaseFailedDelivery(entry.delivery_id);
                 } else {
                   yield* sql`UPDATE scheduled_task_webhook_deliveries SET outcome = 'accepted', error = NULL, rendered_prompt = ${rendered.prompt.slice(0, WEBHOOK_DELIVERY_LOG_PROMPT_LIMIT)}, missing_fields_json = ${encodeMissingFieldsJson(rendered.missing)} WHERE delivery_id = ${entry.delivery_id}`;
-                  if (!(yield* runWebhookDelivery(task, entry.delivery_id, rendered.prompt)))
+                  if (!(yield* dispatchWebhookDelivery(task, entry.delivery_id, rendered.prompt)))
                     return;
                 }
                 yield* remove;
               }
             });
             yield* dispatch.pipe(
-              permit.withPermits(1),
+              permit.withPermit,
               Effect.catch((cause) =>
                 Effect.logWarning("Pending webhook dispatch failed", { cause }),
               ),
@@ -2130,6 +2195,16 @@ export const layer = Layer.effect(
       );
     });
     yield* scheduler.register("webhook-coalescing", dispatchPending());
+
+    // Jones hook: once the server is active, run the webhook deliveries a restart cut off.
+    yield* scheduler.register(
+      "jones-webhook-run-recovery",
+      pendingWebhookRuns.recover({
+        findTask,
+        skip: markDeliveryFailed,
+        run: runWebhookDelivery,
+      }),
+    );
 
     return ScheduledTaskService.of({
       list,

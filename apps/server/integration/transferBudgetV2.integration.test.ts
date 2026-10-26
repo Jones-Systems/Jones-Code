@@ -41,6 +41,7 @@ import { HttpRouter, HttpServer } from "effect/http";
 import { Rpc, RpcGroup, RpcServer, RpcSerialization } from "effect/rpc";
 import * as ServerEnvironment from "../src/environment/ServerEnvironment.ts";
 import * as SqlitePersistence from "../src/persistence/Sqlite.ts";
+import * as ShellMaterialization from "../src/jones/orchestration/shellMaterialization.ts";
 import * as OrchestrationEventStore from "../src/persistence/OrchestrationEventStore.ts";
 import * as EventStore from "../src/orchestration-v2/EventStore.ts";
 import * as EventSink from "../src/orchestration-v2/EventSink.ts";
@@ -130,7 +131,8 @@ const layerEnrichment = Layer.unwrap(
     });
   }),
 );
-const layerServices = layerManagement.pipe(
+const layerServices = ShellMaterialization.layer.pipe(
+  Layer.provideMerge(layerManagement),
   Layer.provideMerge(
     Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
       getEnvironmentId: Effect.succeed(EnvironmentId.make("transfer-test")),
@@ -360,6 +362,14 @@ it.live("reports V2 thread HTTP and WebSocket transfer budgets", () =>
           assert.equal(longTurnColdOpen.status, 200);
           const coldOpen = yield* decodeBoundedSnapshot(
             Buffer.from(longTurnColdOpen.decodedBody).toString(),
+          );
+          assert.isAtMost(
+            coldOpen.projection.visibleTurnItems.length,
+            75,
+            JSON.stringify({
+              rows: coldOpen.projection.visibleTurnItems.length,
+              decodedBytes: longTurnColdOpen.decodedBodyBytes,
+            }),
           );
           const cursor = coldOpen.historyCursor;
           if (cursor === null) return yield* Effect.die("Expected older long-turn history");

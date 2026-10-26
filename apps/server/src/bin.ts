@@ -1,8 +1,8 @@
 /**
  * Every ACP agent spawns `t3 acp-mcp-bridge` while opening its session, and terminal-fallback
  * agents run `t3 acp-mcp-call` per tool call, so their startup sits on first-message latency.
- * They and Codex's managed-token helper dispatch before the full CLI module graph (seconds
- * of evaluation) loads; everything else defers to the real CLI in ./binCli.ts.
+ * They, Codex's managed-token helper, native restore, and update preparation dispatch
+ * before the full CLI module graph; other commands defer to ./binCli.ts.
  */
 import { isEntrypoint } from "./entrypoint.ts";
 
@@ -34,11 +34,20 @@ if (
   } else if (command === "acp-mcp-bridge" || command === "acp-mcp-call") {
     const { runAcpMcpCliFastPath } = await import("./mcp/AcpMcpStdioBridge.ts");
     await runAcpMcpCliFastPath(command, process.argv.slice(3));
-  } else {
-    // Windows desktop launches without stdin; attach before reading, except on fast paths using pipes.
+  } else if (command === "__jones-preparation-worker") {
+    // Off-process update preparation owns its own signals and exit, so it bypasses the CLI.
+    const { runPreparationWorkerCommand } = await import("./jones/updates/preparation/worker.ts");
+    await runPreparationWorkerCommand(process.argv.slice(3));
+  } else if (command !== "__jones-native-authority-transition") {
+    // Before anything reads stdin: the desktop app's Windows launcher starts
+    // the CLI without one. Never for the fast paths, whose stdin is a pipe.
     const { attachConsoleStdin } = await import("./cli/consoleStdin.ts");
     attachConsoleStdin();
     const { runCli } = await import("./binCli.ts");
     runCli();
+  } else {
+    const { runNativeAuthorityTransition } =
+      await import("./jones/workstreams/nativeAuthorityTransition.ts");
+    await runNativeAuthorityTransition();
   }
 }

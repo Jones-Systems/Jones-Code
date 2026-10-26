@@ -140,7 +140,7 @@ function fixture(
   const configLayer = Layer.succeed(
     HostServiceConfig.HostServiceConfig,
     HostServiceConfig.HostServiceConfig.of({
-      read: () => Effect.succeed(Option.some(persisted)),
+      read: () => Effect.succeedSome(persisted),
       write: (_base, data) =>
         Effect.sync(() => {
           writes.push("host-service.json");

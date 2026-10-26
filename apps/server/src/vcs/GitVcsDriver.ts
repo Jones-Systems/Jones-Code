@@ -12,6 +12,7 @@ import { ChildProcessSpawner } from "effect/process";
 
 import {
   GitCommandError,
+  VcsPrimaryCheckoutCheckpointError,
   VcsProcessExitError,
   VcsUnsupportedOperationError,
   type VcsSwitchRefInput,
@@ -135,7 +136,66 @@ export interface CreateWorktreeProgress {
   }) => Effect.Effect<void, never>;
 }
 
+export interface LegacyWorktreeBeforeObservation {
+  readonly parentPath: string;
+  readonly parentRealPath: string;
+  readonly parentDevice: string;
+  readonly parentInode: string;
+  readonly commonDirectoryDevice?: string | undefined;
+  readonly commonDirectoryInode?: string | undefined;
+  readonly targetRefAbsent: true;
+  readonly registrationAbsent: true;
+}
+
+export interface LegacyWorktreeMaterialClaim {
+  readonly path: string;
+  readonly realPath: string;
+  readonly device: string;
+  readonly inode: string;
+  readonly parentRealPath: string;
+  readonly gitDirectory: string;
+  readonly commonDirectory: string;
+  readonly registeredPath: string;
+  readonly headRef: string;
+  readonly headOid: string;
+  readonly parentDevice?: string | undefined;
+  readonly parentInode?: string | undefined;
+  readonly dotGitDevice?: string | undefined;
+  readonly dotGitInode?: string | undefined;
+  readonly gitDirectoryDevice?: string | undefined;
+  readonly gitDirectoryInode?: string | undefined;
+  readonly commonDirectoryDevice?: string | undefined;
+  readonly commonDirectoryInode?: string | undefined;
+}
+
+export interface LegacyWorktreePreparationStep {
+  readonly kind: "worktree.add" | "worktree.submodules" | "worktree.base-config";
+  readonly cwd: string;
+  readonly args: ReadonlyArray<string>;
+  readonly worktreePath: string;
+  readonly commonDirectory: string;
+  readonly baseCommitOid: string;
+  readonly targetRef: string;
+  readonly before?: LegacyWorktreeBeforeObservation;
+}
+
+export interface LegacyWorktreePreparationHooks {
+  /** Affirmative owner refusal after exact intent readback and before invocation. */
+  readonly neverInvoked?: (
+    step: LegacyWorktreePreparationStep,
+    reason: "input_validation_failed",
+  ) => Effect.Effect<void, Error>;
+  readonly beforeEffect: (step: LegacyWorktreePreparationStep) => Effect.Effect<void, Error>;
+  readonly afterEffect: (
+    step: LegacyWorktreePreparationStep,
+    outcome: "settled_success" | "failed_or_unknown",
+    claim?: LegacyWorktreeMaterialClaim,
+  ) => Effect.Effect<void, Error>;
+}
+
 export interface CreateWorktreeOptions {
+  /** Private legacy journaling; independent of the producer's physical mutation guard. */
+  readonly legacyPreparation?: LegacyWorktreePreparationHooks;
   readonly progress?: CreateWorktreeProgress;
   /** Null or omitted defers to the checkout's t3.json. */
   readonly submodules?: WorktreeSubmodules | null;
@@ -180,7 +240,30 @@ export interface GitRangeContext {
   diffPatch: string;
 }
 
+export interface LegacyBranchRenameStep {
+  readonly claim: LegacyWorktreeMaterialClaim;
+  readonly oldRef: string;
+  readonly oldOid: string;
+  readonly targetRef: string;
+  readonly exactName: boolean;
+  readonly args: ReadonlyArray<string>;
+}
+
+export interface LegacyBranchRenameHooks {
+  readonly before: LegacyWorktreeBeforeObservation;
+  readonly claim: LegacyWorktreeMaterialClaim;
+  readonly beforeEffect: (step: LegacyBranchRenameStep) => Effect.Effect<void, Error>;
+  readonly afterEffect: (
+    step: LegacyBranchRenameStep,
+    outcome: "settled_success" | "failed_or_unknown",
+    claim?: LegacyWorktreeMaterialClaim,
+  ) => Effect.Effect<void, Error>;
+}
+
 export interface GitRenameBranchInput {
+  /** Exact private preparation journal, independent of current physical admission. */
+  readonly legacyPreparation?: LegacyBranchRenameHooks;
+  /** Fail on a name collision instead of appending a numeric suffix. */
   exactName?: boolean;
   cwd: string;
   oldBranch: string;
@@ -262,6 +345,12 @@ export interface GitResolveRemoteTrackingCommitInput {
 export interface GitResolveRemoteTrackingCommitResult {
   commitSha: string;
   remoteRefName: string;
+}
+
+export interface GitResolveRemoteTrackingCommitIfExistsInput {
+  readonly cwd: string;
+  readonly remoteName: string;
+  readonly branchName: string;
 }
 
 export interface GitFetchWorktreeBaseCommitInput {
@@ -371,6 +460,9 @@ export class GitVcsDriver extends Context.Service<
     readonly resolveRemoteTrackingCommit: (
       input: GitResolveRemoteTrackingCommitInput,
     ) => Effect.Effect<GitResolveRemoteTrackingCommitResult, GitCommandError>;
+    readonly resolveRemoteTrackingCommitIfExists: (
+      input: GitResolveRemoteTrackingCommitIfExistsInput,
+    ) => Effect.Effect<GitResolveRemoteTrackingCommitResult | null, GitCommandError>;
     readonly resolveWorktreeBaseRemote: (
       input: GitFetchWorktreeBaseCommitInput,
     ) => Effect.Effect<{ remoteName: string; branchName: string } | null, GitCommandError>;
@@ -797,7 +889,20 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
     return path.resolve(physicalCwd, gitCommonDir);
   });
 
-  // Git defaults and macOS writeout-only can leave empty refs after crashes; flush before publication.
+  const resolveGitDir = Effect.fn("resolveGitDir")(function* (cwd: string) {
+    const result = yield* execute({
+      operation: "GitVcsDriver.checkpoints.resolveGitDir",
+      cwd,
+      args: ["rev-parse", "--git-dir"],
+    });
+    const gitDir = result.stdout.trim();
+    return path.isAbsolute(gitDir) ? gitDir : path.resolve(cwd, gitDir);
+  });
+
+  // Git renames loose objects and refs into place without fsync by default, so
+  // an unclean restart can leave 0-byte files under refs/t3/** that break every
+  // later fetch and push. Checkpoint writes flush before they are published;
+  // macOS defaults to writeout-only, which does not reach the disk either.
   // Set fsync first: Git 2.36 ignores unknown batch without resetting the method.
   // Batch fully flushes refs and equals fsync on macOS HFS+/APFS and Windows NTFS/ReFS.
   // Keep per-object fsync elsewhere; VcsProcess retries unsupported macOS full flushes with plain fsync.
@@ -830,6 +935,13 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
         "splitIndex.sharedIndexExpire=never",
       ];
       const gitCommonDir = yield* resolveGitCommonDir(input.cwd);
+      const gitDir = yield* resolveGitDir(input.cwd);
+      if (path.normalize(gitDir) === path.normalize(gitCommonDir)) {
+        return yield* new VcsPrimaryCheckoutCheckpointError({
+          operation,
+          cwd: input.cwd,
+        });
+      }
       const indexId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
       const tempIndexPath = path.join(gitCommonDir, `t3-checkpoint-index-${indexId}`);
       const commitEnv: NodeJS.ProcessEnv = {

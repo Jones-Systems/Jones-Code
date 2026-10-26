@@ -1,4 +1,22 @@
+import * as ThreadMetadataReads from "./jones/orchestration/threadMetadataReads.ts";
+import * as HandoffLaunch from "./jones/linkedThreads/launchTransport.ts";
+import * as ThreadHandoff from "./jones/linkedThreads/handoff.ts";
+import * as LinkedThreads from "./jones/linkedThreads/LinkedThreads.ts";
+import { assertServerProcessPlacement } from "./jones/processPlacement/processPlacement.ts";
+import * as ProcessPlacementRuntime from "./jones/processPlacement/processPlacementRuntime.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
+import * as FleetUpdates from "./jones/fleetUpdates/service.ts";
+import { fleetUpdatesHttpApiLayer } from "./jones/fleetUpdates/http.ts";
+import { importedHistoryHttpApiLayer } from "./jones/importedHistory/http.ts";
+import * as DeviceDirectGrants from "./jones/device/DeviceDirectGrants.ts";
+import * as JonesHttp from "./jones/http/registration.ts";
+import * as JonesUpdates from "./jones/updates/service.ts";
+import { jonesUpdatesHttpApiLayer } from "./jones/updates/http.ts";
+import * as JonesSourceRelation from "./jones/updates/sourceRelation.ts";
+import * as UpdateAdmissionFence from "./jones/updates/UpdateAdmissionFence.ts";
+import * as QueueCompatibility from "./orchestration-v2/QueueCompatibility.ts";
+import { queueCompatibilityHttpApiLayer } from "./orchestration-v2/queueCompatibilityHttp.ts";
+import { providerQueueHttpApiLayer } from "./provider/providerQueueHttp.ts";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Random from "effect/Random";
 import * as DatabaseStorage from "./persistence/DatabaseStorage.ts";
@@ -17,6 +35,10 @@ import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import type * as Crypto from "effect/Crypto";
+import type * as FileSystem from "effect/FileSystem";
+import type * as Path from "effect/Path";
+import type * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
@@ -34,7 +56,16 @@ import {
 } from "./httpResponseErrorGuard.ts";
 import { fixPath } from "./os-jank.ts";
 import * as Ws from "./ws.ts";
-import * as AgentScopeLive from "./process/agentScope.ts";
+import * as ShellMaterialization from "./jones/orchestration/shellMaterialization.ts";
+import {
+  workstreamOperationsLayerLive,
+  workstreamGatewayLayerLive,
+  workstreamHttpApiLayer,
+  workstreamNativeAuthorityLayerLive,
+  workstreamRegistrationContextLayerLive,
+  workstreamResponseHeadersLayer,
+} from "./workstreams/http.ts";
+import * as NativeWorkstreams from "./jones/workstreams/runtimeIntegration/native.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as NodePtyAdapter from "./terminal/NodePtyAdapter.ts";
 import * as PullRequestHttp from "./pullRequest/http.ts";
@@ -67,6 +98,10 @@ import * as ProviderInstanceRegistryHydration from "./provider/ProviderInstanceR
 import * as ProjectSettingsOverrideSweep from "./provider/ProjectSettingsOverrideSweep.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
+import * as PeerForwarding from "./peer/PeerForwarding.ts";
+import * as RemoteDelegation from "./peer/RemoteDelegation.ts";
+import * as PeerLinks from "./peer/PeerLinks.ts";
+import * as PeerMcpClient from "./peer/PeerMcpClient.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as DeviceService from "./device/DeviceService.ts";
@@ -87,6 +122,8 @@ import * as ServerOwnership from "./serverOwnership.ts";
 import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import { hasCloudPublicConfig } from "./cloud/publicConfig.ts";
 import * as ServerSettings from "./serverSettings.ts";
+import * as WorkMode from "./jones/workMode/WorkMode.ts";
+import * as Scheduler from "./scheduling/Scheduler.ts";
 import * as ProjectEnrichmentService from "./project/ProjectEnrichmentService.ts";
 import * as NativeAppIconResolver from "./assets/NativeAppIconResolver.ts";
 import * as AntigravityInstallation from "./provider/AntigravityInstallation.ts";
@@ -168,6 +205,7 @@ import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as DesktopTelemetryReceiver from "./resourceTelemetry/DesktopTelemetryReceiver.ts";
 import * as NativeTelemetryClient from "./resourceTelemetry/NativeTelemetryClient.ts";
 import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts";
+import * as ProcessAttribution from "./jones/resourceTelemetry/ProcessAttribution.ts";
 import * as ResourceMonitorBinary from "./resourceTelemetry/ResourceMonitorBinary.ts";
 import * as ProcessGroupMetrics from "./resourceTelemetry/ProcessGroupMetrics.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
@@ -194,7 +232,7 @@ import * as OrchestrationHttp from "./orchestration-v2/http.ts";
 import * as ProjectHttp from "./project/http.ts";
 import * as NetService from "@t3tools/shared/Net";
 import * as RelayClient from "@t3tools/shared/relayClient";
-import { disableTailscaleServe, ensureTailscaleServe } from "@t3tools/tailscale";
+import { acquireServeMapping, releaseServeMapping } from "@t3tools/tailscale";
 import * as ServerActivation from "./serverActivation.ts";
 
 // Escaped MCP handoff provenance can exceed find-my-way's 100-character segment default.
@@ -205,6 +243,7 @@ const HTTP_ROUTER_CONFIG = {
 // Skip Effect's default 20 s grace; WebSocket scope finalizers already close connections gracefully.
 const HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS = 0;
 const layerResourceAttribution = ResourceAttribution.layer;
+const layerProcessAttribution = ProcessAttribution.layer;
 const layerApplicationObservability = EventLoopMonitor.layer.pipe(
   Layer.provideMerge(Observability.layer),
   Layer.provideMerge(layerResourceAttribution),
@@ -257,6 +296,13 @@ const layerHostPowerMonitor = HostPowerMonitor.layer.pipe(
 
 // A fresh receiver layer would open a second reader on the desktop telemetry fd.
 const layerDesktopAppUpdate = DesktopAppUpdate.layer.pipe(
+  Layer.provide(layerDesktopTelemetryReceiver),
+);
+
+const layerServerSelfUpdate = ServerSelfUpdate.layer.pipe(Layer.provide(layerDesktopAppUpdate));
+
+const layerJonesUpdates = JonesUpdates.layer.pipe(
+  Layer.provide(layerServerSelfUpdate),
   Layer.provide(layerDesktopTelemetryReceiver),
 );
 
@@ -509,6 +555,7 @@ const layerScheduledTaskWebhookOrigin = Layer.effect(
 
 const layerOrchestrationV2Runtime = RuntimeLayer.layerProduction.pipe(
   Layer.provide(layerScheduledTaskWebhookOrigin),
+  Layer.provide(workstreamNativeAuthorityLayerLive),
   Layer.provide(ProviderEventIngestor.layerAnalytics),
   Layer.provide(layerCheckpointStore),
   Layer.provide(layerGitWorkflow),
@@ -536,7 +583,7 @@ const layerIdleCompactionWorker = Layer.effectDiscard(
 
 const layerThreadPullRequestWorker = Layer.effectDiscard(
   ThreadPullRequestService.make.pipe(Effect.flatMap((service) => service.start())),
-).pipe(Layer.provide(layerPullRequestService));
+).pipe(Layer.provide(layerPullRequestService), Layer.provide(ThreadMetadataReads.layer));
 
 const layerProviderInstallationRefresh = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -571,6 +618,16 @@ const layerProviderInstallationRefresh = Layer.effectDiscard(
 );
 
 const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      const workMode = yield* WorkMode.WorkMode;
+      yield* workMode.start;
+    }),
+  ).pipe(
+    Layer.provide(WorkMode.layer),
+    Layer.provide(ProjectionStoreV2.layer),
+    Layer.provide(Scheduler.layer),
+  ),
   AgentAwarenessRelay.layer,
   HeldHooksWaker.layer,
   layerThreadSettlementWorker,
@@ -623,6 +680,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.provideMerge(layerGit),
   Layer.provideMerge(layerVcs),
   Layer.provideMerge(Layer.mergeAll(layerTerminal, layerPreview, layerDevice)),
+  Layer.provideMerge(DeviceDirectGrants.layer),
   Layer.provideMerge(layerPersistence),
   Layer.provideMerge(
     Layer.mergeAll(Keybindings.layer, EnvironmentTheme.layer, UsageLimitSources.layer),
@@ -682,14 +740,18 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
 
 const layerRuntimeDependencies = layerRuntimeCoreDependencies.pipe(
   Layer.provideMerge(layerUsage),
+  Layer.provideMerge(JonesHttp.tokenAccountingLayer),
   Layer.provideMerge(layerBackground),
   Layer.provideMerge(layerResourceDiagnostics),
+  Layer.provideMerge(layerProcessAttribution),
   Layer.provideMerge(TraceDiagnostics.layer),
   Layer.provideMerge(AnalyticsService.layer),
   Layer.provideMerge(ExternalLauncher.layer),
   Layer.provideMerge(RemoteOpenTargets.layer),
   Layer.provideMerge(DirectEndpoints.layer),
   Layer.provideMerge(ServerLifecycleEvents.layer),
+  // Jones: one fence shared by the event sink and the update installer.
+  Layer.provideMerge(UpdateAdmissionFence.layer),
   Layer.provide(NetService.layer),
 );
 
@@ -707,6 +769,17 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(AuthHttp.layer),
       Layer.provide(McpOAuthHttp.layer.pipe(Layer.provide(McpOAuth.layer))),
       Layer.provide(CloudHttp.layer),
+      Layer.provide(jonesUpdatesHttpApiLayer.pipe(Layer.provide(JonesSourceRelation.layer))),
+      Layer.provide(fleetUpdatesHttpApiLayer),
+      Layer.provide(importedHistoryHttpApiLayer),
+      Layer.provide(JonesHttp.remoteAdmissionHttpApiLayer),
+      Layer.provide(providerQueueHttpApiLayer),
+      Layer.provide(queueCompatibilityHttpApiLayer.pipe(Layer.provide(QueueCompatibility.layer))),
+      JonesHttp.provideConversationAndVoiceReview,
+      Layer.provide(workstreamHttpApiLayer),
+      Layer.provide(NativeWorkstreams.nativeWorkstreamsHttpApiLayer),
+      Layer.provide(JonesHttp.hostStatusHttpApiLayer),
+      Layer.provide(JonesHttp.previewCompanionHttpApiLayer),
       Layer.provide(OrchestrationHttp.layer),
       Layer.provide(PullRequestHttp.layer),
       Layer.provide(ProjectHttp.layer),
@@ -720,35 +793,69 @@ const layerMakeRoutes = Layer.mergeAll(
     GuestHttp.layer,
     DeviceHubProxy.layer,
     ServerBrowserStream.routeLayer,
+    JonesHttp.previewCompanionRouteLayer,
     ServerHttp.layerStaticAndDevRoute,
     Ws.layer,
   ),
-  McpHttpServer.layer.pipe(
-    Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
-    Layer.provide(McpOAuth.layerMcpClientAuthenticator),
-  ),
-).pipe(
-  Layer.provide(
-    PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
-  ),
-  // Share the service so HTTP/WS clients single-flight reads and invalidate each other's cached patches.
-  Layer.provide(layerPullRequestService),
-  // The same activity instance RunExecutionService reports to, by layer memoization.
-  Layer.provide(
-    ServerBrowser.layer.pipe(
-      Layer.provide(Layer.merge(DesktopBrowserChannel.layer, PreviewAgentActivity.layer)),
+  JonesHttp.remoteAdmissionResumeLayer
+    .pipe(Layer.provideMerge(McpHttpServer.layer))
+    .pipe(
+      Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
+      Layer.provide(McpOAuth.layerMcpClientAuthenticator),
     ),
+  // Follows delegated tasks running in linked environments, including after a restart.
+  Layer.effectDiscard(
+    RemoteDelegation.RemoteDelegation.pipe(Effect.flatMap((remote) => remote.start())),
   ),
-  Layer.provide(PreviewBrowser.layer),
-  Layer.provide(PreviewAutomationBroker.layer),
-  Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(layerDesktopAppUpdate))),
-  Layer.provide(layerCommandReadiness),
-  Layer.provide(ServerHttp.layerBrowserApiCors),
-  Layer.provide(ServerHttp.layerHttpCompression),
-);
+)
+  .pipe(
+    Layer.provide(ShellMaterialization.layer),
+    Layer.provide(
+      PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
+    ),
+    // delegate_task to a linked environment, from /mcp and the follower above.
+    Layer.provide(RemoteDelegation.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
+    // Both transports consume the same service instance, so caches single-flight across clients
+    // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
+    Layer.provide(layerPullRequestService),
+    Layer.provide(ServerBrowser.layer),
+    Layer.provide(
+      Layer.merge(JonesHttp.previewCompanionServicesLayer, JonesHttp.remoteAdmissionServicesLayer),
+    ),
+    Layer.provide(DesktopBrowserChannel.layer),
+    Layer.provide(PreviewAgentActivity.layer),
+    Layer.provide(PreviewBrowser.layer),
+    Layer.provide(workstreamOperationsLayerLive),
+  )
+  .pipe(
+    Layer.provide(workstreamGatewayLayerLive),
+    Layer.provide(workstreamRegistrationContextLayerLive),
+    // Same layer identity as the gateway's, so the config descriptor reads the same authority.
+    Layer.provide(workstreamNativeAuthorityLayerLive),
+    Layer.provide(ThreadHandoff.layer.pipe(Layer.provide(HandoffLaunch.layer))),
+    // Links to other environments, shared by Settings (WebSocket) and agents (/mcp).
+    Layer.provide(
+      PeerForwarding.layer.pipe(
+        Layer.provideMerge(PeerMcpClient.layer),
+        Layer.provideMerge(PeerLinks.layer),
+      ),
+    ),
+    Layer.provide(LinkedThreads.layer),
+    Layer.provide(PreviewAutomationBroker.layer),
+    Layer.provide(layerServerSelfUpdate),
+    // The same relation layer as the Jones updates routes, so both share one ancestry cache.
+    Layer.provide(FleetUpdates.layer.pipe(Layer.provide(JonesSourceRelation.layer))),
+    Layer.provide(layerJonesUpdates),
+    Layer.provide(layerCommandReadiness),
+    Layer.provide(JonesHttp.voiceReviewResponseHeadersLayer),
+    Layer.provide(workstreamResponseHeadersLayer),
+    Layer.provide(ServerHttp.layerBrowserApiCors),
+    Layer.provide(ServerHttp.layerHttpCompression),
+  );
 
 const layerMakeServer = Layer.unwrap(
   Effect.gen(function* () {
+    yield* Effect.sync(() => assertServerProcessPlacement());
     const config = yield* ServerConfig.ServerConfig;
     // Before anything opens the database: one server per T3 home.
     const ownership = yield* ServerOwnership.acquireServerOwnership(config.serverRuntimeStatePath);
@@ -765,9 +872,9 @@ const layerMakeServer = Layer.unwrap(
 
     const layerHttpListening = Layer.effectDiscard(
       Effect.gen(function* () {
-        yield* HttpServer.HttpServer;
+        const server = yield* HttpServer.HttpServer;
         const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
-        yield* startup.markHttpListening;
+        yield* startup.markHttpListening(server.address);
       }),
     );
     const layerRuntimeState = Layer.effectDiscard(
@@ -808,40 +915,47 @@ const layerMakeServer = Layer.unwrap(
               }
 
               const localPort = address.port;
-              return yield* ensureTailscaleServe({
-                localPort,
+              const claim = {
                 servePort: config.tailscaleServePort,
-                localHost: loopbackUrlHostForAddress(address),
-              }).pipe(
-                Effect.as({ localPort, servePort: config.tailscaleServePort }),
-                Effect.tap(() =>
-                  Effect.logInfo("Tailscale Serve configured", {
+                expectedTarget: `http://${loopbackUrlHostForAddress(address)}:${String(localPort)}`,
+              };
+              const acquired = yield* acquireServeMapping(claim);
+              if ("skipped" in acquired) {
+                yield* Effect.logWarning(
+                  "Tailscale Serve skipped; inspect the route with tailscale serve status --json and remove a stale owned route explicitly",
+                  {
+                    state: acquired.skipped._tag,
+                    reason: "reason" in acquired.skipped ? acquired.skipped.reason : undefined,
                     localPort,
-                    servePort: config.tailscaleServePort,
-                  }),
-                ),
-                Effect.catch((cause) =>
-                  Effect.logWarning("Failed to configure Tailscale Serve", {
-                    cause,
-                    localPort,
-                    servePort: config.tailscaleServePort,
-                  }).pipe(Effect.as(null)),
-                ),
-              );
+                    servePort: claim.servePort,
+                  },
+                );
+                return null;
+              }
+              yield* Effect.logInfo("Tailscale Serve configured", {
+                localPort,
+                servePort: claim.servePort,
+                created: acquired.created,
+              });
+              return { ...claim, created: acquired.created };
             }),
             (configured) =>
               configured
-                ? disableTailscaleServe({ servePort: configured.servePort }).pipe(
-                    Effect.tap(() =>
-                      Effect.logInfo("Tailscale Serve disabled", {
-                        servePort: configured.servePort,
-                      }),
-                    ),
-                    Effect.catch((cause) =>
-                      Effect.logWarning("Failed to disable Tailscale Serve", {
-                        cause,
-                        servePort: configured.servePort,
-                      }),
+                ? releaseServeMapping(configured).pipe(
+                    Effect.flatMap((outcome) =>
+                      outcome === "disabled"
+                        ? Effect.logInfo("Tailscale Serve disabled", {
+                            servePort: configured.servePort,
+                          })
+                        : configured.created
+                          ? Effect.logWarning(
+                              "Tailscale Serve release skipped or effect unknown; inspect tailscale serve status --json before removing the route",
+                              {
+                                outcome,
+                                servePort: configured.servePort,
+                              },
+                            )
+                          : Effect.void,
                     ),
                   )
                 : Effect.void,
@@ -1041,7 +1155,11 @@ const layerMakeServer = Layer.unwrap(
         ],
         { concurrency: "unbounded" },
       ).pipe(Effect.asVoid),
-    }).pipe(Layer.provideMerge(layerRuntimeDependencies), Layer.provide(layerLauncher));
+    }).pipe(
+      Layer.provide(ThreadMetadataReads.layer),
+      Layer.provideMerge(layerRuntimeDependencies),
+      Layer.provide(layerLauncher),
+    );
 
     const layerRoutes = HttpRouter.serve(layerMakeRoutes.pipe(Layer.provide(layerLauncher)), {
       disableLogger: !config.logWebSocketEvents,
@@ -1073,10 +1191,21 @@ const layerMakeServer = Layer.unwrap(
       Layer.provide(layerApplicationObservability),
       Layer.provideMerge(FetchHttpClient.layer),
       Layer.provide(VcsProcess.layer),
-      Layer.provideMerge(AgentScopeLive.layer),
+      Layer.provide(ProcessRunner.layer),
+      Layer.provideMerge(ProcessPlacementRuntime.layer),
       Layer.provideMerge(layerPlatformServices),
     );
   }),
-).pipe(Layer.provide(ProcessRunner.layer));
+).pipe(Layer.provide(Layer.fresh(ProcessRunner.layer)));
 
-export const runServer = Layer.launch(layerMakeServer);
+// Keep the required services explicit: tsc-rs widens inferred requirements to any
+// when the CLI imports this effect, despite resolving them inside this module.
+export const runServer: Effect.Effect<
+  never,
+  Layer.Error<typeof layerMakeServer>,
+  | ChildProcessSpawner.ChildProcessSpawner
+  | Crypto.Crypto
+  | FileSystem.FileSystem
+  | Path.Path
+  | ServerConfig.ServerConfig
+> = Layer.launch(layerMakeServer);

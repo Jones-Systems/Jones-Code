@@ -906,7 +906,7 @@ const hasJonesRuntimeState = Effect.fn("cloud.pinned_runtime.has_jones_state")(f
       .stat(directory)
       .pipe(
         Effect.catch((error) =>
-          error.reason._tag === "NotFound" ? Effect.succeed(undefined) : Effect.fail(error),
+          error.reason._tag === "NotFound" ? Effect.undefined : Effect.fail(error),
         ),
       );
     if (info?.type !== "Directory") continue;

@@ -1381,7 +1381,7 @@ it.layer(NodeServices.layer)("verified private artifact boot service", (it) => {
       } else if (failure === "wrong-marker") {
         yield* fs.writeFileString(paths.sentinelPath, "0.0.44");
       } else if (failure === "wrong-platform") {
-        const provenance = yield* Schema.decodeUnknownEffect(
+        const provenance = yield* Schema.decodeEffect(
           Schema.fromJsonString(JonesRuntimeProvenance),
         )(yield* fs.readFileString(path.join(paths.versionDir, JONES_RUNTIME_PROVENANCE_FILE)));
         yield* fs.writeFileString(
