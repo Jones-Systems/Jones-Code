@@ -21,7 +21,7 @@ export const selectionB = {
 };
 
 export function issuedConnection(params) {
-  const config = params?.config?.mcp_servers?.["t3-code"];
+  const config = params?.config?.["mcp_servers.t3-code"];
   if (!config) throw new Error("App-issued MCP connection missing from thread/start");
   const url = new URL(config.url);
   if (
