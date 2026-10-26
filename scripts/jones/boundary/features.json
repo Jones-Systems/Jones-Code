@@ -2216,6 +2216,11 @@
       "id": "workstreams-native-authority",
       "tests": [
         "apps/server/src/jones/workstreams/native/conformance/semanticTransport.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/gatewayParity.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/httpParity.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/operationsParity.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/mcpParity.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/cpDenied.test.ts",
         "apps/server/src/jones/workstreams/native/transition/apply.test.ts",
         "apps/server/src/jones/workstreams/native/transition/snapshotReader.test.ts",
         "apps/server/src/jones/persistence/Migrations/125_JonesWorkstreamsNative.test.ts",
@@ -2272,6 +2277,11 @@
         "apps/server/src/jones/workstreams/native/runtime/startup.test.ts",
         "apps/server/src/jones/workstreams/native/runtime/entry.test.ts",
         "apps/server/src/jones/workstreams/native/conformance/semanticTransport.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/gatewayParity.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/httpParity.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/operationsParity.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/mcpParity.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/cpDenied.test.ts",
         "apps/server/src/mcp/McpSessionRegistry.test.ts",
         "apps/server/src/jones/workstreams/native/runtime/sourceSetup.test.ts"
       ],

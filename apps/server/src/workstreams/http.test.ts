@@ -106,6 +106,11 @@ class WorkstreamTestApi extends HttpApi.make("environment").add(
   EnvironmentHttpApi.groups.workstreams,
 ) {}
 
+const decodeListResult = Schema.decodeUnknownSync(T3WorkstreamListResult);
+const decodeScopeRequiredError = Schema.decodeUnknownSync(EnvironmentScopeRequiredError);
+const decodeReceipt = Schema.decodeUnknownSync(WorkstreamReceipt);
+const decodeAuthInvalidError = Schema.decodeUnknownSync(EnvironmentAuthInvalidError);
+
 const command: WorkstreamCommand = {
   command_id: "command-http-fixture-0001",
   expected_server_generation: 7,
@@ -233,7 +238,7 @@ it.effect.each(credentials)(
         new Request("http://fixture/api/workstreams?limit=50", { headers }),
       );
       expect(response.status).toBe(200);
-      const body = Schema.decodeUnknownSync(T3WorkstreamListResult)(await response.json());
+      const body = decodeListResult(await response.json());
       expect(body.source).toBe("live");
       expect(body.binding.registryId).toBe("https://workstream-registry.invalid");
       expect(response.headers.get("cache-control")).toBe("private, no-store");
@@ -256,10 +261,9 @@ it.effect.each(credentials)(
       expect(response.status).toBe(403);
       expect(response.headers.get("cache-control")).toBe("private, no-store");
       expect(response.headers.get("x-content-type-options")).toBe("nosniff");
-      expect(
-        Schema.decodeUnknownSync(EnvironmentScopeRequiredError)(await response.json())
-          .requiredScope,
-      ).toBe(AuthOrchestrationOperateScope);
+      expect(decodeScopeRequiredError(await response.json()).requiredScope).toBe(
+        AuthOrchestrationOperateScope,
+      );
       expect(calls).toEqual({ reads: 0, writes: 0 });
       expect(submissions.count).toBe(0);
     }),
@@ -277,9 +281,7 @@ it.effect.each(credentials)(
         }),
       );
       expect(response.status).toBe(200);
-      expect(Schema.decodeUnknownSync(WorkstreamReceipt)(await response.json()).state).toBe(
-        "committed",
-      );
+      expect(decodeReceipt(await response.json()).state).toBe("committed");
       expect(response.headers.get("cache-control")).toBe("private, no-store");
       expect(response.headers.get("x-content-type-options")).toBe("nosniff");
       expect(calls).toEqual({ reads: 0, writes: 1 });
@@ -292,9 +294,7 @@ it.effect("rejects missing HTTP credentials before registry reads", () =>
     expect(response.status).toBe(401);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
-    expect(
-      Schema.decodeUnknownSync(EnvironmentAuthInvalidError)(await response.json()).reason,
-    ).toBe("missing_credential");
+    expect(decodeAuthInvalidError(await response.json()).reason).toBe("missing_credential");
     expect(calls).toEqual({ reads: 0, writes: 0 });
   }),
 );
@@ -319,14 +319,8 @@ it.effect.each([
         expect(response.headers.get("x-content-type-options")).toBe("nosniff");
         expect(calls).toEqual({ reads: 1, writes: 0 });
         const body = await response.json();
-        if (conflict !== undefined)
-          expect(Schema.decodeUnknownSync(EnvironmentHttpConflictError)(body).message).toBe(
-            conflict,
-          );
-        else
-          expect(Schema.decodeUnknownSync(EnvironmentInternalError)(body).reason).toBe(
-            "internal_error",
-          );
+        if (conflict !== undefined) expect(decodeConflictError(body).message).toBe(conflict);
+        else expect(decodeInternalError(body).reason).toBe("internal_error");
       },
       reason,
     ),
@@ -355,22 +349,30 @@ it.effect("rejects malformed commands before transport submission", () =>
 it.effect.each(["server", "registry"] as const)(
   "returns a definitive conflict for a changed %s version before transport submission",
   (version) =>
-    withHttpFixture([AuthOrchestrationOperateScope], async ({ handler, submissions }) => {
-      const result = await handler(
-        submitRequest({
-          ...command,
-          ...(version === "server"
-            ? { expected_server_generation: 6 }
-            : { expected_registry_version: 10 }),
-        }),
-      );
-      expect(submissions.count).toBe(0);
-      expect(result.status).toBe(409);
-      expect(await result.json()).toEqual({
-        _tag: "EnvironmentHttpConflictError",
-        message: "workstream_command_not_current",
-      });
-    }),
+    withHttpFixture(
+      [AuthOrchestrationOperateScope],
+      async ({ handler, submissions }) => {
+        const result = await handler(
+          submitRequest({
+            ...command,
+            ...(version === "server"
+              ? { expected_server_generation: 6 }
+              : { expected_registry_version: 10 }),
+          }),
+        );
+        expect(submissions.count).toBe(0);
+        expect(result.status).toBe(409);
+        expect(await result.json()).toEqual({
+          _tag: "EnvironmentHttpConflictError",
+          message: "version_conflict",
+        });
+      },
+      undefined,
+      (transport) => ({
+        ...transport,
+        readCommandReceipt: () => Effect.succeed({ kind: "absent" as const }),
+      }),
+    ),
 );
 
 it.effect.each(["permission", "owner", "contract", "page-bound"] as const)(

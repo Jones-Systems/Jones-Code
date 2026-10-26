@@ -980,7 +980,7 @@ class EnvironmentWorkstreamsHttpApi extends EnvironmentWorkstreamAppearanceHttpA
     HttpApiEndpoint.get("command", "/api/workstreams/commands/:commandId", {
       headers: OptionalBearerHeaders,
       params: T3WorkstreamCommandPollParams,
-      success: WorkstreamReceipt,
+      success: [WorkstreamReceipt, WorkstreamReceipt.pipe(HttpApiSchema.status(202))],
       error: EnvironmentWorkstreamSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
@@ -988,7 +988,7 @@ class EnvironmentWorkstreamsHttpApi extends EnvironmentWorkstreamAppearanceHttpA
     HttpApiEndpoint.post("submit", "/api/workstreams/commands", {
       headers: OptionalBearerHeaders,
       payload: T3WorkstreamCommandRequest,
-      success: WorkstreamReceipt,
+      success: [WorkstreamReceipt, WorkstreamReceipt.pipe(HttpApiSchema.status(202))],
       error: EnvironmentWorkstreamCommandErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}

@@ -71,7 +71,11 @@ const isScopeRequired = Schema.is(EnvironmentScopeRequiredError);
 
 /** Only these decoded POST refusals prove that the gateway did not submit the command. */
 export function workstreamCommandNoEffect(cause: unknown): "stale" | "denied" | null {
-  if (isHttpConflict(cause) && cause.message === "workstream_command_not_current") return "stale";
+  if (
+    isHttpConflict(cause) &&
+    (cause.message === "workstream_command_not_current" || cause.message === "version_conflict")
+  )
+    return "stale";
   if (isInvalidRequest(cause) || isScopeRequired(cause)) return "denied";
   return null;
 }
