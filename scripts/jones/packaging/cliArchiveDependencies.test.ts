@@ -69,12 +69,12 @@ describe("CLI archive patched dependencies", () => {
         lockfile: yield* fs.readFileString(path.join(root, "pnpm-lock.yaml")),
       };
     }).pipe(Effect.provide(NodeServices.layer), Effect.runPromise);
-    const manifest = Schema.decodeUnknownSync(
+    const manifest = Schema.decodeSync(
       Schema.fromJsonString(
         Schema.Struct({ dependencies: Schema.Record(Schema.String, Schema.String) }),
       ),
     )(inputs.manifest);
-    const workspace = Schema.decodeUnknownSync(
+    const workspace = Schema.decodeSync(
       fromYaml(
         Schema.Struct({
           catalog: Schema.Record(Schema.String, Schema.String),
