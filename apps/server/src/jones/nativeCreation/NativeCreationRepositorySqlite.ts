@@ -426,7 +426,7 @@ const make = Effect.gen(function* () {
       basis_json: string;
     }>`SELECT basis_json FROM jones_native_workspace_admissions WHERE claim_id = ${claimId}`;
     if (rows.length !== 1) return yield* fail("Workspace path admission is missing");
-    return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Workspace.NativeWorkspaceBasis))(
+    return yield* Schema.decodeEffect(Schema.fromJsonString(Workspace.NativeWorkspaceBasis))(
       rows[0]!.basis_json,
     );
   });
@@ -438,7 +438,7 @@ const make = Effect.gen(function* () {
     if (rows.length === 0) return Option.none<Workspace.NativeWorkspaceVerified>();
     if (rows.length !== 1) return yield* fail("Workspace verification receipt is ambiguous");
     return Option.some(
-      yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Workspace.NativeWorkspaceVerified))(
+      yield* Schema.decodeEffect(Schema.fromJsonString(Workspace.NativeWorkspaceVerified))(
         rows[0]!.receipt_json,
       ),
     );
@@ -448,7 +448,7 @@ const make = Effect.gen(function* () {
       .withTransaction(
         Effect.gen(function* () {
           yield* workspaceEligible;
-          const basis = yield* Schema.decodeUnknownEffect(Workspace.NativeWorkspaceBasis)(input, {
+          const basis = yield* Schema.decodeEffect(Workspace.NativeWorkspaceBasis)(input, {
             onExcessProperty: "error",
           });
           const { intent } = yield* readByClaim(claimId);
@@ -479,7 +479,7 @@ const make = Effect.gen(function* () {
       .withTransaction(
         Effect.gen(function* () {
           yield* workspaceEligible;
-          const verified = yield* Schema.decodeUnknownEffect(Workspace.NativeWorkspaceVerified)(
+          const verified = yield* Schema.decodeEffect(Workspace.NativeWorkspaceVerified)(
             input,
             { onExcessProperty: "error" },
           );

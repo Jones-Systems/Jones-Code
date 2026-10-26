@@ -107,7 +107,7 @@ function fixture(
       }),
   } as unknown as ProviderAdapterV2SessionRuntime;
   const provider = Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
-    get: () => Effect.succeed(Option.some(runtime)),
+    get: () => Effect.succeedSome(runtime),
   });
   let group = OrchestrationHttpApi.layer.pipe(
     Layer.provide(

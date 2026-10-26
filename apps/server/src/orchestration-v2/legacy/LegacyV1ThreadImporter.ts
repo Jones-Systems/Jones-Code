@@ -1,4 +1,9 @@
 import {
+  type RecordedAppThread as OrchestrationV2AppThread,
+  RecordedAppThreadJson as OrchestrationV2AppThreadJson,
+  type RecordedLifecycleEvent as OrchestrationV2DomainEvent,
+} from "../RecordedTypes.ts";
+import {
   threadPullRequestKeysEqual,
   threadPullRequestsOf,
 } from "../../sourceControl/threadPullRequests.ts";
@@ -9,10 +14,7 @@ import {
   EventId,
   MessageId,
   ModelSelection,
-  type OrchestrationV2AppThread,
-  OrchestrationV2AppThreadJson,
   type OrchestrationV2ConversationMessage,
-  type OrchestrationV2DomainEvent,
   type OrchestrationV2TurnItem,
   ProjectId,
   ProviderInstanceId,
@@ -680,17 +682,19 @@ const make = Effect.gen(function* () {
   // transcript_imported_at never resets; cache confirmed imports for the process lifetime to skip repeated locks and reads.
   const confirmedTranscriptThreadIds = new Set<ThreadId>();
 
+  const readImport = (threadId: ThreadId) =>
+    sql<LegacyImportRow>`
+      SELECT thread_id, transcript_imported_at
+      FROM orchestration_v2_legacy_imports
+      WHERE thread_id = ${threadId}
+      LIMIT 1
+    `.pipe(Effect.map((imports) => imports[0]));
+
   const ensureTranscriptBase = (threadId: ThreadId) =>
     transcriptImports.withLock(
       threadId,
       Effect.gen(function* () {
-        const imports = yield* sql<LegacyImportRow>`
-          SELECT thread_id, transcript_imported_at
-          FROM orchestration_v2_legacy_imports
-          WHERE thread_id = ${threadId}
-          LIMIT 1
-        `.pipe(NodeSqliteClient.readOnly);
-        const imported = imports[0];
+        const imported = yield* readImport(threadId);
         if (imported === undefined || imported.transcript_imported_at !== null) {
           if (imported !== undefined) {
             confirmedTranscriptThreadIds.add(threadId);
@@ -750,10 +754,23 @@ const make = Effect.gen(function* () {
       }),
     );
 
+  // Native threads have no import row to cache, so every open would otherwise
+  // queue this lookup behind writer commits. The reader sees each committed
+  // row; a missing row is not cached because reconcileShells can still add one.
+  // A pending import is rechecked and written under the lock on the writer.
   const ensureTranscript = (threadId: ThreadId) =>
     confirmedTranscriptThreadIds.has(threadId)
       ? Effect.succeed({ importedThreadCount: 0, importedMessageCount: 0 })
-      : ensureTranscriptBase(threadId).pipe(
+      : Effect.gen(function* () {
+          const imported = yield* readImport(threadId).pipe(NodeSqliteClient.readOnly);
+          if (imported === undefined || imported.transcript_imported_at !== null) {
+            if (imported !== undefined) {
+              confirmedTranscriptThreadIds.add(threadId);
+            }
+            return { importedThreadCount: 0, importedMessageCount: 0 };
+          }
+          return yield* ensureTranscriptBase(threadId);
+        }).pipe(
           Effect.mapError(
             (cause) =>
               new LegacyV1ThreadImportError({

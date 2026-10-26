@@ -288,7 +288,7 @@ it.effect(
               Layer.mergeAll(
                 NodeServices.layer,
                 threads,
-                Layer.mock(PeerLinks.PeerLinks)({ get: () => Effect.succeed(Option.none()) }),
+                Layer.mock(PeerLinks.PeerLinks)({ get: () => Effect.succeedNone }),
                 Layer.mock(Peers.PeerMcpClient)({
                   call: (request) => {
                     payloads.push(request.arguments);
@@ -586,7 +586,7 @@ it.effect.each([
   return Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
     const response = yield* server.callTool({ name: "t3_thread_handoff", arguments: input });
-    const result = yield* Schema.decodeUnknownEffect(
+    const result = yield* Schema.decodeEffect(
       Schema.fromJsonString(ThreadHandoffToolResult),
     )(response.content.map((part) => (part.type === "text" ? part.text : "")).join(""));
     expect(observedLimit).toMatchObject({

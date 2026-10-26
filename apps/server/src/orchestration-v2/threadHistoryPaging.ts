@@ -186,6 +186,46 @@ export function isThreadHistoryUserTurn(item: HistoryRow["item"]): boolean {
   );
 }
 
+export function createThreadHistoryPageBudget(
+  policy: ThreadHistoryPagePolicy,
+  hasUserTurns: boolean,
+): {
+  readonly accept: (row: {
+    userTurn: boolean;
+    turnStart: boolean;
+    encodedBytes: number;
+  }) => boolean;
+  readonly keep: () => number;
+} {
+  const turnLimit = hasUserTurns ? policy.maxUserTurns : undefined;
+  const maxItems =
+    turnLimit === undefined ? policy.maxItems : (policy.maxTurnItems ?? policy.maxItems);
+  let selected = 0;
+  let encodedBytes = 0;
+  let userTurns = 0;
+  let rawTurns = 0;
+  return {
+    accept(row) {
+      if (
+        selected > 0 &&
+        (selected >= maxItems ||
+          encodedBytes + row.encodedBytes > policy.maxEncodedBytes ||
+          (turnLimit !== undefined &&
+            (userTurns >= turnLimit || rawTurns >= THREAD_HISTORY_MAX_RAW_TURNS)))
+      ) {
+        return false;
+      }
+      selected += 1;
+      encodedBytes += row.encodedBytes;
+      if (row.userTurn) userTurns += 1;
+      if (row.turnStart) rawTurns += 1;
+      return true;
+    },
+    // Inside a long turn, the selected window contains no user-turn start.
+    keep: () => (userTurns === 0 ? Math.min(selected, policy.maxItems) : selected),
+  };
+}
+
 /**
  * Always admit at least one row so oversized items cannot deadlock paging.
  */
@@ -204,37 +244,24 @@ function selectOlderTimelinePage<Row extends HistoryRow>(input: {
   }
 
   const selected: Row[] = [];
-  let encodedBytes = 0;
-  let userTurns = 0;
-  let rawTurns = 0;
   const candidates = input.items.slice(0, end);
   const turnStarts = threadHistoryTurnStarts(candidates.map((row) => row.item));
-  const turnLimit = candidates.some((row) => isThreadHistoryUserTurn(row.item))
-    ? policy.maxUserTurns
-    : undefined;
-  const maxItems =
-    turnLimit === undefined ? policy.maxItems : (policy.maxTurnItems ?? policy.maxItems);
+  const hasUserTurns = candidates.some((row) => isThreadHistoryUserTurn(row.item));
+  const budget = createThreadHistoryPageBudget(policy, hasUserTurns);
   for (let index = end - 1; index >= 0; index -= 1) {
     const row = input.items[index]!;
-    const rowBytes = rowCost(row);
     if (
-      selected.length > 0 &&
-      (selected.length >= maxItems ||
-        encodedBytes + rowBytes > policy.maxEncodedBytes ||
-        (turnLimit !== undefined &&
-          (userTurns >= turnLimit || rawTurns >= THREAD_HISTORY_MAX_RAW_TURNS)))
+      !budget.accept({
+        userTurn: isThreadHistoryUserTurn(row.item),
+        turnStart: turnStarts[index]!,
+        encodedBytes: rowCost(row),
+      })
     ) {
       break;
     }
     selected.push(row);
-    encodedBytes += rowBytes;
-    if (isThreadHistoryUserTurn(row.item)) userTurns += 1;
-    if (turnStarts[index]) rawTurns += 1;
   }
-  // Inside a turn longer than the window, no selected row starts a user turn.
-  // Later pages and the snapshot query see only such rows and use `maxItems`,
-  // so this page uses it too.
-  if (userTurns === 0) selected.splice(policy.maxItems);
+  selected.splice(budget.keep());
   selected.reverse();
 
   const oldest = selected[0];

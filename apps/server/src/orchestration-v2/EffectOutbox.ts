@@ -1,19 +1,7 @@
-import {
-  CheckpointId,
-  CheckpointScopeId,
-  CommandId,
-  MessageId,
-  NodeId,
-  ProviderSessionId,
-  RunAttemptId,
-  ProviderApprovalDecision,
-  ProviderUserInputAnswers,
-  ProviderThreadId,
-  ProviderTurnId,
-  RunId,
-  RuntimeRequestId,
-  ThreadId,
-} from "@t3tools/contracts";
+import { URGENT_ACTION_EFFECT_TYPES } from "../jones/orchestration/actionWorkerAdmission.ts";
+import type { NativeCreationExecutionReferenceV2 } from "../jones/nativeCreation/NativeCreationExecutionTypes.ts";
+import { confirmedNativeCompletion } from "../jones/nativeCreation/NativeEffectCompletion.ts";
+import { CommandId, ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as DateTime from "effect/DateTime";
@@ -22,6 +10,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
@@ -29,98 +18,20 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { forkParked } from "../serverActivation.ts";
 
-export const OrchestrationEffectRequestV2 = Schema.Union([
-  Schema.Struct({
-    type: Schema.Literal("provider-runtime.continue"),
-    sourceRunId: RunId,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("provider-session.detach"),
-    providerSessionId: ProviderSessionId,
-    detail: Schema.optional(Schema.String),
-    revokeMcpCredential: Schema.optional(Schema.Boolean),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("provider-turn.start"),
-    runId: RunId,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("provider-turn.interrupt"),
-    providerSessionId: ProviderSessionId,
-    providerThreadId: ProviderThreadId,
-    providerTurnId: ProviderTurnId,
-    subagent: Schema.optional(Schema.Struct({ id: NodeId, nativeTaskId: Schema.String })),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("provider-turn.steer"),
-    providerSessionId: ProviderSessionId,
-    providerThreadId: ProviderThreadId,
-    providerTurnId: ProviderTurnId,
-    messageId: MessageId,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("provider-turn.restart"),
-    providerSessionId: ProviderSessionId,
-    providerThreadId: ProviderThreadId,
-    providerTurnId: ProviderTurnId,
-    interruptedAttemptId: RunAttemptId,
-    runId: RunId,
-    sessionTransition: Schema.optional(
-      Schema.Union([
-        Schema.Struct({
-          type: Schema.Literal("replace"),
-          replacementProviderSessionId: ProviderSessionId,
-        }),
-        Schema.Struct({ type: Schema.Literal("detach") }),
-      ]),
-    ),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("runtime-request.respond"),
-    providerSessionId: ProviderSessionId,
-    requestId: RuntimeRequestId,
-    decision: Schema.optional(ProviderApprovalDecision),
-    feedback: Schema.optional(Schema.String),
-    answers: Schema.optional(ProviderUserInputAnswers),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("provider-thread.rollback"),
-    restoreFiles: Schema.optional(Schema.Boolean),
-    providerThreadId: ProviderThreadId,
-    checkpointId: CheckpointId,
-    scopeId: CheckpointScopeId,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("checkpoint.capture"),
-    runId: RunId,
-    scopeId: CheckpointScopeId,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("scheduled-tasks.cleanup"),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("terminal.cleanup"),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("preview.cleanup"),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("attachment.cleanup"),
-    attachmentIds: Schema.Array(Schema.String),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("thread-title.generate"),
-    kind: Schema.Union([
-      Schema.Struct({ type: Schema.Literal("initial"), messageId: MessageId }),
-      Schema.Struct({ type: Schema.Literal("regenerate") }),
-    ]),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("delegated-tasks.stop"),
-    reason: Schema.optional(Schema.String),
-  }),
-]);
-export type OrchestrationEffectRequestV2 = typeof OrchestrationEffectRequestV2.Type;
+import {
+  enqueue as enqueueEffects,
+  EffectOutboxError,
+  NativeOrchestrationEffectPayloadV2,
+  OrchestrationEffectRequestV2,
+  type PendingOrchestrationEffectV2,
+} from "./EffectOutboxEnqueue.ts";
+
+export {
+  EffectOutboxError,
+  NativeOrchestrationEffectPayloadV2,
+  OrchestrationEffectRequestV2,
+  type PendingOrchestrationEffectV2,
+} from "./EffectOutboxEnqueue.ts";
 
 export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
   "provider-runtime.continue",
@@ -139,6 +50,7 @@ export const PROCESS_BOUND_EFFECT_TYPES = [
   "provider-turn.start",
   "provider-turn.interrupt",
   "provider-turn.steer",
+  "provider-turn.steer-batch",
   "provider-turn.restart",
   "runtime-request.respond",
 ] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
@@ -160,6 +72,7 @@ export interface OrchestrationEffectV2 {
   readonly id: string;
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
+  readonly nativeCreationExecutionReference?: NativeCreationExecutionReferenceV2;
   readonly request: OrchestrationEffectRequestV2;
   readonly status: OrchestrationEffectStatusV2;
   readonly attemptCount: number;
@@ -172,27 +85,6 @@ export interface OrchestrationEffectV2 {
   readonly lastError: string | null;
 }
 
-export interface PendingOrchestrationEffectV2 {
-  readonly id: string;
-  readonly commandId: CommandId;
-  readonly threadId: ThreadId;
-  readonly request: OrchestrationEffectRequestV2;
-  readonly availableAt?: DateTime.Utc;
-}
-
-export class EffectOutboxError extends Schema.TaggedError<EffectOutboxError>()(
-  "EffectOutboxError",
-  {
-    operation: Schema.String,
-    effectId: Schema.optional(Schema.String),
-    cause: Schema.optional(Schema.Defect()),
-  },
-) {
-  override get message(): string {
-    return `Orchestration effect outbox ${this.operation} failed${this.effectId === undefined ? "" : ` for ${this.effectId}`}.`;
-  }
-}
-
 const isEffectOutboxError = Schema.is(EffectOutboxError);
 
 export interface EffectOutboxV2Shape {
@@ -202,11 +94,17 @@ export interface EffectOutboxV2Shape {
   readonly enqueue: (
     effects: ReadonlyArray<PendingOrchestrationEffectV2>,
   ) => Effect.Effect<void, EffectOutboxError>;
+  readonly awaitCompletion: (
+    effectIds: ReadonlyArray<string>,
+  ) => Effect.Effect<void, EffectOutboxError>;
   readonly get: (
     effectId: string,
   ) => Effect.Effect<Option.Option<OrchestrationEffectV2>, EffectOutboxError>;
   readonly listByCommandId: (
     commandId: CommandId,
+  ) => Effect.Effect<ReadonlyArray<OrchestrationEffectV2>, EffectOutboxError>;
+  readonly listByThreadId: (
+    threadId: ThreadId,
   ) => Effect.Effect<ReadonlyArray<OrchestrationEffectV2>, EffectOutboxError>;
   readonly cancelUnsettled: (input: {
     readonly threadId: ThreadId;
@@ -226,8 +124,13 @@ export interface EffectOutboxV2Shape {
     readonly workerId: string;
     readonly leaseDurationMs: number;
     readonly excludeRestartContinuations?: boolean;
+    readonly excludeTitleGeneration?: boolean;
+    readonly urgentOnly?: boolean;
   }) => Effect.Effect<Option.Option<OrchestrationEffectV2>, EffectOutboxError>;
-  readonly nextClaimableAt: Effect.Effect<Option.Option<DateTime.Utc>, EffectOutboxError>;
+  readonly nextClaimableAt: (input?: {
+    readonly excludeTitleGeneration?: boolean;
+    readonly urgentOnly?: boolean;
+  }) => Effect.Effect<Option.Option<DateTime.Utc>, EffectOutboxError>;
   readonly succeed: (input: {
     readonly effectId: string;
     readonly workerId: string;
@@ -267,18 +170,34 @@ type EffectRow = {
   readonly last_error: string | null;
 };
 
-const encodeRequest = Schema.encodeSync(Schema.fromJsonString(OrchestrationEffectRequestV2));
 const decodeRequest = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationEffectRequestV2),
 );
 
+const decodeNativePayload = Schema.decodeUnknownEffect(NativeOrchestrationEffectPayloadV2, {
+  onExcessProperty: "error",
+});
+// An invalid native envelope must never fall back to ordinary provider execution.
+export const decodeOrchestrationEffectPayloadV2 = Effect.fn(
+  "EffectOutbox.decodeOrchestrationEffectPayloadV2",
+)(function* (payload: string) {
+  const raw = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(payload);
+  if (
+    typeof raw === "object" &&
+    raw !== null &&
+    (Object.hasOwn(raw, "request") || Object.hasOwn(raw, "nativeCreationExecutionReference"))
+  )
+    return yield* decodeNativePayload(raw);
+  return { request: yield* decodeRequest(payload) };
+});
+
 const rowToEffect = (row: EffectRow) =>
-  decodeRequest(row.payload_json).pipe(
-    Effect.map((request): OrchestrationEffectV2 => ({
+  decodeOrchestrationEffectPayloadV2(row.payload_json).pipe(
+    Effect.map((payload): OrchestrationEffectV2 => ({
       id: row.effect_id,
       commandId: CommandId.make(row.command_id),
       threadId: ThreadId.make(row.thread_id),
-      request,
+      ...payload,
       status: row.status as OrchestrationEffectStatusV2,
       attemptCount: row.attempt_count,
       availableAt: row.available_at,
@@ -296,6 +215,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const available = yield* Queue.dropping<void>(64);
+    const completionChanges = yield* PubSub.sliding<void>(64);
     const cancellationSignals = new Map<string, Deferred.Deferred<void>>();
     const settledSignals = new Map<string, Deferred.Deferred<void>>();
     const signalSettled = (effectIds: ReadonlyArray<string>) =>
@@ -309,6 +229,11 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         },
         { discard: true },
       );
+    // Neither native envelope key is present. json_type is SQL NULL only for a
+    // missing key, so an explicit JSON null still takes the strict native path.
+    // This predicate reads no Jones table, so it works on upstream-only schema.
+    const ordinaryPayload = sql`json_type(payload_json, '$.request') IS NULL
+      AND json_type(payload_json, '$.nativeCreationExecutionReference') IS NULL`;
     const notifyAvailable = (count = 1) =>
       Queue.offerAll(
         available,
@@ -318,14 +243,57 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
     const claimableCandidatePredicate = (
       availableBefore?: string,
       excludeRestartContinuations = false,
-    ) =>
-      sql`
+      excludeTitleGeneration = false,
+      urgentOnly = false,
+    ) => {
+      const predicate = sql`
         ${
           availableBefore === undefined
             ? sql`1 = 1`
             : sql`candidate.available_at <= ${availableBefore}`
         }
         AND candidate.status = 'pending'
+        AND NOT (candidate.effect_type = 'provider-runtime.continue'
+          AND COALESCE(json_extract(candidate.payload_json, '$.preparedForRestart'), 0) = 1)
+        AND (
+          candidate.effect_type NOT IN ('provider-turn.steer', 'provider-turn.steer-batch')
+          OR candidate.command_id NOT GLOB 'command:queue-tool-boundary:*'
+          OR EXISTS (
+            SELECT 1 FROM orchestration_command_receipts AS candidate_receipt
+            WHERE candidate_receipt.command_id = candidate.command_id
+              AND candidate_receipt.aggregate_kind = 'thread'
+              AND candidate_receipt.aggregate_id = candidate.thread_id
+              AND candidate_receipt.status = 'accepted'
+              AND candidate_receipt.command_type IN ('queued-message.promote-to-steer', 'queued-message.promote-batch-to-steer')
+              AND typeof(candidate_receipt.result_sequence) = 'integer'
+              AND candidate_receipt.result_sequence > 0
+              AND NOT EXISTS (
+                SELECT 1 FROM orchestration_v2_effect_outbox AS predecessor
+                LEFT JOIN orchestration_command_receipts AS predecessor_receipt
+                  ON predecessor_receipt.command_id = predecessor.command_id
+                WHERE predecessor.thread_id = candidate.thread_id
+                  AND predecessor.status IN ('pending', 'running', 'failed', 'cancelled')
+                  AND predecessor.effect_type IN ('provider-turn.steer', 'provider-turn.steer-batch')
+                  AND predecessor.command_id GLOB 'command:queue-tool-boundary:*'
+                  AND predecessor.effect_id != candidate.effect_id
+                  AND json_extract(predecessor.payload_json, '$.providerSessionId') = json_extract(candidate.payload_json, '$.providerSessionId')
+                  AND json_extract(predecessor.payload_json, '$.providerThreadId') = json_extract(candidate.payload_json, '$.providerThreadId')
+                  AND json_extract(predecessor.payload_json, '$.providerTurnId') = json_extract(candidate.payload_json, '$.providerTurnId')
+                  AND (
+                    predecessor_receipt.command_id IS NULL
+                    OR predecessor_receipt.aggregate_kind IS NOT 'thread'
+                    OR predecessor_receipt.aggregate_id IS NOT predecessor.thread_id
+                    OR predecessor_receipt.status IS NOT 'accepted'
+                    OR predecessor_receipt.command_type NOT IN ('queued-message.promote-to-steer', 'queued-message.promote-batch-to-steer')
+                    OR typeof(predecessor_receipt.result_sequence) != 'integer'
+                    OR predecessor_receipt.result_sequence <= 0
+                    OR predecessor_receipt.result_sequence < candidate_receipt.result_sequence
+                    OR (predecessor_receipt.result_sequence = candidate_receipt.result_sequence
+                      AND predecessor.command_id != candidate.command_id)
+                  )
+              )
+          )
+        )
         AND NOT EXISTS (
           SELECT 1
           FROM orchestration_v2_effect_outbox AS active
@@ -335,6 +303,10 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
               OR (
                 active.status = 'pending'
                 AND active.rowid < candidate.rowid
+                AND NOT (active.effect_type = 'provider-runtime.continue'
+                  AND COALESCE(json_extract(active.payload_json, '$.preparedForRestart'), 0) = 1)
+                AND NOT (active.effect_type IN ('provider-turn.steer', 'provider-turn.steer-batch')
+                  AND active.command_id GLOB 'command:queue-tool-boundary:*')
                 AND ${
                   excludeRestartContinuations
                     ? sql`active.effect_type != 'provider-runtime.continue'`
@@ -355,6 +327,13 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             )
         )
       `;
+      const titlePredicate = excludeTitleGeneration
+        ? sql`${predicate} AND candidate.effect_type != 'thread-title.generate'`
+        : predicate;
+      return urgentOnly
+        ? sql`${titlePredicate} AND candidate.effect_type IN ${sql.in(URGENT_ACTION_EFFECT_TYPES)}`
+        : titlePredicate;
+    };
 
     const cancellationSignal = (effectId: string) => {
       const existing = cancellationSignals.get(effectId);
@@ -370,45 +349,8 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
       );
 
     const service: EffectOutboxV2Shape = {
-      enqueue: Effect.fn("EffectOutbox.enqueue")(
-        function* (effects) {
-          const now = yield* DateTime.now;
-          const nowIso = DateTime.formatIso(now);
-          yield* Effect.forEach(
-            effects,
-            (effect) => sql`
-              INSERT INTO orchestration_v2_effect_outbox (
-                effect_id,
-                command_id,
-                thread_id,
-                effect_type,
-                payload_json,
-                status,
-                attempt_count,
-                available_at,
-                created_at,
-                updated_at
-              )
-              VALUES (
-                ${effect.id},
-                ${effect.commandId},
-                ${effect.threadId},
-                ${effect.request.type},
-                ${encodeRequest(effect.request)},
-                'pending',
-                0,
-                ${DateTime.formatIso(effect.availableAt ?? now)},
-                ${nowIso},
-                ${nowIso}
-              )
-              ON CONFLICT(effect_id) DO NOTHING
-            `,
-            { concurrency: 1, discard: true },
-          );
-          // EventSink owns the corresponding post-commit notification.
-        },
-        Effect.mapError((cause) => new EffectOutboxError({ operation: "enqueue", cause })),
-      ),
+      enqueue: (effects) =>
+        enqueueEffects(effects).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       get: (effectId) =>
         sql<EffectRow>`
           SELECT *
@@ -422,6 +364,41 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             return row === undefined ? Effect.succeedNone : rowToEffect(row).pipe(Effect.asSome);
           }),
           Effect.mapError((cause) => new EffectOutboxError({ operation: "get", effectId, cause })),
+        ),
+      awaitCompletion: (effectIds) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            if (effectIds.length === 0) return;
+            const ids = Array.from(new Set(effectIds));
+            const subscription = yield* PubSub.subscribe(completionChanges);
+            while (true) {
+              const rows =
+                yield* sql<EffectRow>`SELECT * FROM orchestration_v2_effect_outbox WHERE effect_id IN ${sql.in(ids)}`;
+              const effects = yield* decodeRows("await-completion", rows);
+              if (effects.length !== ids.length)
+                return yield* new EffectOutboxError({
+                  operation: "await-completion",
+                  cause: "An exact cleanup effect is missing; its completion is unknown.",
+                });
+              const failed = effects.find(
+                (effect) => effect.status === "failed" || effect.status === "cancelled",
+              );
+              if (failed !== undefined)
+                return yield* new EffectOutboxError({
+                  operation: "await-completion",
+                  effectId: failed.id,
+                  cause: failed.lastError ?? `Cleanup ${failed.status}.`,
+                });
+              if (effects.every((effect) => effect.status === "succeeded")) return;
+              yield* PubSub.take(subscription);
+            }
+          }),
+        ).pipe(
+          Effect.mapError((cause) =>
+            isEffectOutboxError(cause)
+              ? cause
+              : new EffectOutboxError({ operation: "await-completion", cause }),
+          ),
         ),
       awaitAvailable: Queue.take(available),
       notifyAvailable,
@@ -438,6 +415,16 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             isEffectOutboxError(cause)
               ? cause
               : new EffectOutboxError({ operation: "list", cause }),
+          ),
+        ),
+      listByThreadId: (threadId) =>
+        sql<EffectRow>`SELECT * FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId}
+          ORDER BY created_at ASC, effect_id ASC`.pipe(
+          Effect.flatMap((rows) => decodeRows("list-thread", rows)),
+          Effect.mapError((cause) =>
+            isEffectOutboxError(cause)
+              ? cause
+              : new EffectOutboxError({ operation: "list-thread", cause }),
           ),
         ),
       cancelUnsettled: Effect.fn("EffectOutbox.cancelUnsettled")(
@@ -458,6 +445,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
               AND effect_type IN ${sql.in(effectTypes)}
             RETURNING effect_id
           `;
+          if (rows.length > 0) yield* PubSub.publish(completionChanges, undefined);
           return rows.map(({ effect_id }) => effect_id);
         },
         Effect.mapError((cause) => new EffectOutboxError({ operation: "cancel-unsettled", cause })),
@@ -517,8 +505,19 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             AND effect_type IN ${sql.in(REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS)}
           RETURNING effect_id
         `;
-        if (requeuedRows.length > 0) yield* notifyAvailable(requeuedRows.length);
-        return { requeued: requeuedRows.length, cancelled: cancelledRows.length };
+        const preparedRows = yield* sql<{ readonly effect_id: string }>`
+          UPDATE orchestration_v2_effect_outbox SET
+            payload_json = json_set(payload_json, '$.preparedForRestart', json('false')),
+            available_at = ${now}, updated_at = ${now}
+          WHERE status = 'pending' AND effect_type = 'provider-runtime.continue'
+            AND json_extract(payload_json, '$.preparedForRestart') = 1 RETURNING effect_id`;
+        if (requeuedRows.length + preparedRows.length > 0)
+          yield* notifyAvailable(requeuedRows.length + preparedRows.length);
+        if (cancelledRows.length > 0) yield* PubSub.publish(completionChanges, undefined);
+        return {
+          requeued: requeuedRows.length + preparedRows.length,
+          cancelled: cancelledRows.length,
+        };
       }).pipe(
         Effect.mapError(
           (cause) => new EffectOutboxError({ operation: "reconcile-process-loss", cause }),
@@ -526,7 +525,13 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
       ),
       // The worker polls for the next effect even when there is no work to claim.
       claimNext: Effect.fnUntraced(
-        function* ({ workerId, leaseDurationMs, excludeRestartContinuations = false }) {
+        function* ({
+          workerId,
+          leaseDurationMs,
+          excludeRestartContinuations = false,
+          excludeTitleGeneration = false,
+          urgentOnly = false,
+        }) {
           const now = yield* DateTime.now;
           const nowIso = DateTime.formatIso(now);
           const leaseExpiresAt = DateTime.formatIso(
@@ -545,7 +550,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             WHERE effect_id = (
               SELECT candidate.effect_id
               FROM orchestration_v2_effect_outbox AS candidate
-              WHERE ${claimableCandidatePredicate(nowIso, excludeRestartContinuations)}
+              WHERE ${claimableCandidatePredicate(nowIso, excludeRestartContinuations, excludeTitleGeneration, urgentOnly)}
                 AND ${excludeRestartContinuations ? sql`candidate.effect_type != 'provider-runtime.continue'` : sql`1 = 1`}
               ORDER BY candidate.available_at ASC, candidate.created_at ASC, candidate.effect_id ASC
               LIMIT 1
@@ -560,23 +565,27 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         },
         Effect.mapError((cause) => new EffectOutboxError({ operation: "claim", cause })),
       ),
-      nextClaimableAt: Effect.gen(function* () {
-        const rows = yield* sql<{ readonly available_at: string | null }>`
-          SELECT MIN(candidate.available_at) AS available_at
-          FROM orchestration_v2_effect_outbox AS candidate
-          WHERE ${claimableCandidatePredicate()}
-        `.pipe(NodeSqliteClient.readOnly, Effect.withTracerEnabled(false));
-        const availableAt = rows[0]?.available_at;
-        if (availableAt === undefined || availableAt === null) return Option.none();
-        const parsed = DateTime.make(availableAt);
-        if (Option.isNone(parsed)) {
-          return yield* new EffectOutboxError({
-            operation: "next-claimable",
-            cause: `Invalid available_at timestamp: ${availableAt}`,
-          });
-        }
-        return parsed;
-      }).pipe(
+      nextClaimableAt: Effect.fnUntraced(
+        function* (input?: {
+          readonly excludeTitleGeneration?: boolean;
+          readonly urgentOnly?: boolean;
+        }) {
+          const rows = yield* sql<{ readonly available_at: string | null }>`
+            SELECT MIN(candidate.available_at) AS available_at
+            FROM orchestration_v2_effect_outbox AS candidate
+            WHERE ${claimableCandidatePredicate(undefined, false, input?.excludeTitleGeneration, input?.urgentOnly)}
+          `.pipe(NodeSqliteClient.readOnly, Effect.withTracerEnabled(false));
+          const availableAt = rows[0]?.available_at;
+          if (availableAt === undefined || availableAt === null) return Option.none();
+          const parsed = DateTime.make(availableAt);
+          if (Option.isNone(parsed)) {
+            return yield* new EffectOutboxError({
+              operation: "next-claimable",
+              cause: `Invalid available_at timestamp: ${availableAt}`,
+            });
+          }
+          return parsed;
+        },
         Effect.mapError((cause) =>
           isEffectOutboxError(cause)
             ? cause
@@ -586,7 +595,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
       succeed: Effect.fn("EffectOutbox.succeed")(
         function* ({ effectId, workerId }) {
           const now = DateTime.formatIso(yield* DateTime.now);
-          const rows = yield* sql<{ readonly effect_id: string }>`
+          const settle = (guard: typeof ordinaryPayload) => sql<{ readonly effect_id: string }>`
             UPDATE orchestration_v2_effect_outbox
             SET
               status = 'succeeded',
@@ -598,11 +607,30 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             WHERE effect_id = ${effectId}
               AND status = 'running'
               AND lease_owner = ${workerId}
+              AND ${guard}
             RETURNING effect_id
           `;
+          let rows = yield* settle(ordinaryPayload);
+          if (rows.length === 0) {
+            const current = yield* sql<{ readonly payload_json: string }>`
+              SELECT payload_json FROM orchestration_v2_effect_outbox
+              WHERE effect_id = ${effectId} AND status = 'running' AND lease_owner = ${workerId}
+            `;
+            // A native envelope must pass the strict decode and its proof. The
+            // payload match binds that proof to the row that was decoded.
+            if (
+              current.length === 1 &&
+              "nativeCreationExecutionReference" in
+                (yield* decodeOrchestrationEffectPayloadV2(current[0]!.payload_json))
+            )
+              rows = yield* settle(
+                sql`payload_json = ${current[0]!.payload_json} AND ${confirmedNativeCompletion(sql, { workerId, now })}`,
+              );
+          }
           if (rows.length === 1) {
             cancellationSignals.delete(effectId);
             yield* signalSettled([effectId]);
+            yield* PubSub.publish(completionChanges, undefined);
             yield* notifyAvailable();
           }
           return rows.length === 1;
@@ -624,7 +652,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           const rows = yield* sql<{ readonly effect_id: string }>`
             UPDATE orchestration_v2_effect_outbox
             SET
-              status = 'pending',
+              status = CASE WHEN json_type(payload_json, '$.nativeCreationExecutionReference') IS NULL THEN 'pending' ELSE 'failed' END,
               available_at = ${availableAt},
               lease_owner = NULL,
               lease_expires_at = NULL,
@@ -637,6 +665,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           `;
           if (rows.length === 1) {
             cancellationSignals.delete(effectId);
+            yield* PubSub.publish(completionChanges, undefined);
             yield* notifyAvailable();
           }
           return rows.length === 1;
@@ -668,6 +697,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           if (rows.length === 1) {
             cancellationSignals.delete(effectId);
             yield* signalSettled([effectId]);
+            yield* PubSub.publish(completionChanges, undefined);
             yield* notifyAvailable();
           }
           return rows.length === 1;

@@ -151,7 +151,7 @@ const fixture = (
       retireStagedOperation: retireStaged,
       installForOperation: install,
       reconcileOperation: () => Effect.sync(() => native),
-      refreshPolicy: Effect.succeed(undefined),
+      refreshPolicy: Effect.void,
     };
     let nextOperation = 0;
     const create = () =>

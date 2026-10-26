@@ -119,7 +119,7 @@ export const makeNativeExecutionMethods = (sql: SqlClient.SqlClient, owner: Owne
       .pipe(Effect.mapError(mapFailure));
   const resolve = Effect.fnUntraced(function* (input: NativeCreationExecutionReferenceV2) {
     yield* eligible;
-    const reference = yield* Schema.decodeUnknownEffect(NativeCreationExecutionReferenceV2)(input);
+    const reference = yield* Schema.decodeEffect(NativeCreationExecutionReferenceV2)(input);
     if (reference.stage !== "native_command")
       return yield* unresolved("Native execution requires the native command stage");
     const history = yield* requireHistory(reference.claimId);
@@ -127,7 +127,7 @@ export const makeNativeExecutionMethods = (sql: SqlClient.SqlClient, owner: Owne
     const reservation = yield* owner.getReservedCommand(reference.stageCommandId);
     if (Option.isNone(reservation) || reservation.value.claimId !== reference.claimId)
       return yield* unresolved("Native execution has no immutable command reservation");
-    const command = yield* Schema.decodeUnknownEffect(
+    const command = yield* Schema.decodeEffect(
       Schema.fromJsonString(OrchestrationV2Command),
     )(reservation.value.canonicalCommand);
     const digest = nativeCreationSha256(nativeCreationCanonicalJson(command));
@@ -176,7 +176,7 @@ export const makeNativeExecutionMethods = (sql: SqlClient.SqlClient, owner: Owne
     const history = yield* requireHistory(input.claimId);
     yield* assertIdentity(input.claimId, input.command.commandId, history.intent.threadId);
     const reservation = yield* owner.getReservedCommand(input.command.commandId);
-    const command = yield* Schema.decodeUnknownEffect(OrchestrationV2Command)(input.command, {
+    const command = yield* Schema.decodeEffect(OrchestrationV2Command)(input.command, {
       onExcessProperty: "error",
     });
     const canonical = nativeCreationCanonicalJson(command);
@@ -255,7 +255,7 @@ export const makeNativeExecutionMethods = (sql: SqlClient.SqlClient, owner: Owne
       AND effect_type='provider-turn.start' AND status='running' AND lease_owner IS NOT NULL AND attempt_count>0 AND lease_expires_at>${now}`;
           if (rows.length !== 1)
             return yield* unresolved("Native execution has no exact owned live outbox claim");
-          const payload = yield* Schema.decodeUnknownEffect(
+          const payload = yield* Schema.decodeEffect(
             Schema.fromJsonString(
               Schema.Struct({
                 request: Schema.Struct({
@@ -279,7 +279,7 @@ export const makeNativeExecutionMethods = (sql: SqlClient.SqlClient, owner: Owne
             nativeCreationCanonicalJson(resolved.history.intent.binding)
           )
             return yield* unresolved("Current authority differs from immutable native claim");
-          const fact = yield* Schema.decodeUnknownEffect(NativeCreationEffectV2)({
+          const fact = yield* Schema.decodeEffect(NativeCreationEffectV2)({
             version: 2,
             kind: "native_command",
             phase: "started",
@@ -328,7 +328,7 @@ export const makeNativeExecutionMethods = (sql: SqlClient.SqlClient, owner: Owne
         Effect.gen(function* () {
           const resolved = yield* resolve(input.reference);
           const evidence = Object.freeze(
-            yield* Schema.decodeUnknownEffect(
+            yield* Schema.decodeEffect(
               Schema.fromJsonString(NativeCreationWholeOperationEvidence),
             )(nativeCreationCanonicalJson(input.evidence)),
           );

@@ -295,7 +295,7 @@ export const runWorkstreamProviderCliOperation = Effect.fn("runWorkstreamProvide
         const sessions = yield* AuthSessions.make;
         const enrollments = yield* makeNativeEnrollments({
           authority,
-          build: Effect.succeed(Option.some(trusted.build)),
+          build: Effect.succeedSome(trusted.build),
         }).pipe(Effect.provideService(AuthSessions.AuthSessionRepository, sessions));
         const credential = makeNativeCredentialWriter({
           baseDir: trusted.baseDir,

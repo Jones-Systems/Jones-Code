@@ -6165,7 +6165,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             unref: Effect.succeed(Effect.void),
             stdin: Sink.forEach((bytes: Uint8Array) =>
               Effect.gen(function* () {
-                const frame = yield* Schema.decodeUnknownEffect(
+                const frame = yield* Schema.decodeEffect(
                   Schema.fromJsonString(Schema.Struct({ method: Schema.String })),
                 )(new TextDecoder().decode(bytes).trim()).pipe(Effect.orDie);
                 if (frame.method === "turn/steer") {

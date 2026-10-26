@@ -79,7 +79,7 @@ it("recorded event codecs preserve upstream pull request link payloads", () => {
   assert.deepStrictEqual(Schema.decodeSync(RecordedLifecycleEvent)(publicEvent), publicEvent);
   assert.deepStrictEqual(Schema.encodeSync(RecordedLifecycleEventJson)(recordedEvent), input);
   assert.throws(() =>
-    Schema.decodeUnknownSync(RecordedLifecycleEventJson)({
+    Schema.decodeSync(RecordedLifecycleEventJson)({
       ...input,
       payload: { ...input.payload, number: 0 },
     }),

@@ -299,7 +299,7 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
         workspacePath: "/private-http-workspace",
         projectWorkspaceRoot: "/private-http-workspace",
       };
-      const decision = yield* Schema.decodeUnknownEffect(LegacyReleaseDecision)({
+      const decision = yield* Schema.decodeEffect(LegacyReleaseDecision)({
         version: 1,
         status: "rejected",
         policy,
@@ -338,7 +338,7 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
       yield* sql`UPDATE orchestration_v2_projection_runs SET payload_json = ${payload} WHERE run_id = ${runId}`;
       const failureCommandId = CommandId.make("recorded-http:B:fail");
       const failureEvidenceEventId = EventId.make("recorded-http:failure:event");
-      const failure = yield* Schema.decodeUnknownEffect(LegacyPreparationFailureDecision)({
+      const failure = yield* Schema.decodeEffect(LegacyPreparationFailureDecision)({
         version: 1,
         status: "known_workspace_failure",
         policy,
@@ -735,7 +735,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           expectedLatestTurnId: null,
           requireIdle: true,
         };
-        const projection = yield* Schema.decodeUnknownEffect(OrchestrationV2ThreadProjectionJson)({
+        const projection = yield* Schema.decodeEffect(OrchestrationV2ThreadProjectionJson)({
           thread: {
             id: threadId,
             projectId,
@@ -1183,7 +1183,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                 Layer.mock(WsManagedProjectFolders.ManagedProjectFolders)({
                   namedProjectsRoot: `${cwd}/unused-projects`,
                   isScratchProject: () => Effect.succeed(false),
-                  folderForThread: () => Effect.succeed(Option.none()),
+                  folderForThread: () => Effect.succeedNone,
                 }),
               );
               const launchSink = Layer.effect(
@@ -1759,7 +1759,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             const readSetupFrame = () =>
               WsQueue.take(setupOutgoing).pipe(
                 Effect.flatMap((raw) =>
-                  Schema.decodeUnknownEffect(
+                  Schema.decodeEffect(
                     Schema.fromJsonString(
                       Schema.Struct({
                         _tag: Schema.String,
@@ -1890,7 +1890,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
               const readCancellationFrame = () =>
                 WsQueue.take(outgoing).pipe(
                   Effect.flatMap((raw) =>
-                    Schema.decodeUnknownEffect(
+                    Schema.decodeEffect(
                       Schema.fromJsonString(
                         Schema.Struct({
                           _tag: Schema.String,
@@ -2270,7 +2270,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             const readCardFrame = () =>
               WsQueue.take(outgoing).pipe(
                 Effect.flatMap((raw) =>
-                  Schema.decodeUnknownEffect(
+                  Schema.decodeEffect(
                     Schema.fromJsonString(
                       Schema.Struct({
                         _tag: Schema.String,

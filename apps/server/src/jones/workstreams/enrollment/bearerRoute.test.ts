@@ -135,20 +135,20 @@ it.live(
         const sessionStore = yield* SessionStore.SessionStore;
         const enrollments = yield* makeNativeEnrollments({
           authority: authorityPort,
-          build: Effect.succeed(Option.some(syntheticBuild)),
+          build: Effect.succeedSome(syntheticBuild),
         }).pipe(Effect.provideService(AuthSessions.AuthSessionRepository, sessions));
         const runtime = NativeWorkstreamsRuntime.of({
           provider: makeWorkstreamsNativeProvider({
             ...providerFixture.ports,
             authority: authorityPort,
-            build: Effect.succeed(Option.some(syntheticBuild)),
+            build: Effect.succeedSome(syntheticBuild),
             threadExists: (threadId) => Effect.succeed(threadId === nativeThreadId),
           }),
           providerV2: makeWorkstreamsNativeProvider(
             {
               ...providerFixture.ports,
               authority: authorityPort,
-              build: Effect.succeed(Option.some(syntheticBuild)),
+              build: Effect.succeedSome(syntheticBuild),
               threadExists: (threadId) => Effect.succeed(threadId === nativeThreadId),
             },
             "v2",

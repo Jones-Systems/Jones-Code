@@ -1,3 +1,4 @@
+import { LifecycleError } from "../jones/workspaceLifecycle/Protocol.ts";
 import {
   backgroundWorkHoldsCompletion,
   turnItemUpdateCanEndBackgroundWork,
@@ -26,6 +27,10 @@ import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import * as GitManager from "../git/GitManager.ts";
+import { asBackgroundGitWork } from "../jones/git/backgroundGitAdmission.ts";
+import { withOperation } from "../jones/workspaceLifecycle/NativeOperation.ts";
+import { beforeCleanup } from "../jones/workspaceLifecycle/NativeBoundary.ts";
+import { workModeSettlementActivity } from "../jones/workMode/Settlement.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -321,16 +326,20 @@ export const make = Effect.gen(function* () {
     const projects = new Map(projectShells.map((project) => [project.id, project]));
     // Merge events resweep all candidates because unlinked threads settle through branch lookup.
     const candidates = threads.filter((thread) => isAutoSettlementCandidate(thread, nowMs));
+    const settlementActivity = yield* workModeSettlementActivity(
+      projections,
+      settings,
+      candidates,
+      nowMs,
+    );
 
     const settleThread = Effect.fn("ThreadSettlementServiceV2.settleThread")(
       function* (thread: (typeof candidates)[number], pullRequest: SettlementPullRequest | null) {
-        const currentSettings = resolveProjectSettings(
-          yield* settingsService.getSettings,
-          thread.projectId,
-        ).settings;
+        const serverSettings = yield* settingsService.getSettings;
+        const currentSettings = resolveProjectSettings(serverSettings, thread.projectId).settings;
         const decisionNow = yield* DateTime.now;
         const settledAt = resolveAutoSettlementAt({
-          thread,
+          thread: settlementActivity(thread, serverSettings),
           pullRequest,
           nowMs: DateTime.toEpochMillis(decisionNow),
           autoSettleAfterDays: currentSettings.sidebarAutoSettleAfterDays,
@@ -425,7 +434,7 @@ export const make = Effect.gen(function* () {
         const { settings } = resolveProjectSettings(currentSettings, thread.projectId);
         return (
           resolveAutoSettlementAt({
-            thread,
+            thread: settlementActivity(thread, currentSettings),
             pullRequest,
             nowMs: DateTime.toEpochMillis(decisionNow),
             autoSettleAfterDays: settings.sidebarAutoSettleAfterDays,
@@ -473,10 +482,9 @@ export const make = Effect.gen(function* () {
         const cwd = lookupCwdByThreadId.get(thread.id);
         if (summary.state !== "open" && thread.branch !== null && cwd !== undefined) {
           if (!(yield* wouldSettle(group, terminal))) return undefined;
-          const current = yield* git.branchPullRequest(
-            { cwd, branch: thread.branch },
-            { refresh: true },
-          );
+          const current = yield* git
+            .branchPullRequest({ cwd, branch: thread.branch }, { refresh: true })
+            .pipe(asBackgroundGitWork);
           const project = projects.get(thread.projectId);
           if (
             current?.state === "open" &&
@@ -494,7 +502,7 @@ export const make = Effect.gen(function* () {
         return yield* Effect.die(new Error("thread project not found"));
       }
       const refresh = group.filter((member) => shellClosedThreads.delete(member.id)).length > 0;
-      return yield* git.branchPullRequest({ cwd, branch: thread.branch }, { refresh });
+      return yield* git.branchPullRequest({ cwd, branch: thread.branch }, { refresh }).pipe(asBackgroundGitWork);
     });
 
     yield* Effect.forEach(
@@ -576,6 +584,32 @@ export const make = Effect.gen(function* () {
       if (thread.settledOverride !== "settled") return;
       const settledAtMs = toMillis(thread.settledAt);
       if (settledAtMs === null || settleActionRunAt.get(threadId) === settledAtMs) return;
+      yield* withOperation(
+        {
+          id: `settle:${threadId}:${settledAtMs}`,
+          kind: "preservation",
+          threadId,
+          boundaries: ["settle-script"],
+          inherit: false,
+          check: Effect.gen(function* () {
+            const current = yield* projections.getThread(threadId);
+            if (
+              current.settledOverride !== "settled" ||
+              toMillis(current.settledAt) !== settledAtMs ||
+              current.projectId !== thread.projectId ||
+              current.worktreePath !== worktreePath ||
+              current.branch !== thread.branch ||
+              toMillis(current.updatedAt) !== toMillis(thread.updatedAt)
+            )
+              return yield* new LifecycleError({ reason: "stale" });
+          }),
+        },
+        beforeCleanup({
+          threadId,
+          boundary: "settle-script",
+          id: `settle:${threadId}:${settledAtMs}`,
+        }),
+      );
       const run = yield* projectScripts.runForThread({
         threadId,
         projectId: thread.projectId,

@@ -244,7 +244,7 @@ export const nativeStartFixture = (f: Effect.Success<typeof fixture>) =>
         Layer.succeed(
           AuthSessions.AuthSessionRepository,
           AuthSessions.AuthSessionRepository.of({
-            getById: () => Effect.succeed(Option.some(session)),
+            getById: () => Effect.succeedSome(session),
             create: () => Effect.void,
             createReplacingActive: () => Effect.succeed([]),
             createIfAbsent: () => Effect.void,

@@ -41,8 +41,10 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerConfig from "../config.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as EventSink from "./EventSink.ts";
+import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EventStore from "./EventStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
@@ -2263,4 +2265,403 @@ it.effect.each([
     );
     assert.isEmpty(persisted);
   }).pipe(Effect.provide(layerFailingWrites(errors))),
+);
+
+it.effect.each([
+  {
+    title: "ignores runtime observations without a matching provider instance",
+    variant: "missing-instance",
+  },
+  {
+    title: "ignores runtime observations from a stale provider instance",
+    variant: "stale-instance",
+  },
+  {
+    title: "ignores runtime observations without a current generation",
+    variant: "missing-generation",
+  },
+  {
+    title: "ignores runtime observations from an abandoned generation",
+    variant: "stale-generation",
+  },
+  { title: "ignores runtime observations from another driver", variant: "wrong-driver" },
+  {
+    title: "ignores runtime observations without a matching native conversation",
+    variant: "missing-native",
+  },
+] as const)("$title", ({ variant }) =>
+  Effect.gen(function* () {
+    const sink = yield* EventSink.EventSinkV2;
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+    const ids = yield* IdAllocator.IdAllocatorV2;
+    const now = yield* DateTime.now;
+    const created = yield* threadCreatedEvent(now);
+    const session = yield* ids.allocate.providerSession({
+      providerInstanceId: modelSelection.instanceId,
+      threadId: created.threadId,
+    });
+    const requested = ProviderAdapter.requestedRuntimeIdentity(modelSelection, CODEX_DRIVER);
+    const row: OrchestrationV2ProviderThread = {
+      id: ids.derive.providerThread({ driver: CODEX_DRIVER, nativeThreadId: "native-thread" }),
+      driver: CODEX_DRIVER,
+      providerInstanceId: modelSelection.instanceId,
+      providerSessionId: session,
+      appThreadId: created.threadId,
+      ownerNodeId: null,
+      nativeThreadRef: { driver: CODEX_DRIVER, nativeId: "native-thread", strength: "strong" },
+      nativeConversationHeadRef: null,
+      status: "idle",
+      firstRunOrdinal: null,
+      lastRunOrdinal: null,
+      handoffIds: [],
+      forkedFrom: null,
+      createdAt: now,
+      updatedAt: now,
+      runtimeIdentity: {
+        ...(variant === "missing-generation" ? {} : { runtimeGeneration: "current-generation" }),
+        evidenceRevision: 1,
+        requested,
+        observed: ProviderAdapter.unobservedRuntimeIdentity(),
+      },
+    };
+    yield* sink.write({
+      events: [
+        created,
+        {
+          id: yield* ids.allocate.event({ threadId: created.threadId }),
+          type: "provider-thread.updated",
+          threadId: created.threadId,
+          occurredAt: now,
+          payload: row,
+        },
+      ],
+    });
+    const observation = {
+      ...ProviderAdapter.unobservedRuntimeIdentity(),
+      model: {
+        status: "observed" as const,
+        value: "rerouted-native",
+        sourceEvent: "codex.model/rerouted",
+      },
+    };
+    const stored = yield* ingestor.ingestNormalized({
+      providerSessionId: session,
+      providerInstanceId:
+        variant === "missing-instance"
+          ? ProviderInstanceId.make("unregistered")
+          : modelSelection.instanceId,
+      threadId: created.threadId,
+      event: {
+        type: "runtime_identity.observed",
+        driver: CODEX_DRIVER,
+        binding: {
+          threadId: created.threadId,
+          providerThreadId:
+            variant === "missing-native" ? ProviderThreadId.make("absent-native-owner") : row.id,
+          providerSessionId: session,
+          providerInstanceId:
+            variant === "stale-instance"
+              ? ProviderInstanceId.make("other-instance")
+              : modelSelection.instanceId,
+          driver:
+            variant === "wrong-driver" ? ProviderDriverKind.make("claude-code") : CODEX_DRIVER,
+          nativeThreadId: "native-thread",
+          runtimeGeneration:
+            variant === "stale-generation" ? "abandoned-generation" : "current-generation",
+        },
+        requested,
+        observed: observation,
+      },
+    });
+    assert.deepEqual(stored, []);
+    assert.deepEqual(
+      (yield* store.getThreadProjection(created.threadId)).providerThreads[0]?.runtimeIdentity
+        ?.observed,
+      ProviderAdapter.unobservedRuntimeIdentity(),
+    );
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect(
+  "accepts a genuine native reroute but never attests model and tier from adapter turn metadata",
+  () =>
+    Effect.gen(function* () {
+      const sink = yield* EventSink.EventSinkV2;
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+      const ids = yield* IdAllocator.IdAllocatorV2;
+      const now = yield* DateTime.now;
+      const created = yield* threadCreatedEvent(now);
+      const session = yield* ids.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId: created.threadId,
+      });
+      const requested = ProviderAdapter.requestedRuntimeIdentity(modelSelection, CODEX_DRIVER);
+      const row: OrchestrationV2ProviderThread = {
+        id: ids.derive.providerThread({ driver: CODEX_DRIVER, nativeThreadId: "native-thread" }),
+        driver: CODEX_DRIVER,
+        providerInstanceId: modelSelection.instanceId,
+        providerSessionId: session,
+        appThreadId: created.threadId,
+        ownerNodeId: null,
+        nativeThreadRef: { driver: CODEX_DRIVER, nativeId: "native-thread", strength: "strong" },
+        nativeConversationHeadRef: null,
+        status: "idle",
+        firstRunOrdinal: null,
+        lastRunOrdinal: null,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+        runtimeIdentity: {
+          runtimeGeneration: "actual-process",
+          evidenceRevision: 1,
+          requested,
+          observed: ProviderAdapter.unobservedRuntimeIdentity(),
+        },
+      };
+      yield* sink.write({
+        events: [
+          created,
+          {
+            id: yield* ids.allocate.event({ threadId: created.threadId }),
+            type: "provider-thread.updated",
+            threadId: created.threadId,
+            occurredAt: now,
+            payload: row,
+          },
+        ],
+      });
+      const snapshot = yield* ingestor.ingestNormalized({
+        providerSessionId: session,
+        providerInstanceId: modelSelection.instanceId,
+        threadId: created.threadId,
+        event: {
+          type: "provider_thread.updated",
+          driver: CODEX_DRIVER,
+          providerThread: {
+            ...row,
+            runtimeIdentity: {
+              ...row.runtimeIdentity!,
+              observed: {
+                ...ProviderAdapter.unobservedRuntimeIdentity(),
+                model: {
+                  status: "observed",
+                  value: "argument-model",
+                  sourceEvent: "turn/start parameters",
+                },
+              },
+            },
+          },
+          runtimeEvidence: {
+            threadId: created.threadId,
+            providerThreadId: row.id,
+            providerSessionId: session,
+            providerInstanceId: modelSelection.instanceId,
+            driver: CODEX_DRIVER,
+            nativeThreadId: "native-thread",
+            runtimeGeneration: "actual-process",
+            evidenceRevision: 1,
+          },
+        },
+      });
+      assert.lengthOf(snapshot, 1);
+      assert.deepEqual(
+        (yield* store.getThreadProjection(created.threadId)).providerThreads[0]?.runtimeIdentity
+          ?.observed,
+        ProviderAdapter.unobservedRuntimeIdentity(),
+      );
+      const observed = {
+        ...ProviderAdapter.unobservedRuntimeIdentity(),
+        model: {
+          status: "observed" as const,
+          value: "rerouted-native",
+          sourceEvent: "codex.model/rerouted",
+        },
+      };
+      yield* ingestor.ingestNormalized({
+        providerSessionId: session,
+        providerInstanceId: modelSelection.instanceId,
+        threadId: created.threadId,
+        event: {
+          type: "runtime_identity.observed",
+          driver: CODEX_DRIVER,
+          binding: {
+            threadId: created.threadId,
+            providerThreadId: row.id,
+            providerSessionId: session,
+            providerInstanceId: modelSelection.instanceId,
+            driver: CODEX_DRIVER,
+            nativeThreadId: "native-thread",
+            runtimeGeneration: "actual-process",
+          },
+          requested,
+          observed,
+        },
+      });
+      const identity = (yield* store.getThreadProjection(created.threadId)).providerThreads[0]
+        ?.runtimeIdentity;
+      assert.deepEqual(identity?.observed, observed);
+      assert.equal(identity?.requested.model, modelSelection.model);
+      assert.equal(identity?.observed.serviceTier.status, "unknown");
+    }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("availability and finalized text persist without settling the current attempt", () =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const sink = yield* EventSink.EventSinkV2;
+    const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const ids = yield* IdAllocator.IdAllocatorV2;
+    const thread = yield* threadCreatedEvent(now);
+    const threadId = thread.threadId;
+    const runId = RunId.make("run:availability-does-not-settle");
+    const attemptId = RunAttemptId.make("attempt:availability-does-not-settle");
+    const nodeId = NodeId.make("node:availability-does-not-settle");
+    const providerThreadId = ids.derive.providerThread({
+      driver: CODEX_DRIVER,
+      nativeThreadId: "native-thread",
+    });
+    const providerSessionId = yield* ids.allocate.providerSession({
+      providerInstanceId: modelSelection.instanceId,
+      threadId,
+    });
+    yield* sink.write({
+      events: [
+        thread,
+        {
+          id: yield* ids.allocate.event({ threadId }),
+          type: "run.created",
+          threadId,
+          runId,
+          occurredAt: now,
+          payload: {
+            id: runId,
+            threadId,
+            ordinal: 1,
+            providerInstanceId: modelSelection.instanceId,
+            modelSelection,
+            providerThreadId,
+            userMessageId: MessageId.make("message:availability"),
+            rootNodeId: nodeId,
+            activeAttemptId: attemptId,
+            status: "running",
+            requestedAt: now,
+            startedAt: now,
+            completedAt: null,
+            checkpointId: null,
+            contextHandoffId: null,
+          },
+        },
+        {
+          id: yield* ids.allocate.event({ threadId }),
+          type: "run-attempt.created",
+          threadId,
+          runId,
+          occurredAt: now,
+          payload: {
+            id: attemptId,
+            runId,
+            attemptOrdinal: 1,
+            rootNodeId: nodeId,
+            providerInstanceId: modelSelection.instanceId,
+            providerThreadId,
+            providerTurnId: null,
+            providerSettlement: null,
+            reason: "initial",
+            status: "running",
+            startedAt: now,
+            completedAt: null,
+          },
+        },
+      ],
+    });
+    yield* sink.write({
+      events: [
+        {
+          id: yield* ids.allocate.event({ threadId }),
+          type: "provider-session.attached",
+          threadId,
+          occurredAt: now,
+          payload: {
+            id: providerSessionId,
+            driver: CODEX_DRIVER,
+            providerInstanceId: modelSelection.instanceId,
+            status: "starting",
+            cwd: "/synthetic",
+            model: null,
+            capabilities: CodexProviderCapabilitiesV2,
+            createdAt: now,
+            updatedAt: now,
+            lastError: null,
+          },
+        },
+      ],
+    });
+    const input = {
+      providerSessionId,
+      providerInstanceId: modelSelection.instanceId,
+      threadId,
+      runId,
+      nodeId,
+    };
+    for (const status of ["starting", "ready", "stopped", "error"] as const) {
+      yield* ingestor.ingestNormalized({
+        ...input,
+        event: {
+          type: "provider_session.updated",
+          driver: CODEX_DRIVER,
+          providerSession: {
+            id: providerSessionId,
+            driver: CODEX_DRIVER,
+            providerInstanceId: modelSelection.instanceId,
+            status,
+            cwd: "/synthetic",
+            model: null,
+            capabilities: CodexProviderCapabilitiesV2,
+            createdAt: now,
+            updatedAt: now,
+            lastError: null,
+          },
+        },
+      });
+    }
+    yield* ingestor.ingestNormalized({
+      ...input,
+      event: {
+        type: "message.updated",
+        driver: CODEX_DRIVER,
+        message: {
+          id: MessageId.make("message:availability:assistant"),
+          threadId,
+          runId,
+          nodeId,
+          role: "assistant",
+          createdBy: "agent",
+          creationSource: "provider",
+          text: "Durable final text",
+          attachments: [],
+          streaming: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      },
+    });
+    const records = yield* store.getThreadRecords(threadId, [
+      "runs",
+      "attempts",
+      "messages",
+      "providerSessions",
+    ]);
+    assert.equal(records.runs[0]?.status, "running");
+    assert.isNull(records.runs[0]?.completedAt);
+    assert.isNull(records.attempts[0]?.providerSettlement);
+    assert.isNull(records.attempts[0]?.completedAt);
+    assert.equal(records.messages[0]?.text, "Durable final text");
+    assert.isFalse(records.messages[0]?.streaming);
+    assert.equal(records.providerSessions[0]?.status, "error");
+    assert.isNull((yield* store.getThreadShell(threadId))?.latestRunProviderSettlement);
+  }).pipe(Effect.provide(layerTest)),
 );
