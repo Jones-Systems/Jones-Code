@@ -1997,7 +1997,10 @@
     "packages/contracts/src/jones/taskContinuation.ts": "jones-owned",
     "packages/provider-core/src/server/jones/TaskContinuationInstructions.ts": "jones-owned",
     "scripts/jones/boundary/fragments/task-continuation.json": "jones-owned",
-    "apps/server/src/jones/orchestration/threadMetadataCallers.test.ts": "jones-owned"
+    "apps/server/src/jones/orchestration/threadMetadataCallers.test.ts": "jones-owned",
+    "packages/client-runtime/src/jones/connection/betterRouteRecovery.ts": "jones-owned",
+    "packages/client-runtime/src/jones/connection/betterRouteRecovery.test.ts": "jones-owned",
+    "packages/client-runtime/src/connection/supervisor.ts": "hook"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

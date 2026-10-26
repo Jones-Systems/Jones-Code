@@ -1642,7 +1642,11 @@
         "apps/mobile/src/connection/background-activity-reporter.test.ts",
         "apps/mobile/src/connection/background-activity.test.ts",
         "apps/server/src/environment/DirectEndpoints.test.ts",
-        "apps/server/src/environment/RemoteOpenTargets.test.ts"
+        "apps/server/src/environment/RemoteOpenTargets.test.ts",
+        "packages/client-runtime/src/jones/connection/betterRouteRecovery.test.ts",
+        "packages/client-runtime/src/connection/resolver.test.ts",
+        "packages/client-runtime/src/connection/routes.test.ts",
+        "packages/client-runtime/src/connection/registry.test.ts"
       ],
       "commands": [
         "cd packages/client-runtime && vp test run src/rpc/session.test.ts src/rpc/client.test.ts src/connection/outdatedHostUpdate.test.ts src/connection/supervisor.test.ts --maxWorkers=1",
@@ -1663,7 +1667,9 @@
         "vp run --filter @t3tools/mobile typecheck",
         "vp lint packages/client-runtime/src/jones/activity/reportLanes.ts packages/client-runtime/src/jones/activity/reportLanes.test.ts apps/web/src/lib/backgroundActivityReporter.ts apps/mobile/src/connection/background-activity.ts apps/web/src/lib/backgroundActivityReporter.test.ts apps/mobile/src/connection/background-activity-reporter.test.ts",
         "vp test run apps/server/src/ws.test.ts apps/server/src/environment/DirectEndpoints.test.ts apps/server/src/environment/RemoteOpenTargets.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp lint apps/server/src/ws.ts apps/server/src/ws.test.ts"
+        "vp lint apps/server/src/ws.ts apps/server/src/ws.test.ts",
+        "vp test run packages/client-runtime/src/jones/connection/betterRouteRecovery.test.ts packages/client-runtime/src/connection/resolver.test.ts packages/client-runtime/src/connection/routes.test.ts packages/client-runtime/src/connection/registry.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint packages/client-runtime/src/connection/driver.ts packages/client-runtime/src/connection/registry.ts packages/client-runtime/src/connection/supervisor.ts packages/client-runtime/src/jones/connection/betterRouteRecovery.ts packages/client-runtime/src/jones/connection/betterRouteRecovery.test.ts"
       ]
     },
     {
