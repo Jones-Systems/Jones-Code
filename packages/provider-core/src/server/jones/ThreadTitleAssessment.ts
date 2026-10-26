@@ -1,13 +1,33 @@
 import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 
 export type ThreadTitleVerdict = "sufficient" | "insufficient" | "unknown";
 
-// Missing or malformed quality consumes an opportunity without becoming a pass.
-export const assessmentFields = {
+const assessmentResponse = Schema.Struct({
+  title: Schema.String,
+  needsRefinement: Schema.optional(Schema.Unknown),
   grounded: Schema.optional(Schema.Unknown),
   specific: Schema.optional(Schema.Unknown),
   recognizable: Schema.optional(Schema.Unknown),
-};
+});
+
+const assessmentGeneration = Schema.Struct({
+  title: Schema.String,
+  needsRefinement: Schema.Boolean,
+  grounded: Schema.Boolean,
+  specific: Schema.Boolean,
+  recognizable: Schema.Boolean,
+});
+
+// Provider JSON Schema projection requires typed, required fields. Response decoding
+// remains tolerant: missing or malformed quality consumes an opportunity without a pass.
+export const assessedThreadTitleSchema = Schema.declare(Schema.is(assessmentResponse), {
+  toCodecJson: () =>
+    Schema.link<typeof assessmentResponse.Type>()(
+      assessmentGeneration,
+      SchemaTransformation.passthrough({ strict: false }),
+    ),
+});
 
 export function threadTitleVerdict(result: {
   readonly grounded?: unknown;

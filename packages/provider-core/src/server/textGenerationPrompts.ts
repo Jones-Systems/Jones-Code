@@ -1,5 +1,5 @@
 import * as Schema from "effect/Schema";
-import { assessmentAddendum, assessmentFields } from "./jones/ThreadTitleAssessment.ts";
+import { assessmentAddendum, assessedThreadTitleSchema } from "./jones/ThreadTitleAssessment.ts";
 import * as Effect from "effect/Effect";
 import { limitTitleMessage } from "./threadTitleContext.ts";
 import type { BranchNamingOptions, ChatAttachment } from "@t3tools/contracts";
@@ -483,10 +483,5 @@ export function buildThreadTitlePrompt(input: ThreadTitlePromptInput) {
     needsRefinement: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   });
 
-  const assessedSchema = Schema.Struct({
-    ...outputSchema.fields,
-    ...assessmentFields,
-    needsRefinement: Schema.optional(Schema.Unknown),
-  });
-  return { prompt, outputSchema: input.titleAssessment ? assessedSchema : outputSchema };
+  return { prompt, outputSchema: input.titleAssessment ? assessedThreadTitleSchema : outputSchema };
 }

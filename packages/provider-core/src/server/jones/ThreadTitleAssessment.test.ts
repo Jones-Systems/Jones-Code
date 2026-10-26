@@ -5,12 +5,35 @@ import { ProviderInstanceId } from "@t3tools/contracts";
 import { buildThreadTitlePrompt } from "../textGenerationPrompts.ts";
 import { fromRunner, decodeJsonReply } from "../textGenerationOperations.ts";
 import { threadTitleVerdict } from "./ThreadTitleAssessment.ts";
+import { toJsonSchemaObject } from "../textGenerationUtils.ts";
 
 const decodeAssessment = Schema.decodeSync(
   buildThreadTitlePrompt({ message: "", titleAssessment: true }).outputSchema,
 );
 
 describe("title assessment", () => {
+  it("projects the strict generation schema consumed by Codex and Claude", () => {
+    for (const previousTitle of [undefined, "Old title"]) {
+      const { outputSchema } = buildThreadTitlePrompt({
+        message: "Choose installation updates",
+        previousTitle,
+        titleAssessment: true,
+      });
+      assert.deepEqual(toJsonSchemaObject(outputSchema), {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          needsRefinement: { type: "boolean" },
+          grounded: { type: "boolean" },
+          specific: { type: "boolean" },
+          recognizable: { type: "boolean" },
+        },
+        required: ["title", "needsRefinement", "grounded", "specific", "recognizable"],
+        additionalProperties: false,
+      });
+    }
+  });
+
   it("uses one explicit three-boolean verdict and preserves legacy insufficiency", () => {
     const pass = { grounded: true, specific: true, recognizable: true };
     assert.equal(threadTitleVerdict(pass), "sufficient");
@@ -73,6 +96,34 @@ describe("title assessment", () => {
       });
       assert.equal(result.assessment, "sufficient");
       assert.equal(count, 1);
+    }),
+  );
+
+  it.effect("common decoding preserves unknown quality and unassessed manual responses", () =>
+    Effect.gen(function* () {
+      const input = {
+        cwd: "/synthetic",
+        message: "install",
+        modelSelection: { instanceId: ProviderInstanceId.make("test"), model: "test" },
+      };
+      for (const quality of [
+        {},
+        { needsRefinement: "false", grounded: "true", specific: true, recognizable: true },
+        { grounded: true, specific: null, recognizable: true },
+        { grounded: true, specific: true, recognizable: {} },
+      ]) {
+        const service = fromRunner("test", (request) =>
+          decodeJsonReply(request, "test", JSON.stringify({ title: "Installation", ...quality })),
+        );
+        assert.deepEqual(yield* service.generateThreadTitle({ ...input, titleAssessment: true }), {
+          title: "Installation",
+          assessment: "unknown",
+        });
+      }
+      const manual = fromRunner("test", (request) =>
+        decodeJsonReply(request, "test", '{"title":"Installation"}'),
+      );
+      assert.deepEqual(yield* manual.generateThreadTitle(input), { title: "Installation" });
     }),
   );
 });

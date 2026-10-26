@@ -20,6 +20,10 @@ const modelSelection = createModelSelection(
   [{ id: "reasoningEffort", value: "high" }],
 );
 const encodeReply = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
+const decodeTurnInput = Schema.decodeUnknownEffect(
+  Schema.Struct({ input: Schema.Array(Schema.Struct({ text: Schema.String })) }),
+);
 const titleInput = {
   cwd: "/project/should-not-be-used",
   message: "Fix the login form",
@@ -155,6 +159,10 @@ it.layer(NodeServices.layer)("Muse text generation", (it) => {
             "insufficient",
           ],
           [{ grounded: "yes" }, "unknown"],
+          [
+            { grounded: true, specific: null, recognizable: true, needsRefinement: "false" },
+            "unknown",
+          ],
           [{}, "unknown"],
         ] as const) {
           const test = fixture(finish(encodeReply({ title: "Installation choices", ...quality })));
@@ -163,6 +171,23 @@ it.layer(NodeServices.layer)("Muse text generation", (it) => {
             (yield* service.generateThreadTitle({ ...titleInput, titleAssessment: true }))
               .assessment,
           ).toBe(expected);
+          const turn = vi
+            .mocked(test.host.connection.command)
+            .mock.calls.find(([method]) => method === "turn/start");
+          const { input } = yield* decodeTurnInput(turn?.[1]);
+          const schemaText = input[0]!.text.split("Do not use tools or ask questions.\n")[1]!;
+          expect(yield* decodeJson(schemaText)).toEqual({
+            type: "object",
+            properties: {
+              title: { type: "string" },
+              needsRefinement: { type: "boolean" },
+              grounded: { type: "boolean" },
+              specific: { type: "boolean" },
+              recognizable: { type: "boolean" },
+            },
+            required: ["title", "needsRefinement", "grounded", "specific", "recognizable"],
+            additionalProperties: false,
+          });
           expect(test.host.close).toHaveBeenCalledOnce();
         }
       }),
