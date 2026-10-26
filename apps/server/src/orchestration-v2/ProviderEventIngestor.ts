@@ -815,6 +815,7 @@ export const layer: Layer.Layer<
                 ),
               };
               historicalWrite = eventSink.writeHistoricalTerminal(historicalInput).pipe(
+                retryLockTimeout,
                 Effect.mapError(
                   (cause) =>
                     new ProviderEventPublishError({
@@ -888,7 +889,11 @@ export const layer: Layer.Layer<
                   ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
                   events,
                 })
-                .pipe(retryLockTimeout, Effect.mapError(mapWriteError), Effect.flatMap(retainRejectedTerminal));
+                .pipe(
+                  retryLockTimeout,
+                  Effect.mapError(mapWriteError),
+                  Effect.flatMap(retainRejectedTerminal),
+                );
             }
             const result = yield* eventSink
               .writeIfRunCurrent({

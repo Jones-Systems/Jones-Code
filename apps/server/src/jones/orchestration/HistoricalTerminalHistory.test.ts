@@ -25,10 +25,13 @@ import {
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
+import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as SqlError from "effect/sql/SqlError";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as EventStore from "../../orchestration-v2/EventStore.ts";
@@ -41,7 +44,7 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 import * as ProviderEventOrigin from "@t3tools/provider-core/server/jones/ProviderEventOrigin";
 
 const driver = ProviderDriverKind.make("codex");
-it.effect.each([
+const modes = [
   "current",
   "superseded-same-session",
   "superseded-rebound-session",
@@ -68,7 +71,18 @@ it.effect.each([
   "ordinary-unrelated-successor-race",
   "ordinary-same-session-race",
   "ordinary-same-session-unrelated-race",
-] as const)("admits only exact committed restart terminal history: %s", (mode) => {
+] as const;
+it.effect.each([
+  ...modes.map((mode) => ({ mode, lockFailures: 0 })),
+  ...(
+    [
+      "current",
+      "superseded-rebound-session",
+      "wrong-generation",
+      "ordinary-current-guard-race",
+    ] as const
+  ).flatMap((mode) => [2, 3].map((lockFailures) => ({ mode, lockFailures }))),
+])("restart terminal history: $mode, locks: $lockFailures", ({ mode, lockFailures }) => {
   const ordinaryRace = mode.startsWith("ordinary-");
   const rebindSession =
     mode !== "superseded-same-session" && !mode.startsWith("ordinary-same-session");
@@ -78,13 +92,31 @@ it.effect.each([
   const releaseCommit = Deferred.makeUnsafe<void>();
   const validated = Deferred.makeUnsafe<void>();
   let pauseNextCommit = false;
+  let historicalTransactionPending = false;
+  let historicalWrites = 0;
+  let historicalTransactions = 0;
+  let remainingLockFailures = lockFailures;
+  const lockTimeout = new SqlError.SqlError({
+    reason: new SqlError.LockTimeoutError({ cause: null }),
+  });
+  const published: { readonly id: EventId; readonly sequence: number }[] = [];
   const database =
-    mode === "locator-race"
+    mode === "locator-race" || lockFailures > 0
       ? Layer.effect(
           SqlClient.SqlClient,
           Effect.map(SqlClient.SqlClient, (sql) => {
             const withTransaction: typeof sql.withTransaction = (effect) =>
               Effect.suspend(() => {
+                if (historicalTransactionPending) {
+                  historicalTransactionPending = false;
+                  if (!ordinaryRace || historicalWrites > 1) {
+                    historicalTransactions++;
+                    if (remainingLockFailures > 0) {
+                      remainingLockFailures--;
+                      return Effect.fail(lockTimeout);
+                    }
+                  }
+                }
                 const pause = pauseNextCommit;
                 pauseNextCommit = false;
                 return sql
@@ -106,7 +138,28 @@ it.effect.each([
           }),
         ).pipe(Layer.provide(SqlitePersistence.layerMemory))
       : SqlitePersistence.layerMemory;
-  const stores = Layer.merge(EventStore.layer, ProjectionStore.layer).pipe(
+  const eventStoreLayer = Layer.effect(
+    EventStore.EventStoreV2,
+    Effect.map(EventStore.EventStoreV2, (store) =>
+      EventStore.EventStoreV2.of({
+        ...store,
+        publishCommitted: (events) =>
+          store.publishCommitted(events).pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                published.push(
+                  ...events.map((stored) => ({
+                    id: stored.event.id,
+                    sequence: stored.sequence,
+                  })),
+                );
+              }),
+            ),
+          ),
+      }),
+    ),
+  ).pipe(Layer.provide(EventStore.layer));
+  const stores = Layer.merge(eventStoreLayer, ProjectionStore.layer).pipe(
     Layer.provideMerge(database),
   );
   const sinkLayer = EventSink.layer.pipe(Layer.provide(stores));
@@ -125,7 +178,16 @@ it.effect.each([
       Layer.updateService(EventSink.EventSinkV2, (sink) => ({
         ...sink,
         writeHistoricalTerminal: (input) =>
-          sink.writeHistoricalTerminal!(input).pipe(
+          Effect.suspend(() => {
+            historicalWrites++;
+            historicalTransactionPending = true;
+            return sink.writeHistoricalTerminal!(input);
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                historicalTransactionPending = false;
+              }),
+            ),
             Effect.tap((result) =>
               ordinaryRace && !result.handled
                 ? Deferred.succeed(ordinaryObserved, undefined).pipe(
@@ -584,20 +646,43 @@ it.effect.each([
     ]);
     const outboxBefore = yield* sql`SELECT * FROM orchestration_v2_effect_outbox`;
     const sequence = yield* sink.latestSequence();
-    const stored =
+    const publishedAfter = () =>
+      published.filter((stored) => stored.sequence > sequence).map((stored) => stored.id);
+    const result = yield* (
       ordinaryIngestion !== undefined
-        ? yield* Deferred.succeed(releaseOrdinary, undefined).pipe(
+        ? Deferred.succeed(releaseOrdinary, undefined).pipe(
             Effect.andThen(Fiber.join(ordinaryIngestion)),
           )
         : mode === "locator-race"
-          ? yield* Effect.gen(function* () {
+          ? Effect.gen(function* () {
               const ingestion = yield* ingest.pipe(Effect.forkScoped);
               yield* Deferred.await(validated);
               yield* Deferred.succeed(releaseCommit, undefined);
               yield* Fiber.join(restartFiber!);
               return yield* Fiber.join(ingestion);
             })
-          : yield* ingest;
+          : ingest
+    ).pipe(Effect.exit);
+    const exhausted = lockFailures === 3;
+    if (exhausted) {
+      assert.isTrue(Exit.isFailure(result));
+      const failure = Exit.isFailure(result) ? Cause.squash(result.cause) : undefined;
+      assert.instanceOf(failure, ProviderEventIngestor.ProviderEventPublishError);
+      if (!(failure instanceof ProviderEventIngestor.ProviderEventPublishError))
+        return assert.fail("Expected the historical write's publication error");
+      assert.equal(failure.providerSessionId, providerSessionId);
+      assert.equal(failure.eventCount, 1);
+      assert.instanceOf(failure.cause, EventSink.EventSinkWriteError);
+      assert.strictEqual((failure.cause as EventSink.EventSinkWriteError).cause, lockTimeout);
+    } else {
+      assert.isTrue(Exit.isSuccess(result));
+    }
+    const stored = Exit.isSuccess(result) ? result.value : [];
+    if (lockFailures > 0) {
+      assert.equal(remainingLockFailures, 0);
+      assert.equal(historicalTransactions, 3);
+      assert.equal(historicalWrites, ordinaryRace ? 4 : 3);
+    }
     const after = yield* projections.getThreadRecords(ids.threadId, [
       "runs",
       "attempts",
@@ -614,10 +699,15 @@ it.effect.each([
     assert.deepEqual(after.runtimeRequests, before.runtimeRequests);
     assert.deepEqual(after.turnItems, before.turnItems);
     assert.deepEqual(yield* sql`SELECT * FROM orchestration_v2_effect_outbox`, outboxBefore);
-    assert.equal(after.providerTurns[0]?.status, accepts ? "interrupted" : "running");
-    assert.equal(stored.length, accepts ? 1 : 0);
-    assert.equal((yield* sink.latestSequence()) - sequence, accepts ? 1 : 0);
-    if (mode === "duplicate") {
+    const admitted = accepts && !exhausted;
+    assert.equal(after.providerTurns[0]?.status, admitted ? "interrupted" : "running");
+    assert.equal(stored.length, admitted ? 1 : 0);
+    assert.equal((yield* sink.latestSequence()) - sequence, admitted ? 1 : 0);
+    assert.deepEqual(
+      publishedAfter(),
+      stored.map((stored) => stored.event.id),
+    );
+    if (mode === "duplicate" || (lockFailures === 2 && admitted && mode !== "current")) {
       const repeated = yield* ingestor.ingestNormalized({
         providerSessionId: providerSessionId,
         providerInstanceId,
@@ -628,6 +718,7 @@ it.effect.each([
       });
       assert.equal(repeated.length, 0);
       assert.equal((yield* sink.latestSequence()) - sequence, 1);
+      assert.equal(publishedAfter().length, 1);
     }
   }).pipe(Effect.provide(testLayer), Effect.scoped);
 });
