@@ -101,7 +101,9 @@ it answers the refusing request, before another request or stage retirement, and
 startup. A rejected operation never starts and does not block the next one. Receipts
 are published whole, through an exclusive hard link from a temporary file. A failed
 outcome without a valid no-effect settlement blocks further replacement. A
-malformed, unreadable or over-4,096-entry receipt store also refuses replacement.
+malformed or unreadable receipt store also refuses replacement. The launcher validates
+the complete retained operation history with bounded per-entry memory rather than
+limiting the number of terminal receipts.
 Readback of an operation and observation of the currently installed source are
 separate checks.
 
@@ -149,7 +151,9 @@ Without launcher support, the client recommends a launcher refresh rather than
 performing one. Retired attempts use the separate operator-only
 `/api/jones-updates/record-retired` endpoint requiring `environment:maintain`, not the normal UI. Its
 `retired-exception` tombstone binds the retained retirement evidence and reserves
-the old ID permanently. Deleting a receipt would destroy that replay protection.
+the old ID permanently. Readback preserves the retired operation's accepted-failure
+identity after the current update changes, without authorizing a retry. Deleting a
+receipt would destroy that replay protection.
 
 ## Admission fence
 
@@ -192,7 +196,8 @@ the laptop holds instead of going back.
 
 The host prepares the laptop's source itself and retires any other unaccepted
 stage first. It does not prefetch an uncommitted laptop build: every retirement
-adds a launcher revocation receipt, and the launcher refuses more than 4,096.
+adds a permanent launcher revocation receipt. Revocation checks validate the full
+history with bounded per-entry memory; retained history still costs linear file work.
 Campaigns still stage the laptop's next build early on hosts that do not follow,
 but preparing it does not supersede hosts still catching up to the committed
 build; the next commit retires them. Automatic activation, including a campaign
@@ -268,7 +273,7 @@ not a CPU cap.
 
 A newer build replaces an unaccepted stage only through the helper's validated
 discard. Unlike a host retirement, a desktop discard writes no launcher revocation
-receipt, so the 4,096-receipt limit does not bound it; disk does. The replaced
+receipt. Disk capacity still bounds retained payloads. The replaced
 handle is recorded before the discard. After a proven discard, the worker removes
 that handle's payload unless any selection, attempt, transaction or retired
 preparation names it, and it removes the completion index before the tree. Two

@@ -169,15 +169,7 @@ function receiptPath(baseDir: string, operationId: string, outcome = false): str
 }
 
 async function readJson(file: string): Promise<unknown | undefined> {
-  try {
-    const stat = await NodeFSP.lstat(file);
-    if (!stat.isFile() || stat.size > 64 * 1024)
-      throw new Error("Invalid update operation receipt.");
-    return JSON.parse(await NodeFSP.readFile(file, "utf8"));
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw cause;
-  }
+  return (await readReceiptSnapshot(file))?.value;
 }
 
 async function syncDirectory(directory: string): Promise<void> {
@@ -388,6 +380,30 @@ export async function reconcileUpdateOperation(
     baseDir = await NodeFSP.realpath(baseDir);
     const reserved = await readOperationReservation(baseDir, operationId);
     if (reserved === undefined) {
+      const retained = await readVerifiedSettlement(baseDir, operationId);
+      if (retained !== undefined) {
+        if (
+          retained.receipt.basis !== "retired-exception" ||
+          (current?.id === operationId &&
+            (current.status !== "failed" ||
+              current.qualified === undefined ||
+              !sameOperationBinding(
+                retained.reserved.binding,
+                operationBinding(current.qualified),
+              )))
+        )
+          throw new Error("Native state differs from the retired update operation.");
+        return {
+          state: "blocked",
+          operationId,
+          binding: publicBinding(retained.reserved.binding),
+          updateId: operationId,
+          settlement: {
+            basis: retained.receipt.basis,
+            recordedAt: retained.receipt.evidence.recordedAt,
+          },
+        };
+      }
       return current?.id === operationId
         ? {
             state: "blocked",
@@ -440,9 +456,7 @@ export async function reconcileUpdateOperation(
   }
 }
 
-async function listReceipts(
-  baseDir: string,
-): Promise<{ readonly reservations: Set<string>; readonly outcomes: Set<string> } | undefined> {
+async function* operationReceipts(baseDir: string) {
   let directory: Awaited<ReturnType<typeof NodeFSP.opendir>>;
   try {
     const path = NodePath.join(baseDir, "runtime", "jones-update-operations");
@@ -450,22 +464,29 @@ async function listReceipts(
       throw new Error("Invalid native receipt directory.");
     directory = await NodeFSP.opendir(path);
   } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return;
     throw cause;
   }
-  const reservations = new Set<string>();
-  const outcomes = new Set<string>();
-  let count = 0;
   for await (const entry of directory) {
-    if (++count > 4096) throw new Error("Native operation receipt inspection limit exceeded.");
     const match = /^([a-f0-9-]+)(\.outcome)?\.json$/.exec(entry.name);
     if (!entry.isFile() || match === null || !isUpdateOperationId(match[1]!))
       throw new Error("Unexpected native operation receipt entry.");
-    (match[2] === undefined ? reservations : outcomes).add(match[1]!);
+    const id = match[1]!;
+    // Probe the companion rather than retaining every historical ID. Outcomes are
+    // checked even if their reservation was already visited, including orphan entries.
+    const reserved = await readOperationReservation(baseDir, id);
+    if (reserved === undefined) throw new Error("Native operation outcome has no reservation.");
+    const outcome = await readOperationOutcome(baseDir, reserved);
+    if (match[2] !== undefined && outcome === undefined)
+      throw new Error("Native operation outcome disappeared during inspection.");
+    if (match[2] === undefined) yield { reserved, outcome };
   }
-  if ([...outcomes].some((id) => !reservations.has(id)))
-    throw new Error("Native operation outcome has no reservation.");
-  return { reservations, outcomes };
+}
+
+async function validateOperationReceipts(baseDir: string): Promise<void> {
+  for await (const _receipt of operationReceipts(baseDir)) {
+    // Exhaust the read-only traversal before any settlement mutation.
+  }
 }
 
 /**
@@ -480,13 +501,15 @@ export async function settleAbandonedUpdateOperations(
 ): Promise<void> {
   baseDir = await NodeFSP.realpath(baseDir);
   const receipts = NodePath.join(baseDir, "runtime", "jones-update-operations");
+  await validateOperationReceipts(baseDir);
   // No receipt is being written while the caller holds the queue; drop a crashed write's leftovers.
   await NodeFSP.rm(stagingDirectory(receipts), { recursive: true, force: true });
-  const listed = await listReceipts(baseDir);
-  if (listed === undefined) return;
-  for (const id of listed.reservations)
-    if (!listed.outcomes.has(id) && current?.id !== id)
-      await rejectUpdateOperation(baseDir, id, current, ABANDONED);
+  // This publication traversal is not a stable snapshot: it may also encounter
+  // outcomes it appends. Only reservations cause work; admission uses a fresh sweep.
+  for await (const { reserved, outcome } of operationReceipts(baseDir))
+    if (outcome === undefined && current?.id !== reserved.operationId)
+      await rejectUpdateOperation(baseDir, reserved.operationId, current, ABANDONED);
+  await validateOperationReceipts(baseDir);
 }
 
 /**
@@ -528,22 +551,27 @@ export async function assertNoUnreconciledUpdateOperations(
   current: ServiceUpdateRecord | undefined,
 ): Promise<void> {
   baseDir = await NodeFSP.realpath(baseDir);
-  const listed = await listReceipts(baseDir);
-  if (listed === undefined) return;
-  for (const id of listed.reservations) {
-    const receipt = await reconcileUpdateOperation(baseDir, id, current);
-    if (receipt.state === "blocked" && receipt.updateId === id && receipt.binding !== undefined) {
-      if (receipt.settlement !== undefined) continue;
-      // Native failure alone remains proved, but a contradictory/corrupt archive is a durability hold.
-      const reserved = await readOperationReservation(baseDir, id);
-      if (reserved === undefined) throw new Error("Update operation reservation disappeared.");
-      const outcome = await readOperationOutcome(baseDir, reserved);
-      if (outcome !== undefined && outcome.status !== "failed")
-        throw new Error("Native failure conflicts with the durable update outcome.");
-      throw new FailedOperationUnsettledError(id);
+  try {
+    for await (const { reserved, outcome } of operationReceipts(baseDir)) {
+      const id = reserved.operationId;
+      const receipt = await reconcileUpdateOperation(baseDir, id, current);
+      if (receipt.state === "blocked" && receipt.updateId === id && receipt.binding !== undefined) {
+        if (receipt.settlement !== undefined) continue;
+        // Native failure alone remains proved, but a contradictory/corrupt archive is a durability hold.
+        if (outcome !== undefined && outcome.status !== "failed")
+          throw new Error("Native failure conflicts with the durable update outcome.");
+        throw new FailedOperationUnsettledError(id);
+      }
+      if (!["committed", "rolled-back", "rejected"].includes(receipt.state))
+        throw new Error(
+          "A retained native operation requires reconciliation before another update.",
+        );
     }
-    if (!["committed", "rolled-back", "rejected"].includes(receipt.state))
-      throw new Error("A retained native operation requires reconciliation before another update.");
+  } catch (cause) {
+    if (cause instanceof FailedOperationUnsettledError) throw cause;
+    throw new Error("A retained native operation requires reconciliation before another update.", {
+      cause,
+    });
   }
 }
 
@@ -813,6 +841,32 @@ function retiredParts(value: unknown): string[] | undefined {
   return parts;
 }
 
+async function verifiedRetiredEvidence(input: {
+  readonly baseDir: string;
+  readonly operationId: string;
+  readonly retiredLocation: string;
+}) {
+  const baseDir = await NodeFSP.realpath(input.baseDir);
+  const parts = retiredParts(input.retiredLocation);
+  if (parts === undefined || !isUpdateOperationId(input.operationId))
+    throw new Error("Invalid retired path.");
+  if (!(await realDirectory(NodePath.join(baseDir, "runtime"))))
+    throw new Error("Missing runtime evidence directory.");
+  await realDirectory(NodePath.dirname(receiptPath(baseDir, input.operationId)));
+  if (
+    (await readReceiptSnapshot(receiptPath(baseDir, input.operationId))) !== undefined ||
+    (await readReceiptSnapshot(receiptPath(baseDir, input.operationId, true))) !== undefined
+  )
+    throw new Error("Retired evidence still has a live ledger entry.");
+  let directory = NodePath.join(baseDir, "runtime");
+  if (!(await realDirectory(directory))) throw new Error("Missing runtime evidence directory.");
+  for (const part of parts) {
+    directory = NodePath.join(directory, part);
+    if (!(await realDirectory(directory))) throw new Error("Missing retired evidence directory.");
+  }
+  return failedEvidence(baseDir, input.operationId, directory);
+}
+
 /** Retired directories retain the original UUID reservation and UUID.outcome filenames. */
 export async function verifyRetiredUpdateOperation(input: {
   readonly baseDir: string;
@@ -823,29 +877,7 @@ export async function verifyRetiredUpdateOperation(input: {
   | { readonly result: "refused"; readonly reason: "retired-evidence-mismatch" }
 > {
   try {
-    const baseDir = await NodeFSP.realpath(input.baseDir);
-    const parts = retiredParts(input.retiredLocation);
-    if (parts === undefined || !isUpdateOperationId(input.operationId))
-      throw new Error("Invalid retired path.");
-    if (!(await realDirectory(NodePath.join(baseDir, "runtime"))))
-      throw new Error("Missing runtime evidence directory.");
-    await realDirectory(NodePath.dirname(receiptPath(baseDir, input.operationId)));
-    if (
-      (await readReceiptSnapshot(receiptPath(baseDir, input.operationId))) !== undefined ||
-      (await readReceiptSnapshot(receiptPath(baseDir, input.operationId, true))) !== undefined
-    )
-      throw new Error("Retired evidence still has a live ledger entry.");
-    let directory = NodePath.join(baseDir, "runtime");
-    if (!(await realDirectory(directory))) throw new Error("Missing runtime evidence directory.");
-    for (const part of parts) {
-      directory = NodePath.join(directory, part);
-      if (!(await realDirectory(directory))) throw new Error("Missing retired evidence directory.");
-    }
-    const { reservationSha256, outcomeSha256 } = await failedEvidence(
-      baseDir,
-      input.operationId,
-      directory,
-    );
+    const { reservationSha256, outcomeSha256 } = await verifiedRetiredEvidence(input);
     return {
       result: "verified",
       retiredLocation: input.retiredLocation,
@@ -860,41 +892,49 @@ export async function verifyRetiredUpdateOperation(input: {
 async function validateSettlement(
   baseDir: string,
   receipt: UpdateOperationSettlement,
-): Promise<void> {
-  const evidence =
-    receipt.basis === "retired-exception"
-      ? await verifyRetiredUpdateOperation({
-          baseDir,
-          operationId: receipt.operationId,
-          retiredLocation: receipt.evidence.retiredLocation,
-        })
-      : await failedEvidence(baseDir, receipt.operationId);
+): Promise<OperationReservation> {
+  let evidence: Awaited<ReturnType<typeof failedEvidence>>;
+  try {
+    evidence =
+      receipt.basis === "retired-exception"
+        ? await verifiedRetiredEvidence({
+            baseDir,
+            operationId: receipt.operationId,
+            retiredLocation: receipt.evidence.retiredLocation,
+          })
+        : await failedEvidence(baseDir, receipt.operationId);
+  } catch {
+    throw new Error("Update settlement digests cannot be verified against retained evidence.");
+  }
   if (
-    ("result" in evidence && evidence.result !== "verified") ||
-    !("reservationSha256" in evidence) ||
     evidence.reservationSha256 !== receipt.reservationSha256 ||
     evidence.outcomeSha256 !== receipt.outcomeSha256
   )
     throw new Error("Update settlement digests differ from retained evidence.");
   if (
     receipt.basis !== "retired-exception" &&
-    "reserved" in evidence &&
     (receipt.evidence.activeVersion !== evidence.reserved.binding.currentVersion ||
       receipt.evidence.activeSourceSha !== evidence.reserved.binding.expectedInstalledSource)
   )
     throw new Error("Update settlement active identity differs from its reservation.");
+  return evidence.reserved;
+}
+
+async function readVerifiedSettlement(baseDir: string, operationId: string) {
+  baseDir = await NodeFSP.realpath(baseDir);
+  const raw = await readSettlementFile(baseDir, operationId);
+  if (raw === undefined) return undefined;
+  const receipt = decodeSettlement(raw.value, operationId);
+  // The binding and digests come from the same bounded reads, never a second copy.
+  const reserved = await validateSettlement(baseDir, receipt);
+  return { receipt, reserved };
 }
 
 export async function readUpdateOperationSettlement(
   baseDir: string,
   operationId: string,
 ): Promise<UpdateOperationSettlement | undefined> {
-  baseDir = await NodeFSP.realpath(baseDir);
-  const raw = await readSettlementFile(baseDir, operationId);
-  if (raw === undefined) return undefined;
-  const receipt = decodeSettlement(raw.value, operationId);
-  await validateSettlement(baseDir, receipt);
-  return receipt;
+  return (await readVerifiedSettlement(baseDir, operationId))?.receipt;
 }
 
 /** Caller proves the pre-trial cleanup and holds the launcher's transition/ownership scope. */
