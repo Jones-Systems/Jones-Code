@@ -123,11 +123,20 @@ const make = Effect.gen(function* () {
       }).pipe(
         Effect.flatMap(() => Effect.fail(new Evidence.RollupError({ code: "provider_timeout" }))),
       );
+    const authorize = Effect.fn("RollupApplication.authorize")(function* () {
+      if (!(yield* store.verifyAdmission(claim.manifest))) return false;
+      const budget = Math.min(options.provider_timeout_ms, yield* remaining());
+      if (budget <= 0) return yield* timeout();
+      const authorization = yield* evidence
+        .verifyCurrentAuthorization(claim.manifest)
+        .pipe(Effect.forkDetach);
+      return yield* Fiber.join(authorization).pipe(
+        Effect.timeoutOrElse({ duration: budget, orElse: timeout }),
+        Effect.ensuring(Fiber.interrupt(authorization).pipe(Effect.forkDetach, Effect.asVoid)),
+      );
+    });
     const work = Effect.gen(function* () {
-      if (
-        !(yield* store.verifyAdmission(claim.manifest)) ||
-        !(yield* evidence.verifyCurrentAuthorization(claim.manifest))
-      )
+      if (!(yield* authorize()) || !(yield* store.verifyAdmission(claim.manifest)))
         return yield* new Evidence.RollupError({ code: "input_unavailable" });
       if (
         claim.manifest.sources.reduce(
@@ -162,10 +171,7 @@ const make = Effect.gen(function* () {
         );
         return Generation.createProviderInput(claim.manifest, inputs);
       }, "input_unavailable");
-      if (
-        !(yield* store.verifyAdmission(claim.manifest)) ||
-        !(yield* evidence.verifyCurrentAuthorization(claim.manifest))
-      )
+      if (!(yield* authorize()) || !(yield* store.verifyAdmission(claim.manifest)))
         return yield* new Evidence.RollupError({ code: "input_unavailable" });
       budget = Math.min(options.provider_timeout_ms, yield* remaining());
       if (budget <= 0) return yield* timeout();
@@ -180,11 +186,6 @@ const make = Effect.gen(function* () {
       );
       if ((yield* remaining()) <= 0) return yield* timeout();
       stage = "input_unavailable";
-      if (
-        !(yield* store.verifyAdmission(claim.manifest)) ||
-        !(yield* evidence.verifyCurrentAuthorization(claim.manifest))
-      )
-        return yield* new Evidence.RollupError({ code: "input_unavailable" });
       const version = yield* store.nextRollupVersion(claim),
         at = yield* now();
       const summary = yield* Evidence.attempt(
@@ -198,7 +199,11 @@ const make = Effect.gen(function* () {
           }),
         "provider_failure",
       );
-      yield* store.completeClaim(claim, summary, at);
+      budget = Math.min(options.provider_timeout_ms, yield* remaining());
+      if (budget <= 0) return yield* timeout();
+      yield* store
+        .completeClaim(claim, summary, at)
+        .pipe(Effect.timeoutOrElse({ duration: budget, orElse: timeout }));
       return {
         ...base,
         status: "published" as const,

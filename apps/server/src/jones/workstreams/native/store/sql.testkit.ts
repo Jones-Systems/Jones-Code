@@ -10,6 +10,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as ServerSecretStore from "../../../../auth/ServerSecretStore.ts";
 import migration from "../../../persistence/Migrations/125_JonesWorkstreamsNative.ts";
+import rollupAttemptsMigration from "../../../persistence/Migrations/127_JonesWorkstreamsRollupAttempts.ts";
 import * as KeyProvider from "../crypto/keyProvider.ts";
 import * as Envelope from "../crypto/envelope.ts";
 import * as IdentityIndex from "../crypto/identityIndex.ts";
@@ -72,6 +73,7 @@ export const testLayer = (options: { filename?: string; keys?: Map<string, Uint8
 };
 export const seed = Effect.gen(function* () {
   yield* migration;
+  yield* rollupAttemptsMigration;
   const registry = yield* RegistryStore.RegistryStore;
   yield* registry.initialize({
     ...scope,

@@ -204,6 +204,8 @@ function cpRow(
     else if (k === "permissions" || k === "workstream_ids") row[k] = JSON.parse(String(data[k]));
     else if (k === "effect" && name === "workstream_external_reservations")
       row[k] = cpReservationEffect(data[k]);
+    else if (k === "fence" && name === "workstream_rollup_queue")
+      row[k] = data.attempt_count ?? data.fence;
     else if (Object.hasOwn(data, k)) row[k] = data[k];
     else if (k === "created_by")
       row[k] = (value.created_by as { principal_id: string }).principal_id;
@@ -485,6 +487,7 @@ export const prepareReverse = Effect.fn("WorkstreamsTransition.prepareReverse")(
           } else if (canonical(current.row) !== canonical({ ...target.data })) {
             for (const k of Object.keys(row))
               if (Object.hasOwn(current.row, k)) row[k] = current.row[k];
+            row.fence = current.row.attempt_count ?? current.row.fence;
           }
         }
         if (source.class === "workstream_external_reservations")

@@ -13,6 +13,7 @@ import * as Exit from "effect/Exit";
 import * as SqlClient from "effect/sql/SqlClient";
 import vectors from "./fixtures/v1/vectors.json" with { type: "json" };
 import migration from "../../../persistence/Migrations/125_JonesWorkstreamsNative.ts";
+import rollupAttemptsMigration from "../../../persistence/Migrations/127_JonesWorkstreamsRollupAttempts.ts";
 import { testLayer } from "../store/sql.testkit.ts";
 import * as Receipts from "../store/receiptStore.ts";
 import { canonical, digest } from "./canonical.ts";
@@ -52,6 +53,7 @@ const prepare = (text = compatibleFull, mapped = true, home = "synthetic.home") 
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* migration;
+    yield* rollupAttemptsMigration;
     yield* sql`INSERT INTO jones_workstreams_keys(key_id,registry_instance_id,scope,state,created_at) VALUES ('synthetic-transition-key',${registry},'home','active','2026-10-25T12:00:00.000Z')`;
     const header = parseSnapshot(text).header;
     return yield* plan({
@@ -510,8 +512,8 @@ it.effect(
       yield* registryStore.advance(scope, { server_generation: 7, registry_version: 7 });
       const sql = yield* SqlClient.SqlClient;
       yield* sql`UPDATE jones_workstreams_rollup_queue SET state='dead_letter', failure_code='published', failed_at='2026-10-25T12:10:00.000Z' WHERE workstream_id='workstream:0'`;
-      yield* sql`INSERT INTO jones_workstreams_rollup_queue SELECT registry_instance_id,owner_id,'workstream:native-published',manifest_sha256,state,attempt_id,fence,lease_expires_at,failure_code,failed_at,updated_at FROM jones_workstreams_rollup_queue WHERE workstream_id='workstream:0'`;
-      yield* sql`INSERT INTO jones_workstreams_rollup_queue SELECT registry_instance_id,owner_id,'workstream:native-dirty',manifest_sha256,'pending',NULL,fence,NULL,NULL,NULL,updated_at FROM jones_workstreams_rollup_queue WHERE workstream_id='workstream:0'`;
+      yield* sql`INSERT INTO jones_workstreams_rollup_queue(registry_instance_id,owner_id,workstream_id,manifest_sha256,state,attempt_id,fence,lease_expires_at,failure_code,failed_at,updated_at) SELECT registry_instance_id,owner_id,'workstream:native-published',manifest_sha256,state,attempt_id,fence,lease_expires_at,failure_code,failed_at,updated_at FROM jones_workstreams_rollup_queue WHERE workstream_id='workstream:0'`;
+      yield* sql`INSERT INTO jones_workstreams_rollup_queue(registry_instance_id,owner_id,workstream_id,manifest_sha256,state,attempt_id,fence,lease_expires_at,failure_code,failed_at,updated_at) SELECT registry_instance_id,owner_id,'workstream:native-dirty',manifest_sha256,'pending',NULL,fence,NULL,NULL,NULL,updated_at FROM jones_workstreams_rollup_queue WHERE workstream_id='workstream:0'`;
       yield* sql`UPDATE jones_workstreams_registries SET state='fenced'`;
       const input = {
         snapshot_id: "80000000-0000-4000-8000-000000000001",

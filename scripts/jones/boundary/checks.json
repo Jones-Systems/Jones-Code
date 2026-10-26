@@ -3562,7 +3562,9 @@
         "apps/server/src/jones/workstreams/native/runtime/admission.test.ts",
         "apps/server/src/jones/workstreams/native/runtime/cli.test.ts",
         "apps/server/src/jones/workstreams/native/runtime/entry.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/startup.test.ts"
+        "apps/server/src/jones/workstreams/native/runtime/startup.test.ts",
+        "apps/server/src/jones/workstreams/native/rollups/store.test.ts",
+        "apps/server/src/jones/persistence/Migrations/127_JonesWorkstreamsRollupAttempts.test.ts"
       ],
       "commands": [
         "vp test run apps/server/src/jones/workstreams/native/compat/http.test.ts packages/contracts/src/jones/workstreamsHttp.test.ts apps/server/src/jones/workstreams/native/conformance/httpParity.test.ts apps/server/src/workstreams/http.test.ts --maxWorkers=1 --no-file-parallelism",
@@ -3578,7 +3580,8 @@
         "vp test run packages/client-runtime/src/state/workstreams apps/mobile/src/features/workstreams apps/web/src/jones/workstreams apps/web/src/components/workstreams apps/web/src/state/workstreams.test.ts --maxWorkers=1 --no-file-parallelism",
         "tsc-rs --noEmit -p packages/client-runtime/tsconfig.json",
         "tsc-rs --noEmit -p apps/web/tsconfig.json",
-        "tsc-rs --noEmit -p apps/mobile/tsconfig.json"
+        "tsc-rs --noEmit -p apps/mobile/tsconfig.json",
+        "vp test run apps/server/src/jones/persistence/Migrations/127_JonesWorkstreamsRollupAttempts.test.ts apps/server/src/jones/workstreams/native/rollups/store.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {

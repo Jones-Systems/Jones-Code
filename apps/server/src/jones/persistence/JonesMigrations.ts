@@ -52,6 +52,7 @@ import JonesMigration0123 from "./Migrations/123_JonesWorkspaceLifecycle.ts";
 import JonesMigration0124 from "./Migrations/124_JonesTaskContinuations.ts";
 import JonesMigration0125 from "./Migrations/125_JonesWorkstreamsNative.ts";
 import JonesMigration0126 from "./Migrations/126_JonesWorkstreamsSourceEnrollments.ts";
+import JonesMigration0127 from "./Migrations/127_JonesWorkstreamsRollupAttempts.ts";
 
 export const jonesMigrationEntries = [
   [1, "WorktreeOwnershipLeases", JonesMigration0001],
@@ -86,6 +87,7 @@ export const jonesMigrationEntries = [
   [124, "TaskContinuations", JonesMigration0124],
   [125, "WorkstreamsNative", JonesMigration0125],
   [126, "WorkstreamsSourceEnrollments", JonesMigration0126],
+  [127, "WorkstreamsRollupAttempts", JonesMigration0127],
 ] as const;
 
 export const runMigrations = Effect.fn("JonesMigrations.runMigrations")(function* () {

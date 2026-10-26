@@ -5,6 +5,8 @@ import * as Layer from "effect/Layer";
 import * as Fixture from "../store/sql.testkit.ts";
 import { NativeHome } from "../mode/authorityMode.ts";
 import * as Bindings from "./bindings.ts";
+import * as Registry from "../store/registryStore.ts";
+import * as NativeSql from "../store/sql.ts";
 import { syntheticFixture } from "./synthetic.ts";
 const home = {
   ...Fixture.scope,
@@ -46,4 +48,42 @@ it.effect("rejects an overlapping active source mapping for another Workstream",
       Exit.isFailure(yield* Effect.exit(b.put({ ...f.binding, workstream_id: "ws:other" }, null))),
     ).toBe(true);
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "advances native context atomically for revisions and rolls back failed binding changes",
+  () =>
+    Effect.gen(function* () {
+      yield* Fixture.seed;
+      const bindings = yield* Bindings.Bindings,
+        registry = yield* Registry.RegistryStore,
+        db = yield* NativeSql.NativeSql,
+        f = syntheticFixture();
+      expect((yield* registry.context(Fixture.scope))?.registry_version).toBe(0);
+      yield* bindings.put(f.binding, null);
+      expect((yield* registry.context(Fixture.scope))?.registry_version).toBe(1);
+      const changed = {
+        ...f.binding,
+        binding_version: 2,
+        selection: { kind: "project" as const, project_id: "project:other", project_version: 2 },
+      };
+      expect(
+        Exit.isFailure(
+          yield* Effect.exit(
+            db.transaction(
+              Fixture.scope,
+              bindings.put(changed, 1).pipe(Effect.andThen(Effect.fail("synthetic rollback"))),
+            ),
+          ),
+        ),
+      ).toBe(true);
+      expect(yield* bindings.list()).toEqual([f.binding]);
+      expect((yield* registry.context(Fixture.scope))?.registry_version).toBe(1);
+      yield* bindings.put(changed, 1);
+      expect((yield* registry.context(Fixture.scope))?.registry_version).toBe(2);
+      expect(
+        Exit.isFailure(yield* Effect.exit(bindings.put({ ...changed, binding_version: 3 }, 1))),
+      ).toBe(true);
+      expect((yield* registry.context(Fixture.scope))?.registry_version).toBe(2);
+    }).pipe(Effect.provide(layer)),
 );

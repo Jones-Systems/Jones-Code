@@ -514,6 +514,7 @@ it.effect("migration 107 backfills only complete attributable native settlement 
       [124, "TaskContinuations"],
       [125, "WorkstreamsNative"],
       [126, "WorkstreamsSourceEnrollments"],
+      [127, "WorkstreamsRollupAttempts"],
     ]);
     const proofs = yield* sql<{
       native_command_id: string;

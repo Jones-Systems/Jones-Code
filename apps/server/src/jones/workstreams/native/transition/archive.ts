@@ -388,6 +388,7 @@ export const targetsFor = Effect.fn("WorkstreamsTransition.targetsFor")(function
         ]),
         state: running ? "pending" : String(r.state),
         fence: Number(r.fence) + (running ? 1 : 0),
+        attempt_count: Number(r.fence),
         attempt_id: null,
         lease_expires_at: null,
       });

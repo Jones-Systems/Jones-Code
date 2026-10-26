@@ -149,6 +149,8 @@ const make = Effect.gen(function* () {
               },
               expectedVersion,
             );
+            // Bindings are native authority: every committed revision fences older manifests.
+            yield* registry.advance(scope, context);
           }),
         )
         .pipe(Effect.mapError(() => new RollupError({ code: "content_unavailable" }))),

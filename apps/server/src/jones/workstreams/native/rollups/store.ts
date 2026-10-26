@@ -1,6 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Allocate durable claim identities within the writer transaction.
 import * as NodeCrypto from "node:crypto";
 import * as DateTime from "effect/DateTime";
+import * as Clock from "effect/Clock";
+import * as Fiber from "effect/Fiber";
 import { WorkstreamOwnerGrant } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -90,6 +92,7 @@ interface QueueRow {
   readonly state: string;
   readonly attempt_id: string | null;
   readonly fence: number;
+  readonly attempt_count: number;
   readonly lease_expires_at: string | null;
   readonly failure_code: string | null;
 }
@@ -104,7 +107,8 @@ const make = Effect.gen(function* () {
     registry = yield* RegistryStore.RegistryStore,
     provider = yield* Evidence.RollupEvidenceProvider,
     bindings = yield* Bindings.Bindings,
-    options = yield* StoreOptions;
+    options = yield* StoreOptions,
+    clock = yield* Clock.Clock;
   const scope = { registry_instance_id: home.registry_instance_id, owner_id: home.owner_id };
   yield* Evidence.attempt(() =>
     Evidence.requireRollup(
@@ -237,7 +241,7 @@ const make = Effect.gen(function* () {
           if (
             old.state === "dead_letter" &&
             old.failure_code === "input_unavailable" &&
-            old.fence < 3
+            old.attempt_count < 3
           )
             yield* sql`UPDATE jones_workstreams_rollup_queue SET state='pending',attempt_id=NULL,lease_expires_at=NULL,failure_code=NULL,failed_at=NULL,updated_at=${now}
           WHERE registry_instance_id=${scope.registry_instance_id} AND owner_id=${scope.owner_id} AND workstream_id=${m.workstream_id}`;
@@ -264,7 +268,7 @@ const make = Effect.gen(function* () {
           });
           return "enqueued" as const;
         }
-        yield* sql`UPDATE jones_workstreams_rollup_queue SET manifest_sha256=${m.manifest_sha256},state='pending',attempt_id=NULL,lease_expires_at=NULL,
+        yield* sql`UPDATE jones_workstreams_rollup_queue SET manifest_sha256=${m.manifest_sha256},attempt_count=${old.failure_code === "published" ? 0 : old.attempt_count},state='pending',attempt_id=NULL,lease_expires_at=NULL,
       failure_code=NULL,failed_at=NULL,updated_at=${now} WHERE registry_instance_id=${scope.registry_instance_id} AND owner_id=${scope.owner_id} AND workstream_id=${m.workstream_id}`;
         return "coalesced" as const;
       }),
@@ -298,7 +302,7 @@ const make = Effect.gen(function* () {
           fence: row.fence + 1,
           lease_expires_at: DateTime.formatIso(DateTime.makeUnsafe(Date.parse(now) + leaseMs)),
         };
-        yield* sql`UPDATE jones_workstreams_rollup_queue SET state='running',attempt_id=${c.attempt_id},fence=${c.fence},lease_expires_at=${c.lease_expires_at},updated_at=${now}
+        yield* sql`UPDATE jones_workstreams_rollup_queue SET state='running',attempt_count=attempt_count+1,attempt_id=${c.attempt_id},fence=${c.fence},lease_expires_at=${c.lease_expires_at},updated_at=${now}
       WHERE registry_instance_id=${scope.registry_instance_id} AND owner_id=${scope.owner_id} AND workstream_id=${row.workstream_id} AND state='pending'`;
         return Evidence.immutable(c);
       }),
@@ -410,51 +414,80 @@ const make = Effect.gen(function* () {
   );
   const completeClaim = Effect.fn("RollupStore.completeClaim")(
     (c: Evidence.Claim, s: Evidence.Summary, now: string) =>
-      atomic(
-        Effect.gen(function* () {
-          yield* Evidence.attempt(() => {
-            timestamp(now);
-            validateSummary(c.manifest, s);
-          });
-          yield* assertClaim(c);
-          const context = yield* active();
-          const record = (yield* sql<{
-            version: number;
-          }>`SELECT version FROM jones_workstreams_records WHERE registry_instance_id=${scope.registry_instance_id} AND owner_id=${scope.owner_id} AND workstream_id=${c.workstream_id}`)[0];
-          if (
-            Date.parse(now) >= Date.parse(c.lease_expires_at) ||
-            context.registry_version !== c.manifest.registry_version ||
-            record?.version !== c.manifest.workstream_version ||
-            s.rollup_version !== (yield* nextRollupVersion(c))
-          )
-            return yield* new Evidence.RollupError({ code: "stale_claim" });
-          if (
-            !(yield* verifyAdmission(c.manifest)) ||
-            !(yield* provider.verifyCurrentAuthorization(c.manifest))
-          )
-            return yield* new Evidence.RollupError({ code: "input_unavailable" });
-          const state = summaryState(c.manifest);
-          yield* registry.put(
-            scope,
-            "rollup_summaries",
-            {
-              metadata: {
-                workstream_id: s.workstream_id,
-                rollup_version: s.rollup_version,
-                manifest_sha256: s.manifest_sha256,
-                output_sha256: s.output_sha256,
-                generated_at: s.generated_at,
-                ...state,
+      Effect.gen(function* () {
+        yield* atomic(
+          Effect.gen(function* () {
+            yield* Evidence.attempt(() => {
+              timestamp(now);
+              validateSummary(c.manifest, s);
+            });
+            yield* assertClaim(c);
+            if (!(yield* verifyAdmission(c.manifest)))
+              return yield* new Evidence.RollupError({ code: "input_unavailable" });
+          }),
+        );
+        const budget = Math.min(
+          50000,
+          Date.parse(c.lease_expires_at) -
+            Math.max(Date.parse(now), yield* clock.currentTimeMillis),
+        );
+        if (budget <= 0) return yield* new Evidence.RollupError({ code: "stale_claim" });
+        // Join a detached authorization so even noncooperative interruption cannot retain the writer or caller.
+        const authorization = yield* provider
+          .verifyCurrentAuthorization(c.manifest)
+          .pipe(Effect.forkDetach);
+        const authorized = yield* Fiber.join(authorization).pipe(
+          Effect.timeoutOrElse({
+            duration: budget,
+            orElse: () => Effect.fail(new Evidence.RollupError({ code: "provider_timeout" })),
+          }),
+          Effect.ensuring(Fiber.interrupt(authorization).pipe(Effect.forkDetach, Effect.asVoid)),
+        );
+        if (!authorized) return yield* new Evidence.RollupError({ code: "input_unavailable" });
+        return yield* atomic(
+          Effect.gen(function* () {
+            yield* Evidence.attempt(() => {
+              timestamp(now);
+              validateSummary(c.manifest, s);
+            });
+            yield* assertClaim(c);
+            const context = yield* active();
+            const record = (yield* sql<{
+              version: number;
+            }>`SELECT version FROM jones_workstreams_records WHERE registry_instance_id=${scope.registry_instance_id} AND owner_id=${scope.owner_id} AND workstream_id=${c.workstream_id}`)[0];
+            if (
+              Math.max(Date.parse(now), yield* clock.currentTimeMillis) >=
+                Date.parse(c.lease_expires_at) ||
+              context.registry_version !== c.manifest.registry_version ||
+              record?.version !== c.manifest.workstream_version ||
+              s.rollup_version !== (yield* nextRollupVersion(c))
+            )
+              return yield* new Evidence.RollupError({ code: "stale_claim" });
+            if (!(yield* verifyAdmission(c.manifest)))
+              return yield* new Evidence.RollupError({ code: "input_unavailable" });
+            const state = summaryState(c.manifest);
+            yield* registry.put(
+              scope,
+              "rollup_summaries",
+              {
+                metadata: {
+                  workstream_id: s.workstream_id,
+                  rollup_version: s.rollup_version,
+                  manifest_sha256: s.manifest_sha256,
+                  output_sha256: s.output_sha256,
+                  generated_at: s.generated_at,
+                  ...state,
+                },
+                value: s,
               },
-              value: s,
-            },
-            null,
-          );
-          // Retained foundation rows require a tombstone, excluded from dirty capacity.
-          yield* sql`UPDATE jones_workstreams_rollup_queue SET state='dead_letter',attempt_id=NULL,lease_expires_at=NULL,failure_code='published',failed_at=${now},updated_at=${now}
+              null,
+            );
+            // Retained foundation rows require a tombstone, excluded from dirty capacity.
+            yield* sql`UPDATE jones_workstreams_rollup_queue SET state='dead_letter',attempt_id=NULL,lease_expires_at=NULL,failure_code='published',failed_at=${now},updated_at=${now}
       WHERE registry_instance_id=${scope.registry_instance_id} AND owner_id=${scope.owner_id} AND workstream_id=${c.workstream_id}`;
-        }),
-      ),
+          }),
+        );
+      }),
   );
   const latestMetadata = Effect.fn("RollupStore.latestMetadata")((id: string) =>
     atomic(

@@ -23,7 +23,11 @@ import * as Manifests from "./manifestSource.ts";
 import * as Application from "./application.ts";
 import * as SummaryRead from "./summaryRead.ts";
 import { syntheticFixture, syntheticEvidenceLayer, syntheticGenerationLayer } from "./synthetic.ts";
-const f = syntheticFixture(),
+const fixture = syntheticFixture(),
+  f = {
+    ...fixture,
+    manifest: Generation.createManifest({ ...fixture.manifest, registry_version: 2 }),
+  },
   now = Fixture.now;
 const home = {
   ...Fixture.scope,
@@ -104,6 +108,11 @@ function layers(
 }
 const seed = Effect.gen(function* () {
   yield* Fixture.seed;
+  // Isolated projection of the additive parent migration; integrated migration qualification remains parent-owned.
+  const sql = yield* SqlClient.SqlClient;
+  const columns = yield* sql<{ name: string }>`PRAGMA table_info(jones_workstreams_rollup_queue)`;
+  if (!columns.some((column) => column.name === "attempt_count"))
+    yield* sql`ALTER TABLE jones_workstreams_rollup_queue ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0)`;
   yield* TestClock.setTime(Date.parse(now));
   const r = yield* Registry.RegistryStore;
   yield* r.appendPlain(base, "principals", {
@@ -239,7 +248,7 @@ it.effect(
       });
       expect(claims.filter(Boolean)).toHaveLength(1);
       const claim = claims.find((c) => c !== null)!;
-      const changed = Generation.createManifest({ ...f.manifest, registry_version: 2 });
+      const changed = Generation.createManifest({ ...f.manifest, registry_version: 3 });
       expect(yield* store.enqueue(changed, now)).toBe("coalesced");
       const old = Generation.createSummary(f.manifest, {
         workstream_id: "ws:test",
@@ -253,7 +262,7 @@ it.effect(
     }).pipe(Effect.provide(layers())),
 );
 it.effect(
-  "expires the exact lease, deadletters failures, and only retries input-unavailable below fence three",
+  "expires the exact lease, deadletters failures, and limits retries until publication",
   () =>
     Effect.gen(function* () {
       yield* seed;
@@ -266,7 +275,7 @@ it.effect(
       );
       yield* store.enqueue(f.manifest, now);
       expect(yield* store.claim(now, 1000)).toBeNull();
-      const next = Generation.createManifest({ ...f.manifest, registry_version: 2 });
+      const next = Generation.createManifest({ ...f.manifest, registry_version: 3 });
       yield* store.enqueue(next, now);
       const c2 = (yield* store.claim(now, 1000))!;
       yield* store.failClaim(c2, "input_unavailable", now);
@@ -397,7 +406,7 @@ it.effect("labels an older summary stale and isolates owner and caller identitie
     yield* publish;
     yield* (yield* Registry.RegistryStore).advance(base, {
       server_generation: 1,
-      registry_version: 1,
+      registry_version: 2,
     });
     const reader = yield* SummaryRead.SummaryRead;
     expect((yield* reader.read(caller, "ws:test")).freshness).toBe("stale");
@@ -435,7 +444,7 @@ it.effect("reads imported encrypted summaries with unconfigured generation and e
           workstream_id: "ws:test",
           manifest_sha256: f.manifest.manifest_sha256,
           workstream_version: 1,
-          registry_version: 1,
+          registry_version: f.manifest.registry_version,
         },
         value: f.manifest,
       },
@@ -486,7 +495,7 @@ it.effect(
             workstream_id: "ws:test",
             manifest_sha256: f.manifest.manifest_sha256,
             workstream_version: 1,
-            registry_version: 1,
+            registry_version: f.manifest.registry_version,
           },
           value: f.manifest,
         },
@@ -881,4 +890,147 @@ it.effect("retains logical queue absence for an imported already-published manif
     const rows = yield* sql`SELECT state,failure_code FROM jones_workstreams_rollup_queue`;
     expect(rows).toEqual([{ state: "dead_letter", failure_code: "published" }]);
   }).pipe(Effect.provide(layers())),
+);
+
+it.effect.each([1, 2, 3])(
+  "bounds stalled authorization at phase %i and releases the writer and application admission",
+  (phase) =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>(),
+        finish = yield* Deferred.make<boolean>(),
+        stopped = yield* Deferred.make<void>();
+      let calls = 0;
+      const evidence = Layer.effect(
+        Evidence.RollupEvidenceProvider,
+        Effect.map(Evidence.RollupEvidenceProvider, (p) => ({
+          ...p,
+          verifyCurrentAuthorization: (m: Evidence.Manifest) =>
+            Effect.suspend(() => {
+              calls++;
+              return calls === phase
+                ? Deferred.succeed(started, undefined).pipe(
+                    Effect.andThen(Deferred.await(finish)),
+                    Effect.ensuring(Deferred.succeed(stopped, undefined)),
+                  )
+                : p.verifyCurrentAuthorization(m);
+            }),
+        })),
+      ).pipe(Layer.provide(syntheticEvidenceLayer([f])));
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const app = yield* Application.RollupApplication,
+          store = yield* Store.RollupStore;
+        const running = yield* app.processOnce().pipe(Effect.forkChild);
+        yield* Deferred.await(started);
+        expect(yield* store.expireClaims(now)).toBe(0);
+        yield* TestClock.adjust(1000);
+        expect((yield* Fiber.join(running)).status).toBe("provider_failed");
+        yield* Deferred.await(stopped);
+        expect(yield* store.latestMetadata("ws:test")).toBeNull();
+        const sql = yield* SqlClient.SqlClient;
+        expect(yield* sql`SELECT failure_code FROM jones_workstreams_rollup_queue`).toEqual([
+          { failure_code: "provider_timeout" },
+        ]);
+        const release = yield* (yield* Application.RollupAdmission).tryAcquire();
+        expect(release).not.toBeNull();
+        if (release) yield* release;
+      }).pipe(
+        Effect.provide(layers({ evidence })),
+        Effect.provideService(Application.ApplicationOptions, {
+          discovery_limit: 100,
+          lease_ms: 60000,
+          provider_timeout_ms: 1000,
+        }),
+        Effect.ensuring(Deferred.succeed(finish, true)),
+      );
+    }),
+);
+
+it.effect(
+  "rechecks a changed branch after authorization and before reading extraction payloads",
+  () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>(),
+        finish = yield* Deferred.make<boolean>();
+      let inputReads = 0;
+      const evidence = Layer.effect(
+        Evidence.RollupEvidenceProvider,
+        Effect.map(Evidence.RollupEvidenceProvider, (p) => ({
+          ...p,
+          verifyCurrentAuthorization: () =>
+            Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(finish))),
+          readExtractionInputs: (m: Evidence.Manifest, signal: AbortSignal) =>
+            Effect.suspend(() => {
+              inputReads++;
+              return p.readExtractionInputs(m, signal);
+            }),
+        })),
+      ).pipe(Layer.provide(syntheticEvidenceLayer([f])));
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const running = yield* (yield* Application.RollupApplication)
+          .processOnce()
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(started);
+        yield* (yield* Bindings.Bindings).put(
+          {
+            ...f.binding,
+            binding_version: 2,
+            selection: {
+              kind: "thread",
+              conversation_id: "conversation:test",
+              thread_id: "thread:test",
+              selected_branch_id: "branch:changed",
+            },
+          },
+          1,
+        );
+        yield* Deferred.succeed(finish, true);
+        expect((yield* Fiber.join(running)).status).toBe("provider_failed");
+        expect(inputReads).toBe(0);
+        expect(yield* (yield* Store.RollupStore).latestMetadata("ws:test")).toBeNull();
+      }).pipe(
+        Effect.provide(layers({ evidence })),
+        Effect.ensuring(Deferred.succeed(finish, true)),
+      );
+    }),
+);
+
+it.effect(
+  "rejects a changed project after generation even when the old provider authorization still passes",
+  () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>(),
+        finish = yield* Deferred.make<Evidence.Result>();
+      const generation = Layer.succeed(Generation.RollupGenerationProvider, {
+        configured: true,
+        identity: f.identity,
+        generate: () =>
+          Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(finish))),
+      });
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const running = yield* (yield* Application.RollupApplication)
+          .processOnce()
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(started);
+        yield* (yield* Bindings.Bindings).put(
+          {
+            ...f.binding,
+            binding_version: 2,
+            selection: { kind: "project", project_id: "project:changed", project_version: 2 },
+          },
+          1,
+        );
+        expect(
+          yield* (yield* Evidence.RollupEvidenceProvider).verifyCurrentAuthorization(f.manifest),
+        ).toBe(true);
+        yield* Deferred.succeed(finish, f.result);
+        expect((yield* Fiber.join(running)).status).toBe("provider_failed");
+        expect(yield* (yield* Store.RollupStore).latestMetadata("ws:test")).toBeNull();
+      }).pipe(
+        Effect.provide(layers({ generation })),
+        Effect.ensuring(Deferred.succeed(finish, f.result)),
+      );
+    }),
 );
