@@ -3,6 +3,10 @@ import { foldSearchQuery, rankSearchItems, scoreThreadSearch } from "@t3tools/sh
 
 import type { EnvironmentThreadShell } from "./state/models.ts";
 import { threadSearchSubject, type ThreadSearchShell } from "./state/threadSearch.ts";
+import {
+  matchJonesComposerThreadItems,
+  type JonesComposerThreadMatchInput,
+} from "./jones/composerThreadMatching.ts";
 
 const COMPOSER_THREAD_RESULT_LIMIT = 5;
 
@@ -17,12 +21,18 @@ export interface ComposerThreadItem {
   readonly description: string;
 }
 
+export function matchComposerThreadItems(
+  input: JonesComposerThreadMatchInput,
+): ComposerThreadItem[] {
+  return matchJonesComposerThreadItems(input);
+}
+
 /**
  * Threads to reference from the composer, matched and ranked like the command
  * palette, without subagent threads. The agent can only read threads on its
  * own server, so candidates stay within the composer's environment.
  */
-export function matchComposerThreadItems(input: {
+export function matchUpstreamComposerThreadItems(input: {
   shells: ReadonlyArray<ComposerThreadCandidate>;
   environmentId: EnvironmentId;
   excludeThreadId: ThreadId | null;
