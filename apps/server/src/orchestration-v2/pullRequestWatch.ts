@@ -57,7 +57,10 @@ export function evaluatePullRequestWatch(
 
     const required = detail.checks.filter((check) => check.required === true);
     const gate = required.length > 0 ? required : detail.checks;
-    const passedNow = gate.every((check) => check.status !== "pending" && !isFailedCheck(check));
+    // Without required-check metadata, skipped or neutral results alone do not prove a pass.
+    const passedNow =
+      (required.length > 0 || gate.some((check) => check.status === "success")) &&
+      gate.every((check) => check.status !== "pending" && !isFailedCheck(check));
     const gateNames = gate.map((check) => check.name);
     const told = passed && passedChecks.length === 0 ? gateNames : passedChecks;
     // Required checks can finish between sweeps; detect new names. With no required checks, ignore advisory gate growth.

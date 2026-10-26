@@ -46,11 +46,11 @@ it.effect(
       Layer.mock(Threads.ThreadManagementService)({
         getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),
       }),
-      Layer.mock(PeerLinks.PeerLinks)({ get: () => Effect.succeed(Option.none()) }),
+      Layer.mock(PeerLinks.PeerLinks)({ get: () => Effect.succeedNone }),
       Layer.mock(Peers.PeerMcpClient)({
         call: (input) => {
           calls.push(input);
-          return Schema.decodeUnknownEffect(input.success)({
+          return Schema.decodeEffect(input.success)({
             threadId: destination,
             projectId: liveThreadShell(destination).projectId,
             modelSelection: liveThreadShell(destination).modelSelection,

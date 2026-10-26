@@ -44,7 +44,7 @@ const links = Layer.mock(PeerLinks.PeerLinks)({
       link: {},
     } as PeerLinks.ResolvedPeerLink),
   recordOutcome: () => Effect.void,
-  currentGeneration: () => Effect.succeed(Option.some("generation-1")),
+  currentGeneration: () => Effect.succeedSome("generation-1"),
 });
 const fixture = (
   respond: (

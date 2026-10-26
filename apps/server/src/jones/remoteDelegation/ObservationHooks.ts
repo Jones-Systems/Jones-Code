@@ -93,7 +93,7 @@ export const make = Effect.fn("RemoteTaskObservation.make")(function* <E>(
             candidate.driver === "remote",
         ),
       })),
-      Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(undefined) }),
+      Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.void }),
     );
   const readRemoteTaskObservation = (parentThreadId: ThreadId, taskId: NodeId) =>
     sql

@@ -34,7 +34,7 @@ const fixtureClaim = (setup = false): Repository.NativeCreationStoredIntent => (
   threadId: "fixture-thread",
   messageId: "fixture-message",
   canonicalPreparation: "{}",
-  binding: Schema.decodeUnknownSync(NativeCreationHistoricalBinding)({
+  binding: Schema.decodeSync(NativeCreationHistoricalBinding)({
     backendInstance: "fixture-backend",
     environmentId: "fixture-environment",
     projectId: "fixture-project",

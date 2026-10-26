@@ -216,7 +216,7 @@ it.effect(
         }),
         Layer.mock(ProjectStore.ProjectStoreV2)({
           listShells: () => Effect.succeed([project]),
-          getShell: () => Effect.succeed(Option.some(project)),
+          getShell: () => Effect.succeedSome(project),
         }),
         Layer.mock(GitManager.GitManager)({
           branchPullRequest: () =>

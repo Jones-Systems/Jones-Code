@@ -137,7 +137,7 @@ const make = Effect.gen(function* () {
       policy_json: string;
     }>`SELECT policy_json FROM jones_remote_admission_policy WHERE singleton = 1`;
     const saved = rows[0]
-      ? yield* Schema.decodeUnknownEffect(Schema.fromJsonString(RemoteAdmissionReceiverPolicy))(
+      ? yield* Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionReceiverPolicy))(
           rows[0].policy_json,
         )
       : defaultPolicy;

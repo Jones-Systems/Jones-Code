@@ -396,7 +396,7 @@ export const fixture = Effect.gen(function* () {
     ),
     Layer.provide(
       Layer.mock(ProjectService.ProjectService)({
-        getById: () => Effect.succeed(Option.some({ id: projectId, workspaceRoot: repo } as never)),
+        getById: () => Effect.succeedSome({ id: projectId, workspaceRoot: repo } as never),
       }),
     ),
     Layer.provide(platform),

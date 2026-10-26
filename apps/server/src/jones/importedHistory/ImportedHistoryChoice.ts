@@ -42,7 +42,7 @@ export interface ImportedHistoryContext {
   readonly targetCapabilities: unknown;
 }
 export const commandIdentity = Effect.fnUntraced(function* (context: ImportedHistoryContext) {
-  const command = yield* Schema.decodeUnknownEffect(ImportedHistoryStart)(context.command, {
+  const command = yield* Schema.decodeEffect(ImportedHistoryStart)(context.command, {
     onExcessProperty: "error",
   });
   if (
@@ -90,7 +90,7 @@ const currentActor = Effect.fnUntraced(function* (principal: EnvironmentSessionP
     Date.parse(row.expires_at) <= DateTime.toEpochMillis(yield* DateTime.now)
   )
     return yield* deny("actor_changed");
-  const scopes = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(Schema.String)))(
+  const scopes = Schema.decodeOption(Schema.fromJsonString(Schema.Array(Schema.String)))(
     row.scopes,
   );
   if (
@@ -147,7 +147,7 @@ export const reviewImportedHistory = Effect.fnUntraced(function* (input: {
       nativeConversationHeadRef: Schema.Null,
     }),
   );
-  if (providers.some((row) => Option.isNone(Schema.decodeUnknownOption(fresh)(row.payload_json))))
+  if (providers.some((row) => Option.isNone(Schema.decodeOption(fresh)(row.payload_json))))
     return unavailable("existing_native_context_requires_review");
   const source = yield* sql<{
     payload_json: string;
@@ -163,7 +163,7 @@ export const reviewImportedHistory = Effect.fnUntraced(function* (input: {
   );
   if (
     source.some((row) => {
-      const decoded = Schema.decodeUnknownOption(transcriptItem)(row.payload_json);
+      const decoded = Schema.decodeOption(transcriptItem)(row.payload_json);
       return Option.isNone(decoded) || decoded.value.threadId !== input.threadId;
     })
   )
@@ -187,10 +187,10 @@ export const reviewImportedHistory = Effect.fnUntraced(function* (input: {
     yield* sql`SELECT * FROM orchestration_v2_projection_provider_sessions WHERE thread_id = ${input.threadId} ORDER BY provider_session_id`;
   if (input.delivery.type === "queued_run") {
     const decodedRuns = yield* Effect.forEach(queuedRuns, (row) =>
-      Schema.decodeUnknownEffect(Schema.fromJsonString(RecordedRunJson))(row.payload_json),
+      Schema.decodeEffect(Schema.fromJsonString(RecordedRunJson))(row.payload_json),
     );
     const decodedMessages = yield* Effect.forEach(queuedMessages, (row) =>
-      Schema.decodeUnknownEffect(Schema.fromJsonString(OrchestrationV2ConversationMessageJson))(
+      Schema.decodeEffect(Schema.fromJsonString(OrchestrationV2ConversationMessageJson))(
         row.payload_json,
       ),
     );
@@ -312,7 +312,7 @@ export const readImportedHistoryChoice = Effect.fnUntraced(function* (input: {
   if (rows.length === 0) return null;
   if (rows.length !== 1 || rows[0]!.actor_session_id !== input.principal.sessionId)
     return yield* deny("actor_conflict");
-  const outcome = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(ImportedHistoryOutcome))(
+  const outcome = yield* Schema.decodeEffect(Schema.fromJsonString(ImportedHistoryOutcome))(
     rows[0]!.outcome_json,
   );
   if (

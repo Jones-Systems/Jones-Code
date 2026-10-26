@@ -663,7 +663,7 @@ it.layer(TestLayer)("settlement restore", (it) => {
       // can show is simulated directly.
       yield* send(threadId, "retry-later", { type: "thread.unpin" });
       yield* send(threadId, "retry-repin", { type: "thread.pin", orderKey: "s" });
-      yield* (yield* ProjectionMaintenance.ProjectionMaintenanceV2).compactEventStore;
+      yield* (yield* ProjectionMaintenance.ProjectionMaintenanceV2).compactEventStore();
       yield* sql`DELETE FROM orchestration_command_receipts WHERE command_id = 'retry-restore'`;
       const sequence = yield* (yield* Orchestrator.OrchestratorV2).getThreadEventSequence(threadId);
       const retried = yield* restore(threadId, "retry-settle", "retry-restore");
@@ -804,7 +804,7 @@ it.effect("the record survives restart and event compaction on the same database
         yield* send(threadId, "restart-pin", { type: "thread.pin" });
         const before = yield* placement(threadId);
         yield* send(threadId, "restart-settle", { type: "thread.settle" });
-        yield* (yield* ProjectionMaintenance.ProjectionMaintenanceV2).compactEventStore;
+        yield* (yield* ProjectionMaintenance.ProjectionMaintenanceV2).compactEventStore();
         return before;
       }).pipe(Effect.scoped, Effect.provide(runtime()));
       yield* Effect.gen(function* () {

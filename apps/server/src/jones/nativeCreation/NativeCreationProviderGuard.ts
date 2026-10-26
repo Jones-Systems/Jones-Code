@@ -131,7 +131,7 @@ export const acknowledgeNativeProviderGuard = Effect.fn("acknowledgeNativeProvid
       input.providerThread.nativeThreadRef?.nativeId !== binding.nativeThreadId
     )
       return yield* refused("Native provider acknowledgement differs from its captured operation");
-    state.acknowledgement = yield* Schema.decodeUnknownEffect(NativeCreationWholeOperationEvidence)(
+    state.acknowledgement = yield* Schema.decodeEffect(NativeCreationWholeOperationEvidence)(
       {
         version: 1,
         outcome: "confirmed_success",

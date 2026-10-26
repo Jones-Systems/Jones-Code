@@ -247,7 +247,7 @@ export const DecisionSnapshotToolkitAccess = McpToolAccess.toLayer(
           );
           const output = yield* collector.collect(purpose, nativePacket, deadlineMonotonic).pipe(
             Effect.flatMap((text) =>
-              Schema.decodeUnknownEffect(Schema.fromJsonString(DecisionSnapshot))(text, {
+              Schema.decodeEffect(Schema.fromJsonString(DecisionSnapshot))(text, {
                 onExcessProperty: "error",
               }),
             ),

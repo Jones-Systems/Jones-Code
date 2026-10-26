@@ -1,4 +1,6 @@
 import * as NodeSqlite from "node:sqlite";
+import * as ServerUpdateContinuation from "./ServerUpdateContinuation.ts";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -1448,6 +1450,103 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
     }),
   );
 
+  it.effect(
+    "fences exact cleanup effects through durable success and fails closed on missing or failed outcomes",
+    () =>
+      Effect.gen(function* () {
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const threadId = ThreadId.make("thread:legacy-cleanup-fence");
+        const commandId = CommandId.make("command:legacy-cleanup-fence");
+        const terminalId = `effect:${commandId}:terminal.cleanup`;
+        const attachmentId = `effect:${commandId}:attachment.cleanup`;
+        // Observe the completed initial SQL read before changing durable status, so the
+        // fence must wake from a notification rather than pass on a late first read.
+        const forkAfterPendingRead = (
+          effect: Effect.Effect<void, EffectOutbox.EffectOutboxError>,
+        ) =>
+          Effect.gen(function* () {
+            const readCompleted = yield* Deferred.make<void>();
+            const tracer = Tracer.make({
+              span(options) {
+                const span = new Tracer.NativeSpan(options);
+                const end = span.end.bind(span);
+                span.end = (endTime, exit) => {
+                  end(endTime, exit);
+                  const query = span.attributes.get("db.query.text");
+                  if (
+                    typeof query === "string" &&
+                    /SELECT \* FROM orchestration_v2_effect_outbox WHERE effect_id IN/.test(query)
+                  )
+                    Deferred.doneUnsafe(readCompleted, Effect.void);
+                };
+                return span;
+              },
+            });
+            const fiber = yield* effect.pipe(
+              Effect.provideService(Tracer.Tracer, tracer),
+              Effect.withTracerEnabled(true),
+              Effect.forkChild,
+            );
+            yield* Deferred.await(readCompleted);
+            return fiber;
+          });
+        yield* outbox.enqueue([
+          { id: terminalId, commandId, threadId, request: { type: "terminal.cleanup" } },
+          {
+            id: attachmentId,
+            commandId,
+            threadId,
+            request: { type: "attachment.cleanup", attachmentIds: ["owned-copy"] },
+          },
+        ]);
+        const fence = yield* forkAfterPendingRead(
+          outbox.awaitCompletion([terminalId, attachmentId]),
+        );
+        const first = yield* outbox.claimNext({
+          workerId: "cleanup-test",
+          leaseDurationMs: 60_000,
+        });
+        assert.isTrue(Option.isSome(first));
+        if (Option.isSome(first))
+          assert.isTrue(
+            yield* outbox.succeed({ effectId: first.value.id, workerId: "cleanup-test" }),
+          );
+        assert.isUndefined(fence.pollUnsafe());
+        const second = yield* outbox.claimNext({
+          workerId: "cleanup-test",
+          leaseDurationMs: 60_000,
+        });
+        assert.isTrue(Option.isSome(second));
+        if (Option.isSome(second))
+          assert.isTrue(
+            yield* outbox.succeed({ effectId: second.value.id, workerId: "cleanup-test" }),
+          );
+        yield* Fiber.join(fence);
+        yield* outbox.awaitCompletion([terminalId, attachmentId]);
+        const missing = yield* outbox.awaitCompletion(["unknown-effect"]).pipe(Effect.flip);
+        assert.equal(missing._tag, "EffectOutboxError");
+        const failedId = `effect:${commandId}:failed-cleanup`;
+        yield* outbox.enqueue([
+          { id: failedId, commandId, threadId, request: { type: "terminal.cleanup" } },
+        ]);
+        const failedFence = yield* forkAfterPendingRead(outbox.awaitCompletion([failedId]));
+        assert.isUndefined(failedFence.pollUnsafe());
+        const failed = yield* outbox.claimNext({
+          workerId: "cleanup-test",
+          leaseDurationMs: 60_000,
+        });
+        assert.isTrue(Option.isSome(failed));
+        assert.isTrue(
+          yield* outbox.fail({
+            effectId: failedId,
+            workerId: "cleanup-test",
+            error: "cleanup failed",
+          }),
+        );
+        const error = yield* Fiber.join(failedFence).pipe(Effect.flip);
+        assert.equal(error.effectId, failedId);
+      }),
+  );
   it.effect("keeps one durable effect across command retries and executes it after recovery", () =>
     Effect.gen(function* () {
       const eventSink = yield* EventSink.EventSinkV2;
@@ -1992,6 +2091,175 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
     }),
   );
 
+  it.effect("prepares, deduplicates, cancels and retries update continuation markers", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread:update-marker");
+      const instanceId = ProviderInstanceId.make("codex");
+      const providerThreadId = ProviderThreadId.make("provider-thread:update-marker");
+      const sessionId = ProviderSessionId.make("session:update-marker");
+      const attemptId = RunAttemptId.make("attempt:update-marker");
+      const runId = RunId.make("run:update-marker");
+      const projection = {
+        thread: {
+          id: threadId,
+          projectId: ProjectId.make("project:update-marker"),
+          providerInstanceId: instanceId,
+          archivedAt: null,
+          deletedAt: null,
+        },
+        runs: [
+          {
+            id: runId,
+            ordinal: 1,
+            status: "running",
+            providerInstanceId: instanceId,
+            providerThreadId,
+            activeAttemptId: attemptId,
+          },
+        ],
+        providerThreads: [
+          {
+            id: providerThreadId,
+            appThreadId: threadId,
+            ownerNodeId: null,
+            providerInstanceId: instanceId,
+            providerSessionId: sessionId,
+            driver: "codex",
+            nativeThreadRef: { driver: "codex", nativeId: "native-marker", strength: "strong" },
+            status: "active",
+          },
+        ],
+        providerSessions: [
+          { id: sessionId, driver: "codex", providerInstanceId: instanceId, status: "running" },
+        ],
+        providerTurns: [{ providerThreadId, runAttemptId: attemptId, status: "running" }],
+        runtimeRequests: [],
+        turnItems: [],
+      } as unknown as ProjectionStore.ProjectionRuntimeRecoveryState;
+      const projections = Layer.mock(ProjectionStore.ProjectionStoreV2)({
+        getRecoveryThreadIds: () => Effect.succeed([threadId]),
+        getRuntimeRecoveryProjection: () => Effect.succeed(projection),
+      });
+      const preferences = ServerSettings.layerTest({ continueThreadsAfterServerUpdate: false });
+      const markers = Layer.merge(projections, preferences);
+      assert.deepEqual(
+        yield* ServerUpdateContinuation.markOptedInProviderSessionsForContinuation.pipe(
+          Effect.provide(markers),
+        ),
+        [],
+      );
+      assert.deepEqual(
+        yield* ServerUpdateContinuation.markRunningProviderSessionsForContinuation.pipe(
+          Effect.provide(markers),
+        ),
+        [threadId],
+      );
+      assert.deepEqual(
+        yield* ServerUpdateContinuation.markRunningProviderSessionsForContinuation.pipe(
+          Effect.provide(markers),
+        ),
+        [threadId],
+      );
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{
+        effect_id: string;
+        payload_json: string;
+      }>`SELECT effect_id,payload_json FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId} AND status = 'pending'`;
+      assert.lengthOf(rows, 1);
+      assert.include(rows[0]!.payload_json, '"continueWithoutPreference":true');
+      yield* ServerUpdateContinuation.clearProviderSessionContinuationMarkers([
+        ThreadId.make("thread:other"),
+      ]);
+      assert.lengthOf(
+        yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId} AND status = 'pending'`,
+        1,
+      );
+      yield* ServerUpdateContinuation.clearProviderSessionContinuationMarkers([threadId]);
+      assert.lengthOf(
+        yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId} AND status = 'pending'`,
+        0,
+      );
+      yield* ServerUpdateContinuation.markRunningProviderSessionsForContinuation.pipe(
+        Effect.provide(markers),
+      );
+      const retry = yield* sql<{
+        effect_id: string;
+      }>`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId} AND status = 'pending'`;
+      assert.lengthOf(retry, 1);
+      assert.notEqual(retry[0]!.effect_id, rows[0]!.effect_id);
+      yield* ServerUpdateContinuation.clearProviderSessionContinuationMarkers([threadId]);
+      const optedPreferences = ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true });
+      const optedMarkers = Layer.merge(projections, optedPreferences);
+      assert.deepEqual(
+        yield* ServerUpdateContinuation.markOptedInProviderSessionsForContinuation.pipe(
+          Effect.provide(optedMarkers),
+        ),
+        [threadId],
+      );
+      const optedRows = yield* sql<{
+        effect_id: string;
+        payload_json: string;
+      }>`SELECT effect_id,payload_json FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId} AND status = 'pending'`;
+      assert.include(optedRows[0]!.payload_json, '"continueWithoutPreference":false');
+      yield* ServerUpdateContinuation.markRunningProviderSessionsForContinuation.pipe(
+        Effect.provide(markers),
+      );
+      const forcedRows = yield* sql<{
+        effect_id: string;
+        payload_json: string;
+      }>`SELECT effect_id,payload_json FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId} AND status = 'pending'`;
+      assert.lengthOf(forcedRows, 1);
+      assert.equal(forcedRows[0]!.effect_id, optedRows[0]!.effect_id);
+      assert.include(forcedRows[0]!.payload_json, '"continueWithoutPreference":true');
+      yield* ServerUpdateContinuation.clearProviderSessionContinuationMarkers([threadId]);
+    }),
+  );
+
+  it.effect("keeps prepared restart continuations passive until process loss", () =>
+    Effect.gen(function* () {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const threadId = ThreadId.make("thread:passive-restart");
+      const commandId = CommandId.make("command:server-update-prepare:passive");
+      const marker = "effect:server-update-continuation:passive";
+      yield* outbox.enqueue([
+        {
+          id: marker,
+          commandId,
+          threadId,
+          request: {
+            type: "provider-runtime.continue",
+            sourceRunId: RunId.make("run:passive"),
+            preparedForRestart: true,
+            continueWithoutPreference: true,
+          },
+        },
+        { id: "effect:passive-live", commandId, threadId, request: { type: "terminal.cleanup" } },
+      ]);
+      const live = yield* outbox.claimNext({ workerId: "passive-worker", leaseDurationMs: 30_000 });
+      assert.equal(Option.getOrThrow(live).id, "effect:passive-live");
+      yield* outbox.succeed({ effectId: "effect:passive-live", workerId: "passive-worker" });
+      assert.isTrue(
+        Option.isNone(
+          yield* outbox.claimNext({ workerId: "passive-worker", leaseDurationMs: 30_000 }),
+        ),
+      );
+      assert.isTrue(Option.isNone(yield* outbox.nextClaimableAt()));
+      const reconciled = yield* outbox.reconcileAfterProcessLoss;
+      assert.equal(reconciled.requeued, 1);
+      const active = Option.getOrThrow(
+        yield* outbox.claimNext({ workerId: "restarted-worker", leaseDurationMs: 30_000 }),
+      );
+      assert.equal(active.id, marker);
+      assert.deepEqual(active.request, {
+        type: "provider-runtime.continue",
+        sourceRunId: RunId.make("run:passive"),
+        preparedForRestart: false,
+        continueWithoutPreference: true,
+      });
+      yield* outbox.succeed({ effectId: marker, workerId: "restarted-worker" });
+    }),
+  );
+
   it.effect("allows only one worker to claim an available effect", () =>
     Effect.gen(function* () {
       const outbox = yield* EffectOutbox.EffectOutboxV2;
@@ -2200,7 +2468,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
       if (Option.isNone(claimed)) return;
       assert.equal(claimed.value.id, "effect:foundation-next-claimable:a1");
 
-      const whileBlocked = yield* outbox.nextClaimableAt;
+      const whileBlocked = yield* outbox.nextClaimableAt();
       assert.isTrue(Option.isSome(whileBlocked));
       if (Option.isSome(whileBlocked)) {
         assert.equal(DateTime.toEpochMillis(whileBlocked.value), DateTime.toEpochMillis(future));
@@ -2210,7 +2478,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         effectId: claimed.value.id,
         workerId: "next-claimable-worker",
       });
-      const afterCompletion = yield* outbox.nextClaimableAt;
+      const afterCompletion = yield* outbox.nextClaimableAt();
       assert.isTrue(Option.isSome(afterCompletion));
       if (Option.isSome(afterCompletion)) {
         assert.isAtMost(DateTime.toEpochMillis(afterCompletion.value), DateTime.toEpochMillis(now));
@@ -2390,7 +2658,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
       assert.equal(Option.getOrUndefined(title)?.id, "effect:foundation-retry-order:b-title");
       const blocked = yield* outbox.claimNext({ workerId, leaseDurationMs: 30_000 });
       assert.isTrue(Option.isNone(blocked));
-      const nextClaimable = yield* outbox.nextClaimableAt;
+      const nextClaimable = yield* outbox.nextClaimableAt();
       assert.isTrue(Option.isSome(nextClaimable));
       if (Option.isSome(nextClaimable)) {
         assert.equal(
@@ -2575,14 +2843,14 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
     }),
   );
 
-  it.effect(
-    "persists shutdown continuation intent through the real event sink without domain events",
-    () =>
+  it.effect.each(["passive", "shutdown"] as const)(
+    "serializes passive quit and shutdown recovery with $0 claimed first",
+    (first) =>
       Effect.gen(function* () {
         const outbox = yield* EffectOutbox.EffectOutboxV2;
         const now = yield* DateTime.now;
-        const threadId = ThreadId.make("thread:shutdown-prepare");
-        const runId = RunId.make("run:shutdown-prepare");
+        const threadId = ThreadId.make(`thread:shutdown-prepare:${first}`);
+        const runId = RunId.make(`run:shutdown-prepare:${first}`);
         const providerThreadId = ProviderThreadId.make("provider-thread:shutdown-prepare");
         const sessionId = ProviderSessionId.make("session:shutdown-prepare");
         const attemptId = RunAttemptId.make("attempt:shutdown-prepare");
@@ -2621,20 +2889,49 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
           runtimeRequests: [],
           turnItems: [],
         } as unknown as OrchestrationV2ThreadProjection;
-        const recovery = yield* ProviderRuntimeRecovery.make.pipe(
-          Effect.provide(
-            Layer.mergeAll(
-              ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
-              Layer.mock(ProjectionStore.ProjectionStoreV2)({
-                getRecoveryThreadIds: () => Effect.succeed([threadId]),
-                getRuntimeRecoveryProjection: () => Effect.succeed(projection),
-              }),
-              Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({}),
-            ),
-          ),
+        const dependencies = Layer.mergeAll(
+          ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getRecoveryThreadIds: () => Effect.succeed([threadId]),
+            getRuntimeRecoveryProjection: () => Effect.succeed(projection),
+          }),
+          Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({}),
         );
-        yield* recovery.prepareForShutdown;
-        yield* recovery.prepareForShutdown;
+        const recovery = yield* ProviderRuntimeRecovery.make.pipe(Effect.provide(dependencies));
+        if (first === "shutdown") {
+          yield* recovery.prepareForShutdown;
+          yield* recovery.prepareForShutdown;
+        }
+        for (let preparation = 0; preparation < 2; preparation += 1) {
+          assert.deepEqual(
+            yield* ServerUpdateContinuation.markOptedInProviderSessionsForContinuation.pipe(
+              Effect.provide(dependencies),
+            ),
+            [threadId],
+          );
+        }
+        const sql = yield* SqlClient.SqlClient;
+        const passiveRows = yield* sql<{ effect_id: string }>`
+          SELECT effect_id FROM orchestration_v2_effect_outbox
+          WHERE thread_id = ${threadId} AND status = 'pending'
+            AND command_id GLOB 'command:server-update-prepare:*'`;
+        assert.lengthOf(passiveRows, 1);
+        const passiveId = passiveRows[0]!.effect_id;
+        const passive = Option.getOrThrow(yield* outbox.get(passiveId));
+        assert.deepEqual(passive.request, {
+          type: "provider-runtime.continue",
+          sourceRunId: runId,
+          preparedForRestart: true,
+          continueWithoutPreference: false,
+        });
+        if (first === "passive") {
+          assert.isTrue(
+            Option.isNone(yield* outbox.claimNext({ workerId: "live", leaseDurationMs: 30_000 })),
+          );
+          assert.isTrue(Option.isNone(yield* outbox.nextClaimableAt()));
+          yield* recovery.prepareForShutdown;
+          yield* recovery.prepareForShutdown;
+        }
         const effects = yield* outbox.listByCommandId(
           CommandId.make(`command:restart-prepare:${runId}`),
         );
@@ -2644,12 +2941,54 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
           type: "provider-runtime.continue",
           sourceRunId: runId,
         });
-        yield* outbox.cancelUnsettled({
-          threadId,
-          effectTypes: ["provider-runtime.continue"],
-          reason: "fixture complete",
+        assert.lengthOf(
+          yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox
+            WHERE thread_id = ${threadId} AND status = 'pending'`,
+          2,
+        );
+        assert.equal((yield* outbox.reconcileAfterProcessLoss).requeued, 1);
+        assert.deepEqual(Option.getOrThrow(yield* outbox.get(passiveId)).request, {
+          type: "provider-runtime.continue",
+          sourceRunId: runId,
+          preparedForRestart: false,
+          continueWithoutPreference: false,
         });
-      }),
+        assert.isTrue(
+          Option.isNone(
+            yield* outbox.claimNext({
+              workerId: "startup",
+              leaseDurationMs: 30_000,
+              excludeRestartContinuations: true,
+            }),
+          ),
+        );
+        const firstId = first === "passive" ? passiveId : effects[0]!.id;
+        const secondId = first === "passive" ? effects[0]!.id : passiveId;
+        // Activation refreshes available_at; control claim order independently of wall-clock ties.
+        yield* sql`UPDATE orchestration_v2_effect_outbox
+          SET available_at = ${DateTime.formatIso(DateTime.subtract(now, { seconds: 1 }))}
+          WHERE effect_id = ${firstId}`;
+        const claimed = Option.getOrThrow(
+          yield* outbox.claimNext({ workerId: "activated", leaseDurationMs: 30_000 }),
+        );
+        assert.equal(claimed.id, firstId);
+        assert.isTrue(
+          Option.isNone(
+            yield* outbox.claimNext({ workerId: "other-worker", leaseDurationMs: 30_000 }),
+          ),
+        );
+        yield* outbox.succeed({ effectId: firstId, workerId: "activated" });
+        const next = Option.getOrThrow(
+          yield* outbox.claimNext({ workerId: "activated", leaseDurationMs: 30_000 }),
+        );
+        assert.equal(next.id, secondId);
+        yield* outbox.succeed({ effectId: secondId, workerId: "activated" });
+        assert.isTrue(
+          Option.isNone(
+            yield* outbox.claimNext({ workerId: "activated", leaseDurationMs: 30_000 }),
+          ),
+        );
+      }).pipe(Effect.provide(Layer.fresh(layerTest))),
   );
 
   it.effect("leaves restart continuation pending until normal worker claims are enabled", () =>
@@ -2830,7 +3169,11 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
             awaitWork: Effect.void,
             runRecoveryOnce: Effect.succeed(false),
             runOnce: Effect.succeed(false),
-            nextClaimableAt: Effect.succeedNone,
+            runActionOnce: Effect.succeed(false),
+            runUrgentOnce: Effect.succeed(false),
+            nextClaimableAt: Effect.succeed(Option.none()),
+            nextActionClaimableAt: Effect.succeed(Option.none()),
+            nextUrgentClaimableAt: Effect.succeed(Option.none()),
             drain: () => Effect.succeed(0),
           }),
         ),
@@ -3047,7 +3390,11 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
             awaitWork: Effect.void,
             runRecoveryOnce: Effect.succeed(false),
             runOnce: Effect.succeed(false),
-            nextClaimableAt: Effect.succeedNone,
+            runActionOnce: Effect.succeed(false),
+            runUrgentOnce: Effect.succeed(false),
+            nextClaimableAt: Effect.succeed(Option.none()),
+            nextActionClaimableAt: Effect.succeed(Option.none()),
+            nextUrgentClaimableAt: Effect.succeed(Option.none()),
             drain: () => Effect.succeed(0),
           }),
         ),
