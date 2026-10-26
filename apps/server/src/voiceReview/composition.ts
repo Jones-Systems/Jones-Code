@@ -59,7 +59,7 @@ export const makeVoiceReviewComposition = Effect.fn("voiceReview.makeComposition
       identity: { source_instance_id: environmentId, native_thread_id: id },
     }));
   });
-  const initial = yield* readIdentities().pipe(Effect.catch(() => Effect.succeed(undefined)));
+  const initial = yield* readIdentities().pipe(Effect.orElseSucceed(() => undefined));
   if (initial === undefined) return undefined;
   return makeVoiceReviewNativeReadPort({
     now: () => clock.currentTimeMillisUnsafe(),

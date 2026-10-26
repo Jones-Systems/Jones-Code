@@ -869,9 +869,9 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         baseRefName: "main",
         headRefName: "feature/status-cache",
       };
-      const { manager, ghCalls } = yield* makeManager({
-        ghScenario: {
-          prListSequence: [JSON.stringify([existingPr]), JSON.stringify([existingPr])],
+      const { manager, providerCalls } = yield* makeManager({
+        providerScenario: {
+          prListSequence: [[existingPr], [existingPr]],
         },
       });
 
@@ -880,7 +880,7 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
 
       expect(first.pr?.number).toBe(113);
       expect(second.pr?.number).toBe(113);
-      expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(1);
+      expect(listed(providerCalls)).toHaveLength(1);
     }),
   );
 
@@ -920,22 +920,22 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
       }
       const gitCommands: string[] = [];
       const gitConfigReads: string[] = [];
-      const { manager, ghCalls } = yield* makeManager({
+      const { manager, providerCalls } = yield* makeManager({
         gitCommands,
         gitConfigReads,
-        ghScenario: {
+        providerScenario: {
           prListByHeadSelector: {
-            "feature/warm-pr": encodeCliJson([
+            "feature/warm-pr": [
               {
                 number: 230,
                 title: "Warm PR",
                 url: "https://github.com/pingdotgg/codething-mvp/pull/230",
                 baseRefName: "main",
                 headRefName: "feature/warm-pr",
-                state: "OPEN",
+                state: "open",
                 updatedAt: "2026-04-07T15:00:00Z",
               },
-            ]),
+            ],
           },
         },
       });
@@ -951,12 +951,12 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
       const warm = yield* lookupAll;
       expect(warm).toEqual(cold);
       expect(gitCommands).toEqual([]);
-      expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(2);
+      expect(listed(providerCalls)).toHaveLength(2);
       yield* TestClock.adjust("61 seconds");
       gitConfigReads.length = 0;
       expect(yield* lookupAll).toEqual(cold);
       expect(gitConfigReads).toEqual([]);
-      expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(3);
+      expect(listed(providerCalls)).toHaveLength(3);
     }),
   );
 
@@ -971,20 +971,19 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         yield* runGit(repoDir, ["checkout", "-b", "feature/moving-upstream"]);
         yield* runGit(repoDir, ["push", "-u", "origin", "feature/moving-upstream"]);
         yield* runGit(repoDir, ["push", "origin", "HEAD:refs/heads/feature/other-head"]);
-        const pullRequest = (number: number, headRefName: string) =>
-          encodeCliJson([
-            {
-              number,
-              title: headRefName,
-              url: `https://github.com/pingdotgg/codething-mvp/pull/${number}`,
-              baseRefName: "main",
-              headRefName,
-              state: "OPEN",
-              updatedAt: "2026-04-07T15:00:00Z",
-            },
-          ]);
+        const pullRequest = (number: number, headRefName: string): FakeChangeRequest[] => [
+          {
+            number,
+            title: headRefName,
+            url: `https://github.com/pingdotgg/codething-mvp/pull/${number}`,
+            baseRefName: "main",
+            headRefName,
+            state: "open",
+            updatedAt: "2026-04-07T15:00:00Z",
+          },
+        ];
         const { manager } = yield* makeManager({
-          ghScenario: {
+          providerScenario: {
             prListByHeadSelector: {
               "feature/moving-upstream": pullRequest(235, "feature/moving-upstream"),
               "feature/other-head": pullRequest(236, "feature/other-head"),
@@ -1730,33 +1729,33 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
       yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
       yield* runGit(repoDir, ["checkout", "-b", "feature/shared-pr-cache"]);
       yield* runGit(repoDir, ["push", "-u", "origin", "feature/shared-pr-cache"]);
-      const { manager, ghCalls } = yield* makeManager({
-        ghScenario: {
+      const { manager, providerCalls } = yield* makeManager({
+        providerScenario: {
           prListSequence: [
-            JSON.stringify([
+            [
               {
                 number: 220,
                 title: "Shared cache PR",
                 url: "https://github.com/pingdotgg/codething-mvp/pull/220",
                 baseRefName: "main",
                 headRefName: "feature/shared-pr-cache",
-                headRefOid: "a".repeat(40),
-                state: "MERGED",
+                headSha: "a".repeat(40),
+                state: "merged",
                 updatedAt: "2026-04-07T15:00:00Z",
               },
-            ]),
-            encodeCliJson([
+            ],
+            [
               {
                 number: 221,
                 title: "New PR on the same branch",
                 url: "https://github.com/pingdotgg/codething-mvp/pull/221",
                 baseRefName: "main",
                 headRefName: "feature/shared-pr-cache",
-                headRefOid: "b".repeat(40),
-                state: "OPEN",
+                headSha: "b".repeat(40),
+                state: "open",
                 updatedAt: "2026-04-08T15:00:00Z",
               },
-            ]),
+            ],
           ],
         },
       });
@@ -1770,7 +1769,7 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
       expect(status.pr?.state).toBe("merged");
       expect(pullRequest?.state).toBe("merged");
       expect(pullRequest?.headSha).toBe("a".repeat(40));
-      expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(1);
+      expect(listed(providerCalls)).toHaveLength(1);
       const refreshed = yield* manager.branchPullRequest(
         { cwd: repoDir, branch: "feature/shared-pr-cache" },
         { refresh: true },
@@ -1781,7 +1780,7 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         headSha: "b".repeat(40),
         repositoryKey: "github.com/pingdotgg/codething-mvp",
       });
-      expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(2);
+      expect(listed(providerCalls)).toHaveLength(2);
     }),
   );
 
@@ -1797,21 +1796,21 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         yield* runGit(repoDir, ["checkout", "-b", branch]);
         yield* runGit(repoDir, ["push", "-u", "origin", branch]);
         const gitCommands: string[] = [];
-        const { manager, ghCalls } = yield* makeManager({
+        const { manager, providerCalls } = yield* makeManager({
           gitCommands,
-          ghScenario: {
+          providerScenario: {
             prListByHeadSelector: {
-              [branch]: encodeCliJson([
+              [branch]: [
                 {
                   number: 303,
                   title: branch,
                   url: "https://github.com/pingdotgg/codething-mvp/pull/303",
                   baseRefName: "main",
                   headRefName: branch,
-                  state: "MERGED",
+                  state: "merged",
                   updatedAt: "2026-04-07T15:00:00Z",
                 },
-              ]),
+              ],
             },
           },
         });
@@ -1826,7 +1825,7 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         expect(gitCommands).toEqual([]);
         expect((yield* manager.branchPullRequest(input))?.state).toBe("merged");
         expect(gitCommands.some((command) => command.startsWith("for-each-ref"))).toBe(true);
-        expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(1);
+        expect(listed(providerCalls)).toHaveLength(1);
       }),
   );
 
@@ -1840,7 +1839,11 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         yield* runGit(repoDir, ["checkout", "-b", branch, "main"]);
         yield* runGit(repoDir, ["push", "-u", "origin", branch]);
       }
-      const pullRequest = (number: number, headRefName: string, state: string) => ({
+      const pullRequest = (
+        number: number,
+        headRefName: string,
+        state: ChangeRequest["state"],
+      ): FakeChangeRequest => ({
         number,
         title: headRefName,
         url: `https://github.com/pingdotgg/codething-mvp/pull/${number}`,
@@ -1849,11 +1852,11 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         state,
         updatedAt: "2026-04-07T15:00:00Z",
       });
-      const { manager, ghCalls } = yield* makeManager({
-        ghScenario: {
+      const { manager, providerCalls } = yield* makeManager({
+        providerScenario: {
           prListByHeadSelector: {
-            "feature/open-pr": encodeCliJson([pullRequest(301, "feature/open-pr", "OPEN")]),
-            "feature/merged-pr": encodeCliJson([pullRequest(302, "feature/merged-pr", "MERGED")]),
+            "feature/open-pr": [pullRequest(301, "feature/open-pr", "open")],
+            "feature/merged-pr": [pullRequest(302, "feature/merged-pr", "merged")],
           },
         },
       });
@@ -1861,7 +1864,7 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         ["feature/open-pr", "feature/merged-pr", "feature/no-pr"],
         (branch) => manager.branchPullRequest({ cwd: repoDir, branch }),
       );
-      const prListCalls = () => ghCalls.filter((call) => call.startsWith("pr list "));
+      const prListCalls = () => listed(providerCalls);
 
       yield* lookupAll;
       expect(prListCalls()).toHaveLength(3);
@@ -1869,17 +1872,21 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
       yield* TestClock.adjust("61 seconds");
       yield* lookupAll;
       expect(prListCalls()).toHaveLength(4);
-      expect(prListCalls().at(-1)).toContain("--head feature/open-pr");
+      expect(prListCalls().at(-1)?.headSelector).toBe("feature/open-pr");
 
       yield* TestClock.adjust("238 seconds");
       yield* lookupAll;
       expect(prListCalls()).toHaveLength(5);
-      expect(prListCalls().at(-1)).toContain("--head feature/open-pr");
+      expect(prListCalls().at(-1)?.headSelector).toBe("feature/open-pr");
 
       yield* TestClock.adjust("2 seconds");
       yield* lookupAll;
       expect(prListCalls()).toHaveLength(7);
-      expect(prListCalls().slice(-2).join("\n")).not.toContain("--head feature/open-pr");
+      expect(
+        prListCalls()
+          .slice(-2)
+          .map((call) => call.headSelector),
+      ).not.toContain("feature/open-pr");
     }),
   );
 
@@ -1894,26 +1901,29 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
           yield* runGit(repoDir, ["checkout", "-b", branch, "main"]);
           yield* runGit(repoDir, ["push", "-u", "origin", branch]);
         }
-        const pullRequest = (number: number, headRefName: string, state: string) =>
-          encodeCliJson([
-            {
-              number,
-              title: headRefName,
-              url: `https://github.com/pingdotgg/codething-mvp/pull/${number}`,
-              baseRefName: "main",
-              headRefName,
-              state,
-              updatedAt: "2026-04-07T15:00:00Z",
-            },
-          ]);
+        const pullRequest = (
+          number: number,
+          headRefName: string,
+          state: ChangeRequest["state"],
+        ): FakeChangeRequest[] => [
+          {
+            number,
+            title: headRefName,
+            url: `https://github.com/pingdotgg/codething-mvp/pull/${number}`,
+            baseRefName: "main",
+            headRefName,
+            state,
+            updatedAt: "2026-04-07T15:00:00Z",
+          },
+        ];
         const { manager } = yield* makeManager({
-          ghScenario: {
+          providerScenario: {
             prListSequenceByHeadSelector: {
               "feature/merges-later": [
-                pullRequest(401, "feature/merges-later", "OPEN"),
-                pullRequest(401, "feature/merges-later", "MERGED"),
+                pullRequest(401, "feature/merges-later", "open"),
+                pullRequest(401, "feature/merges-later", "merged"),
               ],
-              "feature/already-merged": [pullRequest(402, "feature/already-merged", "MERGED")],
+              "feature/already-merged": [pullRequest(402, "feature/already-merged", "merged")],
             },
           },
         });
@@ -2635,22 +2645,22 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
       );
 
       const { manager } = yield* makeManager({
-        ghScenario: {
+        providerScenario: {
           prListByHeadSelector: {
-            "feature/fork-settle": JSON.stringify([
+            "feature/fork-settle": [
               {
                 number: 91,
                 title: "Fork PR to settle",
                 url: "https://github.com/pingdotgg/codething-mvp/pull/91",
                 baseRefName: "main",
                 headRefName: "feature/fork-settle",
-                state: "MERGED",
+                state: "merged",
                 updatedAt: "2026-05-02T10:00:00Z",
                 isCrossRepository: true,
-                headRepository: { nameWithOwner: "contributor/codething-mvp" },
-                headRepositoryOwner: { login: "contributor" },
+                headRepositoryNameWithOwner: "contributor/codething-mvp",
+                headRepositoryOwnerLogin: "contributor",
               },
-            ]),
+            ],
           },
         },
       });
@@ -2706,19 +2716,19 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
       yield* runGit(repoDir, ["push", "origin", "feature/sticky-plain"]);
 
       const { manager } = yield* makeManager({
-        ghScenario: {
+        providerScenario: {
           prListByHeadSelector: {
-            "feature/sticky-plain": JSON.stringify([
+            "feature/sticky-plain": [
               {
                 number: 90,
                 title: "Sticky own-name PR",
                 url: "https://github.com/pingdotgg/codething-mvp/pull/90",
                 baseRefName: "main",
                 headRefName: "feature/sticky-plain",
-                state: "OPEN",
+                state: "open",
                 updatedAt: "2026-05-01T10:00:00Z",
               },
-            ]),
+            ],
           },
           failWith:
             "No GitHub credential on the server. Set GH_TOKEN, or install the GitHub CLI and run `gh auth login`.",

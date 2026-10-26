@@ -59,7 +59,7 @@ export const awaitHandoffOutcome = Effect.fn("HandoffOutcome.awaitHandoffOutcome
       if (input.query === undefined) return yield* Effect.never;
       const answer = yield* input
         .query(operationId)
-        .pipe(Effect.catch(() => Effect.succeed({ outcome: "unknown" as const })));
+        .pipe(Effect.orElseSucceed(() => ({ outcome: "unknown" as const })));
       if (answer.outcome !== "unknown") return answer.outcome;
       yield* Effect.sleep(Duration.millis(delay));
     }

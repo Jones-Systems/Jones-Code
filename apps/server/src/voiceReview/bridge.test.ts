@@ -488,7 +488,7 @@ describe("voice routing and registry bridge", () => {
     expect(() => decode({ ...association, dispatch: true })).toThrow();
     expect(() => decode({ ...association, expected_revision: "0" })).toThrow();
     expect(() =>
-      Schema.decodeUnknownSync(ThreadRegistryLabelPayload)({
+      Schema.decodeSync(ThreadRegistryLabelPayload)({
         schema: "voice.association-mutation/v1",
         label_id: "native:voice",
         name: "name",

@@ -408,8 +408,8 @@ it.effect("returns schema-valid typed detail and reference fixtures", () =>
       ...contract,
       nativeReferenceId: "reference-fixture",
     });
-    yield* Schema.decodeUnknownEffect(WorkstreamDetail)(rawDetail);
-    yield* Schema.decodeUnknownEffect(WorkstreamReferenceDetail)(rawReference);
+    yield* Schema.decodeEffect(WorkstreamDetail)(rawDetail);
+    yield* Schema.decodeEffect(WorkstreamReferenceDetail)(rawReference);
 
     const gateway = yield* make(transport, { binding });
     const detail = yield* gateway.readDetail("ws-core-v1");

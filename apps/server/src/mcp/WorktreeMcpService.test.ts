@@ -282,6 +282,7 @@ const makeHarness = (options: HarnessOptions = {}) => {
           scriptId: "setup",
           scriptName: "Setup",
           scriptCommand: "vp install",
+          writeCompletion: Effect.void,
           terminalId: "setup-terminal",
           cwd: input.worktreePath,
         } as const);

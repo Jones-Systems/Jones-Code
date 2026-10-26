@@ -192,7 +192,7 @@ const canonicalizePath = Effect.fn("ServerConfig.canonicalizePath")(function* (i
   // their existing ancestor so a symlink cannot hide an overlapping target.
   while (true) {
     const canonical = yield* fileSystem.realPath(candidate).pipe(
-      Effect.map(Option.some),
+      Effect.asSome,
       Effect.catch((error) =>
         error.reason._tag === "NotFound"
           ? Effect.succeed(Option.none<string>())

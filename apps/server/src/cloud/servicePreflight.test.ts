@@ -1,4 +1,3 @@
-import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 import {
   decodeServicePreflightResult,
   qualifiedServicePreflightFailure,
