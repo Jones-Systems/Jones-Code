@@ -158,8 +158,11 @@ export async function hashMacFile(file: string): Promise<string> {
   return hash.digest("hex");
 }
 
-/** Hash the complete app layout, file modes, contents, and internal symlink targets. */
-export async function hashMacApp(directory: string): Promise<string> {
+/** Mounted sources need structural checks; copied apps also hash each validated entry. */
+async function validateMacAppStructure(
+  directory: string,
+  visit?: (file: string, record: readonly (string | number)[]) => Promise<void>,
+): Promise<void> {
   const fs = bundleFileSystem().promises;
   const root = await fs.realpath(directory);
   const entries: string[] = [];
@@ -178,7 +181,6 @@ export async function hashMacApp(directory: string): Promise<string> {
       Buffer.from(NodePath.relative(root, b)),
     ),
   );
-  const hash = NodeCrypto.createHash("sha256");
   let totalBytes = 0;
   for (const file of entries) {
     const relative = NodePath.relative(root, file).split(NodePath.sep).join("/");
@@ -194,11 +196,20 @@ export async function hashMacApp(directory: string): Promise<string> {
       totalBytes += stat.size;
       if (totalBytes > 8 * 1024 * 1024 * 1024)
         throw new Error("The native app exceeds its payload-size bound.");
-      record = ["file", relative, stat.mode & 0o777, await hashMacFile(file)];
+      record = ["file", relative, stat.mode & 0o777];
     } else if (stat.isDirectory()) record = ["directory", relative, stat.mode & 0o777];
     else throw new Error("Unexpected app payload file type.");
-    hash.update(`${JSON.stringify(record)}\n`);
+    await visit?.(file, record);
   }
+}
+
+/** Hash the complete app layout, file modes, contents, and internal symlink targets. */
+export async function hashMacApp(directory: string): Promise<string> {
+  const hash = NodeCrypto.createHash("sha256");
+  await validateMacAppStructure(directory, async (file, record) => {
+    const complete = record[0] === "file" ? [...record, await hashMacFile(file)] : record;
+    hash.update(`${JSON.stringify(complete)}\n`);
+  });
   return hash.digest("hex");
 }
 
@@ -503,7 +514,7 @@ export async function stageJonesMacApp(
     if (apps.length !== 1 || apps[0] === undefined)
       throw new Error("The DMG must contain exactly one native app.");
     const source = NodePath.join(mount, apps[0].name);
-    await hashMacApp(source); // Reject escaping links before copying.
+    await validateMacAppStructure(source);
     const appPath = NodePath.join(directory, apps[0].name);
     await copyMacStage(source, appPath, copier);
     const { executablePath, asarPath, bundleIdentifier, startupGateProtocol } =
