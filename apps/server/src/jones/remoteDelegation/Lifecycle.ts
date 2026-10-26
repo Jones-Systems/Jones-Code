@@ -262,7 +262,7 @@ export const make = Effect.fn("RemoteDelegationLifecycle.make")(function* (
           yield* onBound(envelope.request.parentThreadId, task.id);
         }).pipe(
           Effect.catchTags({
-            OrchestratorMcpFailure: (error) => {
+            OrchestratorMcpFailure: (error): Effect.Effect<void, OrchestratorMcpFailure> => {
               if (!permanentRefusal(error)) return Effect.fail(error);
               // A refusal on a later attempt cannot disprove an earlier launch.
               // Never clear launchStarted to turn uncertainty into a rejection.
