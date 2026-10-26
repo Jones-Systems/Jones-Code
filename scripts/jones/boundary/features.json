@@ -2187,6 +2187,15 @@
         "packages/client-runtime/src/state/threadCommands.test.ts"
       ],
       "scope": "Pinned official Effect-TS TSRS identity, private-install patch recovery, verified launcher on all33 CLI surfaces and uncached CI admission. Pure task-cache helper retains automatic input/output tracking and excludes only buildinfo and exact patch lock/reclaim metadata;31 public aliases retain exact native commands. Five complete ConnectionTarget fixture values preserve existing tests. Unsupported local fallback has the explicit Q2-R1 TS377049 limitation; full adoption qualification is required before main integration. One-shot CLI grammar refuses unqualified modes before candidate/fallback lookup. Shared finite raw-config and bounded seed utilities preserve retained v2 identity; Ordinary native state uses configuration-bound logical-form envelopes, same-parent private working files, self-reference-only conversion and bounded external/raw accounting. Native cache metadata stays excluded from task restoration; complete adoption qualification remains required."
+    },
+    {
+      "id": "shell-publication-batching",
+      "tests": [
+        "packages/client-runtime/src/jones/shellPublication/batchedPublication.test.ts",
+        "packages/client-runtime/src/jones/shellPublication/shellPublication.diagnostic.test.ts",
+        "packages/client-runtime/src/jones/shellPublication/shellPublication.test.ts"
+      ],
+      "scope": "One Jones Atom.transform subscription boundary synchronously batches shell publications for the shared web, desktop and mobile thread graph. Real-factory regressions preserve HTTP row identity, streaming quiet suppression, completion, cross-environment approval, optimistic reconciliation, cold mount, disposal/remount and expected errors. Opt-in diagnostics measure counts and warmed uninstrumented timings with synthetic data; installed adoption remains separate."
     }
   ]
 }

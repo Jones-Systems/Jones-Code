@@ -3461,6 +3461,21 @@
         "vp run --filter @t3tools/client-runtime typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-shell-publication-batching",
+      "tests": [
+        "packages/client-runtime/src/jones/shellPublication/batchedPublication.test.ts",
+        "packages/client-runtime/src/jones/shellPublication/shellPublication.diagnostic.test.ts",
+        "packages/client-runtime/src/jones/shellPublication/shellPublication.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/client-runtime/src/jones/shellPublication/batchedPublication.test.ts packages/client-runtime/src/jones/shellPublication/shellPublication.diagnostic.test.ts packages/client-runtime/src/jones/shellPublication/shellPublication.test.ts packages/client-runtime/src/state/threadShell.test.ts packages/client-runtime/src/jones/threadShellCompatibility.test.ts packages/client-runtime/src/state/shell-sync.test.ts packages/client-runtime/src/state/shellReducer.test.ts packages/client-runtime/src/state/threads-atoms.test.ts packages/client-runtime/src/state/threads-sync.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint packages/client-runtime/src/state/shell.ts packages/client-runtime/src/jones/shellPublication/",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "vp run --filter @t3tools/web typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }
