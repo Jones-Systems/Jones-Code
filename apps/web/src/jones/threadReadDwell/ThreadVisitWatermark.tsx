@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { ScopedThreadRef } from "@t3tools/contracts";
+import { claimThreadOpen } from "@t3tools/client-runtime/state/thread-search";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { createThreadReadDwell } from "@t3tools/client-runtime/jones/thread-read-dwell";
 import { resolveThreadLastVisitedAt } from "../../components/Sidebar.logic";
@@ -15,6 +16,8 @@ export function ThreadVisitWatermark(props: { readonly threadRef: ScopedThreadRe
   const markThreadVisited = useUiStateStore((store) => store.markThreadVisited);
   const localLastVisitedAt = useUiStateStore((store) => store.threadLastVisitedAtById[threadKey]);
   const visitThread = useAtomCommand(threadEnvironment.visit, { reportFailure: false });
+  const openedThreadRef = useRef<string | null>(null);
+  const shouldRecordOpenRef = useRef(false);
   const controllerRef = useRef<ReturnType<typeof createThreadReadDwell> | null>(null);
 
   useEffect(() => {
@@ -36,6 +39,16 @@ export function ThreadVisitWatermark(props: { readonly threadRef: ScopedThreadRe
   }, []);
 
   useEffect(() => {
+    if (!serverThread || openedThreadRef.current === threadKey) return;
+    openedThreadRef.current = threadKey;
+    shouldRecordOpenRef.current = claimThreadOpen(
+      serverThread.environmentId,
+      serverThread.id,
+      Date.now(),
+    );
+  }, [serverThread, threadKey]);
+
+  useEffect(() => {
     controllerRef.current?.update(
       serverThread === null
         ? null
@@ -53,9 +66,15 @@ export function ThreadVisitWatermark(props: { readonly threadRef: ScopedThreadRe
                 markThreadVisited(threadKey, visitedAt);
                 return;
               }
+              const opened = shouldRecordOpenRef.current;
+              shouldRecordOpenRef.current = false;
               void visitThread({
                 environmentId: serverThread.environmentId,
-                input: { threadId: serverThread.id, visitedAt },
+                input: {
+                  threadId: serverThread.id,
+                  visitedAt,
+                  ...(opened ? { opened: true } : {}),
+                },
               });
             },
           },

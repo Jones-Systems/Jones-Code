@@ -7,7 +7,17 @@ export function isAppModalPage(pathname: string) {
 }
 
 export function isSidebarUtilityPage(pathname: string) {
-  return pathname.startsWith("/projects/") || pathname === "/pull-requests";
+  return (
+    pathname === "/settings" ||
+    pathname.startsWith("/settings/") ||
+    pathname.startsWith("/projects/") ||
+    pathname === "/usage" ||
+    pathname === "/voice-review" ||
+    pathname === "/pull-requests" ||
+    pathname === "/work-queue" ||
+    pathname === "/requests" ||
+    pathname === "/conversations"
+  );
 }
 
 let mainAppHref: string | null = null;

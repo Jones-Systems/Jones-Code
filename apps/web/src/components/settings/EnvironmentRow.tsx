@@ -48,6 +48,13 @@ export function environmentTransportLabel(
   return environment.displayUrl ?? "Remote link";
 }
 
+/**
+ * One machine in a grouped settings list: icon, name, a single subtitle line,
+ * and controls on the right. Every environment list on the Connections page
+ * uses this so the lists share one rhythm. A row with content `below` keeps
+ * its icon and controls on the name's line, as the header of a taller row,
+ * and gives the subtitle and that content the row's full width.
+ */
 export function EnvironmentRow({
   kind,
   label,
@@ -67,6 +74,9 @@ export function EnvironmentRow({
   readonly className?: string;
   readonly children?: ReactNode;
 }) {
+  const header = below !== undefined;
+  const name = <p className="min-w-0 truncate text-sm font-medium text-foreground">{label}</p>;
+  const line = <div className="truncate text-xs text-muted-foreground">{subtitle}</div>;
   return (
     <div
       className={cn(
@@ -74,18 +84,27 @@ export function EnvironmentRow({
         className,
       )}
     >
-      {/* Dim only identity so switched-off controls remain readable and distinct from disabled controls. */}
       <EnvironmentMachineIcon
         aria-hidden
         kind={kind}
         className={cn("size-4 text-muted-foreground", dimmed && "opacity-60")}
       />
-      <div className={cn("min-w-0", dimmed && "opacity-60")}>
-        <p className="truncate text-sm font-medium text-foreground">{label}</p>
-        <div className="truncate text-xs text-muted-foreground">{subtitle}</div>
-        {below}
-      </div>
-      <div className="flex shrink-0 items-center gap-1">{children}</div>
+      {header ? (
+        <div className={cn("min-w-0", dimmed && "opacity-60")}>{name}</div>
+      ) : (
+        <div className={cn("min-w-0", dimmed && "opacity-60")}>
+          {name}
+          {line}
+        </div>
+      )}
+      {/* Reserve at least the name's line height, and let taller controls push the subtitle below. */}
+      <div className={cn("flex shrink-0 items-center gap-1", header && "min-h-5")}>{children}</div>
+      {header ? (
+        <div className={cn("col-span-2 col-start-2 min-w-0", dimmed && "opacity-60")}>
+          {line}
+          {below}
+        </div>
+      ) : null}
       {detail ? <div className="col-span-2 col-start-2 min-w-0">{detail}</div> : null}
     </div>
   );

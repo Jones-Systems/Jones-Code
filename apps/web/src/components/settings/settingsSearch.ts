@@ -30,7 +30,8 @@ export type SettingsPath =
   | "/settings/storage"
   | "/settings/connections"
   | "/settings/beta"
-  | "/settings/archived";
+  | "/settings/archived"
+  | "/settings/jones-code";
 
 export type SettingsSearchScope =
   | "environment"
@@ -60,6 +61,9 @@ export interface SettingsSearchItem {
   readonly wslAvailableOnly?: boolean;
   readonly managedTunnelOnly?: boolean;
   readonly redesignOnly?: boolean;
+  // Its section only renders for a connected environment with peer links that
+  // lets this session read its links.
+  readonly peerLinksOnly?: boolean;
   readonly secondary?: boolean;
   readonly requiresThreadAutoSettlement?: boolean;
 }
@@ -75,6 +79,7 @@ export interface SettingsSearchAvailability {
   readonly hasThreadAutoSettlement: boolean;
   readonly managedTunnelActive?: boolean;
   readonly redesignEnabled?: boolean;
+  readonly hasPeerLinkHost?: boolean;
 }
 
 export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
@@ -92,6 +97,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/connections": "Connections",
   "/settings/beta": "Beta",
   "/settings/archived": "Archive",
+  "/settings/jones-code": "Jones Code",
 };
 
 export function keybindingSearchAnchorId<Command extends KeybindingCommand>(command: Command) {
@@ -156,6 +162,20 @@ const SOURCE_CONTROL_HOST_TERMS = sourceControlClients.definitions
   .join(" ");
 
 export const SETTINGS_SEARCH_ITEMS = [
+  {
+    id: "thread-activity-window",
+    title: "Thread activity window",
+    to: "/settings/jones-code",
+    searchTerms: [
+      "sidebar working input done recent recency time minutes hours days weeks read completed",
+    ],
+  },
+  {
+    id: "prompts-default-stage",
+    title: "Default prompt view",
+    to: "/settings/jones-code",
+    searchTerms: ["prompts pending queued sent preferred stage opening view"],
+  },
   {
     id: "storage-worktree-keep-when",
     targetId: "storage-worktrees",
@@ -341,8 +361,14 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "project-order",
     title: "Project order",
-    to: "/settings/general",
-    searchTerms: ["sort projects sidebar manual created recent"],
+    to: "/settings/jones-code",
+    searchTerms: ["sort projects sidebar manual created recent reorder drag move draft"],
+  },
+  {
+    id: "environment-order",
+    title: "Environment order",
+    to: "/settings/jones-code",
+    searchTerms: ["sort environments run on host machine reorder drag move"],
   },
   {
     id: "snooze-limited-threads",
@@ -746,6 +772,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["allow simulator emulator ios android drive tools sessions"],
   },
   {
+    id: "agent-decision-snapshot-access",
+    title: "Agent decision snapshot access",
+    to: "/settings/integrations",
+    scope: "project-defaults",
+    searchTerms: [
+      "allow mcp decision snapshot usage cpu memory claude allowance host project override",
+    ],
+  },
+  {
     id: "device-hub",
     title: "Device hub",
     to: "/settings/integrations",
@@ -1023,6 +1058,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     ],
   },
   {
+    id: "linked-environments",
+    peerLinksOnly: true,
+    title: "Linked environments",
+    to: "/settings/connections",
+    targetId: "linked-environments",
+    searchTerms: ["link peer another machine vps agents work there handoff pairing code"],
+  },
+  {
     id: "remote-environments",
     title: "Environments",
     to: "/settings/connections",
@@ -1071,6 +1114,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/scheduled-tasks": null,
   "/settings/beta": null,
   "/settings/archived": "project-defaults",
+  "/settings/jones-code": null,
 };
 
 export function getSettingsSearchTargetScope(targetId: string) {
@@ -1184,6 +1228,7 @@ export function filterAvailableSettingsSearchItems(
       (!item.wslAvailableOnly || availability.isWslSettingsRowVisible) &&
       (!item.requiresThreadAutoSettlement || availability.hasThreadAutoSettlement) &&
       (!item.managedTunnelOnly || availability.managedTunnelActive === true) &&
+      (!item.peerLinksOnly || availability.hasPeerLinkHost === true) &&
       (!item.redesignOnly || availability.redesignEnabled === true),
   );
 }

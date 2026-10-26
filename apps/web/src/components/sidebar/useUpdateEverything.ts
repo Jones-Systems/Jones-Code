@@ -152,17 +152,14 @@ export function useUpdateEverything(localUpdateVersion: string | null) {
             const runs = await providers.updateAll({ quiet: true });
             const outcomes = runs.map((run) => {
               const runOutcome = getProviderUpdateRunOutcome(run);
-              if (runOutcome.status !== "updated") {
-                providerFailures.set(
-                  run.environmentId,
-                  runOutcome.status === "failed" || runOutcome.status === "unchanged"
-                    ? runOutcome.line
-                    : "Provider update interrupted",
-                );
-              }
-              return runOutcome.status === "unchanged"
-                ? { status: "failed" as const, line: runOutcome.line }
-                : runOutcome;
+              if (runOutcome.status === "updated") return { status: "updated" as const };
+              const line =
+                runOutcome.status === "failed" || runOutcome.status === "unchanged"
+                  ? runOutcome.line
+                  : `${run.machineLabel} · ${run.instanceId}: Provider update interrupted`;
+              const previous = providerFailures.get(run.environmentId);
+              providerFailures.set(run.environmentId, previous ? `${previous}\n${line}` : line);
+              return { status: "failed" as const, line };
             });
             for (const machine of machinesById.values()) {
               if (machine.server === null) {

@@ -17,6 +17,7 @@ import { useEnvironmentQuery } from "../../state/query";
 import { terminalEnvironment } from "../../state/terminal";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { randomUUID } from "../../lib/utils";
+import { focusTerminal } from "../../lib/terminalFocus";
 import { ShellRunController, SHELL_RUN_THREAD_ID, type ShellTerminalPort } from "./controller";
 import { shellCommandEligibility } from "./model";
 import { legacyShellRunKey, shellRunKey, shellRunStore } from "./runStore";
@@ -79,7 +80,6 @@ export function ShellDestinationCodeBlock({
     () => null,
   );
   const legacyBlocked = !run && legacyRun !== null;
-  const [focusRequestId, setFocusRequestId] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [closing, setClosing] = useState(false);
   const open = useAtomCommand(terminalEnvironment.open, { reportFailure: false });
@@ -136,8 +136,15 @@ export function ShellDestinationCodeBlock({
       onRunShellCommand(eligibility.command);
       return;
     }
-    setFocusRequestId((value) => value + 1);
-    if (run && !again) return;
+    if (run && !again) {
+      if (target) {
+        focusTerminal(
+          scopeThreadRef(target.environmentId, ThreadId.make(SHELL_RUN_THREAD_ID)),
+          run.terminalId,
+        );
+      }
+      return;
+    }
     void controller
       .run({
         key,
@@ -343,7 +350,6 @@ export function ShellDestinationCodeBlock({
                   if (run.phase !== "writeUnknown")
                     void controller.store.mark(key, "exited", run.terminalId);
                 }}
-                focusRequestId={focusRequestId}
                 autoFocus
                 visible
                 resizeEpoch={0}
