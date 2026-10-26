@@ -3,6 +3,29 @@ import { assert, describe, it } from "@effect/vitest";
 import { buildRuntimeInstructions } from "./runtimeInstructions.ts";
 
 describe("buildRuntimeInstructions", () => {
+  it("keeps absent identity unknown and describes the supplied Jones build", () => {
+    const unknown = buildRuntimeInstructions({ harness: "Codex" });
+    assert.include(unknown, "App identity and build source are unavailable");
+    assert.notInclude(unknown, "running in T3 Code");
+    const identified = buildRuntimeInstructions({
+      harness: "Codex",
+      appIdentity: {
+        productId: "jones-code",
+        productName: "Jones Code",
+        version: "0.1.0-test",
+        source: {
+          repository: "Jones-Systems/Jones-Code",
+          sha: "a".repeat(40),
+          tree: "b".repeat(40),
+        },
+      },
+    });
+    assert.include(identified, "running in Jones Code through the Codex harness");
+    assert.include(identified, "commit " + "a".repeat(40));
+    assert.include(identified, "tree " + "b".repeat(40));
+    assert.include(identified, "a connected desktop or mobile client may have a different version");
+  });
+
   it("links PRs the agent creates, takes over, or pushes to, and no others", () => {
     const instructions = buildRuntimeInstructions({ harness: "Codex" });
 
@@ -12,8 +35,8 @@ describe("buildRuntimeInstructions", () => {
     assert.include(instructions, "If linking fails, say so.");
     assert.notInclude(instructions, "git log -1");
     assert.notInclude(instructions, "work on");
-    // Listing linked PRs as an end-of-work check found nothing to add in audited threads.
-    assert.notInclude(instructions, "list_thread_pull_requests");
+    assert.include(instructions, "list_thread_pull_requests");
+    assert.include(instructions, "link any PR from your work that is missing");
   });
 
   it("waits on a PR only with the watch, never with a poll loop", () => {

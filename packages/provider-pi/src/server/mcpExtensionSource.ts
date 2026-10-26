@@ -1,3 +1,4 @@
+import { buildAppIdentityInstructions } from "@t3tools/provider-core/server/jones/AppIdentity";
 // No T3 imports inside the string; resolve Pi and typebox from the user's Pi install.
 import { T3_CODE_ORCHESTRATION_INSTRUCTIONS } from "@t3tools/provider-core/server/orchestrationInstructions";
 
@@ -21,6 +22,7 @@ const URL_ENV = ${JSON.stringify(T3_MCP_URL_ENV)};
 const TOKEN_ENV = ${JSON.stringify(T3_MCP_BEARER_ENV)};
 const RUNTIME_MODE_ENV = ${JSON.stringify(T3_PI_RUNTIME_MODE_ENV)};
 const EXTENSION_PATH_ENV = ${JSON.stringify(T3_PI_MCP_EXTENSION_PATH_ENV)};
+const APP_IDENTITY_INSTRUCTIONS = process.env.T3_APP_IDENTITY_INSTRUCTIONS || ${JSON.stringify(buildAppIdentityInstructions())};
 const ORCHESTRATION_INSTRUCTIONS = ${JSON.stringify(T3_CODE_ORCHESTRATION_INSTRUCTIONS.trim())};
 const PROTOCOL = "2025-06-18";
 const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls"]);
@@ -336,6 +338,14 @@ export default async function t3McpExtension(pi: ExtensionAPI) {
   const endpoint = env(URL_ENV);
   const token = env(TOKEN_ENV);
   if (endpoint === undefined || token === undefined) {
+    pi.on("before_agent_start", (event) => {
+      const sections = event.systemPromptOptions?.sections;
+      if (sections && typeof sections === "object" && event.systemPromptOptions?.forceSystemPrompt === undefined) {
+        sections.t3_code_app_identity = APP_IDENTITY_INSTRUCTIONS;
+        return undefined;
+      }
+      return { systemPrompt: event.systemPrompt + "\\n\\n" + APP_IDENTITY_INSTRUCTIONS };
+    });
     pi.on("session_start", async (_event, ctx) => {
       ctx.ui.notify(
         "t3-code MCP unavailable: T3_MCP_URL or T3_MCP_BEARER_TOKEN is missing.",
@@ -454,10 +464,11 @@ export default async function t3McpExtension(pi: ExtensionAPI) {
     const sections = event.systemPromptOptions?.sections;
     if (sections && typeof sections === "object" && event.systemPromptOptions?.forceSystemPrompt === undefined) {
       // A full prompt override bypasses Pi's later section rendering.
+      sections.t3_code_app_identity = APP_IDENTITY_INSTRUCTIONS;
       sections.t3_code_orchestration = ORCHESTRATION_INSTRUCTIONS;
       return undefined;
     }
-    return { systemPrompt: event.systemPrompt + "\\n\\n" + ORCHESTRATION_INSTRUCTIONS };
+    return { systemPrompt: event.systemPrompt + "\\n\\n" + APP_IDENTITY_INSTRUCTIONS + "\\n\\n" + ORCHESTRATION_INSTRUCTIONS };
   });
 }
 `;

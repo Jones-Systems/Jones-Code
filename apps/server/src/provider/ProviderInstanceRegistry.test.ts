@@ -697,6 +697,11 @@ describe("ProviderInstanceRegistry — all drivers slice", () => {
     ),
   );
   const layerBaseDeps = AntigravityInstallation.AntigravityInstallation.layer.pipe(
+    Layer.provideMerge(
+      Layer.mock(CodexManagedTokenBroker.CodexManagedTokenBroker)({
+        endpoint: Effect.succeed("unused-private-pipe"),
+      }),
+    ),
     Layer.provideMerge(ServerSecretStore.layer),
     Layer.provideMerge(
       ServerConfig.layerTest(process.cwd(), {

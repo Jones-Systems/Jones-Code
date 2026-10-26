@@ -238,6 +238,7 @@ export const materializePiT3McpExtension = Effect.fn("materializePiT3McpExtensio
 });
 
 export function buildPiRpcLaunch(input: {
+  readonly appIdentityInstructions?: string;
   readonly launchArgs: ReadonlyArray<string>;
   readonly environment: NodeJS.ProcessEnv;
   readonly mcpSession: McpProviderSessionConfig | undefined;
@@ -282,6 +283,7 @@ export function buildPiRpcLaunch(input: {
   }
   const environment = { ...input.environment };
   // MCP credentials belong to this T3 session; discard inherited server/parent credentials.
+  delete environment.T3_APP_IDENTITY_INSTRUCTIONS;
   delete environment[T3_MCP_URL_ENV];
   delete environment[T3_MCP_BEARER_ENV];
   delete environment[T3_PI_MCP_EXTENSION_PATH_ENV];
@@ -290,6 +292,9 @@ export function buildPiRpcLaunch(input: {
     args,
     env: {
       ...environment,
+      ...(input.appIdentityInstructions === undefined
+        ? {}
+        : { T3_APP_IDENTITY_INSTRUCTIONS: input.appIdentityInstructions }),
       ...(hasT3Extension && input.extensionPath !== undefined
         ? { [T3_PI_MCP_EXTENSION_PATH_ENV]: input.extensionPath }
         : {}),
