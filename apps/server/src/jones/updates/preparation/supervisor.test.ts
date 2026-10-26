@@ -16,6 +16,7 @@ import {
 import { adoptVerifiedStage } from "./rebind.ts";
 import {
   makePreparationSupervisor,
+  readPreparedRuntimeReceipt,
   PreparationWorkerError,
   resolvePreparationWorkerCommand,
   type PreparationWorkerExit,
@@ -417,4 +418,29 @@ describe("misbehaving preparation workers", () => {
     await expect(supervisor.sweep()).rejects.toSatisfy(stoppedFor("spawn-failed"));
     expect(await jobsLeft(fixture)).toEqual([]);
   });
+});
+
+it("fully verifies a runtime-only cache miss in the same-build worker and cleans its job", async () => {
+  const h = await home();
+  const observations: PreparationWorkerExit[] = [];
+  const supervisor = makePreparationSupervisor({
+    baseDir: h.base,
+    cacheRoot: h.cacheRoot,
+    command: sourceWorkerCommand,
+    observe: (exit) => {
+      observations.push(exit);
+    },
+  });
+  // Existing fixture setup may already have verified this runtime. Remove only its synthetic cache.
+  await NodeFSP.rm(NodePath.join(h.base, "runtime", "jones-verification", `${BASELINE}.json`), {
+    force: true,
+  });
+  const receipt = await readPreparedRuntimeReceipt(h.base, BASELINE, fixtureHost, supervisor);
+  expect(receipt.version).toBe(BASELINE);
+  expect(observations.map((exit) => [exit.kind, exit.code, exit.reaped])).toEqual([
+    ["verify-runtime", 0, true],
+  ]);
+  expect(await jobsLeft(h)).toEqual([]);
+  await readPreparedRuntimeReceipt(h.base, BASELINE, fixtureHost, supervisor);
+  expect(observations).toHaveLength(1);
 });

@@ -206,7 +206,12 @@ export async function stageQualifiedArtifact(input: {
   readonly signal?: AbortSignal;
 }): Promise<QualifiedArtifactStage> {
   const { host, signal } = input;
-  const options = signal === undefined ? undefined : { signal };
+  const options = {
+    ...(signal === undefined ? {} : { signal }),
+    mode: "receipt" as const,
+    eventLoop: "worker" as const,
+    role: "staging" as const,
+  };
   const staged = await validateJonesStagedArtifact(
     NodePath.dirname(input.artifact.payloadPath),
     input.artifact.candidate,
@@ -233,6 +238,7 @@ export async function stageQualifiedArtifact(input: {
       await extractQualifiedDarwinRuntime({
         artifact: staged,
         destination: scratch,
+        payloadVerification: "staging",
         baseDir: binding.baseDir,
         ...(signal === undefined ? {} : { signal }),
         run: async (command) => {
@@ -251,6 +257,8 @@ export async function stageQualifiedArtifact(input: {
     let migrationPlan: MigrationPlan | undefined;
     const qualifiedStage = await stageQualifiedRuntime({
       artifact: qualifiedRuntimeArtifactFromJonesStage(staged, scratch),
+      consumePayload: true,
+      options,
       binding,
       host,
       validate: async (entryPath) => {
