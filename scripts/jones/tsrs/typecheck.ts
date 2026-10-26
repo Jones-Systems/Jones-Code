@@ -1,7 +1,9 @@
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeURL from "node:url";
+import * as Clock from "effect/Clock";
+import * as Effect from "effect/Effect";
 import * as Identity from "./identity.ts";
-import { runChild } from "./patch.ts";
+import { acquireLock, runChild } from "./patch.ts";
 
 export async function selectCompiler(root: string, host: Identity.Host = Identity.currentHost()) {
   const target = Identity.hostTarget(host);
@@ -25,6 +27,42 @@ export async function admit(
   await selectCompiler(root, host);
 }
 
+export async function launchVerified(
+  installed: Identity.Installed,
+  signal: AbortSignal,
+  launch: (compiler: Identity.Installed, spawned: () => Promise<void>) => Promise<number>,
+): Promise<number> {
+  const deadline = (await Effect.runPromise(Clock.currentTimeMillis)) + 10000;
+  let lock: Awaited<ReturnType<typeof acquireLock>>;
+  for (;;) {
+    if (signal.aborted) throw new Error("Command cancelled before verification.");
+    try {
+      lock = await acquireLock(installed);
+      break;
+    } catch (error) {
+      if ((await Effect.runPromise(Clock.currentTimeMillis)) >= deadline) throw error;
+      // Parallel launchers may observe an in-progress lock write or reclamation.
+      // Retrying never admits a compiler without acquiring and verifying again.
+      await Effect.runPromise(Effect.sleep(25));
+    }
+  }
+  let held = true;
+  const release = async () => {
+    if (!held) return;
+    held = false;
+    await lock.release();
+  };
+  try {
+    if (signal.aborted) throw new Error("Command cancelled before verification.");
+    const compiler = await Identity.verified(installed);
+    // Native spawn completion pins the executable inode. Release before waiting
+    // for compiler exit so independent typechecks can run in parallel.
+    return await launch(compiler, release);
+  } finally {
+    await release();
+  }
+}
+
 export async function typecheck(
   root: string,
   cwd: string,
@@ -33,17 +71,26 @@ export async function typecheck(
 ): Promise<number> {
   if (args.some((arg) => /^(?:--checkerAssignment|--checkers)(?:=|$)/.test(arg)))
     throw new Error("Checker assignment/count are pinned by the repository launcher.");
-  const compiler = await selectCompiler(root);
-  if (compiler.fallback)
-    process.stderr.write(
-      `[tsrs] Unsupported host; using pinned ${Identity.FALLBACK.name}@${Identity.FALLBACK.version} with built-in Effect diagnostics.\n`,
+  const target = Identity.hostTarget();
+  if (target) {
+    return launchVerified(
+      await Identity.resolveInstalled(root, target),
+      signal,
+      (compiler, spawned) =>
+        runChild({
+          executable: compiler.executable,
+          args: [...args, ...Identity.CHECKER_OPTIONS],
+          cwd,
+          signal,
+          spawned,
+        }),
     );
-  return runChild({
-    executable: compiler.executable,
-    args: [...args, ...(compiler.fallback ? [] : Identity.CHECKER_OPTIONS)],
-    cwd,
-    signal,
-  });
+  }
+  const compiler = await Identity.resolveFallback(root);
+  process.stderr.write(
+    `[tsrs] Unsupported host; using pinned ${Identity.FALLBACK.name}@${Identity.FALLBACK.version} with built-in Effect diagnostics.\n`,
+  );
+  return runChild({ executable: compiler.executable, args, cwd, signal });
 }
 
 export async function main(args: string[]): Promise<number> {

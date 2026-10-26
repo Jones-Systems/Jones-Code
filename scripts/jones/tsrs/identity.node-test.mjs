@@ -5,7 +5,7 @@ import * as NodeTest from "node:test";
 import * as NodeTimersPromises from "node:timers/promises";
 import * as Identity from "./identity.ts";
 import { acquireLock, processIdentity, restorePristine, runChild } from "./patch.ts";
-import { admit } from "./typecheck.ts";
+import { admit, launchVerified } from "./typecheck.ts";
 
 const repository = NodePath.resolve(import.meta.dirname, "../../..");
 const scratch = NodePath.join(repository, "node_modules/.cache/jones/tsrs-tests");
@@ -208,42 +208,50 @@ NodeTest.test(
   "cancellation forwards signal, escalates and observes child exit",
   { timeout: 20000 },
   async (t) => {
-    const { installed } = await fixture(t);
+    const { installed } = await patchedFixture(t);
     const marker = NodePath.join(installed.root, "ready");
     const controller = new AbortController();
     let pid;
-    const job = runChild({
-      executable: process.execPath,
-      args: [
-        "-e",
-        `process.on('SIGTERM',()=>{}); require('node:fs').writeFileSync(${JSON.stringify(marker)},'ready'); setInterval(()=>{},1000)`,
-      ],
-      cwd: repository,
-      signal: AbortSignal.any([controller.signal, stopping.signal]),
-      spawned: async (value) => {
-        pid = value;
-        for (let attempt = 0; attempt < 200; attempt++) {
-          if (
-            await NodeFSP.stat(marker).then(
-              () => true,
-              (error) => {
-                if (error.code === "ENOENT") return false;
-                throw error;
-              },
-            )
-          ) {
-            controller.abort("SIGTERM");
-            return;
-          }
-          await NodeTimersPromises.setTimeout(10, undefined, { signal: stopping.signal });
-        }
-        throw new Error("Owned child never became ready.");
-      },
-    });
+    const job = launchVerified(
+      installed,
+      AbortSignal.any([controller.signal, stopping.signal]),
+      (_compiler, spawned) =>
+        runChild({
+          executable: process.execPath,
+          args: [
+            "-e",
+            `process.on('SIGTERM',()=>{}); require('node:fs').writeFileSync(${JSON.stringify(marker)},'ready'); setInterval(()=>{},1000)`,
+          ],
+          cwd: repository,
+          signal: AbortSignal.any([controller.signal, stopping.signal]),
+          spawned: async (value) => {
+            await spawned();
+            pid = value;
+            for (let attempt = 0; attempt < 200; attempt++) {
+              if (
+                await NodeFSP.stat(marker).then(
+                  () => true,
+                  (error) => {
+                    if (error.code === "ENOENT") return false;
+                    throw error;
+                  },
+                )
+              ) {
+                controller.abort("SIGTERM");
+                return;
+              }
+              await NodeTimersPromises.setTimeout(10, undefined, { signal: stopping.signal });
+            }
+            throw new Error("Owned child never became ready.");
+          },
+        }),
+    );
     jobs.add(job);
     try {
       NodeAssert.equal(await job, 143);
       NodeAssert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+      const mutation = await acquireLock(installed);
+      await mutation.release();
     } finally {
       jobs.delete(job);
     }
@@ -261,4 +269,128 @@ NodeTest.test("identity reads refuse oversized unexpected files before hashing",
   const { installed } = await fixture(t);
   await NodeFSP.truncate(installed.executable, 65 * 1024 * 1024);
   await NodeAssert.rejects(Identity.image(installed.executable), /bounded identity read/);
+});
+
+NodeTest.test("verified launch excludes restore until successful spawn", async (t) => {
+  const { installed } = await patchedFixture(t);
+  let observedSpawn = false;
+  NodeAssert.equal(
+    await launchVerified(installed, stopping.signal, async (_compiler, spawned) => {
+      await NodeAssert.rejects(acquireLock(installed), /in progress/);
+      NodeAssert.equal((await Identity.classify(installed)).name, "S1");
+      return runChild({
+        executable: process.execPath,
+        args: ["-e", "process.exitCode=7"],
+        cwd: repository,
+        signal: stopping.signal,
+        spawned: async () => {
+          observedSpawn = true;
+          await spawned();
+          const mutation = await acquireLock(installed);
+          try {
+            await restorePristine(installed);
+          } finally {
+            await mutation.release();
+          }
+        },
+      });
+    }),
+    7,
+  );
+  NodeAssert.ok(observedSpawn);
+  NodeAssert.equal((await Identity.classify(installed)).name, "S0");
+});
+
+NodeTest.test(
+  "parallel launchers release the lock before either compiler exits",
+  { timeout: 10000 },
+  async (t) => {
+    const { installed } = await patchedFixture(t);
+    const controller = new AbortController();
+    const signal = AbortSignal.any([controller.signal, stopping.signal]);
+    let firstSpawn;
+    const firstReady = new Promise((resolve) => {
+      firstSpawn = resolve;
+    });
+    const marker = NodePath.join(installed.root, "second-spawned");
+    const first = launchVerified(installed, signal, (_compiler, spawned) =>
+      runChild({
+        executable: process.execPath,
+        args: [
+          "-e",
+          `const fs=require('node:fs'); const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(marker)})){clearInterval(timer);process.exitCode=11}},10); setTimeout(()=>{process.exit(99)},5000).unref()`,
+        ],
+        cwd: repository,
+        signal,
+        spawned: async () => {
+          await spawned();
+          firstSpawn();
+        },
+      }),
+    );
+    jobs.add(first);
+    let second;
+    try {
+      await firstReady;
+      second = launchVerified(installed, signal, (_compiler, spawned) =>
+        runChild({
+          executable: process.execPath,
+          args: ["-e", "process.exitCode=12"],
+          cwd: repository,
+          signal,
+          spawned: async () => {
+            await spawned();
+            await NodeFSP.writeFile(marker, "ready");
+          },
+        }),
+      );
+      jobs.add(second);
+      NodeAssert.deepEqual(await Promise.all([first, second]), [11, 12]);
+      const mutation = await acquireLock(installed);
+      await mutation.release();
+    } finally {
+      controller.abort("SIGTERM");
+      await Promise.allSettled([first, ...(second ? [second] : [])]);
+      jobs.delete(first);
+      if (second) jobs.delete(second);
+    }
+  },
+);
+
+NodeTest.test("failed spawn and cancelled lock wait release only owned locks", async (t) => {
+  const { installed } = await patchedFixture(t);
+  await NodeAssert.rejects(
+    launchVerified(installed, stopping.signal, (_compiler, spawned) =>
+      runChild({
+        executable: NodePath.join(installed.root, "missing-executable"),
+        args: [],
+        cwd: repository,
+        signal: stopping.signal,
+        spawned,
+      }),
+    ),
+  );
+  const mutation = await acquireLock(installed);
+  const controller = new AbortController();
+  let attempts = 0;
+  const waiting = launchVerified(
+    installed,
+    AbortSignal.any([controller.signal, stopping.signal]),
+    async () => {
+      attempts++;
+      return 0;
+    },
+  );
+  const rejection = NodeAssert.rejects(waiting, /cancelled/);
+  try {
+    await NodeTimersPromises.setTimeout(75, undefined, { signal: stopping.signal });
+    controller.abort("SIGTERM");
+    await rejection;
+    NodeAssert.equal(attempts, 0);
+    await NodeAssert.rejects(acquireLock(installed), /in progress/);
+  } finally {
+    controller.abort("SIGTERM");
+    await Promise.allSettled([waiting]);
+    await mutation.release();
+  }
 });
