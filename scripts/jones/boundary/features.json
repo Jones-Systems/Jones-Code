@@ -9,11 +9,6 @@
       "scope": "Shared saved project names take precedence over repository labels when every checkout agrees, including names equal to the repository short name. Mixed titles retain the repository fallback; group identity, environment membership and persistence stay unchanged. One shared-client hook covers web, desktop and mobile."
     },
     {
-      "id": "experimental-typecheck",
-      "tests": ["scripts/jones/experimental-typecheck/runner.test.mjs"],
-      "scope": "Explicit opt-in tsrs TypeScript-only checking; existing authoritative checks retain Effect diagnostics. The Jones runner discovers pnpm workspaces, validates the existing noEmit script shape, uses the pinned local compiler serially, and owns signal forwarding and isolated build-info cleanup. Root package script and exact dependency/lock entries are minimal shared integration; development documents narrower coverage."
-    },
-    {
       "id": "cross-environment-model-selection",
       "tests": [
         "apps/web/src/jones/settings/modelSelectionCorrespondence.test.ts",
@@ -1776,7 +1771,7 @@
     {
       "id": "incremental-typecheck",
       "tests": ["scripts/jones/incremental-typecheck/incrementalTypecheck.node-test.mjs"],
-      "scope": "Opt-in serial native incremental checking for explicitly selected workspaces whose normal script is tsc --noEmit. Every invocation runs the installed checker and preserves TypeScript and Effect diagnostics. Invocation-private buildinfo and atomic identity/payload publication isolate concurrent writers; fresh mode bypasses retained state. Root commands, editor preparation, emit and APIs keep existing behavior. Root package.json adds the command and scripts/package.json registers focused Node tests; maintainer guidance explains scope and cache lifetime."
+      "scope": "Opt-in serial verified official Effect TSRS incremental checking for explicitly selected exact-launcher workspaces. V2 identity covers compiler/pins/standard libraries, workspace/dependency bindings and guarded raw JSONC inputs, without unsupported native showConfig. Every invocation executes the verified compiler; authenticated launch coordinates with patch/restore only through spawn. Legacy v1 is ignored and preserved; unsupported retained hosts fail clearly. Fresh mode bypasses retained state; private buildinfo cleanup and existing bounds remain."
     },
     {
       "id": "vcs-cache-efficiency",
@@ -2180,6 +2175,18 @@
         "packages/client-runtime/src/state/threads-sync.test.ts"
       ],
       "scope": "Targeted upstream backport 553203c57b780cef9fb30ad835d759befe0dcb7c (#24589): cap every long-turn snapshot and history page by row and encoded-byte budgets, preserve cursor/interrupt dependencies, remove unused full-projection overflow encoding, and expire old thread caches. Jones keyset selection retains its extracted budget and keyed interrupt lookup; no contracts, schema or migrations change. No full upstream import."
+    },
+    {
+      "id": "tsrs-typecheck",
+      "tests": [
+        "scripts/jones/tsrs/identity.node-test.mjs",
+        "scripts/jones/tsrs/build-info.node-test.mjs",
+        "packages/client-runtime/src/jones/sync/commandIsolation.test.ts",
+        "packages/client-runtime/src/state/fileMetadata.test.ts",
+        "packages/client-runtime/src/state/projectCommands.test.ts",
+        "packages/client-runtime/src/state/threadCommands.test.ts"
+      ],
+      "scope": "Pinned official Effect-TS TSRS identity, private-install patch recovery, verified launcher on all33 CLI surfaces and uncached CI admission. Pure task-cache helper retains automatic input/output tracking and excludes only buildinfo and exact patch lock/reclaim metadata;31 public aliases retain exact native commands. Five complete ConnectionTarget fixture values preserve existing tests. Unsupported local fallback has the explicit Q2-R1 TS377049 limitation; full adoption qualification is required before main integration. One-shot CLI grammar refuses unqualified modes before candidate/fallback lookup. Shared finite raw-config and bounded seed utilities preserve retained v2 identity; Ordinary native state uses configuration-bound logical-form envelopes, same-parent private working files, self-reference-only conversion and bounded external/raw accounting. Native cache metadata stays excluded from task restoration; complete adoption qualification remains required."
     }
   ]
 }

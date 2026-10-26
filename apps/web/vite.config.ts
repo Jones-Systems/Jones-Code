@@ -1,3 +1,4 @@
+import { typecheckTask } from "../../scripts/jones/tsrs/task-cache.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Vite config runs before any Effect runtime.
 import * as NodeFSP from "node:fs/promises";
 import * as NodeZlib from "node:zlib";
@@ -245,11 +246,7 @@ export default defineConfig(() => {
   return {
     run: {
       tasks: {
-        // tsc (tsc-rs) rewrites the tsbuildinfo it reads, which keeps a task out of the cache.
-        typecheck: {
-          command: "tsc --noEmit",
-          cache: { input: [{ auto: true }, "!*.tsbuildinfo"] },
-        },
+        typecheck: typecheckTask("node ../../scripts/jones/tsrs/typecheck.ts --noEmit"),
       },
     },
     assetsInclude: ["**/*.wasm"],

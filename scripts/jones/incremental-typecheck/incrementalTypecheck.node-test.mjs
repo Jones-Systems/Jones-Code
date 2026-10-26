@@ -3,6 +3,8 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeAssert from "node:assert/strict";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
+import * as NodeModule from "node:module";
+import * as CompilerIdentity from "../tsrs/identity.ts";
 import * as NodePath from "node:path";
 import * as NodeTimersPromises from "node:timers/promises";
 import * as NodeTest from "node:test";
@@ -17,7 +19,6 @@ import {
   configurationInputs,
   digest,
   discoverWorkspaces,
-  effectiveConfig,
   encodeEnvelope,
   parseArguments,
   projectIdentity,
@@ -28,6 +29,7 @@ import {
   selectWorkspaces,
   sharedIdentity,
   validNativePayload,
+  workspaceCommand,
 } from "./incrementalTypecheck.ts";
 
 const repository = NodePath.resolve(import.meta.dirname, "../../..");
@@ -37,7 +39,7 @@ const scratchParent =
 const payload = (version = "source-v1") =>
   Buffer.from(
     JSON.stringify({
-      version: "7.1.0-dev+effect-tsgo.0.51.1",
+      version: "7.1.0-dev+effect-tsgo.0.57.0",
       fileNames: ["../../source.ts"],
       fileInfos: [version],
       root: [1],
@@ -70,7 +72,7 @@ function fixture(t) {
     const manifest = {
       name: `@fixture/${name}`,
       type: "module",
-      scripts: { typecheck: "tsc --noEmit" },
+      scripts: { typecheck: workspaceCommand(root, directory) },
     };
     write(NodePath.join(directory, "package.json"), JSON.stringify(manifest));
     write(
@@ -80,39 +82,38 @@ function fixture(t) {
     write(NodePath.join(directory, "source.ts"), "export const answer: number = 42;\n");
     return { name: manifest.name, directory, script: manifest.scripts.typecheck };
   });
-  const wrapper = NodePath.join(root, "node_modules", "typescript", "package.json");
-  const platform = `${HostProcess.Platform.defaultValue()}-${HostProcess.Architecture.defaultValue()}`;
+  const target = CompilerIdentity.hostTarget();
+  NodeAssert.ok(target, "Retained fixture requires an official Effect TSRS supported host");
+  const wrapper = NodePath.join(root, "node_modules/tsrs/package.json");
   const nativeManifest = NodePath.join(
-    NodePath.dirname(wrapper),
-    "node_modules",
-    "@typescript",
-    `typescript-${platform}`,
+    root,
+    "node_modules/.pnpm/native/node_modules/@tsrs",
+    target,
     "package.json",
   );
-  const executable = NodePath.join(
-    NodePath.dirname(nativeManifest),
-    "lib",
-    HostProcess.Platform.defaultValue() === "win32" ? "tsc.exe" : "tsc",
-  );
+  const executable = NodePath.join(NodePath.dirname(nativeManifest), "tsrs");
+  write(wrapper, JSON.stringify({ name: "tsrs", version: CompilerIdentity.TSRS_VERSION }));
   write(
-    wrapper,
-    JSON.stringify({
-      name: "@tsc-rs/typescript",
-      version: "0.8.0",
-      tscVersion: "7.1.0-dev",
-      optionalDependencies: {
-        [`@typescript/typescript-${platform}`]: `npm:@tsc-rs/${platform}@0.8.0`,
-      },
-    }),
+    nativeManifest,
+    JSON.stringify({ name: `@tsrs/${target}`, version: CompilerIdentity.TSRS_VERSION }),
   );
-  write(nativeManifest, JSON.stringify({ name: `@tsc-rs/${platform}`, version: "0.8.0" }));
-  write(executable, "fixture executable, never executed");
+  const require = NodeModule.createRequire(NodePath.join(repository, "package.json"));
+  const liveWrapper = require.resolve("tsrs/package.json");
+  const liveManifest = NodeModule.createRequire(liveWrapper).resolve(
+    `@tsrs/${target}/package.json`,
+  );
+  const liveExecutable = NodePath.join(NodePath.dirname(liveManifest), "tsrs");
+  NodeFS.copyFileSync(`${liveExecutable}.original`, `${executable}.original`);
+  NodeFS.copyFileSync(liveExecutable, executable);
   NodeFS.chmodSync(executable, 0o700);
+  const binding = NodePath.join(NodePath.dirname(wrapper), "node_modules/@tsrs", target);
+  NodeFS.mkdirSync(NodePath.dirname(binding), { recursive: true });
+  NodeFS.symlinkSync(NodePath.dirname(nativeManifest), binding, "dir");
   write(
     NodePath.join(NodePath.dirname(executable), "lib.d.ts"),
     "declare const fixture: number;\n",
   );
-  const compiler = { executable, wrapper, nativeManifest };
+  const compiler = { root, target, executable, wrapper, nativeManifest };
   const workspaces = [
     { name: "root", directory: root, script: "vp run -r typecheck" },
     ...projects,
@@ -138,6 +139,8 @@ function nativePath(command) {
   NodeAssert.deepEqual(command.args.slice(0, index), [
     "--noEmit",
     "--incremental",
+    "--checkerAssignment",
+    "go",
     "--checkers",
     "2",
   ]);
@@ -151,12 +154,10 @@ function compilerSeam(f, check) {
         code: 0,
         stdout: JSON.stringify(f.workspaces.map((workspace) => ({ path: workspace.directory }))),
       };
-    if (command.args.includes("--version")) return { code: 0, stdout: "Version 7.1.0-dev\n" };
-    if (command.args.includes("--showConfig"))
-      return {
-        code: 0,
-        stdout: NodeFS.readFileSync(NodePath.join(command.cwd, "tsconfig.json"), "utf8"),
-      };
+    NodeAssert.ok(
+      !command.args.includes("--showConfig"),
+      "TSRS does not support native configuration output",
+    );
     return check(command);
   };
 }
@@ -168,42 +169,23 @@ function assertOnlyEntry(f) {
 }
 
 NodeTest.test(
-  "compiler resolution requires the pinned Rust TypeScript alias and native package",
+  "compiler resolution requires pinned official Effect TSRS manifests and patched bytes",
   async (t) => {
     const f = fixture(t);
     NodeAssert.deepEqual(await resolveCompiler(f.root), f.compiler);
-    const wrapper = JSON.parse(NodeFS.readFileSync(f.compiler.wrapper, "utf8"));
-    for (const replacement of [
-      { ...wrapper, name: "typescript" },
-      { ...wrapper, version: "0.7.0" },
-      { ...wrapper, tscVersion: "other" },
-      { ...wrapper, optionalDependencies: {} },
-      {
-        ...wrapper,
-        optionalDependencies: {
-          ...wrapper.optionalDependencies,
-          [Object.keys(wrapper.optionalDependencies)[0]]: "npm:@tsc-rs/wrong@0.8.0",
-        },
-      },
+    for (const [filename, field, replacement] of [
+      [f.compiler.wrapper, "name", "typescript"],
+      [f.compiler.wrapper, "version", "other"],
+      [f.compiler.nativeManifest, "name", "@tsrs/wrong-platform"],
+      [f.compiler.nativeManifest, "version", "other"],
     ]) {
-      write(f.compiler.wrapper, JSON.stringify(replacement));
-      await NodeAssert.rejects(
-        resolveCompiler(f.root),
-        /Expected installed @tsc-rs\/typescript 0\.8\.0/,
-      );
+      const original = NodeFS.readFileSync(filename);
+      write(filename, JSON.stringify({ ...JSON.parse(original), [field]: replacement }));
+      await NodeAssert.rejects(resolveCompiler(f.root), /Expected tsrs/);
+      write(filename, original);
     }
-    write(f.compiler.wrapper, JSON.stringify(wrapper));
-    const native = JSON.parse(NodeFS.readFileSync(f.compiler.nativeManifest, "utf8"));
-    for (const replacement of [
-      { ...native, name: "wrong-platform" },
-      { ...native, version: "0.7.0" },
-    ]) {
-      write(f.compiler.nativeManifest, JSON.stringify(replacement));
-      await NodeAssert.rejects(resolveCompiler(f.root), /Expected installed @tsc-rs\/.* 0\.8\.0/);
-    }
-    write(f.compiler.nativeManifest, JSON.stringify(native));
     NodeFS.rmSync(f.compiler.executable);
-    await NodeAssert.rejects(resolveCompiler(f.root));
+    await NodeAssert.rejects(resolveCompiler(f.root), /not verified/);
   },
 );
 
@@ -267,6 +249,41 @@ NodeTest.test(
       compilerSeam(f, () => NodeAssert.fail("No compiler expected")),
     );
     NodeAssert.deepEqual(result, f.workspaces);
+    const project = f.projects[0];
+    const filename = NodePath.join(project.directory, "package.json");
+    const manifest = JSON.parse(NodeFS.readFileSync(filename, "utf8"));
+    manifest.scripts["typecheck:native"] = manifest.scripts.typecheck;
+    manifest.scripts.typecheck = "vp run tsrs:typecheck";
+    write(filename, JSON.stringify(manifest));
+    const aliased = await discoverWorkspaces(
+      f.root,
+      signal(),
+      compilerSeam(f, () => NodeAssert.fail("No compiler expected")),
+    );
+    NodeAssert.deepEqual(
+      selectWorkspaces(f.root, aliased, parseArguments(["--all"])).selected.map((p) => p.name),
+      f.projects.map((p) => p.name),
+    );
+    const selectedAlias = aliased.find((p) => p.name === project.name);
+    NodeAssert.equal(selectedAlias.nativeScript, workspaceCommand(f.root, project.directory));
+    NodeAssert.throws(
+      () =>
+        selectWorkspaces(
+          f.root,
+          [{ ...selectedAlias, nativeScript: "tsc --noEmit" }],
+          parseArguments([project.name]),
+        ),
+      /Unsupported/,
+    );
+    NodeAssert.throws(
+      () =>
+        selectWorkspaces(
+          f.root,
+          [{ ...selectedAlias, script: "vp run tsrs:typecheck --other" }],
+          parseArguments([project.name]),
+        ),
+      /Unsupported/,
+    );
     await NodeAssert.rejects(
       discoverWorkspaces(f.root, signal(), async () => ({ code: 1, stdout: "discovery failure" })),
       /discovery failed/,
@@ -329,7 +346,7 @@ NodeTest.test(
 );
 
 NodeTest.test(
-  "identity covers native configuration/Effect settings, worktree, compiler, libraries, workspace and installed dependency metadata, not source/HEAD",
+  "identity covers raw configuration/Effect settings, worktree, compiler, libraries, workspace and installed dependency metadata, not source/HEAD",
   async (t) => {
     const f = fixture(t);
     const shared = async () => await sharedIdentity(f.root, f.workspaces, f.compiler);
@@ -419,16 +436,19 @@ NodeTest.test(
     NodeAssert.notEqual(id, projectIdentity(`${f.root}-other`, f.projects[0], baseline, config));
     config.compilerOptions.plugins[0].diagnosticSeverity.globalDate = "off";
     NodeAssert.notEqual(id, projectIdentity(f.root, f.projects[0], baseline, config));
-    let observed;
-    NodeAssert.deepEqual(
-      await effectiveConfig(f.compiler, f.projects[0], signal(), async (command) => {
-        observed = command;
-        return { code: 0, stdout: JSON.stringify(config) };
-      }),
-      config,
+    const rawInputs = await configurationInputs(f.root, [f.projects[0]]);
+    const rawIdentity = projectIdentity(
+      f.root,
+      f.projects[0],
+      baseline,
+      rawInputs.get(f.projects[0].directory),
     );
-    NodeAssert.ok(observed.args.includes("--showConfig"));
-    NodeAssert.ok(!observed.args.includes("--tsBuildInfoFile"));
+    write(NodePath.join(f.projects[0].directory, "tsconfig.json"), JSON.stringify(config));
+    const changedInputs = await configurationInputs(f.root, [f.projects[0]]);
+    NodeAssert.notEqual(
+      rawIdentity,
+      projectIdentity(f.root, f.projects[0], baseline, changedInputs.get(f.projects[0].directory)),
+    );
   },
 );
 
@@ -602,8 +622,10 @@ NodeTest.test(
     const start = (index) =>
       checkProject({
         ...f.options,
-        run: (command) =>
-          new Promise((resolve) => {
+        run: async (command) => {
+          // This controlled runner models successful spawn before blocking exit.
+          await command.spawned?.();
+          return new Promise((resolve) => {
             const filename = nativePath(command);
             started[index] = filename;
             releases[index] = () => {
@@ -612,7 +634,8 @@ NodeTest.test(
               resolve({ code: 0, stdout: "" });
             };
             readiness[index].resolve();
-          }),
+          });
+        },
       });
     const first = start(0);
     const second = start(1);
@@ -784,8 +807,8 @@ NodeTest.test(
     });
     NodeAssert.equal(
       await runCli(f.root, ["--all"], async (command) => {
-        if (command.args.includes("--showConfig") && command.cwd === f.projects[0].directory) {
-          return { code: 2, stdout: "fixture native config diagnostic\n" };
+        if (command.cwd === f.projects[0].directory) {
+          return { code: 2, stdout: "fixture native diagnostic\n" };
         }
         return successful(command);
       }),
@@ -891,7 +914,7 @@ NodeTest.test(
     );
     write(declaration, "declare const dependency: number;\n");
     write(source, "export const answer: number = dependency;\n");
-    const config = await effectiveConfig(compiler, project, signal(), runProcess);
+    const config = (await configurationInputs(f.root, [project])).get(project.directory);
     const identity = projectIdentity(f.root, project, "stable", config);
     const seeds = [];
     const output = [];
@@ -946,7 +969,7 @@ NodeTest.test(
 );
 
 NodeTest.test(
-  "raw inherited Effect inputs invalidate lossy native configuration identity and preserve retained diagnostics",
+  "raw inherited Effect inputs invalidate retained identity and preserve retained diagnostics",
   async (t) => {
     const f = fixture(t);
     const compiler = await resolveCompiler(repository);
@@ -971,7 +994,7 @@ NodeTest.test(
       source,
       "import * as Effect from 'effect/Effect'; export const probe = Effect.sync(() => 0);\n",
     );
-    const config = await effectiveConfig(compiler, project, signal(), runProcess);
+    const config = (await configurationInputs(f.root, [project])).get(project.directory);
     const identityForInputs = async () =>
       projectIdentity(f.root, project, "stable", {
         native: config,
@@ -1009,11 +1032,14 @@ NodeTest.test(
     NodeAssert.equal(await check(), 0, outputs.at(-1));
     NodeAssert.deepEqual(seeds, [false, true, true, true]);
     assertOnlyEntry(f);
-    NodeAssert.doesNotMatch(JSON.stringify(config), /globalDate/);
+    NodeAssert.equal(typeof config, "string");
     write(base, baseBytes.replace('"globalDateInEffect": "error"', '"globalDateInEffect": "off"'));
     NodeAssert.notEqual(await identityForInputs(), identity);
     identity = await identityForInputs();
-    NodeAssert.deepEqual(await effectiveConfig(compiler, project, signal(), runProcess), config);
+    NodeAssert.notEqual(
+      (await configurationInputs(f.root, [project])).get(project.directory),
+      config,
+    );
     write(
       source,
       "import * as Effect from 'effect/Effect'; export const probe = Effect.sync(() => Date.now());\n",
@@ -1186,3 +1212,37 @@ NodeTest.test(
     assertOnlyEntry(f);
   },
 );
+
+NodeTest.test("v2 retained checking never reads or removes legacy v1 entries", async (t) => {
+  const f = fixture(t);
+  const paths = cachePaths(f.root, f.projects[0]);
+  NodeAssert.equal(NodePath.basename(paths.namespace), "v2");
+  const legacy = NodePath.join(
+    NodePath.dirname(paths.namespace),
+    "v1",
+    NodePath.basename(paths.directory),
+    "entry.json",
+  );
+  const bytes = encodeEnvelope(f.options.identity, payload("legacy-valid-if-read"));
+  write(legacy, bytes);
+  let checked = false;
+  NodeAssert.equal(
+    await checkProject({
+      ...f.options,
+      run: async (command) => {
+        checked = true;
+        const filename = nativePath(command);
+        NodeAssert.equal(NodeFS.statSync(filename).size, 0);
+        write(filename, payload("new-native-check"));
+        return { code: 0, stdout: "" };
+      },
+    }),
+    0,
+  );
+  NodeAssert.ok(checked);
+  NodeAssert.deepEqual(NodeFS.readFileSync(legacy), bytes);
+  NodeAssert.deepEqual(
+    await readSeed(paths.entry, f.options.identity),
+    payload("new-native-check"),
+  );
+});
