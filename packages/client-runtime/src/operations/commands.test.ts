@@ -51,6 +51,7 @@ import {
   revertThreadCheckpoint,
   resumeThreadQueue,
   startThreadTurn,
+  prepareImportedHistoryMessage,
 } from "./commands.ts";
 
 const layerTestCrypto = Layer.succeed(
@@ -162,7 +163,7 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
 
 describe("V2 environment commands", () => {
   it.effect.each([false, true, undefined])(
-    "preserves composer selection intent %s through ordinary and immediate dispatch",
+    "preserves composer selection intent %s through ordinary, immediate and imported dispatch",
     (modelSelectionExplicit) =>
       Effect.gen(function* () {
         const commands: OrchestrationV2Command[] = [];
@@ -187,7 +188,25 @@ describe("V2 environment commands", () => {
             dispatchMode,
           }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
         }
-        expect(commands).toHaveLength(2);
+        const imported = yield* prepareImportedHistoryMessage({
+          commandId: CommandId.make("composer-imported"),
+          threadId: v2ThreadId,
+          message: {
+            messageId: MessageId.make("composer-imported"),
+            role: "user",
+            text: "continue imported work",
+            attachments: [],
+          },
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex-compatible-b"),
+            model: "gpt-6-astra",
+          },
+          ...(modelSelectionExplicit === undefined ? {} : { modelSelectionExplicit }),
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+        commands.push(imported);
+        expect(commands).toHaveLength(3);
         for (const command of commands) {
           expect(command.type).toBe("message.dispatch");
           if (command.type !== "message.dispatch") throw new Error("Expected message dispatch");

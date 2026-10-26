@@ -1,3 +1,4 @@
+import { consumeSubmittedModelPick } from "../jones/threadConfiguration/modelSelection";
 import {
   decodeImportedHistoryCorrelation,
   encodeImportedHistoryCorrelation,
@@ -1142,12 +1143,14 @@ export async function removeDeliveredCloudQueuedMessage(
     if (
       JSON.stringify([
         archived.modelSelection,
+        archived.modelSelectionExplicit,
         archived.runtimeMode,
         archived.interactionMode,
         archived.creation,
       ]) !==
       JSON.stringify([
         message.modelSelection,
+        message.modelSelectionExplicit,
         message.runtimeMode,
         message.interactionMode,
         message.creation,
@@ -1475,6 +1478,18 @@ export function updateComposerDraftSettings(
       ...settings,
     };
     return withComposerDraft(current, draftKey, draft);
+  });
+}
+
+export function consumeSubmittedComposerModelPick(
+  draftKey: string,
+  submittedPick: ModelSelection | undefined,
+): void {
+  updateComposerDrafts((current) => {
+    const draft = current[draftKey];
+    if (!draft) return current;
+    const next = consumeSubmittedModelPick(draft, submittedPick);
+    return next === draft ? current : withComposerDraft(current, draftKey, next);
   });
 }
 

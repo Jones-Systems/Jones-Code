@@ -49,6 +49,27 @@ client connections and provider-instance rebuilds. Releases are immutable, with 
 selecting the version for new processes. Running processes hold leases on their version. Updates
 and removal must respect those leases instead of replacing executables under a running agent.
 
+## Codex account failover
+
+An attributed native usage-limit or availability failure can continue on another enabled,
+compatible Codex instance. Compatibility must prove shared native history; a matching driver
+alone is insufficient. Saved thread defaults and the failed run's captured model/options have
+separate ownership: the switch preserves the former, while the continuation preserves the
+latter. Neither changes Claude behavior.
+
+The durable evidence and switch step bridge crashes between the failure, saved-selection
+change and continuation. The continuation's transaction revalidates selection revision and
+live admission before committing queue overrides. Only queued sends with recorded proof of
+inherited intent follow the switch; explicit selections and older unmarked runs remain fixed.
+A refused continuation leaves the saved target visible and applies the existing failure hold.
+
+Detaching a Codex session interrupts native children, so failover waits for source work to
+settle. The same pending decision holds delegated-child result delivery until continuation or
+exhaustion, preventing a transient failure from finalizing its parent. Startup reconciles these
+decisions after native runtime recovery and before delegated-result recovery and effect workers;
+evidence older than 24 hours cannot start an automatic continuation. Rejected command receipts
+are terminal and never become retry permission.
+
 ## Setup must not happen as a health-check side effect
 
 Opening a provider session can start MCP servers, run hooks, or launch a login browser.

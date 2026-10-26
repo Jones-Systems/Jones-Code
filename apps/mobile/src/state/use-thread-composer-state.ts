@@ -1,3 +1,4 @@
+import { captureFollowUpModelSelection } from "../jones/threadConfiguration/modelSelection";
 import { importedHistoryContinuationEligible } from "@t3tools/client-runtime/jones/imported-history/continuation";
 import {
   getMobileImportedHistoryChoice,
@@ -83,6 +84,7 @@ import {
   insertComposerDraftText,
   insertComposerDraftContext,
   clearComposerDraftContent,
+  consumeSubmittedComposerModelPick,
   composerContextImportsAtom,
   ensureComposerDraftsLoaded,
   getComposerDraftSnapshot,
@@ -613,7 +615,10 @@ export function useThreadComposerState() {
       return null;
     }
 
-    const modelSelection = draft.modelSelection ?? thread.modelSelection;
+    const { modelSelection, modelSelectionExplicit } = captureFollowUpModelSelection(
+      draft.modelSelection,
+      thread.modelSelection,
+    );
     const serverConfig = selectedEnvironmentRuntime?.serverConfig;
     if (
       selectedEnvironmentRuntime?.connectionState === "connected" &&
@@ -767,6 +772,7 @@ export function useThreadComposerState() {
               ...(context && inlineContext ? { context } : {}),
             },
             modelSelection,
+            modelSelectionExplicit,
             runtimeMode: draft.runtimeMode ?? thread.runtimeMode,
             interactionMode: resolveProviderInteractionMode(
               provider,
@@ -811,6 +817,7 @@ export function useThreadComposerState() {
       attachments,
       context: draft.context,
       modelSelection,
+      modelSelectionExplicit,
       runtimeMode: draft.runtimeMode ?? thread.runtimeMode,
       interactionMode: resolveProviderInteractionMode(
         provider,
@@ -821,7 +828,10 @@ export function useThreadComposerState() {
     });
     clearComposerDraftContent(threadKey, { deferAttachmentCleanup: true });
     enqueuePromise.then(
-      () => scheduleUnusedComposerAttachmentCleanup(attachments),
+      () => {
+        consumeSubmittedComposerModelPick(threadKey, draft.modelSelection);
+        scheduleUnusedComposerAttachmentCleanup(attachments);
+      },
       (error: unknown) => {
         // Restore text via merge (idempotent) but attachments via the uncapped
         // append: the merge path slots existing attachments first and truncates

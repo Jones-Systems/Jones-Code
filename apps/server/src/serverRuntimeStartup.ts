@@ -464,6 +464,7 @@ export const runOrderedV2StartupPhases = Effect.fn(
   readonly awaitTrialCommit?: Effect.Effect<void, TrialError, TrialContext>;
   readonly importLegacyShells: Effect.Effect<Import, ImportError, ImportContext>;
   readonly recover: Effect.Effect<Recovery, RecoveryError, RecoveryContext>;
+  readonly recoverCodexFailover?: Effect.Effect<void, DelegationError, DelegationContext>;
   readonly recoverDelegatedTasks: Effect.Effect<void, DelegationError, DelegationContext>;
   readonly startEffectWorker: Effect.Effect<void, WorkerError, WorkerContext>;
   readonly autoBootstrap: Effect.Effect<Bootstrap, BootstrapError, BootstrapContext>;
@@ -471,6 +472,7 @@ export const runOrderedV2StartupPhases = Effect.fn(
   yield* input.awaitTrialCommit ?? Effect.void;
   yield* input.importLegacyShells;
   const recovery = yield* input.recover;
+  yield* input.recoverCodexFailover ?? Effect.void;
   yield* input.recoverDelegatedTasks;
   yield* input.startEffectWorker;
   const bootstrap = yield* input.autoBootstrap;
@@ -646,6 +648,10 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
             );
           return yield* providerRuntimeRecovery.recover;
         }),
+      ),
+      recoverCodexFailover: runStartupPhase(
+        "orchestration-v2.codex-failover.recover",
+        orchestrator.recoverCodexFailover ?? Effect.void,
       ),
       recoverDelegatedTasks: runStartupPhase(
         "orchestration-v2.delegated-tasks.recover",

@@ -23,6 +23,7 @@ import {
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
+import { resolveQueuedModelSelection } from "../jones/threadConfiguration/modelSelection";
 import { DraftComposerAttachmentSchema } from "../lib/composer-image-schema";
 import type { ComposerDispatchMode } from "@t3tools/client-runtime/state/composer-dispatch";
 import type { DraftComposerAttachment } from "../lib/composerImages";
@@ -54,6 +55,7 @@ export const QueuedThreadMessageSchema = Schema.Struct({
   context: Schema.optional(OrchestrationMessageContext),
   attachments: Schema.Array(DraftComposerAttachmentSchema),
   modelSelection: Schema.optional(ModelSelection),
+  modelSelectionExplicit: Schema.optional(Schema.Boolean),
   dispatchMode: Schema.optional(Schema.Literals(["auto", "queue", "steer", "restart"])),
   runtimeMode: Schema.optional(RuntimeMode),
   interactionMode: Schema.optional(ProviderInteractionMode),
@@ -84,6 +86,7 @@ export interface QueuedThreadMessage {
   readonly context?: OrchestrationMessageContext;
   readonly attachments: ReadonlyArray<DraftComposerAttachment>;
   readonly modelSelection?: ModelSelectionType;
+  readonly modelSelectionExplicit?: boolean;
   readonly runtimeMode?: RuntimeModeType;
   readonly interactionMode?: ProviderInteractionModeType;
   /**
@@ -105,7 +108,7 @@ export function resolveQueuedThreadSettings(
   thread: ThreadSettingsSnapshot,
   providers: ReadonlyArray<Pick<ServerProvider, "instanceId" | "showInteractionModeToggle">> = [],
 ): ThreadSettingsSnapshot {
-  const modelSelection = message.modelSelection ?? thread.modelSelection;
+  const modelSelection = resolveQueuedModelSelection(message, thread.modelSelection);
   const provider = providers.find(
     (candidate) => candidate.instanceId === modelSelection.instanceId,
   );

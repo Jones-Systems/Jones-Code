@@ -3462,6 +3462,45 @@
         "vp run --filter @t3tools/client-runtime typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-codex-failover",
+      "tests": [
+        "apps/server/src/jones/codexFailover/CodexFailoverStore.test.ts",
+        "apps/server/src/jones/persistence/Migrations/129_JonesCodexFailover.test.ts",
+        "apps/server/src/jones/codexFailover/CodexFailover.integration.test.ts",
+        "apps/server/src/jones/codexFailover/CodexFailoverEvidence.test.ts",
+        "apps/server/src/jones/provider/codex/CodexCapacityContinuation.test.ts",
+        "apps/server/src/jones/threadConfiguration/selectionAdmission.test.ts",
+        "apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.integration.test.ts",
+        "apps/server/src/jones/threadConfiguration/CodexSelfConfiguration.integration.test.ts",
+        "apps/server/src/jones/provider/codex/CodexFailoverPeer.integration.test.ts",
+        "apps/server/src/jones/provider/codex/CodexFailoverSelection.test.ts",
+        "apps/server/src/jones/provider/codex/CodexFailoverFailure.test.ts",
+        "scripts/jones/ci/codex-failover.node-test.mjs",
+        "apps/mobile/src/state/thread-outbox.test.ts",
+        "apps/mobile/src/state/use-thread-outbox-drain.test.ts",
+        "apps/mobile/src/state/use-thread-outbox-drain.permissions.test.ts",
+        "apps/mobile/src/state/use-composer-drafts.test.ts",
+        "packages/client-runtime/src/operations/commands.test.ts",
+        "apps/server/src/jones/codexFailover/CodexFailover.test.ts",
+        "apps/server/src/jones/codexFailover/CodexFailoverEligibility.test.ts",
+        "apps/server/src/jones/codexFailover/CodexFailoverAdmission.test.ts",
+        "apps/server/src/jones/codexFailover/CodexFailoverNativeEvidence.test.ts",
+        "apps/server/src/jones/codexFailover/CodexFailoverEvidence.adapter.test.ts",
+        "apps/server/src/serverRuntimeStartup.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/src/jones/updates/migrationPlan.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/codexFailover/CodexFailoverStore.test.ts apps/server/src/jones/persistence/Migrations/129_JonesCodexFailover.test.ts apps/server/src/jones/codexFailover/CodexFailover.integration.test.ts apps/server/src/jones/codexFailover/CodexFailoverEvidence.test.ts apps/server/src/jones/provider/codex/CodexCapacityContinuation.test.ts apps/server/src/jones/threadConfiguration/selectionAdmission.test.ts apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.integration.test.ts apps/server/src/jones/threadConfiguration/CodexSelfConfiguration.integration.test.ts apps/server/src/jones/provider/codex/CodexFailoverPeer.integration.test.ts apps/server/src/jones/provider/codex/CodexFailoverSelection.test.ts apps/server/src/jones/provider/codex/CodexFailoverFailure.test.ts apps/server/src/jones/codexFailover/CodexFailover.test.ts apps/server/src/jones/codexFailover/CodexFailoverEligibility.test.ts apps/server/src/jones/codexFailover/CodexFailoverAdmission.test.ts apps/server/src/jones/codexFailover/CodexFailoverNativeEvidence.test.ts apps/server/src/jones/codexFailover/CodexFailoverEvidence.adapter.test.ts apps/server/src/serverRuntimeStartup.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/jones/updates/migrationPlan.test.ts --maxWorkers=1 --no-file-parallelism",
+        "node --test --test-concurrency=1 scripts/jones/ci/codex-failover.node-test.mjs",
+        "vp test run apps/mobile/src/state/thread-outbox.test.ts apps/mobile/src/state/use-thread-outbox-drain.test.ts apps/mobile/src/state/use-thread-outbox-drain.permissions.test.ts apps/mobile/src/state/use-composer-drafts.test.ts packages/client-runtime/src/operations/commands.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter t3 typecheck",
+        "vp run --filter @t3tools/mobile typecheck",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }

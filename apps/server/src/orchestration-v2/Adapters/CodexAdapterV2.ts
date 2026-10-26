@@ -1,4 +1,7 @@
 import { GoalNotificationNotDelivered } from "../../jones/goals/GoalNotificationDelivery.ts";
+import * as CodexFailoverEvidence from "../../jones/codexFailover/CodexFailoverEvidence.ts";
+import { makeCodexFailoverNativeEvidence } from "../../jones/codexFailover/CodexFailoverNativeEvidence.ts";
+import { codexCapacityRetriesExhausted } from "../../jones/provider/codex/CodexCapacityContinuation.ts";
 import * as ControlAdmission from "../../jones/orchestration/ControlAdmission.ts";
 import { boundedSteer, verifyCodexProcessExit } from "../../jones/orchestration/LateSteer.ts";
 import {
@@ -1738,6 +1741,7 @@ export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapter
 ) {
   const clientFactory = yield* CodexAppServerClientFactory;
   const processAttribution = yield* Effect.serviceOption(ProcessAttribution.ProcessAttribution);
+  const failoverEvidence = yield* Effect.serviceOption(CodexFailoverEvidence.CodexFailoverEvidence);
   const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
   const crypto = yield* Crypto.Crypto;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -1771,6 +1775,7 @@ export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapter
     environment: yield* mergeProviderInstanceEnvironment(environment, hostEnvironment),
     clientFactory,
     ...(Option.isSome(processAttribution) ? { processAttribution: processAttribution.value } : {}),
+    ...(Option.isSome(failoverEvidence) ? { failoverEvidence: failoverEvidence.value } : {}),
     crypto,
     fileSystem,
     idAllocator,
@@ -1802,6 +1807,9 @@ const layer: Layer.Layer<
   Effect.gen(function* () {
     const clientFactory = yield* CodexAppServerClientFactory;
     const processAttribution = yield* Effect.serviceOption(ProcessAttribution.ProcessAttribution);
+    const failoverEvidence = yield* Effect.serviceOption(
+      CodexFailoverEvidence.CodexFailoverEvidence,
+    );
     const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
     const crypto = yield* Crypto.Crypto;
     const fileSystem = yield* FileSystem.FileSystem;
@@ -1817,6 +1825,7 @@ const layer: Layer.Layer<
       ...(Option.isSome(processAttribution)
         ? { processAttribution: processAttribution.value }
         : {}),
+      ...(Option.isSome(failoverEvidence) ? { failoverEvidence: failoverEvidence.value } : {}),
       crypto,
       fileSystem,
       idAllocator,
@@ -1833,6 +1842,7 @@ export interface CodexAdapterV2Options {
   readonly environment: NodeJS.ProcessEnv;
   readonly clientFactory: CodexAppServerClientFactoryShape;
   readonly processAttribution?: ProcessAttribution.ProcessAttribution["Service"];
+  readonly failoverEvidence?: CodexFailoverEvidence.CodexFailoverEvidence["Service"];
   readonly onUsageLimits?: ManagedServerProvider["applyUsageLimits"];
   readonly resolveRuntime?: Effect.Effect<CodexEffectiveRuntime, ProviderSetupError, Scope.Scope>;
   readonly crypto: Crypto.Crypto;
@@ -2250,6 +2260,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           new Map<ProviderThreadId, Extract<OrchestrationV2TurnItem, { type: "error" }>>(),
         );
         const activeTurns = yield* Ref.make(new Map<string, ActiveCodexTurnContext>());
+        const failoverNativeEvidence = makeCodexFailoverNativeEvidence<ActiveCodexTurnContext>();
+        yield* Effect.addFinalizer(() => Effect.sync(() => failoverNativeEvidence.clear()));
         const turnTokenUsageByThread = new Map<string, CodexTurnTokenUsageState>();
         const usageStateForThread = (nativeThreadId: string) => {
           let state = turnTokenUsageByThread.get(nativeThreadId);
@@ -2373,7 +2385,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             capacityByThread.delete(request.state.binding.nativeThreadId);
           }
           for (const [nativeTurnId, owner] of capacityByTurn) {
-            if (owner === request) capacityByTurn.delete(nativeTurnId);
+            if (owner === request) {
+              failoverNativeEvidence.forget(nativeTurnId);
+              capacityByTurn.delete(nativeTurnId);
+            }
           }
         };
 
@@ -5492,6 +5507,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               }
               const notificationCode = codexErrorInfoCode(payload.error.codexErrorInfo);
               if (!payload.willRetry) {
+                failoverNativeEvidence.observe(payload.turnId, context, payload.error);
                 context.latestProviderFailure = {
                   nativeMessage: payload.error.message,
                   failure: makeProviderFailure({
@@ -6721,6 +6737,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const request = capacityByTurn.get(input.nativeTurnId);
             if (request?.logicalTerminalEmitted) return;
             const logicalContext = request?.logicalContext ?? input.context;
+            const capacityExhausted =
+              request !== undefined && codexCapacityRetriesExhausted(request.state);
             const event = yield* makeRootTerminalEvent({
               ...input,
               context: logicalContext,
@@ -6746,6 +6764,29 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 ? {}
                 : { providerRetry: request.capacityRetry }),
             });
+            const rawErrorInfo = failoverNativeEvidence.take(input.nativeTurnId, input.context, {
+              message: input.failureMessage,
+              codexErrorInfo: input.failureErrorInfo,
+            });
+            if (
+              event.status === "failed" &&
+              event.evidenceKind !== "local_failure" &&
+              adapterOptions.failoverEvidence !== undefined
+            ) {
+              yield* adapterOptions.failoverEvidence.record({
+                providerTurnId: logicalContext.providerTurnId,
+                threadId: logicalContext.input.threadId,
+                runId: logicalContext.input.runId,
+                attemptId: logicalContext.input.attemptId,
+                providerThreadId: logicalContext.providerThread.id,
+                providerInstanceId: logicalContext.providerThread.providerInstanceId,
+                occurredAt: DateTime.formatIso(input.completedAt),
+                status: "failed",
+                evidenceKind: event.evidenceKind,
+                rawErrorInfo,
+                capacityExhausted,
+              });
+            }
             if (request?.capacityRetry !== undefined) {
               yield* emitCapacityRetryItem(request, providerTurnStatusToTerminal(input.status));
             }
@@ -7079,6 +7120,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   ...(holdsForGoal ? { goalHoldTurn: completedTurn } : {}),
                 });
               }
+              failoverNativeEvidence.forget(input.nativeTurnId);
               const waiter = (yield* Ref.get(turnWaiters)).get(input.nativeTurnId);
               if (waiter !== undefined) {
                 yield* Deferred.succeed(waiter, undefined);
@@ -7240,12 +7282,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               continuingCapacity,
               ...(payload.turn.error?.message === undefined
                 ? {}
-                : {
-                    failureMessage: payload.turn.error.message,
-                    ...(payload.turn.error.codexErrorInfo == null
-                      ? {}
-                      : { failureErrorInfo: payload.turn.error.codexErrorInfo }),
-                  }),
+                : { failureMessage: payload.turn.error.message }),
+              ...(payload.turn.error?.codexErrorInfo == null
+                ? {}
+                : { failureErrorInfo: payload.turn.error.codexErrorInfo }),
             });
             if (continuingCapacity) yield* scheduleCapacityRetry(request);
           },
