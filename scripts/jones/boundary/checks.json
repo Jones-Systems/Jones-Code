@@ -2835,7 +2835,22 @@
         "apps/server/src/jones/peerTransport/LinkedMessageOrigin.test.ts",
         "apps/server/src/jones/peerTransport/PeerMcpSessions.test.ts",
         "apps/server/src/orchestration-v2/SteeringCompletion.integration.test.ts",
-        "apps/server/src/orchestration-v2/EffectWorker.test.ts"
+        "apps/server/src/orchestration-v2/EffectWorker.test.ts",
+        "apps/mobile/src/jones/threadConfiguration/outboxSelection.test.ts",
+        "apps/mobile/src/state/thread-outbox.test.ts",
+        "apps/mobile/src/state/use-thread-outbox-drain.test.ts",
+        "apps/mobile/src/state/use-thread-outbox-drain.permissions.test.ts",
+        "apps/mobile/src/state/thread-outbox-removal.test.ts",
+        "apps/mobile/src/state/use-composer-drafts.test.ts",
+        "apps/server/src/jones/threadConfiguration/ownerIngress.test.ts",
+        "apps/server/src/jones/threadConfiguration/ownerSelection.test.ts",
+        "apps/server/src/jones/threadConfiguration/ownerSelectionStore.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts",
+        "apps/server/src/jones/updates/migrationPlan.test.ts",
+        "apps/server/src/jones/taskContinuation/guard.test.ts",
+        "apps/server/src/jones/taskContinuation/sourceBinding.test.ts"
       ],
       "commands": [
         "vp test run apps/server/src/jones/threadConfiguration/CodexSelfConfiguration.integration.test.ts apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.integration.test.ts apps/server/src/mcp/McpToolAccess.race.test.ts apps/server/src/mcp/McpToolAccess.test.ts apps/server/src/mcp/toolkits/core.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/ProviderSwitchService.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts apps/server/src/orchestration-v2/QueueCompatibility.test.ts apps/server/src/orchestration-v2/QueuedRunOrder.test.ts apps/server/src/orchestration-v2/RestartContinuation.test.ts apps/server/src/orchestration-v2/SelectionRestart.integration.test.ts packages/provider-core/src/server/jones/ThreadSelfConfigurationInstructions.test.ts packages/provider-core/src/jones/orchestrationInstructions.test.ts packages/shared/src/t3McpToolPresentation.test.ts apps/server/src/orchestration-v2/ThreadLaunchService.test.ts apps/server/src/jones/orchestration/ThreadLaunchService.jones.test.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts apps/server/src/orchestration-v2/LegacyBootstrapWireTransport.test.ts packages/client-runtime/src/operations/commands.test.ts packages/client-runtime/src/t3ToolSummary.test.ts packages/client-runtime/src/work-log/presentation.test.ts packages/contracts/src/jones/threadSelfConfiguration.test.ts apps/web/src/jones/threadConfiguration/composerSelection.test.ts apps/web/src/lib/chatThreadActions.test.ts apps/web/src/composerDraftStore.test.ts apps/web/src/components/chat/composerSendRecovery.test.ts apps/server/src/orchestration-v2/ThreadManagementService.test.ts apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.test.ts apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.guards.test.ts apps/server/src/jones/provider/codex/CodexHandoffCompaction.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts apps/server/src/jones/threadConfiguration/prepareExecutionSession.test.ts apps/server/src/orchestration-v2/ProjectionStore.test.ts packages/client-runtime/src/state/orchestrationV2Projection.test.ts apps/server/src/jones/threadConfiguration/CodexSelectionRestart.integration.test.ts apps/server/src/mcp/OrchestratorMcpService.test.ts apps/server/src/jones/peerTransport/LinkedMessageOrigin.test.ts apps/server/src/jones/peerTransport/PeerMcpSessions.test.ts apps/server/src/orchestration-v2/SteeringCompletion.integration.test.ts apps/server/src/orchestration-v2/EffectWorker.test.ts --maxWorkers=1 --no-file-parallelism",
@@ -2844,7 +2859,10 @@
         "vp run --filter @t3tools/client-runtime typecheck",
         "vp run --filter @t3tools/web typecheck",
         "vp run --filter @t3tools/provider-core typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp test run apps/mobile/src/jones/threadConfiguration/outboxSelection.test.ts apps/mobile/src/state/thread-outbox.test.ts apps/mobile/src/state/use-thread-outbox-drain.test.ts apps/mobile/src/state/use-thread-outbox-drain.permissions.test.ts apps/mobile/src/state/thread-outbox-removal.test.ts apps/mobile/src/state/use-composer-drafts.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/mobile typecheck",
+        "vp test run apps/server/src/jones/threadConfiguration/ownerIngress.test.ts apps/server/src/jones/threadConfiguration/ownerSelection.test.ts apps/server/src/jones/threadConfiguration/ownerSelectionStore.test.ts apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts apps/server/src/jones/updates/migrationPlan.test.ts apps/server/src/jones/taskContinuation/guard.test.ts apps/server/src/jones/taskContinuation/sourceBinding.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {

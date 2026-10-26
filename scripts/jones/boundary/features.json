@@ -1723,9 +1723,24 @@
         "apps/server/src/jones/threadConfiguration/prepareExecutionSession.test.ts",
         "apps/server/src/orchestration-v2/ProjectionStore.test.ts",
         "packages/client-runtime/src/state/orchestrationV2Projection.test.ts",
-        "apps/server/src/jones/threadConfiguration/CodexSelectionRestart.integration.test.ts"
+        "apps/server/src/jones/threadConfiguration/CodexSelectionRestart.integration.test.ts",
+        "apps/mobile/src/jones/threadConfiguration/outboxSelection.test.ts",
+        "apps/mobile/src/state/thread-outbox.test.ts",
+        "apps/mobile/src/state/use-thread-outbox-drain.test.ts",
+        "apps/mobile/src/state/use-thread-outbox-drain.permissions.test.ts",
+        "apps/mobile/src/state/thread-outbox-removal.test.ts",
+        "apps/mobile/src/state/use-composer-drafts.test.ts",
+        "apps/server/src/jones/threadConfiguration/ownerIngress.test.ts",
+        "apps/server/src/jones/threadConfiguration/ownerSelection.test.ts",
+        "apps/server/src/jones/threadConfiguration/ownerSelectionStore.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts",
+        "apps/server/src/jones/updates/migrationPlan.test.ts",
+        "apps/server/src/jones/taskContinuation/guard.test.ts",
+        "apps/server/src/jones/taskContinuation/sourceBinding.test.ts"
       ],
-      "scope": "Self-only MCP saves validated future defaults under the thread command lock and transactional execution/revision revalidation. Fingerprinted durable receipts preserve retry identity. Current attached execution owns caller authorization and normal safe-start transitions; queued and recovery selections never overwrite newer defaults. Registered-tool and actual Codex outbound replay tests cover continued execution and later admission. Explicit restart supersession records the already ownership-validated provider turn in the same transaction; recorded Codex interruption must persist before replacement. Historical/current-attempt guards remain unchanged."
+      "scope": "Self-only MCP saves validated future defaults under the thread command lock and transactional execution/revision revalidation. Fingerprinted durable receipts preserve retry identity. Current attached execution owns caller authorization and normal safe-start transitions; queued and recovery selections never overwrite newer defaults. Registered-tool and actual Codex outbound replay tests cover continued execution and later admission. Explicit restart supersession records the already ownership-validated provider turn in the same transaction; recorded Codex interruption must persist before replacement. Historical/current-attempt guards remain unchanged. Mobile outbox explicitness survives persistence and delivery without changing the stored version; recovery and rollback protect newer model interactions, including equal-valued picks and clears. The existing drain harness supplies the required atom, persistence and enqueue integration test exception. Authenticated owner choices transactionally supersede earlier agent selections, including equal-valued choices; pre-admission queue and pristine preparation rebinding, active interrupt transitions, admitted-session protection and validated continuation recovery retain failure holds. Agent saves stay prospective after fresh revision checks; explicit Steer all keeps its active-target behavior. The shared replay harness explicitly refuses unmodeled delegated-child stopping while allowing child-free stop effects; existing acceptance assertions are retained. Ordinary owner-rebound crash recovery is distinguished from strict native delegated-task continuation, with malformed ancestry and native identity bypasses rejected."
     },
     {
       "id": "replay-fixture-diagnostics",
@@ -2147,7 +2162,7 @@
         "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts",
         "apps/server/scripts/jones/currentFixtures.test.ts"
       ],
-      "scope": "Explicit local Claude delegated-task continuation preserves the recorded native session, provider, model and options. Sparse Jones tables bind transactional acceptance, idempotent retries and restart ancestry to provider-confirmed per-attempt witnesses. Small MCP, orchestration and turn-start hooks enforce the guard. The existing Claude adapter harness retains integration cases because it owns SDK streams, warm queries, callbacks and idle lifecycle. Unsupported providers and legacy tasks without original attempt identity refuse explicitly; ordinary recovery remains unchanged."
+      "scope": "Explicit local Claude delegated-task continuation preserves the recorded native session, provider, model and options. Sparse Jones tables bind transactional acceptance, idempotent retries and restart ancestry to provider-confirmed per-attempt witnesses. Small MCP, orchestration and turn-start hooks enforce the guard. The existing Claude adapter harness retains integration cases because it owns SDK streams, warm queries, callbacks and idle lifecycle. Unsupported providers and legacy tasks without original attempt identity refuse explicitly. Ordinary restart ancestry is structurally validated before native-task identity checks, so legitimate owner model or account transitions can recover without weakening delegated-task session binding."
     },
     {
       "id": "upstream-24899-provider-snapshots-on-demand",

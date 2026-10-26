@@ -1,3 +1,4 @@
+import { withOwnerSelectionIngress } from "./jones/threadConfiguration/ownerIngress.ts";
 import * as LinkedThreads from "./jones/linkedThreads/LinkedThreads.ts";
 import * as ThreadReferenceExcerpts from "./jones/orchestration/threadReferenceExcerpt.ts";
 import * as RuntimeStop from "./jones/runtime/RuntimeStop.ts";
@@ -2118,7 +2119,7 @@ export const layerWsRpc = (
               }).pipe(
                 Effect.andThen(
                   startup
-                    .enqueueCommand(queueCompatibility.dispatch(command, "legacy_websocket"))
+                    .enqueueCommand(queueCompatibility.dispatch(command, "legacy_websocket").pipe(withOwnerSelectionIngress))
                     .pipe(
                       Effect.mapError((error) => {
                         const cause = error.cause;
@@ -2169,7 +2170,7 @@ export const layerWsRpc = (
                                   "creationSource" in command ? command.creationSource : "web",
                               }),
                             )
-                        ).pipe(Effect.provide(intakeContext)),
+                        ).pipe(Effect.provide(intakeContext), withOwnerSelectionIngress),
                       )
                       .pipe(
                         Effect.tap((result) =>

@@ -8,7 +8,10 @@ import {
 } from "@t3tools/client-runtime/state/shell";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import { threadFamilyRead, type ThreadFamilyRead } from "@t3tools/client-runtime/state/threads";
-import { deriveThreadTitleSeed } from "@t3tools/client-runtime/operations";
+import {
+  deriveThreadTitleSeed,
+  type StartThreadTurnInput,
+} from "@t3tools/client-runtime/operations";
 import {
   AuthOrchestrationOperateScope,
   CommandId,
@@ -28,6 +31,12 @@ import { buildProjectThreadStartTurnInput } from "../lib/projectThreadStartTurn"
 import { serializeComposerMessageForServer, uploadedComposerContext } from "../lib/composerContext";
 import { prepareTurnAttachments, type PreparedTurnAttachments } from "../lib/attachmentUpload";
 import { randomHex } from "../lib/uuid";
+import {
+  outboxSelectionCommandFields,
+  outboxSelectionRestoreSettings,
+  retainComposerModelSelectionSnapshot,
+  trackComposerModelSelectionInteractions,
+} from "../jones/threadConfiguration/outboxSelection";
 import {
   describeUnavailableModelSelection,
   isModelSelectionUnavailable,
@@ -187,6 +196,37 @@ function findCreationProject(
 
 function settingsCommandId(message: QueuedThreadMessage, setting: string): CommandId {
   return CommandId.make(`${message.commandId}:${setting}`);
+}
+
+export function buildQueuedThreadMessageStartTurnInput(input: {
+  readonly message: QueuedThreadMessage;
+  readonly settings: ThreadSettingsSnapshot;
+  readonly attachments: PreparedTurnAttachments["attachments"];
+  readonly inlineMessageContext: boolean;
+}): StartThreadTurnInput {
+  const { message, settings } = input;
+  return {
+    commandId: message.commandId,
+    creationSource: "mobile",
+    threadId: message.threadId,
+    message: {
+      messageId: message.messageId,
+      role: "user",
+      ...serializeComposerMessageForServer(
+        message.text,
+        uploadedComposerContext(message.context, message.attachments, input.attachments),
+        input.inlineMessageContext,
+      ),
+      attachments: input.attachments,
+    },
+    modelSelection: settings.modelSelection,
+    ...outboxSelectionCommandFields(message),
+    titleSeed: deriveThreadTitleSeed({ text: message.text, attachments: message.attachments }),
+    runtimeMode: settings.runtimeMode,
+    interactionMode: settings.interactionMode,
+    createdAt: message.createdAt,
+    dispatchMode: message.dispatchMode ?? "start",
+  };
 }
 
 export function buildQueuedThreadCreationStartTurnInput(input: {
@@ -375,7 +415,10 @@ export async function recoverEditedCreationAfterDelivery(
     return true;
   }
   const draftKey = scopedThreadKey(kept.environmentId, kept.threadId);
+  const releaseSelectionTracking = trackComposerModelSelectionInteractions(draftKey);
   try {
+    await waitForComposerDraftsLoaded();
+    const originalDraft = getComposerDraftSnapshot(draftKey);
     // Merge before removal to retain file ownership; allow overflow and let send guards require trimming.
     await mergeComposerDraftContent(draftKey, {
       text: kept.text,
@@ -397,7 +440,12 @@ export async function recoverEditedCreationAfterDelivery(
       { allowOverflow: true },
     );
     updateComposerDraftSettings(draftKey, {
-      ...(kept.modelSelection !== undefined ? { modelSelection: kept.modelSelection } : {}),
+      ...outboxSelectionRestoreSettings(
+        kept,
+        draftKey,
+        originalDraft,
+        getComposerDraftSnapshot(draftKey),
+      ),
       ...(kept.runtimeMode !== undefined ? { runtimeMode: kept.runtimeMode } : {}),
       ...(kept.interactionMode !== undefined ? { interactionMode: kept.interactionMode } : {}),
     });
@@ -406,6 +454,8 @@ export async function recoverEditedCreationAfterDelivery(
   } catch (error) {
     console.warn("[thread-outbox] could not hand an edited pending task to the composer", error);
     return false;
+  } finally {
+    releaseSelectionTracking();
   }
   if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[kept.messageId]) {
     return true;
@@ -429,6 +479,7 @@ export async function restoreRejectedQueuedMessage(
   const draftKey = recoveryDraftKey(queuedMessage);
   const threadKey = scopedThreadKey(queuedMessage.environmentId, queuedMessage.threadId);
   let rollback: { readonly snapshot: ComposerDraft; readonly merged: ComposerDraft } | null = null;
+  const releaseSelectionTracking = trackComposerModelSelectionInteractions(draftKey);
   try {
     if (
       appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId] ||
@@ -473,7 +524,10 @@ export async function restoreRejectedQueuedMessage(
       });
     } finally {
       // Capture rollback in finally because merge publishes even on persistence failure; undo must preserve concurrent edits.
-      mergedDraft = getComposerDraftSnapshot(draftKey);
+      mergedDraft = retainComposerModelSelectionSnapshot(
+        getComposerDraftSnapshot(draftKey),
+        originalDraft,
+      );
       rollback = { snapshot: originalDraft, merged: mergedDraft };
     }
     if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId]) {
@@ -481,8 +535,14 @@ export async function restoreRejectedQueuedMessage(
       await undoComposerDraftMerge(draftKey, originalDraft, mergedDraft);
       return "deferred";
     }
-    updateComposerDraftSettings(draftKey, {
-      ...(queuedMessage.modelSelection ? { modelSelection: queuedMessage.modelSelection } : {}),
+    const selectionSettings = outboxSelectionRestoreSettings(
+      queuedMessage,
+      draftKey,
+      originalDraft,
+      getComposerDraftSnapshot(draftKey),
+    );
+    const restoredDraft = updateComposerDraftSettings(draftKey, {
+      ...selectionSettings,
       ...(queuedMessage.runtimeMode ? { runtimeMode: queuedMessage.runtimeMode } : {}),
       ...(queuedMessage.interactionMode ? { interactionMode: queuedMessage.interactionMode } : {}),
       ...(queuedMessage.creation
@@ -499,7 +559,9 @@ export async function restoreRejectedQueuedMessage(
           }
         : {}),
     });
-    const restoredDraft = getComposerDraftSnapshot(draftKey);
+    if (selectionSettings.modelSelection === undefined) {
+      retainComposerModelSelectionSnapshot(restoredDraft, originalDraft);
+    }
     rollback = { snapshot: originalDraft, merged: restoredDraft };
     await flushComposerDrafts();
     if (
@@ -548,6 +610,8 @@ export async function restoreRejectedQueuedMessage(
       queuedMessage.messageId,
     );
     return "retry";
+  } finally {
+    releaseSelectionTracking();
   }
 }
 
@@ -876,34 +940,13 @@ export function useThreadOutboxDrain(): void {
       if (!hasAccess()) return true;
       const deliveryResult = await startTurn({
         environmentId: queuedMessage.environmentId,
-        input: {
-          commandId: queuedMessage.commandId,
-          creationSource: "mobile",
-          threadId: queuedMessage.threadId,
-          message: {
-            messageId: queuedMessage.messageId,
-            role: "user",
-            ...serializeComposerMessageForServer(
-              queuedMessage.text,
-              uploadedComposerContext(
-                queuedMessage.context,
-                queuedMessage.attachments,
-                prepared.attachments,
-              ),
-              currentConfig.environment.capabilities.inlineMessageContext === true,
-            ),
-            attachments: prepared.attachments,
-          },
-          modelSelection: sendSettings.modelSelection,
-          titleSeed: deriveThreadTitleSeed({
-            text: queuedMessage.text,
-            attachments: queuedMessage.attachments,
-          }),
-          runtimeMode: sendSettings.runtimeMode,
-          interactionMode: sendSettings.interactionMode,
-          createdAt: queuedMessage.createdAt,
-          dispatchMode: queuedMessage.dispatchMode ?? "start",
-        },
+        input: buildQueuedThreadMessageStartTurnInput({
+          message: queuedMessage,
+          settings: sendSettings,
+          attachments: prepared.attachments,
+          inlineMessageContext:
+            currentConfig.environment.capabilities.inlineMessageContext === true,
+        }),
       });
       if (AsyncResult.isFailure(deliveryResult) && !hasAccess()) return true;
       const failure = reportFailure(deliveryResult, "start-turn");

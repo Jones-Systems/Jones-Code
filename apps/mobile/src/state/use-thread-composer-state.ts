@@ -778,7 +778,13 @@ export function useThreadComposerState() {
           return null;
         }
         await choice.review(
-          { type: "message", command: prepared.value },
+          {
+            type: "message",
+            command: {
+              ...prepared.value,
+              modelSelectionExplicit: draft.modelSelection !== undefined,
+            },
+          },
           `${threadKey}:${messageId}`,
           unchanged,
         );
@@ -807,6 +813,7 @@ export function useThreadComposerState() {
       attachments,
       context: draft.context,
       modelSelection,
+      modelSelectionExplicit: draft.modelSelection !== undefined,
       runtimeMode: draft.runtimeMode ?? thread.runtimeMode,
       interactionMode: resolveProviderInteractionMode(
         provider,

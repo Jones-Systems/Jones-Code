@@ -1,3 +1,5 @@
+import { makeOwnerSelectionStore } from "../jones/threadConfiguration/ownerSelectionStore.ts";
+import type { ModelSelection } from "@t3tools/contracts";
 import type { ThreadSelfConfigurationCommitContext } from "../jones/threadConfiguration/ThreadSelfConfiguration.ts";
 import type { TaskContinuationCommitContext } from "../jones/taskContinuation/commitContext.ts";
 import * as HistoricalTerminalHistory from "../jones/orchestration/HistoricalTerminalHistory.ts";
@@ -356,6 +358,7 @@ export interface EventSinkV2Shape {
     readonly ordinaryCheckoutCommand?: CheckoutIntent.IntentCommand;
     readonly runtimeStop?: RuntimeStop.RuntimeStopCommitContext;
     readonly threadSelfConfiguration?: ThreadSelfConfigurationCommitContext;
+    readonly ownerSelection?: ModelSelection | undefined;
     readonly providerConversationReselection?: ProviderConversationReselectionCommitContext;
     readonly importedHistory?: ImportedChoice.ImportedHistoryContext;
     readonly nativeCreation?: {
@@ -552,6 +555,7 @@ const layerBase: Layer.Layer<
     const jonesTables = makeJonesTablePresence(sql);
     const runtimeStops = RuntimeStop.makeRuntimeStopMethods(sql, jonesTables);
     const settlementRestores = makeSettlementRestoreStore(sql, jonesTables);
+    const ownerSelections = makeOwnerSelectionStore(sql, jonesTables);
     const publishLane = yield* Semaphore.make(1);
     const commitThenPublish = <A, E, R>(
       transaction: Effect.Effect<A, E, R>,
@@ -1317,6 +1321,11 @@ const layerBase: Layer.Layer<
               yield* checkoutIntent.value.linkEffects({ storedEvents, effects: input.effects });
           }
           if (input.runtimeStop) yield* runtimeStops.record(input.runtimeStop);
+          yield* ownerSelections.commit({
+            threadId: input.threadId, commandId: input.commandId,
+            sequence: receipt.resultSequence, events: input.events,
+            record: input.ownerSelection, recordedAt: input.acceptedAt,
+          });
           const restored = input.settlementRestore
             ? storedEvents.find(
                 (stored) =>

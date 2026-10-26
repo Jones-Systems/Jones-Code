@@ -153,6 +153,7 @@ import { recoverFailedThreadDraft } from "./recover-failed-thread-draft";
 import { editingQueuedMessageIdsAtom } from "./use-thread-outbox";
 import {
   buildQueuedThreadCreationStartTurnInput,
+  buildQueuedThreadMessageStartTurnInput,
   completeQueuedMessageDelivery,
   prepareQueuedMessageAttachments,
   recoverEditedCreationAfterDelivery,
@@ -226,6 +227,149 @@ afterEach(() => {
   harness.removePersistedFile.mockClear();
   harness.removeOutboxMessage.mockClear();
   harness.prepareTurnAttachments.mockReset();
+});
+
+describe("queued mobile selection intent", () => {
+  it.each([
+    [true, 3],
+    [false, 3],
+    [undefined, 1],
+    [undefined, 2],
+    [undefined, 3],
+    [undefined, 4],
+  ] as const)("forwards explicitness %s from version %s storage to delivery", async (flag, version) => {
+    const modelSelection = {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-6.1-sol",
+      options: [{ id: "reasoningEffort", value: "high" }],
+    };
+    const encoded = JSON.parse(
+      JSON.stringify(
+        encodeQueuedThreadMessage({
+          ...queuedMessage({ messageId: `selection-${version}-${flag}`, text: "Continue" }),
+          modelSelection,
+          ...(flag === undefined ? {} : { modelSelectionExplicit: flag }),
+        }),
+      ),
+    );
+    expect(encoded.schemaVersion).toBe(3);
+    const stored = decodeQueuedThreadMessage(
+      JSON.parse(JSON.stringify({ ...encoded, schemaVersion: version })),
+    );
+    await harness.manager.enqueue(stored);
+    const [enqueued] = remainingMessages();
+    expect(enqueued).toEqual(stored);
+    if (!enqueued) throw new Error("Expected the stored outbox entry");
+    const input = buildQueuedThreadMessageStartTurnInput({
+      message: enqueued,
+      settings: { modelSelection, runtimeMode: "full-access", interactionMode: "default" },
+      attachments: [],
+      inlineMessageContext: true,
+    });
+
+    // Equal model values carry different intent; delivery must preserve the stored flag.
+    expect(input.modelSelection).toEqual(modelSelection);
+    expect(input.commandId).toBe(stored.commandId);
+    expect(input.message.messageId).toBe(stored.messageId);
+    if (flag === undefined) {
+      expect(stored).not.toHaveProperty("modelSelectionExplicit");
+      expect(input).not.toHaveProperty("modelSelectionExplicit");
+    } else {
+      expect(input.modelSelectionExplicit).toBe(flag);
+    }
+  });
+});
+
+describe.each(["rejected", "delivered"] as const)("%s outbox selection recovery", (kind) => {
+  const selection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" };
+  const newerSelection = { ...selection, model: "gpt-6.1-astra" };
+  const recover = (message: QueuedThreadMessage) =>
+    kind === "rejected"
+      ? restoreRejectedQueuedMessage(message, "rejected")
+      : recoverEditedCreationAfterDelivery(message);
+  const recovered = kind === "rejected" ? "restored" : true;
+
+  it.each([true, false, undefined])("restores only explicit queued picks (%s)", async (flag) => {
+    const message = decodeQueuedThreadMessage(
+      JSON.parse(
+        JSON.stringify(
+          encodeQueuedThreadMessage({
+            ...queuedMessage({ messageId: `restore-selection-${kind}-${flag}`, text: "Recover me" }),
+            modelSelection: selection,
+            ...(flag === undefined ? {} : { modelSelectionExplicit: flag }),
+          }),
+        ),
+      ),
+    );
+    await harness.manager.enqueue(message);
+
+    await expect(recover(message)).resolves.toBe(recovered);
+
+    const draft = composerDrafts.getComposerDraftSnapshot(
+      `${message.environmentId}:${message.threadId}`,
+    );
+    expect(draft.text).toBe(message.text);
+    expect(draft.modelSelection).toEqual(flag === true ? selection : undefined);
+    expect(remainingMessages()).toEqual([]);
+  });
+
+  it.each(["newer", "same", "clear", "clear-content", "clear-all", "other-draft"] as const)(
+    "preserves owner %s interaction while the recovered content persists",
+    async (interaction) => {
+      const message: QueuedThreadMessage = {
+        ...queuedMessage({ messageId: `restore-race-${kind}-${interaction}`, text: "Recover me" }),
+        modelSelection: selection,
+        modelSelectionExplicit: true,
+      };
+      const draftKey = `${message.environmentId}:${message.threadId}`;
+      const originalMerge = composerDrafts.mergeComposerDraftContent;
+      const mergeCompleted = Promise.withResolvers<void>();
+      const releaseRecovery = Promise.withResolvers<void>();
+      const mergeSpy = vi
+        .spyOn(composerDrafts, "mergeComposerDraftContent")
+        .mockImplementation(async (key, content) => {
+          const result = await originalMerge(key, content);
+          mergeCompleted.resolve();
+          await releaseRecovery.promise;
+          return result;
+        });
+      try {
+        await harness.manager.enqueue(message);
+        const recovery = recover(message);
+        await mergeCompleted.promise;
+        if (interaction === "clear-content") {
+          composerDrafts.clearComposerDraftContent(draftKey, { clearModelSelection: true });
+        } else if (interaction === "clear-all") {
+          composerDrafts.clearComposerDraft(draftKey);
+        } else if (interaction === "other-draft") {
+          composerDrafts.clearComposerDraft(`${draftKey}:other`);
+        } else {
+          composerDrafts.updateComposerDraftSettings(draftKey, {
+            modelSelection:
+              interaction === "newer"
+                ? newerSelection
+                : interaction === "same"
+                  ? selection
+                  : undefined,
+          });
+        }
+        releaseRecovery.resolve();
+        await expect(recovery).resolves.toBe(recovered);
+
+        expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toEqual(
+          interaction === "newer"
+            ? newerSelection
+            : interaction === "same" || interaction === "other-draft"
+              ? selection
+              : undefined,
+        );
+        expect(remainingMessages()).toEqual([]);
+      } finally {
+        releaseRecovery.resolve();
+        mergeSpy.mockRestore();
+      }
+    },
+  );
 });
 
 describe("queued worktree creation command", () => {
@@ -764,6 +908,70 @@ describe("thread outbox delivered creation recovery", () => {
 });
 
 describe("thread outbox recovery rollback", () => {
+  it.each(["newer", "same", "clear"] as const)(
+    "preserves a %s owner pick when queue removal defers and the merge rolls back",
+    async (interaction) => {
+      const selection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" };
+      const ownerSelection =
+        interaction === "newer"
+          ? { ...selection, model: "gpt-6.1-astra" }
+          : interaction === "same"
+            ? selection
+            : undefined;
+      const message: QueuedThreadMessage = {
+        ...queuedMessage({ messageId: `rollback-selection-${interaction}`, text: "Queued text" }),
+        modelSelection: selection,
+        modelSelectionExplicit: true,
+      };
+      const draftKey = `${message.environmentId}:${message.threadId}`;
+      appAtomRegistry.set(composerDrafts.composerDraftsAtom, {
+        [draftKey]: { text: "Typed before", attachments: [] },
+      });
+      await harness.manager.enqueue(message);
+      harness.removeOutboxMessage.mockImplementationOnce(async () => {
+        expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toEqual(selection);
+        composerDrafts.updateComposerDraftSettings(draftKey, { modelSelection: ownerSelection });
+        appAtomRegistry.set(editingQueuedMessageIdsAtom, { [message.messageId]: true });
+      });
+
+      await expect(restoreRejectedQueuedMessage(message, "rejected")).resolves.toBe("deferred");
+
+      expect(composerDrafts.getComposerDraftSnapshot(draftKey)).toMatchObject({
+        text: "Typed before",
+        attachments: [],
+      });
+      expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toEqual(ownerSelection);
+      expect(remainingMessages()).toEqual([message]);
+    },
+  );
+
+  it("preserves equal-valued reselection by a synchronous subscriber during restoration", async () => {
+    const selection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" };
+    const message: QueuedThreadMessage = {
+      ...queuedMessage({ messageId: "rollback-synchronous-pick", text: "Queued text" }),
+      modelSelection: selection,
+      modelSelectionExplicit: true,
+    };
+    const draftKey = `${message.environmentId}:${message.threadId}`;
+    await harness.manager.enqueue(message);
+    const unsubscribe = appAtomRegistry.subscribe(composerDrafts.composerDraftsAtom, (drafts) => {
+      if (drafts[draftKey]?.modelSelection === selection) {
+        unsubscribe();
+        composerDrafts.updateComposerDraftSettings(draftKey, { modelSelection: selection });
+        appAtomRegistry.set(editingQueuedMessageIdsAtom, { [message.messageId]: true });
+      }
+    });
+    try {
+      await expect(restoreRejectedQueuedMessage(message, "rejected")).resolves.toBe("deferred");
+
+      expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toEqual(selection);
+      expect(composerDrafts.getComposerDraftSnapshot(draftKey).text).toBe("");
+      expect(remainingMessages()).toEqual([message]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it("reopens a rejected task with setup edits and every attachment, even above the send cap", async () => {
     const message = queuedMessage({ messageId: "failed-setup", text: "Original prompt" });
     const sourceKey = `${message.environmentId}:${message.threadId}`;
@@ -817,6 +1025,7 @@ describe("thread outbox recovery rollback", () => {
     const message: QueuedThreadMessage = {
       ...queuedMessage({ messageId: "message-creation-restore", text: "new task text" }),
       modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
+      modelSelectionExplicit: true,
       creation: {
         projectId: ProjectId.make("project-1"),
         workspaceMode: "local",

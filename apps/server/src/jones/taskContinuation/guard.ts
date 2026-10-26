@@ -11,7 +11,12 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type { NativeSessionRequirement } from "./requiredNativeSession.ts";
 import type { TaskContinuationStore } from "./TaskContinuationStore.ts";
-import { assertCurrentBinding, continuationRoot, TaskContinuationError } from "./sourceBinding.ts";
+import {
+  assertCurrentBinding,
+  continuationAncestry,
+  continuationRoot,
+  TaskContinuationError,
+} from "./sourceBinding.ts";
 
 const isContinuationMessage = (messageId: string): boolean =>
   messageId.startsWith("message:jones:task-continue:");
@@ -21,10 +26,14 @@ export const requirementFor = Effect.fn("TaskContinuation.requirementFor")(funct
   projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "providerThreads">,
   run: OrchestrationV2Run,
   attempt: OrchestrationV2RunAttempt,
-) {
+): Effect.fn.Return<NativeSessionRequirement | undefined, TaskContinuationError> {
+  const ancestry = continuationAncestry(projection.runs, run);
+  if ("_tag" in ancestry) return yield* ancestry;
+  if (!ancestry.some((ancestor) => isContinuationMessage(ancestor.userMessageId))) return undefined;
   const root = continuationRoot(projection.runs, run);
   if (Schema.is(TaskContinuationError)(root)) return yield* root;
-  if (!isContinuationMessage(root.userMessageId)) return undefined;
+  if (!isContinuationMessage(root.userMessageId))
+    return yield* new TaskContinuationError({ reason: "ancestry_invalid" });
   if (store === undefined) {
     return yield* new TaskContinuationError({ reason: "guard_missing" });
   }
