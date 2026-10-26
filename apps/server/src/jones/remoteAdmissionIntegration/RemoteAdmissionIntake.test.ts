@@ -367,7 +367,7 @@ it.effect(
       expect(yield* bindings).toEqual(beforeCancellation);
       const cancelled = yield* intake
         .invoke("t3_thread_launch", { ...input, clientRequestId: "cancel-me" }, invocation)
-        .pipe(Effect.flip);
+        .pipe(Effect.asVoid, Effect.flip);
       expect(cancelled.code).toBe("remote_admission_denied");
       expect(cancelled.remoteAdmission?.status).toBe("cancelled");
       expect(calls).toBe(0);
@@ -449,7 +449,9 @@ it.effect("withdrawal after approval but before dispatch cancels the original re
     const before = yield* bindings;
     expect((yield* intake.withdraw(held, "remote")).status).toBe("cancelled");
     yield* intake.resumeApproved();
-    const failure = yield* intake.invoke("t3_thread_launch", input, invocation).pipe(Effect.flip);
+    const failure = yield* intake
+      .invoke("t3_thread_launch", input, invocation)
+      .pipe(Effect.asVoid, Effect.flip);
     expect(failure.code).toBe("remote_admission_denied");
     expect(failure.remoteAdmission?.status).toBe("cancelled");
     expect(yield* bindings).toEqual(before);
@@ -627,7 +629,7 @@ it.effect("a handler interrupted after claiming is never blindly dispatched agai
     expect(yield* intake.withdraw(record, "remote")).toEqual(publicRemoteAdmission(record));
     const unresolved = yield* intake
       .invoke("t3_thread_launch", input, invocation)
-      .pipe(Effect.flip);
+      .pipe(Effect.asVoid, Effect.flip);
     expect(unresolved.code).toBe("remote_admission_pending");
     expect(unresolved.remoteAdmission?.status).toBe("dispatching");
     yield* intake.resumeApproved();
