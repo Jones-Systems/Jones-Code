@@ -7,6 +7,43 @@ import * as TestClock from "effect/testing/TestClock";
 import { makeTerminalHistoryWorker } from "./TerminalHistoryWorker.ts";
 
 describe("terminal history persistence", () => {
+  it.effect("interrupts a debounce already in progress when an urgent flush arrives", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const writes: string[] = [];
+        const worker = yield* makeTerminalHistoryWorker<string>({
+          debounceMs: 250,
+          process: (key) =>
+            Effect.sync(() => {
+              writes.push(key);
+            }),
+        });
+        for (const key of ["a", "b", "c"])
+          yield* worker.enqueue(key, { history: "background", immediate: false });
+        yield* TestClock.adjust(100);
+        expect(writes).toEqual([]);
+        yield* worker.enqueue("clear", { history: "", immediate: true });
+        const drained = yield* Deferred.make<void>();
+        yield* worker
+          .drainKey("clear")
+          .pipe(
+            Effect.andThen(Deferred.succeed(drained, undefined)),
+            Effect.forkChild({ startImmediately: true }),
+          );
+        yield* TestClock.adjust(0);
+        expect(yield* Deferred.isDone(drained)).toBe(true);
+        expect(writes).toEqual(["clear"]);
+        yield* TestClock.adjust(249);
+        expect(writes).toEqual(["clear"]);
+        yield* TestClock.adjust(1);
+        expect(writes).toEqual(["clear", "a"]);
+        yield* TestClock.adjust(500);
+        yield* worker.drainKey("c");
+        expect(writes).toEqual(["clear", "a", "b", "c"]);
+      }),
+    ),
+  );
+
   it.effect("flushes ahead of three dirty terminals without increasing background write rate", () =>
     Effect.scoped(
       Effect.gen(function* () {
