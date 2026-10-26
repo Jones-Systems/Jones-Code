@@ -44,7 +44,7 @@ export function useThreadStatusSelection(
     (thread) =>
       thread.lineage.parentThreadId === null &&
       thread.lineage.relationshipToParent === null &&
-      thread.delegatedFrom === undefined,
+      thread.delegatedFrom == null,
   );
   const enabled = useClientSettings((settings) => settings.threadActivityWindowEnabled);
   const amount = useClientSettings((settings) => settings.threadActivityWindowAmount);
