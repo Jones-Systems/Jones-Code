@@ -85,6 +85,9 @@ it("distinguishes independent review from a guarded original-session follow-up",
   assert.include(instructions, "use `t3_task_continue` with the source `taskId`");
   assert.include(instructions, "It resumes the original provider session or refuses");
   assert.include(instructions, "Acceptance is not proof of continuation");
+  assert.include(instructions, "nativeSession.nativeSessionId");
+  assert.include(instructions, "expectedNativeSessionId");
+  assert.include(instructions, "Capture is not verified continuation");
   assert.include(instructions, "Repeat the same request and key to read current evidence");
   assert.include(instructions, "Do not use `t3_thread_send` on `childThreadId`");
   assert.notInclude(instructions, "For every T3 delegated review round");
