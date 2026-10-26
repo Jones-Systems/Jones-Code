@@ -41,6 +41,8 @@ export * from "./orchestrationDispatch.ts";
 export * from "./nativeCreation.ts";
 export * from "./orchestrationProject.ts";
 export * from "./orchestrationV2.ts";
+export * from "./guestShare.ts";
+export * from "./guestStream.ts";
 export * from "./applicationEvent.ts";
 export * from "./orchestratorMcp.ts";
 export * from "./peerLink.ts";
@@ -122,3 +124,6 @@ export * from "./jones/remoteTaskObservation.ts";
 
 export * from "./jones/linkedThreadsCapability.ts";
 export * from "./jones/linkedThreads.ts";
+
+export * from "./jones/desktopThreadMonitor.ts";
+export * from "./jones/guardedThreadSettlement.ts";

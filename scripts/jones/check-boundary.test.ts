@@ -85,6 +85,23 @@ describe("Jones boundary", () => {
     expect(result.violations).toEqual([]);
     expect(result.classified).toEqual({ [hook]: "hook", [implementation]: "jones-owned" });
   });
+  it("resolves app aliases from upstream test directories while enforcing owned edges", () => {
+    const testPath = "apps/web/test/renderer.tsx";
+    const inv = inventory();
+    inv.paths[testPath] = "accepted-shared";
+    const owned = fragment();
+    owned.hookPaths = [testPath];
+    owned.allowedImports = [{ from: testPath, to: implementation }];
+    const tree = new Map([
+      [testPath, 'import {value} from "~/jones/usage/view";'],
+      [implementation, "export const value = 1;"],
+    ]);
+    const run = () =>
+      checkBoundary(inv, [owned], tree, new Set([testPath]), [testPath, implementation]);
+    expect(run().violations).toEqual([]);
+    owned.allowedImports = [];
+    expect(run().violations.map((entry) => entry.code)).toEqual(["unlisted-upstream-import"]);
+  });
   it("keeps advisory findings non-gating and strict findings failing", () => {
     const result = checkBoundary(
       inventory(),

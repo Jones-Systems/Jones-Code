@@ -71,6 +71,7 @@ export function ContinuationChoiceBanner(props: {
   const busyRef = useRef(false);
   const scope = `${props.environmentId}:${props.threadId}`;
   const scopeRef = useRef<string | null>(scope);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Fence continuation actions to the committed thread scope and revoke that scope on unmount.
   useLayoutEffect(() => {
     scopeRef.current = scope;
     return () => {

@@ -646,11 +646,9 @@ export async function planSystemAdoption(
 }
 
 /**
- * The worker's stopped state as reported: exactly `inactive dead`, or the
- * `failed failed` a retained process leaves when it exits unclean on stop,
- * with no main process and no cgroup. A complete worker `stop` result also
- * carries its private job and original-cgroup checks; `install-launcher`
- * checks its private job. An inspection alone never proves quiescence.
+ * Reported stopped state is inactive/dead or retained failed/failed, with no main process or cgroup.
+ * Complete stop proof also checks the private job and original cgroup; install-launcher checks its private job.
+ * Inspection alone never proves quiescence.
  */
 const stoppedUnit = (inspection: SystemUnitInspection) =>
   ((inspection.activeState === "inactive" && inspection.subState === "dead") ||
@@ -692,11 +690,9 @@ async function createServiceState(path: string, activeVersion: string): Promise<
 }
 
 /**
- * Applies only the approved plan. Each step records its phase first. A failure
- * whose effects are all known records `partial`: the completed setup effects
- * up to its recorded phase remain, so it never means that nothing changed. A
- * failure during an attempt whose result is not settled records `unknown`.
- * Neither is retried, reversed or restarted here.
+ * Apply only the approved plan and record each phase first. partial retains known completed effects
+ * through that phase; it never means no change. Unsettled attempted effects are unknown.
+ * Neither outcome is retried, reversed or restarted here.
  */
 export async function adoptSystemHost(
   input: SystemAdoptInput,

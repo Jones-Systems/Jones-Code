@@ -10,6 +10,8 @@ export const HOST_STATUS_NAMES = {
 export const HOST_STATUS_IDS = ["vps", "test", "mini", "home"] as const;
 
 const HOST_STATUS_MAX_AGE_MS = 30_000;
+// oxlint-disable-next-line t3code/no-em-dash-copy -- Owner-approved missing-reading symbol, not prose punctuation.
+const UNAVAILABLE_READING = "—";
 
 function utilizationHealth(percent: number) {
   return percent > 90
@@ -41,8 +43,8 @@ export function hostStatusMetrics(sample: HostStatus | undefined) {
           stale: "Host status sample is stale",
         }[host.reason];
     return {
-      cpu: "—",
-      ram: "—",
+      cpu: UNAVAILABLE_READING,
+      ram: UNAVAILABLE_READING,
       cpuHealth: "unavailable",
       ramHealth: "unavailable",
       health: "unavailable",
@@ -56,7 +58,7 @@ export function hostStatusMetrics(sample: HostStatus | undefined) {
     const swap = host.swapIoBytesPerSecond;
     const swapMiB = swap === undefined ? undefined : swap / 1024 ** 2;
     const ramHealth = swapMiB === undefined ? "unavailable" : swapMiB > 10 ? "warning" : "healthy";
-    const ram = swapMiB === undefined ? "— mb/s" : `${swapMiB.toFixed(1)} mb/s`;
+    const ram = swapMiB === undefined ? UNAVAILABLE_READING : `${swapMiB.toFixed(1)} mb/s`;
     const health = cpuHealth === "healthy" && ramHealth === "warning" ? "warning" : cpuHealth;
     const availableRam =
       availableMemoryBytes === undefined
@@ -76,7 +78,9 @@ export function hostStatusMetrics(sample: HostStatus | undefined) {
       ? "unavailable"
       : utilizationHealth(100 * (1 - availableMemoryBytes / host.totalMemoryBytes));
   const ram =
-    availableMemoryBytes === undefined ? "—" : String(Math.round(availableMemoryBytes / 1024 ** 3));
+    availableMemoryBytes === undefined
+      ? UNAVAILABLE_READING
+      : String(Math.round(availableMemoryBytes / 1024 ** 3));
   const health =
     availableMemoryBytes === undefined
       ? cpuHealth
@@ -89,7 +93,7 @@ export function hostStatusMetrics(sample: HostStatus | undefined) {
     ramHealth,
     cpu,
     ram,
-    detail: `CPU ${cpu} of total cores. Available RAM ${ram === "—" ? "unavailable" : `${ram} GiB (collector estimate, including reclaimable memory)`}. Colors reflect CPU and RAM utilization.`,
+    detail: `CPU ${cpu} of total cores. Available RAM ${availableMemoryBytes === undefined ? "unavailable" : `${ram} GiB (collector estimate, including reclaimable memory)`}. Colors reflect CPU and RAM utilization.`,
   } as const;
 }
 

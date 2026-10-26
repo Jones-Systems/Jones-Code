@@ -21,6 +21,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
+import * as DocumentText from "../../../provider/DocumentText.ts";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ServerConfig from "../../../config.ts";
@@ -80,7 +81,7 @@ it.effect("attributes a launched thread's first message to the calling thread", 
           return Effect.succeed({
             threadId: input.threadId,
             projection: {
-              thread: { id: input.threadId, projectId, modelSelection },
+              thread: { id: input.threadId, title: input.title, projectId, modelSelection },
               runs: [],
             },
             resumed: false,
@@ -92,6 +93,7 @@ it.effect("attributes a launched thread's first message to the calling thread", 
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
       Layer.mock(GitVcsDriver.GitVcsDriver)({}),
       NodeServices.layer,
+      DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
       ServerConfig.layerTest(process.cwd(), { prefix: "t3-source-link-" }).pipe(
         Layer.provide(NodeServices.layer),
       ),
@@ -156,7 +158,12 @@ it.effect("launches a scratch thread into the Scratch project", () =>
           return Effect.succeed({
             threadId: input.threadId,
             projection: {
-              thread: { id: input.threadId, projectId: input.projectId, modelSelection },
+              thread: {
+                id: input.threadId,
+                title: input.title,
+                projectId: input.projectId,
+                modelSelection,
+              },
               runs: [],
             },
             resumed: false,
@@ -171,6 +178,7 @@ it.effect("launches a scratch thread into the Scratch project", () =>
       }),
       Layer.mock(GitVcsDriver.GitVcsDriver)({}),
       NodeServices.layer,
+      DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
       ServerConfig.layerTest(process.cwd(), { prefix: "t3-scratch-launch-" }).pipe(
         Layer.provide(NodeServices.layer),
       ),
@@ -376,6 +384,7 @@ const clientLaunchHarness = (input: {
             thread: {
               id: launch.threadId,
               projectId: launch.projectId,
+              title: launch.title,
               modelSelection: launch.modelSelection,
             },
             runs: [],
@@ -398,7 +407,7 @@ const clientLaunchHarness = (input: {
     }),
     Layer.mock(PeerForwarding.PeerForwarding)({}),
     Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
-    NodeServices.layer,
+    DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer)),
   ).pipe(
     Layer.provideMerge(GitVcsDriver.layer),
     Layer.provideMerge(VcsProcess.layer),
@@ -455,6 +464,7 @@ it.effect(
       expect(belowCeiling.result).toMatchObject({
         projectId: belowCeiling.projectId,
         modelSelection: belowCeiling.modelSelection,
+        link: `[Fix](t3-thread://v1/${belowCeiling.launched[0]?.threadId})`,
       });
       expect(belowCeiling.launched[0]?.runtimeMode).toBe("approval-required");
       expect(belowCeiling.launched[0]?.initialMessage?.senderThreadId).toBeUndefined();

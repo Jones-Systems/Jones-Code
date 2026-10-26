@@ -198,7 +198,7 @@ describe("host status metrics", () => {
       });
       const { swapIoBytesPerSecond: _swap, ...olderMac } = mac;
       expect(hostStatusMetrics(olderMac)).toMatchObject({
-        ram: "— mb/s",
+        ram: "—",
         ramHealth: "unavailable",
         health: "healthy",
       });

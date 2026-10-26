@@ -32,8 +32,8 @@ export const PreviewCompanionCapabilities = Schema.Struct({
 export type PreviewCompanionCapabilities = typeof PreviewCompanionCapabilities.Type;
 
 export const PreviewRenderHostSelection = Schema.Union([
-  Schema.Struct({ _tag: Schema.Literal("server") }),
-  Schema.Struct({ _tag: Schema.Literal("companion"), hostId: PreviewCompanionHostId }),
+  Schema.TaggedStruct("server", {}),
+  Schema.TaggedStruct("companion", { hostId: PreviewCompanionHostId }),
 ]);
 export type PreviewRenderHostSelection = typeof PreviewRenderHostSelection.Type;
 
@@ -184,8 +184,7 @@ export type DesktopCompanionTicketRequest = typeof DesktopCompanionTicketRequest
 export const DesktopCompanionTicketResponse = Schema.Struct({
   ...DesktopCompanionTicketRequest.fields,
   result: Schema.Union([
-    Schema.Struct({
-      _tag: Schema.Literal("ready"),
+    Schema.TaggedStruct("ready", {
       url: TrimmedNonEmptyString.check(Schema.isMaxLength(16384)),
     }),
     Schema.Struct({ _tag: Schema.Literals(["auth_required", "unavailable", "unsupported"]) }),

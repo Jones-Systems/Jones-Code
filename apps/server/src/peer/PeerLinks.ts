@@ -437,8 +437,8 @@ const make = Effect.gen(function* () {
     readRow(environmentId).pipe(
       Effect.flatMap(
         Option.match({
-          onNone: () => Effect.succeed(Option.none()),
-          onSome: (row) => Effect.map(toLink(row), Option.some),
+          onNone: () => Effect.succeedNone,
+          onSome: (row) => toLink(row).pipe(Effect.asSome),
         }),
       ),
     );

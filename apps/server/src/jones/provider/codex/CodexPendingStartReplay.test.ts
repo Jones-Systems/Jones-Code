@@ -184,6 +184,7 @@ const turnStart = (id: number) =>
       approvalsReviewer: "user",
       sandboxPolicy: { type: "dangerFullAccess" },
       summary: "detailed",
+      collaborationMode: { mode: "default", settings: { model: modelSelection.model } },
     },
   });
 const makeTranscript = (outcome: Outcome) =>

@@ -100,6 +100,7 @@ const make = Effect.gen(function* () {
   const config = yield* CompanionConfig.CompanionConfig;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const host = yield* DesktopBrowserHost.DesktopBrowserHost;
+  const browserSource = {};
   const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
   const windows = yield* ElectronWindow.ElectronWindow;
   const platform = yield* HostProcess.Platform;
@@ -145,6 +146,7 @@ const make = Effect.gen(function* () {
                   host.handleCommandLine(
                     line,
                     (key) => isCurrent() && host.isCompanionAssigned(key),
+                    browserSource,
                   ),
                 ),
                 Effect.catch(() =>
@@ -158,7 +160,7 @@ const make = Effect.gen(function* () {
     subscribeBrowser: (listener, isAssigned) => {
       const decoder = new TextDecoder();
       const fiber = runFork(
-        Stream.runForEach(host.eventsMatching(isAssigned), (bytes) =>
+        Stream.runForEach(host.eventsMatching(isAssigned, browserSource), (bytes) =>
           Effect.sync(() => {
             const event = decodeEvent(decoder.decode(bytes));
             if (Option.isSome(event) && isAssigned(event.value)) listener(event.value);

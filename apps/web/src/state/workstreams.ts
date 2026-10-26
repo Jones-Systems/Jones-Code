@@ -698,6 +698,7 @@ export function useWorkstreams(
   const commandRequests = useRef(new Set<BindingOperationRequest>());
   const currentBindingKey = data ? workstreamBindingKey(data.binding) : null;
   const currentBindingKeyRef = useRef(currentBindingKey);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Publish committed snapshots and authority to asynchronous workstream operations before accepting results.
   useLayoutEffect(() => {
     nativeThreadsSnapshot.current = stableNativeThreads;
     preferredThreadRef.current = preferredThread;
@@ -746,6 +747,7 @@ export function useWorkstreams(
     setStale(true);
   });
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Abort operations whose accepted registry authority no longer matches the committed binding.
   useEffect(() => {
     for (const operation of commandRequests.current) {
       if (
@@ -756,6 +758,7 @@ export function useWorkstreams(
     }
   }, [currentBindingKey]);
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Abort and clear all owned command requests when the workstream controller unmounts.
   useEffect(() => {
     const requests = commandRequests.current;
     return () => {
@@ -778,6 +781,7 @@ export function useWorkstreams(
       ),
   );
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Load the current registry and assignment index, aborting superseded reads on dependency changes.
   useEffect(() => {
     listRequest.current?.abort();
     proofRequest.current?.abort();
@@ -951,6 +955,7 @@ export function useWorkstreams(
   ]);
 
   // Native identity changes only refresh proofs for the committed snapshot; they never clear it.
+  // oxlint-disable-next-line t3code/react-effect-budget -- Refresh live placement proof when native identities change without clearing the committed registry snapshot.
   useEffect(() => {
     if (!placementsEnabled || data === null || assignmentIndex === null) return;
     if (listRequest.current !== null) return;
@@ -1014,6 +1019,7 @@ export function useWorkstreams(
   ]);
 
   // Expiry downgrades verified proof to recorded; it never removes a stored assignment.
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own the next proof-expiry timer so expired verification is downgraded without dropping stored assignments.
   useEffect(() => {
     const nowMs = Date.parse(verificationNow);
     let next = Number.POSITIVE_INFINITY;

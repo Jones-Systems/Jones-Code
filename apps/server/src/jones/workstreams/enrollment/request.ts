@@ -84,7 +84,7 @@ const canonicalJson = (value: unknown): string => {
 
 // UTF-8 JSON, recursively sorted object keys, no whitespace or trailing newline; all request fields are closed.
 export const canonicalNativeEnrollmentRequest = (request: NativeEnrollmentRequest): string =>
-  canonicalJson(Schema.decodeUnknownSync(NativeEnrollmentRequest)(request));
+  canonicalJson(Schema.decodeSync(NativeEnrollmentRequest)(request));
 export const sha256EnrollmentBytes = (bytes: string | Uint8Array): string =>
   NodeCrypto.createHash("sha256").update(bytes).digest("hex");
 export const nativeEnrollmentRequestSha256 = (request: NativeEnrollmentRequest): string =>

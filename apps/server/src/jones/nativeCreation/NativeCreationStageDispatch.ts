@@ -92,8 +92,8 @@ export const validateNativeCreationStage = Effect.fn("validateNativeCreationStag
     const preparation = yield* validateNativeCreationPreparation(
       new TextEncoder().encode(intent.canonicalPreparation),
     );
-    const actorSessionId = yield* Schema.decodeUnknownEffect(AuthSessionId)(intent.actorSessionId);
-    const guard = yield* Schema.decodeUnknownEffect(NativeCreationGuard)({
+    const actorSessionId = yield* Schema.decodeEffect(AuthSessionId)(intent.actorSessionId);
+    const guard = yield* Schema.decodeEffect(NativeCreationGuard)({
       schema: "t3.native-creation-guard/v1",
       grantId: intent.grantId,
       grantRevision: intent.grantRevision,
@@ -110,7 +110,7 @@ export const validateNativeCreationStage = Effect.fn("validateNativeCreationStag
       yield* repository.readExecutionReference({
         version: 2,
         claimId: lineage.claimId,
-        stageCommandId: yield* Schema.decodeUnknownEffect(CommandId)(stageCommandId),
+        stageCommandId: yield* Schema.decodeEffect(CommandId)(stageCommandId),
         effectId: `native-stage:${stageCommandId}`,
         stage: "native_command",
       });

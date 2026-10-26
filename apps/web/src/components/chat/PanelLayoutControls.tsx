@@ -1,3 +1,4 @@
+import { MonitorToggle } from "../../jones/threadMonitor/MonitorToggle";
 import { PanelBottomIcon, PanelRightIcon, SquareMenuIcon } from "lucide-react";
 import { Maximize2, Minimize2 } from "lucide";
 import { MorphIcon } from "~/components/MorphIcon";
@@ -12,6 +13,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 export interface PanelLayoutControlsProps {
   showThreadPanelControl?: boolean;
+  showMonitorControl?: boolean;
   showTerminalControl?: boolean;
   showRightPanelControl?: boolean;
   terminalAvailable: boolean;
@@ -32,6 +34,7 @@ export interface PanelLayoutControlsProps {
 
 export const PanelLayoutControls = memo(function PanelLayoutControls({
   showThreadPanelControl = true,
+  showMonitorControl = true,
   showTerminalControl = true,
   showRightPanelControl = true,
   terminalAvailable,
@@ -78,6 +81,7 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
       className="flex h-full shrink-0 items-center gap-1 [-webkit-app-region:no-drag]"
       data-panel-layout-controls
     >
+      {showMonitorControl ? <MonitorToggle /> : null}
       {showThreadPanelControl
         ? threadPanelPresentation === "popover"
           ? threadPanelTooltip(
@@ -170,7 +174,12 @@ export function ThreadPanelHeaderControl(props: PanelLayoutControlsProps) {
       className="absolute top-[var(--workspace-controls-top)] right-[calc(env(safe-area-inset-right)+0.75rem)] z-50 flex h-[var(--workspace-topbar-height)] items-center [-webkit-app-region:no-drag]"
       data-workspace-titlebar-controls
     >
-      <PanelLayoutControls {...props} showTerminalControl={false} showRightPanelControl={false} />
+      <PanelLayoutControls
+        {...props}
+        showMonitorControl={false}
+        showTerminalControl={false}
+        showRightPanelControl={false}
+      />
     </div>
   );
 }

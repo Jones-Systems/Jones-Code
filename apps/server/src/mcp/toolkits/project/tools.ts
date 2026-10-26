@@ -31,6 +31,7 @@ import {
   SourceControlCloneRepositoryResult,
 } from "@t3tools/contracts";
 import * as FileSystem from "effect/FileSystem";
+import * as DocumentText from "../../../provider/DocumentText.ts";
 import * as ServerConfig from "../../../config.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as ThreadLaunchService from "../../../orchestration-v2/ThreadLaunchService.ts";
@@ -140,7 +141,7 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     scratch: Schema.optional(
       Schema.Boolean.annotate({
         description:
-          "Launch without a project, in its own folder under the environment's Scratch project. Not with projectId or workspaceStrategy.",
+          "No project: a new Scratch folder. Not with `projectId` or `workspaceStrategy`.",
       }),
     ),
     title: TrimmedNonEmptyString,
@@ -150,13 +151,12 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     workspaceStrategy: Schema.optional(
       OrchestrationV2ThreadLaunchWorkspaceStrategy.annotate({
         description:
-          "Choose where this thread runs before starting its agent: worktree creates and binds a new checkout from baseRef; existing_worktree binds worktreePath, which must be one of the project's git worktrees; root uses the project checkout. Omitted means root, not the caller's worktree. For a PR stack use the parent branch as baseRef and startFromOrigin:false. Uncommitted changes are not copied.",
+          "'worktree': new checkout from `baseRef`. 'existing_worktree': bind `worktreePath`, a project worktree. 'root': project checkout, the default, not your worktree. Stack: parent branch as `baseRef`, `startFromOrigin: false`. Uncommitted edits are not copied.",
       }),
     ),
     message: Schema.optional(
       Schema.String.check(Schema.isMaxLength(120000)).annotate({
-        description:
-          "First task prompt, delivered after workspace preparation. Omit message and attachments to create an idle thread.",
+        description: "First prompt. Omit it and `attachments` for idle.",
       }),
     ),
     attachments: Schema.optional(Schema.Array(McpAttachmentInput).check(Schema.isMaxLength(8))),
@@ -167,6 +167,7 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
   success: Schema.Struct({
     originLink: Schema.optionalKey(LinkedThreadOriginLink),
     threadId: ThreadId,
+    link: Schema.optional(Schema.String),
     projectId: ProjectId,
     modelSelection: ModelSelection,
     runId: Schema.NullOr(RunId),
@@ -187,6 +188,7 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     FileSystem.FileSystem,
     ServerConfig.ServerConfig,
     ServerSettings.ServerSettingsService,
+    DocumentText.DocumentText,
   ],
 })
   .annotate(Tool.Destructive, true)

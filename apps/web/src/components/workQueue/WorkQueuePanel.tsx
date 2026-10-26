@@ -56,6 +56,7 @@ export function WorkQueuePanel({
   const mutation = useRef(0);
   const readEditor = useStableCallback(() => editor);
   const dirty = !!editor && editor.draft !== (editor.base.text ?? "");
+  // oxlint-disable-next-line t3code/react-effect-budget -- Notify the containing preview when asynchronous editor loads or saves change its dirty state.
   useEffect(() => {
     onDirtyChange?.(dirty);
   }, [dirty, onDirtyChange]);
@@ -118,6 +119,7 @@ export function WorkQueuePanel({
     setSaving(false);
     setLoading(true);
   }
+  // oxlint-disable-next-line t3code/react-effect-budget -- Load the current queue source on mount and fence late reads when its generation retires.
   useEffect(() => {
     generation.current++;
     mutation.current++;
@@ -141,6 +143,7 @@ export function WorkQueuePanel({
   }
   const protectedId =
     editor && (dirty || saving || unknown || editor.current) ? editor.base.id : null;
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own the next grace-expiry timer without expiring a draft protected by an in-flight save.
   useEffect(() => {
     if (saving) return;
     const deadlines = items

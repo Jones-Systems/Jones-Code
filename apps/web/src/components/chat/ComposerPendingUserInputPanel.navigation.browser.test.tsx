@@ -240,7 +240,7 @@ function activeIndex() {
 
 it("does not skip the next unanswered question after manual advance", async () => {
   using _timers = fakeTimers();
-  await using screen = await render(<Questions />);
+  await using _screen = await render(<Questions />);
   await chooseOption();
   await navigate("Next");
   expect(activeIndex()).toBe("1");
@@ -254,7 +254,7 @@ it("does not skip the next unanswered question after manual advance", async () =
 
 it("does not undo previous-question navigation with a stale timer", async () => {
   using _timers = fakeTimers();
-  await using screen = await render(<Questions initialIndex={1} />);
+  await using _screen = await render(<Questions initialIndex={1} />);
   await chooseOption();
   await navigate("Previous");
   await act(async () => vi.advanceTimersByTime(200));
@@ -263,7 +263,7 @@ it("does not undo previous-question navigation with a stale timer", async () => 
 
 it("still auto-advances once after the answer draft rerenders the same question", async () => {
   using _timers = fakeTimers();
-  await using screen = await render(<Questions />);
+  await using _screen = await render(<Questions />);
   await chooseOption();
   await act(async () => vi.advanceTimersByTime(200));
   expect(activeIndex()).toBe("1");

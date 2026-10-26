@@ -920,7 +920,7 @@ jobs:
         run: brew bundle install --file apps/mobile/Brewfile
 
       - name: Lint mobile native sources
-        run: vp run lint:mobile
+        run: node scripts/mobile-native-static-check.ts
 
   # The Linux and macOS legs run the same steps (shared through a YAML anchor)
   # and differ only in runner and expected platform. Only the macOS leg is
@@ -955,6 +955,11 @@ jobs:
           node-version: 26.12.1
           cache: true
           run-install: true
+
+      - name: Verify official Effect TSRS after the full install
+        run: |
+          node scripts/jones/tsrs/patch.ts --verify
+          node scripts/jones/tsrs/typecheck.ts --version
 
       - name: Setup the standalone CLI runtime
         uses: actions/setup-node@v6

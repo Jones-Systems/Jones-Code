@@ -14,7 +14,7 @@ vi.mock("../state/use-atom-command", () => ({
   },
 }));
 import { currentRuntimeStopPointerStore } from "./useCurrentRuntimeStop";
-const input = Schema.decodeUnknownSync(StopCurrentThreadRuntimeInput)({
+const input = Schema.decodeSync(StopCurrentThreadRuntimeInput)({
   commandId: "command:stop",
   threadId: "thread:stop",
   target: {
@@ -66,7 +66,7 @@ describe("retained runtime stop pointer", () => {
     expect(() =>
       remount.clear({
         ...input,
-        commandId: Schema.decodeUnknownSync(StopCurrentThreadRuntimeInput)({
+        commandId: Schema.decodeSync(StopCurrentThreadRuntimeInput)({
           ...input,
           commandId: "command:other",
         }).commandId,

@@ -29,11 +29,10 @@ interface Request extends Binding {
   usage?: ThreadTokenUsageSnapshot;
 }
 
-// Maintenance never registers a root provider turn: that would falsely attribute
-// the still-unsent user input to this native turn. Cancellation never revives it;
-// acknowledged terminal evidence can still release its native admission fence.
-// Once restoration is dispatched, its own acknowledgement or producer retirement
-// is required: the earlier compaction terminal cannot settle that later effect.
+// Never register maintenance as a root turn: it would attribute unsent user input to that native turn.
+// Cancellation never revives it; acknowledged terminal evidence may release its native fence.
+// After restoration dispatch, require restoration acknowledgement or producer retirement;
+// the earlier compaction terminal cannot settle the later effect.
 export function makeCodexHandoffCompaction() {
   const consumed = new Set<string>();
   let pending: Request | undefined;

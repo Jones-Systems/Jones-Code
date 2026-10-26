@@ -206,7 +206,7 @@ export const layer = Layer.effect(
             { platform, architecture },
             preparation,
           ),
-        ).pipe(Effect.catch(() => Effect.succeed(undefined)))
+        ).pipe(Effect.orElseSucceed(() => undefined))
       : undefined;
     yield* Effect.logInfo("Qualified startup timing", {
       step: "receipt",
@@ -224,7 +224,7 @@ export const layer = Layer.effect(
     const unsupportedOperations = {
       reconcile: unsupportedSettlement,
       recordRetired: unsupportedSettlement,
-      refreshPolicy: Effect.succeed(undefined),
+      refreshPolicy: Effect.undefined,
       retireStagedOperation: () =>
         Effect.succeed({
           retired: false,
@@ -365,9 +365,7 @@ export const layer = Layer.effect(
             return snapshot();
           }),
         ).pipe(
-          Effect.catch(() =>
-            Effect.succeed(blocked("The desktop host could not accept this request.")),
-          ),
+          Effect.orElseSucceed(() => blocked("The desktop host could not accept this request.")),
         );
       const prepareNative = Effect.fn("JonesUpdates.prepareNative")(
         function* (input: JonesNativePrepareInput) {
@@ -583,7 +581,7 @@ export const layer = Layer.effect(
         ? undefined
         : yield* Effect.tryPromise(() =>
             readQualifiedBackupReceipt(config.baseDir, terminal.id),
-          ).pipe(Effect.catch(() => Effect.succeed(undefined)));
+          ).pipe(Effect.orElseSucceed(() => undefined));
     let capabilityWrites = Promise.resolve();
     const publishCapability = (state: JonesUpdateState) => {
       if (environmentId === undefined) return;

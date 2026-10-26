@@ -439,11 +439,8 @@ export const layerExecutor: Layer.Layer<
                             : { senderThreadId: message.senderThreadId }),
                         })
                         .pipe(
-                          // The turn that just completed leaves no further retry
-                          // target once the instance is off: the completed turn
-                          // stands as the thread's result instead of going
-                          // through the outbox's bounded retry on a refusal that
-                          // retrying cannot change.
+                          // Once the instance is off, the completed turn has no further retry target.
+                          // Retain it as the result instead of spending the outbox's bounded retries on a permanent refusal.
                           Effect.catchTags({
                             ThreadManagementProviderInstanceDisabledError: (disabledError) =>
                               Effect.logInfo(
@@ -527,7 +524,8 @@ export const layerExecutor: Layer.Layer<
                 ),
               );
           }
-          case "runtime-request.respond":
+          case "runtime-request.respond": {
+            const requestId = effect.request.requestId;
             return runtimeRequests
               .respond({
                 threadId: effect.threadId,
@@ -536,11 +534,33 @@ export const layerExecutor: Layer.Layer<
                 ...(effect.request.decision === undefined
                   ? {}
                   : { decision: effect.request.decision }),
+                ...(effect.request.feedback === undefined
+                  ? {}
+                  : { feedback: effect.request.feedback }),
                 ...(effect.request.answers === undefined
                   ? {}
                   : { answers: effect.request.answers }),
               })
               .pipe(
+                Effect.tapCause((cause) =>
+                  willRetry || Cause.hasInterruptsOnly(cause)
+                    ? Effect.void
+                    : threads
+                        .dispatch({
+                          type: "runtime-request.delivery.fail",
+                          commandId: CommandId.make(`${effect.commandId}:delivery-failed`),
+                          threadId: effect.threadId,
+                          requestId,
+                        })
+                        .pipe(
+                          Effect.catchCause((recordCause) =>
+                            Effect.logWarning("Failed to record answer delivery failure", {
+                              effectId: effect.id,
+                              cause: recordCause,
+                            }),
+                          ),
+                        ),
+                ),
                 Effect.mapError(
                   (cause) =>
                     new OrchestrationEffectExecutionError({
@@ -550,6 +570,7 @@ export const layerExecutor: Layer.Layer<
                     }),
                 ),
               );
+          }
           case "provider-thread.rollback":
             return checkpointRollback
               .execute({
@@ -895,10 +916,7 @@ export const layerWithOptions = (
               ),
               Duration.millis(Math.max(0, claimedAt - eligibleAt)),
             );
-            // Cancellation can commit after the durable claim but before the
-            // process-local Deferred is registered. Re-read the authoritative row
-            // once before starting external work; later cancellations use the
-            // Deferred raced below.
+            // Recheck durable cancellation after registering the Deferred; cancellation may have committed after claim.
             if (yield* wasCancelled(effect.id)) {
               yield* outbox.clearCancellation(effect.id);
               return true;
@@ -1141,9 +1159,7 @@ export const runDaemonWithOptions = (options: OrchestrationEffectDaemonOptions =
             continue;
           }
           if (outcome === "failed") {
-            // A due row can remain visible when a claim UPDATE fails. Do not
-            // feed that past deadline back into the scheduler and retry at the
-            // one-millisecond floor; let transient database failures cool off.
+            // Failed claims can leave overdue rows; cool off instead of rescheduling at the one-millisecond floor.
             yield* Effect.sleep(Duration.millis(Math.min(1_000, livenessPollIntervalMs)));
             continue;
           }
@@ -1182,7 +1198,3 @@ export const runDaemonWithOptions = (options: OrchestrationEffectDaemonOptions =
   );
 
 export const runDaemon = runDaemonWithOptions();
-
-const layerDaemon: Layer.Layer<never, never, OrchestrationEffectWorkerV2> = Layer.effectDiscard(
-  runDaemon.pipe(Effect.forkScoped),
-);

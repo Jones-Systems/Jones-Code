@@ -14,7 +14,7 @@ import {
   WORK_MODE_INTERVAL_MS,
   WORK_MODE_SENTINEL,
 } from "@t3tools/shared/jones/workMode";
-import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import { backgroundWorkHoldsCompletion } from "@t3tools/shared/jones/threadAttention";
 import * as DateTime from "effect/DateTime";
 import { isWorkModeKeepWarm } from "../provider/workModePrompt.ts";
 

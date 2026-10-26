@@ -1,6 +1,6 @@
 {
   "name": "@t3tools/contracts",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "files": [
     "dist"
@@ -78,10 +78,19 @@
     "./jones/linkedThreadsRpc": {
       "types": "./src/jones/linkedThreadsRpc.ts",
       "import": "./src/jones/linkedThreadsRpc.ts"
+    },
+    "./jones/desktopThreadMonitor": {
+      "types": "./src/jones/desktopThreadMonitor.ts",
+      "import": "./src/jones/desktopThreadMonitor.ts"
+    },
+    "./jones/guardedThreadSettlement": {
+      "types": "./src/jones/guardedThreadSettlement.ts",
+      "import": "./src/jones/guardedThreadSettlement.ts"
     }
   },
   "scripts": {
-    "typecheck": "tsc-rs --noEmit",
+    "typecheck": "vp run tsrs:typecheck",
+    "typecheck:native": "node ../../scripts/jones/tsrs/typecheck.ts --noEmit",
     "test": "vp test run --config ../../vite.config.ts --dir ."
   },
   "dependencies": {
