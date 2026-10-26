@@ -2239,6 +2239,14 @@
         "packages/client-runtime/src/jones/shellPublication/shellPublication.test.ts"
       ],
       "scope": "One Jones Atom.transform subscription boundary synchronously batches shell publications for the shared web, desktop and mobile thread graph. Real-factory regressions preserve HTTP row identity, streaming quiet suppression, completion, cross-environment approval, optimistic reconciliation, cold mount, disposal/remount and expected errors. Opt-in diagnostics measure counts and warmed uninstrumented timings with synthetic data; installed adoption remains separate."
+    },
+    {
+      "id": "xcode-device-readiness",
+      "tests": [
+        "apps/server/src/jones/device/xcodeReadiness.test.ts",
+        "apps/server/src/jones/device/sshXcodeReadiness.test.ts"
+      ],
+      "scope": "Check selected Xcode first-launch status with a bounded host-local command before simulator discovery. Local and SSH readiness preserve healthy Android and dual-platform discovery, recheck reused hubs, report incomplete setup and keep remote stop operations independent of platform health. Local private lifecycle/filter wiring and service status updates are accepted shared edits; the existing upstream fixture is adapted only to supply the newly required Xcode readiness seam. No automatic Xcode installation, license acceptance, simulator erasure or runtime deployment."
     }
   ]
 }
