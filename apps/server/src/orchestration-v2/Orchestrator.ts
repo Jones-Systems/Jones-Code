@@ -1732,12 +1732,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: "Reviewed delivery no longer leads the queue",
         });
       }
-      // A provider that just failed will likely fail the next message too.
-      // Hold the queue so the user decides when to resume it. Validation
-      // failures (setup, unsupported handoff) belong to that message alone,
-      // and a message queued for another provider is how users recover.
-      // A message queued behind a worktree that was cancelled or never created
-      // would run in the project checkout instead, so it waits for the user.
+      // Hold after provider failure or missing worktree until the user resumes.
+      // Validation failures affect only their message; a different provider remains a recovery path.
+      // Missing worktrees must not redirect queued work into the project checkout.
       const failedRun = latestExecutedRun(projection.runs);
       const failureClass =
         failedRun?.id === options?.failedRunId
@@ -8355,11 +8352,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     });
   });
 
-  // The wait path uses this when its blocking window ends without a terminal
-  // (timeout), so a child that later terminalizes mid-parent-turn still wakes
-  // the parent. Runs under the parent thread's dispatch lock, which is also
-  // what finalize takes for its parent-side writes, so the two never interleave
-  // on this row.
+  // After a wait timeout, late child completion must still wake the parent.
+  // This and finalize share the parent dispatch lock, preventing interleaved row writes.
   const dispatchDelegatedTaskWakePolicy = Effect.fn(
     "orchestrationV2.dispatch.delegatedTaskWakePolicy",
   )(function* (
@@ -14438,7 +14432,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         command.type === "thread.stop" ||
         command.type === "subagent.stop" ||
         // Closed shares and durably restored settlements accept idempotent retries.
-        (command.type === "thread.guest-share.close" || command.type === "thread.settlement.restore")
+        command.type === "thread.guest-share.close" ||
+        command.type === "thread.settlement.restore"
           ? Effect.succeed(planned)
           : Effect.fail(
               new OrchestratorDispatchError({
@@ -14525,7 +14520,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             }),
         ),
       );
-      return { sequence: resultSequence, storedEvents: [], ...(inserted ? {} : { replayed: true as const }) } satisfies OrchestratorV2DispatchResult;
+      return {
+        sequence: resultSequence,
+        storedEvents: [],
+        ...(inserted ? {} : { replayed: true as const }),
+      } satisfies OrchestratorV2DispatchResult;
     }
     const acceptedAt = plan.events.at(-1)?.occurredAt ?? (yield* DateTime.now);
     const committed = yield* commitWorkspaceLifecycleCommand(
@@ -14781,9 +14780,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     if (command.type !== "legacy-bootstrap.guard-rejection-delete")
       return Effect.gen(function* () {
-        if (
-          command.type !== "message.dispatch" || !mayStartSubagentFollowup(command)
-        )
+        if (command.type !== "message.dispatch" || !mayStartSubagentFollowup(command))
           return yield* serialized;
         const parentThreadId = yield* appOwnedSubagentParentThreadId(command.threadId).pipe(
           Effect.mapError(
@@ -15803,129 +15800,4 @@ export const layer: Layer.Layer<
   | ThreadForkServiceV2
 > = Layer.effect(OrchestratorV2, makeOrchestrator()).pipe(
   Layer.provide(ThreadCommandExecutor.layer),
-);
-
-const layerUnavailable: Layer.Layer<OrchestratorV2> = Layer.succeed(
-  OrchestratorV2,
-  OrchestratorV2.of({
-    requestWorkMode: () => Effect.succeed("skipped" as const),
-    requestSelfSettlement: (input) =>
-      Effect.fail(
-        new OrchestratorDispatchError({
-          commandId: input.commandId,
-          commandType: "thread.metadata.update",
-          cause: "Orchestration V2 live runtime is not configured.",
-        }),
-      ),
-    resumeQueuedRuns: Effect.fail(
-      new OrchestratorDispatchError({
-        commandId: CommandId.make("command:system:resume-queued-runs"),
-        commandType: "message.dispatch",
-        cause: "Orchestration V2 live runtime is not configured.",
-      }),
-    ),
-    recoverDelegatedTasks: Effect.void,
-    recoverDelegatedTask: () => Effect.void,
-    delegatedTaskResultPending: () => Effect.succeed(false),
-    restartContinuationPending: () => Effect.succeed(false),
-    awaitRestartContinuation: () => Effect.void,
-    autoArmLimitRecovery: (input) =>
-      Effect.fail(new OrchestratorProjectionError({ threadId: input.threadId })),
-    dispatch: (command) =>
-      Effect.fail(
-        new OrchestratorDispatchError({
-          commandId: command.commandId,
-          commandType: command.type,
-          cause: "Orchestration V2 live runtime is not configured.",
-        }),
-      ),
-    searchThreadStream: (input) =>
-      Stream.fail(new OrchestratorProjectionError({ threadId: input.threadId })),
-    searchThread: (input) =>
-      Effect.fail(new OrchestratorProjectionError({ threadId: input.threadId })),
-    getThreadHistoryPage: (threadId) => Effect.fail(new OrchestratorProjectionError({ threadId })),
-    getTimelinePages: (threadId) => Effect.fail(new OrchestratorProjectionError({ threadId })),
-    getTimelinePage: (threadId) => Effect.fail(new OrchestratorProjectionError({ threadId })),
-    getMessageCount: (threadId) => Effect.fail(new OrchestratorProjectionError({ threadId })),
-    getTurnItem: ({ threadId }) => Effect.fail(new OrchestratorProjectionError({ threadId })),
-    getThreadRecords: (threadId) => Effect.fail(new OrchestratorProjectionError({ threadId })),
-    getThreadProjection: (threadId) =>
-      Effect.fail(
-        new OrchestratorProjectionError({
-          threadId,
-          cause: "Orchestration V2 live runtime is not configured.",
-        }),
-      ),
-    getCheckpointContext: (threadId) =>
-      Effect.fail(
-        new OrchestratorProjectionError({
-          threadId,
-          cause: "Orchestration V2 live runtime is not configured.",
-        }),
-      ),
-    getThreadSnapshot: (threadId) =>
-      Effect.fail(
-        new OrchestratorProjectionError({
-          threadId,
-          cause: "Orchestration V2 live runtime is not configured.",
-        }),
-      ),
-    getThreadSnapshotWindow: (threadId) =>
-      Effect.fail(
-        new OrchestratorProjectionError({
-          threadId,
-          cause: "Orchestration V2 live runtime is not configured.",
-        }),
-      ),
-    listActiveSubagentThreadIds: () =>
-      Effect.fail(new OrchestratorProjectionError({ threadId: ThreadId.make("thread:shell") })),
-    listOlderSettledThreads: () =>
-      Effect.fail(new OrchestratorProjectionError({ threadId: ThreadId.make("thread:shell") })),
-    findGuestShareThreadId: () =>
-      Effect.fail(new OrchestratorProjectionError({ threadId: ThreadId.make("thread:shell") })),
-    getShellSnapshot: () =>
-      Effect.fail(
-        new OrchestratorProjectionError({
-          threadId: ThreadId.make("thread:shell"),
-          cause: "Orchestration V2 live runtime is not configured.",
-        }),
-      ),
-    readShellSnapshot: () =>
-      Effect.fail(
-        new OrchestratorProjectionError({
-          threadId: ThreadId.make("thread:shell"),
-          cause: "Orchestration V2 live runtime is not configured.",
-        }),
-      ),
-    getThreadShell: (threadId) =>
-      Effect.fail(
-        new OrchestratorProjectionError({
-          threadId,
-          cause: "Orchestration V2 live runtime is not configured.",
-        }),
-      ),
-    getThreadEventSequence: (threadId) =>
-      Effect.fail(
-        new OrchestratorProjectionError({
-          threadId,
-          cause: "Orchestration V2 live runtime is not configured.",
-        }),
-      ),
-    streamStoredEvents: Stream.fail(
-      new OrchestratorDomainEventStreamError({
-        cause: "Orchestration V2 live runtime is not configured.",
-      }),
-    ),
-    streamStoredEventsFrom: () =>
-      Stream.fail(
-        new OrchestratorDomainEventStreamError({
-          cause: "Orchestration V2 live runtime is not configured.",
-        }),
-      ),
-    streamDomainEvents: Stream.fail(
-      new OrchestratorDomainEventStreamError({
-        cause: "Orchestration V2 live runtime is not configured.",
-      }),
-    ),
-  } satisfies OrchestratorV2Shape),
 );

@@ -162,9 +162,10 @@ it("selects an exact source by full commit only and keeps older capability shape
   expect(() => decode({})).toThrow();
   const legacy = { check: true, download: true, install: false };
   expect(Schema.decodeSync(JonesUpdateCapability)(legacy)).toEqual(legacy);
-  expect(Schema.decodeSync(JonesUpdateCapability)({ ...legacy, exactSource: true })).toEqual(
-    { ...legacy, exactSource: true },
-  );
+  expect(Schema.decodeSync(JonesUpdateCapability)({ ...legacy, exactSource: true })).toEqual({
+    ...legacy,
+    exactSource: true,
+  });
 });
 
 it("requires the complete immutable binding for an optional staged replacement", () => {

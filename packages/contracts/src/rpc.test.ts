@@ -95,9 +95,7 @@ describe("legacy queue compatibility on the existing dispatch RPC", () => {
     "rejects a caller-controlled %s field instead of discarding it",
     (key) => {
       expect(
-        Exit.isFailure(
-          Schema.decodeExit(rpc.payloadSchema)({ ...payload, [key]: "forged" }),
-        ),
+        Exit.isFailure(Schema.decodeExit(rpc.payloadSchema)({ ...payload, [key]: "forged" })),
       ).toBe(true);
     },
   );

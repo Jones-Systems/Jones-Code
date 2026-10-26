@@ -797,9 +797,7 @@ describe("ThreadSettlementServiceV2 worker", () => {
             yield* service.start();
             yield* Deferred.succeed(fixture.activation, undefined);
             const calls = yield* Effect.forEach(labels, () => Queue.take(lookups));
-            expect(calls.map((call) => call.refresh)).toEqual(
-              labels.map(() => (fresh ? true : undefined)),
-            );
+            expect(calls.map((call) => call.refresh)).toEqual(labels.map(() => fresh));
             yield* Effect.forEach(Array.from({ length: 4 }), () => Queue.take(gitFixture.starts));
             const foreground = yield* gitFixture
               .run("foreground-fetch-resolution")

@@ -285,9 +285,9 @@ it.effect(
       assert.isTrue(Option.isSome(reservation));
       if (Option.isNone(reservation))
         return yield* Effect.die("Expected accepted create reservation");
-      const create = yield* Schema.decodeEffect(
-        Schema.fromJsonString(OrchestrationV2Command),
-      )(reservation.value.canonicalCommand);
+      const create = yield* Schema.decodeEffect(Schema.fromJsonString(OrchestrationV2Command))(
+        reservation.value.canonicalCommand,
+      );
       assert.strictEqual(create.type, "thread.create");
       if (create.type !== "thread.create") return yield* Effect.die("Expected thread creation");
       const token = yield* Stage.issueNativeCreationStage(reservation.value.claimId, create).pipe(

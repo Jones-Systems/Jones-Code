@@ -3324,27 +3324,25 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
             oldBranch: "legacy/rename",
             newBranch: "qualified",
             exactName: true,
-            ...{
-              legacyPreparation: {
-                before,
-                claim,
-                beforeEffect: () =>
-                  Effect.sync(() => {
-                    intentCalls++;
-                  }).pipe(
-                    Effect.andThen(
-                      Effect.fail(
-                        new GitCommandError({
-                          operation: "fixture.rename.intent",
-                          command: "git",
-                          cwd: fixture.owned,
-                          detail: "Intent readback unavailable",
-                        }),
-                      ),
+            legacyPreparation: {
+              before,
+              claim,
+              beforeEffect: () =>
+                Effect.sync(() => {
+                  intentCalls++;
+                }).pipe(
+                  Effect.andThen(
+                    Effect.fail(
+                      new GitCommandError({
+                        operation: "fixture.rename.intent",
+                        command: "git",
+                        cwd: fixture.owned,
+                        detail: "Intent readback unavailable",
+                      }),
                     ),
                   ),
-                afterEffect: () => Effect.die("No outcome without accepted intent"),
-              },
+                ),
+              afterEffect: () => Effect.die("No outcome without accepted intent"),
             },
           })
           .pipe(Effect.result);
@@ -3787,7 +3785,7 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
         assert.isFalse(fixture.commands.some((args) => args.includes("--get-regexp")));
         assert.equal(fixture.commands.filter((args) => args.includes("add")).length, 1);
         assert.isTrue(
-          fixture.commands.some((args) => args.includes("branch.native/default.gh-merge-base")),
+          fixture.commands.some((args) => args.includes("branch.native/default.t3-merge-base")),
         );
       }),
     );

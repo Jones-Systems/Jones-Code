@@ -2789,6 +2789,10 @@
     {
       "from": "apps/server/src/terminal/Manager.ts",
       "to": "apps/server/src/jones/terminal/ShellIdlePrompt.ts"
+    },
+    {
+      "from": "apps/server/src/storageCleanup.test.ts",
+      "to": "apps/server/src/jones/cleanup/DeletionAdmission.ts"
     }
   ]
 }

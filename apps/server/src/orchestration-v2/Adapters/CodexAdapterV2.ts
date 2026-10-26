@@ -177,31 +177,17 @@ import {
   providerMessageTextWithAttachmentPaths,
 } from "@t3tools/provider-core/server/attachmentPrompt";
 import {
-  ProviderAdapterEnsureThreadError,
-  ProviderAdapterForkThreadError,
-  ProviderAdapterInterruptError,
-  ProviderAdapterOpenSessionError,
   ProviderAdapterProtocolError,
   ProviderRuntimeBindingError,
   requestedRuntimeIdentity,
   unobservedRuntimeIdentity,
   identityForRequest,
   runtimeBinding,
-  ProviderAdapterReadThreadSnapshotError,
-  ProviderAdapterResumeThreadError,
-  ProviderAdapterRollbackThreadError,
-  ProviderAdapterRuntimeRequestResponseError,
-  ProviderAdapterSteerRunError,
   ProviderAdapterTurnStartError,
-  ProviderAdapterV2,
   type ProviderAdapterV2Event,
-  type ProviderAdapterV2ForkThreadInput,
-  type ProviderAdapterV2RollbackThreadInput,
   type ProviderAdapterV2RuntimePolicy,
-  type ProviderAdapterV2McpApps,
   type ProviderAdapterV2SessionRuntime,
   type ProviderAdapterV2InterruptInput,
-  type ProviderAdapterV2SteerInput,
   type ProviderAdapterV2TurnInput,
 } from "@t3tools/provider-core/server/ProviderAdapter";
 import {
@@ -5376,62 +5362,64 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 context.latestProviderFailure = {
                   nativeMessage: payload.error.message,
                   nativeCode: notificationCode,
-                  failure: withCodexManagedFailure(makeProviderFailure({
-                    message: payload.error.additionalDetails?.trim() || payload.error.message,
-                    code: notificationCode,
-                    class: codexUsageLimitError(notificationCode, payload.error.codexErrorInfo)
-                      ? "usage_limit"
-                      : "provider_error",
-                  }),
-                  payload.error,
-                ),
+                  failure: withCodexManagedFailure(
+                    makeProviderFailure({
+                      message: payload.error.additionalDetails?.trim() || payload.error.message,
+                      code: notificationCode,
+                      class: codexUsageLimitError(notificationCode, payload.error.codexErrorInfo)
+                        ? "usage_limit"
+                        : "provider_error",
+                    }),
+                    payload.error,
+                  ),
+                };
+                return;
+              }
+              const updatedAt = yield* DateTime.now;
+              const previous = (yield* Ref.get(providerRetries)).get(context.providerTurnId);
+              const progress = parseCodexRetryProgress(payload.error.message);
+              const retry: OrchestrationV2ProviderRetry = {
+                attempt: progress?.attempt ?? (previous?.retry.attempt ?? 0) + 1,
+                maxAttempts: progress?.maxAttempts ?? previous?.retry.maxAttempts ?? null,
+                retryDelayMs: null,
               };
-              return;
-            }
-            const updatedAt = yield* DateTime.now;
-            const previous = (yield* Ref.get(providerRetries)).get(context.providerTurnId);
-            const progress = parseCodexRetryProgress(payload.error.message);
-            const retry: OrchestrationV2ProviderRetry = {
-              attempt: progress?.attempt ?? (previous?.retry.attempt ?? 0) + 1,
-              maxAttempts: progress?.maxAttempts ?? previous?.retry.maxAttempts ?? null,
-              retryDelayMs: null,
-            };
-            const code = codexErrorInfoCode(payload.error.codexErrorInfo);
-            const additionalDetails = payload.error.additionalDetails?.trim();
-            const failure = withCodexManagedFailure(
-              makeProviderFailure({
-                message:
-                  additionalDetails === undefined || additionalDetails.length === 0
-                    ? payload.error.message
-                    : additionalDetails,
-                code,
-                class: codexUsageLimitError(code, payload.error.codexErrorInfo)
-                  ? "usage_limit"
-                  : code?.startsWith("http") === true || code?.startsWith("responseStream") === true
-                    ? "transport_error"
-                    : "provider_error",
-                retryable: true,
-              }),
-              payload.error,
-            );
-            const itemOrdinal =
-              previous?.itemOrdinal ??
-              (yield* resolveItemOrdinal(context, `terminal-failure:${context.providerTurnId}`));
-            const state: ActiveCodexProviderRetry = {
-              nativeMessage: payload.error.message,
-              nativeCode: code,
-              retry,
-              failure,
-              startedAt: previous?.startedAt ?? updatedAt,
-              itemOrdinal,
-            };
-            yield* Ref.update(providerRetries, (current) => {
-              const updated = new Map(current);
-              updated.set(context.providerTurnId, state);
-              return updated;
-            });
-            yield* emitProviderEvent({
-              type: "turn_item.updated",
+              const code = codexErrorInfoCode(payload.error.codexErrorInfo);
+              const additionalDetails = payload.error.additionalDetails?.trim();
+              const failure = withCodexManagedFailure(
+                makeProviderFailure({
+                  message:
+                    additionalDetails === undefined || additionalDetails.length === 0
+                      ? payload.error.message
+                      : additionalDetails,
+                  code,
+                  class: codexUsageLimitError(code, payload.error.codexErrorInfo)
+                    ? "usage_limit"
+                    : code?.startsWith("http") === true ||
+                        code?.startsWith("responseStream") === true
+                      ? "transport_error"
+                      : "provider_error",
+                  retryable: true,
+                }),
+                payload.error,
+              );
+              const itemOrdinal =
+                previous?.itemOrdinal ??
+                (yield* resolveItemOrdinal(context, `terminal-failure:${context.providerTurnId}`));
+              const state: ActiveCodexProviderRetry = {
+                nativeMessage: payload.error.message,
+                nativeCode: code,
+                retry,
+                failure,
+                startedAt: previous?.startedAt ?? updatedAt,
+                itemOrdinal,
+              };
+              yield* Ref.update(providerRetries, (current) => {
+                const updated = new Map(current);
+                updated.set(context.providerTurnId, state);
+                return updated;
+              });
+              yield* emitProviderEvent({
+                type: "turn_item.updated",
                 driver: CODEX_PROVIDER,
                 turnItem: makeProviderRetryTurnItem({
                   driver: CODEX_PROVIDER,

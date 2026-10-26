@@ -303,9 +303,9 @@ describe("Preview companion HTTP payloads", () => {
         ),
       ).toEqual(wire);
     }
-    expect(
-      Schema.decodeSync(PreviewCompanionThreadSelectionInput)({ selection: null }),
-    ).toEqual({ selection: null });
+    expect(Schema.decodeSync(PreviewCompanionThreadSelectionInput)({ selection: null })).toEqual({
+      selection: null,
+    });
     expect(() =>
       Schema.decodeUnknownSync(PreviewCompanionDefaultSelectionInput)({ selection: null }),
     ).toThrow();

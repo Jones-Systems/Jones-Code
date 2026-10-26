@@ -423,13 +423,17 @@ it.effect.each(["limit", "runLimit", "maxCharsPerItem"])(
   },
 );
 
-it("keeps cross-tool routing out of the delegate_task description", () => {
+it("preserves Jones child ownership and independent review routing", () => {
   const description = OrchestratorToolkit.tools.delegate_task.description ?? "";
-  expect(description).toContain("Start one child agent with only `task`");
-  // Review rounds, follow-ups, and polling are routed in the system text.
-  expect(description).not.toContain("t3_thread_send");
-  expect(description).not.toContain("Do not poll");
-  expect(description).not.toContain("Prefer native");
+  expect(description).toContain("T3-owned child agent/subagent of THIS thread");
+  expect(description).toContain("without copying parent conversation history");
+  expect(description).toContain("own provider session and backing thread");
+  expect(description).toContain(
+    "For every independent T3 delegated review round, call delegate_task again",
+  );
+  expect(description).toContain("childThreadId is backing storage, not the target");
+  expect(description).toContain("another delegated review round through t3_thread_send");
+  expect(description).toContain("end the turn instead of polling or spawning watchers");
 });
 
 it.effect(

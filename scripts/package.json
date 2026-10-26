@@ -10,14 +10,14 @@
     "@effect/platform-node": "catalog:",
     "@electron/asar": "^4.3.0",
     "@electron/osx-sign": "2.7.0",
+    "@t3tools/contracts": "workspace:*",
     "@t3tools/shared": "workspace:*",
     "@t3tools/tailscale": "workspace:*",
     "agent-device": "0.21.31",
     "effect": "catalog:",
     "plist": "catalog:",
     "pngjs": "7.0.0",
-    "sharp": "0.35.4",
-    "@t3tools/contracts": "workspace:*"
+    "sharp": "0.35.4"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",

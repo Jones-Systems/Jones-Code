@@ -6,8 +6,8 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import type * as Path from "effect/Path";
-import type * as Scope from "effect/Scope";
+import * as Path from "effect/Path";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { SCAN_CACHE_FILE_NAME } from "./usage/usageScanCache.ts";
 import { TestClock } from "effect/testing";
@@ -18,6 +18,10 @@ import {
   type StorageCleanupSettings,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as Receipts from "./orchestration-v2/CommandReceiptStore.ts";
+import { runMigrations } from "./persistence/Migrations.ts";
+import { makeDeletionAdmission } from "./jones/cleanup/DeletionAdmission.ts";
 import * as ServerConfig from "./config.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
@@ -33,6 +37,7 @@ import { CodexProviderCapabilitiesV2 } from "./orchestration-v2/Adapters/CodexAd
 import { ServerActivation } from "./serverActivation.ts";
 import { describe, expect, it } from "@effect/vitest";
 import {
+  CommandId,
   ProjectId,
   ProviderInstanceId,
   RunId,
@@ -270,25 +275,103 @@ const cleanupFixture = (
     let openSessionCwd: string | null = null;
     let sessionLive = true;
     let fullStatusCalls = 0;
+    let worktreeRemovalCalls = 0;
+    const deletionRefusals: string[] = [];
+    let qualifiedDeletions = 0;
     let snapshotReads = 0;
     let events: Stream.Stream<OrchestrationV2DomainEvent> = Stream.empty;
     const activated = yield* Deferred.make<void>();
-    const unexpectedDeletionAdmission = () =>
-      Effect.die("The cleanup fixture has no deleted-thread rows to admit or recover.");
+    const lifetime = yield* Effect.scope;
+    const fixturePath = yield* Path.Path;
+    // The policy fixture uses the real durable admission owner in a separate
+    // synthetic database; its report queries below retain their lightweight SQL fixture.
+    const deletionOwner = yield* Effect.cached(
+      Effect.gen(function* () {
+        const context = yield* Layer.build(
+          Receipts.layer.pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" }))),
+        );
+        return yield* Effect.gen(function* () {
+          yield* runMigrations();
+          const sql = yield* SqlClient.SqlClient;
+          const receipts = yield* Receipts.CommandReceiptStoreV2;
+          for (const [index, thread] of deletedThreads.entries()) {
+            const timestamp = DateTime.formatIso(thread.createdAt);
+            const deletedAt = DateTime.formatIso(thread.deletedAt!);
+            const commandId = CommandId.make(`cleanup-delete-${thread.id}`);
+            const payload = JSON.stringify({
+              id: thread.id,
+              projectId: thread.projectId,
+              createdAt: timestamp,
+              deletedAt,
+              worktreePath: thread.worktreePath,
+              branch: thread.branch,
+            });
+            yield* sql`INSERT OR IGNORE INTO projection_projects(project_id,title,workspace_root,scripts_json,created_at,updated_at) VALUES(${thread.projectId},'cleanup',${repo},'[]',${timestamp},${timestamp})`;
+            yield* sql`INSERT INTO orchestration_v2_projection_threads(thread_id,project_id,title,default_provider,runtime_mode,interaction_mode,created_at,updated_at,deleted_at,payload_json) VALUES(${thread.id},${thread.projectId},'cleanup','codex','local','default',${timestamp},${timestamp},${deletedAt},${payload})`;
+            const sequence = index * 2 + 1;
+            for (const [offset, eventType, body] of [
+              [0, "thread.created", JSON.stringify({ ...JSON.parse(payload), deletedAt: null })],
+              [1, "thread.deleted", payload],
+            ] as const) {
+              yield* sql`INSERT INTO orchestration_events(sequence,event_id,aggregate_kind,stream_id,stream_version,event_type,occurred_at,command_id,actor_kind,payload_json,metadata_json,application_event_version) VALUES(${sequence + offset},${`cleanup-${eventType}-${thread.id}`},'thread',${thread.id},${offset + 1},${eventType},${deletedAt},${offset ? commandId : null},'client',${body},'{}',2)`;
+            }
+            yield* receipts.upsert({
+              commandId,
+              threadId: thread.id,
+              commandType: "thread.delete",
+              acceptedAt: thread.deletedAt!,
+              resultSequence: sequence + 1,
+              status: "accepted",
+              error: null,
+            });
+          }
+          return yield* makeDeletionAdmission;
+        }).pipe(Effect.provide(context));
+      }).pipe(Effect.provideService(Scope.Scope, lifetime)),
+    );
+    const withDeletionOwner = <A, E>(
+      run: (owner: Effect.Success<typeof deletionOwner>) => Effect.Effect<A, E, Path.Path>,
+    ) =>
+      deletionOwner.pipe(
+        Effect.flatMap(run),
+        Effect.provideService(Path.Path, fixturePath),
+        Effect.mapError((cause) => new EventSink.EventSinkWriteError({ eventCount: 0, cause })),
+      );
     const context = yield* Layer.build(StorageCleanup.layer).pipe(
       Effect.provide(
         Layer.mock(EventSink.EventSinkV2)({
-          readDeletionWorktreeRemovalStartForTarget: unexpectedDeletionAdmission,
-          startDeletionWorktreeRemoval: unexpectedDeletionAdmission,
-          readDeletionWorktreeRemovalStart: unexpectedDeletionAdmission,
-          revalidateDeletionWorktreeRemovalStart: unexpectedDeletionAdmission,
-          qualifyDeletionWorktreeRemovalObservation: unexpectedDeletionAdmission,
+          readDeletionWorktreeRemovalStartForTarget: (id, target) =>
+            withDeletionOwner((owner) => owner.readTarget(id, target)),
+          startDeletionWorktreeRemoval: (input) =>
+            withDeletionOwner((owner) =>
+              owner.start(input).pipe(
+                Effect.tapError((error) =>
+                  Effect.sync(() => {
+                    deletionRefusals.push(error.reason);
+                  }),
+                ),
+              ),
+            ),
+          readDeletionWorktreeRemovalStart: (id) => withDeletionOwner((owner) => owner.read(id)),
+          revalidateDeletionWorktreeRemovalStart: (start, ordinal, rules, live) =>
+            withDeletionOwner((owner) => owner.revalidate(start, ordinal, rules, live)),
+          qualifyDeletionWorktreeRemovalObservation: (observation) =>
+            withDeletionOwner((owner) =>
+              owner.qualify(observation).pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    qualifiedDeletions++;
+                  }),
+                ),
+              ),
+            ),
         }),
       ),
       Effect.provideService(GitVcsDriver.GitVcsDriver, {
         ...git,
         execute: (input) =>
           Effect.gen(function* () {
+            if (input.args[0] === "worktree" && input.args[1] === "remove") worktreeRemovalCalls++;
             // Before Git's own clean check: inside `git worktree remove`, or on
             // Windows the same status check the removal makes before deleting.
             if (
@@ -449,6 +532,7 @@ const cleanupFixture = (
         openSessionCwd = cwd;
       },
       fullStatusCalls: () => fullStatusCalls,
+      deletionEvidence: () => ({ worktreeRemovalCalls, deletionRefusals, qualifiedDeletions }),
       snapshotReads: () => snapshotReads,
       activate: (domainEvents: Stream.Stream<OrchestrationV2DomainEvent>) => {
         events = domainEvents;
@@ -893,7 +977,7 @@ describe("deleted thread worktrees", () => {
     });
 
   it.effect.each(["no subagents", "native subagent"] as const)(
-    "removes a deleted thread's worktree with %s",
+    "qualifies deleted worktree cleanup with %s",
     (scenario) =>
       Effect.gen(function* () {
         yield* TestClock.setTime(NOW_MS);
@@ -906,12 +990,27 @@ describe("deleted thread worktrees", () => {
         fixture.setDeletedThreads([owner]);
         fixture.setThreads(scenario === "native subagent" ? [subagent(owner)] : []);
         const report = yield* fixture.service.runNow;
-        expect(report.entries[0]).toMatchObject({
-          threadId: owner.id,
-          outcome: "removed",
-          reason: "Thread was deleted",
-        });
-        expect(yield* fixture.fs.exists(fixture.worktree)).toBe(false);
+        if (scenario === "native subagent") {
+          expect(report.entries[0]).toMatchObject({ threadId: owner.id, outcome: "failed" });
+          expect(yield* fixture.fs.exists(fixture.worktree)).toBe(true);
+          expect(fixture.deletionEvidence()).toEqual({
+            worktreeRemovalCalls: 0,
+            deletionRefusals: ["current_cleanup_owner_or_live_prerequisites_changed"],
+            qualifiedDeletions: 0,
+          });
+        } else {
+          expect(report.entries[0]).toMatchObject({
+            threadId: owner.id,
+            outcome: "removed",
+            reason: "Thread was deleted",
+          });
+          expect(yield* fixture.fs.exists(fixture.worktree)).toBe(false);
+          expect(fixture.deletionEvidence()).toEqual({
+            worktreeRemovalCalls: 1,
+            deletionRefusals: [],
+            qualifiedDeletions: 1,
+          });
+        }
       }).pipe(Effect.provide(cleanupTestLayer), Effect.scoped),
   );
 

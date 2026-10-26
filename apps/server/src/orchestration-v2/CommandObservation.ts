@@ -198,9 +198,9 @@ export const makeCommandObservationQuery = Effect.fn("makeCommandObservationQuer
           events.some((e) => e.sequence === receipt.result_sequence)
         ) {
           if (receipt.result_sequence <= snapshotSequence && runs[0] !== undefined) {
-            const run = yield* Schema.decodeEffect(
-              Schema.fromJsonString(OrchestrationV2RunJson),
-            )(runs[0].payload_json);
+            const run = yield* Schema.decodeEffect(Schema.fromJsonString(OrchestrationV2RunJson))(
+              runs[0].payload_json,
+            );
             if (run.id !== created[0]!.id) correlation = "mismatched";
             else {
               const messages = yield* sql<{

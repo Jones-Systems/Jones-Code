@@ -127,9 +127,9 @@ export const makeNativeExecutionMethods = (sql: SqlClient.SqlClient, owner: Owne
     const reservation = yield* owner.getReservedCommand(reference.stageCommandId);
     if (Option.isNone(reservation) || reservation.value.claimId !== reference.claimId)
       return yield* unresolved("Native execution has no immutable command reservation");
-    const command = yield* Schema.decodeEffect(
-      Schema.fromJsonString(OrchestrationV2Command),
-    )(reservation.value.canonicalCommand);
+    const command = yield* Schema.decodeEffect(Schema.fromJsonString(OrchestrationV2Command))(
+      reservation.value.canonicalCommand,
+    );
     const digest = nativeCreationSha256(nativeCreationCanonicalJson(command));
     if (
       !("threadId" in command) ||
@@ -328,9 +328,9 @@ export const makeNativeExecutionMethods = (sql: SqlClient.SqlClient, owner: Owne
         Effect.gen(function* () {
           const resolved = yield* resolve(input.reference);
           const evidence = Object.freeze(
-            yield* Schema.decodeEffect(
-              Schema.fromJsonString(NativeCreationWholeOperationEvidence),
-            )(nativeCreationCanonicalJson(input.evidence)),
+            yield* Schema.decodeEffect(Schema.fromJsonString(NativeCreationWholeOperationEvidence))(
+              nativeCreationCanonicalJson(input.evidence),
+            ),
           );
           if (
             resolved.command.type !== "prepared-run.release" ||

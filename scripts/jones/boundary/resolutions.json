@@ -92,7 +92,7 @@
       "anchors": [
         {
           "path": "apps/web/package.json",
-          "sha256": "9ceb06214c29f7eac0c191e7807864e581b98adea5fd95ddabc137c7342c9c90"
+          "sha256": "b6a9b82b13e5e1ab3e5715eaf92aaf33cc0e6193b771d04a5acb2d0d944dfd65"
         }
       ],
       "targets": []
@@ -129,7 +129,7 @@
       "anchors": [
         {
           "path": "apps/web/package.json",
-          "sha256": "9ceb06214c29f7eac0c191e7807864e581b98adea5fd95ddabc137c7342c9c90"
+          "sha256": "b6a9b82b13e5e1ab3e5715eaf92aaf33cc0e6193b771d04a5acb2d0d944dfd65"
         },
         {
           "path": "patches/@pierre%2Fdiffs@1.6.1.patch",
@@ -180,11 +180,11 @@
       "anchors": [
         {
           "path": "apps/web/package.json",
-          "sha256": "9ceb06214c29f7eac0c191e7807864e581b98adea5fd95ddabc137c7342c9c90"
+          "sha256": "b6a9b82b13e5e1ab3e5715eaf92aaf33cc0e6193b771d04a5acb2d0d944dfd65"
         },
         {
           "path": "scripts/package.json",
-          "sha256": "b2f4353d7a53190d12c7bde7cdc4dbac8bcfa62cacfc13006a3e047961b16519"
+          "sha256": "083d33ceeb3ae56c0b4f08bb58bb92b503af3dad2269b2d9cf09b8eb22a747a7"
         }
       ],
       "targets": []
@@ -197,7 +197,7 @@
       "anchors": [
         {
           "path": "apps/web/package.json",
-          "sha256": "9ceb06214c29f7eac0c191e7807864e581b98adea5fd95ddabc137c7342c9c90"
+          "sha256": "b6a9b82b13e5e1ab3e5715eaf92aaf33cc0e6193b771d04a5acb2d0d944dfd65"
         },
         {
           "path": "pnpm-workspace.yaml",

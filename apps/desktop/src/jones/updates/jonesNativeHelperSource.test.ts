@@ -3714,7 +3714,11 @@ for pid in [True, False, 0, -1, 2147483648, '4321', 1.0, None]:
         try: kernel_process_identity(pid)
         except KernelProcessError: pass
         else: raise AssertionError(pid)
-with patch.object(sys, 'platform', 'darwin'), patch.object(ctypes, 'sizeof', return_value=128), patch.object(ctypes, 'CDLL', side_effect=AssertionError('invalid ABI loaded a library')):
+native_sizeof = ctypes.sizeof
+def invalid_process_layout(value):
+    # ctypes itself uses sizeof while creating fields; only corrupt the completed ABI check.
+    return 128 if isinstance(value, type) and value.__name__ == 'ProcBsdinfo' else native_sizeof(value)
+with patch.object(sys, 'platform', 'darwin'), patch.object(ctypes, 'sizeof', side_effect=invalid_process_layout), patch.object(ctypes, 'CDLL', side_effect=AssertionError('invalid ABI loaded a library')):
     try: kernel_process_identity(4321)
     except KernelProcessError as e: assert e.diagnostic['call'] == 'proc_bsdinfo-layout'
     else: raise AssertionError('invalid ABI accepted')
@@ -3763,8 +3767,9 @@ print('kernel-cli-refusals')
       const result = runPython(
         `${jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0]}\n` +
           String.raw`
-child = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.buffer.read(1)'], stdin=subprocess.PIPE)
+child = subprocess.Popen([sys.executable, '-c', 'import sys; print("ready", flush=True); sys.stdin.buffer.read(1)'], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
 try:
+    assert child.stdout.readline() == b'ready\n'
     proof = kernel_process_identity(child.pid)
     assert proof['pid'] == child.pid and proof['startSec'] > 0 and 0 <= proof['startUsec'] < 1000000
     assert os.path.isabs(proof['executable']) and os.path.samefile(proof['executable'], sys.executable)
@@ -3785,6 +3790,7 @@ finally:
     if child.stdin and not child.stdin.closed: child.stdin.close()
     if child.poll() is None: child.kill()
     child.wait(timeout=1)
+    child.stdout.close()
 print('darwin-owned-child')
 `,
         [],

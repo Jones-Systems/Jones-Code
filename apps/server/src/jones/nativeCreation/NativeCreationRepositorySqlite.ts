@@ -479,10 +479,9 @@ const make = Effect.gen(function* () {
       .withTransaction(
         Effect.gen(function* () {
           yield* workspaceEligible;
-          const verified = yield* Schema.decodeEffect(Workspace.NativeWorkspaceVerified)(
-            input,
-            { onExcessProperty: "error" },
-          );
+          const verified = yield* Schema.decodeEffect(Workspace.NativeWorkspaceVerified)(input, {
+            onExcessProperty: "error",
+          });
           const history = yield* readByClaim(verified.claimId);
           const basis = yield* readWorkspaceAdmission(verified.claimId);
           if (

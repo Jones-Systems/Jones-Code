@@ -502,7 +502,9 @@ export const make = Effect.gen(function* () {
         return yield* Effect.die(new Error("thread project not found"));
       }
       const refresh = group.filter((member) => shellClosedThreads.delete(member.id)).length > 0;
-      return yield* git.branchPullRequest({ cwd, branch: thread.branch }, { refresh }).pipe(asBackgroundGitWork);
+      return yield* git
+        .branchPullRequest({ cwd, branch: thread.branch }, { refresh })
+        .pipe(asBackgroundGitWork);
     });
 
     yield* Effect.forEach(

@@ -237,9 +237,9 @@ export function collectImportedApplicationAttachmentPathsV1(
       attachments = carrier.attachments;
     } else {
       answerCarrierCount++;
-      const decoded = Schema.decodeOption(
-        Schema.fromJsonString(UserInputAttachmentAnswerPayload),
-      )(carrier.payloadJson);
+      const decoded = Schema.decodeOption(Schema.fromJsonString(UserInputAttachmentAnswerPayload))(
+        carrier.payloadJson,
+      );
       if (
         Option.isNone(decoded) ||
         nativeCreationCanonicalJson(decoded.value) !== nativeCreationCanonicalJson(carrier.answer)

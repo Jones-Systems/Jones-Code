@@ -108,9 +108,10 @@ export const dispatchWorkstreamCli = (
       });
     default:
       return Effect.gen(function* () {
-        const payload = yield* Schema.decodeEffect(
-          Operations.WorkstreamOperationSubmitRequest,
-        )({ request: input.request, wait_ms: input.wait_ms }).pipe(
+        const payload = yield* Schema.decodeEffect(Operations.WorkstreamOperationSubmitRequest)({
+          request: input.request,
+          wait_ms: input.wait_ms,
+        }).pipe(
           Effect.mapError((cause) => new WorkstreamCliError({ code: "invalid_request", cause })),
         );
         const request = payload.request;
