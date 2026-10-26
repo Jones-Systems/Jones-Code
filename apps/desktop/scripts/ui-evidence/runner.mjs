@@ -471,6 +471,19 @@ export async function runInner() {
       }
     }
     if (app && error.name === "TimeoutError") readiness = await probeReadiness(app);
+    // Preserve startup evidence even when an unresponsive app cannot finish close().
+    try {
+      result.startupDiagnostics = await writeStartupDiagnostics({
+        artifacts: "/artifacts",
+        processCapture,
+        logs: await captureSyntheticLogs(),
+        readiness,
+        phase,
+      });
+    } catch (diagnosticError) {
+      result.startupDiagnosticsError = diagnosticError.message;
+    }
+
     if (ctx && !secretService?.snapshot().cancelled)
       try {
         await ctx.capture("failure");
@@ -520,13 +533,14 @@ export async function runInner() {
         }),
       );
       try {
-        result.startupDiagnostics = await writeStartupDiagnostics({
-          artifacts: "/artifacts",
-          processCapture,
-          logs,
-          readiness,
-          phase,
-        });
+        if (!result.startupDiagnostics)
+          result.startupDiagnostics = await writeStartupDiagnostics({
+            artifacts: "/artifacts",
+            processCapture,
+            logs,
+            readiness,
+            phase,
+          });
       } catch (error) {
         result.startupDiagnosticsError = error.message;
         if (code === 0) {
