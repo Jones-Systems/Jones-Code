@@ -1,4 +1,5 @@
 import * as Context from "effect/Context";
+import * as SourceSetup from "./runtime/sourceSetup.ts";
 import * as Console from "effect/Console";
 import { Command, Flag } from "effect/cli";
 import * as DateTime from "effect/DateTime";
@@ -133,12 +134,17 @@ export interface InitSelection {
   readonly keyProvider: string;
 }
 /** A CLI boundary factory: the parent binds the selected home and provider before opening SQLite. */
-export const registryCommand = <E, R>(
+export const registryCommand = <E, R, SE, SR>(
   bootstrap: (selection: InitSelection) => Layer.Layer<NativeAdmin, E, R>,
+  sourceBootstrap: (
+    selection: InitSelection,
+    action: "plan" | "apply" | "readback",
+  ) => Layer.Layer<SourceSetup.NativeSourceSetup, SE, SR>,
 ) =>
   Command.make("registry").pipe(
     Command.withDescription("Manage an explicitly selected native Workstreams home."),
     Command.withSubcommands([
+      SourceSetup.command(sourceBootstrap),
       Command.make("init", {
         home: Flag.String("home"),
         keyProvider: Flag.String("key-provider"),

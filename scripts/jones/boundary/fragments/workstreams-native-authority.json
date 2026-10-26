@@ -15,6 +15,14 @@
     {
       "from": "packages/contracts/src/environmentHttp.ts",
       "to": "packages/contracts/src/jones/workstreamsNativePlacement.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/workstreams/native/runtime/startup.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/workstreams/native/integration.ts"
     }
   ]
 }

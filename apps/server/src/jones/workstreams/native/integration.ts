@@ -1,3 +1,7 @@
+import * as SourceEnrollments from "./runtime/sourceEnrollment.ts";
+import * as SourceEnrollmentStore from "./store/sourceEnrollmentStore.ts";
+import * as SourceAuthority from "../../../environment/NativeStoreAuthority.ts";
+import { readNativeProviderBuild } from "../nativeProvider/service.ts";
 import * as NativeSession from "./registry/session.ts";
 import * as NativeRegistry from "./registry/service.ts";
 import * as NativeEffectRunner from "./registry/effectRunner.ts";
@@ -37,7 +41,21 @@ export const nativePersistenceLayer = Layer.mergeAll(
   effectLayer,
   operationLayer,
   IdentityIndex.layer,
+  SourceEnrollmentStore.layer,
 ).pipe(Layer.provideMerge(sqlLayer));
+
+/** Selected native composition only; reuses application SQL and key resources. */
+export const nativeSourceEnrollmentLayer = SourceEnrollments.layer.pipe(
+  Layer.provide(
+    Layer.effect(
+      SourceEnrollments.SourceIssuer,
+      Effect.map(SourceAuthority.NativeStoreAuthority, (authority) => ({
+        authority,
+        build: readNativeProviderBuild,
+      })),
+    ),
+  ),
+);
 
 const sourceProviderLayer = Layer.effect(
   LocalAttestation.NativeProvider,
