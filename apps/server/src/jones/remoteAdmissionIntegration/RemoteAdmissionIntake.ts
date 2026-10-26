@@ -380,9 +380,24 @@ const make = Effect.gen(function* () {
         Effect.mapError(intakeError),
       ),
     withdraw: (input, clientId) =>
-      admissions
-        .withdraw({ ...input, clientId })
-        .pipe(Effect.map(publicRemoteAdmission), Effect.mapError(intakeError)),
+      admissions.withdraw({ ...input, clientId }).pipe(
+        Effect.catchTags({
+          RemoteAdmissionStateConflict: (error) =>
+            error.status === "dispatching" ||
+            error.status === "dispatched" ||
+            error.status === "denied"
+              ? admissions
+                  .get(input.id)
+                  .pipe(
+                    Effect.flatMap((record) =>
+                      record === null ? Effect.fail(error) : Effect.succeed(record),
+                    ),
+                  )
+              : Effect.fail(error),
+        }),
+        Effect.map(publicRemoteAdmission),
+        Effect.mapError(intakeError),
+      ),
     updatePolicy: Effect.fn("RemoteAdmissionIntake.updatePolicy")(function* (input) {
       yield* sql.withTransaction(
         Effect.gen(function* () {

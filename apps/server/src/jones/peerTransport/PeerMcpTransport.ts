@@ -136,7 +136,11 @@ const readEnvelope = Effect.fn("PeerMcpTransport.readEnvelope")(function* (
     const refused = decodeFailure(envelope.error.data);
     return yield* refused._tag === "Some"
       ? new OrchestratorMcpFailure(refused.value)
-      : new OrchestratorMcpFailure({ code: "invalid_request", message: envelope.error.message });
+      : new OrchestratorMcpFailure({
+          code: "orchestration_error",
+          message:
+            "The linked environment reported an unrecognized RPC error. The call was not replayed; its outcome remains uncertain.",
+        });
   }
   return envelope;
 });
