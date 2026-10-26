@@ -34,7 +34,7 @@ const commandId = CommandId.make("self-settle-1");
 function fixture(): OrchestrationV2ThreadProjection {
   const now = "2026-10-04T00:00:00.000Z";
   const selection = { instanceId: "codex", model: "test-model" };
-  return Schema.decodeUnknownSync(Schema.toCodecJson(OrchestrationV2ThreadProjection))({
+  return Schema.decodeSync(Schema.toCodecJson(OrchestrationV2ThreadProjection))({
     thread: {
       createdBy: "user",
       creationSource: "web",
@@ -247,7 +247,7 @@ describe("self settlement lifecycle decisions", () => {
     const notification = {
       ...queuedProjection,
       messages: [
-        Schema.decodeUnknownSync(Schema.toCodecJson(OrchestrationV2ConversationMessage))({
+        Schema.decodeSync(Schema.toCodecJson(OrchestrationV2ConversationMessage))({
           createdBy: "system",
           creationSource: "server",
           id: queued.userMessageId,

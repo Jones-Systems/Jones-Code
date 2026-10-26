@@ -1,3 +1,9 @@
+import {
+  GoalNotificationNotDelivered,
+  GoalNotificationDeliveryUnknown,
+  isGoalNotificationNotDelivered,
+} from "../jones/goals/GoalNotificationDelivery.ts";
+import { planQueuedSteerBatch } from "@t3tools/shared/jones/queuedSteerBatch";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
   MessageId,
@@ -18,18 +24,10 @@ import * as Schema from "effect/Schema";
 
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as EventSink from "./EventSink.ts";
+import { awaitRestartTerminal } from "../jones/orchestration/RestartPreparation.ts";
+import { findSteerFailure } from "../jones/orchestration/LateSteer.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
-
-const yieldToRuntime = Effect.yieldNow.pipe(
-  Effect.andThen(
-    Effect.promise(
-      () =>
-        new Promise<void>((resolve) => {
-          setImmediate(resolve);
-        }),
-    ),
-  ),
-);
 
 export class ProviderTurnControlError extends Schema.TaggedError<ProviderTurnControlError>()(
   "ProviderTurnControlError",
@@ -65,6 +63,7 @@ export interface ProviderTurnControlServiceV2Shape {
     readonly providerThreadId: ProviderThreadId;
     readonly providerTurnId: ProviderTurnId;
     readonly messageId: MessageId;
+    readonly messageIds?: ReadonlyArray<MessageId>;
   }) => Effect.Effect<void, ProviderTurnControlError>;
   readonly interruptAndAwaitTerminal: (input: {
     readonly threadId: ThreadId;
@@ -84,11 +83,14 @@ export class ProviderTurnControlServiceV2 extends Context.Service<
 export const layer: Layer.Layer<
   ProviderTurnControlServiceV2,
   never,
-  ProjectionStore.ProjectionStoreV2 | ProviderSessionManager.ProviderSessionManagerV2
+  | ProjectionStore.ProjectionStoreV2
+  | ProviderSessionManager.ProviderSessionManagerV2
+  | EventSink.EventSinkV2
 > = Layer.effect(
   ProviderTurnControlServiceV2,
   Effect.gen(function* () {
     const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const sink = yield* EventSink.EventSinkV2;
     const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
 
     const load = Effect.fn("ProviderTurnControlService.load")(function* (input: {
@@ -117,7 +119,10 @@ export const layer: Layer.Layer<
           threadId: input.threadId,
           operation: input.operation,
           providerTurnId: input.providerTurnId,
-          cause: "The recorded provider execution target is no longer valid.",
+          cause:
+            context.message?.notification === undefined
+              ? "The recorded provider execution target is no longer valid."
+              : new GoalNotificationNotDelivered(),
         });
       }
       // A restart-session command commits the replacement binding before its
@@ -133,7 +138,8 @@ export const layer: Layer.Layer<
             threadId: input.threadId,
             operation: "steer",
             providerTurnId: input.providerTurnId,
-            turnCompleted: providerTurn.status === "completed",
+            turnCompleted:
+              providerTurn.status === "completed" || context.message?.notification !== undefined,
             cause: "The provider turn ended before the steering message was delivered.",
           });
         }
@@ -163,7 +169,7 @@ export const layer: Layer.Layer<
           );
           return {
             context,
-            providerThread: interruptProviderThread,
+            providerThread,
             providerTurn,
             session: Option.none(),
           };
@@ -172,10 +178,20 @@ export const layer: Layer.Layer<
           threadId: input.threadId,
           operation: input.operation,
           providerTurnId: input.providerTurnId,
-          cause: `Provider session ${input.providerSessionId} is not active.`,
+          cause:
+            context.message?.notification === undefined
+              ? `Provider session ${input.providerSessionId} is not active.`
+              : new GoalNotificationNotDelivered(),
         });
       }
-      return { context, providerThread: interruptProviderThread, providerTurn, session };
+      return {
+        context,
+        providerThread: targetsRecordedSession
+          ? providerThread
+          : { ...interruptProviderThread, providerInstanceId: session.value.instanceId },
+        providerTurn,
+        session,
+      };
     });
 
     return ProviderTurnControlServiceV2.of({
@@ -269,36 +285,18 @@ export const layer: Layer.Layer<
             return;
           }
 
-          yield* loaded.session.value.interruptTurn({
-            providerThread: loaded.providerThread,
-            providerTurnId: loaded.providerTurn.id,
-          });
+          yield* loaded.session.value
+            .interruptTurn({
+              providerThread: loaded.providerThread,
+              providerTurnId: loaded.providerTurn.id,
+              preserveGoal: true,
+            })
+            .pipe(Effect.timeout("14 seconds"));
 
-          for (let remaining = 1_000; remaining > 0; remaining -= 1) {
-            const { providerTurn, attempt } = yield* projections.getProviderControlContext(
-              input.threadId,
-              {
-                providerThreadId: input.providerThreadId,
-                providerTurnId: input.providerTurnId,
-                attemptId: input.interruptedAttemptId,
-              },
-            );
-            if (
-              providerTurn !== undefined &&
-              providerTurn.status !== "running" &&
-              attempt !== undefined &&
-              attempt.status !== "running"
-            ) {
-              return;
-            }
-            // Yield through Node's event loop; detached ingestion cannot advance a deterministic Effect clock.
-            yield* yieldToRuntime;
-          }
-          return yield* new ProviderTurnControlError({
-            threadId: input.threadId,
-            operation: "restart",
-            providerTurnId: input.providerTurnId,
-            cause: `Provider turn ${input.providerTurnId} did not terminalize before restart.`,
+          yield* awaitRestartTerminal({
+            target: input,
+            projections,
+            sink,
           });
         },
         (effect, input) =>
@@ -318,6 +316,19 @@ export const layer: Layer.Layer<
       steer: Effect.fn("ProviderTurnControlService.steer")(
         function* (input) {
           const context = yield* projections.getProviderControlContext(input.threadId, input);
+          if (context.message?.notification !== undefined && context.run !== undefined) {
+            const stopped = yield* projections.getThreadRecords(input.threadId, ["turnItems"], {
+              turnItemTypes: ["run_interrupt_request"],
+              turnItemRunIds: [context.run.id],
+            });
+            if (stopped.turnItems.length > 0)
+              return yield* new ProviderTurnControlError({
+                threadId: input.threadId,
+                operation: "steer",
+                providerTurnId: input.providerTurnId,
+                cause: new GoalNotificationNotDelivered(),
+              });
+          }
           const ownership = context.message?.delegatedCompletion;
           if (ownership !== undefined) {
             const projection = yield* projections.getThreadRecords(input.threadId, ["runs"], {
@@ -345,6 +356,41 @@ export const layer: Layer.Layer<
               cause: "The persisted steering message or target run is missing.",
             });
           }
+          let batchPayload: { text: string; attachments: typeof message.attachments } | undefined;
+          if (input.messageIds !== undefined) {
+            const records = yield* projections.getThreadRecords(input.threadId, ["messages"], {
+              messageIds: input.messageIds,
+            });
+            const messages = input.messageIds.map((id) =>
+              records.messages.find((row) => row.id === id),
+            );
+            if (
+              messages.length === 0 ||
+              input.messageIds[0] !== input.messageId ||
+              new Set(input.messageIds).size !== input.messageIds.length ||
+              messages.some(
+                (row) =>
+                  row === undefined || row.runId !== run.id || row.threadId !== input.threadId,
+              )
+            )
+              return yield* new ProviderTurnControlError({
+                threadId: input.threadId,
+                operation: "steer",
+                providerTurnId: input.providerTurnId,
+                cause: "The persisted batch membership changed.",
+              });
+            const plan = planQueuedSteerBatch(
+              messages.map((row) => ({ message: row!, eligible: true })),
+            );
+            if (plan.count !== messages.length)
+              return yield* new ProviderTurnControlError({
+                threadId: input.threadId,
+                operation: "steer",
+                providerTurnId: input.providerTurnId,
+                cause: "The persisted batch exceeds the steering budget.",
+              });
+            batchPayload = plan;
+          }
           yield* loaded.session.value
             .steerTurn({
               threadId: input.threadId,
@@ -353,11 +399,13 @@ export const layer: Layer.Layer<
               providerTurnId: loaded.providerTurn.id,
               message: {
                 messageId: message.id,
-                text: projectComposerContextForProvider({
-                  text: message.text,
-                  records: message.context?.records ?? [],
-                }),
-                attachments: message.attachments,
+                text:
+                  batchPayload?.text ??
+                  projectComposerContextForProvider({
+                    text: message.text,
+                    records: message.context?.records ?? [],
+                  }),
+                attachments: batchPayload?.attachments ?? message.attachments,
                 createdBy: message.createdBy,
                 creationSource: message.creationSource,
                 ...(message.scheduledTaskId === undefined
@@ -371,6 +419,17 @@ export const layer: Layer.Layer<
             .pipe(
               Effect.catch((cause) =>
                 Effect.gen(function* () {
+                  if (
+                    message.notification !== undefined &&
+                    !isGoalNotificationNotDelivered(cause)
+                  ) {
+                    return yield* new ProviderTurnControlError({
+                      threadId: input.threadId,
+                      operation: "steer",
+                      providerTurnId: input.providerTurnId,
+                      cause: new GoalNotificationDeliveryUnknown({ cause }),
+                    });
+                  }
                   const current = yield* projections.getProviderControlContext(
                     input.threadId,
                     input,
@@ -379,7 +438,11 @@ export const layer: Layer.Layer<
                     threadId: input.threadId,
                     operation: "steer",
                     providerTurnId: input.providerTurnId,
-                    turnCompleted: current.providerTurn?.status === "completed",
+                    turnCompleted:
+                      isGoalNotificationNotDelivered(cause) ||
+                      (message.notification === undefined &&
+                        findSteerFailure(cause) === undefined &&
+                        current.providerTurn?.status === "completed"),
                     cause,
                   });
                 }),

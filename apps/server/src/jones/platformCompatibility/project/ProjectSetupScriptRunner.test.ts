@@ -80,7 +80,7 @@ it.effect("resolves setup scripts through the standalone project service", () =>
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProjectService.ProjectService)({
-          getById: () => Effect.succeed(Option.some(project)),
+          getById: () => Effect.succeedSome(project),
         }),
         Layer.mock(TerminalManager.TerminalManager)({ open, write, subscribe, closeIdle }),
         // `thread-linked` was started from a linked environment, `thread-trusted`
@@ -238,7 +238,7 @@ it.effect(
     const projectId = ProjectId.make("legacy:setup-owner:project");
     const releaseCommandId = CommandId.make("legacy:setup-owner:C");
     const createCommandId = legacyBootstrapCreateCommandId(threadId, releaseCommandId);
-    const binding = Schema.decodeUnknownSync(LegacyOwnedTerminalControl)({
+    const binding = Schema.decodeSync(LegacyOwnedTerminalControl)({
       version: 1,
       threadId,
       runId: "legacy:setup-owner:run",
@@ -421,7 +421,7 @@ it.effect(
             getThreadShell: (id) => Effect.succeed(liveThreadShell(id)),
           }),
           Layer.mock(ProjectService.ProjectService)({
-            getById: () => Effect.succeed(Option.some(project)),
+            getById: () => Effect.succeedSome(project),
           }),
         ),
       ),

@@ -1,3 +1,6 @@
+import { MessageId, NodeId, ProjectId, RunAttemptId, RunId } from "@t3tools/contracts";
+import { AgentScope } from "@t3tools/shared/AgentScope";
+
 import {
   extractCopilotSubagentUpdate,
   makeCopilotSubagentRouting,
@@ -10,6 +13,7 @@ import { AcpRegistrySettings } from "@t3tools/provider-acp-registry/settings";
 import { AcpRegistryCatalog } from "@t3tools/provider-acp-registry/server/AcpRegistrySupport";
 import { decodeAcpReplayTranscript, makeAcpReplayRuntime } from "./AcpAdapterV2.testkit.ts";
 // @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -72,7 +76,6 @@ import {
 } from "@t3tools/provider-grok/testing";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
-import { makeTurnInput } from "./AcpAdapterV2.testkit.ts";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import {
   AcpProviderCapabilitiesV2,
@@ -95,6 +98,171 @@ import {
   registerMistralVibeAcpExtensions,
 } from "@t3tools/provider-acp-registry/testing";
 
+function makeTurnInput(input: {
+  readonly threadId: ThreadId;
+  readonly providerThread: OrchestrationV2ProviderThread;
+  readonly instanceId: ProviderInstanceId;
+  readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
+  readonly now: DateTime.Utc;
+  readonly ordinal?: number;
+  readonly modelSelection?: ModelSelection;
+  readonly messageCreatedBy?: "user" | "agent";
+  readonly messageCreationSource?: "web" | "mobile" | "mcp" | "provider" | "server";
+  readonly messageText?: string;
+}): ProviderAdapter.ProviderAdapterV2TurnInput {
+  const ordinal = input.ordinal ?? 1;
+  const suffix = `${input.threadId}:${ordinal}`;
+  const modelSelection =
+    input.modelSelection ?? ({ instanceId: input.instanceId, model: "default" } as const);
+  return {
+    appThread: {
+      createdBy: "user",
+      creationSource: "web",
+      id: input.threadId,
+      projectId: ProjectId.make(`project:${input.threadId}`),
+      title: "ACP adapter test",
+      providerInstanceId: input.instanceId,
+      modelSelection,
+      runtimeMode: "approval-required",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      activeProviderThreadId: input.providerThread.id,
+      lineage: {
+        parentThreadId: null,
+        relationshipToParent: null,
+        rootThreadId: input.threadId,
+      },
+      forkedFrom: null,
+      createdAt: input.now,
+      updatedAt: input.now,
+      archivedAt: null,
+      settledOverride: null,
+      settledAt: null,
+      lastVisitedAt: null,
+      deletedAt: null,
+    },
+    threadId: input.threadId,
+    runId: RunId.make(`run:${suffix}`),
+    runOrdinal: ordinal,
+    providerTurnOrdinal: ordinal,
+    attemptId: RunAttemptId.make(`attempt:${suffix}`),
+    rootNodeId: NodeId.make(`node:${suffix}`),
+    providerThread: input.providerThread,
+    message: {
+      createdBy: input.messageCreatedBy ?? "user",
+      creationSource: input.messageCreationSource ?? "web",
+      messageId: MessageId.make(`message:${suffix}`),
+      text: input.messageText ?? "test prompt",
+      attachments: [],
+    },
+    modelSelection,
+    runtimePolicy: input.runtimePolicy,
+  };
+}
+
+const waitForPublishedProcessIds = (path: string, count: number) =>
+  Effect.callback<ReadonlyArray<number>>((resume) => {
+    // Subscribe before reading so publication between startup and subscription
+    // cannot be missed. Watch the directory to cover both writes and renames.
+    const read = () => {
+      try {
+        const ids = NodeFS.readFileSync(path, "utf8")
+          .trim()
+          .split(/\s+/)
+          .filter(Boolean)
+          .map(Number);
+        if (ids.length === count && ids.every((pid) => Number.isSafeInteger(pid) && pid > 1)) {
+          finish(Effect.succeed(ids));
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") finish(Effect.die(error));
+      }
+    };
+    const watcher = NodeFS.watch(NodePath.dirname(path), (_event, filename) => {
+      if (filename === null || filename.toString() === NodePath.basename(path)) read();
+    });
+    const close = () => {
+      watcher.removeAllListeners();
+      watcher.close();
+    };
+    const finish: typeof resume = (result) => {
+      close();
+      resume(result);
+    };
+    watcher.on("error", (error) => finish(Effect.die(error)));
+    read();
+    return Effect.sync(close);
+  }).pipe(Effect.timeoutOption("2 seconds"));
+
+function linuxProcessStart(pid: number): string | undefined {
+  try {
+    const stat = NodeFS.readFileSync(`/proc/${pid}/stat`, "utf8");
+    const commandEnd = stat.lastIndexOf(")");
+    return commandEnd < 0
+      ? undefined
+      : stat
+          .slice(commandEnd + 2)
+          .trim()
+          .split(/\s+/)[19];
+  } catch {
+    return undefined;
+  }
+}
+
+function cleanupPublishedDetachedFixture(path: string): void {
+  let published: Array<number>;
+  try {
+    published = NodeFS.readFileSync(path, "utf8")
+      .trim()
+      .split(/\s+/)
+      .map(Number)
+      .filter((pid) => Number.isSafeInteger(pid) && pid > 1);
+  } catch {
+    return;
+  }
+  const roots = published.filter((pid) => {
+    try {
+      return NodeFS.readFileSync(`/proc/${pid}/cmdline`, "utf8").includes(path);
+    } catch {
+      return false;
+    }
+  });
+  const owned = new Map<number, string>();
+  const pending = [...roots];
+  while (pending.length > 0) {
+    const pid = pending.shift();
+    if (pid === undefined || owned.has(pid)) continue;
+    const start = linuxProcessStart(pid);
+    if (start === undefined) continue;
+    owned.set(pid, start);
+    try {
+      pending.push(
+        ...NodeFS.readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8")
+          .trim()
+          .split(/\s+/)
+          .filter(Boolean)
+          .map(Number),
+      );
+    } catch {}
+  }
+  for (const [pid, start] of [...owned.entries()].toReversed()) {
+    if (linuxProcessStart(pid) !== start) continue;
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {}
+  }
+}
+
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const DEFAULT_GROK_SETTINGS = Schema.decodeSync(GrokSettings)({});
 const DROID_SETTINGS = Schema.decodeSync(AcpRegistrySettings)({ agentId: "factory-droid" });
 
@@ -102,6 +270,8 @@ const layerHost = TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer
 
 const layerTest = Layer.mergeAll(
   DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
+  // Unit fixtures must not discover or sweep the runner's inherited cgroup.
+  Layer.succeed(AcpSessionRuntime.AcpLinuxCgroupControllerRef, { create: () => undefined }),
   NodeServices.layer,
   IdAllocator.layer,
   McpProviderSessions.layer,
@@ -394,9 +564,9 @@ function assertReinjectedInstructions(
   request: string,
 ) {
   const text = blocks[0]?.text ?? "";
-  assert.include(text, "T3 Code interaction mode: Default");
-  assert.include(text, "## T3 Code browser");
-  assert.include(text, "T3 Code orchestration");
+  assert.include(text, "Jones Code interaction mode: Default");
+  assert.include(text, "Jones Code collaborative browser");
+  assert.include(text, "Jones Code orchestration");
   assert.include(text, `<user_request>\n${request}\n</user_request>`);
 }
 
@@ -867,6 +1037,14 @@ describe("AcpAdapterV2", () => {
         const terminal = events.find((event) => event.type === "turn.terminal");
         assert.isDefined(terminal);
         if (terminal?.type !== "turn.terminal") return yield* Effect.die("Missing terminal");
+        assert.equal(terminal.providerTurn?.id, terminal.providerTurnId);
+        assert.equal(terminal.providerTurn?.providerThreadId, terminal.providerThreadId);
+        assert.equal(terminal.providerTurn?.status, terminal.status);
+        assert.isNotNull(terminal.providerTurn?.completedAt);
+        assert.equal(
+          terminal.evidenceKind,
+          outcome === "failed" ? "local_failure" : "provider_result",
+        );
         if (outcome === "failed") {
           assert.equal(terminal.status, "failed");
           assert.equal(terminal.failure?.class, "usage_limit");
@@ -981,9 +1159,9 @@ describe("AcpAdapterV2", () => {
       assert.notInclude(whitespaceCommand.prompt, "<t3_code_instructions>");
       const firstDefault = yield* runTurn(2, defaultPolicy, "First default request.");
       assert.equal(firstDefault.textBlockCount, 2);
-      assert.include(firstDefault.prompt, "T3 Code interaction mode: Default");
-      assert.include(firstDefault.prompt, "## T3 Code browser");
-      assert.include(firstDefault.prompt, "T3 Code orchestration");
+      assert.include(firstDefault.prompt, "Jones Code interaction mode: Default");
+      assert.include(firstDefault.prompt, "Jones Code collaborative browser");
+      assert.include(firstDefault.prompt, "Jones Code orchestration");
       assert.notInclude(
         firstDefault.methods,
         "session/set_config_option",
@@ -996,14 +1174,14 @@ describe("AcpAdapterV2", () => {
 
       const planPolicy = policy("plan");
       const firstPlan = yield* runTurn(4, planPolicy, "Plan this change.");
-      assert.include(firstPlan.prompt, "T3 Code interaction mode: Plan");
+      assert.include(firstPlan.prompt, "Jones Code interaction mode: Plan");
       assert.include(firstPlan.methods, "session/set_config_option");
       assert.include(
         (yield* runTurn(5, planPolicy, "Continue planning.")).prompt,
         "Continue planning.",
       );
       const restoredBuild = yield* runTurn(6, defaultPolicy, "Implement the change.");
-      assert.include(restoredBuild.prompt, "T3 Code interaction mode: Default");
+      assert.include(restoredBuild.prompt, "Jones Code interaction mode: Default");
       assert.include(
         restoredBuild.methods,
         "session/set_config_option",
@@ -2497,6 +2675,337 @@ describe("AcpAdapterV2", () => {
       );
       assert.equal(runtimeOrdinalSeen, 2);
       assert.lengthOf(runtimeInputs, 2);
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it.live("reaps detached native work when the provider exits before explicit teardown", () =>
+    Effect.gen(function* () {
+      if ((yield* HostProcess.Platform) !== "linux") return;
+      const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const selfInvocation = yield* resolveSelfInvocation();
+      const mockAgentPath = yield* path.fromFileUrl(
+        new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+      );
+      const scratchRoot = path.join(process.cwd(), "tmp");
+      yield* fileSystem.makeDirectory(scratchRoot, { recursive: true });
+      const commandPidPath = yield* fileSystem.makeTempFileScoped({
+        directory: scratchRoot,
+        prefix: "t3-acp-provider-exit-command-",
+      });
+      const runtimeClosed = yield* Deferred.make<void>();
+      const descendantsRecorded = yield* Deferred.make<void>();
+      const controller = AcpSessionRuntime.makePosixProcessTreeController("linux");
+      const observedPids = new Set<number>();
+      let publishedPids: ReadonlyArray<number> = [];
+      let captured: AcpSessionRuntime.AcpSessionRuntime["Service"] | undefined;
+      const confirmDescendantsRecorded = () => {
+        if (publishedPids.length === 3 && publishedPids.every((pid) => observedPids.has(pid)))
+          Deferred.doneUnsafe(descendantsRecorded, Effect.void);
+      };
+      const observedController: AcpSessionRuntime.AcpPosixProcessTreeController = {
+        ...controller,
+        identity: (pid) => {
+          const identity = controller.identity(pid);
+          if (identity !== undefined) observedPids.add(pid);
+          confirmDescendantsRecorded();
+          return identity;
+        },
+      };
+      const observedSpawner: ChildProcessSpawner.ChildProcessSpawner["Service"] = {
+        ...childProcessSpawner,
+        spawn: (command) =>
+          Effect.gen(function* () {
+            // Registered first in the runtime's scope, hence run after its
+            // process-tree and child-handle finalizers, including automatic exit.
+            yield* Effect.addFinalizer(() => Deferred.succeed(runtimeClosed, undefined));
+            return yield* childProcessSpawner.spawn(command);
+          }),
+      };
+      const waitForProcessesToExit = (pids: ReadonlyArray<number>) =>
+        Deferred.await(runtimeClosed).pipe(
+          Effect.timeoutOption("2 seconds"),
+          Effect.map((closed) =>
+            Option.isSome(closed) && !pids.some(processExists) ? closed : Option.none(),
+          ),
+        );
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => cleanupPublishedDetachedFixture(commandPidPath)),
+      );
+      const instanceId = ProviderInstanceId.make("acp-test-provider-exit");
+      const adapter = yield* makeAcpAdapterV2({
+        instanceId,
+        flavor: {
+          driver: ACP_TEST_DRIVER,
+          capabilities: AcpProviderCapabilitiesV2,
+          terminateRuntimeProcessGroupOnInterrupt: true,
+          makeRuntime: makeMockRuntime({
+            childProcessSpawner: observedSpawner,
+            mockAgentPath,
+            ownDescendantProcessGroups: true,
+            ownDetachedProcessGroup: true,
+            posixProcessTreeController: observedController,
+            wrapRuntime: (runtime) => {
+              captured = runtime;
+              return runtime;
+            },
+            processGroupTerminationGrace: 0,
+            environment: {
+              T3_ACP_EMIT_RUNNING_COMMAND_THEN_HANG: "1",
+              T3_ACP_EXIT_AFTER_RUNNING_COMMAND_LAUNCH: "1",
+              T3_ACP_RUNNING_COMMAND_PID_PATH: commandPidPath,
+              T3_ACP_RUNNING_COMMAND_SEPARATE_SESSION: "1",
+            },
+          }),
+        },
+        selfInvocation,
+      });
+      const threadId = ThreadId.make("thread-acp-provider-exit-running-command");
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: process.cwd(),
+      });
+      const modelSelection = { instanceId, model: "default" } as const;
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("provider-session-acp-provider-exit"),
+        modelSelection,
+        runtimePolicy,
+      });
+      const providerThread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection,
+        runtimePolicy,
+      });
+      yield* runtime
+        .startTurn(
+          makeTurnInput({
+            threadId,
+            providerThread,
+            instanceId,
+            runtimePolicy,
+            now: yield* DateTime.now,
+          }),
+        )
+        .pipe(Effect.exit, Effect.forkScoped);
+
+      const published = yield* waitForPublishedProcessIds(commandPidPath, 3);
+      assert.isTrue(Option.isSome(published), "detached fixture must publish all process IDs");
+      const pids = Option.getOrThrow(published);
+      publishedPids = pids;
+      confirmDescendantsRecorded();
+      // The fixture exits only after the synchronous ownership sampler has seen
+      // its published descendants, so teardown tests retained ownership.
+      yield* Deferred.await(descendantsRecorded);
+      assert.isDefined(captured);
+      yield* captured!.notify("_test/exit", { code: 19 });
+      assert.isTrue(
+        Option.isSome(yield* waitForProcessesToExit(pids)),
+        "provider termination must reap the detached launcher, Bash, and sleep processes",
+      );
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it.live("surfaces reduced guarantee when delegated cgroup containment is unavailable", () =>
+    Effect.gen(function* () {
+      if ((yield* HostProcess.Platform) !== "linux") return;
+      const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const path = yield* Path.Path;
+      const selfInvocation = yield* resolveSelfInvocation();
+      const mockAgentPath = yield* path.fromFileUrl(
+        new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+      );
+      let containment:
+        | AcpSessionRuntime.AcpSessionRuntime["Service"]["processContainment"]
+        | undefined;
+      const instanceId = ProviderInstanceId.make("acp-test-cgroup-unavailable");
+      const adapter = yield* makeAcpAdapterV2({
+        instanceId,
+        flavor: {
+          driver: ACP_TEST_DRIVER,
+          capabilities: AcpProviderCapabilitiesV2,
+          makeRuntime: makeMockRuntime({
+            childProcessSpawner,
+            linuxCgroupController: null,
+            mockAgentPath,
+            ownDescendantProcessGroups: true,
+            ownDetachedProcessGroup: true,
+            wrapRuntime: (runtime) => {
+              containment = runtime.processContainment;
+              return runtime;
+            },
+          }),
+        },
+        selfInvocation,
+      });
+      const threadId = ThreadId.make("thread-acp-cgroup-unavailable");
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: process.cwd(),
+      });
+      const modelSelection = { instanceId, model: "default" } as const;
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("provider-session-acp-cgroup-unavailable"),
+        modelSelection,
+        runtimePolicy,
+      });
+      yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
+      assert.equal(containment, "process-ledger-reduced-guarantee");
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it.live(
+    "uses the controller reference and captured AgentScope cleanup for descendant ownership",
+    () => {
+      let stopCalls = 0;
+      let createCalls = 0;
+      return Effect.gen(function* () {
+        if ((yield* HostProcess.Platform) !== "linux") return;
+        const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const path = yield* Path.Path;
+        const selfInvocation = yield* resolveSelfInvocation();
+        const mockAgentPath = yield* path.fromFileUrl(
+          new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+        );
+        let captured: AcpSessionRuntime.AcpSessionRuntime["Service"] | undefined;
+        let containment:
+          | AcpSessionRuntime.AcpSessionRuntime["Service"]["processContainment"]
+          | undefined;
+        const instanceId = ProviderInstanceId.make("acp-test-cgroup-unavailable");
+        const adapter = yield* makeAcpAdapterV2({
+          instanceId,
+          flavor: {
+            driver: ACP_TEST_DRIVER,
+            capabilities: AcpProviderCapabilitiesV2,
+            makeRuntime: makeMockRuntime({
+              childProcessSpawner,
+              mockAgentPath,
+              ownDescendantProcessGroups: true,
+              ownDetachedProcessGroup: true,
+              wrapRuntime: (runtime) => {
+                captured = runtime;
+                containment = runtime.processContainment;
+                return runtime;
+              },
+            }),
+          },
+          selfInvocation,
+        });
+        const threadId = ThreadId.make("thread-acp-cgroup-unavailable");
+        const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: process.cwd(),
+        });
+        const modelSelection = { instanceId, model: "default" } as const;
+        const runtime = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("provider-session-acp-cgroup-unavailable"),
+          modelSelection,
+          runtimePolicy,
+        });
+        yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
+        assert.equal(containment, "process-ledger-reduced-guarantee");
+        assert.equal(createCalls, 1);
+        assert.isDefined(captured?.terminateProcessGroup);
+        yield* captured!.terminateProcessGroup!;
+        assert.equal(stopCalls, 1);
+      }).pipe(
+        Effect.provideService(AcpSessionRuntime.AcpLinuxCgroupControllerRef, {
+          create: () => {
+            createCalls += 1;
+            return undefined;
+          },
+        }),
+        Effect.provideService(AgentScope, {
+          ...AgentScope.defaultValue(),
+          wrap: ({ command, args }) =>
+            Effect.succeed({
+              command,
+              args,
+              stop: Effect.sync(() => {
+                stopCalls += 1;
+              }),
+            }),
+        }),
+        Effect.provide(layerTest),
+        Effect.scoped,
+      );
+    },
+  );
+
+  it.live("cleans a cgroup lease when the pre-exec join wrapper fails", () =>
+    Effect.gen(function* () {
+      const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const path = yield* Path.Path;
+      const selfInvocation = yield* resolveSelfInvocation();
+      const mockAgentPath = yield* path.fromFileUrl(
+        new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+      );
+      let createCalls = 0;
+      let cgroupExists = true;
+      let killCalls = 0;
+      let removeCalls = 0;
+      const cgroupController: AcpSessionRuntime.AcpLinuxCgroupController = {
+        create: () => {
+          createCalls += 1;
+          return {
+            contains: () => false,
+            exists: () => cgroupExists,
+            path: "/definitely-missing/t3-acp-cgroup",
+            relativePath: "/definitely-missing/t3-acp-cgroup",
+            kill: () => {
+              killCalls += 1;
+            },
+            populated: () => false,
+            remove: () => {
+              removeCalls += 1;
+              cgroupExists = false;
+            },
+          };
+        },
+      };
+      const instanceId = ProviderInstanceId.make("acp-test-cgroup-join-failure");
+      const adapter = yield* makeAcpAdapterV2({
+        instanceId,
+        flavor: {
+          driver: ACP_TEST_DRIVER,
+          capabilities: AcpProviderCapabilitiesV2,
+          makeRuntime: makeMockRuntime({
+            childProcessSpawner,
+            linuxCgroupController: cgroupController,
+            mockAgentPath,
+            ownDescendantProcessGroups: true,
+            ownDetachedProcessGroup: true,
+          }),
+        },
+        selfInvocation,
+      });
+      const threadId = ThreadId.make("thread-acp-cgroup-join-failure");
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: process.cwd(),
+      });
+      const modelSelection = { instanceId, model: "default" } as const;
+      const sessionScope = yield* Scope.make();
+      const opened = yield* adapter
+        .openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("provider-session-acp-cgroup-join-failure"),
+          modelSelection,
+          runtimePolicy,
+        })
+        .pipe(Effect.provideService(Scope.Scope, sessionScope), Effect.exit);
+      assert.isTrue(Exit.isFailure(opened));
+      yield* Scope.close(sessionScope, Exit.void);
+      assert.equal(createCalls, 1);
+      assert.isAtLeast(killCalls, 1);
+      assert.isAtLeast(removeCalls, 1);
     }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 

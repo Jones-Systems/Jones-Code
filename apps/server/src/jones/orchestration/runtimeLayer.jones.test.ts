@@ -92,7 +92,7 @@ const GitWorkflowTestLayer = Layer.mock(GitWorkflow.GitWorkflowService)({
   createWorktree: () => Effect.succeed({} as never),
 });
 const ProjectServiceTestLayer = Layer.mock(ProjectService.ProjectService)({
-  getById: () => Effect.succeed(Option.none()),
+  getById: () => Effect.succeedNone,
 });
 
 const driver = ProviderDriverKind.make("codex");
@@ -1539,7 +1539,7 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
             const sessionSpy = vi
               .spyOn(sessions, "get")
               .mockReturnValue(
-                Effect.succeed(Option.some({ providerSession } as ProviderAdapterV2SessionRuntime)),
+                Effect.succeedSome({ providerSession } as ProviderAdapterV2SessionRuntime),
               );
             yield* Effect.addFinalizer(() => Effect.sync(() => sessionSpy.mockRestore()));
           }

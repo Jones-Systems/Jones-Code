@@ -132,7 +132,7 @@ const dependencies = Layer.mergeAll(
     },
   ]),
   Layer.mock(ProviderSessions.ProviderSessionManagerV2)({
-    get: () => Effect.succeed(Option.some(runtime)),
+    get: () => Effect.succeedSome(runtime),
   }),
   Layer.mock(Scheduler.Scheduler)({ register: () => Effect.void }),
   NodeServices.layer,
@@ -971,7 +971,7 @@ it.effect("a completed persisted context without a live session never starts a r
       DateTime.toEpochMillis(yield* DateTime.now),
     )!;
     const cold = Layer.mock(ProviderSessions.ProviderSessionManagerV2)({
-      get: () => Effect.succeed(Option.none()),
+      get: () => Effect.succeedNone,
     });
     assert.equal(
       yield* Effect.gen(function* () {
@@ -1157,7 +1157,7 @@ it.effect.each([
       const cold = Layer.mergeAll(
         Layer.succeed(PlannedUpdateContinuity.PlannedUpdateContinuity, continuity),
         Layer.mock(ProviderSessions.ProviderSessionManagerV2)({
-          get: () => Effect.succeed(Option.none()),
+          get: () => Effect.succeedNone,
         }),
       );
       yield* Effect.gen(function* () {

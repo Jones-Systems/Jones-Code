@@ -430,7 +430,7 @@ function makeHarness(
               ? Option.some(hqProjectRecord)
               : Option.none(),
         ),
-      getByWorkspaceRoot: () => Effect.succeed(Option.some(projectRecord)),
+      getByWorkspaceRoot: () => Effect.succeedSome(projectRecord),
       snapshot: Effect.die("unused"),
       getShell: () => Effect.die("unused"),
       listShells: () => Effect.die("unused"),
@@ -496,7 +496,7 @@ function makeHarness(
     ProviderRegistryMock.layer([claudeProvider]),
     Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
       namedProjectsRoot: "/projects",
-      folderForThread: () => Effect.succeed(Option.none()),
+      folderForThread: () => Effect.succeedNone,
     }),
   );
   const launch = ThreadLaunch.layer.pipe(

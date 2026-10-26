@@ -1,8 +1,26 @@
+import {
+  SteerOutcomeUnknown,
+  SteerNotDispatched,
+  findSteerFailure,
+} from "../jones/orchestration/LateSteer.ts";
+import { ControlAdmissionHeld } from "../jones/orchestration/ControlAdmission.ts";
+import { GoalNotificationDeliveryUnknown } from "../jones/goals/GoalNotificationDelivery.ts";
+import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as ResourceCleanupService from "./ResourceCleanupService.ts";
+import * as TerminalManager from "../terminal/Manager.ts";
+import * as ServerConfig from "../config.ts";
+import * as PreviewManager from "../preview/Manager.ts";
+import { LegacyOwnedTerminalControl } from "./RecordedTypes.ts";
+import { legacyBootstrapCreateCommandId } from "./LegacyBootstrap.ts";
+import * as Schema from "effect/Schema";
 import { assert, it } from "@effect/vitest";
 import {
   CheckpointId,
   CheckpointScopeId,
   CommandId,
+  MessageId,
   NodeId,
   ProviderSessionId,
   ProviderThreadId,
@@ -21,11 +39,13 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Stream from "effect/Stream";
 
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EffectWorker from "./EffectWorker.ts";
+import { OrchestratorProjectionError } from "./Orchestrator.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
@@ -82,9 +102,10 @@ function layerExecutorFor(input: {
   readonly failFirstStart?: Ref.Ref<boolean>;
   readonly threads?: Partial<ThreadManagementService.ThreadManagementService["Service"]>;
   readonly continueAfterRestart?: boolean;
-  readonly interrupt?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["interrupt"];
+  readonly steer?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["steer"];
   readonly rollback?: CheckpointRollbackService.CheckpointRollbackServiceV2Shape["execute"];
   readonly respond?: RuntimeRequestService.RuntimeRequestServiceV2["Service"]["respond"];
+  readonly interrupt?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["interrupt"];
 }) {
   const record = (event: string) => Ref.update(input.events, (events) => [...events, event]);
   const layerDependencies = Layer.mergeAll(
@@ -92,7 +113,7 @@ function layerExecutorFor(input: {
       ProviderTurnControlService.ProviderTurnControlServiceV2,
       ProviderTurnControlService.ProviderTurnControlServiceV2.of({
         interrupt: input.interrupt ?? (() => Effect.void),
-        steer: () => Effect.void,
+        steer: input.steer ?? (() => Effect.void),
         interruptAndAwaitTerminal: (request) =>
           record(
             request.replacementProviderSessionId === undefined
@@ -104,6 +125,7 @@ function layerExecutorFor(input: {
     Layer.succeed(
       ProviderSessionManager.ProviderSessionManagerV2,
       ProviderSessionManager.ProviderSessionManagerV2.of({
+        isMcpCallerAttached: () => Effect.succeed(false),
         shutdown: Effect.void,
         open: () => Effect.die("unused open"),
         get: () => Effect.succeedNone,
@@ -157,6 +179,24 @@ function layerExecutorFor(input: {
   );
   return EffectWorker.layerExecutor.pipe(
     Layer.provide(
+      Layer.mock(RestartPreparation.RestartPreparation)({
+        run: ({ interrupt, detach, start }) =>
+          interrupt.pipe(
+            Effect.andThen(detach),
+            Effect.mapError(
+              (cause) =>
+                new RestartPreparation.RestartPreparationError({
+                  threadId,
+                  stage: "interrupt",
+                  cause,
+                }),
+            ),
+            Effect.andThen(start),
+          ),
+        recordSteerFailure: () => Effect.void,
+      }),
+    ),
+    Layer.provide(
       Layer.mergeAll(
         layerDependencies,
         Layer.mock(ThreadManagementService.ThreadManagementService)(input.threads ?? {}),
@@ -167,6 +207,157 @@ function layerExecutorFor(input: {
     ),
   );
 }
+
+function ownedCleanupBinding() {
+  const createCommandId = legacyBootstrapCreateCommandId(
+    threadId,
+    CommandId.make("owned-cleanup:C"),
+  );
+  return Schema.decodeUnknownSync(LegacyOwnedTerminalControl)({
+    version: 1,
+    threadId,
+    runId,
+    terminalId: "legacy-owned-setup",
+    generation: "owned-cleanup:terminal-generation",
+    preparationGeneration: "owned-cleanup:birth-generation",
+    claimEventId: "owned-cleanup:claim",
+    claimSequence: 1,
+    claimReceiptSequence: 1,
+    birthEventId: "owned-cleanup:birth",
+    birthSequence: 2,
+    birthReceiptSequence: 2,
+    policy: {
+      version: 1,
+      createCommandId,
+      birthCommandId: `${createCommandId}:initial-message`,
+      releaseCommandId: "owned-cleanup:C",
+      projectId: "owned-cleanup:project",
+      threadId,
+      messageId: "owned-cleanup:M",
+      runId,
+      payloadHash: "owned-cleanup:hash",
+      ownsNewThread: true,
+    },
+  });
+}
+it.effect(
+  "routes legacy owned terminal cleanup unchanged through the actual executor and cleanup owner",
+  () =>
+    Effect.gen(function* () {
+      const calls: Array<{
+        input: Parameters<TerminalManager.TerminalManager["Service"]["close"]>[0];
+        binding: LegacyOwnedTerminalControl | undefined;
+      }> = [];
+      const binding = ownedCleanupBinding();
+      const terminals = Layer.mock(TerminalManager.TerminalManager)({
+        close: (
+          input,
+          options: Parameters<TerminalManager.TerminalManager["Service"]["close"]>[1] = {},
+        ) =>
+          Effect.sync(() => {
+            calls.push({ input, binding: options?.legacyOwnedControl });
+          }),
+      });
+      const unexpectedPreview = () =>
+        Effect.die("unexpected preview operation during terminal cleanup");
+      const cleanup = ResourceCleanupService.layer.pipe(
+        Layer.provideMerge(
+          Layer.mergeAll(
+            terminals,
+            Layer.mock(ScheduledTaskService.ScheduledTaskService)({
+              deleteForThread: () => Effect.die("unexpected scheduled task cleanup"),
+            }),
+            Layer.succeed(PreviewManager.PreviewManager, {
+              open: unexpectedPreview,
+              navigate: unexpectedPreview,
+              reportStatus: unexpectedPreview,
+              requestReveal: unexpectedPreview,
+              resize: unexpectedPreview,
+              adjust: unexpectedPreview,
+              refresh: unexpectedPreview,
+              close: unexpectedPreview,
+              list: unexpectedPreview,
+              events: Stream.die("unexpected preview events during terminal cleanup"),
+              subscribeEvents: unexpectedPreview(),
+            }),
+            ServerConfig.layerTest(process.cwd(), { prefix: "legacy-owned-cleanup-route-" }),
+          ),
+        ),
+      );
+      const events = yield* Ref.make<ReadonlyArray<string>>([]);
+      const layer = layerExecutorFor({ events }).pipe(Layer.provide(cleanup));
+      const now = yield* DateTime.now;
+      const template = restartEffect(now, { type: "detach" });
+      yield* Effect.gen(function* () {
+        const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+        yield* executor.execute({
+          ...template,
+          request: { type: "terminal.cleanup", legacyOwnedControl: binding },
+        });
+        assert.deepEqual(calls, [{ input: { threadId, deleteHistory: true }, binding }]);
+        yield* executor.execute({ ...template, request: { type: "terminal.cleanup" } });
+        assert.deepEqual(calls[1], {
+          input: { threadId, deleteHistory: true },
+          binding: undefined,
+        });
+        assert.deepEqual(yield* Ref.get(events), []);
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+it.effect("bound legacy terminal cleanup refuses a default no-op owner", () =>
+  Effect.gen(function* () {
+    const events = yield* Ref.make<ReadonlyArray<string>>([]);
+    const layer = layerExecutorFor({ events });
+    const template = restartEffect(yield* DateTime.now, { type: "detach" });
+    yield* Effect.gen(function* () {
+      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+      const bound = yield* executor
+        .execute({
+          ...template,
+          request: { type: "terminal.cleanup", legacyOwnedControl: ownedCleanupBinding() },
+        })
+        .pipe(Effect.result);
+      assert.equal(bound._tag, "Failure");
+      const native = yield* executor
+        .execute({ ...template, request: { type: "terminal.cleanup" } })
+        .pipe(Effect.result);
+      assert.equal(native._tag, "Success");
+    }).pipe(Effect.provide(layer));
+  }),
+);
+
+it("does not retry pure interrupt races where the turn is already gone", () => {
+  assert.isTrue(
+    EffectWorker.isNonRetryableProviderTurnControlFailure(
+      "provider-turn.interrupt",
+      "ProviderAdapterInterruptError: ... ACP provider turn provider-turn:x is not active",
+    ),
+  );
+  assert.isTrue(
+    EffectWorker.isNonRetryableProviderTurnControlFailure(
+      "provider-turn.interrupt",
+      "Provider session provider-session:x is not active.",
+    ),
+  );
+  assert.isFalse(
+    EffectWorker.isNonRetryableProviderTurnControlFailure(
+      "provider-turn.restart",
+      "Provider session provider-session:x is not active.",
+    ),
+  );
+  assert.isFalse(
+    EffectWorker.isNonRetryableProviderTurnControlFailure(
+      "provider-turn.start",
+      "Provider session provider-session:x is not active.",
+    ),
+  );
+  assert.isFalse(
+    EffectWorker.isNonRetryableProviderTurnControlFailure(
+      "provider-turn.interrupt",
+      "ACP hard teardown failed unexpectedly; the session is poisoned",
+    ),
+  );
+});
 
 it.effect("settles a stopped run when its adapter has already lost the native turn", () =>
   Effect.gen(function* () {
@@ -339,7 +530,8 @@ it.effect("requeues a claim when a pre-execution worker check fails", () =>
     >([]);
     const executionCount = yield* Ref.make(0);
     const layerOutbox = Layer.mock(EffectOutbox.EffectOutboxV2)({
-      claimNext: () => Effect.succeedSome(claimedEffect),
+      nextClaimableAt: () => Effect.succeed(Option.none()),
+      claimNext: () => Effect.succeed(Option.some(claimedEffect)),
       get: () =>
         Effect.fail(
           new EffectOutbox.EffectOutboxError({
@@ -406,7 +598,8 @@ it.effect("arms cancellation before the durable pre-execution check", () =>
     const executionCount = yield* Ref.make(0);
     const settlementCount = yield* Ref.make(0);
     const layerOutbox = Layer.mock(EffectOutbox.EffectOutboxV2)({
-      claimNext: () => Effect.succeedSome(claimedEffect),
+      nextClaimableAt: () => Effect.succeed(Option.none()),
+      claimNext: () => Effect.succeed(Option.some(claimedEffect)),
       awaitCancellation: () => {
         cancellationArmed = true;
         return Deferred.await(signal);
@@ -473,8 +666,9 @@ it.effect("terminalizes a process-bound claim when success settlement fails", ()
     const terminalErrors = yield* Ref.make<ReadonlyArray<string>>([]);
     const executionCount = yield* Ref.make(0);
     const layerOutbox = Layer.mock(EffectOutbox.EffectOutboxV2)({
-      claimNext: () => Effect.succeedSome(claimedEffect),
-      get: () => Effect.succeedSome(claimedEffect),
+      nextClaimableAt: () => Effect.succeed(Option.none()),
+      claimNext: () => Effect.succeed(Option.some(claimedEffect)),
+      get: () => Effect.succeed(Option.some(claimedEffect)),
       awaitCancellation: () => Effect.never,
       clearCancellation: () => Effect.void,
       succeed: () =>
@@ -624,5 +818,274 @@ it.effect.each(["confirmed", "unconfirmed", "failed"] as const)(
         yield* Ref.get(events),
         outcome === "confirmed" ? ["stop-child", "settle-child"] : ["stop-child"],
       );
+    }),
+);
+
+it.effect(
+  "requeues a definitively undelivered notification with stable message and command identity",
+  () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const events = yield* Ref.make<ReadonlyArray<string>>([]);
+      const messageId = MessageId.make("notification-steer-race");
+      const notification = {
+        source: { kind: "monitor" as const },
+        outcome: "updated",
+        summary: "PR ready",
+      };
+      const commands: unknown[] = [];
+      const effect: EffectOutbox.OrchestrationEffectV2 = {
+        ...restartEffect(now, { type: "detach" }),
+        id: "effect:notification-steer-race",
+        request: {
+          type: "provider-turn.steer",
+          providerSessionId: oldSessionId,
+          providerThreadId,
+          providerTurnId,
+          messageId,
+        },
+      };
+      yield* Effect.gen(function* () {
+        const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+        yield* executor.execute(effect);
+        yield* executor.execute(effect);
+        assert.lengthOf(commands, 2);
+        assert.deepEqual(commands[0], commands[1]);
+        assert.nestedPropertyVal(commands[0], "dispatchMode.type", "queue_after_active");
+        assert.propertyVal(commands[0], "messageId", messageId);
+        assert.deepEqual((commands[0] as { notification: unknown }).notification, notification);
+      }).pipe(
+        Effect.provide(
+          layerExecutorFor({
+            events,
+            steer: () =>
+              Effect.fail(
+                new ProviderTurnControlService.ProviderTurnControlError({
+                  threadId,
+                  operation: "steer",
+                  providerTurnId,
+                  turnCompleted: true,
+                }),
+              ),
+            threads: {
+              getThreadRecords: () =>
+                Effect.succeed({
+                  messages: [
+                    {
+                      id: messageId,
+                      runId,
+                      text: "PR ready",
+                      attachments: [],
+                      createdBy: "agent",
+                      creationSource: "server",
+                      notification,
+                    },
+                  ],
+                  runs: [
+                    {
+                      id: runId,
+                      status: "completed",
+                      modelSelection: { instanceId: "codex", model: "test" },
+                    },
+                  ],
+                } as never),
+              dispatch: (command) =>
+                Effect.sync(() => {
+                  commands.push(command);
+                  return {} as never;
+                }),
+            },
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect.each(["success", "unknown"] as const)(
+  "retains notification delivery evidence when metadata becomes unavailable after %s",
+  (outcome) =>
+    Effect.gen(function* () {
+      const events = yield* Ref.make<ReadonlyArray<string>>([]);
+      const now = yield* DateTime.now;
+      const messageId = MessageId.make("notification-post-send-read-failure");
+      let sent = false;
+      let sends = 0;
+      const effect: EffectOutbox.OrchestrationEffectV2 = {
+        ...restartEffect(now, { type: "detach" }),
+        id: "effect:notification-post-send-read-failure",
+        request: {
+          type: "provider-turn.steer",
+          providerSessionId: oldSessionId,
+          providerThreadId,
+          providerTurnId,
+          messageId,
+        },
+      };
+      yield* Effect.gen(function* () {
+        const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+        const result = yield* executor.execute(effect).pipe(Effect.result);
+        assert.equal(sends, 1);
+        if (outcome === "success") assert.equal(result._tag, "Success");
+        else {
+          assert.equal(result._tag, "Failure");
+          if (result._tag === "Failure")
+            assert.nestedPropertyVal(
+              result.failure,
+              "cause._tag",
+              "GoalNotificationDeliveryUnknown",
+            );
+        }
+      }).pipe(
+        Effect.provide(
+          layerExecutorFor({
+            events,
+            steer: () =>
+              Effect.gen(function* () {
+                sent = true;
+                sends++;
+                if (outcome === "unknown")
+                  return yield* new ProviderTurnControlService.ProviderTurnControlError({
+                    threadId,
+                    operation: "steer",
+                    providerTurnId,
+                    cause: "Response unavailable after send",
+                  });
+              }),
+            threads: {
+              getThreadRecords: () =>
+                Effect.suspend(() =>
+                  sent
+                    ? Effect.fail(
+                        new OrchestratorProjectionError({
+                          threadId,
+                          cause: "Metadata unavailable after send",
+                        }),
+                      )
+                    : Effect.succeed({
+                        messages: [
+                          {
+                            id: messageId,
+                            runId,
+                            text: "PR ready",
+                            attachments: [],
+                            createdBy: "agent",
+                            creationSource: "server",
+                            notification: {
+                              source: { kind: "monitor" },
+                              outcome: "updated",
+                              summary: "PR ready",
+                            },
+                          },
+                        ],
+                        runs: [
+                          { id: runId, modelSelection: { instanceId: "codex", model: "test" } },
+                        ],
+                      } as never),
+                ),
+            },
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect.each(["single", "batch", "notification"] as const)(
+  "typed unknown and held %s steering never becomes a completed-turn follow-up",
+  (kind) =>
+    Effect.gen(function* () {
+      const events = yield* Ref.make<ReadonlyArray<string>>([]);
+      const now = yield* DateTime.now;
+      const messageId = MessageId.make("message:uncertain");
+      const base = restartEffect(now, {
+        type: "replace",
+        replacementProviderSessionId: ProviderSessionId.make(
+          "provider-session:effect-worker-restart:replacement",
+        ),
+      });
+      const effect = {
+        ...base,
+        request: {
+          providerSessionId: oldSessionId,
+          providerThreadId,
+          providerTurnId,
+          messageId,
+          ...(kind === "batch"
+            ? {
+                type: "provider-turn.steer-batch" as const,
+                messageIds: [messageId, MessageId.make("message:second")],
+              }
+            : { type: "provider-turn.steer" as const }),
+        },
+      };
+      for (const failure of [
+        new SteerOutcomeUnknown({
+          instanceId: "codex",
+          nativeThreadId: "native-thread",
+          nativeTurnId: "native-turn",
+        }),
+        new SteerNotDispatched({ instanceId: "codex" }),
+        new ControlAdmissionHeld({ instanceId: "codex" }),
+      ]) {
+        const result = yield* EffectWorker.OrchestrationEffectExecutorV2.pipe(
+          Effect.flatMap((executor) => executor.execute(effect)),
+          Effect.exit,
+          Effect.provide(
+            layerExecutorFor({
+              events,
+              steer: () =>
+                Effect.fail(
+                  new ProviderTurnControlService.ProviderTurnControlError({
+                    threadId,
+                    operation: "steer",
+                    providerTurnId,
+                    turnCompleted: true,
+                    cause:
+                      kind === "notification"
+                        ? new GoalNotificationDeliveryUnknown({ cause: failure })
+                        : failure,
+                  }),
+                ),
+              threads: {
+                getThreadRecords: () =>
+                  Effect.succeed({
+                    messages: [
+                      {
+                        id: messageId,
+                        runId,
+                        text: "Steering message",
+                        attachments: [],
+                        createdBy: "agent",
+                        creationSource: "server",
+                        ...(kind === "notification"
+                          ? {
+                              notification: {
+                                source: { kind: "monitor" },
+                                outcome: "updated",
+                                summary: "Steering message",
+                              },
+                            }
+                          : {}),
+                      },
+                    ],
+                    runs: [
+                      {
+                        id: runId,
+                        status: "completed",
+                        modelSelection: { instanceId: "codex", model: "test" },
+                      },
+                    ],
+                  } as never),
+                dispatch: () =>
+                  Ref.update(events, (current) => [...current, "unexpected-follow-up"]).pipe(
+                    Effect.as({} as never),
+                  ),
+              },
+            }),
+          ),
+        );
+        assert.isTrue(Exit.isFailure(result));
+        if (Exit.isFailure(result)) assert.equal(findSteerFailure(result.cause), failure);
+      }
+      assert.deepEqual(yield* Ref.get(events), []);
     }),
 );

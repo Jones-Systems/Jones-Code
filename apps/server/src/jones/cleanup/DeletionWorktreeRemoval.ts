@@ -257,7 +257,7 @@ const makeDeletionWorktreeRemoval = Effect.gen(function* () {
   )(function* (original, startOrdinal, revalidateStart) {
     yield* assertOrdinal(startOrdinal);
     const start = frozenStart(
-      yield* Schema.decodeUnknownEffect(DeletionWorktreeRemovalStartV1)(original, {
+      yield* Schema.decodeEffect(DeletionWorktreeRemovalStartV1)(original, {
         onExcessProperty: "error",
       }).pipe(
         Effect.mapError(
@@ -354,7 +354,7 @@ const makeDeletionWorktreeRemoval = Effect.gen(function* () {
   )(function* (original, startOrdinal) {
     yield* assertOrdinal(startOrdinal);
     const start = frozenStart(
-      yield* Schema.decodeUnknownEffect(DeletionWorktreeRemovalStartV1)(original, {
+      yield* Schema.decodeEffect(DeletionWorktreeRemovalStartV1)(original, {
         onExcessProperty: "error",
       }).pipe(
         Effect.mapError(

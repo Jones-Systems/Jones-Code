@@ -70,15 +70,15 @@ const make = Effect.gen(function* () {
       const preparation = yield* validateNativeCreationPreparation(
         new TextEncoder().encode(input.claim.canonicalPreparation),
       );
-      const actorSessionId = yield* Schema.decodeUnknownEffect(AuthSessionId)(
+      const actorSessionId = yield* Schema.decodeEffect(AuthSessionId)(
         input.claim.actorSessionId,
       );
-      const guard = yield* Schema.decodeUnknownEffect(NativeCreationGuard)({
+      const guard = yield* Schema.decodeEffect(NativeCreationGuard)({
         schema: "t3.native-creation-guard/v1",
         grantId: input.claim.grantId,
         grantRevision: input.claim.grantRevision,
       });
-      const script = yield* Schema.decodeUnknownEffect(ProjectScript)(input.script);
+      const script = yield* Schema.decodeEffect(ProjectScript)(input.script);
       if (
         !input.claim.binding.runSetupScript ||
         canonical(script) !== input.basis.setupDefinition ||
