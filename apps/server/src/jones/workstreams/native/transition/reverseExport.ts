@@ -448,6 +448,13 @@ export const prepareReverse = Effect.fn("WorkstreamsTransition.prepareReverse")(
               )
                 row[k] =
                   k === "workstream_ids" ? JSON.parse(String(current.row[k])) : current.row[k];
+            if (target.table === "references") {
+              // Native routing stores seven fields; the four CP discriminators live in identity.
+              // Reproject the complete tuple after verification changes an archived null route.
+              const projected = cpRow(source.class, current.row, current.value).row;
+              for (const k of Object.keys(row).filter((k) => k.startsWith("routing_")))
+                row[k] = projected[k];
+            }
             if (typeof row.payload === "string" && row.payload !== source.row.payload) {
               const rev = Number(
                 current.row[revisions[target.table] ?? ""] ??

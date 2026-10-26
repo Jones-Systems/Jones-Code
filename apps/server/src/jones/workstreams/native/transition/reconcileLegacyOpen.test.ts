@@ -147,6 +147,11 @@ function scenario(
       ...refSource.row,
       native_reference_id: refId,
       attestation_version: reference.registration.attestation_version,
+      cipher_revision: reference.registration.attestation_version,
+      cipher: {
+        ...(refSource.row.cipher as { key_id: string; revision: number }),
+        revision: reference.registration.attestation_version,
+      },
       registration_state: reference.registration.state,
       payload: JSON.stringify(reference),
     };
@@ -506,6 +511,25 @@ it.effect.each(["verify_reference", "native_t3_settlement", "refresh_linked_pr"]
         reverse.snapshot.rows.find((x) => x.class === "workstream_external_reservations")!.row
           .state,
       ).toBe("released");
+      const referenceRow = reverse.snapshot.rows.find(
+        (x) => x.class === "workstream_native_references",
+      )!.row;
+      expect(referenceRow.cipher_revision).toBe(referenceRow.attestation_version);
+      expect(referenceRow.cipher).toMatchObject({ revision: referenceRow.attestation_version });
+      if (kind !== "refresh_linked_pr")
+        expect(referenceRow).toMatchObject({
+          routing_provider: "t3",
+          routing_resource_kind: "thread",
+          routing_id_kind: "internal",
+          routing_account_kind: "not_account_scoped",
+          routing_source_instance_id: "synthetic.environment",
+          routing_native_id: "synthetic.thread.0",
+          routing_authority_namespace: "synthetic.authority",
+          routing_store_generation: 2,
+          routing_attested_at: "2026-10-25T12:00:00+00:00",
+          routing_expires_at: "2026-10-25T12:05:00+00:00",
+          routing_evidence_sha256: "a".repeat(64),
+        });
       expect(reverse.next_generations).toEqual([{ owner_id: owner, server_generation: 8 }]);
     }).pipe(Effect.provide(testLayer({ keys: keys() }))),
 );
