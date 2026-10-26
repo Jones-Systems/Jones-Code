@@ -1,3 +1,4 @@
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as LinkedThreads from "../jones/linkedThreads/LinkedThreads.ts";
 import {
   CommandId,
@@ -2930,6 +2931,7 @@ const make = Effect.gen(function* () {
           includeSubagents: input.includeSubagents !== false,
         })
         .pipe(
+          NodeSqliteClient.readOnly,
           Effect.mapError((error) =>
             failure("orchestration_error", `Unable to list threads: ${errorMessage(error)}`),
           ),

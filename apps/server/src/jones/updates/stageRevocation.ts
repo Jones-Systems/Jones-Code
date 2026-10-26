@@ -107,7 +107,13 @@ export async function retireNativeStage(
   await settleAbandonedUpdateOperations(baseDir, current);
   await assertNoUnreconciledUpdateOperations(baseDir, current);
   if (current?.status === "pending") throw new Error("An update is pending; retirement held.");
-  const staged = await verifyStagedQualifiedRuntime(baseDir, activeVersion, input.stagedHandle);
+  const staged = await verifyStagedQualifiedRuntime(
+    baseDir,
+    activeVersion,
+    input.stagedHandle,
+    undefined,
+    { mode: "receipt", role: "revocation" },
+  );
   const binding = operationBinding(staged);
   if (
     [

@@ -187,6 +187,7 @@ describe("receiving V2 synthetic fixtures", () => {
           { id: 121, name: "RemoteTaskObservations" },
           { id: 122, name: "ThreadLinks" },
           { id: 123, name: "WorkspaceLifecycle" },
+          { id: 124, name: "TaskContinuations" },
         ]);
         NodeAssert.equal(result.capture?.integrity.ok, true);
         NodeAssert.equal(result.capture?.foreignKeys.violations, 0);

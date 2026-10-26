@@ -20,6 +20,7 @@ import {
   RELAY_ACTIVITY_PUBLISH_TYP,
   signRelayJwt,
 } from "@t3tools/shared/relayJwt";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -708,7 +709,7 @@ export const make = Effect.gen(function* () {
     const environmentId = yield* serverEnvironment.getEnvironmentId;
     const [projectSnapshot, shellSnapshot] = yield* Effect.all([
       projects.snapshot,
-      threads.getShellSnapshot(),
+      threads.getShellSnapshot({ location: "active" }).pipe(NodeSqliteClient.readOnly),
     ]);
     const activeThreadIds = resolveAgentAwarenessRelayActiveThreadIds({
       environmentId,
