@@ -3302,6 +3302,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             }
                             thread={thread}
                             variant={rowVariant}
+                            showWorkingNormally={statusFilter === "working"}
                             variantAction={
                               section === "snoozed"
                                 ? "unsnooze"
