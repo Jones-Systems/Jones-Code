@@ -677,6 +677,70 @@ it.live.each(["implicit", "notification"] as const)(
     ),
 );
 
+it.live("owner selection supersedes an older agent queue selection at execution", () =>
+  scenario("self-configure-owner-queue-override", false, ({ threadId, call, state }) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sink = yield* Sink.EventSinkV2;
+      const worker = yield* Worker.OrchestrationEffectWorkerV2;
+      const before = yield* decodeEvidence(
+        (yield* call("t3_thread_configuration")).structuredContent,
+      );
+      yield* call("t3_thread_self_configure", {
+        clientRequestId: "agent-save-before-owner",
+        modelSelection: replacement,
+        expectedConfigurationRevision: before.configurationRevision,
+        executionPrecondition: before.executionPrecondition,
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("agent-queue-before-owner"),
+        threadId,
+        messageId: MessageId.make("agent-queue-before-owner"),
+        text: "Older agent work must use the subsequent owner selection",
+        attachments: [],
+        createdBy: "agent",
+        creationSource: "mcp",
+        modelSelection: replacement,
+        modelSelectionExplicit: true,
+        dispatchMode: { type: "queue_after_active" },
+      });
+      const ownerSelection: ModelSelection = {
+        ...initialSelection,
+        options: [
+          { id: "reasoningEffort", value: "high" },
+          { id: "serviceTier", value: "default" },
+        ],
+      };
+      yield* orchestrator.dispatch({
+        type: "thread.model-selection.set",
+        commandId: CommandId.make("owner-overrides-agent-queue"),
+        threadId,
+        modelSelection: ownerSelection,
+      });
+      const queued = (yield* orchestrator.getThreadProjection(threadId)).runs[1]!;
+      const started = yield* sink.stream({ threadId }).pipe(
+        Stream.filter(
+          ({ event }) =>
+            event.type === "provider-turn.updated" &&
+            event.payload.runAttemptId === queued.activeAttemptId &&
+            (event.payload.status === "running" || event.payload.status === "completed"),
+        ),
+        Stream.take(1),
+        Stream.runDrain,
+        Effect.forkScoped,
+      );
+      yield* finishActive(state);
+      yield* Fiber.join(started);
+      yield* worker.drain();
+      const after = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(after.thread.modelSelection, ownerSelection);
+      assert.deepEqual((yield* Ref.get(state)).started[1]?.selection, ownerSelection);
+      assert.deepEqual(after.runs[1]?.modelSelection, ownerSelection);
+    }),
+  ),
+);
+
 it.live("owner edit wins over retry; detached runtime cannot authorize a new save", () =>
   scenario("self-configure-owner", false, ({ threadId, call, state }) =>
     Effect.gen(function* () {
