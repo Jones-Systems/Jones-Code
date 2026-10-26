@@ -373,6 +373,7 @@ it.effect(
         const followupTurn = {
           ...turn,
           id: ProviderTurnId.make("production-followup-turn"),
+          ordinal: turn.ordinal + 1,
           runAttemptId: followupAttempt.id,
           nodeId: followup.rootNodeId!,
         };
