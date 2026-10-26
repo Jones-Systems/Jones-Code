@@ -116,6 +116,14 @@ describe.each(["current", "legacy"] as const)("%s active status-filter retention
     const working: SidebarThreadSummary = {
       ...thread,
       id: ThreadId.make("working"),
+      runtime: {
+        status: "running",
+        providerName: "Codex",
+        providerInstanceId: thread.providerInstanceId,
+        activeRunId: null,
+        lastError: null,
+        updatedAt: completed,
+      },
       pendingBackgroundTasks: [{ taskId: "monitor", kind: "monitor" }],
     };
     const inputThread = { ...thread, id: ThreadId.make("input"), hasPendingUserInput: true };
