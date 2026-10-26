@@ -4793,16 +4793,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             producer === undefined
               ? undefined
               : ProviderAdapter.runtimeBinding(producer.providerThread, producer.runtimeGeneration);
-          const queuedEvent: ProviderAdapter.ProviderAdapterV2Event =
-            binding === undefined || event.type === "runtime_identity.observed"
-              ? event
-              : {
-                  ...event,
-                  runtimeEvidence: {
-                    ...binding,
-                    evidenceRevision: producer!.providerThread.runtimeIdentity?.evidenceRevision,
-                  },
-                };
           if (event.type === "provider_thread.updated") {
             const budget = pdfBudgets.get(event.providerThread.nativeThreadRef?.nativeId ?? "");
             if (budget !== undefined) {
@@ -4821,6 +4811,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               };
             }
           }
+          const queuedEvent: ProviderAdapter.ProviderAdapterV2Event =
+            binding === undefined || event.type === "runtime_identity.observed"
+              ? event
+              : {
+                  ...event,
+                  runtimeEvidence: {
+                    ...binding,
+                    evidenceRevision: producer!.providerThread.runtimeIdentity?.evidenceRevision,
+                  },
+                };
           const currentTurn = yield* Ref.get(activeTurn);
           const providerTurnId =
             event.type === "turn.terminal"
@@ -10636,19 +10636,19 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 yield* attachTurn;
                 yield* startUserTurnForWakeReports(nativeThreadId);
                 yield* turnInput.revalidateStartAdmission ?? Effect.void;
-              yield* Effect.uninterruptibleMask((restore) =>
-                restore(
-                  querySession.query.offer(userMessage, () => {
-                    pdfReservation.commit();
-                  }),
-                ).pipe(
-                  Effect.tap(() =>
-                    Effect.sync(() => {
+                yield* Effect.uninterruptibleMask((restore) =>
+                  restore(
+                    querySession.query.offer(userMessage, () => {
                       pdfReservation.commit();
                     }),
+                  ).pipe(
+                    Effect.tap(() =>
+                      Effect.sync(() => {
+                        pdfReservation.commit();
+                      }),
+                    ),
                   ),
-                ),
-              );
+                );
               });
               yield* nativeSessionProof === undefined
                 ? offer
