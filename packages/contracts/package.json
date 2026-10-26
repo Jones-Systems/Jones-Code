@@ -78,6 +78,26 @@
     "./jones/linkedThreadsRpc": {
       "types": "./src/jones/linkedThreadsRpc.ts",
       "import": "./src/jones/linkedThreadsRpc.ts"
+    },
+    "./jones/workstreamsNative": {
+      "types": "./src/jones/workstreamsNative.ts",
+      "import": "./src/jones/workstreamsNative.ts"
+    },
+    "./jones/workstreamsNativeRead": {
+      "types": "./src/jones/workstreamsNativeRead.ts",
+      "import": "./src/jones/workstreamsNativeRead.ts"
+    },
+    "./jones/workstreamsNativePlacement": {
+      "types": "./src/jones/workstreamsNativePlacement.ts",
+      "import": "./src/jones/workstreamsNativePlacement.ts"
+    },
+    "./jones/workstreamsSnapshot": {
+      "types": "./src/jones/workstreamsSnapshot.ts",
+      "import": "./src/jones/workstreamsSnapshot.ts"
+    },
+    "./jones/workstreamsRollups": {
+      "types": "./src/jones/workstreamsRollups.ts",
+      "import": "./src/jones/workstreamsRollups.ts"
     }
   },
   "scripts": {
