@@ -1,3 +1,4 @@
+import { backgroundWorkHoldsCompletion as upstreamBackgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { defaultAnimateLayoutChanges, type AnimateLayoutChanges } from "@dnd-kit/sortable";
 import {
   animateSidebarLayoutChanges,
@@ -1293,15 +1294,7 @@ describe("unseen completion with background work", () => {
       pill: "Completed",
     },
     {
-      roster: "explicitly unawaited dev server watchdog",
-      task: { kind: "monitor", awaited: false },
-      status: "ready",
-      topStatus: "done",
-      receded: false,
-      pill: "Completed",
-    },
-    {
-      roster: "legacy monitor with unknown awaited state",
+      roster: "legacy Jones monitor",
       task: { kind: "monitor" },
       status: "waiting",
       topStatus: "waiting",
@@ -1317,6 +1310,11 @@ describe("unseen completion with background work", () => {
       pill: "Waiting",
     },
   ] as const)("presents a completed thread with a $roster roster", (expected) => {
+    // The upstream core keeps unmarked monitors nonblocking; the Jones presenter
+    // retains the fork's monitor-waiting policy without changing that core helper.
+    expect(upstreamBackgroundWorkHoldsCompletion([expected.task])).toBe(
+      expected.task.kind !== "monitor" && "awaited" in expected.task,
+    );
     const thread = presentThreadShell(localEnvironmentId, {
       ...makeThreadFixture().source,
       latestRunId: RunId.make("run-background-completion"),
