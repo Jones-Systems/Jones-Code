@@ -21,6 +21,7 @@ export type GuardedSettlementRecords = Pick<
 export type MonitorSettlementBlocker =
   | "stale"
   | "request"
+  | "guest"
   | "run"
   | "plan"
   | "goal"
@@ -49,6 +50,8 @@ export function monitorSettlementBlocker(
   )
     return "stale";
   if (records.runtimeRequests.some((request) => request.status === "pending")) return "request";
+  if (records.thread.guestShare?.messages.some((message) => message.status === "pending"))
+    return "guest";
   if (
     records.runs.some((run) =>
       ["preparing", "queued", "starting", "running", "waiting"].includes(run.status),
@@ -150,6 +153,7 @@ export const readMonitorSettlementBlocker = Effect.fn("ThreadMonitor.readSettlem
 export const monitorSettlementBlockerMessage: Record<MonitorSettlementBlocker, string> = {
   stale: "Thread changed after the monitor snapshot. Refresh before settling.",
   request: "Resolve every pending request before settling.",
+  guest: "Review pending guest messages in Jones Code before settling.",
   run: "Thread has active or queued work, including automatic work.",
   plan: "Thread has an actionable plan.",
   goal: "Thread has an unfinished goal.",

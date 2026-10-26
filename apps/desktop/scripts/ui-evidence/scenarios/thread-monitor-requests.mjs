@@ -152,7 +152,9 @@ export default async function threadMonitorRequests(ctx) {
     );
     const before = await ctx.readSnapshot();
     const runs = (await snapshot()).runs.length;
-    await button.click();
+    // Exercise the disabled handler without Playwright waiting for it to become enabled.
+    // aria-disabled and the unchanged domain/command readbacks remain asserted.
+    await button.click({ force: true });
     const after = await ctx.readSnapshot();
     NodeAssert.equal(
       after.threads.find((t) => t.id === threadId)?.settledAt,

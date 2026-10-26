@@ -405,6 +405,8 @@ export async function runSmoke() {
                 /TOKEN|SECRET|API_KEY|CREDENTIAL|NODE_OPTIONS/.test(key),
             ),
           }));
+          // Preserve sanitized path/flag evidence even when a prerequisite fails.
+          result.isolation.observed = runtime;
           check(
             runtime.pid === child.pid && runtime.displays.length > 0,
             "Prerequisite: actual spawned Electron and native display required",

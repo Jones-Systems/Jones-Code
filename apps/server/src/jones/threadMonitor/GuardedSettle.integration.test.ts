@@ -3,6 +3,8 @@ import { assert, it } from "@effect/vitest";
 import {
   CommandId,
   EventId,
+  GuestMessageId,
+  GuestShareId,
   MessageId,
   NodeId,
   PlanId,
@@ -25,6 +27,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
@@ -32,6 +35,7 @@ import * as ServerConfig from "../../config.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
+import * as CommandReceiptStore from "../../orchestration-v2/CommandReceiptStore.ts";
 import * as EffectOutbox from "../../orchestration-v2/EffectOutbox.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
@@ -72,7 +76,7 @@ const TestLayer = ProviderReplayHarness.layerWithRegistryAndServices(
     runEffectWorker: false,
     runContinuationWorker: false,
   },
-);
+).pipe(Layer.merge(CommandReceiptStore.layer.pipe(Layer.provide(database))));
 const create = Effect.fnUntraced(function* (name: string) {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const threadId = ThreadId.make(`monitor:${name}`);
@@ -134,6 +138,35 @@ const assertNoEffects = Effect.fnUntraced(function* (commandId: string) {
     [],
   );
 });
+const submitGuest = Effect.fnUntraced(function* (threadId: ThreadId) {
+  const orchestrator = yield* Orchestrator.OrchestratorV2;
+  const shareId = GuestShareId.make(`share:${threadId}`);
+  const guestMessageId = GuestMessageId.make(`guest:${threadId}`);
+  yield* orchestrator.dispatch({
+    type: "thread.guest-share.open",
+    commandId: CommandId.make(`share-open:${threadId}`),
+    threadId,
+    shareId,
+    host: "env.t3.test",
+    expiresAt: DateTime.formatIso(DateTime.add(yield* DateTime.now, { hours: 24 })),
+  });
+  yield* orchestrator.dispatch({
+    type: "thread.guest-share.redeem",
+    commandId: CommandId.make(`share-redeem:${threadId}`),
+    threadId,
+    shareId,
+    guestName: "Sam",
+  });
+  yield* orchestrator.dispatch({
+    type: "thread.guest-message.submit",
+    commandId: CommandId.make(`guest-submit:${threadId}`),
+    threadId,
+    shareId,
+    guestMessageId,
+    text: "Please review this guest suggestion",
+  });
+  return guestMessageId;
+});
 const request = Effect.fnUntraced(function* (
   threadId: ThreadId,
   kind: "permission" | "user_input",
@@ -186,6 +219,126 @@ const request = Effect.fnUntraced(function* (
 });
 
 it.layer(TestLayer)("monitor guarded settlement under real dispatch", (it) => {
+  it.effect.each(["dismissed", "sent"] as const)(
+    "preserves a submitted guest request with a fresh timestamp until %s, then permits safe settlement",
+    (resolution) =>
+      Effect.gen(function* () {
+        const threadId = yield* create(`guest-${resolution}`);
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        yield* orchestrator.dispatch({
+          type: "thread.active.reorder",
+          threadId,
+          commandId: CommandId.make(`placement:${threadId}`),
+          orderKey: "guest-placement",
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.pin",
+          threadId,
+          commandId: CommandId.make(`pin:${threadId}`),
+          orderKey: "guest-pin",
+        });
+        const guestMessageId = yield* submitGuest(threadId);
+        const before = yield* orchestrator.getThreadProjection(threadId);
+        const shell = yield* projections.getThreadShell(threadId);
+        assert.ok(shell);
+        assert.equal(shell.pendingGuestMessageCount, 1);
+        assert.deepEqual(
+          before.thread.guestShare?.messages.map((message) => ({
+            id: message.id,
+            text: message.text,
+            status: message.status,
+          })),
+          [{ id: guestMessageId, text: "Please review this guest suggestion", status: "pending" }],
+        );
+        assert.equal(before.thread.pinOrderKey, "guest-pin");
+        assert.equal(before.thread.activeOrderKey, "guest-placement");
+        assert.isNull(before.thread.settledAt);
+        assert.deepEqual(before.runtimeRequests, []);
+        const effectsBefore = yield* outbox.listByThreadId(threadId);
+        const refuseId = `refuse-guest:${resolution}`;
+        yield* assertGuardRejection(
+          threadId,
+          refuseId,
+          "Review pending guest messages in Jones Code before settling.",
+          DateTime.formatIso(shell.updatedAt),
+        );
+        yield* assertNoEffects(refuseId);
+        const receipt = yield* (yield* CommandReceiptStore.CommandReceiptStoreV2).getByCommandId(
+          CommandId.make(refuseId),
+        );
+        assert.isTrue(Option.isSome(receipt));
+        if (Option.isSome(receipt)) {
+          assert.equal(receipt.value.status, "rejected");
+          assert.equal(
+            receipt.value.error,
+            `Failed to dispatch orchestration command thread.settle (${refuseId}).`,
+          );
+        }
+        assert.deepEqual(yield* orchestrator.getThreadProjection(threadId), before);
+        assert.deepEqual(yield* outbox.listByThreadId(threadId), effectsBefore);
+        assert.equal((yield* projections.getThreadShell(threadId))?.pendingGuestMessageCount, 1);
+        if (resolution === "dismissed") {
+          yield* orchestrator.dispatch({
+            type: "thread.guest-message.dismiss",
+            threadId,
+            commandId: CommandId.make(`dismiss:${threadId}`),
+            guestMessageId,
+          });
+        } else {
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            threadId,
+            commandId: CommandId.make(`send:${threadId}`),
+            messageId: MessageId.make(`send:${threadId}`),
+            guestMessageId,
+            text: "ignored owner override",
+            attachments: [],
+            dispatchMode: { type: "defer_start" },
+            createdBy: "user",
+            creationSource: "web",
+          });
+          const sent = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(sent.thread.guestShare?.messages[0]?.status, "sent");
+          assert.equal(
+            sent.messages[0]?.text,
+            "Message from guest Sam, sent by the owner:\n\nPlease review this guest suggestion",
+          );
+          const run = sent.runs[0];
+          assert.ok(run);
+          assert.equal(run.status, "preparing");
+          yield* assertGuardRejection(
+            threadId,
+            "refuse-guest-sent-preparing",
+            "Thread has active or queued work, including automatic work.",
+          );
+          yield* assertNoEffects("refuse-guest-sent-preparing");
+          yield* orchestrator.dispatch({
+            type: "prepared-run.fail",
+            threadId,
+            commandId: CommandId.make(`fail-preparation:${threadId}`),
+            runId: run.id,
+            failure: {
+              class: "validation_error",
+              message: "Synthetic preparation failure before provider launch",
+              code: null,
+              retryable: false,
+            },
+          });
+          assert.equal(
+            (yield* orchestrator.getThreadProjection(threadId)).runs[0]?.status,
+            "failed",
+          );
+        }
+        assert.equal((yield* projections.getThreadShell(threadId))?.pendingGuestMessageCount, 0);
+        const accepted = yield* guard(threadId, `settle-guest:${resolution}`);
+        assert.ok(accepted.storedEvents.some((event) => event.event.type === "thread.settled"));
+        const settled = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(settled.thread.settledOverride, "settled");
+        assert.equal(settled.thread.guestShare?.messages[0]?.status, resolution);
+      }),
+  );
   it.effect(
     "accepts an idle thread, preserves exact receipt replay, and restores the actual settle",
     () =>
@@ -549,6 +702,28 @@ it.layer(TestLayer)("monitor guarded settlement under real dispatch", (it) => {
         type: "thread.settle",
         threadId: childId,
         commandId: CommandId.make("settle-child"),
+      });
+      const guestMessageId = yield* submitGuest(childId);
+      yield* (yield* Orchestrator.OrchestratorV2).dispatch({
+        type: "thread.settle",
+        threadId: childId,
+        commandId: CommandId.make("legacy-settle-child-guest"),
+      });
+      assert.equal(
+        (yield* projections.getThread(childId)).guestShare?.messages[0]?.status,
+        "pending",
+      );
+      yield* assertGuardRejection(
+        threadId,
+        "refuse-child-guest",
+        "Thread has unfinished child or delegated work.",
+      );
+      yield* assertNoEffects("refuse-child-guest");
+      yield* (yield* Orchestrator.OrchestratorV2).dispatch({
+        type: "thread.guest-message.dismiss",
+        threadId: childId,
+        commandId: CommandId.make("dismiss-child-guest"),
+        guestMessageId,
       });
       yield* guard(threadId, "settle-parent-after-child");
       assert.equal((yield* projections.getThread(threadId)).settledOverride, "settled");

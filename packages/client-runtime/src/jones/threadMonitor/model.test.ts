@@ -46,6 +46,53 @@ const completed = shell({
 });
 
 describe("source-grounded monitor cohorts", () => {
+  it("keeps guest review in Needs You after completion expires without inventing a provider decision", () => {
+    const guest = { ...completed, pendingGuestMessageCount: 1, snoozedUntil: at(7_200_000) };
+    for (const clock of [now + 3_600_001, now]) {
+      const cohort = buildMonitorCohort([environment([guest])], clock);
+      expect(cohort.counts).toEqual({ needsYou: 1, working: 0, waiting: 0, done: 0 });
+      expect(cohort.nextDoneExpiryMs).toBeNull();
+      expect(cohort.rows).toHaveLength(1);
+      expect(cohort.rows[0]).toMatchObject({
+        group: "needsYou",
+        status: "input",
+        statusLabel: "Guest message awaiting review",
+        pendingChildAttention: null,
+        actions: {
+          settle: { available: false, reason: "Review pending guest messages in Jones Code first" },
+          respondToApproval: { available: false },
+          respondToUserInput: { available: false },
+        },
+      });
+      expect(guest.pendingRuntimeRequest).toBeNull();
+    }
+    const resolved = { ...guest, pendingGuestMessageCount: 0, snoozedUntil: undefined };
+    const legacy = { ...completed, pendingGuestMessageCount: undefined };
+    for (const thread of [resolved, legacy]) {
+      expect(
+        buildMonitorCohort([environment([thread])], now).rows[0]?.actions.settle.available,
+      ).toBe(true);
+      expect(buildMonitorCohort([environment([thread])], now + 3_600_001).rows).toHaveLength(0);
+    }
+  });
+
+  it("preserves actual provider request precedence when guest review is also pending", () => {
+    const thread = {
+      ...completed,
+      pendingGuestMessageCount: 1,
+      pendingRuntimeRequest: {
+        id: RuntimeRequestId.make("real-approval"),
+        kind: "permission" as const,
+        createdAt: at(),
+      },
+    };
+    expect(buildMonitorCohort([environment([thread])], now).rows[0]).toMatchObject({
+      group: "needsYou",
+      status: "approval",
+      statusLabel: "Pending Approval",
+      actions: { settle: { available: false } },
+    });
+  });
   it("uses actual terminal timestamps and the exact half-open last-hour window", () => {
     expect(isRecentMonitorCompletion(DateTime.formatIso(at(-3_599_999)), now)).toBe(true);
     expect(isRecentMonitorCompletion(DateTime.formatIso(at(-3_600_000)), now)).toBe(false);

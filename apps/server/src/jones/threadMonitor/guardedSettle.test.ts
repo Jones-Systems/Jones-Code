@@ -2,6 +2,8 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
   EventId,
+  GuestMessageId,
+  GuestShareId,
   MessageId,
   RunId,
   NodeId,
@@ -11,6 +13,7 @@ import {
   ThreadId,
   type ThreadPullRequestLink,
   type OrchestrationV2Subagent,
+  type ThreadGuestShare,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -84,8 +87,51 @@ const task: OrchestrationV2Subagent = {
   completedAt: now,
   updatedAt: now,
 };
+const guestShare = (status: "pending" | "sent" | "dismissed"): ThreadGuestShare => ({
+  id: GuestShareId.make("guard-guest-share"),
+  host: "env.t3.test",
+  createdAt: DateTime.formatIso(now),
+  expiresAt: DateTime.formatIso(DateTime.add(now, { hours: 24 })),
+  guestName: "Sam",
+  messages: [
+    {
+      id: GuestMessageId.make("guard-guest-message"),
+      text: "Please review this suggestion",
+      status,
+      submittedAt: DateTime.formatIso(now),
+    },
+  ],
+});
 
 describe("guarded settle completeness policy", () => {
+  it("blocks authoritative pending guest messages, but permits resolved and absent guests", () => {
+    for (const share of [
+      undefined,
+      null,
+      { ...guestShare("sent"), messages: [] },
+      guestShare("sent"),
+      guestShare("dismissed"),
+    ]) {
+      expect(
+        monitorSettlementBlocker(
+          {
+            ...projection,
+            thread: { ...projection.thread, guestShare: share },
+          },
+          DateTime.formatIso(now),
+        ),
+      ).toBeNull();
+    }
+    expect(
+      monitorSettlementBlocker(
+        {
+          ...projection,
+          thread: { ...projection.thread, guestShare: guestShare("pending") },
+        },
+        DateTime.formatIso(now),
+      ),
+    ).toBe("guest");
+  });
   it("permits known idle records and rejects active, queued and automatic queued runs uniformly", () => {
     expect(monitorSettlementBlocker(projection, DateTime.formatIso(now))).toBeNull();
     for (const status of ["preparing", "queued", "starting", "running", "waiting"] as const) {
@@ -188,6 +234,23 @@ describe("guarded settle completeness policy", () => {
         expect(
           yield* readMonitorSettlementBlocker(store, threadId, DateTime.formatIso(now)),
         ).toBeNull();
+        for (const status of ["pending", "sent", "dismissed"] as const) {
+          yield* store.apply({
+            id: EventId.make(`child-guest-${status}`),
+            type: "thread.guest-share-updated",
+            threadId: child.id,
+            occurredAt: now,
+            payload: {
+              ...child,
+              settledAt: now,
+              settledOverride: "settled",
+              guestShare: guestShare(status),
+            },
+          });
+          expect(
+            yield* readMonitorSettlementBlocker(store, threadId, DateTime.formatIso(now)),
+          ).toBe(status === "pending" ? "child" : null);
+        }
         yield* store.apply({
           id: EventId.make("duplicate-child-history"),
           type: "subagent.updated",

@@ -103,13 +103,19 @@ export function buildMonitorCohort(
       const background = backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []);
       const goal = thread.goal != null && thread.goal.status !== "complete";
       const pending = thread.pendingRuntimeRequest;
+      const guestPending = (thread.pendingGuestMessageCount ?? 0) > 0;
+      const requestAttention =
+        (pending !== null && pending.kind !== "auth_refresh") || child !== null;
       let group: ThreadMonitorGroup;
       let status: ThreadMonitorStatus;
-      if ((pending !== null && pending.kind !== "auth_refresh") || child !== null) {
+      if (requestAttention) {
         group = "needsYou";
         status = (pending !== null ? pending.kind === "user_input" : child === "user_input")
           ? "input"
           : "approval";
+      } else if (guestPending) {
+        group = "needsYou";
+        status = "input";
       } else if (thread.hasActionableProposedPlan && !live) {
         group = "needsYou";
         status = "plan";
@@ -181,16 +187,18 @@ export function buildMonitorCohort(
           ? "Server does not support safe monitor settlement"
           : pending !== null || child !== null
             ? "Resolve all pending requests first"
-            : live
-              ? "Thread has active or queued work"
-              : thread.hasActionableProposedPlan
-                ? "Thread has an actionable plan"
-                : goal
-                  ? "Thread has an unfinished goal"
-                  : (thread.pendingBackgroundTasks?.length ?? 0) > 0 ||
-                      thread.pullRequests?.some((link) => link.watch !== undefined)
-                    ? "Thread has background work"
-                    : null);
+            : guestPending
+              ? "Review pending guest messages in Jones Code first"
+              : live
+                ? "Thread has active or queued work"
+                : thread.hasActionableProposedPlan
+                  ? "Thread has an actionable plan"
+                  : goal
+                    ? "Thread has an unfinished goal"
+                    : (thread.pendingBackgroundTasks?.length ?? 0) > 0 ||
+                        thread.pullRequests?.some((link) => link.watch !== undefined)
+                      ? "Thread has background work"
+                      : null);
       rows.push({
         publisherGeneration: env.publisherGeneration,
         environmentId: env.environmentId,
@@ -200,7 +208,11 @@ export function buildMonitorCohort(
         projectLabel: (input.projectLabels.get(thread.projectId) ?? "").slice(0, 512),
         group,
         status,
-        statusLabel: completionTimeUnavailable ? "Completion time unavailable" : labels[status],
+        statusLabel: completionTimeUnavailable
+          ? "Completion time unavailable"
+          : guestPending && !requestAttention
+            ? "Guest message awaiting review"
+            : labels[status],
         updatedAt: DateTime.formatIso(thread.updatedAt),
         completedAt,
         completionTimeUnavailable,

@@ -140,14 +140,16 @@ function NativeMonitorPublisher({ router }: { readonly router: AppRouter }) {
     };
     const publish = (frame: ThreadMonitorPublisherFrame) => publishBatch([frame]);
     transport.current = publish;
-    const viewFrames = () =>
-      monitorSnapshot({
+    const viewFrames = () => {
+      displayRevision = displayRevision + 1;
+      return monitorSnapshot({
         publisherGeneration: monitorStore.fence.publisherGeneration,
-        revision: ++displayRevision,
+        revision: displayRevision,
         environments: monitorStore.environments,
         rows: monitorStore.visibleRows(),
         counts: monitorStore.counts,
       });
+    };
     const publishView = async () => {
       if (!alive || !initialized) return;
       await publishBatch(viewFrames());
