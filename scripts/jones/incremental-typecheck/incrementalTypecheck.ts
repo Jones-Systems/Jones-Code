@@ -52,16 +52,16 @@ export const ENVELOPE_LIMIT = 24 * 1024 * 1024;
 export const NAMESPACE_LIMIT = 1024 * 1024 * 1024;
 const SCHEMA = "jones-incremental-typecheck/v1";
 const OPTIONS = ["--noEmit", "--incremental", "--checkers", "2"];
+const PACKAGE_VERSION = "0.8.0";
 const NATIVE_VERSION = "Version 7.1.0-dev";
 const BUILD_VERSION = "7.1.0-dev+effect-tsgo.0.51.1";
-const UPSTREAM_VERSION = "7.1.0-dev.20261008.1";
 const EXPO_MANIFEST_HASH = "b64e612beee02fbbf0aa883e9d3d767a2213abb5093d5bd04a2aef87868fd2ba";
 const EXPO_STORE_PATH =
   "node_modules/.pnpm/expo@58.0.14_f758e93be082e96fe84cde9538c0a615/node_modules/expo";
 
 export const HELP = `Usage: pnpm typecheck:incremental <workspace-name-or-relative-path>... | --all
 Options: --fresh (no retained reads or publication), --help
-Only workspace scripts exactly equal to "tsc-rs --noEmit" are supported.
+Only workspace scripts exactly equal to "tsc --noEmit" are supported.
 Projects run serially; every selected project runs the native Effect checker.
 Cache: node_modules/.cache/jones/incremental-typecheck/v1; retained for the
 worktree dependency-cache lifetime. Admission: 1 GiB including crash residue;
@@ -171,7 +171,7 @@ export function selectWorkspaces(
   args: ReturnType<typeof parseArguments>,
 ) {
   const eligible = workspaces.filter(
-    (workspace) => workspace.directory !== root && workspace.script === "tsc-rs --noEmit",
+    (workspace) => workspace.directory !== root && workspace.script === "tsc --noEmit",
   );
   const selected = args.all
     ? eligible
@@ -394,13 +394,29 @@ export async function discoverWorkspaces(
 
 export async function resolveCompiler(root: string) {
   const require = NodeModule.createRequire(hostPath().join(root, "package.json"));
-  const wrapper = require.resolve("tsc-rs/package.json");
-  const nativeManifest = NodeModule.createRequire(wrapper).resolve(
-    `@tsc-rs/${HostProcess.Platform.defaultValue()}-${HostProcess.Architecture.defaultValue()}/package.json`,
+  const wrapper = require.resolve("typescript/package.json");
+  const platform = `${HostProcess.Platform.defaultValue()}-${HostProcess.Architecture.defaultValue()}`;
+  const nativeAlias = `@typescript/typescript-${platform}`;
+  const nativeName = `@tsc-rs/${platform}`;
+  const manifest: unknown = JSON.parse(await hostFileSystem((fs) => fs.readFileString(wrapper)));
+  if (
+    !object(manifest) ||
+    manifest.name !== "@tsc-rs/typescript" ||
+    manifest.version !== PACKAGE_VERSION ||
+    manifest.tscVersion !== NATIVE_VERSION.slice("Version ".length) ||
+    !object(manifest.optionalDependencies) ||
+    manifest.optionalDependencies[nativeAlias] !== `npm:${nativeName}@${PACKAGE_VERSION}`
+  ) {
+    throw new Error(
+      `Expected installed @tsc-rs/typescript ${PACKAGE_VERSION} for ${platform}: ${wrapper}`,
+    );
+  }
+  const nativeManifest = NodeModule.createRequire(wrapper).resolve(`${nativeAlias}/package.json`);
+  const native: unknown = JSON.parse(
+    await hostFileSystem((fs) => fs.readFileString(nativeManifest)),
   );
-  for (const file of [wrapper, nativeManifest]) {
-    if (JSON.parse(await hostFileSystem((fs) => fs.readFileString(file))).version !== "0.7.0")
-      throw new Error(`Expected installed tsc-rs 0.7.0: ${file}`);
+  if (!object(native) || native.name !== nativeName || native.version !== PACKAGE_VERSION) {
+    throw new Error(`Expected installed ${nativeName} ${PACKAGE_VERSION}: ${nativeManifest}`);
   }
   const executable = await hostFileSystem((fs) =>
     fs.realPath(
@@ -722,7 +738,7 @@ export function projectIdentity(
       config,
       options: OPTIONS,
       nativeVersion: NATIVE_VERSION,
-      upstreamVersion: UPSTREAM_VERSION,
+      packageVersion: PACKAGE_VERSION,
       launch: "GOPORT_LAUNCH=0",
       rayon: 2,
     }),
@@ -1095,10 +1111,10 @@ export async function runCli(
     if (version.code !== 0 || version.stdout.trim() !== NATIVE_VERSION)
       throw new Error(`Unexpected native compiler version: ${version.stdout.trim()}`);
     process.stderr.write(
-      `[incremental] tsc-rs 0.7.0; ${NATIVE_VERSION}; upstream TypeScript ${UPSTREAM_VERSION} (distinct from root TypeScript API).\n[incremental] ${compiler.executable} ${OPTIONS.join(" ")} --tsBuildInfoFile <private>; GOPORT_LAUNCH=0 RAYON_NUM_THREADS=2\n`,
+      `[incremental] @tsc-rs/typescript ${PACKAGE_VERSION}; ${NATIVE_VERSION}.\n[incremental] ${compiler.executable} ${OPTIONS.join(" ")} --tsBuildInfoFile <private>; GOPORT_LAUNCH=0 RAYON_NUM_THREADS=2\n`,
     );
     const shared = args.fresh ? "fresh" : await sharedIdentity(root, workspaces, compiler);
-    // --showConfig drops Effect settings in Rust 0.7. Raw, guarded inputs supply
+    // --showConfig can omit Effect settings. Raw, guarded inputs supply
     // identity for them without interpreting or merging plugin options.
     const configInputs = args.fresh
       ? new Map<string, string>()
