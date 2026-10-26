@@ -146,7 +146,9 @@ export default defineConfig({
       outExtensions: () => ({ js: ".cjs" }),
       define: publicConfigDefine,
       entry: ["src/preload.ts"],
-      outputOptions: { codeSplitting: false },
+      // Electron's sandbox wrapper already binds setImmediate/clearImmediate.
+      // Keep bundled Effect internals inside a separate lexical scope.
+      outputOptions: { codeSplitting: false, banner: "(() => {", footer: "})();" },
       deps: {
         // Sandboxed Electron preloads cannot reliably resolve package imports
         // from inside the packaged ASAR. Bundle Clerk's preload bridge into the
@@ -168,7 +170,7 @@ export default defineConfig({
       outExtensions: () => ({ js: ".cjs" }),
       entry: { "jones/threadMonitor/preload": "src/jones/threadMonitor/preload.ts" },
       clean: false,
-      outputOptions: { codeSplitting: false },
+      outputOptions: { codeSplitting: false, banner: "(() => {", footer: "})();" },
       deps: {
         alwaysBundle: (id) => id !== "electron" && !id.startsWith("node:"),
         neverBundle: (id) => id === "electron" || id.startsWith("node:"),
