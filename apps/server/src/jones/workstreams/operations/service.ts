@@ -34,6 +34,8 @@ import { workstreamChildId } from "./childIds.ts";
 import { canonicalJson } from "./encoding.ts";
 import { Ports } from "./ports.ts";
 import { planSetPrimary } from "./planner.ts";
+import type * as DurableEntries from "../native/operations/durableEntries.ts";
+import type * as OperationStore from "../native/store/operationStore.ts";
 
 export class OperationConflict extends Schema.TaggedError<OperationConflict>()(
   "OperationConflict",
@@ -83,6 +85,7 @@ type Child = {
   readonly principalId: string;
 };
 type Entry = {
+  durable?: OperationStore.Operation;
   readonly request: WorkstreamOperationRequest;
   readonly digest: string;
   readonly ids: Record<Kind, readonly string[]>;
@@ -150,6 +153,7 @@ const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const scope = yield* Scope.Scope;
   const gateway = ports.gateway;
+  const native = ports.native;
   const admission = yield* Semaphore.make(1);
   const entries = new Map<string, Entry>();
   const locks = new Map<string, Entry>();
@@ -162,7 +166,10 @@ const make = Effect.gen(function* () {
     const done = yield* Deferred.make<WorkstreamRecoverySubmitResult, WorkstreamGatewayError>();
     queue.push({
       priority: entry.request.origin.kind === "queue" ? 1 : 0,
-      run: gateway.resubmit(child.command.command_id, child.body).pipe(
+      run: (native && entry.durable
+        ? native.executor.dispatch(entry.durable, child.command.command_id, child.body)
+        : gateway.resubmit(child.command.command_id, child.body)
+      ).pipe(
         Effect.matchEffect({
           onSuccess: (value) => Deferred.succeed(done, value),
           onFailure: (error) => Deferred.fail(done, error),
@@ -182,9 +189,52 @@ const make = Effect.gen(function* () {
     }
     return yield* Deferred.await(done);
   });
+  const readReceipt = (entry: Entry, id: string) =>
+    native && entry.durable
+      ? native.executor.readReceipt(entry.durable, id)
+      : gateway.readReceipt(id);
+  const checkpoint = (entry: Entry, result = entry.result): DurableEntries.Checkpoint => ({
+    version: 1,
+    result,
+    regAbsent: entry.regAbsent,
+    ...(entry.epoch === undefined ? {} : { epoch: entry.epoch }),
+    ...(entry.firstAbsent === undefined ? {} : { firstAbsent: entry.firstAbsent }),
+    ...(entry.unknown === undefined ? {} : { unknown: entry.unknown }),
+  });
+  const persist = Effect.fn("WorkstreamOperations.persist")(function* (
+    entry: Entry,
+    result = entry.result,
+    dispatch = false,
+  ) {
+    if (native && entry.durable)
+      entry.durable = yield* native.entries
+        .save(entry.request.operation_id, checkpoint(entry, result), dispatch)
+        .pipe(
+          Effect.mapError(
+            () =>
+              new WorkstreamGatewayError({
+                reason: "unknown-effect",
+                detail: "Operation checkpoint unavailable.",
+              }),
+          ),
+        );
+  });
   const update = Effect.fn("WorkstreamOperations.update")(function* (entry: Entry, patch: object) {
     const at = DateTime.formatIso(DateTime.makeUnsafe(yield* ports.now));
-    entry.result = parseWorkstreamOperationResult({ ...entry.result, ...patch, updated_at: at });
+    let result = parseWorkstreamOperationResult({ ...entry.result, ...patch, updated_at: at });
+    if (native && entry.durable?.state !== "accepted" && result.state === "unavailable")
+      result = parseWorkstreamOperationResult({
+        ...result,
+        state: "reconciling",
+        reason:
+          entry.request.kind === "create_workstream"
+            ? "create_effect_unknown"
+            : "membership_effect_unknown",
+        detail: null,
+        poll_after_ms: 30_000,
+      });
+    yield* persist(entry, result);
+    entry.result = result;
   });
   const record = (entry: Entry, receipt: WorkstreamReceipt) => {
     const child = {
@@ -225,7 +275,17 @@ const make = Effect.gen(function* () {
     const registry =
       entry.request.kind === "create_workstream" ? entry.request.registry : entry.request.target;
     // The gateway validates the current principal/generation. Here, bind recovery to this request.
-    return receipt.command_id === id && receipt.owner_id === registry.owner_id && operationMatches;
+    return (
+      receipt.command_id === id &&
+      receipt.owner_id === registry.owner_id &&
+      operationMatches &&
+      (!entry.durable ||
+        (receipt.actor.principal_id === entry.durable.destination.principal_id &&
+          receipt.server_generation === entry.durable.destination.home_generation &&
+          (!entry.unknown ||
+            entry.unknown.command.command_id !== id ||
+            receipt.request_sha256 === entry.unknown.digest)))
+    );
   };
   const invalidReceipt = () =>
     new WorkstreamGatewayError({
@@ -239,11 +299,12 @@ const make = Effect.gen(function* () {
     // R8: sealing assumes the predecessor exited before this process's first CP read.
     // This source implementation cannot establish that operational ordering for a deployment.
     const binding = yield* gateway.readSession();
+    if (native && entry.durable) yield* native.executor.assertSession(entry.durable, binding);
     entry.epoch ??= binding.registryVersion;
     let committed: Committed | undefined;
     for (let index = 1; index <= 9; index++) {
       const id = entry.ids[kind][index - 1]!;
-      const read = yield* gateway.readReceipt(id);
+      const read = yield* readReceipt(entry, id);
       if (read.kind === "absent") {
         if (kind === finalKind(entry)) entry.firstAbsent ??= index;
         if (kind === "reg" && index === 1) entry.regAbsent = true;
@@ -412,8 +473,8 @@ const make = Effect.gen(function* () {
     entry: Entry,
     child: Child,
   ): Effect.fn.Return<WorkstreamReceipt | null, WorkstreamGatewayError> {
-    const response = yield* write(entry, child).pipe(Effect.result);
-    if (response._tag === "Success" && response.success.kind === "receipt") {
+    const response = native ? undefined : yield* write(entry, child).pipe(Effect.result);
+    if (response?._tag === "Success" && response.success.kind === "receipt") {
       const receipt = response.success.receipt;
       if (
         !validReceipt(entry, child.kind, child.command.command_id, receipt) ||
@@ -426,12 +487,23 @@ const make = Effect.gen(function* () {
       delete entry.unknown;
       return receipt;
     }
-    const read = yield* gateway.readReceipt(child.command.command_id);
+    if (native && entry.durable) {
+      const session = yield* gateway.readSession();
+      yield* native.executor.assertSession(entry.durable, session);
+    }
+    const read = yield* readReceipt(entry, child.command.command_id);
     if (read.kind === "receipt") {
-      if (!validReceipt(entry, child.kind, child.command.command_id, read.receipt))
+      if (
+        !validReceipt(entry, child.kind, child.command.command_id, read.receipt) ||
+        (native &&
+          (read.receipt.request_sha256 !== child.digest ||
+            read.receipt.actor.principal_id !== child.principalId ||
+            read.receipt.server_generation !== child.command.expected_server_generation))
+      )
         return yield* invalidReceipt();
       record(entry, read.receipt);
-      delete entry.unknown;
+      if (!native || (read.receipt.state !== "pending" && read.receipt.state !== "unresolved"))
+        delete entry.unknown;
       return read.receipt;
     }
     // G1 observes the version BEFORE absence; reversing that order is unsafe.
@@ -479,6 +551,25 @@ const make = Effect.gen(function* () {
         },
       ].slice(-16),
     };
+    if (native && entry.durable) {
+      yield* native.executor.assertSession(entry.durable, pass.binding);
+      yield* persist(entry, entry.result, true);
+      const response = yield* write(entry, child).pipe(Effect.result);
+      if (response._tag === "Success" && response.success.kind === "receipt") {
+        const receipt = response.success.receipt;
+        if (
+          !validReceipt(entry, kind, command.command_id, receipt) ||
+          receipt.request_sha256 !== child.digest ||
+          receipt.actor.principal_id !== child.principalId ||
+          receipt.server_generation !== command.expected_server_generation
+        )
+          return yield* invalidReceipt();
+        record(entry, receipt);
+        delete entry.unknown;
+        yield* persist(entry);
+        return receipt;
+      }
+    }
     const started = yield* ports.now;
     let delay = 250;
     for (;;) {
@@ -513,7 +604,7 @@ const make = Effect.gen(function* () {
         poll_after_ms: Math.min(30_000, receipt.retry_after_seconds * 1000),
       });
       yield* ports.sleep(Math.min(remaining, receipt.retry_after_seconds * 1000));
-      const read = yield* gateway.readReceipt(receipt.command_id);
+      const read = yield* readReceipt(entry, receipt.command_id);
       if (read.kind === "absent" || !validReceipt(entry, "ver", receipt.command_id, read.receipt))
         return yield* stop(unavailable("verification_unresolved"));
       receipt = read.receipt;
@@ -559,6 +650,20 @@ const make = Effect.gen(function* () {
     )
       return yield* stop(rejected("foreign_thread"));
     if (ports.activation.state !== "enabled") return yield* stop(unavailable("not_configured"));
+    if (native && entry.unknown) {
+      const child = entry.unknown;
+      const receipt = yield* recover(entry, child);
+      yield* persist(entry);
+      if (!receipt) return yield* retry();
+      if (receipt.state === "rejected") return yield* handleRejected(receipt);
+      if (child.kind === finalKind(entry)) {
+        if (receipt.state !== "committed") return yield* invalidReceipt();
+        yield* commit(entry, receipt);
+        return true;
+      }
+      if (receipt.state !== "committed") yield* pollVerification(entry, receipt);
+      return false;
+    }
     const pass = yield* scan(entry);
     if (pass.committed) {
       yield* commit(entry, pass.committed);
@@ -787,6 +892,33 @@ const make = Effect.gen(function* () {
     entry: Entry,
     failure: Failure,
   ) {
+    if (native && entry.unknown) {
+      const child = entry.unknown;
+      const recovery = yield* recover(entry, child).pipe(Effect.result);
+      if (recovery._tag === "Success") {
+        const receipt = recovery.success;
+        if (receipt?.state === "committed" && child.kind === finalKind(entry)) {
+          yield* commit(entry, receipt);
+          return true;
+        }
+        if (!receipt || receipt.state === "committed" || receipt.state === "rejected") {
+          yield* persist(entry);
+          entry.restartRequested = true;
+          return false;
+        }
+      }
+      yield* update(entry, {
+        state: "reconciling",
+        reason:
+          entry.request.kind === "create_workstream"
+            ? "create_effect_unknown"
+            : "membership_effect_unknown",
+        detail: null,
+        result: null,
+        poll_after_ms: 30_000,
+      });
+      return false;
+    }
     const closingScan = yield* scan(entry).pipe(Effect.result);
     if (closingScan._tag === "Success" && closingScan.success.committed) {
       yield* commit(entry, closingScan.success.committed);
@@ -794,12 +926,12 @@ const make = Effect.gen(function* () {
     }
     if (configFailure(failure) && !entry.unknown) {
       yield* update(entry, { ...failure, result: null, poll_after_ms: null });
-      return true;
+      return !native || entry.result.state !== "reconciling";
     }
     if (closingScan._tag === "Success" && !entry.unknown) {
       const pass = closingScan.success;
       if (!entry.regAbsent && entry.request.kind === "set_primary") {
-        const reg = yield* gateway.readReceipt(entry.ids.reg[0]!).pipe(Effect.result);
+        const reg = yield* readReceipt(entry, entry.ids.reg[0]!).pipe(Effect.result);
         if (reg._tag === "Success" && reg.success.kind === "absent") entry.regAbsent = true;
       }
       if (
@@ -809,12 +941,12 @@ const make = Effect.gen(function* () {
         (entry.request.kind === "set_primary" && entry.regAbsent)
       ) {
         yield* update(entry, { ...failure, result: null, poll_after_ms: null });
-        return true;
+        return !native || entry.result.state !== "reconciling";
       }
     }
     entry.phase = "sealing";
     entry.failure = failure;
-    if (!entry.restartRequested) releaseLock(entry);
+    if (!native && !entry.restartRequested) releaseLock(entry);
     yield* update(entry, {
       state: "reconciling",
       reason:
@@ -879,6 +1011,11 @@ const make = Effect.gen(function* () {
       break;
     }
     delete entry.restartRequested;
+    if (native && entry.result.state === "reconciling") {
+      entry.phase = "sealing";
+      yield* Deferred.succeed(entry.done, undefined);
+      return;
+    }
     entry.phase = "finished";
     entry.finishedAt = yield* ports.now;
     releaseLock(entry);
@@ -894,6 +1031,98 @@ const make = Effect.gen(function* () {
       if (index >= 1000 || now - entry.finishedAt! >= 86_400_000)
         entries.delete(entry.request.operation_id);
   };
+  const restore = Effect.fn("WorkstreamOperations.restore")(function* (
+    saved: DurableEntries.DurableEntry,
+  ) {
+    const existing = entries.get(saved.request.operation_id);
+    if (existing) return existing;
+    const ids: Record<Kind, string[]> = { reg: [], ver: [], mem: [], cre: [] };
+    for (const kind of ["reg", "ver", "mem", "cre"] as const)
+      for (let attempt = 1; attempt <= 9; attempt++)
+        ids[kind].push(
+          yield* workstreamChildId({
+            environment_id: ports.environmentId,
+            operation_id: saved.request.operation_id,
+            request_sha256: saved.operation.request_sha256,
+            kind,
+            attempt,
+          }).pipe(
+            Effect.provideService(Crypto.Crypto, crypto),
+            Effect.mapError(() => new OperationInternalError({})),
+          ),
+        );
+    if (
+      canonicalJson(Object.values(ids).flat()) !== canonicalJson(saved.operation.child_command_ids)
+    )
+      return yield* new OperationInternalError({});
+    const cp = saved.checkpoint;
+    const result =
+      cp?.result ??
+      parseWorkstreamOperationResult({
+        contract: WORKSTREAM_OPERATIONS_CONTRACT,
+        operation_id: saved.request.operation_id,
+        kind: saved.request.kind,
+        origin: saved.request.origin,
+        request_sha256: saved.operation.request_sha256,
+        state: "in_progress",
+        reason: null,
+        detail: null,
+        observed: null,
+        result: null,
+        children: [],
+        accepted_at: saved.operation.accepted_at,
+        updated_at: saved.operation.updated_at,
+        poll_after_ms: 250,
+      });
+    const entry: Entry = {
+      request: saved.request,
+      digest: saved.operation.request_sha256,
+      ids,
+      result,
+      durable: saved.operation,
+      phase: "finished",
+      finishedAt: Date.parse(saved.operation.updated_at),
+      regAbsent: cp?.regAbsent ?? false,
+      ...(cp?.epoch === undefined ? {} : { epoch: cp.epoch }),
+      ...(cp?.firstAbsent === undefined ? {} : { firstAbsent: cp.firstAbsent }),
+      ...(cp?.unknown === undefined ? {} : { unknown: cp.unknown }),
+      done: yield* Deferred.make<void>(),
+      wake: yield* Deferred.make<void>(),
+    };
+    entries.set(saved.request.operation_id, entry);
+    return entry;
+  });
+  const durableError = (error: DurableEntries.DurableEntryError) =>
+    error.code === "operation_id_conflict" || error.code === "thread_operation_in_progress"
+      ? new OperationConflict({
+          code: error.code,
+          ...(error.open_operation_id === undefined
+            ? {}
+            : { open_operation_id: error.open_operation_id }),
+        })
+      : new OperationInternalError({});
+  const launch = Effect.fn("WorkstreamOperations.launch")(function* (entry: Entry) {
+    yield* execute(entry).pipe(
+      Effect.catch(() =>
+        Effect.gen(function* () {
+          entry.phase = "sealing";
+          entry.result = parseWorkstreamOperationResult({
+            ...entry.result,
+            state: "reconciling",
+            reason:
+              entry.request.kind === "create_workstream"
+                ? "create_effect_unknown"
+                : "membership_effect_unknown",
+            detail: null,
+            result: null,
+            poll_after_ms: 30_000,
+          });
+          yield* Deferred.succeed(entry.done, undefined);
+        }),
+      ),
+      Effect.forkIn(scope),
+    );
+  });
   const admit = Effect.fn("WorkstreamOperations.admit")(function* (
     input: WorkstreamOperationSubmitRequest,
   ) {
@@ -904,9 +1133,20 @@ const make = Effect.gen(function* () {
       const now = yield* ports.now;
       prune(now);
       let entry = entries.get(input.request.operation_id);
+      if (!entry && native) {
+        const saved = yield* native.entries
+          .read(input.request.operation_id)
+          .pipe(Effect.mapError(durableError));
+        if (saved) entry = yield* restore(saved);
+      }
       if (entry && entry.digest !== hash)
         return yield* new OperationConflict({ code: "operation_id_conflict" });
-      if (entry && settled(entry.result)) return entry.result;
+      if (
+        entry &&
+        (settled(entry.result) ||
+          (native && ["rejected", "unavailable"].includes(entry.result.state)))
+      )
+        return entry.result;
       if (!entry || entry.phase === "finished") {
         if (input.request.kind === "set_primary") {
           const locked = locks.get(threadKey(input.request.thread));
@@ -974,7 +1214,12 @@ const make = Effect.gen(function* () {
                 poll_after_ms: 250,
               },
             };
-            entries.set(input.request.operation_id, entry);
+            if (native) {
+              const saved = yield* native.entries
+                .accept(input.request, Object.values(ids).flat(), at)
+                .pipe(Effect.mapError(durableError));
+              entry = yield* restore(saved);
+            } else entries.set(input.request.operation_id, entry);
           }
         }
         if (entry.phase === "finished") {
@@ -991,7 +1236,7 @@ const make = Effect.gen(function* () {
             result: null,
             poll_after_ms: 250,
           });
-          yield* execute(entry).pipe(Effect.forkIn(scope));
+          yield* launch(entry);
         }
       } else if (entry.phase === "sealing") {
         if (entry.request.kind === "set_primary") {
@@ -1009,7 +1254,12 @@ const make = Effect.gen(function* () {
         yield* Deferred.succeed(entry.wake, undefined);
       }
       return entry;
-    }).pipe(Semaphore.withPermit(admission));
+    }).pipe(
+      Semaphore.withPermit(admission),
+      Effect.mapError((error) =>
+        error._tag === "WorkstreamGatewayError" ? new OperationInternalError({}) : error,
+      ),
+    );
   });
   const submit = Effect.fn("WorkstreamOperations.submit")(function* (
     input: WorkstreamOperationSubmitRequest,
@@ -1025,6 +1275,10 @@ const make = Effect.gen(function* () {
   ): Effect.fn.Return<WorkstreamOperationReadResponse> {
     const now = yield* ports.now;
     prune(now);
+    if (native && "operation_id" in input && !entries.has(input.operation_id)) {
+      const saved = yield* native.entries.read(input.operation_id).pipe(Effect.orDie);
+      if (saved) yield* restore(saved).pipe(Effect.orDie);
+    }
     if ("operation_id" in input)
       return { operation: entries.get(input.operation_id)?.result ?? null };
     if ("open" in input)
@@ -1128,6 +1382,15 @@ const make = Effect.gen(function* () {
     setupCache = { at: now, value };
     return value;
   });
+  if (native) {
+    const pending = yield* native.entries.open();
+    for (const saved of pending) {
+      const entry = yield* restore(saved);
+      entry.phase = "running";
+      if (entry.request.kind === "set_primary") locks.set(threadKey(entry.request.thread), entry);
+      yield* launch(entry);
+    }
+  }
   return WorkstreamOperations.of({ submit, read, setupStatus });
 });
 

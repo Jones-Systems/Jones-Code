@@ -7,7 +7,7 @@ import * as ServerEnvironment from "../../../environment/ServerEnvironment.ts";
 import * as ProjectionStore from "../../../orchestration-v2/ProjectionStore.ts";
 import * as WorkstreamGateway from "../../../workstreams/WorkstreamGateway.ts";
 import * as RegistrationContext from "../registrationContext/service.ts";
-import { Activation, Ports } from "./ports.ts";
+import { Activation, ExecutionContext, Ports } from "./ports.ts";
 import * as Operations from "./service.ts";
 
 const portsLayer = Layer.effect(
@@ -18,7 +18,9 @@ const portsLayer = Layer.effect(
     const gateway = yield* WorkstreamGateway.WorkstreamGateway;
     const registration = yield* RegistrationContext.WorkstreamsRegistrationContext;
     const activation = yield* Activation;
+    const execution = yield* ExecutionContext;
     return Ports.of({
+      ...(execution.mode === "native" ? { native: execution } : {}),
       environmentId: yield* environment.getEnvironmentId,
       activation: activation.status,
       registryId: activation.registryId,

@@ -1,6 +1,8 @@
 import type { WorkstreamSetupStatus } from "@t3tools/contracts/jones/workstreamOperations";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
+import type * as DurableEntries from "../native/operations/durableEntries.ts";
+import type * as HomeExecutor from "../native/operations/homeExecutor.ts";
 import type { WorkstreamGateway } from "../../../workstreams/WorkstreamGateway.ts";
 import type { WorkstreamsRegistrationContext } from "../registrationContext/service.ts";
 
@@ -14,9 +16,22 @@ export class Activation extends Context.Service<
   { readonly status: WorkstreamSetupStatus["activation"]; readonly registryId: string | null }
 >()("t3/jones/workstreams/operations/ports/Activation") {}
 
+export type NativeExecutionContext = {
+  readonly mode: "native";
+  readonly entries: DurableEntries.DurableEntries["Service"];
+  readonly executor: HomeExecutor.HomeExecutor["Service"];
+};
+
+export const ExecutionContext = Context.Reference<
+  NativeExecutionContext | { readonly mode: "legacy" }
+>("t3/jones/workstreams/operations/ExecutionContext", {
+  defaultValue: () => ({ mode: "legacy" }),
+});
+
 export class Ports extends Context.Service<
   Ports,
   {
+    readonly native?: NativeExecutionContext;
     readonly environmentId: string;
     /** Public operation identity, also returned by setupStatus.registry.registry_id. */
     readonly registryId: string | null;
