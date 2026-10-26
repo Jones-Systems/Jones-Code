@@ -1,0 +1,23 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "upstream-24899-provider-snapshots-on-demand",
+  "jonesOwnedPaths": [
+    "packages/client-runtime/src/jones/providerWorkspaceRefresh.ts",
+    "packages/client-runtime/src/jones/providerWorkspaceRefresh.test.ts"
+  ],
+  "hookPaths": [
+    "apps/web/src/components/chat/useProviderWorkspaceSnapshotRefresh.ts",
+    "apps/mobile/src/features/threads/use-composer-command-menu.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/chat/useProviderWorkspaceSnapshotRefresh.ts",
+      "to": "packages/client-runtime/src/jones/providerWorkspaceRefresh.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/use-composer-command-menu.ts",
+      "to": "packages/client-runtime/src/jones/providerWorkspaceRefresh.ts"
+    }
+  ]
+}

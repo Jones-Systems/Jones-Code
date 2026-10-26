@@ -3015,14 +3015,6 @@
       ]
     },
     {
-      "id": "jones-ci-registry-search-timers",
-      "tests": ["apps/web/src/components/settings/AcpRegistrySearchStep.browser.test.tsx"],
-      "commands": [
-        "cd apps/web && vp test run --project browser src/components/settings/AcpRegistrySearchStep.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
-        "node scripts/jones/check-boundary.ts --strict"
-      ]
-    },
-    {
       "id": "jones-pr-cache-scope-locks",
       "tests": [
         "apps/server/src/pullRequest/PullRequestReadCache.test.ts",
@@ -3422,6 +3414,27 @@
         "vp run --filter t3 typecheck",
         "vp run --filter @t3tools/contracts typecheck",
         "vp run --filter @t3tools/provider-core typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-upstream-24899-provider-snapshots-on-demand",
+      "tests": [
+        "apps/server/src/provider/ProviderRegistry.test.ts",
+        "apps/server/src/provider/ClaudeCapabilitiesProbe.test.ts",
+        "apps/server/src/ws.test.ts",
+        "packages/client-runtime/src/state/server.test.ts",
+        "packages/client-runtime/src/rpc/session.test.ts",
+        "packages/client-runtime/src/providerSkills.test.ts",
+        "packages/client-runtime/src/jones/providerWorkspaceRefresh.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/provider/ProviderRegistry.test.ts apps/server/src/provider/ClaudeCapabilitiesProbe.test.ts apps/server/src/ws.test.ts packages/client-runtime/src/state/server.test.ts packages/client-runtime/src/rpc/session.test.ts packages/client-runtime/src/providerSkills.test.ts packages/client-runtime/src/jones/providerWorkspaceRefresh.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter t3 typecheck",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "vp run --filter @t3tools/contracts typecheck",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter @t3tools/mobile typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
     }
