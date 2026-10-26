@@ -112,7 +112,56 @@ type AdmissionRecords = Pick<
   | "providerTurns"
   | "runtimeRequests"
   | "turnItems"
+  | "contextTransfers"
 >;
+
+function legacyInitialRun(
+  task: OrchestrationV2Subagent,
+  child: AdmissionRecords,
+): OrchestrationV2Run | undefined {
+  if (
+    child.thread.lineage.parentThreadId !== task.threadId ||
+    child.thread.lineage.relationshipToParent !== "subagent" ||
+    child.thread.forkedFrom?.type !== "node" ||
+    child.thread.forkedFrom.nodeId !== task.id
+  )
+    return undefined;
+  const initial = child.runs.filter((run) => run.ordinal === 1);
+  const run = initial[0];
+  if (
+    initial.length !== 1 ||
+    run === undefined ||
+    run.threadId !== child.thread.id ||
+    run.delegatedTaskId !== undefined ||
+    run.restartContinuationOfRunId !== undefined
+  )
+    return undefined;
+  const transfers = child.contextTransfers.filter(
+    (transfer) =>
+      transfer.type === "subagent_spawn" &&
+      transfer.sourceThreadId === task.threadId &&
+      transfer.targetThreadId === child.thread.id,
+  );
+  if (transfers.length > 0) {
+    const transfer = transfers[0]!;
+    return transfers.length === 1 &&
+      transfer.targetRunId === run.id &&
+      transfer.sourcePoint.threadId === task.threadId &&
+      transfer.sourcePoint.runId === task.runId &&
+      transfer.targetProviderInstanceId === run.providerInstanceId
+      ? run
+      : undefined;
+  }
+  // IdAllocator derives these three IDs from the same encoded spawn command.
+  // Missing spawn transfers must not turn an arbitrary first run into a source.
+  const prefix = "node:delegated-task:";
+  const suffix = task.id.startsWith(prefix) ? task.id.slice(prefix.length) : "";
+  return suffix.length > 0 &&
+    child.thread.id === `thread:delegated-task:${suffix}` &&
+    run.userMessageId === `message:delegated-task:${suffix}`
+    ? run
+    : undefined;
+}
 
 export function sourceBinding(
   task: OrchestrationV2Subagent,
@@ -128,16 +177,33 @@ export function sourceBinding(
     return new TaskContinuationError({ reason: "driver_unsupported" });
   if (task.status !== "completed" || task.result === null || task.completedAt === null)
     return new TaskContinuationError({ reason: "source_not_completed" });
-  const runs = child.runs
-    .filter((run) => run.delegatedTaskId === task.id)
-    .toSorted((a, b) => a.ordinal - b.ordinal);
+  let runs = child.runs.filter((run) => run.delegatedTaskId === task.id);
+  const legacy = runs.length === 0 ? legacyInitialRun(task, child) : undefined;
+  if (legacy !== undefined) {
+    const members = new Set([legacy.id]);
+    // Collect links before validating identity so a corrupt successor cannot hide
+    // behind an older completed source. continuationRoot validates every member below.
+    for (let depth = 0; depth < 64; depth++) {
+      const size = members.size;
+      for (const run of child.runs) {
+        if (
+          run.restartContinuationOfRunId !== undefined &&
+          members.has(run.restartContinuationOfRunId)
+        )
+          members.add(run.id);
+      }
+      if (members.size === size) break;
+    }
+    runs = child.runs.filter((run) => members.has(run.id));
+  }
+  runs = runs.toSorted((a, b) => a.ordinal - b.ordinal);
   const last = runs.at(-1);
   if (last === undefined || last.status !== "completed")
     return new TaskContinuationError({ reason: "native_source_unavailable" });
   const root = continuationRoot(child.runs, last);
   if (
     Schema.is(TaskContinuationError)(root) ||
-    root.delegatedTaskId !== task.id ||
+    (root.delegatedTaskId !== task.id && root.id !== legacy?.id) ||
     runs.some((run) => {
       const candidate = continuationRoot(child.runs, run);
       return Schema.is(TaskContinuationError)(candidate) || candidate.id !== root.id;

@@ -26,6 +26,8 @@ import * as Threads from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Harness from "../../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import { TaskContinuationCommit } from "./commitContext.ts";
 import { TaskContinuationError } from "./sourceBinding.ts";
+import { requirementFor, loadedSessionMatches } from "./guard.ts";
+import { makeClaudeNativeSessionProof } from "./claudeNativeSessionProof.ts";
 import * as Continuation from "./TaskContinuation.ts";
 import * as Store from "./TaskContinuationStore.ts";
 import { fixture } from "./testkit.ts";
@@ -55,10 +57,11 @@ type ScenarioServices =
 const scenario = <E>(
   name: string,
   body: (context: Scenario) => Effect.Effect<void, E, ScenarioServices>,
+  legacyInitialRun = false,
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const f = fixture();
+      const f = fixture(legacyInitialRun);
       const config = yield* Harness.makeReplayServerConfig(`task-continuation-${name}`);
       const fs = yield* FileSystem.FileSystem;
       yield* Effect.addFinalizer(() =>
@@ -191,42 +194,47 @@ const scenario = <E>(
     }),
   ).pipe(Effect.provide(NodeServices.layer));
 
-it.effect("accepts one new task in the same child and replays before mutable idle checks", () =>
-  scenario("replay", ({ f, input, dispatchCount }) =>
-    Effect.gen(function* () {
-      const service = yield* Continuation.TaskContinuation;
-      const projections = yield* Projections.ProjectionStoreV2;
-      const first = yield* service.continue(f.scope, input);
-      assert.isFalse(first.replayed);
-      assert.notEqual(first.taskId, f.task.id);
-      assert.equal(first.childThreadId, f.child.thread.id);
-      assert.equal(first.continuation.nativeSessionId, "original-native");
-      assert.equal(first.continuation.verification, "pending");
-      // The admitted run makes the child busy; replay still returns the committed task.
-      const replay = yield* service.continue(
-        { ...f.scope, requestNamespace: "restarted-mcp" },
-        input,
-      );
-      assert.isTrue(replay.replayed);
-      assert.equal(replay.taskId, first.taskId);
-      assert.equal(dispatchCount(), 1);
-      const parent = yield* projections.getThreadRecords(f.parent.thread.id, ["subagents"]);
-      assert.deepStrictEqual(
-        parent.subagents.find((task) => task.id === f.task.id),
-        f.task,
-      );
-      const followup = parent.subagents.find((task) => task.id === first.taskId)!;
-      assert.isNull(followup.result);
-      assert.equal(followup.completionWake, "always");
-      assert.equal(parent.subagents.length, 2);
-      const changed = yield* Effect.result(
-        service.continue(f.scope, { ...input, message: "Different body" }),
-      );
-      assert.equal(changed._tag, "Failure");
-      if (changed._tag === "Failure") assert.equal(changed.failure.code, "request_conflict");
-      assert.equal(dispatchCount(), 1);
-    }),
-  ),
+it.effect.each([false, true])(
+  "accepts one task and replays before idle checks (legacy=%s)",
+  (legacy) =>
+    scenario(
+      "replay",
+      ({ f, input, dispatchCount }) =>
+        Effect.gen(function* () {
+          const service = yield* Continuation.TaskContinuation;
+          const projections = yield* Projections.ProjectionStoreV2;
+          const first = yield* service.continue(f.scope, input);
+          assert.isFalse(first.replayed);
+          assert.notEqual(first.taskId, f.task.id);
+          assert.equal(first.childThreadId, f.child.thread.id);
+          assert.equal(first.continuation.nativeSessionId, "original-native");
+          assert.equal(first.continuation.verification, "pending");
+          // The admitted run makes the child busy; replay still returns the committed task.
+          const replay = yield* service.continue(
+            { ...f.scope, requestNamespace: "restarted-mcp" },
+            input,
+          );
+          assert.isTrue(replay.replayed);
+          assert.equal(replay.taskId, first.taskId);
+          assert.equal(dispatchCount(), 1);
+          const parent = yield* projections.getThreadRecords(f.parent.thread.id, ["subagents"]);
+          assert.deepStrictEqual(
+            parent.subagents.find((task) => task.id === f.task.id),
+            f.task,
+          );
+          const followup = parent.subagents.find((task) => task.id === first.taskId)!;
+          assert.isNull(followup.result);
+          assert.equal(followup.completionWake, "always");
+          assert.equal(parent.subagents.length, 2);
+          const changed = yield* Effect.result(
+            service.continue(f.scope, { ...input, message: "Different body" }),
+          );
+          assert.equal(changed._tag, "Failure");
+          if (changed._tag === "Failure") assert.equal(changed.failure.code, "request_conflict");
+          assert.equal(dispatchCount(), 1);
+        }),
+      legacy,
+    ),
 );
 
 it.effect("reconciles an accepted command after its dispatch response is lost", () =>
@@ -243,49 +251,68 @@ it.effect("reconciles an accepted command after its dispatch response is lost", 
   ),
 );
 
-it.effect("returns verified only after a durable observation of the guarded attempt", () =>
-  scenario("durable-view", ({ f, input }) =>
-    Effect.gen(function* () {
-      const service = yield* Continuation.TaskContinuation;
-      const sink = yield* Sink.EventSinkV2;
-      const projections = yield* Projections.ProjectionStoreV2;
-      const store = yield* Store.TaskContinuationStore;
-      const accepted = yield* service.continue(f.scope, input);
-      const current = yield* projections.getThreadRecords(f.child.thread.id, ["runs", "attempts"]);
-      const run = current.runs.find((run) => run.id === accepted.childRunId)!;
-      const attempt = current.attempts.find((attempt) => attempt.id === run.activeAttemptId)!;
-      yield* sink.write({
-        events: [
-          f.event("run.updated", f.child.thread.id, {
-            ...run,
-            status: "running",
-            startedAt: f.now,
-          }),
-          f.event("run-attempt.updated", f.child.thread.id, {
-            ...attempt,
-            status: "running",
-            startedAt: f.now,
-            nativeThreadId: "original-native",
-          }),
-        ],
-      });
-      assert.equal((yield* service.continue(f.scope, input)).continuation.verification, "pending");
-      const row = yield* store.get(
-        Continuation.requestIdentity(f.parent.thread.id, input).messageId,
-      );
-      assert.isNotNull(row);
-      yield* store.confirm(row!, {
-        runId: run.id,
-        attemptId: attempt.id,
-        nativeSessionId: "original-native",
-        runtimeGeneration: "confirmed-query",
-      });
-      const view = yield* service.continue(f.scope, input);
-      assert.isTrue(view.replayed);
-      assert.equal(view.continuation.verification, "verified");
-      assert.equal(view.continuation.verifiedRunId, run.id);
-      assert.equal(view.continuation.account, "unavailable");
-    }),
+it.effect.each([false, true])("verifies the guarded native conversation (legacy=%s)", (legacy) =>
+  scenario(
+    "durable-view",
+    ({ f, input }) =>
+      Effect.gen(function* () {
+        const service = yield* Continuation.TaskContinuation;
+        const sink = yield* Sink.EventSinkV2;
+        const projections = yield* Projections.ProjectionStoreV2;
+        const store = yield* Store.TaskContinuationStore;
+        const accepted = yield* service.continue(f.scope, input);
+        const current = yield* projections.getThreadRecords(f.child.thread.id, [
+          "runs",
+          "attempts",
+          "providerThreads",
+        ]);
+        const run = current.runs.find((run) => run.id === accepted.childRunId)!;
+        const attempt = current.attempts.find((attempt) => attempt.id === run.activeAttemptId)!;
+        yield* sink.write({
+          events: [
+            f.event("run.updated", f.child.thread.id, {
+              ...run,
+              status: "running",
+              startedAt: f.now,
+            }),
+            f.event("run-attempt.updated", f.child.thread.id, {
+              ...attempt,
+              status: "running",
+              startedAt: f.now,
+              nativeThreadId: "original-native",
+            }),
+          ],
+        });
+        assert.equal(
+          (yield* service.continue(f.scope, input)).continuation.verification,
+          "pending",
+        );
+        const row = yield* store.get(
+          Continuation.requestIdentity(f.parent.thread.id, input).messageId,
+        );
+        assert.isNotNull(row);
+        assert.equal(row!.sourceRunId, f.run.id);
+        assert.equal(row!.sourceAttemptId, f.attempt.id);
+        assert.isDefined(run.delegatedTaskId);
+        const required = yield* requirementFor(store, current, run, attempt);
+        assert.isDefined(required);
+        assert.equal(required!.nativeSessionId, "original-native");
+        assert.isTrue(loadedSessionMatches(required!, f.provider, f.provider));
+        const wrongQuery = yield* makeClaudeNativeSessionProof(required!);
+        assert.equal(
+          (yield* Effect.result(wrongQuery.confirm("different-native", "wrong-query", true)))._tag,
+          "Failure",
+        );
+        assert.deepStrictEqual(yield* store.witnesses(row!), []);
+        const resumedQuery = yield* makeClaudeNativeSessionProof(required!);
+        yield* resumedQuery.confirm("original-native", "confirmed-query", true);
+        const view = yield* service.continue(f.scope, input);
+        assert.isTrue(view.replayed);
+        assert.equal(view.continuation.verification, "verified");
+        assert.equal(view.continuation.verifiedRunId, run.id);
+        assert.equal(view.continuation.account, "unavailable");
+      }),
+    legacy,
   ),
 );
 

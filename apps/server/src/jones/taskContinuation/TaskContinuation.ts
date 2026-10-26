@@ -182,6 +182,7 @@ const make = Effect.gen(function* () {
             "subagents",
             "runtimeRequests",
             "turnItems",
+            "contextTransfers",
           ]);
           const binding = sourceBinding(task, child);
           if (Schema.is(TaskContinuationError)(binding)) return yield* binding;

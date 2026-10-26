@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   NodeId,
+  MessageId,
   ProviderThreadId,
   RunId,
   RuntimeRequestId,
@@ -20,6 +21,121 @@ import { fixture } from "./testkit.ts";
 
 const isError = Schema.is(TaskContinuationError);
 describe("source task continuation binding", () => {
+  it("binds the legacy initial app-owned run without delegatedTaskId or a spawn transfer", () => {
+    const f = fixture(true);
+    expect(f.run.delegatedTaskId).toBeUndefined();
+    expect(f.child.contextTransfers).toEqual([]);
+    expect(sourceBinding(f.task, f.child)).toMatchObject({
+      sourceTaskId: f.task.id,
+      sourceRunId: f.run.id,
+      sourceAttemptId: f.attempt.id,
+      nativeSessionId: "original-native",
+    });
+  });
+  it("uses a matching spawn transfer and follows only the legacy run's restart ancestry", () => {
+    const f = fixture(true);
+    const child = {
+      ...f.child,
+      runs: [{ ...f.run, userMessageId: MessageId.make("historical-message") }],
+      contextTransfers: [f.spawnTransfer],
+    };
+    expect(sourceBinding(f.task, child)).toMatchObject({ nativeSessionId: "original-native" });
+    const successor = {
+      ...f.run,
+      id: RunId.make("legacy-successor"),
+      ordinal: 2,
+      restartContinuationOfRunId: f.run.id,
+    };
+    const unrelated = {
+      ...f.run,
+      id: RunId.make("unrelated"),
+      ordinal: 3,
+      userMessageId: MessageId.make("unrelated-message"),
+    };
+    expect(
+      sourceBinding(f.task, {
+        ...f.child,
+        runs: [f.run, successor, unrelated],
+        attempts: [{ ...f.attempt, runId: successor.id }],
+      }),
+    ).toMatchObject({ sourceRunId: successor.id, nativeSessionId: "original-native" });
+  });
+  it("rejects foreign, ambiguous or explicitly mismatched legacy lineage", () => {
+    const f = fixture(true);
+    for (const child of [
+      {
+        ...f.child,
+        thread: {
+          ...f.child.thread,
+          lineage: { ...f.child.thread.lineage, parentThreadId: f.child.thread.id },
+        },
+      },
+      {
+        ...f.child,
+        thread: {
+          ...f.child.thread,
+          forkedFrom: { type: "node" as const, nodeId: NodeId.make("foreign-task") },
+        },
+      },
+      { ...f.child, runs: [{ ...f.run, userMessageId: MessageId.make("foreign-message") }] },
+      { ...f.child, runs: [{ ...f.run, delegatedTaskId: NodeId.make("foreign-task") }] },
+      { ...f.child, runs: [f.run, { ...f.run, id: RunId.make("ambiguous-initial") }] },
+      { ...f.child, runs: [{ ...f.run, ordinal: 2 }] },
+      { ...f.child, contextTransfers: [f.spawnTransfer, f.spawnTransfer] },
+      {
+        ...f.child,
+        contextTransfers: [{ ...f.spawnTransfer, targetRunId: RunId.make("foreign-run") }],
+      },
+      {
+        ...f.child,
+        contextTransfers: [
+          {
+            ...f.spawnTransfer,
+            sourcePoint: {
+              ...f.spawnTransfer.sourcePoint,
+              runId: RunId.make("foreign-parent-run"),
+            },
+          },
+        ],
+      },
+      { ...f.child, providerTurns: [] },
+      { ...f.child, attempts: [{ ...f.attempt, status: "failed" as const }] },
+      {
+        ...f.child,
+        attempts: [{ ...f.attempt, providerInstanceId: f.parent.thread.providerInstanceId }],
+      },
+    ])
+      expect(sourceBinding(f.task, child)).toMatchObject({ reason: "native_source_unavailable" });
+    expect(sourceBinding({ ...f.task, id: NodeId.make("foreign-task") }, f.child)).toMatchObject({
+      reason: "native_source_unavailable",
+    });
+    const successor = {
+      ...f.run,
+      id: RunId.make("relabelled"),
+      ordinal: 2,
+      restartContinuationOfRunId: f.run.id,
+      delegatedTaskId: f.task.id,
+    };
+    expect(sourceBinding(f.task, { ...f.child, runs: [f.run, successor] })).toMatchObject({
+      reason: "native_source_unavailable",
+    });
+    for (const corrupt of [
+      { ...successor, delegatedTaskId: NodeId.make("foreign-task") },
+      {
+        ...successor,
+        delegatedTaskId: undefined,
+        providerThreadId: ProviderThreadId.make("moved"),
+      },
+      {
+        ...successor,
+        delegatedTaskId: undefined,
+        modelSelection: { ...f.run.modelSelection, model: "different-model" },
+      },
+    ])
+      expect(sourceBinding(f.task, { ...f.child, runs: [f.run, corrupt] })).toMatchObject({
+        reason: "native_source_unavailable",
+      });
+  });
   it("uses the completed child's accepted attempt when initial parent task provider metadata is null", () => {
     const f = fixture();
     expect(f.task.providerThreadId).toBeNull();
@@ -34,50 +150,56 @@ describe("source task continuation binding", () => {
     expect(assertCurrentBinding(binding, f.child)).toBeUndefined();
     expect(idleEligibility(f.parent, f.child)).toBeUndefined();
   });
-  it("does not substitute today's provider row for a legacy or unaccepted attempt", () => {
-    const f = fixture();
-    const { nativeThreadId: _native, ...legacy } = f.attempt;
-    expect(sourceBinding(f.task, { ...f.child, attempts: [legacy] })).toMatchObject({
-      reason: "native_source_unavailable",
-    });
-    expect(sourceBinding(f.task, { ...f.child, providerTurns: [] })).toMatchObject({
-      reason: "native_source_unavailable",
-    });
-  });
-  it("rejects a moved native ref, selection, unpublished source, and remote child", () => {
-    const f = fixture();
-    const binding = sourceBinding(f.task, f.child);
-    if (isError(binding)) throw binding;
-    expect(
-      assertCurrentBinding(binding, {
-        ...f.child,
-        providerThreads: [
-          {
-            ...f.provider,
-            nativeThreadRef: { ...f.provider.nativeThreadRef!, nativeId: "fresh-native" },
+  it.each([false, true])(
+    "does not substitute today's row for an unaccepted attempt (legacy=%s)",
+    (legacy) => {
+      const f = fixture(legacy);
+      const { nativeThreadId: _native, ...unrecorded } = f.attempt;
+      expect(sourceBinding(f.task, { ...f.child, attempts: [unrecorded] })).toMatchObject({
+        reason: "native_source_unavailable",
+      });
+      expect(sourceBinding(f.task, { ...f.child, providerTurns: [] })).toMatchObject({
+        reason: "native_source_unavailable",
+      });
+    },
+  );
+  it.each([false, true])(
+    "rejects moved refs, selection, unpublished source and remote child (legacy=%s)",
+    (legacy) => {
+      const f = fixture(legacy);
+      const binding = sourceBinding(f.task, f.child);
+      if (isError(binding)) throw binding;
+      expect(
+        assertCurrentBinding(binding, {
+          ...f.child,
+          providerThreads: [
+            {
+              ...f.provider,
+              nativeThreadRef: { ...f.provider.nativeThreadRef!, nativeId: "fresh-native" },
+            },
+          ],
+        }),
+      ).toMatchObject({ reason: "native_reference_moved" });
+      expect(
+        assertCurrentBinding(binding, {
+          ...f.child,
+          thread: {
+            ...f.child.thread,
+            modelSelection: {
+              ...f.child.thread.modelSelection,
+              options: [{ id: "effort", value: "high" }],
+            },
           },
-        ],
-      }),
-    ).toMatchObject({ reason: "native_reference_moved" });
-    expect(
-      assertCurrentBinding(binding, {
-        ...f.child,
-        thread: {
-          ...f.child.thread,
-          modelSelection: {
-            ...f.child.thread.modelSelection,
-            options: [{ id: "effort", value: "high" }],
-          },
-        },
-      }),
-    ).toMatchObject({ reason: "selection_changed" });
-    expect(sourceBinding({ ...f.task, result: null }, f.child)).toMatchObject({
-      reason: "source_not_completed",
-    });
-    expect(sourceBinding({ ...f.task, childThreadId: null }, f.child)).toMatchObject({
-      reason: "task_not_found",
-    });
-  });
+        }),
+      ).toMatchObject({ reason: "selection_changed" });
+      expect(sourceBinding({ ...f.task, result: null }, f.child)).toMatchObject({
+        reason: "source_not_completed",
+      });
+      expect(sourceBinding({ ...f.task, childThreadId: null }, f.child)).toMatchObject({
+        reason: "task_not_found",
+      });
+    },
+  );
   it("blocks held queues, pending input, secret cards and live nested/background ownership", () => {
     const f = fixture();
     const pendingSecret = {

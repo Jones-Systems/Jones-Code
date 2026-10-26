@@ -1,5 +1,6 @@
 import {
   CommandId,
+  ContextTransferId,
   EnvironmentId,
   EventId,
   MessageId,
@@ -18,11 +19,12 @@ import {
   type OrchestrationV2Subagent,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import { derive } from "@t3tools/provider-core/server/IdAllocator";
 import { idleThreadProjection, liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import type { TaskContinuationRecord } from "./TaskContinuationStore.ts";
 
-export function fixture() {
+export function fixture(legacyInitialRun = false) {
   const now = DateTime.makeUnsafe("2026-10-25T20:00:00.000Z");
   const instanceId = ProviderInstanceId.make("claude");
   const modelSelection = {
@@ -31,8 +33,9 @@ export function fixture() {
     options: [{ id: "effort", value: "max" }],
   };
   const parentId = ThreadId.make("parent");
-  const childId = ThreadId.make("child");
-  const taskId = NodeId.make("source-task");
+  const commandId = CommandId.make("command:mcp:fixture:delegate-task:source");
+  const childId = derive.delegatedTaskThread({ commandId });
+  const taskId = derive.delegatedTaskNode({ commandId });
   const providerId = ProviderThreadId.make("claude-row");
   const parent = idleThreadProjection(liveThreadShell(parentId));
   const child = idleThreadProjection(liveThreadShell(childId, { activeRunId: null }));
@@ -43,7 +46,7 @@ export function fixture() {
     providerInstanceId: instanceId,
     modelSelection,
     providerThreadId: providerId,
-    userMessageId: MessageId.make("source-message"),
+    userMessageId: derive.delegatedTaskMessage({ commandId }),
     rootNodeId: NodeId.make("source-root"),
     activeAttemptId: RunAttemptId.make("source-attempt"),
     status: "completed",
@@ -52,7 +55,7 @@ export function fixture() {
     completedAt: now,
     checkpointId: null,
     contextHandoffId: null,
-    delegatedTaskId: taskId,
+    ...(legacyInitialRun ? {} : { delegatedTaskId: taskId }),
   };
   const attempt: OrchestrationV2RunAttempt = {
     id: RunAttemptId.make("source-attempt"),
@@ -161,6 +164,24 @@ export function fixture() {
     ],
   };
   const owner = { ...parent, runs: [parentRun], subagents: [task] };
+  const spawnTransfer = {
+    id: ContextTransferId.make("spawn-transfer"),
+    type: "subagent_spawn" as const,
+    sourceThreadId: parentId,
+    targetThreadId: childId,
+    sourcePoint: { threadId: parentId, runId: parentRun.id },
+    basePoint: null,
+    sourceProviderInstanceId: parentRun.providerInstanceId,
+    targetProviderInstanceId: instanceId,
+    targetRunId: run.id,
+    status: "consumed" as const,
+    resolution: null,
+    createdBy: "agent" as const,
+    error: null,
+    createdAt: now,
+    updatedAt: now,
+    consumedAt: now,
+  };
   const scope: McpInvocationScope = {
     environmentId: EnvironmentId.make("env"),
     issuedAt: 1,
@@ -204,5 +225,17 @@ export function fixture() {
       occurredAt: now,
       payload,
     }) as Extract<OrchestrationV2DomainEvent, { type: T }>;
-  return { now, parent: owner, child: source, task, run, attempt, provider, row, scope, event };
+  return {
+    now,
+    parent: owner,
+    child: source,
+    task,
+    run,
+    attempt,
+    provider,
+    row,
+    scope,
+    event,
+    spawnTransfer,
+  };
 }
