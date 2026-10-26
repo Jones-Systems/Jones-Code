@@ -3513,7 +3513,11 @@
         "apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx",
         "apps/web/src/components/workstreams/WorkstreamNativeSidebar.browser.test.tsx",
         "apps/mobile/src/features/workstreams/projection.test.ts",
-        "apps/mobile/src/features/workstreams/Controls.operations.test.tsx"
+        "apps/mobile/src/features/workstreams/Controls.operations.test.tsx",
+        "apps/server/src/jones/workstreams/native/runtime/admission.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/cli.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/entry.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/startup.test.ts"
       ],
       "commands": [
         "vp test run apps/server/src/jones/workstreams/native/transition --maxWorkers=1 --no-file-parallelism",

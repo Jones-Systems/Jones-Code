@@ -37,7 +37,7 @@ export const secrets = () =>
       Uint8Array.from({ length: 32 }, (_, i) => 255 - i),
     ],
   ]);
-export const secretLayer = (values: Map<string, Uint8Array>) =>
+const secretLayer = (values: Map<string, Uint8Array>) =>
   Layer.succeed(
     ServerSecretStore.ServerSecretStore,
     ServerSecretStore.ServerSecretStore.of({

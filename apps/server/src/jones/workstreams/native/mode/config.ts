@@ -14,6 +14,18 @@ const NativeConfig = closedWorkstreamsNative(
       "disabled",
     ]),
     registry: Schema.NullOr(WorkstreamsNativeRegistry),
+    bootstrap: Schema.optionalKey(
+      closedWorkstreamsNative(
+        Schema.Struct({
+          home: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4096)),
+          database: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4096)),
+          key_provider: Schema.Literal("server-secret-store"),
+          source_session_id: Schema.optionalKey(
+            Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+          ),
+        }),
+      ),
+    ),
   }),
 );
 export type NativeConfig = typeof NativeConfig.Type;

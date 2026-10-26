@@ -1,3 +1,4 @@
+import { registryCommand } from "../jones/workstreams/native/runtime/cli.ts";
 import { workstreamOperationCommands } from "../jones/workstreams/operations/cli.ts";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
@@ -45,6 +46,7 @@ const authorityCommand = Command.make("authority").pipe(
 export const workstreamCommand = Command.make("workstream").pipe(
   Command.withDescription("Manage cross-system workstream integration."),
   Command.withSubcommands([
+    registryCommand,
     authorityCommand,
     workstreamProviderCommand,
     ...workstreamOperationCommands,

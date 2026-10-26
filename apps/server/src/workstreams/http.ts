@@ -1,4 +1,6 @@
-import { NativeEntry } from "../jones/workstreams/native/integration.ts";
+import * as NativeStartup from "../jones/workstreams/native/runtime/startup.ts";
+import * as NativeRuntimeEntry from "../jones/workstreams/native/runtime/entry.ts";
+import { nativePersistenceLayer } from "../jones/workstreams/native/integration.ts";
 import { decodeRegistryBinding } from "@t3tools/shared/jones/workstreamsRegistryBinding";
 import * as WorkstreamOperations from "../jones/workstreams/operations/service.ts";
 import * as WorkstreamOperationsLive from "../jones/workstreams/operations/live.ts";
@@ -156,7 +158,7 @@ export const workstreamRegistrationContextLayerLive = Layer.effect(
   Layer.provide(workstreamControlPlaneLayer),
 );
 
-export const workstreamOperationsLayerLive = WorkstreamOperationsLive.layer.pipe(
+const workstreamOperationsLayerLive = WorkstreamOperationsLive.layer.pipe(
   Layer.provide(
     Layer.effect(
       Activation,
@@ -186,6 +188,25 @@ export const workstreamOperationsLayerLive = WorkstreamOperationsLive.layer.pipe
     ),
   ),
   Layer.provide(workstreamControlPlaneLayer),
+);
+
+// Resolve explicit native selection before constructing any Control Plane service.
+const workstreamStartupLayer = NativeStartup.layer.pipe(Layer.provide(nativePersistenceLayer));
+export const workstreamSelectedServicesLayer = NativeStartup.chooseLayer({
+  legacy: () =>
+    Layer.mergeAll(
+      workstreamGatewayLayerLive,
+      workstreamRegistrationContextLayerLive,
+      workstreamOperationsLayerLive.pipe(
+        Layer.provide(workstreamGatewayLayerLive),
+        Layer.provide(workstreamRegistrationContextLayerLive),
+      ),
+    ),
+  home: NativeStartup.homeServicesLayer,
+  unavailable: NativeStartup.unavailableServicesLayer,
+}).pipe(
+  Layer.provideMerge(workstreamStartupLayer),
+  Layer.provide(workstreamNativeAuthorityLayerLive),
 );
 
 const internal = <A>(
@@ -305,12 +326,12 @@ export const workstreamHttpApiLayer = HttpApiBuilder.group(
           const contract = args.headers["x-t3-workstreams-placement-contract"];
           if (contract === undefined)
             return yield* internal("threadPlacements", gateway.readThreadPlacements(args.payload));
-          const native = yield* Effect.serviceOption(NativeEntry);
+          const native = yield* Effect.serviceOption(NativeRuntimeEntry.Entry);
           if (Option.isNone(native))
             return yield* new EnvironmentHttpConflictError({
               message: "workstreams_native_unavailable",
             });
-          return yield* native.value.adapter
+          return yield* native.value
             .placementResponse(args.payload, contract)
             .pipe(
               Effect.mapError(
@@ -323,12 +344,12 @@ export const workstreamHttpApiLayer = HttpApiBuilder.group(
       .handle("legacyReceiptLookup", (args) =>
         Effect.gen(function* () {
           yield* read(args.endpoint.name);
-          const native = yield* Effect.serviceOption(NativeEntry);
+          const native = yield* Effect.serviceOption(NativeRuntimeEntry.Entry);
           if (Option.isNone(native))
             return yield* new EnvironmentHttpConflictError({
               message: "workstreams_legacy_receipts_unavailable",
             });
-          return yield* native.value.adapter.lookupLegacyReceipt(args.payload).pipe(
+          return yield* native.value.lookupLegacyReceipt(args.payload).pipe(
             Effect.mapError(
               () =>
                 new EnvironmentHttpConflictError({

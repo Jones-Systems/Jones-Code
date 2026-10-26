@@ -58,11 +58,9 @@ import { fixPath } from "./os-jank.ts";
 import * as Ws from "./ws.ts";
 import * as ShellMaterialization from "./jones/orchestration/shellMaterialization.ts";
 import {
-  workstreamOperationsLayerLive,
-  workstreamGatewayLayerLive,
+  workstreamSelectedServicesLayer,
   workstreamHttpApiLayer,
   workstreamNativeAuthorityLayerLive,
-  workstreamRegistrationContextLayerLive,
   workstreamResponseHeadersLayer,
 } from "./workstreams/http.ts";
 import * as NativeWorkstreams from "./jones/workstreams/runtimeIntegration/native.ts";
@@ -725,7 +723,9 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
   ),
 );
 
-const layerRuntimeDependencies = layerRuntimeCoreDependencies.pipe(
+const layerRuntimeDependencies = NativeWorkstreams.nativeWorkstreamsRuntimeLayer.pipe(
+  Layer.provide(workstreamNativeAuthorityLayerLive),
+  Layer.provideMerge(layerRuntimeCoreDependencies),
   Layer.provideMerge(layerUsage),
   Layer.provideMerge(JonesHttp.tokenAccountingLayer),
   Layer.provideMerge(layerBackground),
@@ -810,11 +810,9 @@ const layerMakeRoutes = Layer.mergeAll(
     ),
     Layer.provide(DesktopBrowserChannel.layer),
     Layer.provide(PreviewBrowser.layer),
-    Layer.provide(workstreamOperationsLayerLive),
+    Layer.provide(workstreamSelectedServicesLayer),
   )
   .pipe(
-    Layer.provide(workstreamGatewayLayerLive),
-    Layer.provide(workstreamRegistrationContextLayerLive),
     // Same layer identity as the gateway's, so the config descriptor reads the same authority.
     Layer.provide(workstreamNativeAuthorityLayerLive),
     Layer.provide(ThreadHandoff.layer.pipe(Layer.provide(HandoffLaunch.layer))),

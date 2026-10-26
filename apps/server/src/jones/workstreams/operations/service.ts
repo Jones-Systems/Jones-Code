@@ -1382,15 +1382,8 @@ const make = Effect.gen(function* () {
     setupCache = { at: now, value };
     return value;
   });
-  if (native) {
-    const pending = yield* native.entries.open();
-    for (const saved of pending) {
-      const entry = yield* restore(saved);
-      entry.phase = "running";
-      if (entry.request.kind === "set_primary") locks.set(threadKey(entry.request.thread), entry);
-      yield* launch(entry);
-    }
-  }
+  // Native replay is owned by the recovery worker with retained caller/destination admission.
+  // Service construction must not dispatch records without that evidence.
   return WorkstreamOperations.of({ submit, read, setupStatus });
 });
 

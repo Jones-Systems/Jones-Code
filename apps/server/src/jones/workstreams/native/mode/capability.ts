@@ -3,8 +3,10 @@ import type { NativeConfig } from "./config.ts";
 /** Advertise only after the parent has composed the corresponding runtime routes. */
 export function nativeCapability(
   config: NativeConfig,
+  mounted: { readonly readProjection: boolean; readonly placementsV2: boolean },
   homeLink: "ok" | "missing" | "expired" | "unknown" = "unknown",
-): WorkstreamsNativeCapability {
+): WorkstreamsNativeCapability | undefined {
+  if (!mounted.readProjection || !mounted.placementsV2) return undefined;
   const common = {
     contract: "workstreams-native/1.0.0" as const,
     reads: ["workstreams-read/1.0.0" as const],
@@ -12,7 +14,6 @@ export function nativeCapability(
       "workstreams-t3-placement/1.0.0" as const,
       "workstreams-t3-placement/2.0.0" as const,
     ],
-    rollups: { contract: "workstreams-rollups/1.0.0" as const, producer: "unconfigured" as const },
   };
   if (config.mode === "native-home" && config.registry)
     return { ...common, mode: "native-home", registry: config.registry };

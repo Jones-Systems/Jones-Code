@@ -2233,7 +2233,11 @@
         "apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx",
         "apps/web/src/components/workstreams/WorkstreamNativeSidebar.browser.test.tsx",
         "apps/mobile/src/features/workstreams/projection.test.ts",
-        "apps/mobile/src/features/workstreams/Controls.operations.test.tsx"
+        "apps/mobile/src/features/workstreams/Controls.operations.test.tsx",
+        "apps/server/src/jones/workstreams/native/runtime/admission.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/cli.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/entry.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/startup.test.ts"
       ],
       "scope": "Native registry-home contracts, encrypted persistence and all31 native tables, pure v1 CAS/receipt/history domain and source-admitted provider ports. Source identity remains source-owned; authority stays home-owned. Native command/forwarding registration, end-to-end qualification and fleet adoption remain subsequent integration. Includes encrypted durable operation intent/recovery, fixed home destination and restart replay; runtime admission and home transport remain composition dependencies. Client integration adds native mode/home awareness, generation-isolated grouping, memory-only protected projections and honest unavailable provenance. Native envelope transport, forwarding, summary mounts and physical captures remain incomplete."
     }

@@ -40,9 +40,7 @@ const revisions: Record<string, string> = {
   legacy_receipts: "registry_version",
   external_reservations: "admitted_registry_version",
 };
-export const currentTarget = Effect.fn("WorkstreamsTransition.currentTarget")(function* (
-  target: Target,
-) {
+const currentTarget = Effect.fn("WorkstreamsTransition.currentTarget")(function* (target: Target) {
   const sql = yield* SqlClient.SqlClient,
     db = yield* NativeSql.NativeSql;
   const rows = yield* sql<

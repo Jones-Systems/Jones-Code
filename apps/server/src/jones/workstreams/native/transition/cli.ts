@@ -84,31 +84,3 @@ const make = Effect.gen(function* () {
 });
 /** @public Operator composition supplies J1 persistence and explicitly provisioned keys. */
 export const layer = Layer.effect(WorkstreamsTransition, make);
-/** Thin CLI adapter: the operator composition owns input decoding, encrypted I/O and approval. */
-export const nativeTransitionCommand = Effect.fn("WorkstreamsTransition.cli")(function* (
-  command:
-    | { readonly action: "plan"; readonly input: Parameters<typeof plan>[0] }
-    | {
-        readonly action: "apply";
-        readonly plan: Parameters<typeof apply>[0];
-        readonly limit?: number;
-      }
-    | { readonly action: "readback"; readonly plan: Parameters<typeof readback>[0] }
-    | {
-        readonly action: "activate";
-        readonly plan: Parameters<typeof activate>[0];
-        readonly intent: Parameters<typeof activate>[1];
-      },
-) {
-  const service = yield* WorkstreamsTransition;
-  switch (command.action) {
-    case "plan":
-      return yield* service.plan(command.input);
-    case "apply":
-      return yield* service.apply(command.plan, command.limit);
-    case "readback":
-      return yield* service.readback(command.plan);
-    case "activate":
-      return yield* service.activate(command.plan, command.intent);
-  }
-});

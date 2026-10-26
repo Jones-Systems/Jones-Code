@@ -20,7 +20,8 @@ import * as NodePath from "node:path";
 import { expect, it } from "@effect/vitest";
 import * as Wire from "@t3tools/contracts";
 import { WorkstreamsNativePlacementResult } from "@t3tools/contracts/jones/workstreamsNativePlacement";
-import { NativeEntry } from "../integration.ts";
+import * as NativeRuntimeEntry from "../runtime/entry.ts";
+import * as NativeAdmission from "../runtime/admission.ts";
 import {
   WORKSTREAMS_LEGACY_RECEIPTS_CONTRACT,
   WorkstreamsLegacyReceiptLookupResult,
@@ -955,7 +956,21 @@ it.effect(
     Effect.gen(function* () {
       yield* seed;
       const h = yield* harness,
-        registration = (yield* Registration.Registration).forCaller(caller);
+        local = yield* Local.LocalTransport,
+        registrations = yield* Registration.Registration,
+        registration = registrations.forCaller(caller),
+        admission = yield* NativeAdmission.Admission.pipe(Effect.provide(NativeAdmission.layer));
+      const dynamicEntry = NativeRuntimeEntry.layer.pipe(
+        Layer.provide(Layer.succeed(NativeHome, home)),
+        Layer.provide(Layer.succeed(Local.LocalTransport, local)),
+        Layer.provide(Layer.succeed(Registration.Registration, registrations)),
+        Layer.provide(Layer.succeed(NativeAdmission.Admission, admission)),
+        Layer.provide(
+          Layer.succeed(NativeAdmission.CallerBoundary, {
+            current: () => Effect.succeed({ origin: caller.origin, check: () => Effect.void }),
+          }),
+        ),
+      );
       const cp = yield* Effect.acquireRelease(
         Effect.sync(() =>
           vi.spyOn(ControlPlane, "makeControlPlaneWorkstreamTransport").mockImplementation(() => {
@@ -993,7 +1008,7 @@ it.effect(
           const routes = HttpApiBuilder.layer(NativeTestApi).pipe(
             Layer.provide(workstreamHttpApiLayer),
             Layer.provide(Layer.succeed(Gateway.WorkstreamGateway, h.gateway)),
-            Layer.provide(Layer.succeed(NativeEntry, { caller, adapter: h, registration })),
+            Layer.provide(dynamicEntry),
             Layer.provide(
               Layer.succeed(LegacyRegistration.WorkstreamsRegistrationContext, registration),
             ),

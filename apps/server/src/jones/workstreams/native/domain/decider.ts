@@ -120,7 +120,7 @@ function validateSortOrder(sortOrder: number): void {
   );
 }
 
-export function sameIdentity(
+function sameIdentity(
   left: NativeReference["identity"],
   right: NativeReference["identity"],
 ): boolean {
@@ -238,7 +238,7 @@ function appendAudit(
   });
 }
 
-export function admitDomainCommand(
+function admitDomainCommand(
   state: WorkstreamDomainState,
   input: RegistryCommandInput,
   ids: DomainIdSource,
@@ -297,7 +297,7 @@ export function admitDomainCommand(
   }
 }
 
-export function rejectCommand(
+function rejectCommand(
   state: WorkstreamDomainState,
   input: RegistryCommandInput,
   ids: DomainIdSource,
@@ -960,7 +960,7 @@ function decideCommand(
   return { state: changed ? "committed_change" : "committed_noop", receipt };
 }
 
-export function completeExternalIntent(
+function completeExternalIntent(
   state: WorkstreamDomainState,
   intent: ExternalIntent,
   ids: DomainIdSource,
@@ -1131,7 +1131,7 @@ export function completeExternalIntent(
   return receipt;
 }
 
-export function reconcileNativeIntent(
+function reconcileNativeIntent(
   state: WorkstreamDomainState,
   intent: ExternalIntent,
   ids: DomainIdSource,
