@@ -23,6 +23,26 @@ export interface ProviderUpdateAttempt {
   readonly message: string;
 }
 
+// Keep captured progress until an attempt finishes. A new target or advertised
+// version then supersedes terminal feedback, while refresh/reorder/removal of
+// completed targets preserves it.
+export function providerUpdatePresentationAttempt(
+  attempt: ProviderUpdateAttempt | undefined,
+  candidates: ReadonlyArray<ProviderUpdateCandidate>,
+): ProviderUpdateAttempt | undefined {
+  if (!attempt || attempt.phase === "running") return attempt;
+  const basis = (candidate: ProviderUpdateCandidate) =>
+    JSON.stringify([
+      candidate.driver,
+      candidate.instanceId,
+      candidate.versionAdvisory.latestVersion,
+      candidate.versionAdvisory.updateCommand,
+      candidate.versionAdvisory.canUpdate,
+    ]);
+  const captured = new Set(attempt.machine.candidates.map(basis));
+  return candidates.some((candidate) => !captured.has(basis(candidate))) ? undefined : attempt;
+}
+
 type Update = (input: {
   environmentId: EnvironmentId;
   input: { provider: ServerProvider["driver"]; instanceId: ServerProvider["instanceId"] };

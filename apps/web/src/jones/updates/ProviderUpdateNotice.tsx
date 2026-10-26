@@ -9,6 +9,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { getProviderUpdateRunOutcome } from "~/components/ProviderUpdateLaunchNotification.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
+import { providerUpdatePresentationAttempt } from "./providerUpdateController";
 import { useJonesProviderUpdates } from "./useProviderUpdates";
 
 export function ProviderUpdateEnvironmentRows() {
@@ -17,7 +18,7 @@ export function ProviderUpdateEnvironmentRows() {
   return (
     <div className="flex flex-col gap-3">
       {updates.groups.map((group) => {
-        const attempt = group.attempt;
+        const attempt = providerUpdatePresentationAttempt(group.attempt, group.allCandidates);
         const pending = attempt?.phase === "running";
         const reason = !group.connected
           ? "Connect this environment before updating providers."

@@ -24,7 +24,8 @@ export default function PreviewImageContent(props: {
       viewer.current?.zoomTo(value / 100);
     else setPercent(String(Math.round(view.zoom * 100)));
   };
-  if (failed) return <FileSurfaceFailure message="Unable to load image." />;
+  if (failed)
+    return <FileSurfaceFailure message="Unable to load image." onRetry={() => setFailed(false)} />;
   return (
     <>
       <div className="flex min-h-10 shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border/60 px-3 py-1 text-xs text-muted-foreground">

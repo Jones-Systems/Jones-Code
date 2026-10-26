@@ -736,7 +736,7 @@
     "apps/web/src/components/desktopUpdate.toast.tsx": "hook",
     "apps/web/src/components/device/DeviceStreamView.browser.test.tsx": "upstream-deleted",
     "apps/web/src/components/device/DeviceStreamView.tsx": "hook",
-    "apps/web/src/components/files/AttachmentFilePreview.browser.test.tsx": "upstream-deleted",
+    "apps/web/src/components/files/AttachmentFilePreview.browser.test.tsx": "jones-tests-in-upstream",
     "apps/web/src/components/files/AttachmentFilePreview.tsx": "accepted-shared",
     "apps/web/src/components/files/BrowserDocumentFrame.tsx": "accepted-shared",
     "apps/web/src/components/files/FilePreviewPanel.tsx": "accepted-shared",
@@ -2049,7 +2049,8 @@
     "packages/source-control-core/src/server/driver.ts": "accepted-shared",
     "packages/source-control-github/package.json": "accepted-shared",
     "packages/source-control-github/src/server/GitHubPullRequestProvider.ts": "accepted-shared",
-    "packages/source-control-github/src/server/driver.ts": "accepted-shared"
+    "packages/source-control-github/src/server/driver.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/TurnItemCompaction.test.ts": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

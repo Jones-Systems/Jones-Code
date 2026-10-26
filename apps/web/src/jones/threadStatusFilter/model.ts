@@ -113,7 +113,7 @@ export function classifyThreadStatus(
     isWoke,
   });
   if (topStatus === "working" || topStatus === "waiting") return "working";
-  if (topStatus === "approval" || topStatus === "input") return "input";
+  if (topStatus === "approval" || topStatus === "input" || topStatus === "request") return "input";
   return topStatus === "done" ? "done" : null;
 }
 

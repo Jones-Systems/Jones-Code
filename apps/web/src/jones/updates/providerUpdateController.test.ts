@@ -11,6 +11,7 @@ import { collectProviderUpdateCandidates } from "@t3tools/client-runtime/jones/p
 import { getProviderUpdateRunOutcome } from "~/components/ProviderUpdateLaunchNotification.logic";
 import {
   createProviderUpdateController,
+  providerUpdatePresentationAttempt,
   type ProviderUpdateMachine,
 } from "./providerUpdateController";
 
@@ -73,6 +74,45 @@ const flush = async () => {
 afterEach(() => vi.useRealTimers());
 
 describe("provider update controller", () => {
+  it("keeps captured active targets and only supersedes terminal feedback for a new semantic basis", async () => {
+    let providers = [provider()];
+    const controller = createProviderUpdateController({
+      readCurrent: () => ({ connected: true, permitted: true, providers }),
+    });
+    const remaining = deferred<ReturnType<typeof success>>();
+    const pending = controller.start(machine(providers), () => remaining.promise);
+    const active = controller.getSnapshot().get(environmentId)!;
+    providers = [provider("work")];
+    expect(providerUpdatePresentationAttempt(active, machine(providers).candidates)).toBe(active);
+    remaining.resolve(success());
+    await pending;
+    const terminal = controller.getSnapshot().get(environmentId)!;
+    expect(providerUpdatePresentationAttempt(terminal, [])).toBe(terminal);
+    expect(
+      providerUpdatePresentationAttempt(
+        terminal,
+        machine([{ ...provider(), checkedAt: "2026-10-26T02:00:00.000Z" }]).candidates,
+      ),
+    ).toBe(terminal);
+    expect(
+      providerUpdatePresentationAttempt(terminal, machine(providers).candidates),
+    ).toBeUndefined();
+    const newer = {
+      ...provider(),
+      versionAdvisory: { ...provider().versionAdvisory!, latestVersion: "3.0.0" },
+    };
+    expect(
+      providerUpdatePresentationAttempt(terminal, machine([newer]).candidates),
+    ).toBeUndefined();
+    const dispatch = vi.fn(async () => success([provider("work", "succeeded")]));
+    await controller.start(machine(providers), dispatch);
+    expect(dispatch).toHaveBeenCalledWith({
+      environmentId,
+      input: { provider: "codex", instanceId: "work" },
+    });
+    expect(controller.getSnapshot().get(environmentId)?.generation).toBe(2);
+  });
+
   it.each(["connection", "permission", "eligibility", "running"])(
     "rechecks %s after offering, including the primary environment",
     async (lost) => {

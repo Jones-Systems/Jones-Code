@@ -15,7 +15,14 @@ import type {
   ThreadAttentionPill,
 } from "@t3tools/contracts/jones/threadAttention";
 import * as DateTime from "effect/DateTime";
-import { backgroundWorkHoldsCompletion } from "../orchestrationV2PendingBackgroundWork.ts";
+import { backgroundWorkHoldsCompletion as upstreamBackgroundWorkHoldsCompletion } from "../orchestrationV2PendingBackgroundWork.ts";
+
+// Jones monitors have always kept their thread visibly waiting. Preserve that
+// attention policy alongside upstream's explicit awaited-task handling.
+const backgroundWorkHoldsCompletion = (
+  tasks: Parameters<typeof upstreamBackgroundWorkHoldsCompletion>[0],
+): boolean =>
+  tasks.some((task) => task.kind === "monitor") || upstreamBackgroundWorkHoldsCompletion(tasks);
 
 export type PendingSubagentRequest = "approval" | "user_input";
 const EMPTY_SUBAGENT_REQUESTS: ReadonlyMap<ThreadId, PendingSubagentRequest> = new Map();
@@ -69,8 +76,8 @@ function terminalRunStatus(status: OrchestrationV2RunStatus): boolean {
   );
 }
 
-// Only work the agent waits on holds it: unmarked commands and monitors, such as a
-// dev server, present the run's own status. The server suppresses the
+// Awaited tasks and Jones monitors hold completion; unmarked persistent
+// commands present the run's own status. The server suppresses the
 // roster while an interruptible activity run exists, so a remaining roster is
 // stronger than checkpoint-oriented waiting.
 function shellRuntime(thread: OrchestrationV2ThreadShell): ThreadRuntimeSummary | null {

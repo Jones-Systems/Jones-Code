@@ -436,6 +436,47 @@ describe("bounded binary previews", () => {
 });
 import { OFFICE_PREVIEW_MAX_COLUMNS, type OfficeWorkerResult } from "./officePreviewProtocol";
 
+it("shows an authorized workspace image decode failure and retries to a decoded image", async () => {
+  const { WorkspaceImagePreview } = await import("./FilePreviewPanel");
+  const invalid = "data:image/png;base64,YnJva2Vu";
+  const valid =
+    "data:image/svg+xml," +
+    encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="2" height="3"/>');
+  assetUrlState.mockReturnValue({ _tag: "Success", url: invalid, expiresAt: Date.now() + 60_000 });
+  const original = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, "src")!.set!;
+  let requests = 0;
+  using _imageResponse = vi
+    .spyOn(HTMLImageElement.prototype, "src", "set")
+    .mockImplementation(function (this: HTMLImageElement, value: string) {
+      if (value === invalid) {
+        requests += 1;
+        original.call(this, requests === 1 ? invalid : valid);
+      } else original.call(this, value);
+    });
+  await using screen = await render(
+    <div style={{ display: "flex", flexDirection: "column", width: 600, height: 400 }}>
+      <WorkspaceImagePreview
+        environmentId={EnvironmentId.make("test")}
+        threadRef={{ environmentId: EnvironmentId.make("test"), threadId: ThreadId.make("test") }}
+        draft={false}
+        absolutePath="/repo/image.png"
+        workspaceRoot="/repo"
+        alt="Workspace image"
+        workspaceMutationId={null}
+      />
+    </div>,
+  );
+  await expect.element(page.getByText("Unable to load image.", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Try again", exact: true }).click();
+  await vi.waitFor(() => {
+    const image = screen.container.querySelector<HTMLImageElement>("img");
+    expect(image?.naturalWidth).toBe(2);
+    expect(image?.naturalHeight).toBe(3);
+    expect(screen.container.querySelector('[role="alert"]')).toBeNull();
+  });
+  expect(requests).toBe(2);
+});
+
 describe("large text preview recovery", () => {
   it("retains the workspace viewer across URL renewals and reloads revisions and manual refreshes", async () => {
     const { WorkspaceLargeTextPreview } = await import("./FilePreviewPanel");

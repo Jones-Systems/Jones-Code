@@ -6,6 +6,7 @@ import {
 } from "@t3tools/contracts";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import * as Effect from "effect/Effect";
+import { layerRemoteHttpClient } from "@t3tools/client-runtime/rpc";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useRef, useState } from "react";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
@@ -75,8 +76,10 @@ const installedSourceAncestryAtom = Atom.family((key: string): AncestryAtom => {
     .atom((get) => {
       const prepared = get(environmentSession.preparedConnectionValueAtom(environmentId));
       return prepared._tag === "None" || prepared.value.environmentId !== environmentId
-        ? Effect.void
-        : readInstalledSourceAncestry(prepared.value, pair);
+        ? Effect.succeed(undefined)
+        : readInstalledSourceAncestry(prepared.value, pair).pipe(
+            Effect.provide(layerRemoteHttpClient(globalThis.fetch)),
+          );
     })
     .pipe(
       Atom.setIdleTTL(5 * 60_000),

@@ -79,7 +79,71 @@ function updates() {
   };
 }
 
+// Match the real external store: snapshots change identity on publication.
+function publishGroups(group: ReturnType<typeof updates>["groups"][number]) {
+  state.updates = {
+    ...state.updates!,
+    groups: state.updates!.groups.map((entry) =>
+      entry.environmentId === group.environmentId ? { ...group } : entry,
+    ),
+  };
+}
+
 describe("current provider update notice rows", () => {
+  it.each(["instance", "version"])(
+    "resurfaces current %s targets after a completed attempt while preserving active capture",
+    async (change) => {
+      state.updates = updates();
+      state.updates.groups = state.updates.groups.slice(0, 1);
+      const group = state.updates.groups[0]!;
+      const personal = collectProviderUpdateCandidates([provider("personal")]);
+      group.candidates = personal;
+      group.allCandidates = personal;
+      group.attempt = {
+        generation: 1,
+        machine: { environmentId: wsl, label: "WSL", candidates: personal },
+        phase: "succeeded",
+        message: "Personal completed",
+        runs: [],
+      };
+      await using screen = await render(<ProviderUpdateEnvironmentRows />, { router: false });
+      await expect.element(page.getByText("Personal completed", { exact: true })).toBeVisible();
+      const baseProvider = provider(change === "instance" ? "work" : "personal");
+      const offered = {
+        ...baseProvider,
+        versionAdvisory: { ...baseProvider.versionAdvisory!, latestVersion: "3.0.0" },
+      };
+      group.allCandidates = collectProviderUpdateCandidates([offered]);
+      group.candidates = group.allCandidates;
+      publishGroups(group);
+      await screen.rerender(<ProviderUpdateEnvironmentRows />);
+      await expect
+        .element(page.getByText("Personal completed", { exact: true }))
+        .not.toBeInTheDocument();
+      await expect
+        .element(page.getByText(`Codex · ${offered.instanceId}`, { exact: true }))
+        .toBeVisible();
+      state.updateEnvironment.mockClear();
+      await page.getByRole("button", { name: "Update", exact: true }).click();
+      expect(state.updateEnvironment).toHaveBeenCalledWith(wsl);
+      expect(
+        group.candidates.map((candidate) => [
+          candidate.instanceId,
+          candidate.versionAdvisory.latestVersion,
+        ]),
+      ).toEqual([[offered.instanceId, "3.0.0"]]);
+      group.attempt = { ...group.attempt!, phase: "running" };
+      publishGroups(group);
+      await screen.rerender(<ProviderUpdateEnvironmentRows />);
+      await expect
+        .element(page.getByText("Codex · personal · updating", { exact: true }))
+        .toBeVisible();
+      await expect
+        .element(page.getByRole("button", { name: "Loading", exact: true }))
+        .toBeDisabled();
+    },
+  );
+
   it("groups every instance, exposes manual settings, and retains retry and diagnostic feedback", async () => {
     state.navigate.mockReset();
     state.updateEnvironment.mockClear();
@@ -136,6 +200,7 @@ describe("current provider update notice rows", () => {
       })),
     };
     await act(async () => {
+      publishGroups(group);
       await screen.rerender(<ProviderUpdateEnvironmentRows />);
     });
     await expect
@@ -151,6 +216,7 @@ describe("current provider update notice rows", () => {
     expect(state.updateEnvironment).toHaveBeenCalledTimes(2);
     group.connected = false;
     await act(async () => {
+      publishGroups(group);
       await screen.rerender(<ProviderUpdateEnvironmentRows />);
     });
     await expect.element(wslRow.getByRole("button", { name: "Retry", exact: true })).toBeDisabled();
