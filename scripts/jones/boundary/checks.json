@@ -3469,6 +3469,16 @@
         "vp run --filter @t3tools/client-runtime typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-tsrs-typecheck",
+      "tests": ["scripts/jones/tsrs/identity.node-test.mjs"],
+      "commands": [
+        "node --test --test-concurrency=1 scripts/jones/tsrs/*.node-test.mjs",
+        "vp lint scripts/jones/tsrs",
+        "vp run --filter @t3tools/scripts typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }

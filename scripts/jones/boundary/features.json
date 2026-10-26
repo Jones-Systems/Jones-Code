@@ -2191,6 +2191,11 @@
         "packages/client-runtime/src/state/threads-sync.test.ts"
       ],
       "scope": "Targeted upstream backport 553203c57b780cef9fb30ad835d759befe0dcb7c (#24589): cap every long-turn snapshot and history page by row and encoded-byte budgets, preserve cursor/interrupt dependencies, remove unused full-projection overflow encoding, and expire old thread caches. Jones keyset selection retains its extracted budget and keyed interrupt lookup; no contracts, schema or migrations change. No full upstream import."
+    },
+    {
+      "id": "tsrs-typecheck",
+      "tests": ["scripts/jones/tsrs/identity.node-test.mjs"],
+      "scope": "Pinned official Effect-TS TSRS identity and private-install patch recovery, launcher and uncached CI admission. Compiler commands remain on the incumbent until complete adoption qualification."
     }
   ]
 }

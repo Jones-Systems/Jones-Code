@@ -184,7 +184,7 @@
         },
         {
           "path": "scripts/package.json",
-          "sha256": "083d33ceeb3ae56c0b4f08bb58bb92b503af3dad2269b2d9cf09b8eb22a747a7"
+          "sha256": "81da56d06936416389bf931c3028bcb512777e0aa2547e2b7f23e2c2abf887c3"
         }
       ],
       "targets": []
