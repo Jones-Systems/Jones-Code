@@ -1900,17 +1900,6 @@
       "scope": "Consumes the unchanged upstream dependency classifier with conservative full runs for non-PR, stack, unreadable or unknown changes. Required Check accepts a skipped job only after successful explicit selection. Linux package suites are disjoint; standalone checks remain unconditional and native enrollment keeps its independent gate."
     },
     {
-      "id": "ios-native-pin-workflow",
-      "tests": [
-        "scripts/jones/mobile/ios-pin-workflow.test.ts",
-        "scripts/jones/mobile/xcuitest.test.ts",
-        "scripts/jones/mobile/ios-admission.test.ts",
-        "scripts/jones/mobile/ios-native-build.test.ts",
-        "scripts/jones/mobile/ios-cleanup-sentinel.test.ts"
-      ],
-      "scope": "One provider-free iOS pin/unpin persistence journey using an opt-in Expo XCUITest target. Ordinary pairing and command-created synthetic threads feed authenticated target/control-thread readbacks through pin, unpin and app relaunch. Captured-child lifecycle, admission, negative-control, startup-timeout and cancellation checks protect the harness without adding app journeys. The advisory macOS workflow runs only by manual dispatch or native-e2e PR label. Pure checks establish boundary evidence only; native execution and cleanup remain unqualified until real current-source receipts establish them."
-    },
-    {
       "id": "native-electron-workflows",
       "tests": [
         "apps/desktop/scripts/ui-evidence/endpoint-trace.test.mjs",
