@@ -1,3 +1,6 @@
+import * as AutomaticTitles from "../jones/threadTitle/automaticTitles.ts";
+import { titlePolicyApplies } from "../jones/threadTitle/policy.ts";
+import type { ThreadTitleCommitContext } from "../jones/threadTitle/commitContext.ts";
 import {
   readMonitorSettlementBlocker,
   monitorSettlementBlockerMessage,
@@ -1170,6 +1173,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const commandReceipts = yield* CommandReceiptStoreV2;
   const checkoutIntent = yield* Effect.serviceOption(CheckoutIntent.CheckoutIntent);
   const sql = yield* SqlClient.SqlClient;
+  const automaticTitles = yield* AutomaticTitles.make;
   const settlementRestores = makeSettlementRestoreStore(sql, makeJonesTablePresence(sql));
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const projects = yield* ProjectStore.ProjectStoreV2;
@@ -5517,43 +5521,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         occurredAt: now,
         payload: thread,
       });
-      projection = yield* getProjectionWithPendingEvents(command.threadId, events);
-    }
-    const userMessages = projection.messages.filter((message) => message.role === "user");
-    const onlyMaintenanceHistory =
-      userMessages.length > 0 && userMessages.every(isNativeMaintenanceCommand);
-    if (
-      !isNativeMaintenanceCommand(command) &&
-      ((command.titleSeed !== undefined &&
-        (yield* projectionStore
-          .getMessageCount(command.threadId)
-          .pipe(mapDispatchError(command))) === 0) ||
-        (command.createdBy === "user" && onlyMaintenanceHistory))
-    ) {
-      const now = yield* DateTime.now;
-      const thread: OrchestrationV2AppThread = {
-        ...projection.thread,
-        title: command.titleSeed ?? projection.thread.title,
-        titleRegeneration: { requestId: command.commandId, startedAt: now },
-        updatedAt: now,
-      };
-      yield* emit(
-        events,
-        command,
-      )({
-        type: "thread.metadata-updated",
-        threadId: command.threadId,
-        providerInstanceId: thread.providerInstanceId,
-        occurredAt: now,
-        payload: thread,
-      });
-      yield* Ref.update(effects, (existing) => [
-        ...existing,
-        pendingThreadTitleGenerationEffect(command.commandId, command.threadId, {
-          type: "initial",
-          messageId: command.messageId,
-        }),
-      ]);
       projection = yield* getProjectionWithPendingEvents(command.threadId, events);
     }
     const modelSelection = resolveMessageModelSelection(command, projection.thread.modelSelection);
@@ -14449,7 +14416,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (shell !== null) yield* refuseAboveDispatchModeLimit(command, threadId, shell);
     }
 
-    const plan = yield* (
+    let plan = yield* (
       command.type === "message.dispatch"
         ? validateDispatchGuard(command).pipe(
             Effect.mapError(
@@ -14555,6 +14522,58 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
     );
 
+    let threadTitleCommit: ThreadTitleCommitContext | undefined;
+    if (titlePolicyApplies(command)) {
+      const threadId = commandThreadId(command);
+      const pending = yield* Ref.make<Array<OrchestrationV2DomainEvent>>([...plan.events]);
+      const projection = yield* getProjectionWithPendingEvents(threadId, pending);
+      const current =
+        command.type === "thread.title.regeneration.complete"
+          ? yield* projectionStore.getThread(threadId).pipe(mapDispatchError(command))
+          : undefined;
+      const decision = yield* automaticTitles
+        .plan({
+          command,
+          projection,
+          ...(current?.titleRegeneration == null
+            ? {}
+            : { completingRequestId: current.titleRegeneration.requestId }),
+        })
+        .pipe(mapDispatchError(command));
+      threadTitleCommit = decision.commit;
+      if (decision.arm !== undefined) {
+        const now = yield* DateTime.now;
+        yield* emit(
+          pending,
+          command,
+        )({
+          type: "thread.metadata-updated",
+          threadId,
+          occurredAt: now,
+          payload: {
+            ...projection.thread,
+            title: decision.seed ?? projection.thread.title,
+            titleRegeneration: { requestId: decision.arm.requestId, startedAt: now },
+            updatedAt: now,
+          },
+        });
+        plan = {
+          ...plan,
+          events: yield* Ref.get(pending),
+          effects: [
+            ...plan.effects,
+            pendingThreadTitleGenerationEffect(
+              decision.arm.requestId,
+              threadId,
+              decision.arm.initial
+                ? { type: "initial", messageId: decision.arm.messageId }
+                : { type: "regenerate" },
+            ),
+          ],
+        };
+      }
+    }
+
     if (
       nativeAcceptance !== undefined &&
       (plan.events.length === 0 ||
@@ -14610,6 +14629,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           acceptedAt,
           ordinaryCheckoutCommand: command,
           taskContinuation: yield* TaskContinuationCommit,
+          threadTitle: threadTitleCommit,
           codexFailover: codexFailover.commitContext(command),
           ...(command.type === "thread.settlement.restore"
             ? { settlementRestore: { settleCommandId: command.settleCommandId } }

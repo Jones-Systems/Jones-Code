@@ -1,4 +1,5 @@
 import * as Effect from "effect/Effect";
+import { threadTitleVerdict } from "./jones/ThreadTitleAssessment.ts";
 import * as Schema from "effect/Schema";
 
 import { type ChatAttachment, type ModelSelection, TextGenerationError } from "@t3tools/contracts";
@@ -179,6 +180,7 @@ export function fromRunner(
       modelSelection: input.modelSelection,
       attachments: input.attachments,
       ...buildThreadTitlePrompt({
+        titleAssessment: input.titleAssessment,
         message: input.message,
         previousTitle: input.previousTitle,
         forkSource: input.forkSource,
@@ -189,7 +191,8 @@ export function fromRunner(
     });
     return {
       title: sanitizeThreadTitle(generated.title),
-      ...(generated.needsRefinement ? { needsRefinement: true } : {}),
+      ...(generated.needsRefinement === true ? { needsRefinement: true } : {}),
+      ...(input.titleAssessment ? { assessment: threadTitleVerdict(generated) } : {}),
     };
   });
 

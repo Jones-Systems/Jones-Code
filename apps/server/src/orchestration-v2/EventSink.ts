@@ -1,3 +1,4 @@
+import type { ThreadTitleCommitContext } from "../jones/threadTitle/commitContext.ts";
 import type { CodexFailoverCommitContext } from "../jones/codexFailover/CodexFailover.ts";
 import type { ThreadSelfConfigurationCommitContext } from "../jones/threadConfiguration/ThreadSelfConfiguration.ts";
 import type { TaskContinuationCommitContext } from "../jones/taskContinuation/commitContext.ts";
@@ -353,6 +354,7 @@ export interface EventSinkV2Shape {
   readonly commitCommand: (input: {
     readonly codexFailover?: CodexFailoverCommitContext | undefined;
     readonly taskContinuation?: TaskContinuationCommitContext | undefined;
+    readonly threadTitle?: ThreadTitleCommitContext | undefined;
     readonly selfSettlementProjectRemaining?: SelfSettlementProjectRemaining;
     readonly settlementRestore?: { readonly settleCommandId: CommandId };
     readonly ordinaryCheckoutCommand?: CheckoutIntent.IntentCommand;
@@ -1244,6 +1246,7 @@ const layerBase: Layer.Layer<
           if (input.providerConversationReselection)
             yield* input.providerConversationReselection.revalidate(input);
           if (input.taskContinuation) yield* input.taskContinuation.accept(input);
+          if (input.threadTitle) yield* input.threadTitle.accept;
 
           if (imported !== undefined && choice !== undefined && choice.rejectionReason !== null) {
             const receipt: CommandReceiptStore.CommandReceiptV2 = {

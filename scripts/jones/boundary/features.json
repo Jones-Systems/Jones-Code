@@ -2304,6 +2304,17 @@
         "apps/server/src/jones/device/sshXcodeReadiness.test.ts"
       ],
       "scope": "Check selected Xcode first-launch status with a bounded host-local command before simulator discovery. Local and SSH readiness preserve healthy Android and dual-platform discovery, recheck reused hubs, report incomplete setup and keep remote stop operations independent of platform health. Local private lifecycle/filter wiring and service status updates are accepted shared edits; the existing upstream fixture is adapted only to supply the newly required Xcode readiness seam. No automatic Xcode installation, license acceptance, simulator erasure or runtime deployment."
+    },
+    {
+      "id": "thread-title-refinement",
+      "tests": [
+        "apps/server/src/jones/threadTitle/refinement.test.ts",
+        "apps/server/src/jones/threadTitle/evidence.test.ts",
+        "packages/provider-core/src/server/jones/ThreadTitleAssessment.test.ts",
+        "packages/provider-muse/src/server/textGeneration.test.ts",
+        "apps/server/src/orchestration-v2/ThreadTitleRegenerationService.test.ts"
+      ],
+      "scope": "Bounded automatic title and quality assessment in one provider call using at most the first three accepted owner messages and one bounded completed root-provider reply. Jones-owned policy, provenance, context and sparse migration 130 state commit through a narrow EventSink hook with the existing title completion command and outbox effect. Manual rename/regenerate/cancel permanently stops automation, including same-text and pre-first-message edits. Common and Muse paths share the assessment verdict; unassessed manual prompts/schema and legacy retry behavior remain unchanged. The title worker and prompt builder are narrow hooks. Existing EventSink and Muse accepted-shared classifications remain; their private transaction/runner integration cannot be extracted without duplicating machinery. Existing title-worker and Muse tests retain small integration cases because those harnesses own the worker and SDK fixtures. Provider-core package metadata adds one private helper subpath. No wire/schema, upstream-table, CLI lifecycle, client UI, ancestor lookup or installed-runtime changes."
     }
   ]
 }
