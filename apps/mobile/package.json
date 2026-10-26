@@ -47,7 +47,7 @@
     "generate": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/generate-uniwind-themes.mts",
     "generate:highlights": "node scripts/generate-highlights.mts",
     "test": "vp test run --project unit --project react",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "node ../../scripts/jones/tsrs/typecheck.ts --noEmit"
   },
   "dependencies": {
     "@clerk/expo": "catalog:",

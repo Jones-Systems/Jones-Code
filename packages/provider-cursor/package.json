@@ -45,7 +45,7 @@
     }
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "node ../../scripts/jones/tsrs/typecheck.ts --noEmit",
     "test": "vp test run --config ../../vite.config.ts --dir ."
   },
   "dependencies": {

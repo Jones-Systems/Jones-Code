@@ -66,7 +66,7 @@
       "anchors": [
         {
           "path": "apps/server/package.json",
-          "sha256": "58dbe947e13f35c92fdf455559fb422eeb4e7d2f989dd7153d029bc9e2f465a0"
+          "sha256": "7eba1440d99f3d78f30bd7c441b1076d90d1869211bdf5c29c002e874af00c44"
         }
       ],
       "targets": []
@@ -146,7 +146,7 @@
       "anchors": [
         {
           "path": "apps/mobile/package.json",
-          "sha256": "d7494afe8793fae13c63b535ee0b93696d8397dd2feba5da72dfcdf9e69e0088"
+          "sha256": "262188792d7f8cae3f1d921718a46942bc33e730328c5dd6e6405dc25ef637b6"
         },
         {
           "path": "apps/mobile/metro.config.js",
@@ -184,7 +184,7 @@
         },
         {
           "path": "scripts/package.json",
-          "sha256": "81da56d06936416389bf931c3028bcb512777e0aa2547e2b7f23e2c2abf887c3"
+          "sha256": "fc2ba02de2664016ceaf949e7f6484dc3bdf5b3e97106dae299b5246b655c09b"
         }
       ],
       "targets": []
@@ -214,7 +214,7 @@
       "anchors": [
         {
           "path": "apps/mobile/package.json",
-          "sha256": "d7494afe8793fae13c63b535ee0b93696d8397dd2feba5da72dfcdf9e69e0088"
+          "sha256": "262188792d7f8cae3f1d921718a46942bc33e730328c5dd6e6405dc25ef637b6"
         },
         {
           "path": "pnpm-workspace.yaml",

@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "test": "vp test run --config ../../vite.config.ts --dir .",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "node ../../scripts/jones/tsrs/typecheck.ts --noEmit",
     "smoke": "node scripts/smoke.ts",
     "deploy": "alchemy deploy --stage prod",
     "writers": "node scripts/manage.ts"

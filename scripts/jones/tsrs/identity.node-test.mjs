@@ -1,6 +1,8 @@
 import * as NodeAssert from "node:assert/strict";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
+import * as NodeModule from "node:module";
+import { runProcess } from "../incremental-typecheck/incrementalTypecheck.ts";
 import * as NodeTest from "node:test";
 import * as NodeTimersPromises from "node:timers/promises";
 import * as Identity from "./identity.ts";
@@ -394,3 +396,94 @@ NodeTest.test("failed spawn and cancelled lock wait release only owned locks", a
     await mutation.release();
   }
 });
+
+NodeTest.test("root admission remains uncached and CI uses the root typecheck chain", async () => {
+  const manifest = JSON.parse(
+    await NodeFSP.readFile(NodePath.join(repository, "package.json"), "utf8"),
+  );
+  const chain = "vp run tsrs:admit && vp run -r --cache --concurrency-limit 4 typecheck";
+  NodeAssert.equal(manifest.scripts.typecheck, chain);
+  NodeAssert.equal(manifest.scripts.tc, chain);
+  const config = await NodeFSP.readFile(NodePath.join(repository, "vite.config.ts"), "utf8");
+  NodeAssert.match(
+    config,
+    /"tsrs:admit":\s*\{\s*command: "node scripts\/jones\/tsrs\/typecheck\.ts --admit",\s*cache: false,?\s*\}/,
+  );
+  const workflow = await NodeFSP.readFile(
+    NodePath.join(repository, ".github/workflows/ci.yml"),
+    "utf8",
+  );
+  NodeAssert.match(workflow, /run: vpr typecheck/);
+  const workspace = await NodeFSP.readFile(
+    NodePath.join(repository, "pnpm-workspace.yaml"),
+    "utf8",
+  );
+  NodeAssert.match(
+    workspace,
+    new RegExp(
+      `^  typescript: ${Identity.FALLBACK.catalog.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+      "m",
+    ),
+  );
+});
+
+NodeTest.test(
+  "pinned fallback preserves current configured Effect errors and corrected success",
+  async (t) => {
+    const parent = NodePath.join(repository, ".t3/test-scratch/tsrs-fallback");
+    await NodeFSP.mkdir(parent, { recursive: true });
+    const root = await NodeFSP.mkdtemp(NodePath.join(parent, "control-"));
+    roots.add(root);
+    t.after(async () => {
+      await NodeFSP.rm(root, { recursive: true, force: true });
+      roots.delete(root);
+    });
+    await NodeFSP.writeFile(NodePath.join(root, "package.json"), '{"type":"module"}');
+    await NodeFSP.writeFile(
+      NodePath.join(root, "tsconfig.json"),
+      JSON.stringify({
+        extends: NodePath.join(repository, "tsconfig.base.json"),
+        files: ["probe.ts"],
+      }),
+    );
+    await NodeFSP.mkdir(NodePath.join(root, "node_modules"));
+    const require = NodeModule.createRequire(NodePath.join(repository, "scripts/package.json"));
+    const effect = NodePath.dirname(require.resolve("effect/package.json"));
+    await NodeFSP.symlink(effect, NodePath.join(root, "node_modules/effect"), "dir");
+    const entry = NodePath.join(root, "probe.ts");
+    const check = async () => {
+      const moduleUrl = new URL("./typecheck.ts", import.meta.url).href;
+      const job = runProcess({
+        executable: process.execPath,
+        args: [
+          "--input-type=module",
+          "--eval",
+          `import {runFallback} from ${JSON.stringify(moduleUrl)};process.exitCode=await runFallback(${JSON.stringify(repository)},${JSON.stringify(root)},["--noEmit","--pretty","false"],new AbortController().signal);`,
+        ],
+        cwd: root,
+        capture: true,
+        signal: stopping.signal,
+      });
+      jobs.add(job);
+      try {
+        return await job;
+      } finally {
+        jobs.delete(job);
+      }
+    };
+    await NodeFSP.writeFile(
+      entry,
+      "import * as Effect from 'effect/Effect'; export const probe = Effect.sync(() => Date.now());\n",
+    );
+    const negative = await check();
+    NodeAssert.equal(negative.code, 2, negative.stdout);
+    NodeAssert.match(negative.stdout, /error TS377067/);
+    await NodeFSP.writeFile(
+      entry,
+      "import * as Effect from 'effect/Effect'; export const probe = Effect.sync(() => 0);\n",
+    );
+    const positive = await check();
+    NodeAssert.equal(positive.code, 0, positive.stdout);
+    NodeAssert.doesNotMatch(positive.stdout, /error TS377067/);
+  },
+);

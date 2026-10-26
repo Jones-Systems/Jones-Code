@@ -12,10 +12,6 @@
     "scripts/jones/incremental-typecheck/incrementalTypecheck.ts": "jones-owned",
     "scripts/jones/incremental-typecheck/incrementalTypecheck.node-test.mjs": "jones-owned",
     "scripts/jones/boundary/fragments/incremental-typecheck.json": "jones-owned",
-    "scripts/jones/experimental-typecheck/cli.mjs": "jones-owned",
-    "scripts/jones/experimental-typecheck/runner.mjs": "jones-owned",
-    "scripts/jones/experimental-typecheck/runner.test.mjs": "jones-owned",
-    "scripts/jones/boundary/fragments/experimental-typecheck.json": "jones-owned",
     "apps/server/src/jones/workspaceLifecycle/NativeOperation.ts": "jones-owned",
     "apps/server/src/jones/workspaceLifecycle/ManagedConsumers.test.ts": "jones-owned",
     "apps/server/src/jones/workspaceLifecycle/ManagedCleanup.test.ts": "jones-owned",
@@ -2136,7 +2132,11 @@
     "apps/web/src/jones/usage/SavedTokenAccounting.test.tsx",
     ".github/workflows/relay-preview-cleanup.yml",
     ".github/workflows/relay-preview.yml",
-    ".github/workflows/stale-needs-more-info.yml"
+    ".github/workflows/stale-needs-more-info.yml",
+    "scripts/jones/experimental-typecheck/cli.mjs",
+    "scripts/jones/experimental-typecheck/runner.mjs",
+    "scripts/jones/experimental-typecheck/runner.test.mjs",
+    "scripts/jones/boundary/fragments/experimental-typecheck.json"
   ],
   "allowedImports": [
     {

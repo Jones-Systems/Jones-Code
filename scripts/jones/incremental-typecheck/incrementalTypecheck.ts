@@ -15,8 +15,10 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 
-import * as NodeModule from "node:module";
+import * as CompilerIdentity from "../tsrs/identity.ts";
+import { launchVerified } from "../tsrs/typecheck.ts";
 import * as NodeOS from "node:os";
+import * as NodeModule from "node:module";
 
 // These adapters are the standalone CLI's Effect-to-Promise boundary. Services
 // come from their installed Node layers, rather than hidden native imports.
@@ -50,20 +52,18 @@ async function fileInfo(filename: string): Promise<FileSystem.File.Info> {
 export const RAW_LIMIT = 16 * 1024 * 1024;
 export const ENVELOPE_LIMIT = 24 * 1024 * 1024;
 export const NAMESPACE_LIMIT = 1024 * 1024 * 1024;
-const SCHEMA = "jones-incremental-typecheck/v1";
-const OPTIONS = ["--noEmit", "--incremental", "--checkers", "2"];
-const PACKAGE_VERSION = "0.8.0";
-const NATIVE_VERSION = "Version 7.1.0-dev";
-const BUILD_VERSION = "7.1.0-dev+effect-tsgo.0.51.1";
+const SCHEMA = "jones-incremental-typecheck/v2";
+const OPTIONS = ["--noEmit", "--incremental", ...CompilerIdentity.CHECKER_OPTIONS];
+const BUILD_VERSION = CompilerIdentity.BUILD_VERSION;
 const EXPO_MANIFEST_HASH = "b64e612beee02fbbf0aa883e9d3d767a2213abb5093d5bd04a2aef87868fd2ba";
 const EXPO_STORE_PATH =
   "node_modules/.pnpm/expo@58.0.14_277a83826bb26ba15256633fefeb0bc2/node_modules/expo";
 
 export const HELP = `Usage: pnpm typecheck:incremental <workspace-name-or-relative-path>... | --all
 Options: --fresh (no retained reads or publication), --help
-Only workspace scripts exactly equal to "tsc --noEmit" are supported.
+Only exact repository verified-launcher scripts are supported.
 Projects run serially; every selected project runs the native Effect checker.
-Cache: node_modules/.cache/jones/incremental-typecheck/v1; retained for the
+Cache: node_modules/.cache/jones/incremental-typecheck/v2; retained for the
 worktree dependency-cache lifetime. Admission: 1 GiB including crash residue;
 payload: 16 MiB; envelope: 24 MiB. No eviction or automatic cold fallback.
 These are retention/admission bounds, not concurrent native-write quotas.
@@ -84,6 +84,7 @@ export interface Command {
   cwd: string;
   capture: boolean;
   signal: AbortSignal;
+  spawned?: () => Promise<void>;
 }
 export interface CommandResult {
   code: number;
@@ -165,13 +166,23 @@ export function parseArguments(args: string[]) {
   };
 }
 
+export function workspaceCommand(root: string, directory: string): string {
+  const relative = hostPath().relative(
+    directory,
+    hostPath().join(root, "scripts/jones/tsrs/typecheck.ts"),
+  );
+  return `node ${relative.split(hostPath().sep).join("/")} --noEmit`;
+}
+
 export function selectWorkspaces(
   root: string,
   workspaces: Workspace[],
   args: ReturnType<typeof parseArguments>,
 ) {
   const eligible = workspaces.filter(
-    (workspace) => workspace.directory !== root && workspace.script === "tsc --noEmit",
+    (workspace) =>
+      workspace.directory !== root &&
+      workspace.script === workspaceCommand(root, workspace.directory),
   );
   const selected = args.all
     ? eligible
@@ -211,14 +222,6 @@ class Interrupted extends Error {
 // Cleanup must not race a process whose exit could not be established.
 class UnconfirmedExit extends Error {}
 
-class NativeConfigurationFailure extends Error {
-  readonly exitCode: number;
-  constructor(project: string, exitCode: number) {
-    super(`Native configuration resolution failed for ${project} (${exitCode}).`);
-    this.exitCode = exitCode;
-  }
-}
-
 function checkCancellation(signal: AbortSignal): void {
   if (signal.aborted) throw new Interrupted(String(signal.reason));
 }
@@ -247,7 +250,7 @@ export const runProcess: Runner = async (command) => {
           ChildProcess.make(command.executable, command.args, {
             cwd: command.cwd,
             // The native checker stays in this process on all platforms.
-            env: { ...process.env, GOPORT_LAUNCH: "0", RAYON_NUM_THREADS: "2" },
+            env: { ...HostProcess.Environment.defaultValue(), RAYON_NUM_THREADS: "2" },
             detached: HostProcess.Platform.defaultValue() !== "win32",
             stdin: "ignore",
             stdout: command.capture ? "pipe" : "inherit",
@@ -300,6 +303,7 @@ export const runProcess: Runner = async (command) => {
     }
     command.signal.addEventListener("abort", stop, { once: true });
     if (command.signal.aborted) stop();
+    await command.spawned?.();
     const outcome = await new Promise<{ code?: number; error?: unknown }>((resolve, reject) => {
       rejectExit = reject;
       void Effect.runPromise(child.exitCode).then(
@@ -393,42 +397,14 @@ export async function discoverWorkspaces(
 }
 
 export async function resolveCompiler(root: string) {
-  const require = NodeModule.createRequire(hostPath().join(root, "package.json"));
-  const wrapper = require.resolve("typescript/package.json");
-  const platform = `${HostProcess.Platform.defaultValue()}-${HostProcess.Architecture.defaultValue()}`;
-  const nativeAlias = `@typescript/typescript-${platform}`;
-  const nativeName = `@tsc-rs/${platform}`;
-  const manifest: unknown = JSON.parse(await hostFileSystem((fs) => fs.readFileString(wrapper)));
-  if (
-    !object(manifest) ||
-    manifest.name !== "@tsc-rs/typescript" ||
-    manifest.version !== PACKAGE_VERSION ||
-    manifest.tscVersion !== NATIVE_VERSION.slice("Version ".length) ||
-    !object(manifest.optionalDependencies) ||
-    manifest.optionalDependencies[nativeAlias] !== `npm:${nativeName}@${PACKAGE_VERSION}`
-  ) {
+  const target = CompilerIdentity.hostTarget();
+  if (!target)
     throw new Error(
-      `Expected installed @tsc-rs/typescript ${PACKAGE_VERSION} for ${platform}: ${wrapper}`,
+      "Retained typechecking requires a supported official Effect TSRS host; use the regular typecheck command for the pinned local fallback.",
     );
-  }
-  const nativeManifest = NodeModule.createRequire(wrapper).resolve(`${nativeAlias}/package.json`);
-  const native: unknown = JSON.parse(
-    await hostFileSystem((fs) => fs.readFileString(nativeManifest)),
-  );
-  if (!object(native) || native.name !== nativeName || native.version !== PACKAGE_VERSION) {
-    throw new Error(`Expected installed ${nativeName} ${PACKAGE_VERSION}: ${nativeManifest}`);
-  }
-  const executable = await hostFileSystem((fs) =>
-    fs.realPath(
-      hostPath().join(
-        hostPath().dirname(nativeManifest),
-        "lib",
-        HostProcess.Platform.defaultValue() === "win32" ? "tsc.exe" : "tsc",
-      ),
-    ),
-  );
-  await hostFileSystem((fs) => fs.access(executable));
-  return { executable, wrapper, nativeManifest };
+  const installed = await CompilerIdentity.resolveInstalled(root, target);
+  await CompilerIdentity.provePrivate(installed);
+  return CompilerIdentity.verified(installed);
 }
 
 type Compiler = Awaited<ReturnType<typeof resolveCompiler>>;
@@ -700,27 +676,18 @@ export async function sharedIdentity(
   return hash(chunks.join(""));
 }
 
-export async function effectiveConfig(
+async function runCompiler(
   compiler: Compiler,
-  project: Workspace,
-  signal: AbortSignal,
+  command: Command,
   run: Runner,
-): Promise<unknown> {
-  const result = await run({
-    executable: compiler.executable,
-    args: [...OPTIONS, "--showConfig"],
-    cwd: project.directory,
-    capture: true,
-    signal,
+): Promise<CommandResult> {
+  let result: CommandResult | undefined;
+  await launchVerified(compiler, command.signal, async (_installed, spawned) => {
+    result = await run({ ...command, spawned });
+    return result.code;
   });
-  if (result.code !== 0) {
-    process.stdout.write(result.stdout);
-    throw new NativeConfigurationFailure(project.name, result.code);
-  }
-  const config: unknown = JSON.parse(result.stdout);
-  if (!object(config) || !object(config.compilerOptions))
-    throw new Error(`Invalid native configuration for ${project.name}.`);
-  return config;
+  if (!result) throw new Error("Verified compiler returned no result.");
+  return result;
 }
 
 export function projectIdentity(
@@ -737,9 +704,10 @@ export function projectIdentity(
       shared,
       config,
       options: OPTIONS,
-      nativeVersion: NATIVE_VERSION,
-      packageVersion: PACKAGE_VERSION,
-      launch: "GOPORT_LAUNCH=0",
+      buildVersion: BUILD_VERSION,
+      packageVersion: CompilerIdentity.TSRS_VERSION,
+      effectVersion: CompilerIdentity.EFFECT_VERSION,
+      patchedHashes: CompilerIdentity.TARGETS,
       rayon: 2,
     }),
   );
@@ -752,7 +720,7 @@ export function cachePaths(root: string, project: Workspace) {
     ".cache",
     "jones",
     "incremental-typecheck",
-    "v1",
+    "v2",
   );
   const directory = hostPath().join(namespace, digest(canonical([root, project.directory])));
   return { namespace, directory, entry: hostPath().join(directory, "entry.json") };
@@ -844,12 +812,7 @@ export function validNativePayload(bytes: Buffer): boolean {
   if (bytes.length > RAW_LIMIT) return false;
   try {
     const value: unknown = JSON.parse(bytes.toString("utf8"));
-    if (
-      !object(value) ||
-      !["7.1.0-dev", BUILD_VERSION].includes(String(value.version)) ||
-      !object(value.options)
-    )
-      return false;
+    if (!object(value) || value.version !== BUILD_VERSION || !object(value.options)) return false;
     if (value.effect !== undefined && !object(value.effect)) return false;
     if (
       !Array.isArray(value.fileNames) ||
@@ -1013,13 +976,17 @@ export async function checkProject(options: CheckProjectOptions): Promise<number
     log(
       `[incremental] ${project.name}: ${fresh ? "fresh" : seed ? "seed validated" : "cache miss"}; ${native}`,
     );
-    const outcome = await run({
-      executable: compiler.executable,
-      args: [...OPTIONS, "--tsBuildInfoFile", native],
-      cwd: project.directory,
-      capture: false,
-      signal,
-    });
+    const outcome = await runCompiler(
+      compiler,
+      {
+        executable: compiler.executable,
+        args: [...OPTIONS, "--tsBuildInfoFile", native],
+        cwd: project.directory,
+        capture: false,
+        signal,
+      },
+      run,
+    );
     result = outcome.code;
     checkCancellation(signal);
     if (result === 0 && !fresh) {
@@ -1101,35 +1068,22 @@ export async function runCli(
       `[incremental] Excluded: ${excluded.map((workspace) => `${workspace.name}: ${workspace.script ?? "no typecheck script"}`).join("; ")}\n`,
     );
     const compiler = await resolveCompiler(root);
-    const version = await run({
-      executable: compiler.executable,
-      args: ["--version"],
-      cwd: root,
-      capture: true,
-      signal,
-    });
-    if (version.code !== 0 || version.stdout.trim() !== NATIVE_VERSION)
-      throw new Error(`Unexpected native compiler version: ${version.stdout.trim()}`);
     process.stderr.write(
-      `[incremental] @tsc-rs/typescript ${PACKAGE_VERSION}; ${NATIVE_VERSION}.\n[incremental] ${compiler.executable} ${OPTIONS.join(" ")} --tsBuildInfoFile <private>; GOPORT_LAUNCH=0 RAYON_NUM_THREADS=2\n`,
+      `[incremental] Official Effect TSRS ${CompilerIdentity.TSRS_VERSION} / Effect ${CompilerIdentity.EFFECT_VERSION}.\n[incremental] ${compiler.executable} ${OPTIONS.join(" ")} --tsBuildInfoFile <private>; RAYON_NUM_THREADS=2\n`,
     );
+    const legacy = hostPath().join(root, "node_modules/.cache/jones/incremental-typecheck/v1");
+    if (await hostFileSystem((fs) => fs.exists(legacy)))
+      process.stderr.write(
+        `[incremental] Legacy v1 cache ignored and preserved: ${legacy}; remove this exact directory separately when no older invocation uses it.\n`,
+      );
     const shared = args.fresh ? "fresh" : await sharedIdentity(root, workspaces, compiler);
-    // --showConfig can omit Effect settings. Raw, guarded inputs supply
-    // identity for them without interpreting or merging plugin options.
+    // The finite raw JSONC topology guard fingerprints configuration without
+    // handwritten inheritance or TSRS's unsupported --showConfig command.
     const configInputs = args.fresh
       ? new Map<string, string>()
       : await configurationInputs(root, selected);
     for (const project of selected) {
       checkCancellation(signal);
-      let config: unknown;
-      try {
-        config = await effectiveConfig(compiler, project, signal, run);
-      } catch (error) {
-        if (!(error instanceof NativeConfigurationFailure)) throw error;
-        process.stderr.write(`[incremental] ${message(error)}\n`);
-        if (firstFailure === 0) firstFailure = error.exitCode;
-        continue;
-      }
       if (
         !args.fresh &&
         (await configurationInputs(root, [project])).get(project.directory) !==
@@ -1140,7 +1094,6 @@ export async function runCli(
         );
       }
       const identity = projectIdentity(root, project, shared, {
-        native: config,
         inputs: configInputs.get(project.directory),
       });
       const result = await checkProject({
@@ -1152,11 +1105,9 @@ export async function runCli(
         signal,
         run,
         inputsUnchanged: async () => {
-          const currentConfig = await effectiveConfig(compiler, project, signal, run);
           const currentInputs = (await configurationInputs(root, [project])).get(project.directory);
           return (
             projectIdentity(root, project, await sharedIdentity(root, workspaces, compiler), {
-              native: currentConfig,
               inputs: currentInputs,
             }) === identity
           );

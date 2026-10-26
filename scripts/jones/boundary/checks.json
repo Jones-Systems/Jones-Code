@@ -26,15 +26,6 @@
       ]
     },
     {
-      "id": "jones-experimental-typecheck",
-      "tests": ["scripts/jones/experimental-typecheck/runner.test.mjs"],
-      "commands": [
-        "vp test run scripts/jones/experimental-typecheck/runner.test.mjs --maxWorkers=1 --no-file-parallelism",
-        "vp lint scripts/jones/experimental-typecheck/*.mjs",
-        "node scripts/jones/check-boundary.ts --strict"
-      ]
-    },
-    {
       "id": "jones-cross-environment-model-selection",
       "tests": [
         "apps/web/src/jones/settings/modelSelectionCorrespondence.test.ts",

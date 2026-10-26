@@ -65,7 +65,7 @@ export default defineConfig({
       },
       // tsc (tsc-rs) rewrites the tsbuildinfo it reads, which keeps a task out of the cache.
       typecheck: {
-        command: "tsc --noEmit",
+        command: "node ../../scripts/jones/tsrs/typecheck.ts --noEmit",
         cache: { input: [{ auto: true }, "!*.tsbuildinfo"] },
       },
     },

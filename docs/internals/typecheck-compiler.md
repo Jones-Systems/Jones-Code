@@ -1,18 +1,19 @@
 # Typecheck compiler selection
 
-The authoritative workspace commands currently use `tsc` through the catalog
-alias `npm:@tsc-rs/typescript@0.8.0`. This Rust compiler has built-in Effect
-checks. `pnpm typecheck:incremental` uses the same incumbent and retains native
-state between explicit local checks. Marketing uses `astro check`.
+Workspace CLI commands invoke the verified official Effect-patched TSRS
+launcher on all 33 TypeScript surfaces. Root `typecheck` and `tc` run uncached
+compiler admission before cached recursive tasks. `pnpm typecheck:incremental`
+uses the same pinned compiler and Go assignment in a separate v2 namespace.
+Marketing continues using `astro check`.
 
-The official Effect-patched TSRS candidate is being qualified separately;
-[it is not yet approved as the default](https://github.com/Jones-Systems/Jones-Code/issues/711).
-Effect upgrades can add diagnostics even when ordinary TypeScript checks agree.
-Schema-class connection targets in tests use real constructors: a partial
-supervisor double does not make a plain object a complete Schema class instance.
-Preserve diagnostic settings when correcting such fixtures. Adoption still
-requires complete configured-rule, workspace, lifecycle, cache and platform
-qualification. No complete current-workflow speed improvement has been qualified.
+The candidate integration remains under
+[qualification](https://github.com/Jones-Systems/Jones-Code/issues/711) before
+main adoption. The initial 33-surface direct screen preserved incumbent
+errors/warnings and non-standard-library coverage after constructive fixture
+corrections, but complete rule, lifecycle, cache, performance and platform gates
+remain. No complete current-workflow speed improvement has been qualified.
+Schema-class connection targets in partial supervisor doubles still use genuine
+Schema instances; diagnostic settings stay unchanged.
 
 ## Publisher and rationale
 
@@ -36,10 +37,10 @@ The candidate checks types and diagnostics. It does not speed up runtime code,
 replace Vite's bundling, or establish a saving on every build. Fresh compiler
 runs, retained checks, and task-cache hits are different workloads.
 
-## Isolated candidate operation
+## Installation and commands
 
-These commands are for qualification in an isolated, fully installed worktree;
-root `prepare` does not invoke the candidate patcher yet:
+Root `prepare` invokes the verified patch wrapper before `vp config`. In a
+fully installed isolated worktree, these commands repair, verify and run it:
 
 ```sh
 node scripts/jones/tsrs/patch.ts
@@ -60,9 +61,15 @@ Supported replacements are Linux x64/arm64 with glibc 2.35 or newer, and macOS
 arm64. Musl, Windows and macOS x64 have no artifact in this pinned Effect
 release. The candidate launcher selects the exact incumbent fallback on an
 unsupported local host. Its `--admit` mode refuses unsupported CI hosts; the
-root uncached admission chain is not wired until adoption qualifies. Compiler
+root uncached admission task runs before cached work, even with top-level
+`--cache`. Compiler
 selection inside the launcher does not depend on `CI` or another environment
 switch.
+
+The launcher holds the mutation lock through verification and successful native
+spawn, then releases it while checking continues. Parallel compiler processes
+therefore do not serialize for the duration of their checks. A concurrent restore
+cannot replace the verified executable before it starts.
 
 The native TSRS invocation pins `--checkerAssignment go --checkers 2`.
 Do not infer reproducibility or performance from the defaults of another build.
@@ -106,3 +113,24 @@ parity, cache admission, actual workflow cost, interruption recovery and actual
 supported-platform execution before changing the default commands. The
 [separate test-directory override issue](https://github.com/Jones-Systems/Jones-Code/issues/661)
 is not resolved by compiler substitution.
+
+## Retained checks and cache lifetime
+
+The incremental runner uses guarded raw JSONC inputs rather than unsupported
+TSRS `--showConfig`. Its v2 identity includes exact pins, patched binary bytes,
+adjacent standard libraries, checker options, workspace and installed dependency
+bindings, and recognized project/base configuration bytes. Every retained check
+still executes the verified compiler. Success may atomically retain a bounded
+build-info envelope; failures preserve the earlier seed. `--fresh` reads and
+publishes no retained state. Retained mode refuses unsupported hosts instead of
+changing compiler; use regular `typecheck` there.
+
+V1 retained entries are ignored and preserved, never migrated or deleted
+automatically. Stop old invocations before separately removing the exact legacy
+path printed by the runner. Task-cache hits, fresh checks and retained checks
+have different costs. After an OS or libc upgrade, invalidate local task-cache
+entries with `vp cache clean` before relying on cached typechecks. Shared remote
+typecheck caches require separate libc-aware qualification.
+
+The unverified `typecheck:tsrs:experimental` runner is retired. It did not verify
+the Effect-patched binary and cannot serve as a diagnostics-preserving fallback.

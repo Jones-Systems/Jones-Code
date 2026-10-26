@@ -956,6 +956,11 @@ jobs:
           cache: true
           run-install: true
 
+      - name: Verify official Effect TSRS after the full install
+        run: |
+          node scripts/jones/tsrs/patch.ts --verify
+          node scripts/jones/tsrs/typecheck.ts --version
+
       - name: Setup the standalone CLI runtime
         uses: actions/setup-node@v6
         with:

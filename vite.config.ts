@@ -90,7 +90,13 @@ const taskCacheConfig = {
 export default defineConfig({
   run: {
     cache: taskCacheConfig,
-    tasks: cachedTestTasks(process.env.T3_CACHED_TESTS),
+    tasks: {
+      ...cachedTestTasks(process.env.T3_CACHED_TESTS),
+      "tsrs:admit": {
+        command: "node scripts/jones/tsrs/typecheck.ts --admit",
+        cache: false,
+      },
+    },
   },
   resolve: {
     alias: {

@@ -25,6 +25,12 @@ export async function admit(
       "CI requires a supported, verified official Effect TSRS build; local fallback cannot qualify CI.",
     );
   await selectCompiler(root, host);
+  const target = Identity.hostTarget(host);
+  process.stdout.write(
+    target
+      ? `[tsrs] admission: official Effect ${Identity.EFFECT_VERSION}, ${target}, ${Identity.TARGETS[target].patched}\n`
+      : `[tsrs] admission: local non-authoritative fallback ${Identity.FALLBACK.name}@${Identity.FALLBACK.version}\n`,
+  );
 }
 
 export async function launchVerified(
@@ -86,9 +92,18 @@ export async function typecheck(
         }),
     );
   }
+  return runFallback(root, cwd, args, signal);
+}
+
+export async function runFallback(
+  root: string,
+  cwd: string,
+  args: string[],
+  signal: AbortSignal,
+): Promise<number> {
   const compiler = await Identity.resolveFallback(root);
   process.stderr.write(
-    `[tsrs] Unsupported host; using pinned ${Identity.FALLBACK.name}@${Identity.FALLBACK.version} with built-in Effect diagnostics.\n`,
+    `[tsrs] Unsupported host; using pinned ${Identity.FALLBACK.name}@${Identity.FALLBACK.version} with built-in Effect diagnostics (local, non-authoritative).\n`,
   );
   return runChild({ executable: compiler.executable, args, cwd, signal });
 }
