@@ -3459,6 +3459,7 @@
         "apps/server/src/jones/threadMonitor/GuardedSettle.integration.test.ts",
         "apps/server/src/jones/threadMonitor/guardedSettle.test.ts",
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/ShellStream.test.ts",
         "apps/web/src/jones/threadMonitor/MonitorUI.browser.test.tsx",
         "apps/web/src/jones/threadMonitor/actions.test.ts",
         "apps/web/src/jones/threadMonitor/answers.test.ts",
@@ -3470,7 +3471,8 @@
         "packages/client-runtime/src/jones/threadMonitor/lifecycle.test.ts",
         "packages/client-runtime/src/jones/threadMonitor/model.test.ts",
         "packages/contracts/src/jones/desktopThreadMonitor.test.ts",
-        "packages/contracts/src/jones/guardedThreadSettlement.test.ts"
+        "packages/contracts/src/jones/guardedThreadSettlement.test.ts",
+        "packages/shared/src/jones/threadAttention.test.ts"
       ],
       "commands": [
         "vp test run packages/contracts/src/jones/desktopThreadMonitor.test.ts packages/contracts/src/jones/guardedThreadSettlement.test.ts --maxWorkers=1 --no-file-parallelism",
@@ -3485,7 +3487,9 @@
         "vp run --filter @t3tools/web typecheck",
         "node scripts/jones/check-boundary.ts --strict",
         "node --test apps/desktop/scripts/ui-evidence/thread-monitor-provider.test.mjs",
-        "vp test run apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts -t \"publishes approval artifacts before a consumer\" --maxWorkers=1 --no-file-parallelism"
+        "vp test run apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts -t \"publishes approval artifacts before a consumer\" --maxWorkers=1 --no-file-parallelism",
+        "vp test run packages/shared/src/jones/threadAttention.test.ts packages/client-runtime/src/jones/threadMonitor/model.test.ts --maxWorkers=1 --no-file-parallelism",
+        "cd apps/server && vp test run src/orchestration-v2/ShellStream.test.ts src/jones/threadMonitor/guardedSettle.test.ts src/jones/threadMonitor/GuardedSettle.integration.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {

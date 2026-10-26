@@ -12,7 +12,7 @@
     "docs/ui-map/desktop-thread-monitor.md",
     ".github/workflows/jones-thread-monitor-native.yml"
   ],
-  "hookPaths": [],
+  "hookPaths": ["apps/server/src/orchestration-v2/ShellStream.ts"],
   "tombstones": [],
   "allowedImports": [
     {
@@ -106,6 +106,10 @@
     {
       "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
       "to": "apps/server/src/jones/threadMonitor/codexCommandApprovalOptions.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ShellStream.ts",
+      "to": "packages/shared/src/jones/threadAttention.ts"
     }
   ]
 }

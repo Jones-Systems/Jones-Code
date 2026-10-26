@@ -2083,7 +2083,8 @@
     "packages/ssh/vite.config.ts": "hook",
     "packages/tailscale/vite.config.ts": "hook",
     "scripts/vite.config.ts": "hook",
-    "apps/web/tsconfig.json": "hook"
+    "apps/web/tsconfig.json": "hook",
+    "apps/server/src/orchestration-v2/ShellStream.test.ts": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

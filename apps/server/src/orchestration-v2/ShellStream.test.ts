@@ -25,6 +25,9 @@ import {
   omitOlderSettledShells,
   shellStreamItemFromEnrichmentRefresh,
   shellStreamItemsFromInitialSnapshot,
+  shellSnapshotForSubscriber,
+  shellStreamItemFromThreadShell,
+  toShellApplicationEvent,
   shouldPublishShellApplicationEvent,
   skipUnchangedThreadShells,
 } from "./ShellStream.ts";
@@ -650,6 +653,98 @@ describe("skipUnchangedThreadShells", () => {
       Stream.runCollect,
       Effect.map((items) => Array.from(items, (item) => ("sequence" in item ? item.sequence : -1))),
     );
+
+  const guestFamily = (pendingGuestMessageCount: number | undefined) => {
+    const root = shell("root", { status: "completed", activityRunStatus: null });
+    const middle = shell("middle", {
+      status: "completed",
+      activityRunStatus: null,
+      lineage: { rootThreadId: root.id, parentThreadId: root.id, relationshipToParent: "subagent" },
+    });
+    const leaf = shell("leaf", {
+      status: "completed",
+      activityRunStatus: null,
+      pendingGuestMessageCount,
+      lineage: {
+        rootThreadId: root.id,
+        parentThreadId: middle.id,
+        relationshipToParent: "subagent",
+      },
+    });
+    return [root, middle, leaf];
+  };
+  const snapshot = (threads: ReadonlyArray<OrchestrationV2ThreadShell>, omitIdleSubagents = true) =>
+    shellSnapshotForSubscriber(
+      { ...emptyShellSnapshot, threads },
+      { omitIdleSubagents, omitOlderSettled: true, now: at(0) },
+    );
+
+  it("keeps the pending guest leaf and complete ancestor chain in the actual opted-in snapshot", () => {
+    const family = guestFamily(1);
+    expect(snapshot(family).snapshot.threads.map(({ id }) => id)).toEqual([
+      "root",
+      "middle",
+      "leaf",
+    ]);
+    expect(snapshot(family, false).snapshot.threads).toEqual(family);
+    for (const count of [0, undefined]) {
+      expect(snapshot(guestFamily(count)).snapshot.threads.map(({ id }) => id)).toEqual([
+        "root",
+        "middle",
+      ]);
+    }
+  });
+
+  it.effect(
+    "delivers late guest-only updates and resolution after an omitted child without transcript leakage",
+    () =>
+      Effect.gen(function* () {
+        const initial = snapshot(guestFamily(0));
+        expect(initial.snapshot.threads.map(({ id }) => id)).toEqual(["root", "middle"]);
+        const before = guestFamily(0)[2]!;
+        const pending = { ...before, pendingGuestMessageCount: 1 };
+        const dismissed = { ...before, pendingGuestMessageCount: 0 };
+        const guestEvents = [before, pending, dismissed].map((thread, index) => {
+          const stored = {
+            sequence: index + 1,
+            event: { threadId: thread.id, type: "thread.guest-share-updated" },
+          } as ApplicationStoredEvent;
+          expect(shouldPublishShellApplicationEvent(stored, initial.subagentThreadIds)).toBe(true);
+          const event = toShellApplicationEvent(stored);
+          if (!("event" in event)) throw new Error("Expected thread event");
+          return shellStreamItemFromThreadShell({ stored: event, shell: thread });
+        });
+        expect(
+          shouldPublishShellApplicationEvent(
+            { event: { threadId: before.id, type: "message.updated" } } as ApplicationStoredEvent,
+            initial.subagentThreadIds,
+          ),
+        ).toBe(false);
+        const items = yield* composeShellStreamWithEnrichment({
+          initial: Stream.fromIterable(
+            shellStreamItemsFromInitialSnapshot({
+              snapshot: initial.snapshot,
+              resolvedRepositoryIdentityRoots: [],
+            }),
+          ),
+          tail: Stream.fromIterable(guestEvents).pipe(skipUnchangedThreadShells),
+          enrichment: Stream.empty,
+        }).pipe(Stream.runCollect);
+        expect(items[0]).toMatchObject({
+          kind: "snapshot",
+          snapshot: { threads: initial.snapshot.threads },
+        });
+        expect(items.slice(1)).toEqual(guestEvents);
+        expect(
+          items
+            .slice(1)
+            .map((item) =>
+              item.kind === "thread.updated" ? item.thread.pendingGuestMessageCount : null,
+            ),
+        ).toEqual([0, 1, 0]);
+        expect(snapshot(guestFamily(1)).snapshot.threads).toHaveLength(3);
+      }),
+  );
 
   it.effect("sends the next update after a removal", () =>
     Effect.gen(function* () {

@@ -9,7 +9,11 @@ import {
   type ThreadMonitorStatus,
 } from "@t3tools/contracts/jones/desktopThreadMonitor";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
-import { pendingSubagentRequestsByThread } from "@t3tools/shared/jones/threadAttention";
+import {
+  hasPendingGuestMessages,
+  pendingSubagentGuestAttentionByThread,
+  pendingSubagentRequestsByThread,
+} from "@t3tools/shared/jones/threadAttention";
 import * as DateTime from "effect/DateTime";
 import { presentThreadShell } from "../../state/models.ts";
 import { effectiveSnoozed } from "../../state/threadSettled.ts";
@@ -81,6 +85,7 @@ export function buildMonitorCohort(
   for (const input of inputs) {
     const env = input.environment;
     const childRequests = pendingSubagentRequestsByThread(input.threads, input.delegatedAttention);
+    const childGuestAttention = pendingSubagentGuestAttentionByThread(input.threads);
     for (const thread of input.threads) {
       if (
         thread.deletedAt !== null ||
@@ -95,15 +100,19 @@ export function buildMonitorCohort(
       )
         continue;
       const child = childRequests.get(thread.id) ?? null;
+      const childGuestPending = childGuestAttention.has(thread.id);
       const summary = presentThreadShell(env.environmentId, thread, child);
-      if (effectiveSnoozed(summary, { now: DateTime.formatIso(DateTime.makeUnsafe(nowMs)) }))
+      if (
+        !childGuestPending &&
+        effectiveSnoozed(summary, { now: DateTime.formatIso(DateTime.makeUnsafe(nowMs)) })
+      )
         continue;
       const live =
         active(thread.activityRunStatus) || active(thread.status) || thread.activeRunId !== null;
       const background = backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []);
       const goal = thread.goal != null && thread.goal.status !== "complete";
       const pending = thread.pendingRuntimeRequest;
-      const guestPending = (thread.pendingGuestMessageCount ?? 0) > 0;
+      const guestPending = hasPendingGuestMessages(thread) || childGuestPending;
       const requestAttention =
         (pending !== null && pending.kind !== "auth_refresh") || child !== null;
       let group: ThreadMonitorGroup;
@@ -188,7 +197,9 @@ export function buildMonitorCohort(
           : pending !== null || child !== null
             ? "Resolve all pending requests first"
             : guestPending
-              ? "Review pending guest messages in Jones Code first"
+              ? childGuestPending
+                ? "Review pending child guest messages in Jones Code first"
+                : "Review pending guest messages in Jones Code first"
               : live
                 ? "Thread has active or queued work"
                 : thread.hasActionableProposedPlan
@@ -211,7 +222,9 @@ export function buildMonitorCohort(
         statusLabel: completionTimeUnavailable
           ? "Completion time unavailable"
           : guestPending && !requestAttention
-            ? "Guest message awaiting review"
+            ? childGuestPending
+              ? "Child guest message awaiting review"
+              : "Guest message awaiting review"
             : labels[status],
         updatedAt: DateTime.formatIso(thread.updatedAt),
         completedAt,

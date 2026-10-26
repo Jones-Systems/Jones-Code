@@ -2194,6 +2194,7 @@
         "apps/server/src/jones/threadMonitor/GuardedSettle.integration.test.ts",
         "apps/server/src/jones/threadMonitor/guardedSettle.test.ts",
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/ShellStream.test.ts",
         "apps/web/src/jones/threadMonitor/MonitorUI.browser.test.tsx",
         "apps/web/src/jones/threadMonitor/actions.test.ts",
         "apps/web/src/jones/threadMonitor/answers.test.ts",
@@ -2206,9 +2207,10 @@
         "packages/client-runtime/src/jones/threadMonitor/model.test.ts",
         "packages/client-runtime/src/operations/commands.test.ts",
         "packages/contracts/src/jones/desktopThreadMonitor.test.ts",
-        "packages/contracts/src/jones/guardedThreadSettlement.test.ts"
+        "packages/contracts/src/jones/guardedThreadSettlement.test.ts",
+        "packages/shared/src/jones/threadAttention.test.ts"
       ],
-      "scope": "Independent always-visible native desktop monitor with top-level four-group counts, native Jones theme, collapsed sections, hover/focus replies and real request/plan actions. Main renderer retains the sole authenticated environment runtime; bounded typed IPC and generation/epoch fences isolate the peer. Safe server-locked guarded settlement and genuine placement restoration preserve pending work. Main-native visibility drives activity and a monitor-aware throttle lease keeps minimized updates live; private Linux/macOS harnesses qualify actual windows separately from source tests. No database, deployment or installed-app changes."
+      "scope": "Independent always-visible native desktop monitor with top-level four-group counts, native Jones theme, collapsed sections, hover/focus replies and real request/plan actions. Main renderer retains the sole authenticated environment runtime; bounded typed IPC and generation/epoch fences isolate the peer. Safe server-locked guarded settlement and genuine placement restoration preserve pending work. Main-native visibility drives activity and a monitor-aware throttle lease keeps minimized updates live; private Linux/macOS harnesses qualify actual windows separately from source tests. No database, deployment or installed-app changes. Guest-only completed children remain in filtered shell snapshots and raise scoped ancestor attention without provider requests. ShellStream keeps the narrow shared guest eligibility hook; snapshot/live-event regressions use its existing integration harness as an explicit upstream-test exception."
     },
     {
       "id": "tsrs-typecheck",

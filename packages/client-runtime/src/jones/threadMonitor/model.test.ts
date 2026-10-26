@@ -247,3 +247,155 @@ describe("source-grounded monitor cohorts", () => {
     ).toEqual([completed.id, older.id]);
   });
 });
+
+describe("completed child guest monitor regression", () => {
+  const child = (id = "guest-child", parent = completed.id): OrchestrationV2ThreadShell => ({
+    ...completed,
+    id: ThreadId.make(id),
+    creationSource: "mcp",
+    activityRunStatus: null,
+    activeRunId: null,
+    pendingRuntimeRequest: null,
+    pendingGuestMessageCount: 1,
+    lineage: {
+      rootThreadId: completed.id,
+      parentThreadId: parent,
+      relationshipToParent: "subagent",
+    },
+  });
+
+  it("shows exactly one expired parent with truthful child guest attention and no provider decision", () => {
+    const guest = child();
+    for (const clock of [now, now + 3_599_000, now + 7_200_000]) {
+      const cohort = buildMonitorCohort([environment([completed, guest, guest])], clock);
+      expect(cohort.counts).toEqual({ needsYou: 1, working: 0, waiting: 0, done: 0 });
+      expect(cohort.rows).toHaveLength(1);
+      expect(cohort.nextDoneExpiryMs).toBeNull();
+      expect(cohort.rows[0]).toMatchObject({
+        threadId: completed.id,
+        group: "needsYou",
+        status: "input",
+        statusLabel: "Child guest message awaiting review",
+        pendingChildAttention: null,
+        actions: {
+          settle: {
+            available: false,
+            reason: "Review pending child guest messages in Jones Code first",
+          },
+          respondToApproval: { available: false },
+          respondToUserInput: { available: false },
+        },
+      });
+      expect(guest.pendingRuntimeRequest).toBeNull();
+      expect(completed.pendingGuestMessageCount ?? 0).toBe(0);
+    }
+  });
+
+  it("bypasses snooze for a descendant hand raise without fabricating a runtime request", () => {
+    const parent = { ...completed, snoozedUntil: at(7_200_000) };
+    const cohort = buildMonitorCohort([environment([parent, child()])], now + 3_599_000);
+    expect(cohort.counts.needsYou).toBe(1);
+    expect(cohort.rows[0]?.pendingChildAttention).toBeNull();
+    expect(
+      buildMonitorCohort([environment([parent, { ...child(), pendingGuestMessageCount: 0 }])], now)
+        .rows,
+    ).toHaveLength(0);
+  });
+
+  it("walks nested ancestry while isolating identical thread IDs in other environments", () => {
+    const middle = { ...child("middle"), pendingGuestMessageCount: 0 };
+    const leaf = child("leaf", middle.id);
+    const other = environment([
+      completed,
+      { ...middle },
+      { ...leaf, pendingGuestMessageCount: undefined },
+    ]);
+    const cohort = buildMonitorCohort(
+      [
+        environment([leaf, completed, middle]),
+        {
+          ...other,
+          environment: { ...other.environment, environmentId: EnvironmentId.make("other") },
+        },
+      ],
+      now + 3_599_000,
+    );
+    expect(cohort.rows.map(({ environmentId, threadId }) => [environmentId, threadId])).toEqual([
+      ["e", completed.id],
+    ]);
+    expect(cohort.counts.needsYou).toBe(1);
+    const cycle = { ...middle, lineage: { ...middle.lineage, parentThreadId: leaf.id } };
+    expect(
+      buildMonitorCohort([environment([completed, cycle, leaf])], now + 3_599_000).rows,
+    ).toHaveLength(0);
+  });
+
+  it.each(["permission", "user_input"] as const)(
+    "preserves real %s precedence over child guests",
+    (kind) => {
+      const request = { id: RuntimeRequestId.make("real"), kind, createdAt: at() };
+      const guest = child();
+      for (const threads of [
+        [{ ...completed, pendingRuntimeRequest: request }, guest],
+        [
+          completed,
+          guest,
+          {
+            ...child("provider-child"),
+            status: "running" as const,
+            activityRunStatus: "running" as const,
+            pendingGuestMessageCount: 0,
+            pendingRuntimeRequest: request,
+          },
+        ],
+      ]) {
+        const cohort = buildMonitorCohort([environment(threads)], now + 3_599_000);
+        expect(cohort.rows).toHaveLength(1);
+        expect(cohort.rows[0]).toMatchObject({
+          group: "needsYou",
+          status: kind === "permission" ? "approval" : "input",
+          statusLabel: kind === "permission" ? "Pending Approval" : "Awaiting Input",
+          actions: { settle: { available: false } },
+        });
+      }
+    },
+  );
+
+  it("returns resolved and legacy absent child counts to the exact half-open completion expiry", () => {
+    for (const count of [0, undefined]) {
+      const threads = [completed, { ...child(), pendingGuestMessageCount: count }];
+      const before = buildMonitorCohort([environment(threads)], now + 3_598_999);
+      expect(before.counts).toEqual({ needsYou: 0, working: 0, waiting: 0, done: 1 });
+      expect(before.rows[0]?.actions.settle.available).toBe(true);
+      expect(before.nextDoneExpiryMs).toBe(now + 3_599_000);
+      expect(buildMonitorCohort([environment(threads)], now + 3_599_000).rows).toHaveLength(0);
+    }
+  });
+
+  it("suppresses provider-native duplicate requests and child rows while keeping real guest attention", () => {
+    const native = {
+      ...child(),
+      creationSource: "provider" as const,
+      status: "running" as const,
+      activityRunStatus: "running" as const,
+      pendingRuntimeRequest: {
+        id: RuntimeRequestId.make("native"),
+        kind: "permission" as const,
+        createdAt: at(),
+      },
+    };
+    const cohort = buildMonitorCohort([environment([completed, native, native])], now + 3_599_000);
+    expect(cohort.counts.needsYou).toBe(1);
+    expect(cohort.rows).toHaveLength(1);
+    expect(cohort.rows[0]).toMatchObject({
+      statusLabel: "Child guest message awaiting review",
+      pendingChildAttention: null,
+    });
+    expect(
+      buildMonitorCohort(
+        [environment([completed, { ...native, pendingGuestMessageCount: 0 }])],
+        now + 3_599_000,
+      ).rows,
+    ).toHaveLength(0);
+  });
+});
