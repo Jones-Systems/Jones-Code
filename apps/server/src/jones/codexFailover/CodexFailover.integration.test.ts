@@ -189,7 +189,7 @@ const scenario = (mode: "chain" | "all-unavailable") =>
       decodeSettings({
         binaryPath: peerPath,
         homePath,
-        launchArgs: `--state-dir ${JSON.stringify(stateDir)} --account ${account} --mode ${mode}`,
+        launchArgs: `--state-dir ${JSON.stringify(stateDir)} --account ${account} --mode ${mode}${mode === "chain" && account === "A" ? " --hold" : ""}`,
       }).pipe(Effect.map((config) => ({ account, config }))),
     );
     const clientFactory = yield* Codex.CodexAppServerClientFactory.pipe(
@@ -306,7 +306,7 @@ const scenario = (mode: "chain" | "all-unavailable") =>
         createdBy: "user",
         creationSource: "web",
       });
-      const dispatch = (marker: string, modelSelection?: ModelSelection) =>
+      const dispatch = (marker: string, modelSelection?: ModelSelection, queued = false) =>
         orchestrator.dispatch({
           type: "message.dispatch",
           commandId: CommandId.make(marker),
@@ -317,17 +317,60 @@ const scenario = (mode: "chain" | "all-unavailable") =>
           attachments: [],
           createdBy: "user",
           creationSource: "web",
-          dispatchMode: { type: "start_immediately" },
+          dispatchMode: { type: queued ? "queue_after_active" : "start_immediately" },
         });
+      const awaitHeldA = Effect.fn("CodexFailoverTest.awaitHeldA")(function* (
+        afterSequence: number,
+        turnCount: number,
+      ) {
+        const held = yield* awaitMilestone(
+          threadId,
+          afterSequence,
+          (projection) =>
+            projection.providerTurns.length >= turnCount &&
+            projection.providerTurns.some(
+              (turn) => turn.status === "running" && turn.nativeTurnRef?.nativeId != null,
+            ),
+        );
+        const turn = held.providerTurns.find(
+          (turn) => turn.status === "running" && turn.nativeTurnRef?.nativeId != null,
+        )!;
+        assert.equal(
+          held.providerThreads.find((row) => row.id === held.thread.activeProviderThreadId)
+            ?.providerInstanceId,
+          instanceId("A"),
+        );
+        assert.isString(turn.nativeTurnRef?.nativeId);
+        return { held, turn };
+      });
       const afterSequence = yield* sink.latestSequence();
       yield* dispatch("SYNTHETIC_ORIGINAL");
+      let queuedProviderThreadId: OrchestrationV2ThreadProjection["thread"]["activeProviderThreadId"] =
+        null;
+      if (mode === "chain") {
+        const { held, turn } = yield* awaitHeldA(afterSequence, 1);
+        queuedProviderThreadId = held.thread.activeProviderThreadId;
+        yield* dispatch("SYNTHETIC_QUEUED_INHERITED", undefined, true);
+        const queued = yield* orchestrator.getThreadProjection(threadId);
+        const follower = queued.runs.find(
+          (run) => run.userMessageId === "SYNTHETIC_QUEUED_INHERITED",
+        )!;
+        assert.equal(follower.status, "queued");
+        assert.equal(follower.providerThreadId, queuedProviderThreadId);
+        yield* fs.writeFileString(
+          path.join(stateDir, `release-${turn.nativeTurnRef!.nativeId}`),
+          "SYNTHETIC_RELEASE\n",
+        );
+      }
       const expected = mode === "chain" ? ["A", "B", "C"] : [...accounts];
       const first = yield* awaitMilestone(
         threadId,
         afterSequence,
-        (projection) => projection.providerTurns.length >= expected.length && isIdle(projection),
+        (projection) =>
+          projection.providerTurns.length >= expected.length + (mode === "chain" ? 1 : 0) &&
+          isIdle(projection),
       );
-      assert.lengthOf(first.providerTurns, expected.length);
+      assert.lengthOf(first.providerTurns, expected.length + (mode === "chain" ? 1 : 0));
       assert.equal(first.runs.at(-1)?.status, mode === "chain" ? "completed" : "failed");
       const providerThread = first.providerThreads.find(
         ({ id }) => id === first.thread.activeProviderThreadId,
@@ -343,9 +386,32 @@ const scenario = (mode: "chain" | "all-unavailable") =>
       assert.equal(before.cwd, cwd);
       assert.deepEqual(
         before.turns.map(({ status }) => status),
-        mode === "chain" ? ["failed", "failed", "completed"] : accounts.map(() => "failed"),
+        mode === "chain"
+          ? ["failed", "failed", "completed", "completed"]
+          : accounts.map(() => "failed"),
       );
       if (mode === "chain") {
+        const follower = first.runs.find(
+          (run) => run.userMessageId === "SYNTHETIC_QUEUED_INHERITED",
+        )!;
+        assert.equal(follower.status, "completed");
+        assert.deepEqual(follower.modelSelection, {
+          ...initialSelection,
+          instanceId: instanceId("C"),
+        });
+        assert.notEqual(follower.providerThreadId, queuedProviderThreadId);
+        const chainRuns = first.runs.filter(
+          (run) => run.userMessageId !== "SYNTHETIC_QUEUED_INHERITED",
+        );
+        assert.equal(new Set(chainRuns.map((run) => run.providerThreadId)).size, 3);
+        const sql = yield* SqlClient.SqlClient;
+        const acceptances = yield* sql<{
+          status: string;
+        }>`SELECT r.status FROM jones_codex_failover_steps s JOIN orchestration_command_receipts r ON r.command_id = s.continue_command_id WHERE s.thread_id = ${threadId}`;
+        assert.deepEqual(
+          acceptances.map((row) => row.status),
+          ["accepted", "accepted"],
+        );
         const saved = { ...initialSelection, instanceId: instanceId("C") };
         assert.deepEqual(first.thread.modelSelection, saved);
         assert.equal(first.thread.providerInstanceId, saved.instanceId);
@@ -354,9 +420,9 @@ const scenario = (mode: "chain" | "all-unavailable") =>
         const next = yield* awaitMilestone(
           threadId,
           nextSequence,
-          (projection) => projection.providerTurns.length >= 4 && isIdle(projection),
+          (projection) => projection.providerTurns.length >= 5 && isIdle(projection),
         );
-        assert.lengthOf(next.providerTurns, 4);
+        assert.lengthOf(next.providerTurns, 5);
         assert.equal(next.runs.at(-1)?.status, "completed");
         assert.deepEqual(next.runs.at(-1)?.modelSelection, saved);
         assert.deepEqual(next.thread.modelSelection, saved);
@@ -367,12 +433,17 @@ const scenario = (mode: "chain" | "all-unavailable") =>
         );
         const returnSequence = yield* sink.latestSequence();
         yield* dispatch("SYNTHETIC_EXPLICIT_RETURN", initialSelection);
+        const { turn } = yield* awaitHeldA(returnSequence, 6);
+        yield* fs.writeFileString(
+          path.join(stateDir, `release-${turn.nativeTurnRef!.nativeId}`),
+          "SYNTHETIC_RELEASE\n",
+        );
         const returned = yield* awaitMilestone(
           threadId,
           returnSequence,
-          (projection) => projection.providerTurns.length >= 7 && isIdle(projection),
+          (projection) => projection.providerTurns.length >= 8 && isIdle(projection),
         );
-        assert.lengthOf(returned.providerTurns, 7);
+        assert.lengthOf(returned.providerTurns, 8);
         assert.equal(returned.runs.at(-1)?.status, "completed");
         assert.deepEqual(returned.thread.modelSelection, saved);
       }
@@ -381,12 +452,12 @@ const scenario = (mode: "chain" | "all-unavailable") =>
       assert.equal(history.id, nativeRef.nativeId);
       assert.equal(history.cwd, cwd);
       assert.deepEqual(history.turns.slice(0, before.turns.length), before.turns);
-      const visited = mode === "chain" ? [...expected, "C", ...expected] : expected;
+      const visited = mode === "chain" ? [...expected, "C", "C", ...expected] : expected;
       assert.lengthOf(history.turns, visited.length);
       const markers = [
         "SYNTHETIC_ORIGINAL",
         ...expected.slice(1).map(() => "SYNTHETIC_CONTINUATION"),
-        ...(mode === "chain" ? ["SYNTHETIC_FRESH_INHERITED"] : []),
+        ...(mode === "chain" ? ["SYNTHETIC_QUEUED_INHERITED", "SYNTHETIC_FRESH_INHERITED"] : []),
         ...(mode === "chain"
           ? ["SYNTHETIC_EXPLICIT_RETURN", "SYNTHETIC_CONTINUATION", "SYNTHETIC_CONTINUATION"]
           : []),
@@ -490,7 +561,7 @@ const scenario = (mode: "chain" | "all-unavailable") =>
 
 describe("Codex automatic account failover through the real server and subprocess adapter", () => {
   it.live(
-    "cascades A → B → C and preserves native history, model/options and the inherited account",
+    "cascades A → B → C across distinct provider threads and starts an inherited queued follower on C",
     () => scenario("chain"),
   );
   it.live(

@@ -1,4 +1,5 @@
 import {
+  CommandId,
   MessageId,
   NodeId,
   ProviderDriverKind,
@@ -754,6 +755,161 @@ describe("Codex failover queued followers", () => {
     ).toEqual(expected);
     expect(checked).toEqual([expected]);
     expect(input.effectiveSelection.instanceId).toBe(source);
+  });
+
+  const continuedFollower = (): Follower => {
+    const input = follower();
+    const effectiveSelection = { ...input.effectiveSelection, instanceId: target };
+    const switchCommandId = CommandId.make("previous-switch");
+    const continueMessageId = MessageId.make("previous-continuation");
+    return {
+      ...input,
+      activeProviderThreadId: ProviderThreadId.make("account-B-thread"),
+      sourceInstanceId: target,
+      targetInstanceId: ProviderInstanceId.make("codex_C"),
+      effectiveSelection,
+      marker: {
+        threadId,
+        runId,
+        overrideSelection: effectiveSelection,
+        overrideSwitchCommandId: switchCommandId,
+      },
+      continuation: {
+        chainRootRunId: runId,
+        origin: {
+          ...run(),
+          userMessageId: continueMessageId,
+          providerThreadId: ProviderThreadId.make("account-B-thread"),
+          providerInstanceId: target,
+        },
+        previousStep: {
+          switchCommandId,
+          threadId,
+          chainRootRunId: runId,
+          continueMessageId,
+          targetInstanceId: target,
+          status: "continued",
+        },
+      },
+    };
+  };
+
+  it("follows a durable prior override across distinct account-owned provider threads", () => {
+    const input = continuedFollower();
+    expect(input.run.providerThreadId).not.toBe(input.activeProviderThreadId);
+    expect(codexFailoverFollowerSelection(input)).toEqual({
+      ...input.effectiveSelection,
+      instanceId: input.targetInstanceId,
+    });
+  });
+
+  const continuationCases: Array<{ name: string; change: (input: Follower) => Follower }> = [
+    { name: "explicit or markerless run", change: (i) => ({ ...i, marker: null }) },
+    {
+      name: "another run's marker",
+      change: (i) => ({ ...i, marker: { ...i.marker!, runId: RunId.make("other-run") } }),
+    },
+    {
+      name: "another thread's marker",
+      change: (i) => ({ ...i, marker: { ...i.marker!, threadId: otherThreadId } }),
+    },
+    {
+      name: "missing durable override",
+      change: (i) => ({ ...i, marker: { ...i.marker!, overrideSelection: null } }),
+    },
+    {
+      name: "unrelated override command",
+      change: (i) => ({
+        ...i,
+        marker: { ...i.marker!, overrideSwitchCommandId: CommandId.make("unrelated") },
+      }),
+    },
+    {
+      name: "changed effective selection",
+      change: (i) => ({
+        ...i,
+        effectiveSelection: { ...i.effectiveSelection, model: "other-model" },
+      }),
+    },
+    {
+      name: "missing prior switch",
+      change: (i) => ({ ...i, continuation: { ...i.continuation!, previousStep: null } }),
+    },
+    {
+      name: "different chain",
+      change: (i) => ({
+        ...i,
+        continuation: { ...i.continuation!, chainRootRunId: RunId.make("other-chain") },
+      }),
+    },
+    {
+      name: "different continuation",
+      change: (i) => ({
+        ...i,
+        continuation: {
+          ...i.continuation!,
+          origin: { ...i.continuation!.origin, userMessageId: MessageId.make("unrelated") },
+        },
+      }),
+    },
+    {
+      name: "unrelated active provider thread",
+      change: (i) => ({ ...i, activeProviderThreadId: ProviderThreadId.make("unrelated") }),
+    },
+    {
+      name: "another source account",
+      change: (i) => ({
+        ...i,
+        continuation: {
+          ...i.continuation!,
+          origin: { ...i.continuation!.origin, providerInstanceId: source },
+        },
+      }),
+    },
+    {
+      name: "another app thread",
+      change: (i) => ({
+        ...i,
+        continuation: {
+          ...i.continuation!,
+          origin: { ...i.continuation!.origin, threadId: otherThreadId },
+        },
+      }),
+    },
+    {
+      name: "abandoned prior switch",
+      change: (i) => ({
+        ...i,
+        continuation: {
+          ...i.continuation!,
+          previousStep: { ...i.continuation!.previousStep!, status: "abandoned" },
+        },
+      }),
+    },
+    {
+      name: "prior switch targeting another source",
+      change: (i) => ({
+        ...i,
+        continuation: {
+          ...i.continuation!,
+          previousStep: { ...i.continuation!.previousStep!, targetInstanceId: source },
+        },
+      }),
+    },
+    {
+      name: "prior switch on another thread",
+      change: (i) => ({
+        ...i,
+        continuation: {
+          ...i.continuation!,
+          previousStep: { ...i.continuation!.previousStep!, threadId: otherThreadId },
+        },
+      }),
+    },
+    { name: "inadmissible follower", change: (i) => ({ ...i, targetAdmissible: () => false }) },
+  ];
+  it.each(continuationCases)("preserves $name across provider-thread changes", ({ change }) => {
+    expect(codexFailoverFollowerSelection(change(continuedFollower()))).toBeNull();
   });
 
   const cases: Array<{ name: string; change: (input: Follower) => Follower }> = [

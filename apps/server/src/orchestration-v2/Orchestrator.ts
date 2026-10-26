@@ -5069,10 +5069,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           threadId: input.command.threadId,
         }),
       );
+      const targetAccountThread = canResumeAcrossInstances
+        ? rootProviderThreadsForProvider(input.projection, input.modelSelection.instanceId)[0]
+        : providerThread;
       restartProviderThread = {
-        ...providerThread,
+        ...(targetAccountThread ?? {
+          id: idAllocator.derive.providerThread({
+            driver: providerThread.driver,
+            nativeThreadId: `pending:${targetRun.id}:attempt:${attemptOrdinal}`,
+          }),
+          driver: providerThread.driver,
+          appThreadId: input.command.threadId,
+          ownerNodeId: null,
+          firstRunOrdinal: targetRun.ordinal,
+          lastRunOrdinal: targetRun.ordinal,
+          handoffIds: [],
+          forkedFrom: null,
+          createdAt: now,
+        }),
         providerInstanceId: input.modelSelection.instanceId,
         providerSessionId: nextProviderSessionId,
+        nativeThreadRef: providerThread.nativeThreadRef,
+        nativeConversationHeadRef: providerThread.nativeConversationHeadRef,
+        nativeMetadata: providerThread.nativeMetadata,
         status: "not_loaded",
         updatedAt: now,
       };
@@ -15531,7 +15550,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const runs = child.runs.filter((run) => run.delegatedTaskId === taskId);
         const run = runs.toSorted((a, b) => b.ordinal - a.ordinal)[0];
         if (run === undefined || delegatedTaskTerminalStatus(run.status) === null) return true;
-        if (yield* codexFailover.holdsChildResult(childThreadId, run)) return true;
+        if (yield* codexFailover.holdsChildResult(childThreadId, run, taskId)) return true;
         return yield* childAwaitsRestartContinuation(runs, run);
       }
       const progress = delegatedTaskProgress(child);

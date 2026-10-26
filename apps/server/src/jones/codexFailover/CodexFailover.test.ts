@@ -22,6 +22,7 @@ import {
   type OrchestrationV2TurnItem,
   type ServerProvider,
 } from "@t3tools/contracts";
+import { latestExecutedRun } from "@t3tools/shared/orchestrationV2ThreadError";
 import { makeSubagentChildThread } from "@t3tools/provider-core/server/subagentProjection";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -58,6 +59,7 @@ const providerTurnId = ProviderTurnId.make("turn:failed");
 const providerThreadId = ProviderThreadId.make("native:source");
 const source = ProviderInstanceId.make("codex-A");
 const target = ProviderInstanceId.make("codex-B");
+const third = ProviderInstanceId.make("codex-C");
 const driver = ProviderDriverKind.make("codex");
 const saved: ModelSelection = { instanceId: source, model: "saved-model" };
 const captured: ModelSelection = {
@@ -260,6 +262,7 @@ const seed = Effect.gen(function* () {
 const makeService = Effect.fn("CodexFailover.test.makeService")(function* (
   options: {
     readonly noRegistry?: boolean;
+    readonly cascade?: boolean;
     readonly refuseContinuation?: boolean;
     readonly refuseSwitch?: boolean;
     readonly refuseAfterAccept?: boolean;
@@ -302,11 +305,18 @@ const makeService = Effect.fn("CodexFailover.test.makeService")(function* (
         if (command.type !== "message.dispatch") return;
         if (options.refuseContinuation) return yield* Effect.fail("synthetic refusal");
         const inheritedFrom = yield* sourceFor(command);
-        const origin = fixture.run;
+        const current = yield* projections.getThreadRecords(threadId, ["runs", "providerThreads"]);
+        const origin = current.runs.find((run) => run.id === inheritedFrom) ?? fixture.run;
+        const continuedProviderThreadId = options.cascade
+          ? ProviderThreadId.make(`native:${command.modelSelection!.instanceId}`)
+          : origin.providerThreadId;
         const continued: RecordedRun = {
           ...origin,
-          id: RunId.make("run:continued"),
-          ordinal: 10,
+          id: RunId.make(
+            dispatched.length === 1 ? "run:continued" : `run:continued:${dispatched.length}`,
+          ),
+          ordinal: 10 + dispatched.length,
+          providerThreadId: continuedProviderThreadId,
           providerInstanceId: command.modelSelection!.instanceId,
           modelSelection: command.modelSelection!,
           userMessageId: command.messageId,
@@ -323,13 +333,32 @@ const makeService = Effect.fn("CodexFailover.test.makeService")(function* (
           effects: [],
           events: [
             {
-              id: EventId.make("event:continue"),
+              id: EventId.make(
+                dispatched.length === 1 ? "event:continue" : `event:continue:${dispatched.length}`,
+              ),
               type: "run.created",
               threadId,
               runId: continued.id,
               occurredAt: fixture.now,
               payload: continued,
             },
+            ...(options.cascade
+              ? [
+                  {
+                    id: EventId.make(`event:provider:${dispatched.length}`),
+                    type: "provider-thread.updated" as const,
+                    threadId,
+                    occurredAt: fixture.now,
+                    payload: {
+                      ...current.providerThreads[0]!,
+                      id: continuedProviderThreadId!,
+                      providerInstanceId: command.modelSelection!.instanceId,
+                      firstRunOrdinal: continued.ordinal,
+                      lastRunOrdinal: continued.ordinal,
+                    },
+                  },
+                ]
+              : []),
           ],
           codexFailover: options.refuseAfterAccept
             ? {
@@ -351,12 +380,22 @@ const makeService = Effect.fn("CodexFailover.test.makeService")(function* (
       }),
   }).pipe(
     Effect.provideService(Sink.EventSinkV2, wrappedSink),
-    Effect.provideService(Adapters.ProviderAdapterRegistryV2, adapters),
+    Effect.provideService(Adapters.ProviderAdapterRegistryV2, {
+      ...adapters,
+      list: () => Effect.succeed(options.cascade ? [source, target, third] : [source, target]),
+    }),
     Effect.provideService(Switch.ProviderSwitchServiceV2, transitions),
   );
   const service = yield* options.noRegistry
     ? program
-    : program.pipe(Effect.provideService(Registry.ProviderRegistry, registry));
+    : program.pipe(
+        Effect.provideService(Registry.ProviderRegistry, {
+          ...registry,
+          getProviders: Effect.succeed(
+            options.cascade ? [...catalog, { ...catalog[1]!, instanceId: third }] : catalog,
+          ),
+        }),
+      );
   contextFor = service.commitContext;
   sourceFor = service.continuationSourceRunId;
   return { ...fixture, service, dispatched, queues, receipts, projections };
@@ -656,6 +695,213 @@ it.effect(
       assert.isFalse(yield* ctx.service.holdsChildResult(threadId, ctx.run));
       assert.lengthOf(ctx.dispatched, 1);
       assert.deepEqual(yield* ctx.store.listOpenEvidence(), []);
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect(
+  "queued inherited work follows accepted A → B → C continuations with distinct provider threads",
+  () =>
+    Effect.gen(function* () {
+      const ctx = yield* makeService({ cascade: true });
+      const follower = yield* queueRun(ctx, "cascade-follower");
+      const fixed = yield* queueRun(ctx, "cascade-explicit", captured, true);
+      const markerless = yield* queueRun(ctx, "cascade-markerless");
+      yield* ctx.store.deleteQueuedRuns([markerless.id]);
+      yield* ctx.service.afterFailedRun(threadId, originId);
+      const firstStep = (yield* ctx.store.getStepByOrigin(originId))!;
+      assert.equal(firstStep.status, "continued");
+      assert.equal(
+        Option.getOrThrow(yield* ctx.receipts.getByCommandId(firstStep.continueCommandId)).status,
+        "accepted",
+      );
+      assert.equal((yield* ctx.service.queuedSelection(threadId, follower))?.instanceId, target);
+      const records = yield* ctx.projections.getThreadRecords(threadId, ["runs", "attempts"]);
+      const continued = records.runs.find(
+        (run) => run.userMessageId === firstStep.continueMessageId,
+      )!;
+      assert.notEqual(continued.providerThreadId, follower.providerThreadId);
+      const nextAttemptId = RunAttemptId.make("attempt:cascade-B");
+      const nextTurnId = ProviderTurnId.make("turn:cascade-B");
+      const failed = {
+        ...continued,
+        activeAttemptId: nextAttemptId,
+        status: "failed" as const,
+        completedAt: ctx.now,
+      };
+      yield* ctx.sink.write({
+        events: [
+          {
+            id: EventId.make("cascade:failure"),
+            type: "run.updated",
+            threadId,
+            runId: failed.id,
+            occurredAt: ctx.now,
+            payload: failed,
+          },
+          {
+            id: EventId.make("cascade:attempt"),
+            type: "run-attempt.created",
+            threadId,
+            runId: failed.id,
+            occurredAt: ctx.now,
+            payload: {
+              ...records.attempts[0]!,
+              id: nextAttemptId,
+              runId: failed.id,
+              rootNodeId: failed.rootNodeId!,
+              providerInstanceId: target,
+              providerThreadId: failed.providerThreadId!,
+              providerTurnId: nextTurnId,
+              providerSettlement: {
+                runAttemptId: nextAttemptId,
+                providerTurnId: nextTurnId,
+                status: "failed",
+                completedAt: ctx.now,
+              },
+            },
+          },
+        ],
+      });
+      const recorder = yield* Evidence.make;
+      yield* recorder.record({
+        providerTurnId: nextTurnId,
+        threadId,
+        runId: failed.id,
+        attemptId: nextAttemptId,
+        providerThreadId: failed.providerThreadId!,
+        providerInstanceId: target,
+        status: "failed",
+        evidenceKind: "provider_result",
+        rawErrorInfo: "usageLimitExceeded",
+        occurredAt: DateTime.formatIso(ctx.now),
+        capacityExhausted: false,
+      });
+      yield* ctx.service.afterFailedRun(threadId, failed.id);
+      const secondStep = (yield* ctx.store.getStepByOrigin(failed.id))!;
+      assert.equal(secondStep.status, "continued");
+      const receipt = yield* ctx.receipts.getByCommandId(secondStep.continueCommandId);
+      assert.isTrue(Option.isSome(receipt));
+      assert.equal(Option.getOrThrow(receipt).status, "accepted");
+      assert.deepEqual(yield* ctx.service.queuedSelection(threadId, follower), {
+        ...follower.modelSelection,
+        instanceId: third,
+      });
+      assert.isNull(yield* ctx.service.queuedSelection(threadId, fixed));
+      assert.isNull(yield* ctx.service.queuedSelection(threadId, markerless));
+      const final = yield* ctx.projections.getThreadRecords(threadId, ["runs"]);
+      const last = final.runs.find((run) => run.userMessageId === secondStep.continueMessageId)!;
+      assert.notEqual(last.providerThreadId, continued.providerThreadId);
+      assert.notEqual(last.providerThreadId, follower.providerThreadId);
+      assert.equal(last.delegatedTaskId, ctx.run.delegatedTaskId);
+      assert.deepEqual(final.thread.modelSelection, { ...saved, instanceId: third });
+      assert.equal(
+        (yield* ctx.store.listInheritedQueuedRuns(threadId)).find(
+          (row) => row.runId === follower.id,
+        )?.overrideSwitchCommandId,
+        secondStep.switchCommandId,
+      );
+      assert.lengthOf(ctx.dispatched, 2);
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect(
+  "a stale completed task hint cannot hide a newer deferred failure with a rounded native clock",
+  () =>
+    Effect.gen(function* () {
+      const ctx = yield* makeService();
+      const earlier: RecordedRun = {
+        ...ctx.run,
+        id: RunId.make("run:earlier-task"),
+        ordinal: 1,
+        delegatedTaskId: NodeId.make("task:earlier"),
+        status: "completed",
+        completedAt: DateTime.add(ctx.now, { milliseconds: 500 }),
+      };
+      const failed: RecordedRun = {
+        ...ctx.run,
+        ordinal: 2,
+        requestedAt: DateTime.add(ctx.now, { milliseconds: 600 }),
+        startedAt: DateTime.add(ctx.now, { milliseconds: 600 }),
+        completedAt: ctx.now,
+      };
+      yield* ctx.sink.write({
+        events: [
+          {
+            id: EventId.make("rounded-failure"),
+            type: "run.updated",
+            threadId,
+            runId: failed.id,
+            occurredAt: ctx.now,
+            payload: failed,
+          },
+          {
+            id: EventId.make("earlier-task"),
+            type: "run.created",
+            threadId,
+            runId: earlier.id,
+            occurredAt: ctx.now,
+            payload: earlier,
+          },
+        ],
+      });
+      assert.equal(latestExecutedRun([earlier, failed])?.id, earlier.id);
+      assert.notEqual(earlier.delegatedTaskId, failed.delegatedTaskId);
+      yield* nativeChild(ctx, "deferred-task-native-work");
+      yield* ctx.service.afterFailedRun(threadId, failed.id);
+      assert.equal((yield* ctx.store.getEvidence(providerTurnId))?.state, "deferred");
+      assert.isTrue(yield* ctx.service.holdsChildResult(threadId, earlier));
+      assert.isTrue(yield* ctx.service.holdsChildResult(threadId, failed));
+      assert.isFalse(
+        yield* ctx.service.holdsChildResult(threadId, earlier, earlier.delegatedTaskId),
+      );
+      assert.isTrue(yield* ctx.service.holdsChildResult(threadId, earlier, failed.delegatedTaskId));
+      assert.isFalse(
+        yield* ctx.service.holdsChildResult(threadId, earlier, NodeId.make("task:unrelated")),
+      );
+      assert.isFalse(yield* ctx.service.holdsChildResult(ThreadId.make("other-child"), earlier));
+      assert.lengthOf(ctx.dispatched, 0);
+      yield* ctx.store.markEvidence(providerTurnId, {
+        state: "decided",
+        decision: "exhausted",
+        updatedAt: DateTime.formatIso(ctx.now),
+      });
+      assert.isFalse(yield* ctx.service.holdsChildResult(threadId, earlier));
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect.each(["running", "completed"] as const)(
+  "a newer %s delegated task does not inherit an older task's failover hold",
+  (status) =>
+    Effect.gen(function* () {
+      const ctx = yield* makeService();
+      const newer: RecordedRun = {
+        ...ctx.run,
+        id: RunId.make("run:newer-task"),
+        ordinal: 2,
+        delegatedTaskId: NodeId.make("task:newer"),
+        status,
+        requestedAt: DateTime.add(ctx.now, { seconds: 1 }),
+        startedAt: DateTime.add(ctx.now, { seconds: 1 }),
+        completedAt: status === "completed" ? DateTime.add(ctx.now, { seconds: 2 }) : null,
+      };
+      yield* ctx.sink.write({
+        events: [
+          {
+            id: EventId.make("newer-task"),
+            type: "run.created",
+            threadId,
+            runId: newer.id,
+            occurredAt: ctx.now,
+            payload: newer,
+          },
+        ],
+      });
+      assert.isFalse(yield* ctx.service.holdsChildResult(threadId, ctx.run));
+      assert.isFalse(yield* ctx.service.holdsChildResult(threadId, newer));
+      assert.isTrue(
+        yield* ctx.service.holdsChildResult(threadId, ctx.run, ctx.run.delegatedTaskId),
+      );
+      assert.isFalse(yield* ctx.service.holdsChildResult(threadId, newer, newer.delegatedTaskId));
     }).pipe(Effect.provide(testLayer)),
 );
 

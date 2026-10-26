@@ -1,4 +1,5 @@
 import type {
+  CommandId,
   MessageId,
   ModelSelection,
   OrchestrationV2AppThread,
@@ -257,7 +258,27 @@ export function codexFailoverChain(input: {
 
 export function codexFailoverFollowerSelection(input: {
   readonly run: Pick<OrchestrationV2Run, "id" | "threadId" | "providerThreadId" | "status">;
-  readonly marker: { readonly threadId: ThreadId; readonly runId: RunId } | null;
+  readonly marker: {
+    readonly threadId: ThreadId;
+    readonly runId: RunId;
+    readonly overrideSwitchCommandId?: CommandId | null;
+    readonly overrideSelection?: ModelSelection | null;
+  } | null;
+  readonly continuation?: {
+    readonly chainRootRunId: RunId;
+    readonly origin: Pick<
+      OrchestrationV2Run,
+      "threadId" | "userMessageId" | "providerThreadId" | "providerInstanceId"
+    >;
+    readonly previousStep: {
+      readonly switchCommandId: CommandId;
+      readonly threadId: ThreadId;
+      readonly chainRootRunId: RunId;
+      readonly continueMessageId: MessageId;
+      readonly targetInstanceId: ProviderInstanceId;
+      readonly status: "switched" | "continued" | "abandoned";
+    } | null;
+  };
   readonly threadId: ThreadId;
   readonly activeProviderThreadId: ProviderThreadId | null;
   readonly sourceInstanceId: ProviderInstanceId;
@@ -265,7 +286,25 @@ export function codexFailoverFollowerSelection(input: {
   readonly effectiveSelection: ModelSelection;
   readonly targetAdmissible: (selection: ModelSelection) => boolean;
 }): ModelSelection | null {
-  const { run, marker } = input;
+  const { run, marker, continuation } = input;
+  const previous = continuation?.previousStep;
+  // A persisted override proves this queued run already followed the immediately
+  // preceding continuation, even though each account owns a distinct provider thread.
+  const followsContinuation =
+    marker?.overrideSwitchCommandId != null &&
+    marker.overrideSelection != null &&
+    continuation !== undefined &&
+    previous != null &&
+    previous.switchCommandId === marker.overrideSwitchCommandId &&
+    previous.threadId === input.threadId &&
+    previous.status === "continued" &&
+    previous.chainRootRunId === continuation.chainRootRunId &&
+    previous.continueMessageId === continuation.origin.userMessageId &&
+    previous.targetInstanceId === input.sourceInstanceId &&
+    continuation.origin.threadId === input.threadId &&
+    continuation.origin.providerThreadId === input.activeProviderThreadId &&
+    continuation.origin.providerInstanceId === input.sourceInstanceId &&
+    modelSelectionsEqual(marker.overrideSelection, input.effectiveSelection);
   if (
     marker === null ||
     marker.runId !== run.id ||
@@ -273,7 +312,7 @@ export function codexFailoverFollowerSelection(input: {
     run.threadId !== input.threadId ||
     run.status !== "queued" ||
     input.activeProviderThreadId === null ||
-    run.providerThreadId !== input.activeProviderThreadId ||
+    (run.providerThreadId !== input.activeProviderThreadId && !followsContinuation) ||
     input.effectiveSelection.instanceId !== input.sourceInstanceId
   )
     return null;

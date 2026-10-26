@@ -3,6 +3,7 @@ import {
   EventId,
   MessageId,
   type ModelSelection,
+  type NodeId,
   type OrchestrationV2ServerCommand,
   type RunId,
   type ThreadId,
@@ -90,6 +91,7 @@ export interface CodexFailoverHooks {
   readonly holdsChildResult: (
     threadId: ThreadId,
     run: RecordedRun | null | undefined,
+    taskId?: NodeId,
   ) => Effect.Effect<boolean, CodexFailoverError>;
   readonly commitContext: (command: {
     readonly type: string;
@@ -446,14 +448,17 @@ export const make = Effect.fn("CodexFailover.make")(function* <DispatchError, Qu
   const holdsChildResult = Effect.fn("CodexFailover.holdsChildResult")(function* (
     threadId: ThreadId,
     run: RecordedRun | null | undefined,
+    taskId?: NodeId,
   ) {
     if (!enabled || run?.threadId !== threadId) return false;
     const projection = yield* projections.getThreadRecords(threadId, ["runs", "attempts"]);
-    const taskRuns =
-      run.delegatedTaskId === undefined
+    // A raw-clock hint can belong to an earlier delegated task. Only an explicit
+    // task scope may restrict the corrected latest-run lookup.
+    const latest = latestCodexExecutedRun(
+      taskId === undefined
         ? projection.runs
-        : projection.runs.filter((row) => row.delegatedTaskId === run.delegatedTaskId);
-    const latest = latestCodexExecutedRun(taskRuns);
+        : projection.runs.filter((row) => row.delegatedTaskId === taskId),
+    );
     if (latest?.status !== "failed") return false;
     const step = yield* store.getStepByOrigin(latest.id);
     if (step?.threadId === threadId && step.status === "switched") return true;
@@ -516,7 +521,10 @@ export const make = Effect.fn("CodexFailover.make")(function* <DispatchError, Qu
               return yield* new CodexFailoverError({ reason: "continuation_refused" });
             const live = yield* admission(before, step.savedSelection, step.continuationSelection);
             const markers = yield* store.listInheritedQueuedRuns(step.threadId);
+            const chainSteps = yield* store.listChainSteps(step.chainRootRunId);
+            const origin = before.runs.find((run) => run.id === step.originRunId)!;
             for (const run of before.runs) {
+              const marker = markers.find((row) => row.runId === run.id) ?? null;
               const queuedMessage = before.messages.find((row) => row.id === run.userMessageId);
               const effectiveSelection =
                 (yield* store.getQueuedOverride(run.id)) ??
@@ -526,7 +534,15 @@ export const make = Effect.fn("CodexFailover.make")(function* <DispatchError, Qu
                   : run.modelSelection);
               const selection = codexFailoverFollowerSelection({
                 run,
-                marker: markers.find((row) => row.runId === run.id) ?? null,
+                marker,
+                continuation: {
+                  chainRootRunId: step.chainRootRunId,
+                  origin,
+                  previousStep:
+                    chainSteps.find(
+                      (prior) => prior.switchCommandId === marker?.overrideSwitchCommandId,
+                    ) ?? null,
+                },
                 threadId: step.threadId,
                 activeProviderThreadId: before.thread.activeProviderThreadId,
                 sourceInstanceId: step.sourceInstanceId,
@@ -669,8 +685,8 @@ export const make = Effect.fn("CodexFailover.make")(function* <DispatchError, Qu
       queuedSelection(threadId, run).pipe(Effect.mapError(unavailable)),
     continuationSourceRunId: (command) =>
       continuationSourceRunId(command).pipe(Effect.mapError(unavailable)),
-    holdsChildResult: (threadId, run) =>
-      holdsChildResult(threadId, run).pipe(Effect.mapError(unavailable)),
+    holdsChildResult: (threadId, run, taskId) =>
+      holdsChildResult(threadId, run, taskId).pipe(Effect.mapError(unavailable)),
     commitContext,
     recoverCodexFailover,
   };
