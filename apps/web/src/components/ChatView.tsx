@@ -1272,6 +1272,7 @@ export default function ChatView(props: ChatViewProps) {
     onChangeActivePendingUserInputCustomAnswer,
     onAdvanceActivePendingUserInputStable,
     onPreviousActivePendingUserInputQuestion: onPreviousActivePendingUserInputQuestionStable,
+    onSelectActivePendingUserInputQuestion,
   } = usePendingThreadRequests({
     environmentId,
     activeThreadId,
@@ -3584,6 +3585,7 @@ export default function ChatView(props: ChatViewProps) {
                                       onChangeActivePendingUserInputCustomAnswer
                                     }
                                     onPrevious={onPreviousActivePendingUserInputQuestionStable}
+                                    onSelectQuestion={onSelectActivePendingUserInputQuestion}
                                     onAdvance={onAdvanceActivePendingUserInputStable}
                                     onDismiss={onDismissUserInputStable}
                                     attachmentCapabilities={{
@@ -3663,6 +3665,9 @@ export default function ChatView(props: ChatViewProps) {
                                 onAdvanceActivePendingUserInputStable
                               }
                               onDismissActivePendingUserInput={onDismissUserInputStable}
+                              onSelectActivePendingUserInputQuestion={
+                                onSelectActivePendingUserInputQuestion
+                              }
                               onPreviousActivePendingUserInputQuestion={
                                 onPreviousActivePendingUserInputQuestionStable
                               }

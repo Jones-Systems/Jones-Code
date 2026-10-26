@@ -1,3 +1,4 @@
+import { formatUserResponseChoiceWithNote } from "@t3tools/contracts/jones/userResponseRequest";
 import { isWorkModeSentinelMessage } from "@t3tools/shared/jones/workMode";
 import type {
   ThreadPendingApproval,
@@ -456,9 +457,10 @@ function normalizeSelectedOptionValues(
   );
 }
 
-function resolvePendingUserInputAnswer(
+export function resolvePendingUserInputAnswer(
   question: ThreadUserInputQuestion,
   draft: PendingUserInputDraftAnswer | undefined,
+  options: { notes?: boolean } = {},
 ): string | ReadonlyArray<string> | null {
   if (draft?.attachmentsBlocked) return null;
   const customAnswer =
@@ -467,6 +469,9 @@ function resolvePendingUserInputAnswer(
       : question.initialAnswer !== undefined
         ? (draft?.customAnswer ?? null)
         : normalizeDraftAnswer(draft?.customAnswer);
+  const selected = normalizeSelectedOptionValues(question, draft?.selectedOptionValues)[0];
+  if (options.notes && !question.multiSelect && selected !== undefined)
+    return formatUserResponseChoiceWithNote(selected, customAnswer ?? "");
   if (customAnswer !== null && customAnswer.length > 0) {
     return customAnswer;
   }
@@ -1961,13 +1966,15 @@ export function setPendingUserInputCustomAnswer(
   question: ThreadUserInputQuestion,
   draft: PendingUserInputDraftAnswer | undefined,
   customAnswer: string,
+  options: { notes?: boolean } = {},
 ): PendingUserInputDraftAnswer {
   if (question.allowCustomAnswer === false) {
     return draft ?? {};
   }
 
   const selectedOptionValues =
-    question.initialAnswer !== undefined || customAnswer.trim().length > 0
+    !(options.notes && !question.multiSelect) &&
+    (question.initialAnswer !== undefined || customAnswer.trim().length > 0)
       ? undefined
       : normalizeSelectedOptionValues(question, draft?.selectedOptionValues);
   return {
@@ -1980,8 +1987,13 @@ export function isPendingUserInputOptionSelected(
   question: ThreadUserInputQuestion,
   draft: PendingUserInputDraftAnswer | undefined,
   optionValue: string,
+  options: { notes?: boolean } = {},
 ): boolean {
-  if (question.allowCustomAnswer !== false && normalizeDraftAnswer(draft?.customAnswer)) {
+  if (
+    !(options.notes && !question.multiSelect) &&
+    question.allowCustomAnswer !== false &&
+    normalizeDraftAnswer(draft?.customAnswer)
+  ) {
     return false;
   }
 
@@ -1998,6 +2010,7 @@ export function togglePendingUserInputOptionSelection(
   question: ThreadUserInputQuestion,
   draft: PendingUserInputDraftAnswer | undefined,
   optionValue: string,
+  options: { notes?: boolean } = {},
 ): PendingUserInputDraftAnswer {
   const resolvedOptionValue = resolvePendingUserInputOptionValue(question, optionValue);
   if (resolvedOptionValue === null) {
@@ -2021,6 +2034,13 @@ export function togglePendingUserInputOptionSelection(
     };
   }
 
+  if (options.notes) {
+    const selected = normalizeSelectedOptionValues(question, draft?.selectedOptionValues);
+    return {
+      ...draft,
+      selectedOptionValues: selected.includes(resolvedOptionValue) ? [] : [resolvedOptionValue],
+    };
+  }
   return {
     customAnswer: "",
     selectedOptionValues: [resolvedOptionValue],
@@ -2030,11 +2050,12 @@ export function togglePendingUserInputOptionSelection(
 export function buildPendingUserInputAnswers(
   questions: ReadonlyArray<ThreadUserInputQuestion>,
   draftAnswers: Record<string, PendingUserInputDraftAnswer>,
+  options: { notes?: boolean } = {},
 ): Record<string, string | ReadonlyArray<string>> | null {
   const answers: Record<string, string | ReadonlyArray<string>> = {};
 
   for (const question of questions) {
-    const answer = resolvePendingUserInputAnswer(question, draftAnswers[question.id]);
+    const answer = resolvePendingUserInputAnswer(question, draftAnswers[question.id], options);
     if (answer === null) {
       return null;
     }

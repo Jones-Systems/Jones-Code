@@ -11,6 +11,8 @@ import {
 it("routes actual owner actions to durable open input without plan mode or duplicate permissions", () => {
   for (const text of [
     "t3_request_user_response",
+    "up to five brief Markdown questions",
+    "put involved context in chat first",
     "Free text is always available",
     "omit choices unless real alternatives exist",
     "Only claim it was created after acceptance",

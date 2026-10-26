@@ -1177,9 +1177,11 @@
         "apps/web/src/components/chat/ComposerPendingUserInputPanel.navigation.browser.test.tsx",
         "apps/web/src/jones/questionAnswer/ComposerPendingUserInputPanel.permissions.browser.test.tsx",
         "apps/web/src/pendingUserInput.test.ts",
-        "apps/web/src/composer-logic.test.ts"
+        "apps/web/src/composer-logic.test.ts",
+        "apps/mobile/src/jones/questionAnswer/sequentialQuestions.test.ts",
+        "apps/mobile/src/lib/threadActivity.test.ts"
       ],
-      "scope": "Dedicated question-card written answers and isolated answer attachments; the main web and mobile composers retain ordinary thread messages. Live questions force queue delivery to preserve waiting provider tools and needs-input state. Existing option, collapse, literal-answer, and permission behavior remains. The legacy ChatComposer question branches stay inert through its slot hook to bound upstream divergence. No server, wire, persistence, or runtime activation change. Workspace file-drag overlays clear on capture-phase drops without rerouting nested reply attachments."
+      "scope": "Dedicated question-card written answers and isolated answer attachments; the main web and mobile composers retain ordinary thread messages. Live questions force queue delivery to preserve waiting provider tools and needs-input state. Collapse, literal-answer, attachment and permission behavior remains. The legacy ChatComposer question branches stay inert through its slot hook to bound upstream divergence. The card reuses existing answer contracts and persisted request shapes without runtime activation. Workspace file-drag overlays clear on capture-phase drops without rerouting nested reply attachments. Structured owner requests use sequential progress-button navigation, explicit Continue/Send and message-mode choice notes, newline editing and all-question gating. Native provider replacement semantics remain; option selection never advances. Integrated UI and native evidence are separately root-owned."
     },
     {
       "id": "compact-sidebar-header",
@@ -1481,9 +1483,10 @@
         "apps/server/src/jones/orchestration/userInputRequestRecord.test.ts",
         "apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.test.ts",
         "packages/shared/src/t3McpToolPresentation.test.ts",
-        "packages/provider-core/src/jones/orchestrationInstructions.test.ts"
+        "packages/provider-core/src/jones/orchestrationInstructions.test.ts",
+        "apps/server/src/jones/mcp/userResponseRequest/questions.test.ts"
       ],
-      "scope": "Provider-neutral self-only durable owner response MCP tool. Jones-owned service creates existing message-capable user input through an internal serialized command with active-run/root/provider validation; no public command, database schema or UI changes. Contract export, internal union, orchestrator dispatch, HTTP registration and tool presentation/instruction hooks are narrow shared edits. Existing shared presentation/instruction tests cover their consumed hooks. Jones-local integration uses the existing replay harness with scoped synthetic state cleanup and real receipts, projections, recovery and response dispatch. Permission prompts remain authoritative; eligible live retries only. Provider-session attachment validates distinct MCP credential identities; detached and foreign callers remain refused."
+      "scope": "Provider-neutral self-only durable owner response MCP tool. Jones-owned service creates existing message-capable user input through an internal serialized command with active-run/root/provider validation; no public command or database schema changes. Contract export, internal union, orchestrator dispatch, HTTP registration and tool presentation/instruction hooks are narrow shared edits. Existing shared presentation/instruction tests cover their consumed hooks. Jones-local integration uses the existing replay harness with scoped synthetic state cleanup and real receipts, projections, recovery and response dispatch. Permission prompts remain authoritative; eligible live retries only. Provider-session attachment validates distinct MCP credential identities; detached and foreign callers remain refused. Additive 1–5-question input, per-prompt 1500-code-point bounds and multiline legacy input preserve legacy normalization. Batch integration proves incomplete rejection, ordered long reply, durable pending provider-start intent and replay deduplication without an effect worker."
     },
     {
       "id": "thread-reference-only",

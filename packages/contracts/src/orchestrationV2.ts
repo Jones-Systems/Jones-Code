@@ -3419,6 +3419,9 @@ const OrchestrationV2InternalCommand = Schema.Union([
     requestNodeId: NodeId,
     turnItemId: TurnItemId,
     question: OrchestrationV2UserInputQuestion,
+    questions: Schema.optional(
+      Schema.Array(OrchestrationV2UserInputQuestion).check(Schema.isMinLength(1)),
+    ),
   }),
   Schema.Struct({
     type: Schema.Literal("legacy-bootstrap.failure-delete"),

@@ -1988,7 +1988,9 @@
         "apps/web/src/jones/questionAnswer/ComposerPendingUserInputPanel.permissions.browser.test.tsx",
         "apps/web/src/pendingUserInput.test.ts",
         "apps/web/src/composer-logic.test.ts",
-        "apps/web/src/reactCompilerCoverage.test.ts"
+        "apps/web/src/reactCompilerCoverage.test.ts",
+        "apps/mobile/src/jones/questionAnswer/sequentialQuestions.test.ts",
+        "apps/mobile/src/lib/threadActivity.test.ts"
       ],
       "commands": [
         "cd apps/web && vp test run src/reactCompilerCoverage.test.ts --project unit --maxWorkers=1 -t 'compiles apps/web/src/jones/questionAnswer/'",
@@ -1998,7 +2000,8 @@
         "vp run --filter @t3tools/mobile typecheck",
         "node scripts/jones/check-boundary.ts --strict",
         "cd apps/web && vp test run src/jones/questionAnswer/QuestionAnswerCard.browser.test.tsx src/jones/questionAnswer/QuestionAnswerInteractions.browser.test.tsx src/components/chat/ComposerPendingUserInputPanel.navigation.browser.test.tsx src/jones/questionAnswer/ComposerPendingUserInputPanel.permissions.browser.test.tsx --project browser --maxWorkers=1",
-        "vp test run apps/web/src/jones/questionAnswer/ComposerPendingUserInputPanel.permissions.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
+        "vp test run apps/web/src/jones/questionAnswer/ComposerPendingUserInputPanel.permissions.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/mobile/src/jones/questionAnswer/sequentialQuestions.test.ts apps/mobile/src/lib/threadActivity.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -2472,7 +2475,8 @@
         "apps/server/src/jones/orchestration/userInputRequestRecord.test.ts",
         "apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.test.ts",
         "packages/shared/src/t3McpToolPresentation.test.ts",
-        "packages/provider-core/src/jones/orchestrationInstructions.test.ts"
+        "packages/provider-core/src/jones/orchestrationInstructions.test.ts",
+        "apps/server/src/jones/mcp/userResponseRequest/questions.test.ts"
       ],
       "commands": [
         "vp test run packages/contracts/src/jones/userResponseRequest.test.ts apps/server/src/jones/orchestration/userInputRequestRecord.test.ts apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.test.ts packages/shared/src/t3McpToolPresentation.test.ts packages/provider-core/src/jones/orchestrationInstructions.test.ts --maxWorkers=1 --no-file-parallelism",
@@ -2480,7 +2484,8 @@
         "vp run --filter t3 typecheck",
         "vp run --filter @t3tools/shared typecheck",
         "vp run --filter @t3tools/provider-core typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp test run apps/server/src/jones/mcp/userResponseRequest/questions.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
