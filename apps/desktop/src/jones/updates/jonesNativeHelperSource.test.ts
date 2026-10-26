@@ -193,6 +193,8 @@ def synthetic_stop(proofs):
     if fault == 'state-grew': (home / 'desktop-settings.json').write_bytes(bytes(RECOVERY_HEADROOM))
     for proof in proofs:
         if proof.get('pid') == 654: alive(proof)
+    if fault == 'binding-recovery-eperm' and 'candidate-launch' in events:
+        raise KernelProcessError('process-inspection-failed', 'proc_pidpath', 1)
     if fault == 'candidate-stop' and proofs and proofs[0]['pid'] == 456:
         raise RuntimeError('Writer quiescence could not be proved.')
 stop_exact = synthetic_stop
@@ -210,7 +212,8 @@ def synthetic_launch(active, descriptor=None):
     if descriptor is None:
         events.append('restart-previous')
         if fault in ('restart-refused', 'snapshot-restart-refused'): raise RuntimeError('Synthetic relaunch refusal')
-        return {'pid': 789, 'identity': 'restored-native-app'}
+        if fault == 'relaunch-eperm': raise KernelProcessError('process-inspection-failed', 'proc_pidpath', 1)
+        return {'pid': 789, 'startSec': 102, 'startUsec': 0, 'executable': active['executablePath']}
     events.append('candidate-launch')
     assert (tx / 'previous-pair' / 'pair.json').exists()
     with sqlite3.connect(database) as db: db.execute("UPDATE identity SET value='advanced-state'")
@@ -230,12 +233,13 @@ def synthetic_launch(active, descriptor=None):
     if fault == 'version-mismatch': receipt['version'] = 'wrong-version'
     if fault == 'listener-mismatch': receipt['listener'] = 'http://127.0.0.1:4777'
     if fault == 'invalid-backend': receipt['backendProcess'] = {'pid': True, 'identity': 'unqualified-process'}
+    if fault == 'kernel-receipt': receipt['backendProcess'] = {'pid': 654, 'startSec': 101, 'startUsec': 0, 'executable': '/synthetic/backend'}
     if fault.startswith('missing-'): receipt.pop(fault.removeprefix('missing-'))
-    if fault in ('trial-mismatch', 'restart-refused', 'candidate-stop', 'resume-dispatched', 'reserve-release-failed', 'recovery-space-missing', 'recovery-lease-busy'): receipt['sourceSha'] = 'wrong-source'
+    if fault in ('trial-mismatch', 'restart-refused', 'relaunch-eperm', 'candidate-stop', 'resume-dispatched', 'reserve-release-failed', 'recovery-space-missing', 'recovery-lease-busy'): receipt['sourceSha'] = 'wrong-source'
     if fault.startswith('authority-'): receipt['sourceSha'] = 'wrong-source'
     if fault == 'resume-dispatched': durable(tx / 'resume-dispatched.json', {'uncertain': True}, True)
     durable(tx / 'trial-receipt.json', receipt, True)
-    return {'pid': 456, 'identity': 'tracked-native-app'}
+    return {'pid': 456, 'startSec': 100, 'startUsec': 0, 'executable': active['executablePath']}
 launch = synthetic_launch
 def synthetic_identity(pid, deadline=None):
     events.append('identity:' + str(pid))
@@ -247,6 +251,17 @@ def synthetic_identity(pid, deadline=None):
     return None
 process_identity = synthetic_identity
 process_start = lambda pid, deadline=None: ('S', '')
+def synthetic_kernel_sample(pid):
+    events.append('identity:' + str(pid))
+    if pid == 654:
+        if fault == 'dead-backend': raise KernelProcessError('process-exited', 'proc_pidinfo', 3)
+        if fault in ('binding-eperm', 'binding-recovery-eperm'): raise KernelProcessError('process-inspection-failed', 'proc_pidinfo', 1)
+        start = int(time.time()) + 100 if fault == 'changed-backend' else (99 if fault == 'backend-before-candidate' else 101)
+        return {'pid': pid, 'startSec': start, 'startUsec': 0, 'executable': '/synthetic/backend'}, 999 if fault == 'backend-parent' else 456
+    if pid == 456 and fault == 'candidate-gone': raise KernelProcessError('process-exited', 'proc_pidinfo', 3)
+    return {'pid': pid, 'startSec': 100, 'startUsec': 0, 'executable': expected['executablePath']}, 1
+kernel_process_sample = synthetic_kernel_sample
+kernel_process_identity = lambda pid: synthetic_kernel_sample(pid)[0]
 native_durable = durable
 syncing_marker = None
 def synthetic_durable(destination, value, exclusive=False):
@@ -314,8 +329,9 @@ else:
         assert read(manifest_path) == expected
         assert not (tx / 'commit-grant.json').exists()
         assert 'manifest-commit' not in events
-    if fault == 'dead-backend':
-        assert 'stop:2' in events
+    if fault in ('dead-backend', 'changed-backend'):
+        assert 'stop:1' in events
+        assert 'stop:2' not in events
         assert events.count('quiescence') >= 3
     if fault in ('invalid-backend', 'missing-backendProcess'):
         assert 'identity:654' not in events
@@ -474,7 +490,7 @@ def manual_launch(active, descriptor=None):
     for name, content in originals.items(): assert (pair / name).read_bytes() == content
     events.append('launched')
     if manual_fault == 'launch-unknown': raise RuntimeError('Synthetic unknown launch effect')
-    return {'pid': 456, 'identity': 'captured-new-process'}
+    return {'pid': 456, 'startSec': 100, 'startUsec': 0, 'executable': active['executablePath']}
 launch = manual_launch
 refused = ('flag-only', 'plan-only', 'unknown-policy', 'clonefile-unavailable', 'cross-volume')
 if manual_fault in refused:
@@ -1348,7 +1364,11 @@ def direct_launch(*args, **kwargs):
     return type('Child', (), {'pid': 456})()
 subprocess.run = capture
 subprocess.Popen = direct_launch
-process_identity = lambda pid: 'start ' + active['executablePath']
+proof = {'pid': 456, 'startSec': 100, 'startUsec': 2, 'executable': '/synthetic/ResolvedJonesImage'}
+kernel_process_sample = lambda pid: (dict(proof), 1)
+def forbidden_legacy(*args, **kwargs): raise AssertionError('New launch used legacy process inspection')
+process_identity = process_start = forbidden_legacy
+os.path.samefile = lambda left, right: left == proof['executable'] and right == active['executablePath']
 read = lambda path: {'listener': 'http://127.0.0.1:3777'}
 for descriptor in (None, pathlib.Path('/synthetic/trial.json')):
     calls.clear()
@@ -1367,7 +1387,7 @@ for descriptor in (None, pathlib.Path('/synthetic/trial.json')):
         **{name: os.environ[name] for name in ('HOME', 'TMPDIR', 'USER', 'LOGNAME') if name in os.environ})
     assert options['stdin'] == subprocess.DEVNULL and options['stdout'] == subprocess.PIPE
     assert options['stderr'] == subprocess.DEVNULL and options['timeout'] == 30
-    assert proof == {'pid': 456, 'identity': 'start ' + active['executablePath']}
+    assert proof == {'pid': 456, 'startSec': 100, 'startUsec': 2, 'executable': '/synthetic/ResolvedJonesImage'}
 del os.environ['T3CODE_NATIVE_AUTHORITY_STATE_DIR']
 launch(active)
 assert 'T3CODE_NATIVE_AUTHORITY_STATE_DIR' not in json.loads(calls[-1][0][5])['environment']
@@ -1378,6 +1398,118 @@ assert 'T3CODE_NATIVE_AUTHORITY_STATE_DIR' not in json.loads(calls[-1][0][5])['e
       timeout: 10000,
     });
   });
+
+  it("rolls back with homogeneous kernel candidate and backend proofs without legacy inspection", async () => {
+    const f = await fixture();
+    try {
+      const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const runtime = activationScenario.split("\nif fault in ('interrupted-trial'")[0];
+      const scenario = String.raw`
+candidate_proof = {'pid': 456, 'startSec': 100, 'startUsec': 0, 'executable': str(previous_app / 'Contents/MacOS/Jones')}
+backend_proof = {'pid': 654, 'startSec': 101, 'startUsec': 0, 'executable': '/synthetic/backend'}
+launch_fixture = launch
+def kernel_launch(active, descriptor=None):
+    launch_fixture(active, descriptor)
+    return dict(candidate_proof, pid=789) if descriptor is None else dict(candidate_proof)
+launch = kernel_launch
+def forbidden_legacy(*args, **kwargs): raise AssertionError('New candidate rollback used legacy inspection')
+process_identity = process_start = forbidden_legacy
+bound = False
+def sample(pid):
+    global bound
+    events.append('identity:' + str(pid))
+    if pid == 654: bound = True; return dict(backend_proof), 456
+    return dict(candidate_proof), 1
+kernel_process_sample = sample
+kernel_process_identity = lambda pid: sample(pid)[0]
+original_binding = same_binding
+same_binding = lambda left, right: False if bound and left == right == expected else original_binding(left, right)
+stopped = []
+def capture_stop(proofs):
+    if 'candidate-launch' in events:
+        assert valid_kernel_processes(proofs), proofs
+        stopped.append(proofs)
+    events.append('stop:' + str(len(proofs)))
+stop_exact = capture_stop
+activate(tx / 'intent.json')
+journal = read(tx / 'journal.json')
+assert journal['phase'] == 'rolled-back', journal
+assert 'Active manifest changed before commit' in journal['message']
+assert stopped == [[candidate_proof, backend_proof]], stopped
+assert journal['candidateWriter'] == candidate_proof and journal['backendWriter'] == backend_proof
+assert journal['trialReceipt']['backendProcess'] == {'pid': 654, 'identity': 'tracked-native-backend'}
+assert read(manifest_path) == expected
+`;
+      runPython(`${definitions}\n${runtime}\n${scenario}`, [f.directory, "success"], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      });
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it.each([
+    "backend-parent",
+    "backend-before-candidate",
+    "changed-backend",
+    "dead-backend",
+    "candidate-gone",
+    "invalid-backend",
+    "missing-backendProcess",
+    "kernel-receipt",
+    "binding-eperm",
+    "binding-recovery-eperm",
+    "relaunch-eperm",
+  ])(
+    "refuses unbound trial writers and retains separate kernel diagnostics for %s",
+    async (fault) => {
+      const f = await fixture();
+      try {
+        const definitions = jonesNativeHelperSource.split(
+          "\nparser = argparse.ArgumentParser()",
+        )[0];
+        const runtime = activationScenario.split("\nif fault in ('interrupted-trial'")[0];
+        const scenario = String.raw`
+stops = []
+fixture_stop = stop_exact
+def observed_stop(proofs):
+    if 'candidate-launch' in events: stops.extend(proofs)
+    return fixture_stop(proofs)
+stop_exact = observed_stop
+activate(tx / 'intent.json')
+journal = read(tx / 'journal.json')
+assert journal['phase'] == ('blocked' if fault == 'binding-recovery-eperm' else 'rolled-back'), journal
+assert all(proof['pid'] != 654 for proof in stops), stops
+assert 'backendWriter' not in journal
+assert not (tx / 'commit-grant.json').exists() and read(manifest_path) == expected
+if fault in ('invalid-backend', 'missing-backendProcess', 'kernel-receipt'):
+    assert 'identity:654' not in events
+if fault in ('backend-parent', 'backend-before-candidate', 'changed-backend', 'kernel-receipt'):
+    assert 'Candidate did not prove the exact backend process.' in journal['message']
+if fault == 'dead-backend': assert 'Candidate backend stopped before commit.' in journal['message']
+if fault == 'candidate-gone': assert 'Candidate app stopped.' in journal['message']
+if fault in ('binding-eperm', 'binding-recovery-eperm'):
+    assert journal['diagnostics'] == {'error': 'process-inspection-failed', 'call': 'proc_pidinfo', 'errno': 1}
+if fault == 'binding-recovery-eperm':
+    assert journal['recoveryDiagnostics'] == {'error': 'process-inspection-failed', 'call': 'proc_pidpath', 'errno': 1}
+    assert 'restart-previous' not in events
+if fault == 'relaunch-eperm':
+    assert journal['relaunch'] == 'failed'
+    assert journal['relaunchDiagnostics'] == {'error': 'process-inspection-failed', 'call': 'proc_pidpath', 'errno': 1}
+    assert 'Candidate trial identity does not match install intent.' in journal['message']
+`;
+        runPython(`${definitions}\n${runtime}\n${scenario}`, [f.directory, fault], {
+          encoding: "utf8",
+          maxBuffer: 1024 * 1024,
+          timeout: 10000,
+        });
+      } finally {
+        await f.cleanup();
+      }
+    },
+  );
 
   it("rejects unproved LaunchServices outcomes after one attempt without direct fallback", () => {
     const nativeFunctions = jonesNativeHelperSource.split(
@@ -1392,7 +1524,7 @@ good = {'protocol': 1, 'status': 'launched', 'pid': 456,
 cases = ['timeout', 'os-error', 'nonzero', 'oversized', 'non-ascii', 'malformed', 'list', 'protocol-missing',
          'protocol-wrong', 'protocol-boolean', 'failed', 'unavailable', 'pid-zero', 'pid-negative', 'pid-boolean',
          'pid-string', 'pid-missing', 'bundle-missing', 'bundle-wrong', 'executable-missing', 'executable-wrong',
-         'exited', 'identity-wrong', 'identity-prefix']
+         'exited', 'identity-wrong', 'identity-prefix', 'identity-io', 'identity-eperm']
 for fault in cases:
     calls, direct, observed = [], [], []
     def capture(command, **kwargs):
@@ -1421,17 +1553,22 @@ for fault in cases:
         raise AssertionError('Direct fallback attempted')
     def identity(pid):
         observed.append(pid)
-        if fault == 'exited': return None
-        if fault == 'identity-wrong': return 'start /some/other/app'
-        if fault == 'identity-prefix': return 'start ' + active['executablePath'] + '-substituted'
-        return 'start ' + active['executablePath']
-    subprocess.run, subprocess.Popen, process_identity = capture, direct_launch, identity
+        if fault == 'exited': raise KernelProcessError('process-exited', 'proc_pidinfo', 3)
+        if fault == 'identity-eperm': raise KernelProcessError('process-inspection-failed', 'proc_pidpath', 1)
+        path = '/some/other/app' if fault == 'identity-wrong' else active['executablePath'] + '-substituted'
+        return {'pid': pid, 'startSec': 100, 'startUsec': 0, 'executable': path}, 1
+    def samefile(left, right):
+        if fault == 'identity-io': raise FileNotFoundError('Synthetic image disappeared')
+        return left == right
+    os.path.samefile = samefile
+    subprocess.run, subprocess.Popen, kernel_process_sample = capture, direct_launch, identity
     try: launch(active)
     except RuntimeError as error:
         assert 'must-not-leak' not in str(error) and '/usr/bin/osascript' not in str(error)
+        if fault == 'identity-eperm': assert error.diagnostic == {'error': 'process-inspection-failed', 'call': 'proc_pidpath', 'errno': 1}
     else: raise AssertionError('Unproved launch accepted: ' + fault)
     assert len(calls) == 1 and direct == [], fault
-    assert observed == ([456] if fault in ('exited', 'identity-wrong', 'identity-prefix') else []), fault
+    assert observed == ([456] if fault in ('exited', 'identity-wrong', 'identity-prefix', 'identity-io', 'identity-eperm') else []), fault
 `;
     runPython(nativeFunctions + "\n" + scenario, [], {
       encoding: "utf8",
@@ -1618,7 +1755,7 @@ def manual_launch(active, descriptor=None):
         with sqlite3.connect(database) as db: db.execute("UPDATE identity SET value='advanced-state'")
         (profile / 'opaque').write_text('advanced-profile')
         raise RuntimeError('Synthetic unknown launch effect')
-    return {'pid': 456, 'identity': 'captured-new-process'}
+    return {'pid': 456, 'startSec': 100, 'startUsec': 0, 'executable': active['executablePath']}
 launch = manual_launch
 manual_root = manifest_path.parent / 'jones-manual-installs'
 if manual_fault in ('stale-admission', 'wrong-bundle', 'wrong-artifact', 'missing-bundle-identity', 'cold-state', 'launch-unavailable'):
@@ -1631,6 +1768,16 @@ if manual_fault in ('stale-admission', 'wrong-bundle', 'wrong-artifact', 'missin
     assert manifest_path.read_bytes() == original_manifest
     assert (previous_app / 'Contents/MacOS/Jones').read_text() == 'previous-executable'
 else:
+    if manual_fault == 'success':
+        # Public identity capture and the manual result use the same closed proof.
+        captured = {'pid': 123, 'startSec': 100, 'startUsec': 0, 'executable': expected['executablePath']}
+        kernel_process_identity = lambda pid: dict(captured)
+        kernel_plan = dict(plan, processes=[kernel_process_identity(123)])
+        kernel_path = root / 'kernel-manual-plan.json'
+        durable(kernel_path, kernel_plan, True)
+        original_kernel_plan = kernel_path.read_bytes()
+        assert manual_install(kernel_path, digest(kernel_path))['status'] == 'ready'
+        assert kernel_path.read_bytes() == original_kernel_plan and not manual_root.exists()
     inspected = manual_install(plan_path, plan_hash)
     assert inspected['status'] == 'ready' and not manual_root.exists()
     try: result = manual_install(plan_path, plan_hash, apply=True)
@@ -1640,11 +1787,13 @@ else:
         assert manual_fault == 'success'
         assert result['status'] == 'launched' and result['readinessVerified'] is False
         assert result['automaticContinuationRequested'] is False
+        assert valid_kernel_process(result['process']) and result['process']['pid'] == 456
     receipt = read(next(manual_root.glob('*/receipt.json')))
     assert receipt['originalManifest'].encode() == original_manifest
     assert receipt['installed']['sourceSha'] == '3' * 40
     assert receipt['phase'] == ('held' if manual_fault == 'launch-unknown' else 'launched')
     assert receipt['automaticContinuationRequested'] is False
+    if manual_fault == 'success': assert receipt['process'] == result['process']
     assert read(manifest_path)['sourceSha'] == candidate['sourceSha']
     assert read(manifest_path)['transactionId'].startswith('manual-')
     assert (pathlib.Path(receipt['previousBundle']) / 'Contents/MacOS/Jones').read_text() == 'previous-executable'
@@ -2700,7 +2849,7 @@ assert sorted(path.name for path in root.iterdir()) == ['jones-activation.lock',
     ["listener-mismatch", "rolled-back"],
     ["invalid-backend", "rolled-back"],
     ["dead-backend", "rolled-back"],
-    ["changed-backend", "blocked"],
+    ["changed-backend", "rolled-back"],
     ["missing-protocol", "rolled-back"],
     ["missing-startupGateProtocol", "blocked"],
     ["missing-transactionId", "rolled-back"],
@@ -3714,7 +3863,11 @@ for pid in [True, False, 0, -1, 2147483648, '4321', 1.0, None]:
         try: kernel_process_identity(pid)
         except KernelProcessError: pass
         else: raise AssertionError(pid)
-with patch.object(sys, 'platform', 'darwin'), patch.object(ctypes, 'sizeof', return_value=128), patch.object(ctypes, 'CDLL', side_effect=AssertionError('invalid ABI loaded a library')):
+native_sizeof = ctypes.sizeof
+def invalid_process_layout(value):
+    # ctypes itself uses sizeof while creating fields; only corrupt the completed ABI check.
+    return 128 if isinstance(value, type) and value.__name__ == 'ProcBsdinfo' else native_sizeof(value)
+with patch.object(sys, 'platform', 'darwin'), patch.object(ctypes, 'sizeof', side_effect=invalid_process_layout), patch.object(ctypes, 'CDLL', side_effect=AssertionError('invalid ABI loaded a library')):
     try: kernel_process_identity(4321)
     except KernelProcessError as e: assert e.diagnostic['call'] == 'proc_bsdinfo-layout'
     else: raise AssertionError('invalid ABI accepted')
@@ -3763,11 +3916,33 @@ print('kernel-cli-refusals')
       const result = runPython(
         `${jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0]}\n` +
           String.raw`
-child = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.buffer.read(1)'], stdin=subprocess.PIPE)
+# Framework Python's launcher can differ from its loaded Mach-O image.
+# The owned child reports dyld's image independently of the libproc helper.
+child_source = '''
+import ctypes, json, os, sys
+image_path = ctypes.CDLL(None)._NSGetExecutablePath
+image_path.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+image_path.restype = ctypes.c_int
+size = ctypes.c_uint32(4096)
+image = ctypes.create_string_buffer(size.value)
+result = image_path(image, ctypes.byref(size))
+if result == -1:
+    assert 4096 < size.value <= 1048576, size.value
+    image = ctypes.create_string_buffer(size.value)
+    result = image_path(image, ctypes.byref(size))
+assert result == 0 and image.value, result
+print(json.dumps({'pid': os.getpid(), 'executable': os.path.realpath(os.fsdecode(image.value))}), flush=True)
+sys.stdin.buffer.read(1)
+'''
+child = subprocess.Popen([sys.executable, '-c', child_source], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
 try:
+    ready = json.loads(child.stdout.readline())
+    assert set(ready) == {'pid', 'executable'} and ready['pid'] == child.pid, ready
+    expected_executable = ready['executable']
+    assert os.path.isabs(expected_executable) and os.path.isfile(expected_executable), ready
     proof = kernel_process_identity(child.pid)
     assert proof['pid'] == child.pid and proof['startSec'] > 0 and 0 <= proof['startUsec'] < 1000000
-    assert os.path.isabs(proof['executable']) and os.path.samefile(proof['executable'], sys.executable)
+    assert os.path.isabs(proof['executable']) and os.path.samefile(proof['executable'], expected_executable), {'launcherExecutable': sys.executable, 'expectedImage': expected_executable, 'observedExecutable': proof['executable'], 'observedResolved': os.path.realpath(proof['executable'])}
     assert kernel_process_identity(child.pid) == proof
     child.stdin.close()
     deadline = time.monotonic() + 3
@@ -3785,6 +3960,7 @@ finally:
     if child.stdin and not child.stdin.closed: child.stdin.close()
     if child.poll() is None: child.kill()
     child.wait(timeout=1)
+    child.stdout.close()
 print('darwin-owned-child')
 `,
         [],

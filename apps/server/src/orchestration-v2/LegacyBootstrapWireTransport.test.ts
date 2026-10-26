@@ -1,4 +1,5 @@
 import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
+import * as DocumentText from "../provider/DocumentText.ts";
 import * as WsProviderMaintenanceRunner from "../provider/providerMaintenanceRunner.ts";
 import * as WsSourceControlDiscovery from "../sourceControl/SourceControlDiscovery.ts";
 import * as WsOtlpEndpointCheck from "../observability/OtlpEndpointCheck.ts";
@@ -11,6 +12,7 @@ import * as WsServerBrowser from "../preview/ServerBrowser.ts";
 import * as OrchestrationHttpApi from "./http.ts";
 import * as EnvironmentAuth from "../auth/http.ts";
 import * as WebSocketRpc from "../ws.ts";
+import * as WsGuestShareService from "../guest/GuestShareService.ts";
 import * as ShellMaterialization from "../jones/orchestration/shellMaterialization.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import * as ProviderRegistryMock from "../provider/testUtils/providerRegistryMock.ts";
@@ -165,17 +167,17 @@ import * as Threads from "./ThreadManagementService.ts";
 import { OrchestratorProjectionError, OrchestratorDispatchError } from "./Orchestrator.ts";
 import {
   LegacyReleaseDecision,
+  LegacyDeletionProvenance,
   LegacyPreparationFailureDecision,
   RecordedAppThreadJson,
   RecordedRunJson,
+  RecordedThreadBoundedSnapshot,
 } from "./RecordedTypes.ts";
 
 const decodeThread = Schema.decodeUnknownSync(RecordedAppThreadJson);
 const decodeRun = Schema.decodeUnknownSync(RecordedRunJson);
 const decodeLegacyRpcFailureCause = Schema.decodeUnknownEffect(
-  Schema.Array(
-    Schema.Struct({ _tag: Schema.Literal("Fail"), error: OrchestrationDispatchCommandError }),
-  ),
+  Schema.Array(Schema.TaggedStruct("Fail", { error: OrchestrationDispatchCommandError })),
 );
 const encodeSocketRpcRequest = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeSocketRpcResponse = Schema.decodeUnknownEffect(
@@ -299,7 +301,15 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
         workspacePath: "/private-http-workspace",
         projectWorkspaceRoot: "/private-http-workspace",
       };
-      const decision = yield* Schema.decodeUnknownEffect(LegacyReleaseDecision)({
+      const deletion = yield* Schema.decodeEffect(LegacyDeletionProvenance)({
+        ...correlation,
+        version: 1,
+        type: "no_control",
+        commandId: CommandId.make("recorded-http:D"),
+        evidenceEventId: EventId.make("recorded-http:D:event"),
+        control: { ...correlation, version: 1, type: "no_control" },
+      });
+      const decision = yield* Schema.decodeEffect(LegacyReleaseDecision)({
         version: 1,
         status: "rejected",
         policy,
@@ -320,14 +330,7 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
           expectedLatestTurnId: null,
           requireIdle: true,
         },
-        deletion: {
-          ...correlation,
-          version: 1,
-          type: "no_control",
-          commandId: CommandId.make("recorded-http:D"),
-          evidenceEventId: EventId.make("recorded-http:D:event"),
-          control: { ...correlation, version: 1, type: "no_control" },
-        },
+        deletion,
       });
       // This direct recorded DTO fixture tests authenticated serving, not D authority or a V1 trace.
       const payload = yield* Schema.encodeEffect(Schema.fromJsonString(RecordedRunJson))({
@@ -338,7 +341,7 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
       yield* sql`UPDATE orchestration_v2_projection_runs SET payload_json = ${payload} WHERE run_id = ${runId}`;
       const failureCommandId = CommandId.make("recorded-http:B:fail");
       const failureEvidenceEventId = EventId.make("recorded-http:failure:event");
-      const failure = yield* Schema.decodeUnknownEffect(LegacyPreparationFailureDecision)({
+      const failure = yield* Schema.decodeEffect(LegacyPreparationFailureDecision)({
         version: 1,
         status: "known_workspace_failure",
         policy,
@@ -361,7 +364,7 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
         evidenceEventId: failureEvidenceEventId,
         deletion: {
           basis: "workspace_failure",
-          provenance: decision.deletion,
+          provenance: deletion,
           failureCommandId,
           failureEvidenceEventId,
           failureEventSequence: 4,
@@ -380,6 +383,41 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
               Effect.asVoid,
             )
           : Effect.void,
+      );
+
+      const boundedSnapshot = {
+        snapshotSequence: 2,
+        projection: yield* projections.getThreadProjection(threadId),
+        historyCursor: null,
+        hasMoreHistory: false,
+        latestLocalTurnOrdinal: null,
+      };
+      const isRecordedBoundedSnapshot = Schema.is(RecordedThreadBoundedSnapshot);
+      expect(isRecordedBoundedSnapshot(boundedSnapshot)).toBe(true);
+      expect(
+        isRecordedBoundedSnapshot({
+          ...boundedSnapshot,
+          historyCursor: "opaque-history-cursor",
+          hasMoreHistory: true,
+          latestLocalTurnOrdinal: 0,
+          turnItemsOmitLocalVisible: true,
+          idTable: true,
+        }),
+      ).toBe(true);
+      for (const field of [
+        "snapshotSequence",
+        "historyCursor",
+        "hasMoreHistory",
+        "latestLocalTurnOrdinal",
+      ]) {
+        const incompleteSnapshot = { ...boundedSnapshot };
+        Reflect.deleteProperty(incompleteSnapshot, field);
+        expect(isRecordedBoundedSnapshot(incompleteSnapshot)).toBe(false);
+      }
+      expect(isRecordedBoundedSnapshot({ ...boundedSnapshot, snapshotSequence: -1 })).toBe(false);
+      expect(isRecordedBoundedSnapshot({ ...boundedSnapshot, historyCursor: "" })).toBe(false);
+      expect(isRecordedBoundedSnapshot({ ...boundedSnapshot, hasMoreHistory: "false" })).toBe(
+        false,
       );
 
       const mapError = (cause: unknown) => new OrchestratorProjectionError({ threadId, cause });
@@ -526,7 +564,9 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
   );
   // Unrelated owners are deliberately unavailable; rejection must precede any RPC layer construction.
   const deniedRpcOwners = Layer.mergeAll(
+    Layer.mock(DocumentText.DocumentText)({ ensure: denyRpcWork }),
     Layer.mock(ShellMaterialization.ShellMaterialization)({}),
+    Layer.mock(WsGuestShareService.GuestShareService)({}),
     Layer.mock(WsDirectEndpoints.DirectEndpoints)({}),
     Layer.mock(WsPeerLinks.PeerLinks)({}),
     Layer.mock(WsMcpAppRequests.McpAppRequests)({}),
@@ -735,7 +775,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           expectedLatestTurnId: null,
           requireIdle: true,
         };
-        const projection = yield* Schema.decodeUnknownEffect(OrchestrationV2ThreadProjectionJson)({
+        const projection = yield* Schema.decodeEffect(OrchestrationV2ThreadProjectionJson)({
           thread: {
             id: threadId,
             projectId,
@@ -1183,7 +1223,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                 Layer.mock(WsManagedProjectFolders.ManagedProjectFolders)({
                   namedProjectsRoot: `${cwd}/unused-projects`,
                   isScratchProject: () => Effect.succeed(false),
-                  folderForThread: () => Effect.succeed(Option.none()),
+                  folderForThread: () => Effect.succeedNone,
                 }),
               );
               const launchSink = Layer.effect(
@@ -1247,7 +1287,11 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
         >[0][] = [];
         const order: string[] = [];
         const rpcOwners = Layer.mergeAll(
+          Layer.mock(DocumentText.DocumentText)({
+            ensure: (path) => Effect.succeed(new Map<string, string>().get(path)),
+          }),
           Layer.mock(ShellMaterialization.ShellMaterialization)({}),
+          Layer.mock(WsGuestShareService.GuestShareService)({}),
           Layer.mock(WsDirectEndpoints.DirectEndpoints)({}),
           Layer.mock(WsPeerLinks.PeerLinks)({}),
           Layer.mock(WsMcpAppRequests.McpAppRequests)({}),
@@ -1641,8 +1685,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
               return yield* Effect.die("Preflight failure required");
             const failures = yield* Schema.decodeUnknownEffect(
               Schema.Array(
-                Schema.Struct({
-                  _tag: Schema.Literal("Fail"),
+                Schema.TaggedStruct("Fail", {
                   error: OrchestrationDispatchCommandError,
                 }),
               ),
@@ -1759,7 +1802,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             const readSetupFrame = () =>
               WsQueue.take(setupOutgoing).pipe(
                 Effect.flatMap((raw) =>
-                  Schema.decodeUnknownEffect(
+                  Schema.decodeEffect(
                     Schema.fromJsonString(
                       Schema.Struct({
                         _tag: Schema.String,
@@ -1890,7 +1933,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
               const readCancellationFrame = () =>
                 WsQueue.take(outgoing).pipe(
                   Effect.flatMap((raw) =>
-                    Schema.decodeUnknownEffect(
+                    Schema.decodeEffect(
                       Schema.fromJsonString(
                         Schema.Struct({
                           _tag: Schema.String,
@@ -1952,8 +1995,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                     );
                     const failures = yield* Schema.decodeUnknownEffect(
                       Schema.Array(
-                        Schema.Struct({
-                          _tag: Schema.Literal("Fail"),
+                        Schema.TaggedStruct("Fail", {
                           error: OrchestrationDispatchCommandError,
                         }),
                       ),
@@ -2270,7 +2312,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             const readCardFrame = () =>
               WsQueue.take(outgoing).pipe(
                 Effect.flatMap((raw) =>
-                  Schema.decodeUnknownEffect(
+                  Schema.decodeEffect(
                     Schema.fromJsonString(
                       Schema.Struct({
                         _tag: Schema.String,

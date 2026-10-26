@@ -445,7 +445,7 @@ export const make = Effect.gen(function* () {
             ? // oxlint-disable-next-line t3code/no-inline-schema-compile -- The caller supplies its result schema per invocation.
               Schema.decodeUnknownEffect(input.success)(result.structuredContent)
             : // oxlint-disable-next-line t3code/no-inline-schema-compile -- The caller supplies its result schema per invocation.
-              Schema.decodeUnknownEffect(Schema.fromJsonString(input.success))(text)
+              Schema.decodeEffect(Schema.fromJsonString(input.success))(text)
         ).pipe(
           Effect.mapError(
             () =>

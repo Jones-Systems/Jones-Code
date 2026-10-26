@@ -15,7 +15,7 @@ import { stageRun, bwrapArguments } from "./ui-evidence/sandbox.mjs";
 import { collectProvenance } from "./ui-evidence/provenance.mjs";
 import { createManifest, writeManifest } from "./ui-evidence/manifest.mjs";
 import { prepareSecretService, stageSecretService } from "./ui-evidence/secret-service-stage.mjs";
-
+import { prepareWindowManager, stageWindowManager } from "./ui-evidence/window-manager.mjs";
 export const harness = NodePath.resolve(
   NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)),
   "../../..",
@@ -38,6 +38,7 @@ export function parseOptions(argv) {
       "build-receipt",
       "queue-case",
       "secret-service",
+      "window-manager-receipt",
     ],
     cleanup: ["run"],
   }[command];
@@ -73,7 +74,10 @@ export function parseOptions(argv) {
     command,
     ...options,
     source: NodePath.resolve(options.source || harness),
-    size: { width: Number(size[1]), height: Number(size[2]) },
+    size: {
+      width: Number(size[1]),
+      height: Number(size[2]),
+    },
     scale,
     theme,
   };
@@ -95,9 +99,10 @@ export async function queueCaseConfiguration(options) {
   const stat = await NodeFSP.lstat(expected);
   if (!stat.isFile() || stat.isSymbolicLink() || (await NodeFSP.realpath(expected)) !== expected)
     throw new Error("Queue scenario must be a real regular file without symlink aliases");
-  return { queueCase };
+  return {
+    queueCase,
+  };
 }
-
 export async function assertHarnessPin() {
   const pin = process.env.JCUE_HARNESS_OID;
   if (!pin) return;
@@ -111,12 +116,17 @@ export async function assertHarnessPin() {
 async function runEvidence(options) {
   const queueConfiguration = await queueCaseConfiguration(options);
   const secretService = await prepareSecretService(options["secret-service"]);
+  const windowManager = await prepareWindowManager(options["window-manager-receipt"]);
   const outerStart = performance.now();
   const timing = {};
   const source = await NodeFSP.realpath(options.source);
   const checked = await doctor(source);
   timing.preflightSeconds = (performance.now() - outerStart) / 1000;
-  if (checked.outcome !== "complete") return { code: 2, ...checked };
+  if (checked.outcome !== "complete")
+    return {
+      code: 2,
+      ...checked,
+    };
   const scenarioId = options.scenario || "sidebar-rename";
   const scenario =
     scenarioId === "sidebar-rename"
@@ -146,7 +156,11 @@ async function runEvidence(options) {
   const identity = {
     id: scenarioId === "sidebar-rename" ? scenarioId : "custom",
     path: scenario,
-    ...(queueConfiguration.queueCase ? { queueCase: queueConfiguration.queueCase } : {}),
+    ...(queueConfiguration.queueCase
+      ? {
+          queueCase: queueConfiguration.queueCase,
+        }
+      : {}),
     sha256: await sha256(scenario),
   };
   try {
@@ -156,8 +170,13 @@ async function runEvidence(options) {
     );
     if (artifacts === run.root || artifacts.startsWith(`${run.root}/`))
       throw new Error("Artifacts must be separate from scratch");
-    await NodeFSP.mkdir(NodePath.dirname(artifacts), { recursive: true, mode: 0o700 });
-    await NodeFSP.mkdir(artifacts, { mode: 0o700 });
+    await NodeFSP.mkdir(NodePath.dirname(artifacts), {
+      recursive: true,
+      mode: 0o700,
+    });
+    await NodeFSP.mkdir(artifacts, {
+      mode: 0o700,
+    });
     const provenanceStart = performance.now();
     provenance = await collectProvenance({
       source,
@@ -180,6 +199,7 @@ async function runEvidence(options) {
     const configuration = {
       ...queueConfiguration,
       ...secretService?.configuration,
+      ...windowManager?.configuration,
       size: options.size,
       scale: options.scale,
       theme: options.theme,
@@ -187,12 +207,33 @@ async function runEvidence(options) {
       clockTicks,
       hostEffectiveCores: NodeOS.availableParallelism(),
     };
-    const stage = await stageRun({ run, source, harness, scenario, closure, configuration });
+    const stage = await stageRun({
+      run,
+      source,
+      harness,
+      scenario,
+      closure,
+      configuration,
+    });
+    if (windowManager) {
+      await stageWindowManager(windowManager, stage);
+      await NodeFSP.writeFile(
+        NodePath.join(artifacts, "window-manager-inputs.json"),
+        JSON.stringify(windowManager, null, 2),
+        {
+          mode: 0o600,
+          flag: "wx",
+        },
+      );
+    }
     if (secretService) {
       await NodeFSP.writeFile(
         NodePath.join(artifacts, "secret-service-inputs.json"),
         JSON.stringify(secretService, null, 2),
-        { mode: 0o600, flag: "wx" },
+        {
+          mode: 0o600,
+          flag: "wx",
+        },
       );
       await stageSecretService(secretService, stage);
     }
@@ -200,7 +241,11 @@ async function runEvidence(options) {
       throw new Error("Scenario changed during staging");
     timing.stagingSeconds = (performance.now() - stagingStart) / 1000;
     if (cancelled) throw new Error("Cancelled during preparation");
-    const args = await bwrapArguments({ stage, runtime: checked.runtime, artifacts });
+    const args = await bwrapArguments({
+      stage,
+      runtime: checked.runtime,
+      artifacts,
+    });
     let diagnostic = "";
     result = await superviseRun({
       run,
@@ -242,7 +287,10 @@ async function runEvidence(options) {
       try {
         cleanup = await removeRun(run);
       } catch (error) {
-        cleanup = { outcome: "unknown", error: error.message };
+        cleanup = {
+          outcome: "unknown",
+          error: error.message,
+        };
         if (result?.code === 0) result.code = 1;
       }
     process.off("SIGINT", interrupt);
@@ -261,7 +309,10 @@ async function runEvidence(options) {
         namespaceProcess: result.namespaceProcess || null,
         resources: {
           ...inner?.resources,
-          outer: { ...timing, totalSeconds: (performance.now() - outerStart) / 1000 },
+          outer: {
+            ...timing,
+            totalSeconds: (performance.now() - outerStart) / 1000,
+          },
         },
       },
       cleanup,
@@ -285,14 +336,28 @@ export async function main(argv = process.argv.slice(2)) {
     await assertHarnessPin();
     if (options.command === "doctor") {
       const result = await doctor(options.source);
-      return { code: result.outcome === "complete" ? 0 : 2, ...result };
+      return {
+        code: result.outcome === "complete" ? 0 : 2,
+        ...result,
+      };
     }
-    if (options.command === "setup") return { code: 0, ...(await setupRuntime(options.source)) };
+    if (options.command === "setup")
+      return {
+        code: 0,
+        ...(await setupRuntime(options.source)),
+      };
     if (options.command === "cleanup")
-      return { code: 0, ...(await cleanupRegistered(options.run)) };
+      return {
+        code: 0,
+        ...(await cleanupRegistered(options.run)),
+      };
     return await runEvidence(options);
   } catch (error) {
-    return { code: 2, outcome: "rejected", error: error.message };
+    return {
+      code: 2,
+      outcome: "rejected",
+      error: error.message,
+    };
   }
 }
 if (process.argv[1] && import.meta.url === NodeURL.pathToFileURL(process.argv[1]).href) {

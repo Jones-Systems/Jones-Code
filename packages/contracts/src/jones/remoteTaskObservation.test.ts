@@ -35,7 +35,7 @@ it("keeps legacy waits decodable and negotiates exact versioned observations", (
     decode({ ...legacy, remoteObservation: { ...remoteObservation, schemaVersion: "v2" } }),
   ).toThrow();
   expect(
-    Schema.decodeUnknownSync(OrchestratorMcpThreadWaitInput)({
+    Schema.decodeSync(OrchestratorMcpThreadWaitInput)({
       threadId: "thread:remote",
       observeBlockingQuestions: true,
       questionResumeToken: "resume",

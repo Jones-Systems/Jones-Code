@@ -108,10 +108,10 @@ does not perform repository deletion or authorize runtime changes.
 
 The Jones-Code workflow allowlist is `ci.yml`, `artifact-cli-linux.yml`,
 `artifact-cli-mac.yml`, `artifact-desktop-mac.yml`,
-`jones-update-qualification.yml`, `native-enrollment-candidate.yml`,
-`jones-native-workflows.yml`, and `jones-ios-native.yml`, using GitHub-hosted
-Ubuntu and macOS runners. CI runs on pull requests, main pushes and manual
-dispatch. `Check` is the required aggregate; selected Linux jobs may skip only
+`jones-update-qualification.yml`, `native-enrollment-candidate.yml`, and
+`jones-native-workflows.yml`, using GitHub-hosted Ubuntu and macOS runners. CI runs
+on pull requests, main pushes and manual dispatch. `Check` is the required
+aggregate; selected Linux jobs may skip only
 on explicit successful classification, with full main, unknown-change and
 complete-stack backstops. The macOS enrollment and mobile-source gates remain
 independent. The enrollment candidate workflow remains path-filtered/manual,
@@ -128,10 +128,15 @@ do not publish a Release or install an application.
 Jones update qualification keeps unique native startup, macOS lifecycle and
 Preview evidence behind their path gates; the duplicate Linux Vitest batch and
 second strict boundary check are absent. Native Electron E2E runs nightly or
-by manual dispatch/`native-e2e` label. Native iOS E2E runs only by manual dispatch
-or that label while simulator startup and cleanup remain unqualified. Both
-native E2E workflows and all artifact workflows are advisory. The macOS
-enrollment and install-lifecycle path gates from #562 and #581 remain.
+by manual dispatch/`native-e2e` label. The native Electron workflow and all
+artifact workflows are advisory. The macOS enrollment and install-lifecycle
+path gates from #562 and #581 remain.
+
+The iOS XCUITest workflow and harness are retired. Cheaper mobile and server
+tests retain pin/unpin coverage; React Native long-press and relaunch on a device
+remain an accepted gap. Re-entry requires a device-level regression that cheaper
+checks miss or a qualified macOS route with no custody hold, starting by reverting
+the retirement. Existing native startup and cleanup holds remain unresolved.
 
 There are no tag, release, privileged PR, workflow-completion or
 repository-dispatch triggers. Additional Jones-Code-owned workflows require

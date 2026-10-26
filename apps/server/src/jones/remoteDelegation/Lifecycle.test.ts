@@ -11,7 +11,6 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
@@ -93,12 +92,10 @@ const makeFixture = Effect.gen(function* () {
     }),
     Layer.mock(Links.PeerLinks)({
       get: () =>
-        Effect.succeed(
-          Option.some({
-            environmentId: envelope.environmentId,
-            linkedAt: DateTime.makeUnsafe(envelope.linkedAt),
-          } as never),
-        ),
+        Effect.succeedSome({
+          environmentId: envelope.environmentId,
+          linkedAt: DateTime.makeUnsafe(envelope.linkedAt),
+        } as never),
     }),
     Layer.mock(Forwarding.PeerForwarding)({
       call: (scope, tool, _environmentId, input) =>

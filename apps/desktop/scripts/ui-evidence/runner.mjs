@@ -14,13 +14,14 @@ import {
   launchManagedElectron,
 } from "./support/secret-service.mjs";
 import { isolationProbe } from "./probe.mjs";
+import { startWindowManager } from "./window-manager.mjs";
+import { waitForMainPage } from "./main-window.mjs";
 import {
   captureApplicationProcesses,
   closeApplicationGeneration,
   assertRestartIdentity,
 } from "./runtime.mjs";
 import { createScenarioContext, loadScenario } from "./scenario-api.mjs";
-
 export function generationProgress(artifacts, appendFile = NodeFSP.appendFile) {
   return async (generation, phase, work) => {
     if (
@@ -35,14 +36,26 @@ export function generationProgress(artifacts, appendFile = NodeFSP.appendFile) {
         "bridge",
         "setup",
         "identity",
+        "scenario",
+        "window-readback",
+        "viewport-readback",
+        "final-diagnostics",
+        "final-close",
       ].includes(phase)
     )
       throw new Error("restart-progress-invalid");
     const record = (state) =>
       appendFile(
         `${artifacts}/restart-progress.ndjson`,
-        `${JSON.stringify({ generation, phase, state })}\n`,
-        { mode: 0o600, flush: true },
+        `${JSON.stringify({
+          generation,
+          phase,
+          state,
+        })}\n`,
+        {
+          mode: 0o600,
+          flush: true,
+        },
       );
     // The launch ordinal is intended only; requested does not prove a process was spawned.
     await record(phase === "launch" ? "requested" : "entered");
@@ -51,14 +64,12 @@ export function generationProgress(artifacts, appendFile = NodeFSP.appendFile) {
     return result;
   };
 }
-
 export async function launchWithProgress({ index, progress, launch, window, bridge, setup }) {
   const generation = await progress(index, "launch", launch);
   await progress(index, "window", window);
   await progress(index, "bridge", bridge);
   return progress(index, "setup", () => setup(generation));
 }
-
 export async function restartWithProgress({
   previous,
   progress,
@@ -78,12 +89,14 @@ export async function restartWithProgress({
   });
   return replacement;
 }
-
 async function startXvfb(size) {
   const child = NodeChildProcess.spawn(
     "/usr/bin/Xvfb",
     ["-displayfd", "3", "-nolisten", "tcp", "-screen", "0", `${size.width}x${size.height}x24`],
-    { stdio: ["ignore", "ignore", "pipe", "pipe"], env: process.env },
+    {
+      stdio: ["ignore", "ignore", "pipe", "pipe"],
+      env: process.env,
+    },
   );
   try {
     const display = await new Promise((resolve, reject) => {
@@ -103,7 +116,10 @@ async function startXvfb(size) {
         }
       });
     });
-    return { child, display };
+    return {
+      child,
+      display,
+    };
   } catch (error) {
     child.kill("SIGTERM");
     throw error;
@@ -133,15 +149,21 @@ async function sampleResources() {
       if (!["ENOENT", "ESRCH", "EACCES"].includes(error.code)) throw error;
     }
   }
-  return { ticks, pssKiB, at: performance.now() };
+  return {
+    ticks,
+    pssKiB,
+    at: performance.now(),
+  };
 }
 export async function runInner() {
   const configuration = JSON.parse(await NodeFSP.readFile("/harness/config.json", "utf8"));
-  let app, page, xvfb, ctx, timer, processCapture, secretService;
+  let app, page, xvfb, ctx, timer, processCapture, secretService, windowManagerChild;
   const managedWait = (promise) => (secretService ? secretService.wait(promise) : promise);
   const generations = [];
   let phase = "isolation";
-  let readiness = { status: "not-requested" };
+  let readiness = {
+    status: "not-requested",
+  };
   const start = performance.now();
   const result = {
     status: "failed",
@@ -158,6 +180,7 @@ export async function runInner() {
     },
   };
   let code = 2;
+  const progress = generationProgress("/artifacts");
   try {
     result.isolation = await isolationProbe(configuration.realHome);
     if (configuration.managedSecretService) {
@@ -167,8 +190,17 @@ export async function runInner() {
     }
     const scenario = await loadScenario("/harness/scenario.mjs");
     xvfb = await startXvfb(configuration.size);
+    if (configuration.managedWindowManager) {
+      phase = "window-manager-setup";
+      result.windowManager = await startWindowManager(
+        configuration.managedWindowManager,
+        xvfb.display,
+        (child) => {
+          windowManagerChild = child;
+        },
+      );
+    }
     const { _electron } = await import("playwright-core");
-    const progress = generationProgress("/artifacts");
     const launchApplication = () =>
       launchWithProgress({
         index: generations.length,
@@ -188,14 +220,23 @@ export async function runInner() {
                   `--force-device-scale-factor=${configuration.scale}`,
                   ...(secretService ? ["--password-store=gnome-libsecret"] : []),
                 ],
-                env: { ...process.env, DISPLAY: xvfb.display, ...serviceEnvironment },
+                env: {
+                  ...process.env,
+                  DISPLAY: xvfb.display,
+                  ...serviceEnvironment,
+                },
                 chromiumSandbox: true,
                 timeout: 60000,
               }),
             register: (launched) => {
               app = launched;
               processCapture = captureProcess(app.process());
-              const owned = { index: generations.length, app, processCapture, closed: false };
+              const owned = {
+                index: generations.length,
+                app,
+                processCapture,
+                closed: false,
+              };
               generations.push(owned);
               return owned;
             },
@@ -204,7 +245,20 @@ export async function runInner() {
         },
         window: async () => {
           phase = "first-window";
-          page = await managedWait(app.firstWindow({ timeout: 60000 }));
+          await app.evaluate(({ app }) => {
+            const failures = [];
+            globalThis.__jonesEvidencePreloadFailures = failures;
+            app.on("web-contents-created", (_event, contents) => {
+              contents.on("preload-error", (_errorEvent, preloadPath, error) => {
+                if (failures.length < 16)
+                  failures.push({
+                    preload: preloadPath.split("/").at(-1),
+                    message: String(error.message).slice(0, 2000),
+                  });
+              });
+            });
+          });
+          page = await managedWait(waitForMainPage(app));
         },
         bridge: async () => {
           phase = "desktop-bridge";
@@ -256,7 +310,12 @@ export async function runInner() {
             throw new Error("Electron wrote outside its private data roots");
           result.isolation.assertedPaths = paths;
           generation.paths = paths;
-          return { electronApp: app, page, restoreConnectivity, generation };
+          return {
+            electronApp: app,
+            page,
+            restoreConnectivity,
+            generation,
+          };
         },
       });
     const identifyGeneration = async (generation) => {
@@ -264,7 +323,11 @@ export async function runInner() {
       const path = "/scratch/t3home/userdata/statev2.sqlite";
       const stat = await NodeFSP.lstat(path);
       if (!stat.isFile()) throw new Error("Synthetic database is not a regular file");
-      generation.database = { path, device: stat.dev, inode: stat.ino };
+      generation.database = {
+        path,
+        device: stat.dev,
+        inode: stat.ino,
+      };
     };
     const restartApplication = async () => {
       const previous = generations.at(-1);
@@ -278,12 +341,16 @@ export async function runInner() {
         },
         diagnostics: async (generation) => {
           const artifacts = `/artifacts/generation-${generation.index}`;
-          await NodeFSP.mkdir(artifacts, { mode: 0o700 });
+          await NodeFSP.mkdir(artifacts, {
+            mode: 0o700,
+          });
           generation.diagnostics = await writeStartupDiagnostics({
             artifacts,
             processCapture: generation.processCapture,
             logs: await captureSyntheticLogs(),
-            readiness: { status: "scenario-restart" },
+            readiness: {
+              status: "scenario-restart",
+            },
             phase,
           });
         },
@@ -335,7 +402,10 @@ export async function runInner() {
       // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone evidence script has no Effect runtime.
       arch: NodeOS.arch(),
     };
-    result.runtime.xvfb = { ...configuration.size, depth: 24 };
+    result.runtime.xvfb = {
+      ...configuration.size,
+      depth: 24,
+    };
     let previous = await sampleResources();
     const idleStart = previous;
     let sampling = false;
@@ -376,18 +446,26 @@ export async function runInner() {
     code = 1;
     const captureStart = performance.now();
     phase = "scenario";
-    await managedWait(scenario.run(ctx));
+    await progress(generations.at(-1).index, "scenario", () => managedWait(scenario.run(ctx)));
     result.resources.scenarioSeconds = (performance.now() - captureStart) / 1000;
-    result.window = await app.evaluate(({ BrowserWindow, nativeTheme }) => ({
-      bounds: BrowserWindow.getAllWindows()[0].getBounds(),
-      theme: nativeTheme.shouldUseDarkColors ? "dark" : "light",
-      themeSource: nativeTheme.themeSource,
-    }));
-    result.window.viewport = await page.evaluate(() => ({
-      width: innerWidth,
-      height: innerHeight,
-      scale: devicePixelRatio,
-    }));
+    const mainWindow = await progress(generations.at(-1).index, "window-readback", () =>
+      app.browserWindow(page),
+    );
+    result.window = await app.evaluate(
+      ({ nativeTheme }, win) => ({
+        bounds: win.getBounds(),
+        theme: nativeTheme.shouldUseDarkColors ? "dark" : "light",
+        themeSource: nativeTheme.themeSource,
+      }),
+      mainWindow,
+    );
+    result.window.viewport = await progress(generations.at(-1).index, "viewport-readback", () =>
+      page.evaluate(() => ({
+        width: innerWidth,
+        height: innerHeight,
+        scale: devicePixelRatio,
+      })),
+    );
     if (Math.abs(result.window.viewport.scale - configuration.scale) > 0.01)
       throw new Error("Requested device scale readback mismatch");
     result.status = "passed";
@@ -399,7 +477,9 @@ export async function runInner() {
         await NodeFSP.writeFile(
           "/artifacts/secret-service-failure.json",
           JSON.stringify(secretService.snapshot(), null, 2),
-          { mode: 0o600 },
+          {
+            mode: 0o600,
+          },
         );
       } catch {
         result.secretServiceFailureEvidence = "unavailable";
@@ -413,6 +493,90 @@ export async function runInner() {
       }
     }
     if (app && error.name === "TimeoutError") readiness = await probeReadiness(app);
+    if (app && error.name === "TimeoutError") {
+      let metadataTimer;
+      try {
+        const windows = await Promise.race([
+          app.evaluate(async ({ BrowserWindow }) =>
+            Promise.all(
+              BrowserWindow.getAllWindows()
+                .slice(0, 20)
+                .map(async (window) => {
+                  const contents = window.webContents;
+                  const preferences = contents.getLastWebPreferences();
+                  let location;
+                  try {
+                    const url = new URL(contents.getURL());
+                    location = {
+                      protocol: url.protocol,
+                      hostname: url.hostname,
+                      pathname: url.pathname,
+                    };
+                  } catch {
+                    location = { protocol: "unavailable" };
+                  }
+                  let probeTimer;
+                  let bridge;
+                  try {
+                    bridge = await Promise.race([
+                      contents.executeJavaScript(
+                        "({desktopBridge:typeof window.desktopBridge,threadMonitor:typeof window.threadMonitor,mainMonitor:typeof window.desktopBridge?.threadMonitor,readyState:document.readyState})",
+                      ),
+                      new Promise((resolve) => {
+                        probeTimer = setTimeout(() => resolve("timed-out"), 500);
+                      }),
+                    ]);
+                  } catch (probeError) {
+                    bridge = String(probeError.message).slice(0, 500);
+                  } finally {
+                    clearTimeout(probeTimer);
+                  }
+                  return {
+                    bridge,
+                    preferenceKeys: Object.keys(preferences).slice(0, 80),
+                    preloadFailures: globalThis.__jonesEvidencePreloadFailures ?? [],
+                    id: window.id,
+                    location,
+                    loading: contents.isLoading(),
+                    destroyed: contents.isDestroyed(),
+                    publisher:
+                      preferences.additionalArguments?.includes(
+                        "--jones-thread-monitor-publisher",
+                      ) === true,
+                    preload: preferences.preload?.split("/").at(-1) ?? null,
+                  };
+                }),
+            ),
+          ),
+          new Promise((resolve) => {
+            metadataTimer = setTimeout(() => resolve("timed-out"), 1000);
+          }),
+        ]);
+        await NodeFSP.writeFile(
+          "/artifacts/window-readiness.json",
+          JSON.stringify(windows, null, 2),
+          { mode: 0o600, flag: "wx" },
+        );
+      } catch {
+        result.windowReadiness = "unavailable";
+      } finally {
+        clearTimeout(metadataTimer);
+      }
+    }
+
+    // Preserve startup evidence even when an unresponsive app cannot finish close().
+    try {
+      result.startupDiagnostics = await writeStartupDiagnostics({
+        artifacts: "/artifacts",
+        processCapture,
+        logs: await captureSyntheticLogs(),
+        readiness,
+        phase,
+      });
+    } catch (diagnosticError) {
+      result.startupDiagnosticsError = diagnosticError.message;
+    }
+
     if (ctx && !secretService?.snapshot().cancelled)
       try {
         await ctx.capture("failure");
@@ -425,10 +589,51 @@ export async function runInner() {
       if (ctx) Object.assign(result, ctx.results());
       const teardown = performance.now();
       const logs = await captureSyntheticLogs();
+      // Preserve diagnostics before close on successful scenarios too.
+      if (!result.startupDiagnostics)
+        result.startupDiagnostics = await progress(
+          generations.at(-1)?.index ?? 0,
+          "final-diagnostics",
+          () =>
+            writeStartupDiagnostics({
+              artifacts: "/artifacts",
+              processCapture,
+              logs,
+              readiness,
+              phase,
+            }),
+        );
       for (const generation of generations) {
         if (generation.closed) continue;
         try {
-          await closeApplicationGeneration(generation);
+          // Control-only diagnostics from the task-owned isolated app.
+          await generation.app.evaluate(({ app, BrowserWindow }, index) => {
+            const fs = process.getBuiltinModule("fs");
+            let entries = 0;
+            const record = (event, error) => {
+              if (++entries > 32) return;
+              fs.appendFileSync(
+                "/artifacts/shutdown-events.ndjson",
+                JSON.stringify({
+                  generation: index,
+                  event,
+                  windows: BrowserWindow.getAllWindows().map((win) => ({
+                    id: win.id,
+                    destroyed: win.isDestroyed(),
+                  })),
+                  ...(error ? { error: String(error.message).slice(0, 2000) } : {}),
+                }) + "\n",
+                { mode: 0o600 },
+              );
+            };
+            record("close-request");
+            for (const event of ["before-quit", "will-quit", "window-all-closed"])
+              app.on(event, () => record(event));
+            process.on("uncaughtExceptionMonitor", (error) => record("uncaughtException", error));
+          }, generation.index);
+          await progress(generation.index, "final-close", () =>
+            closeApplicationGeneration(generation),
+          );
         } catch (error) {
           generation.closeError = error.message;
           result.closeError = error.message;
@@ -462,13 +667,14 @@ export async function runInner() {
         }),
       );
       try {
-        result.startupDiagnostics = await writeStartupDiagnostics({
-          artifacts: "/artifacts",
-          processCapture,
-          logs,
-          readiness,
-          phase,
-        });
+        if (!result.startupDiagnostics)
+          result.startupDiagnostics = await writeStartupDiagnostics({
+            artifacts: "/artifacts",
+            processCapture,
+            logs,
+            readiness,
+            phase,
+          });
       } catch (error) {
         result.startupDiagnosticsError = error.message;
         if (code === 0) {
@@ -478,6 +684,8 @@ export async function runInner() {
       } finally {
         for (const generation of generations) generation.processCapture.dispose();
       }
+      await stop(windowManagerChild);
+      if (result.windowManager) result.windowManager.closed = true;
       await stop(xvfb?.child);
       result.resources.teardownSeconds = (performance.now() - teardown) / 1000;
     } finally {
@@ -487,7 +695,9 @@ export async function runInner() {
             NodeFSP.writeFile(
               "/artifacts/secret-service-before-cleanup.json",
               JSON.stringify(evidence, null, 2),
-              { mode: 0o600 },
+              {
+                mode: 0o600,
+              },
             ),
           );
         } catch (error) {

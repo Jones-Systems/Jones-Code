@@ -76,7 +76,7 @@ describe("workstreams-t3-provider/1.0.0 native contract", () => {
     expect(manifest.contract_version).toBe(Provider.WORKSTREAMS_T3_PROVIDER_VERSION);
     expect(manifest.manifest_sha256).toBe(Provider.WORKSTREAMS_T3_PROVIDER_MANIFEST_SHA256);
     expect(manifest.files.map((file) => file.path)).toEqual(
-      [...manifest.files.map((file) => file.path)].sort(),
+      manifest.files.map((file) => file.path).sort(),
     );
     expect(conformanceCorpus.contract_family).toBe(Provider.WORKSTREAMS_T3_PROVIDER_FAMILY);
     expect(conformanceCorpus.contract_version).toBe(Provider.WORKSTREAMS_T3_PROVIDER_VERSION);

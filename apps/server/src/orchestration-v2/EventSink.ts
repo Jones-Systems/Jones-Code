@@ -313,12 +313,7 @@ export interface EventSinkV2Shape {
     },
     EventSinkV2Error
   >;
-  /**
-   * Atomically commit only when the provider thread is still owned by the
-   * expected run attempt and ordinal. Used for late post-terminal
-   * provider_thread updates so a completed or superseded attempt cannot clobber
-   * a newer attempt that already claimed the thread.
-   */
+  /** Commits only if the expected attempt and ordinal still own the provider thread, protecting newer attempts. */
   readonly writeIfProviderThreadOwner: (input: {
     readonly historicalTerminal?: HistoricalTerminalHistory.HistoricalTerminalInput;
     readonly runtimeIdentityRequest?: RequestedRuntimeIdentity;
@@ -343,12 +338,7 @@ export interface EventSinkV2Shape {
     },
     EventSinkV2Error
   >;
-  /**
-   * Atomically commit only while the stored provider thread still equals
-   * `expected`, the row its writer read, so a read-modify-write of the row
-   * cannot overwrite an update published in between. The whole row is
-   * compared because not every writer moves `updatedAt`.
-   */
+  /** Commits only if the full provider row equals expected; some writers do not advance updatedAt. */
   readonly writeIfProviderThreadUnchanged: (input: {
     readonly expected: OrchestrationV2ProviderThread;
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
@@ -556,13 +546,9 @@ const layerBase: Layer.Layer<
           Effect.andThen(publishLiveEvents(events.filter(isPublicStoredOrchestrationEvent))),
         );
 
-    // Transactions commit one at a time, but each writer publishes after its
-    // commit. If a writer is descheduled in between, a later commit reaches
-    // subscribers first, and clients drop any event at or below the newest
-    // sequence they have applied. So a writer takes this lane as the last step
-    // of its transaction and holds it until it has published. Publishing never
-    // waits, so a writer that holds the transaction while it waits for the
-    // lane is not blocked for long.
+    // Commit order can differ from publication order if a writer is descheduled; clients discard older sequences.
+    // Take this lane last inside the transaction and hold it through publication to preserve that order.
+    // Publication never waits, so a transaction waiting for the lane blocks only briefly.
     const jonesTables = makeJonesTablePresence(sql);
     const runtimeStops = RuntimeStop.makeRuntimeStopMethods(sql, jonesTables);
     const settlementRestores = makeSettlementRestoreStore(sql, jonesTables);
@@ -571,7 +557,7 @@ const layerBase: Layer.Layer<
       transaction: Effect.Effect<A, E, R>,
       publish: (committed: A) => Effect.Effect<void>,
     ) =>
-      Effect.suspend(() => {
+      Effect.uninterruptibleMask((restore) => {
         let holdsLane = false;
         const takeLane = publishLane.take(1).pipe(
           Effect.andThen(
@@ -581,8 +567,11 @@ const layerBase: Layer.Layer<
           ),
           Effect.uninterruptible,
         );
+        // Cancellation may roll back the transaction's work. Once it commits,
+        // every subscriber must hear about it before this writer can exit.
+        // Otherwise a failed child run can leave its parent's task running.
         return sql
-          .withTransaction(Effect.tap(transaction, () => takeLane))
+          .withTransaction(Effect.tap(restore(transaction), () => takeLane))
           .pipe(
             Effect.tap(publish),
             Effect.ensuring(
@@ -1177,12 +1166,10 @@ const layerBase: Layer.Layer<
                   effect.nativeCreationExecutionReference.effectId !== effect.id),
             )
           ) {
-            return yield* Effect.fail(
-              new NativeCreationRepository.NativeCreationRepositoryError({
-                code: "unresolved_claim",
-                message: "Native queued effect differs from its acceptance binding",
-              }),
-            );
+            return yield* new NativeCreationRepository.NativeCreationRepositoryError({
+              code: "unresolved_claim",
+              message: "Native queued effect differs from its acceptance binding",
+            });
           }
           if (
             input.nativeCreation !== undefined &&
@@ -1192,12 +1179,10 @@ const layerBase: Layer.Layer<
                 effect.nativeCreationExecutionReference === undefined,
             )
           ) {
-            return yield* Effect.fail(
-              new NativeCreationRepository.NativeCreationRepositoryError({
-                code: "unresolved_claim",
-                message: "Native provider start is missing its execution envelope",
-              }),
-            );
+            return yield* new NativeCreationRepository.NativeCreationRepositoryError({
+              code: "unresolved_claim",
+              message: "Native provider start is missing its execution envelope",
+            });
           }
           const reserved = yield* commandReceipts.insertIfAbsent({
             commandId: input.commandId,
@@ -1237,12 +1222,10 @@ const layerBase: Layer.Layer<
                 nativeCreation.value.recordExecutionAcceptance === undefined ||
                 boundary === undefined
               )
-                return yield* Effect.fail(
-                  new NativeCreationRepository.NativeCreationRepositoryError({
-                    code: "unresolved_claim",
-                    message: "Native receipt retry has no native acceptance owner",
-                  }),
-                );
+                return yield* new NativeCreationRepository.NativeCreationRepositoryError({
+                  code: "unresolved_claim",
+                  message: "Native receipt retry has no native acceptance owner",
+                });
               yield* nativeCreation.value.recordExecutionAcceptance({
                 ...input.nativeCreation,
                 eventId: boundary.event.id,
@@ -1299,7 +1282,11 @@ const layerBase: Layer.Layer<
               events: normalized,
             })
             .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
-          const sequence = storedEvents.at(-1)?.sequence;
+          const sequence =
+            storedEvents.at(-1)?.sequence ??
+            (input.effects.length === 0
+              ? undefined
+              : yield* eventStore.latestSequence({ threadId: input.threadId }));
           if (sequence === undefined) {
             return yield* Effect.die(
               new Error(`Command ${input.commandId} produced no orchestration events.`),
@@ -1433,12 +1420,10 @@ const layerBase: Layer.Layer<
               input.nativeCreation.command.threadId !== input.threadId ||
               input.nativeCreation.command.type !== input.commandType
             ) {
-              return yield* Effect.fail(
-                new NativeCreationRepository.NativeCreationRepositoryError({
-                  code: "unresolved_claim",
-                  message: "Native acceptance owner is unavailable or differs from the receipt",
-                }),
-              );
+              return yield* new NativeCreationRepository.NativeCreationRepositoryError({
+                code: "unresolved_claim",
+                message: "Native acceptance owner is unavailable or differs from the receipt",
+              });
             }
             const event = storedEvents.at(-1)!;
             yield* nativeCreation.value.recordExecutionAcceptance({
@@ -1496,9 +1481,9 @@ const layerBase: Layer.Layer<
         const intentId = CommandId.make(`${policy.createCommandId}:preflight-intent`);
         const outcomeId = CommandId.make(`${policy.createCommandId}:preflight-outcome`);
         const reject = (detail: string) => new Error(detail);
-        const payload = yield* Schema.decodeUnknownEffect(
-          Schema.fromJsonString(QueueDispatchCommand),
-        )(binding.canonicalPayload);
+        const payload = yield* Schema.decodeEffect(Schema.fromJsonString(QueueDispatchCommand))(
+          binding.canonicalPayload,
+        );
         if (
           payload.type !== "thread.turn.start" ||
           payload.bootstrap === undefined ||
@@ -2326,10 +2311,7 @@ const layerBase: Layer.Layer<
   }),
 );
 
-/**
- * Keeping the outbox instance shared with the worker is important because enqueue notifications
- * are in-memory wakeups backed by the durable SQL queue.
- */
+/** Share the worker's outbox instance: enqueue wakeups are in-memory. */
 export const layerFromStores = layerBase;
 
 export const layer: Layer.Layer<

@@ -100,11 +100,9 @@ const make = Effect.gen(function* () {
   const projects = yield* ProjectService.ProjectService;
 
   /**
-   * The caller's own limits here, which travel with every call it forwards.
-   * The peer sees only the link's credential, so a credential that may not
-   * control threads here is refused here. Work a link started here never uses
-   * this environment's own links: the peer would see this environment's
-   * session, not the link the work came from, so its fence could not hold.
+   * Forward the caller's own limits because the peer sees only the link credential; refuse local authority first.
+   * Work originating through a link must not use this environment's own links: the peer would see our session
+   * instead of the originating link and could not preserve its fence.
    */
   const forwardingCaller = (scope: Scope) =>
     readCaller().pipe(

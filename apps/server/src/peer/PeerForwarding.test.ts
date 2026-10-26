@@ -29,6 +29,7 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as DocumentText from "../provider/DocumentText.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -40,6 +41,7 @@ import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts
 // Linked launches use the upstream receipt namespace, outside the client-launch service.
 const layerLaunchDependencies = Layer.mergeAll(
   SqlitePersistence.layerMemory,
+  DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
   Layer.mock(EventSink.EventSinkV2)({}),
   Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({}),
 );

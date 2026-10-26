@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import type {
+  ApplicationStoredEvent,
   OrchestrationV2ShellSnapshot,
   OrchestrationV2ShellStreamItem,
   OrchestrationV2ThreadShell,
@@ -16,11 +17,18 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import {
+  activeShellRowsForSubscriber,
   bufferShellLiveStream,
   composeShellStreamWithEnrichment,
   dedupeShellEnrichment,
+  omitIdleSubagentShells,
+  omitOlderSettledShells,
   shellStreamItemFromEnrichmentRefresh,
   shellStreamItemsFromInitialSnapshot,
+  shellSnapshotForSubscriber,
+  shellStreamItemFromThreadShell,
+  toShellApplicationEvent,
+  shouldPublishShellApplicationEvent,
   skipUnchangedThreadShells,
 } from "./ShellStream.ts";
 
@@ -31,6 +39,49 @@ const emptyShellSnapshot = {
   threads: [],
   archivedThreads: [],
 } as OrchestrationV2ShellSnapshot;
+
+describe("subagent shell events", () => {
+  const stored = (threadId: string, type: string) =>
+    ({ event: { threadId, type } }) as ApplicationStoredEvent;
+
+  it("keeps regular threads and subagent state changes while omitting subagent transcript updates", () => {
+    const subagents = new Set(["child"]);
+    expect(
+      shouldPublishShellApplicationEvent(stored("parent", "turn-item.updated"), subagents),
+    ).toBe(true);
+    expect(
+      shouldPublishShellApplicationEvent(stored("child", "turn-item.updated"), subagents),
+    ).toBe(false);
+    expect(shouldPublishShellApplicationEvent(stored("child", "node.updated"), subagents)).toBe(
+      false,
+    );
+    expect(
+      shouldPublishShellApplicationEvent(stored("child", "runtime-request.updated"), subagents),
+    ).toBe(true);
+    expect(shouldPublishShellApplicationEvent(stored("child", "run.updated"), subagents)).toBe(
+      true,
+    );
+  });
+
+  it("tracks subagents created after the subscription starts", () => {
+    const subagents = new Set<string>();
+    const created = {
+      event: {
+        threadId: "new-child",
+        type: "thread.created",
+        payload: { lineage: { relationshipToParent: "subagent" } },
+      },
+    } as ApplicationStoredEvent;
+    expect(shouldPublishShellApplicationEvent(created, subagents)).toBe(true);
+    expect(
+      shouldPublishShellApplicationEvent(stored("new-child", "message.updated"), subagents),
+    ).toBe(false);
+    expect(
+      shouldPublishShellApplicationEvent(stored("new-child", "thread.deleted"), subagents),
+    ).toBe(true);
+    expect(subagents.has("new-child")).toBe(true);
+  });
+});
 
 it.effect("coalesces a slow shell subscriber by identity and location in sequence order", () =>
   Effect.scoped(
@@ -93,6 +144,156 @@ it.effect("coalesces a slow shell subscriber by identity and location in sequenc
 function shellFixture(overrides: Partial<OrchestrationV2ThreadShell>): OrchestrationV2ThreadShell {
   return { id: "thread-a", archivedAt: null, ...overrides } as OrchestrationV2ThreadShell;
 }
+
+describe("omitIdleSubagentShells", () => {
+  const row = (
+    id: string,
+    parent: string | null,
+    overrides: Partial<OrchestrationV2ThreadShell> = {},
+  ) =>
+    shellFixture({
+      id: ThreadId.make(id),
+      lineage: {
+        parentThreadId: parent === null ? null : ThreadId.make(parent),
+        relationshipToParent: parent === null ? null : "subagent",
+        rootThreadId: ThreadId.make("root"),
+      },
+      status: "completed",
+      activityRunStatus: null,
+      pendingRuntimeRequest: null,
+      pendingBackgroundTasks: [],
+      ...overrides,
+    });
+
+  it("drops idle leaf children but keeps live ones and the middle of nested chains", () => {
+    const threads = [
+      row("root", null),
+      row("idle", "root"),
+      row("running", "root", { activityRunStatus: "running" }),
+      row("queued", "root", { status: "queued" }),
+      row("asking", "root", {
+        pendingRuntimeRequest: {
+          id: "request" as never,
+          kind: "user_input",
+          createdAt: DateTime.makeUnsafe(0),
+        },
+      }),
+      row("background", "root", {
+        pendingBackgroundTasks: [{ kind: "subagent" } as never],
+      }),
+      // Idle, but a woken grandchild walks through it to reach the root's badge.
+      row("middle", "root"),
+      row("grandchild", "middle"),
+    ];
+    expect(omitIdleSubagentShells(threads).map((thread) => thread.id)).toEqual([
+      "root",
+      "running",
+      "queued",
+      "asking",
+      "background",
+      "middle",
+    ]);
+  });
+
+  it("still filters the transcript events of omitted children for a subscriber that opts in", () => {
+    const threads = [row("root", null), row("idle", "root")];
+    const omitted = activeShellRowsForSubscriber(threads, true);
+    expect(omitted.threads.map((thread) => thread.id)).toEqual(["root"]);
+    expect(
+      shouldPublishShellApplicationEvent(
+        { event: { threadId: "idle", type: "turn-item.updated" } } as ApplicationStoredEvent,
+        omitted.subagentThreadIds,
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("omitOlderSettledShells", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const now = DateTime.makeUnsafe(100 * DAY);
+  const row = (
+    id: string,
+    settledDaysAgo: number | null,
+    overrides: Partial<OrchestrationV2ThreadShell> = {},
+  ) =>
+    shellFixture({
+      id: ThreadId.make(id),
+      projectId: ProjectId.make(id.startsWith("b-") ? "project-b" : "project-a"),
+      lineage: {
+        parentThreadId: null,
+        relationshipToParent: null,
+        rootThreadId: ThreadId.make(id),
+      },
+      status: "completed",
+      activityRunStatus: null,
+      pendingRuntimeRequest: null,
+      pendingBackgroundTasks: [],
+      settledOverride: settledDaysAgo === null ? null : "settled",
+      settledAt:
+        settledDaysAgo === null ? null : DateTime.makeUnsafe(100 * DAY - settledDaysAgo * DAY),
+      ...overrides,
+    });
+  const newest = Array.from({ length: 25 }, (_, index) => row(`new-${index}`, index / 10));
+  const omit = (threads: ReadonlyArray<OrchestrationV2ThreadShell>) =>
+    omitOlderSettledShells({ threads, snapshotSequence: 7, now });
+
+  it("keeps the 25 newest settled threads and counts the rest per project", () => {
+    const result = omit([...newest, row("old", 30), row("b-old", 40), row("unsettled", null)]);
+    expect(result.threads.map((thread) => thread.id)).toEqual([
+      ...newest.map((thread) => thread.id),
+      "unsettled",
+    ]);
+    expect(result.olderSettled).toEqual({
+      before: DateTime.formatIso(DateTime.makeUnsafe(100 * DAY - 2.4 * DAY)),
+      asOfSequence: 7,
+      counts: [
+        { projectId: "project-a", count: 1 },
+        { projectId: "project-b", count: 1 },
+      ],
+    });
+  });
+
+  it("keeps threads tied with the 25th newest", () => {
+    const result = omit([...newest, row("tie", 2.4), row("older", 2.5)]);
+    expect(result.threads.map((thread) => thread.id).slice(25)).toEqual(["tie"]);
+  });
+
+  it("omits nothing with fewer than 25 settled threads, however old", () => {
+    const old = Array.from({ length: 5 }, (_, index) => row(`old-${index}`, 300 + index));
+    const result = omit(old);
+    expect(result.threads).toEqual(old);
+    expect(result.olderSettled.counts).toEqual([]);
+  });
+
+  it("keeps older rows that are snoozed, live, or above a kept subagent, and still counts them", () => {
+    const threads = [
+      ...newest,
+      row("snoozed", 30, { snoozedUntil: DateTime.makeUnsafe(101 * DAY) }),
+      row("woke", 30, { snoozedUntil: DateTime.makeUnsafe(99 * DAY) }),
+      row("running", 30, { activityRunStatus: "running" }),
+      row("parent", 30),
+      shellFixture({
+        id: ThreadId.make("child"),
+        projectId: ProjectId.make("project-a"),
+        lineage: {
+          parentThreadId: ThreadId.make("parent"),
+          relationshipToParent: "subagent",
+          rootThreadId: ThreadId.make("parent"),
+        },
+        settledOverride: null,
+        settledAt: null,
+      }),
+    ];
+    const result = omit(threads);
+    expect(result.threads.map((thread) => thread.id).slice(25)).toEqual([
+      "snoozed",
+      "running",
+      "parent",
+      "child",
+    ]);
+    expect(result.olderSettled.counts).toEqual([{ projectId: "project-a", count: 4 }]);
+  });
+});
 
 describe("shellStreamItemsFromInitialSnapshot", () => {
   it("keeps thread rows out of the metadata-only enrichment frame", () => {
@@ -452,6 +653,98 @@ describe("skipUnchangedThreadShells", () => {
       Stream.runCollect,
       Effect.map((items) => Array.from(items, (item) => ("sequence" in item ? item.sequence : -1))),
     );
+
+  const guestFamily = (pendingGuestMessageCount: number | undefined) => {
+    const root = shell("root", { status: "completed", activityRunStatus: null });
+    const middle = shell("middle", {
+      status: "completed",
+      activityRunStatus: null,
+      lineage: { rootThreadId: root.id, parentThreadId: root.id, relationshipToParent: "subagent" },
+    });
+    const leaf = shell("leaf", {
+      status: "completed",
+      activityRunStatus: null,
+      pendingGuestMessageCount,
+      lineage: {
+        rootThreadId: root.id,
+        parentThreadId: middle.id,
+        relationshipToParent: "subagent",
+      },
+    });
+    return [root, middle, leaf];
+  };
+  const snapshot = (threads: ReadonlyArray<OrchestrationV2ThreadShell>, omitIdleSubagents = true) =>
+    shellSnapshotForSubscriber(
+      { ...emptyShellSnapshot, threads },
+      { omitIdleSubagents, omitOlderSettled: true, now: at(0) },
+    );
+
+  it("keeps the pending guest leaf and complete ancestor chain in the actual opted-in snapshot", () => {
+    const family = guestFamily(1);
+    expect(snapshot(family).snapshot.threads.map(({ id }) => id)).toEqual([
+      "root",
+      "middle",
+      "leaf",
+    ]);
+    expect(snapshot(family, false).snapshot.threads).toEqual(family);
+    for (const count of [0, undefined]) {
+      expect(snapshot(guestFamily(count)).snapshot.threads.map(({ id }) => id)).toEqual([
+        "root",
+        "middle",
+      ]);
+    }
+  });
+
+  it.effect(
+    "delivers late guest-only updates and resolution after an omitted child without transcript leakage",
+    () =>
+      Effect.gen(function* () {
+        const initial = snapshot(guestFamily(0));
+        expect(initial.snapshot.threads.map(({ id }) => id)).toEqual(["root", "middle"]);
+        const before = guestFamily(0)[2]!;
+        const pending = { ...before, pendingGuestMessageCount: 1 };
+        const dismissed = { ...before, pendingGuestMessageCount: 0 };
+        const guestEvents = [before, pending, dismissed].map((thread, index) => {
+          const stored = {
+            sequence: index + 1,
+            event: { threadId: thread.id, type: "thread.guest-share-updated" },
+          } as ApplicationStoredEvent;
+          expect(shouldPublishShellApplicationEvent(stored, initial.subagentThreadIds)).toBe(true);
+          const event = toShellApplicationEvent(stored);
+          if (!("event" in event)) throw new Error("Expected thread event");
+          return shellStreamItemFromThreadShell({ stored: event, shell: thread });
+        });
+        expect(
+          shouldPublishShellApplicationEvent(
+            { event: { threadId: before.id, type: "message.updated" } } as ApplicationStoredEvent,
+            initial.subagentThreadIds,
+          ),
+        ).toBe(false);
+        const items = yield* composeShellStreamWithEnrichment({
+          initial: Stream.fromIterable(
+            shellStreamItemsFromInitialSnapshot({
+              snapshot: initial.snapshot,
+              resolvedRepositoryIdentityRoots: [],
+            }),
+          ),
+          tail: Stream.fromIterable(guestEvents).pipe(skipUnchangedThreadShells),
+          enrichment: Stream.empty,
+        }).pipe(Stream.runCollect);
+        expect(items[0]).toMatchObject({
+          kind: "snapshot",
+          snapshot: { threads: initial.snapshot.threads },
+        });
+        expect(items.slice(1)).toEqual(guestEvents);
+        expect(
+          items
+            .slice(1)
+            .map((item) =>
+              item.kind === "thread.updated" ? item.thread.pendingGuestMessageCount : null,
+            ),
+        ).toEqual([0, 1, 0]);
+        expect(snapshot(guestFamily(1)).snapshot.threads).toHaveLength(3);
+      }),
+  );
 
   it.effect("sends the next update after a removal", () =>
     Effect.gen(function* () {

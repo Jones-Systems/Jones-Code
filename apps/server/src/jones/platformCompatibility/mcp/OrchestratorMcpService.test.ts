@@ -139,7 +139,7 @@ describe("Jones MCP provider compatibility", () => {
     }) as unknown as OrchestrationV2ThreadProjection;
 
   const childProjection = {
-    thread: { id: childThreadId },
+    thread: { id: childThreadId, title: "MCP child" },
     runs: [],
     contextTransfers: [],
     messages: [],

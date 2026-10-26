@@ -355,11 +355,9 @@ const make = Effect.gen(function* () {
   );
 
   /**
-   * Completes `task` here with its thread there's final state. Each attempt
-   * is its own command, so one that failed never blocks the next. A report
-   * refused because the task already has its result (from a cancel, a Stop
-   * or an earlier report) is done. `stoppedThere` records that nothing is
-   * left to stop there, also on a task that already has its result.
+   * Each completion attempt uses its own command so one failed attempt cannot block its successor.
+   * A refusal because cancel, Stop or an earlier report already supplied the result is terminal.
+   * stoppedThere discharges remote stop debt even for a task whose result already exists.
    */
   const complete = Effect.fn("RemoteDelegation.complete")(function* (
     parentThreadId: ThreadId,
@@ -418,11 +416,8 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Stops the task's thread there as its Stop button does: its running turn,
-   * its queued messages, its pull request watches and the tasks it delegated.
-   * The thread there is the task's own, so whatever runs on it is stopped.
-   * `key` names the stop: the follower sends one, each cancel its own, and
-   * each is recorded there once however often it is sent.
+   * Stop all current work on the owned remote child thread: run, queued messages, PR watches and descendants.
+   * key identifies the stop; the follower sends one, each cancel its own, and remote recording deduplicates retries.
    */
   const stopThere = (
     scope: ThreadScope,
@@ -476,11 +471,9 @@ const make = Effect.gen(function* () {
   const noReply = "(The thread in the linked environment ended without a reply.)";
 
   /**
-   * Waits on the task's thread there until its run ends, then completes the
-   * task here, and stops it there if it ended here first. A revoked, expired
-   * or forgotten link, or a thread or run gone there, fails the local task.
-   * Only a missing thread proves nothing remains to stop; lost access keeps
-   * that debt through bounded retries and restart.
+   * Follow remote completion and complete locally, or stop remotely if the local task ended first.
+   * Revoked/expired/missing links or missing thread/run fail the task. Only a missing thread proves
+   * no remaining stop debt; lost access retains that debt across bounded retries and restart.
    */
   const follow = (parentThreadId: ThreadId, taskId: NodeId): Effect.Effect<void> =>
     followOnce(parentThreadId, taskId).pipe(

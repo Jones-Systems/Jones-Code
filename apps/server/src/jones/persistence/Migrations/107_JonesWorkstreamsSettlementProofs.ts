@@ -47,7 +47,7 @@ export default Effect.gen(function* () {
   }>`
     SELECT native_command_id, request_json, dispatch_started_at FROM workstreams_native_attempts`;
   for (const attempt of attempts) {
-    const association = Schema.decodeUnknownOption(Association)(attempt.request_json);
+    const association = Schema.decodeOption(Association)(attempt.request_json);
     if (Option.isNone(association)) continue;
     const { identity, native_action } = association.value;
     let proofJson: string | null = null;

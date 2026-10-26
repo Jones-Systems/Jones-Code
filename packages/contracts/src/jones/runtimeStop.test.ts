@@ -24,12 +24,12 @@ const input = {
 };
 describe("captured runtime stop contract", () => {
   it("requires complete capture identity rather than only a thread name", () => {
-    expect(Schema.decodeUnknownSync(StopCurrentThreadRuntimeInput)(input)).toEqual(input);
+    expect(Schema.decodeSync(StopCurrentThreadRuntimeInput)(input)).toEqual(input);
     expect(() =>
       Schema.decodeUnknownSync(StopCurrentThreadRuntimeInput)({ ...input, target: undefined }),
     ).toThrow();
     expect(() =>
-      Schema.decodeUnknownSync(StopCurrentThreadRuntimeInput)({
+      Schema.decodeSync(StopCurrentThreadRuntimeInput)({
         ...input,
         target: { ...input.target, evidenceRevision: -1 },
       }),
@@ -45,7 +45,7 @@ describe("captured runtime stop contract", () => {
   });
   it("reports unsupported physical capture without manufacturing a target", () => {
     expect(
-      Schema.decodeUnknownSync(ReadCurrentRuntimeStopTargetResult)({
+      Schema.decodeSync(ReadCurrentRuntimeStopTargetResult)({
         status: "unavailable",
         reason: "physical_capture_unavailable",
         backgroundCoverage: "partial",

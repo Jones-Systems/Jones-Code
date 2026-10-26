@@ -40,6 +40,7 @@ import {
   waitForStartedServerThread,
 } from "../ChatView.logic";
 import { draftSendState } from "./chatViewSend";
+import { dispatchPlanFollowUp, planFollowUpSource } from "../../jones/threadMonitor/planFollowUp";
 import type { useLocalDispatchState } from "./useLocalDispatchState";
 import type { useTimelineFollow } from "./useTimelineFollow";
 
@@ -169,50 +170,44 @@ export function usePlanFollowUpSend(input: PlanFollowUpSendInput) {
       },
     ]);
 
-    const settingsResult = await persistThreadSettingsForNextTurn({
-      threadId: threadIdForSend,
-      createdAt: messageCreatedAt,
-      ...(localCheckoutBranchMismatch ? { branch: localCheckoutBranchMismatch.currentBranch } : {}),
-      runtimeMode,
-      interactionMode: nextInteractionMode,
-    });
-    let failure: AtomCommandResult<unknown, unknown> | null =
-      settingsResult._tag === "Failure" ? settingsResult : null;
-
-    if (failure === null) {
-      setComposerDraftInteractionMode(
-        scopeThreadRef(activeThread.environmentId, threadIdForSend),
-        nextInteractionMode,
-      );
-
-      const startResult = await startThreadTurn({
-        environmentId,
-        input: {
+    const followUpResult = await dispatchPlanFollowUp({
+      persistSettings: () =>
+        persistThreadSettingsForNextTurn({
           threadId: threadIdForSend,
-          message: {
-            messageId: messageIdForSend,
-            role: "user",
-            text: outgoingMessageText,
-            ...(context ? { context } : {}),
-            attachments: [],
-          },
-          modelSelection: sendCtx.selectedModelSelection,
-          titleSeed: activeThread.title,
+          createdAt: messageCreatedAt,
+          ...(localCheckoutBranchMismatch
+            ? { branch: localCheckoutBranchMismatch.currentBranch }
+            : {}),
           runtimeMode,
           interactionMode: nextInteractionMode,
-          ...(nextInteractionMode === "default" && activeProposedPlan
-            ? {
-                sourceProposedPlan: {
-                  threadId: activeThread.id,
-                  planId: activeProposedPlan.id,
-                },
-              }
-            : {}),
-          createdAt: messageCreatedAt,
-        },
-      });
-      failure = startResult._tag === "Failure" ? startResult : null;
-    }
+        }),
+      onSettingsPersisted: () =>
+        setComposerDraftInteractionMode(
+          scopeThreadRef(activeThread.environmentId, threadIdForSend),
+          nextInteractionMode,
+        ),
+      startTurn: () =>
+        startThreadTurn({
+          environmentId,
+          input: {
+            threadId: threadIdForSend,
+            message: {
+              messageId: messageIdForSend,
+              role: "user",
+              text: outgoingMessageText,
+              ...(context ? { context } : {}),
+              attachments: [],
+            },
+            modelSelection: sendCtx.selectedModelSelection,
+            titleSeed: activeThread.title,
+            runtimeMode,
+            interactionMode: nextInteractionMode,
+            ...planFollowUpSource(nextInteractionMode, activeThread.id, activeProposedPlan?.id),
+            createdAt: messageCreatedAt,
+          },
+        }),
+    });
+    const failure = followUpResult._tag === "Failure" ? followUpResult : null;
 
     if (failure === null) {
       sendInFlightRef.current = false;

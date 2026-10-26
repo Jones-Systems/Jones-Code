@@ -228,7 +228,7 @@ function decodeResponse(
   const body = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   if (!response.ok) {
     try {
-      const error = Schema.decodeUnknownSync(Schema.fromJsonString(WorkstreamError))(body, {
+      const error = Schema.decodeSync(Schema.fromJsonString(WorkstreamError))(body, {
         onExcessProperty: "error",
       });
       if (

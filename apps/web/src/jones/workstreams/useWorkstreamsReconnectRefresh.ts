@@ -19,6 +19,7 @@ export function useWorkstreamsReconnectRefresh(refresh: () => void): void {
   const generation = useAtomValue(connectedPrimaryGeneration);
   // Mount already starts a read; only a newly connected session needs another one.
   const lastConnectedGeneration = useRef(generation);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Refresh workstream state when the transport observes a new connected generation.
   useEffect(() => {
     if (generation === null || generation === lastConnectedGeneration.current) return;
     lastConnectedGeneration.current = generation;

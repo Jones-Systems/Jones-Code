@@ -25,12 +25,10 @@ const receiptOutcome = (
         : undefined;
 
 /**
- * Waits for the launcher to prove how a failed handoff ended. A refusal it sent proves rejection
- * unless its receipts show acceptance. Otherwise its durable receipts or its answer to a later
- * query decide, and acceptance wins over contrary evidence. A timeout, a missing answer, a
- * reservation without an outcome or an unreadable receipt proves nothing: this asks again, backing
- * off to every 30 seconds, while the launcher can answer, and otherwise waits until this process
- * exits.
+ * A handoff refusal proves rejection unless durable receipts show acceptance, which always wins.
+ * Otherwise await durable receipts or a later launcher query; timeout, missing answers, reservations
+ * and unreadable receipts prove nothing. Back off to 30s while the launcher can answer;
+ * otherwise wait until this process exits.
  */
 export const awaitHandoffOutcome = Effect.fn("HandoffOutcome.awaitHandoffOutcome")(
   function* (input: {
@@ -59,7 +57,7 @@ export const awaitHandoffOutcome = Effect.fn("HandoffOutcome.awaitHandoffOutcome
       if (input.query === undefined) return yield* Effect.never;
       const answer = yield* input
         .query(operationId)
-        .pipe(Effect.catch(() => Effect.succeed({ outcome: "unknown" as const })));
+        .pipe(Effect.orElseSucceed(() => ({ outcome: "unknown" as const })));
       if (answer.outcome !== "unknown") return answer.outcome;
       yield* Effect.sleep(Duration.millis(delay));
     }
