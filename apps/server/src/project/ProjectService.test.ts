@@ -1,3 +1,4 @@
+import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { CommandId, type Project, ProjectId, ProviderInstanceId } from "@t3tools/contracts";
@@ -70,6 +71,7 @@ const layerTestFor = (
 const layerTest = layerTestFor(layerMetadata);
 
 const layerProjectServiceDependencies = Layer.mergeAll(
+  ThreadMetadataReads.layer,
   RuntimeLayer.layerEventSink,
   ProjectStore.layer,
   ProjectionStore.layer,

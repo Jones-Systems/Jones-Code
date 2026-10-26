@@ -95,6 +95,12 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
+import {
+  NativeSessionIdentityRejected,
+  RequiredNativeSession,
+  type NativeSessionObservation,
+  type NativeSessionRequirement,
+} from "../../jones/taskContinuation/requiredNativeSession.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { ClaudeOrchestratorReplayHarness } from "./ClaudeAdapterV2.testkit.ts";
 import { provideDeterministicTestRuntime } from "../testkit/DeterministicRuntime.ts";
@@ -2141,7 +2147,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     });
 
   const makeWakeHarnessWithOptions = (options?: {
-    readonly close?: (sdkMessages: Queue.Queue<SDKMessage>) => Effect.Effect<void>;
+    readonly close?: (
+      sdkMessages: Queue.Queue<SDKMessage>,
+    ) => ClaudeAdapterV2.ClaudeAgentSdkQuerySession["close"];
     readonly interrupt?: Effect.Effect<void>;
     readonly setPermissionMode?: ClaudeAdapterV2.ClaudeAgentSdkQuerySession["setPermissionMode"];
     readonly stopTask?: (
@@ -2385,6 +2393,518 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       };
     });
   const makeWakeHarness = makeWakeHarnessWithOptions();
+
+  it.layer(Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer))(
+    "strict native session continuation",
+    (it) => {
+      type Harness = Effect.Success<typeof makeWakeHarness>;
+      const turnFor = Effect.fnUntraced(function* (harness: Harness, ordinal = 1) {
+        return makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make(`attempt-native-gate-${ordinal}`),
+          text: "Continue the original task.",
+          attachments: [],
+          providerTurnOrdinal: ordinal,
+          nativeThreadHasTurns: false,
+        });
+      });
+      const startGuarded = (
+        harness: Harness,
+        turn: ProviderAdapter.ProviderAdapterV2TurnInput,
+        confirm: NativeSessionRequirement["confirm"] = () => Effect.void,
+      ) =>
+        harness.runtime.startTurn(turn).pipe(
+          Effect.provideService(RequiredNativeSession, {
+            runId: turn.runId,
+            attemptId: turn.attemptId,
+            nativeSessionId: WAKE_NATIVE_SESSION,
+            confirm,
+          }),
+        );
+      const noAcceptedOutput = (harness: Harness) => {
+        assert.isFalse(
+          harness.events.some(
+            (event) =>
+              (event.type === "message.updated" && event.message.role === "assistant") ||
+              (event.type === "turn_item.updated" && event.turnItem.type !== "system_notice") ||
+              event.type === "runtime_request.updated",
+          ),
+        );
+      };
+      const identityError = (error: ProviderAdapter.ProviderAdapterV2Error) => {
+        if (
+          error._tag !== "ProviderAdapterTurnStartError" ||
+          !Schema.is(NativeSessionIdentityRejected)(error.cause)
+        ) {
+          throw new Error("Expected a typed native session identity rejection.");
+        }
+        return error.cause;
+      };
+      const makeGuardHarness = makeWakeHarnessWithOptions({
+        freshQueueOnReopen: true,
+        close: (messages) => Queue.shutdown(messages),
+      });
+
+      it.effect("forces an exact cold resume and persists proof before accepting output", () =>
+        Effect.gen(function* () {
+          const harness = yield* makeGuardHarness;
+          const turn = yield* turnFor(harness);
+          const observations: NativeSessionObservation[] = [];
+          const entered = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          yield* startGuarded(harness, turn, (observation) =>
+            Effect.gen(function* () {
+              observations.push(observation);
+              yield* Deferred.succeed(entered, undefined);
+              yield* Deferred.await(release);
+            }),
+          );
+          assert.equal(harness.getOpenedOptions()?.resume, WAKE_NATIVE_SESSION);
+          assert.isUndefined(harness.getOpenedOptions()?.sessionId);
+          assert.equal(observations.length, 0);
+          yield* Queue.offer(harness.sdkMessages, wakeTurnInit);
+          yield* Deferred.await(entered);
+          yield* Queue.offer(
+            harness.sdkMessages,
+            makeAssistantTextFrame({
+              uuid: "guarded-cold-assistant",
+              text: "Verified cold continuation.",
+            }),
+          );
+          noAcceptedOutput(harness);
+          yield* Deferred.succeed(release, undefined);
+          yield* harness.offerAndWait(
+            makeResultFrame({
+              uuid: "guarded-cold-result",
+              result: "Verified cold continuation.",
+            }),
+          );
+          const terminal = yield* Queue.take(harness.terminalReceipts);
+          assert.equal(terminal.status, "completed");
+          assert.equal(observations.length, 1);
+          assert.equal(observations[0]?.runId, turn.runId);
+          assert.equal(observations[0]?.attemptId, turn.attemptId);
+          assert.equal(observations[0]?.nativeSessionId, WAKE_NATIVE_SESSION);
+          assert.isNotEmpty(observations[0]?.runtimeGeneration);
+        }),
+      );
+
+      it.effect.each([
+        {
+          title: "wrong init",
+          frame: { ...wakeTurnInit, session_id: "wrong-native-session" },
+          reason: "init_mismatch",
+        },
+        {
+          title: "assistant before init",
+          frame: makeAssistantTextFrame({ uuid: "pre-init-assistant", text: "Must be rejected." }),
+          reason: "output_before_init",
+        },
+        {
+          title: "tool before init",
+          frame: claudeSdkFrame({
+            type: "assistant",
+            uuid: "pre-init-tool",
+            session_id: WAKE_NATIVE_SESSION,
+            parent_tool_use_id: null,
+            message: {
+              id: "msg_pre_init_tool",
+              role: "assistant",
+              content: [
+                {
+                  type: "tool_use",
+                  id: "tool_pre_init",
+                  name: "Read",
+                  input: { file_path: "/workspace/source.ts" },
+                },
+              ],
+            },
+          }),
+          reason: "output_before_init",
+        },
+        {
+          title: "result before init",
+          frame: makeResultFrame({ uuid: "pre-init-result", result: "Must be rejected." }),
+          reason: "output_before_init",
+        },
+        {
+          title: "delta before init",
+          frame: claudeSdkFrame({
+            type: "stream_event",
+            uuid: "pre-init-delta",
+            session_id: WAKE_NATIVE_SESSION,
+            parent_tool_use_id: null,
+            event: {
+              type: "content_block_delta",
+              index: 0,
+              delta: { type: "text_delta", text: "Must be rejected." },
+            },
+          }),
+          reason: "output_before_init",
+        },
+      ])("rejects $title and retires its query without accepted content", ({ frame, reason }) =>
+        Effect.gen(function* () {
+          let interrupts = 0;
+          let closes = 0;
+          let confirmations = 0;
+          const closed = yield* Deferred.make<void>();
+          const harness = yield* makeWakeHarnessWithOptions({
+            freshQueueOnReopen: true,
+            interrupt: Effect.sync(() => {
+              interrupts += 1;
+            }),
+            close: (messages) =>
+              Effect.sync(() => {
+                closes += 1;
+              }).pipe(
+                Effect.andThen(Queue.shutdown(messages)),
+                Effect.andThen(Deferred.succeed(closed, undefined)),
+              ),
+          });
+          yield* startGuarded(harness, yield* turnFor(harness), () =>
+            Effect.sync(() => {
+              confirmations += 1;
+            }),
+          );
+          yield* Queue.offer(harness.sdkMessages, frame);
+          const terminal = yield* Queue.take(harness.terminalReceipts);
+          assert.equal(terminal.status, "failed");
+          if (terminal.status !== "failed") return;
+          assert.equal(terminal.failure.code, "native_session_identity_rejected");
+          assert.include(terminal.failure.message, reason);
+          yield* Deferred.await(closed);
+          assert.equal(closes, 1);
+          noAcceptedOutput(harness);
+          assert.equal(confirmations, 0);
+          assert.equal(interrupts, 1);
+          assert.equal(harness.providerThread.nativeThreadRef?.nativeId, WAKE_NATIVE_SESSION);
+          assert.equal(terminal.evidenceKind, "local_failure");
+          assert.equal(harness.terminalEvents().length, 1);
+          assert.isUndefined(
+            ProviderEventOrigin.readProviderEventOrigin(terminal)?.producer.runtimeGeneration,
+          );
+          yield* ProviderEventOrigin.revalidateProviderEventOrigin(terminal, harness.runtime);
+        }),
+      );
+
+      it.effect("reuses an observed warm query and confirms the new attempt before offering", () =>
+        Effect.gen(function* () {
+          const harness = yield* makeGuardHarness;
+          yield* harness.runtime.startTurn(yield* turnFor(harness));
+          yield* harness.offerAndWait(wakeTurnInit);
+          yield* harness.offerAndWait(turnOneResult);
+          yield* Queue.take(harness.terminalReceipts);
+          const observations: NativeSessionObservation[] = [];
+          const turn = yield* turnFor(harness, 2);
+          yield* startGuarded(harness, turn, (observation) =>
+            Effect.sync(() => {
+              assert.equal(harness.offeredMessages.length, 1);
+              observations.push(observation);
+            }),
+          );
+          assert.equal(harness.processQueues.length, 1);
+          assert.equal(harness.offeredMessages.length, 2);
+          yield* harness.offerAndWait(
+            makeResultFrame({ uuid: "warm-result", result: "Warm continuation complete." }),
+          );
+          assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
+          assert.equal(observations.length, 1);
+          assert.equal(observations[0]?.attemptId, turn.attemptId);
+        }),
+      );
+
+      it.effect("keeps ordinary output compatible and reopens an idle unobserved query cold", () =>
+        Effect.gen(function* () {
+          const harness = yield* makeGuardHarness;
+          yield* harness.runtime.startTurn(yield* turnFor(harness));
+          assert.equal(harness.getOpenedOptions()?.sessionId, WAKE_NATIVE_SESSION);
+          yield* harness.offerAndWait(turnOneResult);
+          assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
+          assert.isTrue(
+            harness.events.some(
+              (event) => event.type === "message.updated" && event.message.role === "assistant",
+            ),
+          );
+          let confirmations = 0;
+          yield* startGuarded(harness, yield* turnFor(harness, 2), () =>
+            Effect.sync(() => {
+              confirmations += 1;
+            }),
+          );
+          assert.equal(harness.processQueues.length, 2);
+          assert.equal(harness.getOpenedOptions()?.resume, WAKE_NATIVE_SESSION);
+          assert.equal(confirmations, 0);
+          yield* harness.offerAndWait(wakeTurnInit);
+          yield* harness.offerAndWait(
+            makeResultFrame({ uuid: "reopened-result", result: "Reopened continuation complete." }),
+          );
+          assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
+          assert.equal(confirmations, 1);
+        }),
+      );
+
+      it.effect(
+        "refuses an unobserved warm query with live background work without closing it",
+        () =>
+          Effect.gen(function* () {
+            let closes = 0;
+            const harness = yield* makeWakeHarnessWithOptions({
+              close: (messages) =>
+                Effect.sync(() => {
+                  closes += 1;
+                }).pipe(Effect.andThen(Queue.shutdown(messages))),
+            });
+            yield* harness.runtime.startTurn(yield* turnFor(harness));
+            yield* harness.offerAndWait(wakeTaskStarted);
+            yield* harness.offerAndWait(turnOneResult);
+            yield* Queue.take(harness.terminalReceipts);
+            assert.isTrue(yield* harness.hasPendingBackgroundWork);
+            const rejected = yield* startGuarded(harness, yield* turnFor(harness, 2)).pipe(
+              Effect.flip,
+            );
+            assert.equal(identityError(rejected).reason, "unobserved_live_query");
+            assert.equal(closes, 0);
+            assert.equal(harness.offeredMessages.length, 1);
+            assert.equal(harness.processQueues.length, 1);
+            assert.isTrue(yield* harness.hasPendingBackgroundWork);
+          }),
+      );
+
+      it.effect.each(["close failure", "stream exit timeout"] as const)(
+        "blocks strict reopening and later launches after %s",
+        (mode) =>
+          Effect.gen(function* () {
+            let closes = 0;
+            const closeStarted = yield* Deferred.make<void>();
+            const harness = yield* makeWakeHarnessWithOptions({
+              freshQueueOnReopen: true,
+              close: () =>
+                Effect.gen(function* () {
+                  closes += 1;
+                  yield* Deferred.succeed(closeStarted, undefined);
+                  if (mode === "close failure") {
+                    return yield* new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+                      method: "close",
+                      cause: new Error("The native process close was not acknowledged."),
+                    });
+                  }
+                }),
+            });
+            yield* harness.runtime.startTurn(yield* turnFor(harness));
+            yield* harness.offerAndWait(turnOneResult);
+            yield* Queue.take(harness.terminalReceipts);
+            const start = yield* startGuarded(harness, yield* turnFor(harness, 2)).pipe(
+              Effect.flip,
+              Effect.forkScoped,
+            );
+            yield* Deferred.await(closeStarted);
+            if (mode === "stream exit timeout") yield* TestClock.adjust("10 seconds");
+            const rejection = yield* Fiber.join(start);
+            assert.equal(rejection._tag, "ProviderAdapterTurnStartError");
+            assert.equal(harness.processQueues.length, 1);
+            assert.equal(harness.offeredMessages.length, 1);
+            assert.equal(closes, 1);
+            // A late stream exit cannot restore a binding whose close was unproved.
+            yield* Queue.shutdown(harness.sdkMessages);
+            const retry = yield* startGuarded(harness, yield* turnFor(harness, 3)).pipe(
+              Effect.flip,
+            );
+            assert.isTrue(
+              retry._tag === "ProviderAdapterTurnStartError" &&
+                Schema.is(ProviderAdapter.ProviderAdapterProtocolError)(retry.cause) &&
+                retry.cause.detail.includes("unconfirmed"),
+            );
+            const ordinaryRetry = yield* harness.runtime
+              .startTurn(yield* turnFor(harness, 4))
+              .pipe(Effect.flip);
+            assert.isTrue(
+              ordinaryRetry._tag === "ProviderAdapterTurnStartError" &&
+                Schema.is(ProviderAdapter.ProviderAdapterProtocolError)(ordinaryRetry.cause) &&
+                ordinaryRetry.cause.detail.includes("unconfirmed"),
+            );
+            assert.equal(harness.processQueues.length, 1);
+            assert.equal(harness.offeredMessages.length, 1);
+            assert.equal(closes, 1);
+          }),
+      );
+
+      it.effect("retires a warm query observed on a different native session", () =>
+        Effect.gen(function* () {
+          let closes = 0;
+          const harness = yield* makeWakeHarnessWithOptions({
+            freshQueueOnReopen: true,
+            close: (messages) =>
+              Effect.sync(() => {
+                closes += 1;
+              }).pipe(Effect.andThen(Queue.shutdown(messages))),
+          });
+          yield* harness.runtime.startTurn(yield* turnFor(harness));
+          yield* harness.offerAndWait({ ...wakeTurnInit, session_id: "wrong-native-session" });
+          yield* harness.offerAndWait(turnOneResult);
+          yield* Queue.take(harness.terminalReceipts);
+          const rejected = yield* startGuarded(harness, yield* turnFor(harness, 2)).pipe(
+            Effect.flip,
+          );
+          assert.equal(identityError(rejected).reason, "init_mismatch");
+          assert.equal(closes, 1);
+          assert.equal(harness.offeredMessages.length, 1);
+          yield* startGuarded(harness, yield* turnFor(harness, 3));
+          assert.equal(harness.processQueues.length, 2);
+          assert.equal(harness.getOpenedOptions()?.resume, WAKE_NATIVE_SESSION);
+        }),
+      );
+
+      it.effect.each(["wrong", "missing"] as const)(
+        "refuses a %s destination before query creation",
+        (destination) =>
+          Effect.gen(function* () {
+            const harness = yield* makeGuardHarness;
+            const turn = yield* turnFor(harness);
+            const rejected = yield* startGuarded(harness, {
+              ...turn,
+              providerThread: {
+                ...turn.providerThread,
+                nativeThreadRef:
+                  destination === "missing"
+                    ? null
+                    : {
+                        driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+                        nativeId: "wrong-native-session",
+                        strength: "strong",
+                      },
+              },
+            }).pipe(Effect.flip);
+            assert.equal(identityError(rejected).reason, "destination_mismatch");
+            assert.equal(harness.processQueues.length, 0);
+            assert.equal(harness.offeredMessages.length, 0);
+          }),
+      );
+
+      it.effect.each(["cold", "warm"] as const)(
+        "fails a %s guarded turn when the witness write fails",
+        (mode) =>
+          Effect.gen(function* () {
+            let closes = 0;
+            const closed = yield* Deferred.make<void>();
+            const harness = yield* makeWakeHarnessWithOptions({
+              close: (messages) =>
+                Effect.sync(() => {
+                  closes += 1;
+                }).pipe(
+                  Effect.andThen(Queue.shutdown(messages)),
+                  Effect.andThen(Deferred.succeed(closed, undefined)),
+                ),
+            });
+            if (mode === "warm") {
+              yield* harness.runtime.startTurn(yield* turnFor(harness));
+              yield* harness.offerAndWait(wakeTurnInit);
+              yield* harness.offerAndWait(turnOneResult);
+              yield* Queue.take(harness.terminalReceipts);
+            }
+            const start = startGuarded(harness, yield* turnFor(harness, 2), () =>
+              Effect.fail(
+                new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+                  detail: "Verification storage is unavailable",
+                }),
+              ),
+            );
+            if (mode === "warm") {
+              yield* start.pipe(Effect.flip);
+              assert.equal(harness.offeredMessages.length, 1);
+            } else {
+              yield* start;
+              yield* Queue.offer(harness.sdkMessages, wakeTurnInit);
+              const terminal = yield* Queue.take(harness.terminalReceipts);
+              assert.equal(terminal.status, "failed");
+              yield* Deferred.await(closed);
+              assert.equal(harness.terminalEvents().length, 1);
+              yield* ProviderEventOrigin.revalidateProviderEventOrigin(terminal, harness.runtime);
+              noAcceptedOutput(harness);
+            }
+            yield* Deferred.await(closed);
+            assert.equal(closes, 1);
+            assert.equal(harness.providerThread.nativeThreadRef?.nativeId, WAKE_NATIVE_SESSION);
+          }),
+      );
+
+      it.effect.each(["tool", "dialog"] as const)(
+        "refuses a pre-init %s callback before actionable effects",
+        (kind) =>
+          Effect.gen(function* () {
+            const harness = yield* makeGuardHarness;
+            let confirmations = 0;
+            yield* startGuarded(harness, yield* turnFor(harness), () =>
+              Effect.sync(() => {
+                confirmations += 1;
+              }),
+            );
+            const options = harness.getOpenedOptions()!;
+            const signal = new AbortController().signal;
+            const callback =
+              kind === "tool"
+                ? () =>
+                    options.canUseTool!(
+                      "Read",
+                      { file_path: "/workspace/source.ts" },
+                      {
+                        signal,
+                        toolUseID: "guarded-pre-init-tool",
+                        requestId: "guarded-pre-init-tool",
+                      },
+                    )
+                : () =>
+                    options.onUserDialog!(
+                      { dialogKind: "resume_return", payload: {} },
+                      { signal, requestId: "guarded-pre-init-dialog" },
+                    );
+            yield* Effect.tryPromise(async () => {
+              await callback();
+            }).pipe(Effect.flip);
+            const terminal = yield* Queue.take(harness.terminalReceipts);
+            assert.equal(terminal.status, "failed");
+            if (terminal.status !== "failed") return;
+            assert.equal(terminal.failure.code, "native_session_identity_rejected");
+            assert.equal(terminal.evidenceKind, "local_failure");
+            assert.equal(harness.terminalEvents().length, 1);
+            assert.isUndefined(
+              ProviderEventOrigin.readProviderEventOrigin(terminal)?.producer.runtimeGeneration,
+            );
+            yield* ProviderEventOrigin.revalidateProviderEventOrigin(terminal, harness.runtime);
+            noAcceptedOutput(harness);
+            assert.equal(confirmations, 0);
+          }),
+      );
+
+      it.effect("resumes exactly after an idle query is released", () =>
+        Effect.gen(function* () {
+          const harness = yield* makeGuardHarness;
+          yield* harness.runtime.startTurn(yield* turnFor(harness));
+          yield* harness.offerAndWait(wakeTurnInit);
+          yield* harness.offerAndWait(turnOneResult);
+          yield* Queue.take(harness.terminalReceipts);
+          yield* harness.runtime.interruptTurn({
+            providerThread: harness.providerThread,
+            providerTurnId: ProviderTurnId.make("idle-release"),
+            requestRuntimeRestart: true,
+          });
+          yield* startGuarded(harness, yield* turnFor(harness, 2));
+          assert.equal(harness.processQueues.length, 2);
+          assert.equal(harness.getOpenedOptions()?.resume, WAKE_NATIVE_SESSION);
+          yield* harness.offerAndWait(wakeTurnInit);
+          yield* harness.offerAndWait(
+            makeResultFrame({
+              uuid: "idle-release-result",
+              result: "Continued after idle release.",
+            }),
+          );
+          assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
+        }),
+      );
+    },
+  );
 
   describe("Claude settings restrictions", () => {
     it.effect("resolves cached managed policy from the configured home through the real SDK", () =>

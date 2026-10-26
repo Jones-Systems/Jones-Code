@@ -2,6 +2,7 @@ import { EnvironmentId } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
@@ -39,9 +40,11 @@ const links = Layer.mock(PeerLinks.PeerLinks)({
     Effect.succeed({
       url: "https://peer.invalid",
       token: "synthetic-token",
+      generation: "generation-1",
       link: {},
     } as PeerLinks.ResolvedPeerLink),
   recordOutcome: () => Effect.void,
+  currentGeneration: () => Effect.succeed(Option.some("generation-1")),
 });
 const fixture = (
   respond: (

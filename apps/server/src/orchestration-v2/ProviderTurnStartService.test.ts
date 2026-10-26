@@ -97,6 +97,10 @@ function startWithMissingWorktree(
     "provider_session_provider_turn_start_projection_failure",
   );
   const messageId = MessageId.make("message_provider_turn_start_projection_failure");
+  const modelSelection: ModelSelection = {
+    instanceId: ProviderInstanceId.make("codex"),
+    model: "gpt-5.4",
+  };
   const checkpointScopeId = CheckpointScopeId.make(
     "checkpoint_scope_provider_turn_start_projection_failure",
   );
@@ -110,6 +114,9 @@ function startWithMissingWorktree(
     runs: [
       {
         id: runId,
+        threadId,
+        providerInstanceId: modelSelection.instanceId,
+        modelSelection,
         status: "starting",
         rootNodeId,
         activeAttemptId: attemptId,

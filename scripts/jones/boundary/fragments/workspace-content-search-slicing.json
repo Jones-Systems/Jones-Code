@@ -1,0 +1,16 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "workspace-content-search-slicing",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/workspace/contentSearchPages.ts",
+    "apps/server/src/jones/workspace/contentSearchPages.test.ts"
+  ],
+  "hookPaths": ["apps/server/src/workspace/WorkspaceSearchIndex.ts"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/workspace/WorkspaceSearchIndex.ts",
+      "to": "apps/server/src/jones/workspace/contentSearchPages.ts"
+    }
+  ]
+}

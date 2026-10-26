@@ -1,3 +1,4 @@
+import * as ThreadMetadataReads from "./jones/orchestration/threadMetadataReads.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
 import { DEFAULT_SERVER_SETTINGS, EnvironmentId, ProjectId } from "@t3tools/contracts";
@@ -79,6 +80,10 @@ it.effect("parks automatic pull until activation without delaying command readin
       const dependencies: Layer.Layer<
         Layer.Services<ReturnType<typeof ServerRuntimeStartup.layerWithOptions>>
       > = Layer.mergeAll(
+        Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({
+          count: Effect.succeed(0),
+          list: () => Effect.succeed({ snapshotSequence: 0, threads: [] }),
+        }),
         Layer.mock(ServerConfig.ServerConfig)({
           ...(yield* ServerConfig.deriveServerPaths(cwd, undefined).pipe(
             Effect.provide(Path.layer),
@@ -139,6 +144,7 @@ it.effect("parks automatic pull until activation without delaying command readin
           runOnce: Effect.never,
           awaitWork: Effect.never,
           runActionOnce: Effect.never,
+          runUrgentOnce: Effect.never,
         }),
         Layer.mock(ServerLifecycleEvents.ServerLifecycleEvents)({
           publish: (event) => Effect.succeed({ ...event, sequence: 1 }),
