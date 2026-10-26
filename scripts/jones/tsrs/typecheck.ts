@@ -5,6 +5,9 @@ import * as Effect from "effect/Effect";
 import * as Identity from "./identity.ts";
 import { acquireLock, runChild } from "./patch.ts";
 
+const FALLBACK_LIMITATION =
+  "The pinned fallback misses configured deterministicKeys ERROR TS377049; local or cached success requires authoritative supported-platform CI.";
+
 export async function selectCompiler(root: string, host: Identity.Host = Identity.currentHost()) {
   const target = Identity.hostTarget(host);
   if (target)
@@ -29,7 +32,7 @@ export async function admit(
   process.stdout.write(
     target
       ? `[tsrs] admission: official Effect ${Identity.EFFECT_VERSION}, ${target}, ${Identity.TARGETS[target].patched}\n`
-      : `[tsrs] admission: local non-authoritative fallback ${Identity.FALLBACK.name}@${Identity.FALLBACK.version}\n`,
+      : `[tsrs] admission: local non-authoritative fallback ${Identity.FALLBACK.name}@${Identity.FALLBACK.version}. ${FALLBACK_LIMITATION}\n`,
   );
 }
 
@@ -103,7 +106,7 @@ export async function runFallback(
 ): Promise<number> {
   const compiler = await Identity.resolveFallback(root);
   process.stderr.write(
-    `[tsrs] Unsupported host; using pinned ${Identity.FALLBACK.name}@${Identity.FALLBACK.version} with built-in Effect diagnostics (local, non-authoritative).\n`,
+    `[tsrs] Unsupported host; using pinned ${Identity.FALLBACK.name}@${Identity.FALLBACK.version} with built-in Effect diagnostics (local, non-authoritative). ${FALLBACK_LIMITATION}\n`,
   );
   return runChild({ executable: compiler.executable, args, cwd, signal });
 }

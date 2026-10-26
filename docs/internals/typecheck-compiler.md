@@ -66,6 +66,21 @@ root uncached admission task runs before cached work, even with top-level
 selection inside the launcher does not depend on `CI` or another environment
 switch.
 
+The pinned local fallback is `@tsc-rs/typescript@0.8.0`. It misses the configured
+`deterministicKeys` error TS377049: an unsupported host can report success for
+an invalid service key that supported-platform checking rejects. Its observed
+Effect 4 corpus coverage is 48 of 49 applicable configured rules, compared with
+49 of 49 for the official Effect-patched TSRS candidate. The remaining configured
+`missingEffectServiceDependency` rule supports Effect 3 only and is not applicable
+to the installed Effect 4; it is not counted as passed. The original strict
+fallback-parity criterion failed; the versioned Q2-R1 qualification retains this
+pre-existing limitation. Local and cached fallback success cannot establish
+complete diagnostics. Supported-platform CI remains authoritative. Track the
+limit in [issue 711](https://github.com/Jones-Systems/Jones-Code/issues/711);
+closure requires a separately selected and qualified fallback that enforces
+TS377049. Changing compiler pins, relevant settings or rule applicability requires
+affected qualification again.
+
 The launcher holds the mutation lock through verification and successful native
 spawn, then releases it while checking continues. Parallel compiler processes
 therefore do not serialize for the duration of their checks. A concurrent restore

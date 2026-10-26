@@ -428,7 +428,7 @@ NodeTest.test("root admission remains uncached and CI uses the root typecheck ch
 });
 
 NodeTest.test(
-  "pinned fallback preserves current configured Effect errors and corrected success",
+  "pinned fallback preserves TS377067 and discloses its TS377049 limitation",
   async (t) => {
     const parent = NodePath.join(repository, ".t3/test-scratch/tsrs-fallback");
     await NodeFSP.mkdir(parent, { recursive: true });
@@ -458,7 +458,7 @@ NodeTest.test(
         args: [
           "--input-type=module",
           "--eval",
-          `import {runFallback} from ${JSON.stringify(moduleUrl)};process.exitCode=await runFallback(${JSON.stringify(repository)},${JSON.stringify(root)},["--noEmit","--pretty","false"],new AbortController().signal);`,
+          `import {runFallback} from ${JSON.stringify(moduleUrl)};process.stderr.write=(chunk)=>process.stdout.write(chunk);process.exitCode=await runFallback(${JSON.stringify(repository)},${JSON.stringify(root)},["--noEmit","--pretty","false"],new AbortController().signal);`,
         ],
         cwd: root,
         capture: true,
@@ -478,6 +478,10 @@ NodeTest.test(
     const negative = await check();
     NodeAssert.equal(negative.code, 2, negative.stdout);
     NodeAssert.match(negative.stdout, /error TS377067/);
+    NodeAssert.match(
+      negative.stdout,
+      /fallback misses configured deterministicKeys ERROR TS377049/,
+    );
     await NodeFSP.writeFile(
       entry,
       "import * as Effect from 'effect/Effect'; export const probe = Effect.sync(() => 0);\n",
@@ -485,5 +489,6 @@ NodeTest.test(
     const positive = await check();
     NodeAssert.equal(positive.code, 0, positive.stdout);
     NodeAssert.doesNotMatch(positive.stdout, /error TS377067/);
+    NodeAssert.match(positive.stdout, /local or cached success requires authoritative/);
   },
 );
