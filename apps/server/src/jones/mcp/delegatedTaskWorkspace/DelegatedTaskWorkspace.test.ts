@@ -470,6 +470,7 @@ function makeHarness(
           Effect.andThen(observed ? Effect.void : Deferred.succeed(setupEntered, undefined)),
           Effect.as({
             status: "started" as const,
+            writeCompletion: Effect.void,
             async: options.setupAsync === true,
             scriptId: "setup",
             scriptName: "Setup",
