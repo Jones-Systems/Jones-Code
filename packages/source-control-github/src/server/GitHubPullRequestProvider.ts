@@ -16,6 +16,8 @@ import type {
 
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import * as GitHubPullRequestApi from "./GitHubPullRequestApi.ts";
+import * as GitHubRest from "./GitHubRest.ts";
+import type { SourceControlCiReader } from "@t3tools/source-control-core/server/driver";
 import {
   PullRequestProviderError,
   type PullRequestProviderFailure,
@@ -125,6 +127,28 @@ function gitHubProviderFailure(
       return { reason: "failed" };
   }
 }
+
+export const makeCiReader = Effect.gen(function* () {
+  const github = yield* GitHubRest.GitHubRest;
+  return {
+    rest: (input) =>
+      github.rest(input).pipe(
+        Effect.mapError(
+          (cause) =>
+            new PullRequestProviderError({
+              provider: SourceControlProviderKind.make("github"),
+              operation: input.operation,
+              ...gitHubProviderFailure(cause),
+              ...(cause._tag === "GitHubApiResponseError" && cause.status === 429
+                ? { reason: "rate-limited" as const }
+                : {}),
+              detail: "GitHub CI data could not be read.",
+              cause,
+            }),
+        ),
+      ),
+  } satisfies SourceControlCiReader;
+});
 
 function withAvatar(
   actor: PullRequestActor | null,

@@ -6,7 +6,11 @@ import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as TestClock from "effect/testing/TestClock";
-import type { OrchestrationProjectShell, ProjectId } from "@t3tools/contracts";
+import {
+  SourceControlProviderKind,
+  type OrchestrationProjectShell,
+  type ProjectId,
+} from "@t3tools/contracts";
 import * as GitHubRest from "@t3tools/source-control-github/server/GitHubRest";
 import * as GitHubRequestPolicy from "@t3tools/source-control-github/server/GitHubRequestPolicy";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
@@ -45,7 +49,7 @@ function project(
     workspaceRoot: `/workspace/${repository}`,
     repositoryIdentity: {
       canonicalKey: `${host}/${repository}`,
-      provider,
+      provider: SourceControlProviderKind.make(provider),
       displayName: repository,
       locator: {
         source: "git-remote",
@@ -60,7 +64,7 @@ function project(
   };
 }
 const input = { host: "github.com", organization: "acme" };
-function fixture(projects: ReadonlyArray<OrchestrationProjectShell>) {
+function fixture(projects: ReadonlyArray<OrchestrationProjectShell>, supportsCi = true) {
   return Effect.gen(function* () {
     let credential = "credential-a";
     const calls: { endpoint: string; credential: string | undefined }[] = [];
@@ -85,12 +89,36 @@ function fixture(projects: ReadonlyArray<OrchestrationProjectShell>) {
         }),
       ),
     );
+    const ci = yield* GitHubPullRequestProvider.makeCiReader.pipe(
+      Effect.provideService(GitHubRest.GitHubRest, {
+        credential: () => Effect.die("CI reads must use the pinned credential"),
+        rest: (request) =>
+          Effect.gen(function* () {
+            const pinned = yield* GitHubRequestPolicy.PinnedGitHubCredential;
+            const endpoint = request.path;
+            calls.push({ endpoint, credential: pinned?.credentialFingerprint });
+            const value = endpoint.includes("/runners")
+              ? { total_count: 0, runners: [] }
+              : { total_count: 0, workflow_runs: [] };
+            return {
+              status: 200,
+              headers: {},
+              body: encodeJson(value),
+              truncated: false,
+              invalidUtf8: false,
+            };
+          }),
+      }),
+    );
     const service = yield* PullRequestService.make.pipe(
       Effect.provide(
         Layer.mergeAll(
           Layer.succeed(
             PullRequestProviderRegistry.PullRequestProviderRegistry,
-            PullRequestProviderRegistry.fromProviders([provider]),
+            PullRequestProviderRegistry.fromProviders(
+              [provider],
+              new Map(supportsCi ? [[provider.kind, ci]] : []),
+            ),
           ),
           Layer.mock(ProjectService.ProjectService)({ listShells: () => Effect.succeed(projects) }),
           Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({}),
@@ -101,24 +129,6 @@ function fixture(projects: ReadonlyArray<OrchestrationProjectShell>) {
           Layer.mock(PullRequestReadCache.PullRequestReadCache)({}),
           SourceControlRateLimit.layer,
           ServerSettings.layerTest(),
-          Layer.mock(GitHubRest.GitHubRest)({
-            rest: (request) =>
-              Effect.gen(function* () {
-                const pinned = yield* GitHubRequestPolicy.PinnedGitHubCredential;
-                const endpoint = request.path;
-                calls.push({ endpoint, credential: pinned?.credentialFingerprint });
-                const value = endpoint.includes("/runners")
-                  ? { total_count: 0, runners: [] }
-                  : { total_count: 0, workflow_runs: [] };
-                return {
-                  status: 200,
-                  headers: {},
-                  body: encodeJson(value),
-                  truncated: false,
-                  invalidUtf8: false,
-                };
-              }),
-          }),
         ),
       ),
     );
@@ -190,5 +200,17 @@ it.effect("coalesces concurrent reads for two minutes and separates credential c
     yield* service.ciStatus(input);
     assert.equal(calls.length, 18);
     assert.equal(calls[17]!.credential, "credential-b");
+  }),
+);
+
+it.effect("reports CI unavailable when the driver has no CI reader", () =>
+  Effect.gen(function* () {
+    const { service, calls } = yield* fixture([project("acme/web")], false);
+    const result = yield* service.ciStatus(input);
+    assert.equal(result.jobs.state, "unavailable");
+    assert.equal(result.workflows.state, "unavailable");
+    assert.equal(result.runners.state, "unavailable");
+    assert.deepEqual(result.repositories, ["acme/web"]);
+    assert.equal(calls.length, 0);
   }),
 );

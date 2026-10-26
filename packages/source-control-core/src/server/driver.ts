@@ -1,5 +1,6 @@
 import type { SourceControlProviderKind } from "@t3tools/contracts";
 import type * as Crypto from "effect/Crypto";
+import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
 import type { HttpClient, HttpClientError, HttpClientResponse } from "effect/http";
@@ -9,7 +10,7 @@ import type * as Scope from "effect/Scope";
 import type { SourceControlDefinition } from "../shared/definition.ts";
 
 import type { SourceControlProviderDiscoverySpec } from "./discovery.ts";
-import type { PullRequestProviderApi } from "./PullRequestProvider.ts";
+import type { PullRequestProviderApi, PullRequestProviderError } from "./PullRequestProvider.ts";
 import type * as SourceControlHost from "./SourceControlHost.ts";
 import type * as SourceControlProvider from "./SourceControlProvider.ts";
 import type * as SourceControlRateLimit from "./SourceControlRateLimit.ts";
@@ -21,11 +22,34 @@ export interface SourceControlMediaRequest {
   readonly headers: Readonly<Record<string, string>>;
 }
 
+export interface SourceControlCiReader {
+  readonly rest: (input: {
+    readonly host: string;
+    readonly operation: string;
+    readonly method: "GET";
+    readonly path: string;
+    readonly body?: never;
+    readonly timeout?: Duration.Input;
+    readonly maxResponseBytes?: number;
+  }) => Effect.Effect<
+    {
+      readonly status: number;
+      readonly headers: Readonly<Record<string, string | undefined>>;
+      readonly body: string;
+      readonly truncated: boolean;
+      readonly invalidUtf8: boolean;
+    },
+    PullRequestProviderError
+  >;
+}
+
 export interface SourceControlDriverInstance {
   readonly sourceControl: SourceControlProvider.SourceControlProvider["Service"];
   readonly discovery: SourceControlProviderDiscoverySpec;
   /** Null for a host whose pull requests this build cannot read. */
   readonly pullRequests: PullRequestProviderApi | null;
+  /** Uses the driver's existing verified credential and shared request budget. */
+  readonly ci?: SourceControlCiReader;
   /**
    * Fetches media the definition's `mediaUrl` claimed, with the credential the host serves it
    * to. Null when the fetch went nowhere a response could come from, such as a redirect loop.
