@@ -1,7 +1,7 @@
 {
   "schema": "jones.boundary-features/v1",
   "scopeReference": "docs/operations/upstream-sync.md",
-  "baseline": "f88b33a16de988f86782343b348631d11432ddf2",
+  "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "features": [
     {
       "id": "project-group-title",

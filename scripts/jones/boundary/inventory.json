@@ -3,9 +3,9 @@
   "upstream": {
     "repository": "pingdotgg/t3code",
     "ref": "refs/heads/main",
-    "commit": "f88b33a16de988f86782343b348631d11432ddf2"
+    "commit": "0a3b561bc0901d8fa47e430fc9d8593918cde978"
   },
-  "baseline": "f88b33a16de988f86782343b348631d11432ddf2",
+  "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "paths": {
     "apps/desktop/src/updates/DesktopUpdates.test.ts": "jones-tests-in-upstream",
     "scripts/jones/incremental-typecheck/cli.ts": "jones-owned",
