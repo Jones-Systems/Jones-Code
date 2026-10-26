@@ -2096,9 +2096,17 @@
         "apps/server/src/serverRuntimeStartup.test.ts",
         "apps/server/src/serverRuntimeStartup.autoPull.test.ts",
         "apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts",
-        "apps/server/src/jones/mcp/delegatedTaskWorkspace/DelegatedTaskWorkspace.test.ts"
+        "apps/server/src/jones/mcp/delegatedTaskWorkspace/DelegatedTaskWorkspace.test.ts",
+        "apps/server/src/jones/mcp/pinPlacement/pinPlacement.test.ts",
+        "apps/server/src/mcp/toolkits/core.test.ts",
+        "apps/server/src/mcp/toolkits/thread/handlers.test.ts",
+        "apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts",
+        "apps/server/src/relay/AgentAwarenessRelay.test.ts",
+        "apps/server/src/voiceReview/composition.test.ts",
+        "apps/server/src/jones/orchestration/threadMetadataCallers.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts"
       ],
-      "scope": "Narrow threads-only ID, metadata, count and watermark reads replace full-shell work for rename discovery, startup selection/counting and project deletion. Standalone rename/count reads select the reader; bootstrap/deletion retain writer read-your-writes. Rows and event watermark share a transaction, decode follows commit, deleted rows are excluded, and active-before-archived order is preserved. Existing integration harness exceptions retain production locking, cascade ordering and startup behavior; no database schema or installed-runtime change."
+      "scope": "Narrow threads-only ID, metadata, count and watermark reads replace full-shell work for rename discovery, startup selection/counting and project deletion. Standalone rename/count reads select the reader; bootstrap/deletion retain writer read-your-writes. Rows and event watermark share a transaction, decode follows commit, deleted rows are excluded, and active-before-archived order is preserved. Existing integration harness exceptions retain production locking, cascade ordering and startup behavior; no database schema or installed-runtime change. PR discovery and single-thread refresh, relay catch-up, pin metadata, voice root IDs and thread listing use the existing narrow/read-only paths while retaining sequence guards, command shape, deletion filtering and ordering. Existing MCP, relay, voice and PR integration harness exceptions cover actual caller wiring; reader load still requires composed qualification."
     },
     {
       "id": "queue-removal",

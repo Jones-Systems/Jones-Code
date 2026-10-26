@@ -1996,7 +1996,8 @@
     "packages/contracts/src/jones/taskContinuation.test.ts": "jones-owned",
     "packages/contracts/src/jones/taskContinuation.ts": "jones-owned",
     "packages/provider-core/src/server/jones/TaskContinuationInstructions.ts": "jones-owned",
-    "scripts/jones/boundary/fragments/task-continuation.json": "jones-owned"
+    "scripts/jones/boundary/fragments/task-continuation.json": "jones-owned",
+    "apps/server/src/jones/orchestration/threadMetadataCallers.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

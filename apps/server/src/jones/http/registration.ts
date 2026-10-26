@@ -1,3 +1,4 @@
+import * as ThreadMetadataReads from "../orchestration/threadMetadataReads.ts";
 import * as ProjectionStoreV2 from "../../orchestration-v2/ProjectionStore.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as WorkQueueMetadataService from "../workQueueMetadata/WorkQueueMetadataService.ts";
@@ -36,7 +37,11 @@ export const provideConversationAndVoiceReview = <A, E, R>(api: Layer.Layer<A, E
             Layer.provide(
               VoiceReview.dependenciesLayerLive.pipe(
                 Layer.provide(
-                  Layer.merge(ProjectionStoreV2.layer, ServerEnvironment.layerIdentity),
+                  Layer.mergeAll(
+                    ProjectionStoreV2.layer,
+                    ThreadMetadataReads.layer,
+                    ServerEnvironment.layerIdentity,
+                  ),
                 ),
               ),
             ),

@@ -25,6 +25,7 @@ import * as Stream from "effect/Stream";
 
 import * as GitManager from "../git/GitManager.ts";
 import { asBackgroundGitWork } from "../jones/git/backgroundGitAdmission.ts";
+import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
@@ -101,6 +102,7 @@ interface RefreshRequest {
 
 export const make = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
+  const metadata = yield* ThreadMetadataReads.ThreadMetadataReads;
   const projectStore = yield* ProjectStore.ProjectStoreV2;
   const git = yield* GitManager.GitManager;
   const pullRequests = yield* PullRequestService.PullRequestService;
@@ -123,8 +125,8 @@ export const make = Effect.gen(function* () {
 
   const readThreadSnapshot = ({ threadId, backfill }: RefreshRequest) =>
     threadId === null
-      ? orchestrator
-          .getShellSnapshot({
+      ? metadata
+          .list({
             location: "active",
             unsettledOnly: !(backfill || pendingBackfill.size > 0),
           })
@@ -133,8 +135,8 @@ export const make = Effect.gen(function* () {
           // Read the sequence first. The thread is then at least this new, so a
           // sync guarded by the sequence is rejected rather than missing a change.
           const snapshotSequence = yield* orchestrator.getThreadEventSequence(threadId);
-          const thread = yield* orchestrator.getThreadShell(threadId);
-          return { snapshotSequence, threads: thread === null ? [] : [thread] };
+          const { threads } = yield* metadata.list({ threadIds: [threadId] });
+          return { snapshotSequence, threads };
         });
 
   const synchronize = Effect.fn("ThreadPullRequestServiceV2.synchronize")(function* (
