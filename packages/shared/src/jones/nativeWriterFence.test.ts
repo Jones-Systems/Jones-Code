@@ -484,3 +484,246 @@ it("one retained desktop owner excludes a competing admitted desktop and survive
     );
     expect(result.status, result.stderr).toBe(0);
   }));
+
+async function interruptedFixture(root: string, phase: string, transactionId = "c".repeat(64)) {
+  const manifest = NodePath.join(root, "runtime", "jones-active-install.json");
+  const expected = {
+    ...JSON.parse(await NodeFSP.readFile(manifest, "utf8")),
+    appPath: NodePath.join(root, "Jones Code.app"),
+  };
+  await NodeFSP.writeFile(manifest, JSON.stringify(expected), { mode: 0o600 });
+  const directory = NodePath.join(root, "runtime", "jones-updates", "transactions", transactionId);
+  await NodeFSP.mkdir(directory, { recursive: true, mode: 0o700 });
+  const intent = {
+    protocol: 1,
+    transactionId,
+    expected,
+    staged: { handle: "d".repeat(64) },
+    continuationReceipt: NodePath.join(directory, "continuation.json"),
+    processes: [{ pid: 42, identity: "synthetic recorded birth" }],
+    listener: "fixture-listener",
+  };
+  await NodeFSP.writeFile(NodePath.join(directory, "intent.json"), JSON.stringify(intent));
+  if (phase !== "intent-only") {
+    await NodeFSP.writeFile(
+      NodePath.join(directory, "journal.json"),
+      JSON.stringify({ intent, phase }),
+    );
+  }
+  return { manifest, expected, directory, intent, transactionId };
+}
+
+function refusal(input: Record<string, unknown>, before = "") {
+  const script =
+    "const m = await import(" +
+    JSON.stringify(moduleUrl) +
+    ");\n" +
+    before +
+    "\ntry { m.holdJonesNativeWriterFence(" +
+    JSON.stringify(input) +
+    "); process.stdout.write('null'); }" +
+    "\ncatch (cause) { process.stdout.write(JSON.stringify({ code: cause.code, transactionId: cause.transactionId, message: cause.message })); }";
+  const result = NodeChildProcess.spawnSync(
+    process.execPath,
+    ["--input-type=module", "-e", script],
+    { encoding: "utf8", timeout: 10000, maxBuffer: 1024 * 1024 },
+  );
+  expect(result.status, result.stderr).toBe(0);
+  return JSON.parse(result.stdout);
+}
+
+it.each(["preparing", "intent-only"])(
+  "classifies a proved interrupted %s activation for startup settlement",
+  async (phase) =>
+    fixture(async (root, input) => {
+      const { directory, transactionId } = await interruptedFixture(root, phase);
+      const before = await NodeFSP.readFile(NodePath.join(directory, "intent.json"), "utf8");
+      expect(refusal(input)).toMatchObject({ code: "transaction-settleable", transactionId });
+      expect(await NodeFSP.readFile(NodePath.join(directory, "intent.json"), "utf8")).toBe(before);
+      expect(await NodeFSP.readFile(String(input.databasePath), "utf8")).toBe(
+        "opaque application state",
+      );
+      if (phase === "intent-only") {
+        await expect(NodeFSP.lstat(NodePath.join(directory, "journal.json"))).rejects.toMatchObject(
+          { code: "ENOENT" },
+        );
+      }
+    }),
+);
+
+it.each(["intent", "quiescent"])(
+  "also classifies interrupted %s without publishing a journal",
+  async (phase) =>
+    fixture(async (root, input) => {
+      const { directory, transactionId } = await interruptedFixture(root, phase);
+      const journal = NodePath.join(directory, "journal.json");
+      const before = await NodeFSP.readFile(journal, "utf8");
+      expect(refusal(input)).toMatchObject({ code: "transaction-settleable", transactionId });
+      expect(await NodeFSP.readFile(journal, "utf8")).toBe(before);
+    }),
+);
+
+it("compares settlement manifests structurally instead of by JSON property order", async () =>
+  fixture(async (root, input) => {
+    const { directory, expected, intent, transactionId } = await interruptedFixture(
+      root,
+      "preparing",
+    );
+    const reordered = {
+      ...intent,
+      expected: Object.fromEntries(Object.entries(expected).toReversed()),
+    };
+    await NodeFSP.writeFile(NodePath.join(directory, "intent.json"), JSON.stringify(reordered));
+    await NodeFSP.writeFile(
+      NodePath.join(directory, "journal.json"),
+      JSON.stringify({ intent: reordered, phase: "preparing" }),
+    );
+    expect(refusal(input)).toMatchObject({ code: "transaction-settleable", transactionId });
+  }));
+
+it.each([
+  "pair",
+  "pair-link",
+  "swapped",
+  "manifest",
+  "blocked",
+  "trial",
+  "trial-descriptor",
+  "cold",
+  "later-cold",
+  "later-unknown",
+  "extra-entry",
+  "trial-receipt",
+  "recovery",
+  "null-bundle",
+  "maintenance",
+])("does not advertise startup settlement for %s evidence", async (fault) =>
+  fixture(async (root, input) => {
+    const { directory, expected, intent } = await interruptedFixture(root, "preparing");
+    const journal = NodePath.join(directory, "journal.json");
+    let candidate = input;
+    if (fault === "pair") {
+      await NodeFSP.mkdir(NodePath.join(directory, "previous-pair"));
+      await NodeFSP.writeFile(NodePath.join(directory, "previous-pair", "pair.json"), "{}");
+    } else if (fault === "pair-link") {
+      await NodeFSP.symlink(
+        NodePath.join(root, "missing-pair"),
+        NodePath.join(directory, "previous-pair"),
+      );
+    } else if (fault === "swapped") {
+      await NodeFSP.mkdir(expected.appPath + ".jones-previous-" + expected.generation);
+    } else if (fault === "manifest") {
+      await NodeFSP.writeFile(
+        NodePath.join(root, "runtime", "jones-active-install.json"),
+        JSON.stringify({ ...expected, generation: "new" }),
+      );
+    } else if (fault === "blocked" || fault === "trial") {
+      await NodeFSP.writeFile(journal, JSON.stringify({ intent, phase: fault }));
+    } else if (fault === "trial-descriptor") {
+      candidate = { ...input, descriptorPath: NodePath.join(directory, "trial-descriptor.json") };
+    } else if (fault === "cold" || fault === "later-cold") {
+      const id = fault === "cold" ? intent.transactionId : "f".repeat(64);
+      const target = NodePath.join(NodePath.dirname(directory), id);
+      await NodeFSP.mkdir(target, { recursive: true });
+      await NodeFSP.writeFile(
+        NodePath.join(target, "journal.json"),
+        JSON.stringify({
+          phase: "resumed",
+          intent: { ...intent, transactionId: id, kind: "cold-first-transition" },
+        }),
+      );
+    } else if (fault === "later-unknown") {
+      await NodeFSP.mkdir(NodePath.join(NodePath.dirname(directory), "unknown"));
+    } else if (fault === "extra-entry" || fault === "trial-receipt") {
+      await NodeFSP.writeFile(
+        NodePath.join(directory, fault === "extra-entry" ? "unknown" : "trial-receipt.json"),
+        "{}",
+      );
+    } else if (fault === "recovery" || fault === "null-bundle") {
+      await NodeFSP.writeFile(
+        journal,
+        JSON.stringify({
+          intent,
+          phase: "preparing",
+          ...(fault === "recovery" ? { recovery: {} } : { previousBundle: null }),
+        }),
+      );
+    } else {
+      await NodeFSP.mkdir(NodePath.join(root, "runtime", "jones-maintenance"));
+    }
+    const before = await NodeFSP.readFile(journal, "utf8");
+    const error = refusal(candidate);
+    expect(error).not.toBeNull();
+    expect(error.code).not.toBe("transaction-settleable");
+    expect(await NodeFSP.readFile(journal, "utf8")).toBe(before);
+  }),
+);
+
+it("a different source generation cannot cause automatic settlement", async () =>
+  fixture(async (root, input) => {
+    const { directory } = await interruptedFixture(root, "preparing");
+    const before = await NodeFSP.readFile(NodePath.join(directory, "journal.json"), "utf8");
+    expect(refusal({ ...input, version: "another-version" })).toMatchObject({
+      code: "writer-mismatch",
+    });
+    expect(await NodeFSP.readFile(NodePath.join(directory, "journal.json"), "utf8")).toBe(before);
+  }));
+
+it.each([
+  "ownership-unknown",
+  "paths-differ",
+  "trial-permit-mismatch",
+  "foreign-state",
+  "unstarted-activation",
+])("exposes the %s refusal code without caller writes", async (code) =>
+  fixture(async (root, input) => {
+    const manifest = NodePath.join(root, "runtime", "jones-active-install.json");
+    let candidate = input;
+    if (code === "ownership-unknown") {
+      await NodeFSP.writeFile(manifest, JSON.stringify({ protocol: 2 }));
+    } else if (code === "paths-differ") {
+      const value = JSON.parse(await NodeFSP.readFile(manifest, "utf8"));
+      await NodeFSP.writeFile(manifest, JSON.stringify({ ...value, home: root + "/other" }));
+    } else if (code === "trial-permit-mismatch") {
+      await NodeFSP.unlink(manifest);
+      candidate = { ...input, descriptorPath: "missing" };
+    } else if (code === "foreign-state") {
+      expect(run(input).status).toBe(0);
+      await NodeFSP.unlink(manifest);
+    } else {
+      const { directory, intent } = await interruptedFixture(root, "intent-only");
+      await NodeFSP.writeFile(
+        NodePath.join(directory, "intent.json"),
+        JSON.stringify({ ...intent, listener: "" }),
+      );
+    }
+    expect(refusal(candidate)).toMatchObject({ code });
+  }),
+);
+
+it("retained capabilities expose generation and lease loss with typed codes", async () =>
+  fixture(async (root, input) => {
+    const script =
+      "const m = await import(" +
+      JSON.stringify(moduleUrl) +
+      ");" +
+      "const fs = await import('node:fs'); const input = " +
+      JSON.stringify(input) +
+      ";" +
+      "const a = m.holdJonesNativeWriterFence(input);" +
+      "const p = input.home + '/runtime/jones-active-install.json'; const old = fs.readFileSync(p, 'utf8');" +
+      "fs.writeFileSync(p, JSON.stringify({ ...JSON.parse(old), generation: 'changed' }));" +
+      "try { a.assertCurrent(); throw Error('admitted changed generation'); } catch (e) { if (e.code !== 'generation-changed') throw e; }" +
+      "fs.writeFileSync(p, old);" +
+      "for (const lease of globalThis[Symbol.for('jones.native-writer-leases.v1')].values()) lease.database.close();" +
+      "try { a.assertCurrent(); throw Error('admitted lost lease'); } catch (e) { if (e.code !== 'lease-lost') throw e; }";
+    const result = NodeChildProcess.spawnSync(
+      process.execPath,
+      ["--input-type=module", "-e", script],
+      { encoding: "utf8", timeout: 10000, maxBuffer: 1024 * 1024 },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(await NodeFSP.readFile(String(input.databasePath), "utf8")).toBe(
+      "opaque application state",
+    );
+  }));
