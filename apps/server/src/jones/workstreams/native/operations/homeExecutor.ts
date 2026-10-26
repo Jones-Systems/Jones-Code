@@ -1,4 +1,4 @@
-import type { T3WorkstreamBinding } from "@t3tools/contracts";
+import { WorkstreamReceipt, type T3WorkstreamBinding } from "@t3tools/contracts";
 import type { WorkstreamsNativeReceiptLookup } from "@t3tools/contracts/jones/workstreamsNative";
 import type {
   WorkstreamReceiptRecovery,
@@ -47,6 +47,7 @@ export class HomeExecutor extends Context.Service<
   }
 >()("t3/jones/workstreams/native/operations/homeExecutor") {}
 
+const isNativeReceipt = Schema.is(WorkstreamReceipt);
 const decodeCheckpoint = Schema.decodeUnknownEffect(Schema.fromJsonString(Checkpoint));
 
 const make = Effect.gen(function* () {
@@ -88,6 +89,7 @@ const make = Effect.gen(function* () {
     if (result.kind === "present") {
       const receipt = result.receipt;
       if (
+        !isNativeReceipt(receipt) ||
         receipt.command_id !== commandId ||
         receipt.owner_id !== operation.destination.owner_id ||
         receipt.actor.principal_id !== operation.destination.principal_id ||

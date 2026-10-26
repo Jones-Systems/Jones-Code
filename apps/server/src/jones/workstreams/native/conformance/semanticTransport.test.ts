@@ -20,6 +20,11 @@ import * as NodePath from "node:path";
 import { expect, it } from "@effect/vitest";
 import * as Wire from "@t3tools/contracts";
 import { WorkstreamsNativePlacementResult } from "@t3tools/contracts/jones/workstreamsNativePlacement";
+import { NativeEntry } from "../integration.ts";
+import {
+  WORKSTREAMS_LEGACY_RECEIPTS_CONTRACT,
+  WorkstreamsLegacyReceiptLookupResult,
+} from "@t3tools/contracts/jones/workstreamsLegacyReceipts";
 import * as Effect from "effect/Effect";
 import * as Clock from "effect/Clock";
 import * as TestClock from "effect/testing/TestClock";
@@ -70,6 +75,9 @@ import { resolveNativeMode } from "../mode/config.ts";
 
 const decodeSettlementRequest = Schema.decodeUnknownEffect(Wire.WorkstreamsNativeSettlementRequest);
 const decodeNativePlacementResult = Schema.decodeUnknownEffect(WorkstreamsNativePlacementResult);
+const decodeLegacyReceiptLookupResult = Schema.decodeUnknownEffect(
+  WorkstreamsLegacyReceiptLookupResult,
+);
 const decodeReceipt = Schema.decodeUnknownEffect(Wire.WorkstreamReceipt);
 const decodeListResult = Schema.decodeUnknownEffect(Wire.T3WorkstreamListResult);
 const home = {
@@ -985,6 +993,7 @@ it.effect(
           const routes = HttpApiBuilder.layer(NativeTestApi).pipe(
             Layer.provide(workstreamHttpApiLayer),
             Layer.provide(Layer.succeed(Gateway.WorkstreamGateway, h.gateway)),
+            Layer.provide(Layer.succeed(NativeEntry, { caller, adapter: h, registration })),
             Layer.provide(
               Layer.succeed(LegacyRegistration.WorkstreamsRegistrationContext, registration),
             ),
@@ -1024,6 +1033,33 @@ it.effect(
           expect(raw.headers.get("cache-control")).toBe("private, no-store");
           const first = yield* Effect.promise(() => raw.json());
           yield* decodeReceipt(first);
+          const receiptRequest = {
+            contract: WORKSTREAMS_LEGACY_RECEIPTS_CONTRACT,
+            command_id: command.command_id,
+            expected_server_generation: 1,
+          };
+          const lookup = (payload: unknown) =>
+            Effect.promise(() =>
+              app.handler(
+                new Request("http://synthetic/api/workstreams/legacy-receipts/v1/lookup", {
+                  method: "POST",
+                  headers: { "content-type": "application/json" },
+                  body: JSON.stringify(payload),
+                }),
+              ),
+            );
+          const found = yield* lookup(receiptRequest);
+          expect(found.status).toBe(200);
+          expect(found.headers.get("cache-control")).toBe("private, no-store");
+          const decoded = yield* decodeLegacyReceiptLookupResult(
+            yield* Effect.promise(() => found.json()),
+          );
+          expect(decoded.result).toEqual({ kind: "present", source: "native", receipt: first });
+          expect((yield* lookup({ ...receiptRequest, principal_id: "forged" })).status).toBe(400);
+          const mismatch = yield* lookup({ ...receiptRequest, expected_server_generation: 2 });
+          expect(yield* Effect.promise(() => mismatch.json())).toMatchObject({
+            result: { kind: "unknown", reason: "generation_mismatch" },
+          });
           const request = {
             contract: "workstream-operations/1.0.0",
             operation_id: "http-operation-000000001",
@@ -1058,6 +1094,15 @@ it.effect(
             "HTTP native operation",
             "HTTP native raw",
           ]);
+          const grant = (yield* h.registry.snapshot(caller)).authorization.grant;
+          yield* (yield* Store.RegistryStore).appendPlain(scope, "grants", {
+            principal_id: caller.principal_id,
+            grant_version: grant.grant_version + 1,
+            grant_id: grant.grant_id,
+            permissions: JSON.stringify(grant.permissions),
+            state: "revoked",
+          });
+          expect((yield* lookup(receiptRequest)).status).toBe(409);
           expect(cp).not.toHaveBeenCalled();
           expect(egress).not.toHaveBeenCalled();
         }),

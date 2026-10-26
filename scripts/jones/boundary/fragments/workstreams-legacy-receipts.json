@@ -1,0 +1,17 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "workstreams-legacy-receipts",
+  "jonesOwnedPaths": [],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "packages/contracts/src/environment.ts",
+      "to": "packages/contracts/src/jones/workstreamsLegacyReceipts.ts"
+    },
+    {
+      "from": "packages/contracts/src/environmentHttp.ts",
+      "to": "packages/contracts/src/jones/workstreamsLegacyReceipts.ts"
+    }
+  ]
+}

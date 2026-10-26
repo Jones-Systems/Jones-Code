@@ -2,6 +2,23 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-workstreams-legacy-receipts",
+      "tests": [
+        "packages/contracts/src/jones/workstreamsLegacyReceipts.test.ts",
+        "apps/server/src/jones/workstreams/native/transition/legacyReceipts.test.ts",
+        "apps/server/src/jones/workstreams/native/domain/state.test.ts",
+        "apps/server/src/jones/workstreams/native/operations/homeExecutor.test.ts",
+        "apps/server/src/jones/workstreams/native/store/archiveStore.test.ts",
+        "apps/server/src/jones/workstreams/native/store/receiptStore.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/contracts/src/jones/workstreamsLegacyReceipts.test.ts apps/server/src/jones/workstreams/native/transition/legacyReceipts.test.ts apps/server/src/jones/workstreams/native/domain/state.test.ts apps/server/src/jones/workstreams/native/operations/homeExecutor.test.ts apps/server/src/jones/workstreams/native/store/archiveStore.test.ts apps/server/src/jones/workstreams/native/store/receiptStore.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/contracts typecheck",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-queue-removal",
       "tests": ["apps/web/src/jones/queue/QueuedRunRemoval.browser.test.tsx"],
       "commands": [

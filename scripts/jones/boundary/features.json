@@ -4,6 +4,18 @@
   "baseline": "05b697f6a2012497ae790425e197fbd1fcef7de7",
   "features": [
     {
+      "id": "workstreams-legacy-receipts",
+      "tests": [
+        "packages/contracts/src/jones/workstreamsLegacyReceipts.test.ts",
+        "apps/server/src/jones/workstreams/native/transition/legacyReceipts.test.ts",
+        "apps/server/src/jones/workstreams/native/domain/state.test.ts",
+        "apps/server/src/jones/workstreams/native/operations/homeExecutor.test.ts",
+        "apps/server/src/jones/workstreams/native/store/archiveStore.test.ts",
+        "apps/server/src/jones/workstreams/native/store/receiptStore.test.ts"
+      ],
+      "scope": "Additive legacy receipt evidence and principal-bound lookup over retained encrypted archive version 1; preserve strict command admission, closed native v1 lookup, exact payloads, imported ID reservation and activation fences."
+    },
+    {
       "id": "project-group-title",
       "tests": ["packages/client-runtime/src/jones/projectGroupTitle.test.ts"],
       "scope": "Shared saved project names take precedence over repository labels when every checkout agrees, including names equal to the repository short name. Mixed titles retain the repository fallback; group identity, environment membership and persistence stay unchanged. One shared-client hook covers web, desktop and mobile."

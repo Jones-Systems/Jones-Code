@@ -320,6 +320,24 @@ export const workstreamHttpApiLayer = HttpApiBuilder.group(
             );
         }),
       )
+      .handle("legacyReceiptLookup", (args) =>
+        Effect.gen(function* () {
+          yield* read(args.endpoint.name);
+          const native = yield* Effect.serviceOption(NativeEntry);
+          if (Option.isNone(native))
+            return yield* new EnvironmentHttpConflictError({
+              message: "workstreams_legacy_receipts_unavailable",
+            });
+          return yield* native.value.adapter.lookupLegacyReceipt(args.payload).pipe(
+            Effect.mapError(
+              () =>
+                new EnvironmentHttpConflictError({
+                  message: "workstreams_legacy_receipts_unavailable",
+                }),
+            ),
+          );
+        }),
+      )
       .handle("list", (args) =>
         read(args.endpoint.name).pipe(
           Effect.andThen(restartable("list", gateway.readMetadata(pageInput(args.payload)))),

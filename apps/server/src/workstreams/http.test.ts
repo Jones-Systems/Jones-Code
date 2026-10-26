@@ -680,3 +680,36 @@ it.effect.each([
     expect(calls).toEqual({ reads: 0, writes: 0 });
   }),
 );
+
+it.effect(
+  "legacy proof lookup fails closed without an admitted native entry and keeps authentication and contract fences",
+  () =>
+    withHttpFixture([AuthOrchestrationReadScope], async ({ handler, calls, submissions }) => {
+      const payload = {
+        contract: "workstreams-legacy-receipts/1.0.0",
+        command_id: "command:0",
+        expected_server_generation: 1,
+      };
+      const request = (body: unknown, authenticated = true) =>
+        handler(
+          new Request("http://fixture/api/workstreams/legacy-receipts/v1/lookup", {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              ...(authenticated ? credentials[0]!.headers : {}),
+            },
+            body: JSON.stringify(body),
+          }),
+        );
+      expect((await request(payload, false)).status).toBe(401);
+      const unavailable = await request(payload);
+      expect(unavailable.status).toBe(409);
+      expect(unavailable.headers.get("cache-control")).toBe("private, no-store");
+      expect(
+        (await request({ ...payload, contract: "workstreams-legacy-receipts/2.0.0" })).status,
+      ).toBe(400);
+      expect((await request({ ...payload, principal_id: "forged" })).status).toBe(400);
+      expect(calls).toEqual({ reads: 0, writes: 0 });
+      expect(submissions.count).toBe(0);
+    }),
+);

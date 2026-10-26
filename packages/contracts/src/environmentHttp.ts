@@ -105,6 +105,10 @@ import {
   WorkstreamReceipt,
 } from "./workstreams.ts";
 import { T3PlacementLoadRequest, T3PlacementResult } from "./workstreamPlacements.ts";
+import {
+  WorkstreamsLegacyReceiptLookupRequest,
+  WorkstreamsLegacyReceiptLookupResult,
+} from "./jones/workstreamsLegacyReceipts.ts";
 import { WorkstreamsNativePlacementResult } from "./jones/workstreamsNativePlacement.ts";
 
 const OptionalBearerHeaders = Schema.Struct({
@@ -896,6 +900,14 @@ class EnvironmentWorkstreamsHttpApi extends EnvironmentWorkstreamAppearanceHttpA
     error: EnvironmentWorkstreamPagedSnapshotErrors,
   }).middleware(EnvironmentAuthenticatedAuth),
 )
+  .add(
+    HttpApiEndpoint.post("legacyReceiptLookup", "/api/workstreams/legacy-receipts/v1/lookup", {
+      headers: OptionalBearerHeaders,
+      payload: WorkstreamsLegacyReceiptLookupRequest,
+      success: WorkstreamsLegacyReceiptLookupResult,
+      error: EnvironmentWorkstreamPagedSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
   .add(
     HttpApiEndpoint.get("list", "/api/workstreams", {
       headers: OptionalBearerHeaders,

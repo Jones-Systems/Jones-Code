@@ -2,7 +2,7 @@
 import type * as NodeCrypto from "node:crypto";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { WorkstreamReceipt } from "@t3tools/contracts";
+import { WorkstreamsLegacyReceiptIdentity } from "@t3tools/contracts/jones/workstreamsLegacyReceipts";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Keys from "../crypto/keyProvider.ts";
 import { canonical, digest, TransitionError } from "./canonical.ts";
@@ -36,7 +36,9 @@ export function manifestOf(p: Omit<ImportPlan, "plan_sha256">) {
     mapping_sha256: digest(mappingDigest(p.mappings)),
   };
 }
-const decodeLegacyReceipt = Schema.decodeUnknownEffect(Schema.fromJsonString(WorkstreamReceipt));
+const decodeLegacyReceipt = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(WorkstreamsLegacyReceiptIdentity),
+);
 export const plan = Effect.fn("WorkstreamsTransition.plan")(function* (input: {
   readonly import_run_id: string;
   readonly encrypted: string;
@@ -74,7 +76,14 @@ export const plan = Effect.fn("WorkstreamsTransition.plan")(function* (input: {
       receipt.command_id !== row.row.command_id ||
       receipt.owner_id !== row.row.owner_id ||
       receipt.actor.principal_id !== row.row.principal_id ||
-      receipt.state !== row.row.state
+      receipt.state !== row.row.state ||
+      receipt.server_generation >
+        (snapshot.header.owners.find((o) => o.owner_id === receipt.owner_id)?.server_generation ??
+          0) ||
+      ["request_sha256", "server_generation", "operation", "registry_version"].some(
+        (field) =>
+          row.row[field] !== undefined && row.row[field] !== receipt[field as keyof typeof receipt],
+      )
     )
       return yield* new TransitionError({ reason: "legacy_receipt_metadata_conflict" });
   }

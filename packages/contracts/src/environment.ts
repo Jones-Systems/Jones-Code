@@ -1,3 +1,4 @@
+import { WorkstreamsLegacyReceiptCapability } from "./jones/workstreamsLegacyReceipts.ts";
 import { WorkstreamsNativeCapability } from "./jones/workstreamsNative.ts";
 import { LinkedThreadsCapability } from "./jones/linkedThreadsCapability.ts";
 import { WORKSTREAM_OPERATIONS_CONTRACT } from "./jones/workstreamOperations.ts";
@@ -105,6 +106,7 @@ export const NativeBootstrapCreationCapability = nativeBootstrapCapabilityStruct
 export type NativeBootstrapCreationCapability = typeof NativeBootstrapCreationCapability.Type;
 
 export const ExecutionEnvironmentCapabilities = Schema.Struct({
+  workstreamsLegacyReceipts: Schema.optionalKey(WorkstreamsLegacyReceiptCapability),
   workstreamsNative: Schema.optionalKey(WorkstreamsNativeCapability),
   workstreamOperations: Schema.optionalKey(
     Schema.Struct({ contract: Schema.Literal(WORKSTREAM_OPERATIONS_CONTRACT) }),

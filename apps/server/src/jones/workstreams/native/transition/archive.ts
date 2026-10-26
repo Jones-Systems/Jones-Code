@@ -196,6 +196,7 @@ export const targetsFor = Effect.fn("WorkstreamsTransition.targetsFor")(function
       );
       break;
     case "workstream_command_receipts": {
+      // Version 1 storage is unchanged; the separate proof reads exact bytes from the encrypted source archive.
       const terminal = r.state === "committed" || r.state === "rejected";
       if (terminal)
         add(

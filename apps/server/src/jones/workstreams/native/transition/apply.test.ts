@@ -167,11 +167,15 @@ it.effect("activation refuses an incomplete import without changing its durable 
 );
 
 it.effect(
-  "the immutable X1 full vector is rejected before writes because its receipt command IDs violate the native frozen contract",
+  "the immutable X1 full vector retains original receipt IDs without native command admission",
   () =>
     Effect.gen(function* () {
-      const result = yield* Effect.exit(prepare(vectors.full_snapshot.canonical_jsonl));
-      expect(Exit.isFailure(result)).toBe(true);
+      const result = yield* prepare(vectors.full_snapshot.canonical_jsonl);
+      expect(
+        result.snapshot.rows
+          .filter((r) => r.class === "workstream_command_receipts")
+          .map((r) => r.row.command_id),
+      ).toEqual(["command:0", "command:1", "command:2"]);
       const sql = yield* SqlClient.SqlClient;
       expect(
         (yield* sql<{

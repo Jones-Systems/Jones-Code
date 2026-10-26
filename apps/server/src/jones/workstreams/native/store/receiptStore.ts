@@ -1,3 +1,8 @@
+import {
+  WORKSTREAMS_LEGACY_RECEIPTS_CONTRACT,
+  WorkstreamsLegacyReceiptLookupRequest,
+  type WorkstreamsLegacyReceiptLookupResult,
+} from "@t3tools/contracts/jones/workstreamsLegacyReceipts";
 // @effect-diagnostics nodeBuiltinImport:off -- SHA-256 binds the exact retained request bytes for idempotency.
 import * as NodeCrypto from "node:crypto";
 import { WorkstreamReceipt } from "@t3tools/contracts";
@@ -18,6 +23,7 @@ export interface ReceiptRecord {
   readonly origin: "native" | "legacy_open";
 }
 const Payload = Schema.Struct({ receipt: WorkstreamReceipt, request_body: Schema.String });
+const decodeLegacyRequest = Schema.decodeUnknownEffect(WorkstreamsLegacyReceiptLookupRequest);
 const decode = Schema.decodeUnknownEffect(Payload);
 type Failure = SqlError | NativeSql.StoreError | NativeSql.CryptoError;
 export class ReceiptStore extends Context.Service<
@@ -32,6 +38,11 @@ export class ReceiptStore extends Context.Service<
       value: ReceiptRecord,
       registryVersion: number | null,
     ) => Effect.Effect<ReceiptRecord, Failure>;
+    readonly lookupLegacy: (
+      scope: NativeSql.OwnerScope,
+      principalId: string,
+      request: WorkstreamsLegacyReceiptLookupRequest,
+    ) => Effect.Effect<WorkstreamsLegacyReceiptLookupResult, Failure>;
     readonly lookup: (
       scope: NativeSql.OwnerScope,
       commandId: string,
@@ -100,9 +111,9 @@ const make = Effect.gen(function* () {
             (value.state === "committed" && value.registry_version !== registryVersion)
           )
             return yield* new NativeSql.StoreError({ reason: "invalid_payload" });
+          if (yield* archive.contains(scope, value.command_id))
+            return yield* new NativeSql.StoreError({ reason: "idempotency_conflict" });
           const old = yield* read(scope, value.command_id);
-          const legacy = yield* archive.receipt(scope, value.command_id);
-          if (legacy) return yield* new NativeSql.StoreError({ reason: "idempotency_conflict" });
           if (old) {
             if (
               old.request_body !== payload.request_body ||
@@ -160,6 +171,8 @@ const make = Effect.gen(function* () {
               };
             const legacy = yield* archive.receipt(scope, commandId);
             if (legacy) return { kind: "present", source: "legacy_archive", receipt: legacy };
+            if (yield* archive.contains(scope, commandId))
+              return yield* new NativeSql.StoreError({ reason: "invalid_payload" });
             const reservations =
               yield* sql`SELECT command_id FROM jones_workstreams_external_reservations WHERE registry_instance_id = ${scope.registry_instance_id} AND owner_id = ${scope.owner_id} AND command_id = ${commandId}`;
             if (reservations.length || context.state !== "active")
@@ -187,7 +200,82 @@ const make = Effect.gen(function* () {
           }),
         ),
   );
-  return ReceiptStore.of({ read, save, lookup });
+  const lookupLegacy = Effect.fn("ReceiptStore.lookupLegacy")(
+    (
+      scope: NativeSql.OwnerScope,
+      principalId: string,
+      input: WorkstreamsLegacyReceiptLookupRequest,
+    ) =>
+      db
+        .transaction(
+          scope,
+          Effect.gen(function* (): Effect.fn.Return<WorkstreamsLegacyReceiptLookupResult, Failure> {
+            const request = yield* decodeLegacyRequest(input).pipe(
+              Effect.mapError(() => new NativeSql.StoreError({ reason: "invalid_payload" })),
+            );
+            const wrap = (
+              result: WorkstreamsLegacyReceiptLookupResult["result"],
+            ): WorkstreamsLegacyReceiptLookupResult => ({
+              contract: WORKSTREAMS_LEGACY_RECEIPTS_CONTRACT,
+              result,
+            });
+            const contexts = yield* sql<{
+              server_generation: number;
+            }>`SELECT server_generation FROM jones_workstreams_registries WHERE registry_instance_id=${scope.registry_instance_id} AND owner_id=${scope.owner_id}`;
+            if (!contexts[0]) return wrap({ kind: "unknown", reason: "import_incomplete" });
+            if (contexts[0].server_generation !== request.expected_server_generation)
+              return wrap({ kind: "unknown", reason: "generation_mismatch" });
+            yield* keys.get(yield* keys.activeKeyId(scope));
+            const proof = yield* archive.evidence(scope, request.command_id);
+            if (proof) {
+              if (proof.principal_id !== principalId)
+                return yield* new NativeSql.StoreError({ reason: "binding_mismatch" });
+              if (
+                request.request_sha256 !== undefined &&
+                request.request_sha256 !== proof.request_sha256
+              )
+                return yield* new NativeSql.StoreError({ reason: "idempotency_conflict" });
+              if (proof.server_generation > contexts[0].server_generation)
+                return yield* new NativeSql.StoreError({ reason: "invalid_payload" });
+              return wrap({
+                kind: "legacy_present",
+                source:
+                  proof.state === "committed" || proof.state === "rejected"
+                    ? "legacy_archive"
+                    : "legacy_open",
+                proof,
+              });
+            }
+            if (yield* archive.contains(scope, request.command_id))
+              return wrap({ kind: "unknown", reason: "import_incomplete" });
+            const result = yield* lookup(
+              scope,
+              request.command_id,
+              request.expected_server_generation,
+            );
+            if (result.kind === "present") {
+              if (result.receipt.actor.principal_id !== principalId)
+                return yield* new NativeSql.StoreError({ reason: "binding_mismatch" });
+              if (
+                request.request_sha256 !== undefined &&
+                request.request_sha256 !== result.receipt.request_sha256
+              )
+                return yield* new NativeSql.StoreError({ reason: "idempotency_conflict" });
+            }
+            return wrap(result);
+          }),
+        )
+        .pipe(
+          Effect.catchTags({
+            KeyUnavailable: () =>
+              Effect.succeed<WorkstreamsLegacyReceiptLookupResult>({
+                contract: WORKSTREAMS_LEGACY_RECEIPTS_CONTRACT,
+                result: { kind: "unknown", reason: "key_unavailable" },
+              }),
+          }),
+        ),
+  );
+  return ReceiptStore.of({ read, save, lookup, lookupLegacy });
 });
 /** @public Canonical service layer. */
 export const layer = Layer.effect(ReceiptStore, make);

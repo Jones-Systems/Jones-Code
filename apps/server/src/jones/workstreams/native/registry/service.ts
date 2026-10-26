@@ -2,6 +2,10 @@
 import * as NodeCrypto from "node:crypto";
 import * as Wire from "@t3tools/contracts";
 import type { WorkstreamsNativeReceiptLookup } from "@t3tools/contracts/jones/workstreamsNative";
+import type {
+  WorkstreamsLegacyReceiptLookupRequest,
+  WorkstreamsLegacyReceiptLookupResult,
+} from "@t3tools/contracts/jones/workstreamsLegacyReceipts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -47,6 +51,10 @@ export class Registry extends Context.Service<
       id: string,
       generation: number,
     ) => Effect.Effect<WorkstreamsNativeReceiptLookup, Session.RegistryError>;
+    readonly lookupLegacy: (
+      caller: AdmittedCaller,
+      request: WorkstreamsLegacyReceiptLookupRequest,
+    ) => Effect.Effect<WorkstreamsLegacyReceiptLookupResult, Session.RegistryError>;
     readonly complete: (
       intent: Domain.ExternalIntent,
       result: Domain.RegistryExternalResult,
@@ -372,6 +380,18 @@ const make = Effect.gen(function* () {
         )
         .pipe(Effect.mapError(failure)),
   );
+  const lookupLegacy = Effect.fn("NativeRegistry.lookupLegacy")(
+    (caller: AdmittedCaller, request: WorkstreamsLegacyReceiptLookupRequest) =>
+      db
+        .transaction(
+          scope,
+          Effect.gen(function* () {
+            yield* session.authorize(caller, "workstreams:read");
+            return yield* receipts.lookupLegacy(scope, caller.principal_id, request);
+          }),
+        )
+        .pipe(Effect.mapError(failure)),
+  );
   const submit = Effect.fn("NativeRegistry.submit")((caller: AdmittedCaller, body: string) =>
     db
       .transaction(
@@ -509,6 +529,6 @@ const make = Effect.gen(function* () {
         )
         .pipe(Effect.mapError(failure)),
   );
-  return Registry.of({ snapshot, submit, lookup, complete });
+  return Registry.of({ snapshot, submit, lookup, lookupLegacy, complete });
 });
 export const layer = Layer.effect(Registry, make);

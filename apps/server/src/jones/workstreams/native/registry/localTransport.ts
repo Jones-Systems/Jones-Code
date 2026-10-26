@@ -2,6 +2,10 @@
 import * as NodeCrypto from "node:crypto";
 import * as Wire from "@t3tools/contracts";
 import type { WorkstreamsNativePlacementResult } from "@t3tools/contracts/jones/workstreamsNativePlacement";
+import type {
+  WorkstreamsLegacyReceiptLookupRequest,
+  WorkstreamsLegacyReceiptLookupResult,
+} from "@t3tools/contracts/jones/workstreamsLegacyReceipts";
 import * as Context from "effect/Context";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
@@ -33,6 +37,9 @@ export interface NativeAdapter {
   readonly guardExecutor: (
     executor: HomeExecutor.HomeExecutor["Service"],
   ) => HomeExecutor.HomeExecutor["Service"];
+  readonly lookupLegacyReceipt: (
+    request: WorkstreamsLegacyReceiptLookupRequest,
+  ) => Effect.Effect<WorkstreamsLegacyReceiptLookupResult, RegistryError>;
   readonly placementResponse: (
     input: Wire.T3PlacementLoadRequest,
     contract?: string,
@@ -500,7 +507,17 @@ export const layer = Layer.effect(
           },
         };
       });
-      return { transport, gateway, homeTransport, guardExecutor, placementResponse };
+      const lookupLegacyReceipt = Effect.fn("NativeTransport.lookupLegacyReceipt")(
+        (request: WorkstreamsLegacyReceiptLookupRequest) => registry.lookupLegacy(caller, request),
+      );
+      return {
+        transport,
+        gateway,
+        homeTransport,
+        guardExecutor,
+        placementResponse,
+        lookupLegacyReceipt,
+      };
     });
     return LocalTransport.of({ forCaller });
   }),
