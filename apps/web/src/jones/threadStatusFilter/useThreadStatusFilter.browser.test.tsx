@@ -151,9 +151,7 @@ describe.each(["current", "legacy"] as const)("%s active status-filter retention
       expect(counts()).toBe('{"working":1,"input":1,"done":1}');
     }
     await render({ filter: "hide-working" });
-    expect(visible()).toEqual(
-      roster.filter((row) => !row.pendingBackgroundTasks?.length).map(key),
-    );
+    expect(visible()).toEqual(roster.filter((row) => !row.pendingBackgroundTasks?.length).map(key));
     await render({ filter: "done", threads: children, selected: key(children[0]!) });
     expect(counts()).toBe('{"working":0,"input":0,"done":0}');
     expect(visible()).toEqual([]);
