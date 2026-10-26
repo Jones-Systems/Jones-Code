@@ -2138,7 +2138,14 @@
     "apps/server/src/jones/workstreams/native/runtime/entry.test.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/runtime/entry.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/runtime/startup.test.ts": "jones-owned",
-    "apps/server/src/jones/workstreams/native/runtime/startup.ts": "jones-owned"
+    "apps/server/src/jones/workstreams/native/runtime/startup.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/runtime/recordedCaller.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/runtime/recordedCaller.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/runtime/recovery.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/runtime/recovery.test.ts": "jones-owned",
+    "apps/server/src/mcp/McpSessionRegistry.ts": "accepted-shared",
+    "apps/server/src/mcp/McpSessionRegistry.test.ts": "accepted-shared",
+    "apps/server/src/mcp/McpSessionRegistry.testkit.ts": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

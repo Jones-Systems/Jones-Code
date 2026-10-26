@@ -59,7 +59,11 @@ export const nativeSourceEnrollmentLayer = SourceEnrollments.layer.pipe(
 
 const sourceProviderLayer = Layer.effect(
   LocalAttestation.NativeProvider,
-  Effect.map(NativeRuntime.NativeWorkstreamsRuntime, (runtime) => runtime.providerV2),
+  Effect.gen(function* () {
+    // Resolve at build time: startup and the source runtime import one another.
+    const runtime = yield* NativeRuntime.NativeWorkstreamsRuntime;
+    return runtime.providerV2;
+  }),
 );
 
 export const nativeSourceProvidersLayer = Layer.merge(

@@ -7,6 +7,9 @@ import type {
   WorkstreamsLegacyReceiptLookupResult,
 } from "@t3tools/contracts/jones/workstreamsLegacyReceipts";
 import * as Context from "effect/Context";
+import * as Crypto from "effect/Crypto";
+import * as Option from "effect/Option";
+import * as Recorded from "../runtime/recordedCaller.ts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -83,6 +86,7 @@ const now = DateTime.now.pipe(Effect.map((t) => DateTime.formatIso(t)));
 const different = (a: unknown, b: unknown) => canonicalJson(a) !== canonicalJson(b);
 
 const make = Effect.gen(function* () {
+  const recoveryCrypto = yield* Crypto.Crypto;
   const home = yield* NativeHome;
   const scope = { registry_instance_id: home.registry_instance_id, owner_id: home.owner_id };
   const db = yield* NativeSql.NativeSql;
@@ -447,6 +451,25 @@ const make = Effect.gen(function* () {
           yield* persist(before, state);
           if (result.state === "external") {
             const receipt = state.receipts.get(command.command_id)!;
+            const recording = yield* Effect.serviceOption(Recorded.RecordedCallers);
+            const record = Option.isSome(recording) ? yield* recording.value.captureCaller() : null;
+            const recovery = record
+              ? yield* Recorded.wrapEffectIntent(
+                  canonicalJson(result.intent),
+                  body,
+                  digest,
+                  record,
+                ).pipe(Effect.provideService(Crypto.Crypto, recoveryCrypto))
+              : null;
+            if (record && Option.isSome(recording)) {
+              const evidence = yield* recording.value.readmitRecorded(record);
+              yield* evidence.check(
+                "workstreams:write",
+                result.intent.reference.identity.provider === "t3"
+                  ? result.intent.reference.identity.native_id
+                  : null,
+              );
+            }
             yield* effects.reserve(
               scope,
               { receipt, request_body: body, origin: "native" },
@@ -458,8 +481,19 @@ const make = Effect.gen(function* () {
                 server_generation: state.server_generation,
                 admitted_registry_version: state.registry_version,
                 intent: result.intent,
+                ...(recovery ? { recovery } : {}),
               },
             );
+            // A failed last authority check rolls reservation and state back together.
+            if (record && Option.isSome(recording)) {
+              const evidence = yield* recording.value.readmitRecorded(record);
+              yield* evidence.check(
+                "workstreams:write",
+                result.intent.reference.identity.provider === "t3"
+                  ? result.intent.reference.identity.native_id
+                  : null,
+              );
+            }
             return { receipt, intent: result.intent };
           }
           yield* receipts.save(

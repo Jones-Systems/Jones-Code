@@ -2,6 +2,7 @@ import type { WorkstreamSetupStatus } from "@t3tools/contracts/jones/workstreamO
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as DurableEntries from "../native/operations/durableEntries.ts";
+import type * as RecordedCallers from "../native/runtime/recordedCaller.ts";
 import type * as HomeExecutor from "../native/operations/homeExecutor.ts";
 import type { WorkstreamGateway } from "../../../workstreams/WorkstreamGateway.ts";
 import type { WorkstreamsRegistrationContext } from "../registrationContext/service.ts";
@@ -18,6 +19,7 @@ export class Activation extends Context.Service<
 
 export type NativeExecutionContext = {
   readonly mode: "native";
+  readonly callers?: RecordedCallers.RecordedCallers["Service"];
   readonly entries: DurableEntries.DurableEntries["Service"];
   readonly executor: HomeExecutor.HomeExecutor["Service"];
 };

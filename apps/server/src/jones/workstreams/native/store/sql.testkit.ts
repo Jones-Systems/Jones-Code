@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Synthetic receipt fixtures pin raw request-byte digests.
 import * as NodeCrypto from "node:crypto";
+import * as EffectNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { WorkstreamReceipt } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -66,6 +67,7 @@ export const testLayer = (options: { filename?: string; keys?: Map<string, Uint8
   return Layer.mergeAll(RegistryStore.layer, effects, operations, IdentityIndex.layer).pipe(
     Layer.provideMerge(db),
     Layer.provideMerge(NodeSqliteClient.layer({ filename: options.filename ?? ":memory:" })),
+    Layer.provideMerge(EffectNodeCrypto.layer),
   );
 };
 export const seed = Effect.gen(function* () {

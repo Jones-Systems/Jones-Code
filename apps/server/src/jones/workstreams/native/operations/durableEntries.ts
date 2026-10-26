@@ -9,6 +9,8 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Callers from "../runtime/recordedCaller.ts";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { canonicalJson } from "../../operations/encoding.ts";
@@ -144,10 +146,35 @@ const make = Effect.gen(function* () {
       sql
         .withTransaction(
           Effect.gen(function* () {
+            // Capture is part of acceptance, including duplicate ownership, never a later checkpoint.
+            const callers = yield* Effect.serviceOption(Callers.RecordedCallers);
+            const recordedCaller = Option.isSome(callers)
+              ? yield* callers.value
+                  .captureCaller()
+                  .pipe(Effect.mapError(() => new DurableEntryError({ code: "unavailable" })))
+              : null;
+            if (recordedCaller) {
+              const caller = yield* callers.pipe(
+                Option.match({
+                  onNone: () => Effect.fail(new DurableEntryError({ code: "unavailable" })),
+                  onSome: (value) =>
+                    value
+                      .readmitRecorded(recordedCaller)
+                      .pipe(Effect.mapError(() => new DurableEntryError({ code: "unavailable" }))),
+                }),
+              );
+              yield* caller
+                .check(
+                  "workstreams:write",
+                  request.kind === "set_primary" ? request.thread.thread_id : null,
+                )
+                .pipe(Effect.mapError(() => new DurableEntryError({ code: "unavailable" })));
+            }
             const body = canonicalJson(request);
             const old = yield* read(request.operation_id);
             if (old) {
               if (
+                !Callers.sameRecordedCaller(old.operation.recorded_caller, recordedCaller) ||
                 old.operation.request_body !== body ||
                 canonicalJson(old.operation.child_command_ids) !== canonicalJson(childIds)
               )
@@ -178,7 +205,7 @@ const make = Effect.gen(function* () {
               destination.owner_id !== registry.owner_id
             )
               return yield* new DurableEntryError({ code: "unavailable" });
-            return yield* operations
+            const accepted = yield* operations
               .accept({
                 operation_id: request.operation_id,
                 kind: request.kind,
@@ -190,11 +217,24 @@ const make = Effect.gen(function* () {
                 child_command_ids: childIds,
                 request_body: body,
                 accepted_at: acceptedAt,
+                recorded_caller: recordedCaller,
               })
               .pipe(
                 Effect.mapError(() => new DurableEntryError({ code: "unavailable" })),
                 Effect.flatMap(decode),
               );
+            if (Option.isSome(callers) && recordedCaller) {
+              const caller = yield* callers.value
+                .readmitRecorded(recordedCaller)
+                .pipe(Effect.mapError(() => new DurableEntryError({ code: "unavailable" })));
+              yield* caller
+                .check(
+                  "workstreams:write",
+                  request.kind === "set_primary" ? request.thread.thread_id : null,
+                )
+                .pipe(Effect.mapError(() => new DurableEntryError({ code: "unavailable" })));
+            }
+            return accepted;
           }),
         )
         .pipe(

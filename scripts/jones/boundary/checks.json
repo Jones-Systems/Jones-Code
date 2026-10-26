@@ -3562,6 +3562,27 @@
         "tsc-rs --noEmit -p apps/web/tsconfig.json",
         "tsc-rs --noEmit -p apps/mobile/tsconfig.json"
       ]
+    },
+    {
+      "id": "jones-workstreams-native-recorded-recovery",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/operations/durableEntries.test.ts",
+        "apps/server/src/jones/workstreams/native/operations/homeExecutor.test.ts",
+        "apps/server/src/jones/workstreams/native/store/operationStore.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/recordedCaller.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/recovery.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/admission.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/startup.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/entry.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/semanticTransport.test.ts",
+        "apps/server/src/mcp/McpSessionRegistry.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/sourceSetup.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/workstreams/native/operations/durableEntries.test.ts apps/server/src/jones/workstreams/native/operations/homeExecutor.test.ts apps/server/src/jones/workstreams/native/store/operationStore.test.ts apps/server/src/jones/workstreams/native/runtime/recordedCaller.test.ts apps/server/src/jones/workstreams/native/runtime/recovery.test.ts apps/server/src/jones/workstreams/native/runtime/admission.test.ts apps/server/src/jones/workstreams/native/runtime/startup.test.ts apps/server/src/jones/workstreams/native/runtime/entry.test.ts apps/server/src/jones/workstreams/native/conformance/semanticTransport.test.ts apps/server/src/mcp/McpSessionRegistry.test.ts apps/server/src/jones/workstreams/native/runtime/sourceSetup.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }

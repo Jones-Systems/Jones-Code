@@ -19,6 +19,7 @@ import { NativeHome } from "../mode/authorityMode.ts";
 import { canonicalJson } from "../../operations/encoding.ts";
 import { nativeSetupStatus } from "../mode/setupStatus.ts";
 import * as Admission from "./admission.ts";
+import * as Recorded from "./recordedCaller.ts";
 
 type Run = <A, E, R>(
   permission: Admission.Permission,
@@ -51,6 +52,7 @@ export const layer = Layer.effect(
   Entry,
   Effect.gen(function* () {
     const home = yield* NativeHome;
+    const recordedCallers = yield* Recorded.RecordedCallers;
     const boundary = yield* Admission.CallerBoundary,
       admission = yield* Admission.Admission,
       local = yield* Local.LocalTransport,
@@ -67,7 +69,10 @@ export const layer = Layer.effect(
             .pipe(Effect.mapError(() => new Source.ProviderError({ code: "not_granted" }))),
           registration.forCaller(caller),
         );
-      }).pipe(Effect.provideService(Admission.RequestCaller, evidence));
+      }).pipe(
+        Effect.provideService(Admission.RequestCaller, evidence),
+        Effect.provideService(Recorded.RecordedCallers, recordedCallers),
+      );
     });
     const read = <A>(
       f: (
@@ -301,12 +306,17 @@ export const operationsLayer = Layer.effect(
       home = yield* NativeHome,
       entries = yield* Durable.DurableEntries,
       admission = yield* Admission.Admission;
+    const recorded = yield* Recorded.RecordedCallers;
     const visible = Effect.fn("NativeEntry.visibleOperation")(function* (id: string) {
       const caller = yield* admission.admit("workstreams:read");
       const saved = yield* entries.read(id);
       const destination = saved?.operation.destination;
       return (
         !!saved &&
+        (yield* recorded.visible(
+          saved.operation.recorded_caller,
+          saved.request.kind === "set_primary" ? saved.request.thread.thread_id : null,
+        )) &&
         !!destination &&
         canonicalJson(saved.request.origin) === canonicalJson(caller.origin) &&
         destination.registry_instance_id === home.registry_instance_id &&
@@ -318,6 +328,7 @@ export const operationsLayer = Layer.effect(
       );
     });
     return Operations.WorkstreamOperations.of({
+      resumeRecorded: operations.resumeRecorded,
       submit: (input) =>
         entry
           .run(

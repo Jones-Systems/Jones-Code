@@ -1,11 +1,14 @@
 // @effect-diagnostics nodeBuiltinImport:off -- CLI tests use only freshly allocated synthetic homes; the root retains evidence and owns cleanup.
 import * as NodeFS from "node:fs";
+import * as NodeChildProcess from "node:child_process";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 import { expect, it } from "@effect/vitest";
 import * as NetService from "@t3tools/shared/Net";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import { Command } from "effect/cli";
 import * as TestConsole from "effect/testing/TestConsole";
@@ -31,6 +34,84 @@ vi.mock("../../../../../package.json", () => ({
     },
   },
 }));
+
+const lockProbe = vi.hoisted(() => ({
+  onRead: undefined as undefined | ((filename: string, stage: string, active: boolean) => void),
+}));
+vi.mock("../../enrollment/trustedCliContext.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../enrollment/trustedCliContext.ts")>();
+  return {
+    ...actual,
+    makeTrustedNativeEnrollmentCliContext: (
+      ...args: Parameters<typeof actual.makeTrustedNativeEnrollmentCliContext>
+    ) =>
+      actual.makeTrustedNativeEnrollmentCliContext(...args).pipe(
+        Effect.map((trusted) => ({
+          ...trusted,
+          bindAuthorityToSqlClient: (sql: Parameters<typeof trusted.bindAuthorityToSqlClient>[0]) =>
+            trusted.bindAuthorityToSqlClient(sql).pipe(
+              Effect.map((authority) => ({
+                readCurrent: Effect.gen(function* () {
+                  const active = Option.isSome(yield* Effect.serviceOption(sql.transactionService));
+                  lockProbe.onRead?.(trusted.sqlite.filename, "before", active);
+                  const value = yield* authority.readCurrent;
+                  lockProbe.onRead?.(trusted.sqlite.filename, "after", active);
+                  return value;
+                }),
+              })),
+            ),
+        })),
+      ),
+  };
+});
+const decodeCompetingWriter = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Struct({ pid: Schema.Number, acquired: Schema.Boolean })),
+);
+const competingWriter = (filename: string, stage: string) => {
+  const child = NodeChildProcess.spawnSync(
+    process.execPath,
+    [
+      "--input-type=commonjs",
+      "-e",
+      `
+    const { DatabaseSync } = require("node:sqlite");
+    const db = new DatabaseSync(process.argv[1]);
+    let acquired;
+    try {
+      db.exec("PRAGMA busy_timeout=0; BEGIN IMMEDIATE; CREATE TABLE synthetic_lock_probe (id TEXT); INSERT INTO synthetic_lock_probe VALUES ('competitor'); ROLLBACK");
+      acquired = true;
+    } catch (error) {
+      if (db.isTransaction) db.exec("ROLLBACK");
+      if (error.errcode !== 5) throw error;
+      acquired = false;
+    } finally { db.close(); }
+    process.stdout.write(JSON.stringify({ pid: process.pid, acquired }));
+  `,
+      filename,
+    ],
+    { encoding: "utf8", timeout: 10000 },
+  );
+  expect(child.error).toBeUndefined();
+  expect(child.signal).toBeNull();
+  expect(child.status, child.stderr).toBe(0);
+  const result = decodeCompetingWriter(child.stdout);
+  expect(child.pid).toBe(result.pid);
+  let absent = false;
+  try {
+    process.kill(result.pid, 0);
+  } catch (error) {
+    absent =
+      typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH";
+  }
+  expect(absent).toBe(true);
+  if (process.env.NW_SOURCE_LOCK_EVIDENCE)
+    NodeFS.appendFileSync(
+      process.env.NW_SOURCE_LOCK_EVIDENCE,
+      JSON.stringify({ stage: "mounted-cli/" + stage, ...result, exit: child.status, absent }) +
+        "\n",
+    );
+  return result.acquired;
+};
 
 const fresh = (keys: boolean) => {
   const parent = NodePath.resolve("node_modules/.cache/nw-startup-fixtures");
@@ -171,7 +252,7 @@ it.effect("mounted source-setup commands refuse an unqualified home without crea
 });
 
 it.effect(
-  "mounted source-setup issues once through qualified CLI ownership and replays after reopen",
+  "mounted source-setup excludes competing writers, issues once and replays after reopen",
   () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(Date.parse(Fixture.now));
@@ -238,8 +319,25 @@ it.effect(
         "--request",
         JSON.stringify(setup),
       ];
-      for (const action of ["plan", "apply", "readback", "apply", "readback"])
-        yield* run(args(action));
+      const activeStages: string[] = [];
+      lockProbe.onRead = (filename, stage, active) => {
+        if (active) {
+          activeStages.push(stage);
+          expect(competingWriter(filename, stage)).toBe(false);
+        }
+      };
+      yield* Effect.gen(function* () {
+        for (const action of ["plan", "apply", "readback", "apply", "readback"])
+          yield* run(args(action));
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            lockProbe.onRead = undefined;
+          }),
+        ),
+      );
+      expect(activeStages.filter((stage) => stage === "before").length).toBeGreaterThan(0);
+      expect(activeStages.filter((stage) => stage === "after").length).toBeGreaterThan(0);
       const db = new NodeSqlite.DatabaseSync(home.dbPath, { readOnly: true });
       try {
         for (const table of [

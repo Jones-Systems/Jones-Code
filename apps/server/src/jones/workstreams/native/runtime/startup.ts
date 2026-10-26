@@ -3,6 +3,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -243,6 +244,10 @@ import * as Gateway from "../../../../workstreams/WorkstreamGateway.ts";
 import * as Registration from "../../registrationContext/service.ts";
 import { WORKSTREAM_OPERATIONS_CONTRACT } from "@t3tools/contracts/jones/workstreamOperations";
 import * as DateTime from "effect/DateTime";
+import * as Recorded from "./recordedCaller.ts";
+import * as NativeRecovery from "./recovery.ts";
+import * as NativeEffects from "../registry/effectRunner.ts";
+import * as NativeSourceEnrollments from "./sourceEnrollment.ts";
 import { NativeHome as Home } from "../mode/authorityMode.ts";
 
 /** One home, SQL resource and operations instance. Authorization remains request-local. */
@@ -250,6 +255,53 @@ export const homeServicesLayer = (
   selection: Selection & { readonly home: NativeHome["Service"] },
 ) => {
   const admission = NativeAdmission.layer.pipe(Layer.provideMerge(NativeSession.layer));
+  const enrolledSource = Layer.effect(
+    NativeAdmission.RecordedSourceEnrollment,
+    Effect.map(Effect.serviceOption(NativeSourceEnrollments.NativeSourceEnrollments), (source) => ({
+      lookup: Effect.fn("NativeRecovery.validatedSourceEnrollment")(function* (sessionId: string) {
+        if (Option.isNone(source))
+          return yield* new Recorded.RecordedCallerFence({ code: "unavailable" });
+        const found = yield* source.value
+          .getValidatedBySessionId(sessionId)
+          .pipe(Effect.mapError(() => new Recorded.RecordedCallerFence({ code: "not_granted" })));
+        if (Option.isNone(found)) return null;
+        const proof = found.value,
+          request = proof.request,
+          context = request.enrollment.context,
+          expected = request.expected,
+          session = request.enrollment.session;
+        return {
+          source: {
+            environment_id: context.source_instance_id,
+            authority_namespace: context.authority_namespace,
+            store_generation: context.store_generation,
+            binding_version: proof.receipt.source_binding_version,
+            enrollment_id: request.enrollment.enrollment_id,
+            enrollment_session_id: session.session_id,
+          },
+          destination: {
+            registry_instance_id: expected.registry_instance_id,
+            owner_id: expected.owner_id,
+            home_environment_id: expected.home_environment_id,
+            home_generation: expected.home_generation,
+            principal_id: context.principal_id,
+            binding_version: expected.singleton_binding_version,
+          },
+          issued_at: Date.parse(session.issued_at),
+          expires_at: Date.parse(session.expires_at),
+          active: true,
+        };
+      }),
+    })),
+  );
+  const recording = Recorded.layer.pipe(
+    Layer.provideMerge(
+      NativeAdmission.recordedAuthorityLayer.pipe(
+        Layer.provide(enrolledSource),
+        Layer.provideMerge(admission),
+      ),
+    ),
+  );
   const source = NativeIntegration.nativeSourceProvidersLayer.pipe(
     Layer.provideMerge(NativeAdmission.sourceAdmissionLayer),
   );
@@ -268,7 +320,7 @@ export const homeServicesLayer = (
       ),
     ),
     Layer.provide(NativeAdmission.callerBoundaryLayer),
-    Layer.provideMerge(admission),
+    Layer.provideMerge(recording),
     Layer.provideMerge(DurableEntries.layer),
     Layer.provideMerge(NativeIntegration.nativePersistenceLayer),
   );
@@ -291,7 +343,16 @@ export const homeServicesLayer = (
       ),
     ),
   );
-  return Layer.mergeAll(NativeEntry.gatewayLayer, NativeEntry.registrationLayer, operations).pipe(
+  const recovery = NativeRecovery.layer.pipe(
+    Layer.provideMerge(operations),
+    Layer.provide(NativeEffects.rawRecoveryLayer),
+  );
+  return Layer.mergeAll(
+    NativeEntry.gatewayLayer,
+    NativeEntry.registrationLayer,
+    operations,
+    recovery,
+  ).pipe(
     Layer.provideMerge(entry),
     Layer.provide(Layer.succeed(Home, selection.home)),
     Layer.provide(Layer.succeed(Startup, selection)),
@@ -338,6 +399,7 @@ export const unavailableServicesLayer = (selection: Selection) => {
       const environment = yield* Environment.ServerEnvironmentIdentity;
       const environmentId = yield* environment.getEnvironmentId;
       return Operations.WorkstreamOperations.of({
+        resumeRecorded: () => Effect.fail(new Recorded.RecordedCallerFence({ code: "missing" })),
         submit: () => Effect.fail(new Operations.OperationInternalError({})),
         read: (input) =>
           Effect.succeed(

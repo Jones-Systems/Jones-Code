@@ -81,7 +81,7 @@ const sourceBootstrap = (selection: Admin.InitSelection, action: "plan" | "apply
           return { authority, build: Effect.succeed(Option.some(trusted.build)) };
         }),
       );
-      // Bound authority repeats verifyUnchanged with this SQL client's owned-transaction journal qualification.
+      // Bound authority rechecks owner/source metadata and qualifies main through the owned SQL transaction.
       const owner = Layer.effect(
         SourceEnrollments.SourceSetupOwner,
         Effect.map(SourceEnrollments.SourceIssuer, (issuer) => ({

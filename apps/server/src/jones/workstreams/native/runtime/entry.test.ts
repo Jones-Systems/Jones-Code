@@ -18,7 +18,6 @@ import * as HttpPlatform from "effect/http/HttpPlatform";
 import * as Etag from "effect/http/Etag";
 import * as Fixture from "../store/sql.testkit.ts";
 import * as Admin from "../cli.ts";
-import * as Store from "../store/registryStore.ts";
 import * as Operations from "../../operations/service.ts";
 import * as OperationStore from "../store/operationStore.ts";
 import * as Startup from "./startup.ts";
@@ -32,11 +31,15 @@ import * as Placements from "../registry/placements.ts";
 import * as Authority from "../../../../environment/NativeStoreAuthority.ts";
 import * as Environment from "../../../../environment/ServerEnvironment.ts";
 import * as ProjectionStore from "../../../../orchestration-v2/ProjectionStore.ts";
+import * as ThreadManagement from "../../../../orchestration-v2/ThreadManagementService.ts";
+import { liveThreadShell } from "../../../../mcp/McpToolAccess.testkit.ts";
 import * as AuthSessions from "../../../../persistence/AuthSessions.ts";
 import { runMigrations } from "../../../../persistence/Migrations.ts";
 import nativeMigration from "../../../persistence/Migrations/125_JonesWorkstreamsNative.ts";
-import enrollmentMigration from "../../../persistence/Migrations/006_JonesWorkstreamsProviderEnrollments.ts";
-import * as Enrollment from "../../enrollment/service.ts";
+import enrollmentMigration from "../../../persistence/Migrations/126_JonesWorkstreamsSourceEnrollments.ts";
+import * as SourceSetup from "./sourceSetup.ts";
+import * as SourceEnrollment from "./sourceEnrollment.ts";
+import * as SourceRecords from "../store/sourceEnrollmentStore.ts";
 import { NativeProviderEnrollmentError } from "../../nativeProvider/enrollment.ts";
 import { enrollmentRequest } from "../../enrollment/testFixtures.ts";
 import { makeProviderFixture } from "../../nativeProvider/testFixtures.ts";
@@ -76,7 +79,12 @@ const fresh = () => {
     home,
     database,
     layer: Admin.layer.pipe(
-      Layer.provideMerge(Fixture.testLayer({ filename: database })),
+      Layer.provideMerge(
+        Fixture.testLayer({
+          filename: database,
+          keys: new Map([...Fixture.secrets(), ["server-signing-key", Fixture.keyBytes]]),
+        }),
+      ),
       Layer.provideMerge(NodeServices.layer),
     ),
   };
@@ -93,19 +101,6 @@ const seed = (f: ReturnType<typeof fresh>) =>
       content_key_id: "test-home",
       local_key_id: "test-local",
     });
-    const store = yield* Store.RegistryStore;
-    yield* store.appendPlain(
-      { registry_instance_id: registry.registry_instance_id, owner_id: registry.owner_id },
-      "source_bindings",
-      {
-        provider: "t3",
-        source_instance_id: registry.home_environment_id,
-        authority_namespace: enrollmentRequest.context.authority_namespace,
-        store_generation: enrollmentRequest.context.store_generation,
-        binding_version: 1,
-        state: "active",
-      },
-    );
     const sessions = yield* AuthSessions.make;
     const issuedAt = DateTime.makeUnsafe(enrollmentRequest.session.issued_at),
       expiresAt = DateTime.makeUnsafe(enrollmentRequest.session.expires_at);
@@ -133,6 +128,15 @@ const seed = (f: ReturnType<typeof fresh>) =>
       expiresAt,
       client,
     });
+    yield* sessions.create({
+      ...principal,
+      sessionId: Wire.AuthSessionId.make("startup-cli"),
+      subject: "cli-issued-session",
+      scopes: [...principal.scopes],
+      issuedAt,
+      expiresAt,
+      client,
+    });
     const provider = makeProviderFixture();
     const authority: Authority.NativeStoreAuthority["Service"] = {
       ...provider.ports.authority,
@@ -149,17 +153,51 @@ const seed = (f: ReturnType<typeof fresh>) =>
         }),
       },
     };
-    const enrollments = yield* Enrollment.makeNativeEnrollments({
-      authority,
-      build: Effect.succeed(Option.some(enrollmentRequest.context.build)),
-    }).pipe(Effect.provideService(AuthSessions.AuthSessionRepository, sessions));
-    yield* enrollments.reserve(enrollmentRequest);
+    const nativeSources = yield* SourceEnrollment.NativeSourceEnrollments.pipe(
+      Effect.provide(
+        SourceEnrollment.layer.pipe(
+          Layer.provide(
+            Layer.succeed(SourceEnrollment.SourceSetupOwner, { verifyUnchanged: Effect.void }),
+          ),
+          Layer.provideMerge(SourceRecords.layer),
+          Layer.provide(Layer.succeed(AuthSessions.AuthSessionRepository, sessions)),
+          Layer.provide(
+            Layer.succeed(SourceEnrollment.SourceIssuer, {
+              authority,
+              build: Effect.succeed(Option.some(enrollmentRequest.context.build)),
+            }),
+          ),
+        ),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      yield* (yield* SourceSetup.NativeSourceSetup).apply({
+        schema: "jones-code.native-source-setup/v1",
+        enrollment: enrollmentRequest,
+        expected: {
+          registry_instance_id: registry.registry_instance_id,
+          owner_id: registry.owner_id,
+          home_environment_id: registry.home_environment_id,
+          home_generation: 1,
+          registry_version: 1,
+          singleton_binding_version: 1,
+          grant_id: "grant:" + enrollmentRequest.context.principal_id,
+          grant_version: 1,
+          source_binding: null,
+        },
+        rebind: false,
+      });
+    }).pipe(
+      Effect.provide(SourceSetup.layer.pipe(Layer.provide(SourceRecords.layer))),
+      Effect.provideService(SourceEnrollment.NativeSourceEnrollments, nativeSources),
+      Effect.provideService(SourceEnrollment.SourceSetupOwner, { verifyUnchanged: Effect.void }),
+    );
     const runtime: Runtime.NativeWorkstreamsRuntime["Service"] = {
       provider: provider.provider(),
       providerV2: makeWorkstreamsNativeProvider(provider.ports, "v2"),
       enrollments: {
         getBySessionId: (id) =>
-          enrollments
+          nativeSources
             .getBySessionId(id)
             .pipe(Effect.mapError(() => new NativeProviderEnrollmentError())),
       },
@@ -183,6 +221,7 @@ const seed = (f: ReturnType<typeof fresh>) =>
     });
     if (selection.home === null) return yield* Effect.die(selection.problem);
     const services = Startup.homeServicesLayer({ ...selection, home: selection.home }).pipe(
+      Layer.provide(Layer.succeed(SourceEnrollment.NativeSourceEnrollments, nativeSources)),
       Layer.provide(Layer.succeed(Runtime.NativeWorkstreamsRuntime, runtime)),
       Layer.provide(Layer.succeed(Authority.NativeStoreAuthority, authority)),
       Layer.provide(Layer.succeed(Placements.PlacementTrust, authority.trustProvider)),
@@ -193,6 +232,12 @@ const seed = (f: ReturnType<typeof fresh>) =>
         }),
       ),
       Layer.provide(ProjectionStore.layerMemory),
+      Layer.provide(
+        Layer.mock(ThreadManagement.ThreadManagementService)({
+          getThreadShell: (id) =>
+            Effect.succeed(id === "thread-synthetic" ? liveThreadShell(id) : null),
+        }),
+      ),
     );
     return { services, sessions };
   });
@@ -212,7 +257,7 @@ const operation = (origin: { readonly kind: "app" | "agent" | "cli" }, suffix: s
 });
 
 it.effect(
-  "production composition shares the exact destination across HTTP, MCP and trusted CLI contexts",
+  "production composition shares native issuance across HTTP, MCP and authenticated CLI while refusing callback-only recovery",
   () => {
     const f = fresh();
     return Effect.gen(function* () {
@@ -267,11 +312,29 @@ it.effect(
             }),
           ).toEqual({ operation: null });
         }).pipe(
-          Effect.provideService(Admission.TrustedCli, {
-            environmentId: registry.home_environment_id,
-            check: () => Effect.void,
+          Effect.provideService(Wire.EnvironmentAuthenticatedPrincipal, {
+            ...principal,
+            sessionId: Wire.AuthSessionId.make("startup-cli"),
+            subject: "cli-issued-session",
           }),
         );
+        expect(
+          (yield* operations
+            .submit({
+              request: operation({ kind: "cli" }, "callback-only"),
+              wait_ms: 0,
+            })
+            .pipe(
+              Effect.provideService(Admission.TrustedCli, {
+                environmentId: registry.home_environment_id,
+                check: () => Effect.void,
+              }),
+              Effect.result,
+            ))._tag,
+        ).toBe("Failure");
+        expect(
+          yield* (yield* OperationStore.OperationStore).read("startup-operation-callback-only"),
+        ).toBeNull();
         for (const suffix of ["http", "mcp", "cli"]) {
           const saved = yield* (yield* OperationStore.OperationStore).read(
             "startup-operation-" + suffix,

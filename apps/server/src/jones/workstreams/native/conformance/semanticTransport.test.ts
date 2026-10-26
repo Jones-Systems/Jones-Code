@@ -21,6 +21,7 @@ import { expect, it } from "@effect/vitest";
 import * as Wire from "@t3tools/contracts";
 import { WorkstreamsNativePlacementResult } from "@t3tools/contracts/jones/workstreamsNativePlacement";
 import * as NativeRuntimeEntry from "../runtime/entry.ts";
+import * as Recorded from "../runtime/recordedCaller.ts";
 import * as NativeAdmission from "../runtime/admission.ts";
 import {
   WORKSTREAMS_LEGACY_RECEIPTS_CONTRACT,
@@ -133,7 +134,88 @@ const runtime = (
   const persistence = Fixture.testLayer(options).pipe(
     Layer.provideMerge(Layer.succeed(NativeHome, home)),
   );
+
+  // This conformance fixture supplies synthetic caller records. Production
+  // authentication and source enrollment are exercised by mounted runtime tests.
+  const recorded = Recorded.layer.pipe(
+    Layer.provide(
+      Layer.succeed(Recorded.CallerAuthority, {
+        capture: () =>
+          Effect.map(Clock.currentTimeMillis, (at): Recorded.RecordedCallerV1 => ({
+            version: 1,
+            captured_at: at,
+            origin: caller.origin,
+            auth: {
+              kind: "bearer",
+              session_id: "synthetic-owner-session",
+              subject: "synthetic-owner",
+              method: "bearer-access-token",
+            },
+            source_environment_id: binding.source_instance_id,
+            registry_principal_id: binding.principal_id,
+            singleton_binding_version: 1,
+            grant_version: 1,
+            source: {
+              environment_id: binding.source_instance_id,
+              authority_namespace: binding.authority_namespace,
+              store_generation: binding.store_generation,
+              binding_version: 1,
+              enrollment_id: binding.enrollment_id,
+              enrollment_session_id: binding.session_id,
+            },
+            destination: {
+              registry_instance_id: home.registry_instance_id,
+              owner_id: home.owner_id,
+              home_environment_id: home.home_environment_id,
+              home_generation: 1,
+              principal_id: binding.principal_id,
+              binding_version: 1,
+            },
+            ceiling: {
+              permissions: ["workstreams:read", "workstreams:write"],
+              scopes: [Wire.AuthOrchestrationReadScope, Wire.AuthOrchestrationOperateScope],
+              capabilities: [],
+              limits: null,
+            },
+          })),
+        refresh: (record) =>
+          Effect.succeed({
+            admission: record,
+            registry_active: true,
+            singleton_active: true,
+            source_binding_active: true,
+            grant: {
+              active: true,
+              version: record.grant_version,
+              permissions: record.ceiling.permissions,
+            },
+            enrollment: {
+              enrollment_id: binding.enrollment_id,
+              session_id: binding.session_id,
+              active: true,
+              issued_at: 0,
+              expires_at: 9_000_000_000_000,
+            },
+            session: {
+              session_id: "synthetic-owner-session",
+              subject: "synthetic-owner",
+              method: "bearer-access-token",
+              scopes: [Wire.AuthOrchestrationReadScope, Wire.AuthOrchestrationOperateScope],
+              issued_at: 0,
+              expires_at: 9_000_000_000_000,
+              revoked: false,
+            },
+            credential: null,
+            run: null,
+            trusted_cli_authority_id: null,
+          }),
+        checkTarget: () => Effect.void,
+      }),
+    ),
+  );
+
   const registry = Registry.layer.pipe(
+    Layer.provideMerge(recorded),
     Layer.provideMerge(Session.layer),
     Layer.provideMerge(persistence),
   );
@@ -960,7 +1042,9 @@ it.effect(
         registrations = yield* Registration.Registration,
         registration = registrations.forCaller(caller),
         admission = yield* NativeAdmission.Admission.pipe(Effect.provide(NativeAdmission.layer));
+      const recordedCallers = yield* Recorded.RecordedCallers;
       const dynamicEntry = NativeRuntimeEntry.layer.pipe(
+        Layer.provide(Layer.succeed(Recorded.RecordedCallers, recordedCallers)),
         Layer.provide(Layer.succeed(NativeHome, home)),
         Layer.provide(Layer.succeed(Local.LocalTransport, local)),
         Layer.provide(Layer.succeed(Registration.Registration, registrations)),

@@ -10,6 +10,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 import * as BindingStore from "./bindingStore.ts";
 import * as NativeSql from "./sql.ts";
+import * as Callers from "../runtime/recordedCaller.ts";
 
 export type OperationState =
   | "accepted"
@@ -31,6 +32,7 @@ export interface OperationInput {
   readonly child_command_ids: readonly string[];
   readonly request_body: string;
   readonly accepted_at: string;
+  readonly recorded_caller?: Callers.RecordedCallerV1 | null;
 }
 export interface Operation extends OperationInput {
   readonly request_sha256: string;
@@ -108,6 +110,25 @@ const make = Effect.gen(function* () {
         row.request_sha256
     )
       return yield* new NativeSql.StoreError({ reason: "invalid_payload" });
+    const versioned = "version" in payload;
+    if (
+      (versioned && payload.version !== 2) ||
+      Object.keys(payload).some(
+        (key) =>
+          !(
+            versioned
+              ? ["version", "request_body", "principal_id", "recorded_caller"]
+              : ["request_body", "principal_id"]
+          ).includes(key),
+      )
+    )
+      return yield* new NativeSql.StoreError({ reason: "invalid_payload" });
+    const recordedCaller =
+      versioned && "recorded_caller" in payload && payload.recorded_caller !== null
+        ? yield* Callers.decodeRecordedCaller(payload.recorded_caller).pipe(
+            Effect.mapError(() => new NativeSql.StoreError({ reason: "invalid_payload" })),
+          )
+        : null;
     const origin = yield* decodeOriginJson(row.origin).pipe(
       Effect.mapError(() => new NativeSql.StoreError({ reason: "invalid_payload" })),
     );
@@ -123,6 +144,24 @@ const make = Effect.gen(function* () {
         )
       : null;
     if (result !== null && typeof result !== "string")
+      return yield* new NativeSql.StoreError({ reason: "invalid_payload" });
+    if (
+      recordedCaller &&
+      (Object.entries(recordedCaller.destination).some(
+        ([key, value]) =>
+          value !==
+          {
+            registry_instance_id: row.dest_registry_instance_id,
+            owner_id: row.dest_owner_id,
+            home_environment_id: row.dest_home_environment_id,
+            home_generation: row.dest_home_generation,
+            principal_id: payload.principal_id,
+            binding_version: row.binding_version,
+          }[key as keyof typeof recordedCaller.destination],
+      ) ||
+        canonicalWorkstreamsSnapshotJson(recordedCaller.origin) !==
+          canonicalWorkstreamsSnapshotJson(origin))
+    )
       return yield* new NativeSql.StoreError({ reason: "invalid_payload" });
     return {
       operation_id: row.operation_id,
@@ -140,6 +179,7 @@ const make = Effect.gen(function* () {
       },
       child_command_ids: childIds,
       request_body: payload.request_body,
+      recorded_caller: recordedCaller,
       accepted_at: row.accepted_at,
       request_sha256: row.request_sha256,
       state: row.state,
@@ -185,6 +225,7 @@ const make = Effect.gen(function* () {
                 old.destination[key as keyof typeof old.destination] !==
                 operation.destination[key as keyof typeof operation.destination],
             ) ||
+            !Callers.sameRecordedCaller(old.recorded_caller, operation.recorded_caller) ||
             old.kind !== operation.kind ||
             old.thread_environment_id !== operation.thread_environment_id ||
             old.thread_id !== operation.thread_id ||
@@ -195,6 +236,25 @@ const make = Effect.gen(function* () {
           )
             return yield* new NativeSql.StoreError({ reason: "idempotency_conflict" });
           return old;
+        }
+        if (operation.recorded_caller) {
+          const record = yield* Callers.decodeRecordedCaller(operation.recorded_caller).pipe(
+            Effect.mapError(() => new NativeSql.StoreError({ reason: "invalid_payload" })),
+          );
+          if (
+            canonicalWorkstreamsSnapshotJson(record.destination) !==
+              canonicalWorkstreamsSnapshotJson(
+                Object.fromEntries(
+                  Object.keys(record.destination).map((key) => [
+                    key,
+                    operation.destination[key as keyof typeof operation.destination],
+                  ]),
+                ),
+              ) ||
+            canonicalWorkstreamsSnapshotJson(record.origin) !==
+              canonicalWorkstreamsSnapshotJson(operation.origin)
+          )
+            return yield* new NativeSql.StoreError({ reason: "invalid_payload" });
         }
         yield* bindings.assertDestination(operation.destination);
         const origin = yield* decodeOrigin(operation.origin).pipe(
@@ -212,6 +272,8 @@ const make = Effect.gen(function* () {
             revision: 1,
           },
           {
+            version: 2,
+            recorded_caller: operation.recorded_caller ?? null,
             request_body: operation.request_body,
             principal_id: operation.destination.principal_id,
           },
@@ -219,6 +281,7 @@ const make = Effect.gen(function* () {
         yield* sql`INSERT INTO jones_workstreams_operations ${sql.insert({ operation_id: operation.operation_id, kind: operation.kind, thread_environment_id: operation.thread_environment_id, thread_id: operation.thread_id, origin: canonicalWorkstreamsSnapshotJson(origin), request_sha256: requestSha256, dest_registry_instance_id: operation.destination.registry_instance_id, dest_owner_id: operation.destination.owner_id, dest_home_environment_id: operation.destination.home_environment_id, dest_home_generation: operation.destination.home_generation, binding_version: operation.destination.binding_version, state: "accepted", child_command_ids: canonicalWorkstreamsSnapshotJson(operation.child_command_ids), accepted_at: operation.accepted_at, updated_at: operation.accepted_at, next_poll_at: null, request_envelope: requestEnvelope, result_envelope: null })}`;
         return {
           ...operation,
+          recorded_caller: operation.recorded_caller ?? null,
           state: "accepted" as const,
           request_sha256: requestSha256,
           updated_at: operation.accepted_at,

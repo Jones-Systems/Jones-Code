@@ -8,6 +8,8 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Option from "effect/Option";
+import * as Callers from "../runtime/recordedCaller.ts";
 import { Checkpoint } from "./durableEntries.ts";
 import { WorkstreamGatewayError } from "../../../../workstreams/WorkstreamGateway.ts";
 import * as BindingStore from "../store/bindingStore.ts";
@@ -53,8 +55,29 @@ const decodeCheckpoint = Schema.decodeUnknownEffect(Schema.fromJsonString(Checkp
 const make = Effect.gen(function* () {
   const bindings = yield* BindingStore.BindingStore;
   const transport = yield* HomeTransport;
-  const beforeDispatch = Effect.fn("HomeExecutor.beforeDispatch")((operation: Operation) =>
-    bindings.assertDestination(operation.destination).pipe(
+  const beforeDispatch = Effect.fn("HomeExecutor.beforeDispatch")(function* (operation: Operation) {
+    const callers = yield* Effect.serviceOption(Callers.RecordedCallers);
+    if (Option.isSome(callers) || operation.recorded_caller) {
+      if (Option.isNone(callers) || !operation.recorded_caller)
+        return yield* new WorkstreamGatewayError({
+          reason: "unknown-effect",
+          detail: "Recorded admission is unavailable.",
+        });
+      const record = operation.recorded_caller;
+      yield* Effect.gen(function* () {
+        const caller = yield* callers.value.readmitRecorded(record);
+        yield* caller.check("workstreams:write", operation.thread_id);
+      }).pipe(
+        Effect.mapError(
+          () =>
+            new WorkstreamGatewayError({
+              reason: "unknown-effect",
+              detail: "Recorded admission is fenced.",
+            }),
+        ),
+      );
+    }
+    yield* bindings.assertDestination(operation.destination).pipe(
       Effect.mapError(
         () =>
           new WorkstreamGatewayError({
@@ -62,8 +85,8 @@ const make = Effect.gen(function* () {
             detail: "Operation destination is no longer current.",
           }),
       ),
-    ),
-  );
+    );
+  });
   const assertSession = Effect.fn("HomeExecutor.assertSession")(function* (
     operation: Operation,
     session: T3WorkstreamBinding,
@@ -85,7 +108,13 @@ const make = Effect.gen(function* () {
     commandId: string,
   ) {
     yield* beforeDispatch(operation);
+    if (!operation.child_command_ids.includes(commandId))
+      return yield* new WorkstreamGatewayError({
+        reason: "unknown-effect",
+        detail: "Child is not owned by the operation.",
+      });
     const result = yield* transport.lookup(operation.destination, commandId);
+    yield* beforeDispatch(operation);
     if (result.kind === "present") {
       const receipt = result.receipt;
       if (
@@ -148,6 +177,16 @@ const make = Effect.gen(function* () {
         reason: "unknown-effect",
         detail: "Child intent is not accepted.",
       });
+    const prior = yield* readReceipt(operation, commandId);
+    if (prior.kind === "receipt") {
+      if (
+        prior.receipt.request_sha256 !== saved.unknown.digest ||
+        prior.receipt.operation !== saved.unknown.command.action.operation
+      )
+        return { kind: "idempotency_conflict" as const };
+      return { kind: "receipt" as const, receipt: prior.receipt };
+    }
+    yield* beforeDispatch(operation);
     return yield* transport.resubmit(operation.destination, commandId, body);
   });
   return HomeExecutor.of({ assertSession, readReceipt, dispatch });

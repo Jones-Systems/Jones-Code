@@ -4,6 +4,11 @@ import * as NodeCrypto from "node:crypto";
 import { vi } from "vite-plus/test";
 import { expect, it } from "@effect/vitest";
 import { AuthSessionId } from "@t3tools/contracts";
+import * as Wire from "@t3tools/contracts";
+import * as Recorded from "./recordedCaller.ts";
+import * as Recovery from "./recovery.ts";
+import * as ProjectionStore from "../../../../orchestration-v2/ProjectionStore.ts";
+import * as Environment from "../../../../environment/ServerEnvironment.ts";
 import { canonicalWorkstreamsSnapshotJson } from "@t3tools/contracts/jones/workstreamsSnapshot";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -437,7 +442,7 @@ it.effect(
             selected.pipe(
               Layer.provideMerge(
                 Runtime.nativeWorkstreamsRuntimeLayer.pipe(
-                  Layer.provide(Layer.mock(Orchestrator.OrchestratorV2, {})),
+                  Layer.provide(Layer.mock(Orchestrator.OrchestratorV2)({})),
                   Layer.provide(
                     ServerConfig.layerTest(
                       ".",
@@ -634,4 +639,105 @@ it.effect("another home's shaped request is not authentic source authority", () 
     expect(yield* counts).toEqual([1, 1, 1]);
     expect((yield* f.registries.context(scope))?.home_environment_id).toBe("home:test");
   }).pipe(Effect.provide(services())),
+);
+
+it.effect(
+  "mounted home recovery uses validated native enrollment and original authenticated caller with CP and network denied",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* f.setup.apply(request);
+      const home = {
+        ...scope,
+        canonical_origin: request.enrollment.registry_origin,
+        home_environment_id: "home:test",
+        server_generation: 1,
+        served_by_environment_id: "home:test",
+      };
+      const selection: Startup.Selection & { home: typeof home } = {
+        mode: "native-home",
+        config: null,
+        home,
+        sourceSessionId: request.enrollment.session.session_id,
+        problem: null,
+      };
+      const sessionId = AuthSessionId.make("recorded-mounted-caller");
+      const caller = {
+        sessionId,
+        subject: "mounted-owner",
+        method: "browser-session-cookie" as const,
+        scopes: [Wire.AuthOrchestrationReadScope, Wire.AuthOrchestrationOperateScope],
+        client: {
+          label: null,
+          ipAddress: null,
+          userAgent: null,
+          deviceType: "unknown" as const,
+          os: null,
+          browser: null,
+        },
+        issuedAt: DateTime.makeUnsafe(request.enrollment.session.issued_at),
+        expiresAt: DateTime.makeUnsafe(request.enrollment.session.expires_at),
+      };
+      yield* f.sessions.create(caller);
+      const base = ServerConfig.layerTest(
+        ".",
+        NodeFS.mkdtempSync("node_modules/.cache/nw-recorded-mounted-"),
+      ).pipe(Layer.provide(NodeServices.layer));
+      const resources = Runtime.nativeWorkstreamsRuntimeLayer.pipe(
+        Layer.provide(Layer.mock(Orchestrator.OrchestratorV2)({})),
+        Layer.provide(base),
+      );
+      const selected = Startup.homeServicesLayer(selection).pipe(
+        Layer.provideMerge(resources),
+        Layer.provide(
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getThreadShell: () => Effect.succeed(null),
+          }),
+        ),
+        Layer.provide(
+          Layer.succeed(Environment.ServerEnvironmentIdentity, {
+            getEnvironmentId: Effect.succeed(Wire.EnvironmentId.make("home:test")),
+          }),
+        ),
+      );
+      const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+        throw new Error("Network denied");
+      });
+      try {
+        yield* Effect.gen(function* () {
+          const callers = yield* Recorded.RecordedCallers;
+          const recovery = yield* Recovery.NativeWorkstreamsRecovery;
+          const record = yield* callers.captureCaller().pipe(
+            Effect.provideService(Wire.EnvironmentAuthenticatedPrincipal, {
+              ...caller,
+              scopes: new Set(caller.scopes),
+            }),
+          );
+          expect(record.auth).toMatchObject({ kind: "bearer", session_id: sessionId });
+          expect(record.source.enrollment_session_id).toBe(request.enrollment.session.session_id);
+          expect(record.source.enrollment_session_id).not.toBe(sessionId);
+          expect(record.source.binding_version).toBe(1);
+          yield* (yield* callers.readmitRecorded(record)).check("workstreams:write", null);
+          expect(yield* recovery.sweep()).toEqual({ attempted: 0, fenced: 0, deferred: 0 });
+          yield* f.sessions.revoke({
+            sessionId,
+            revokedAt: DateTime.makeUnsafe(request.enrollment.session.issued_at),
+          });
+          expect((yield* Effect.flip(callers.readmitRecorded(record))).code).toBe("not_granted");
+          expect(fetch).not.toHaveBeenCalled();
+        }).pipe(
+          Effect.provide(selected),
+          Effect.provideService(Startup.Startup, selection),
+          Effect.provideService(NativeHome, home),
+          Effect.provideService(NativeStoreAuthority, {
+            readCurrent: Effect.succeed(authority),
+            trustProvider: {
+              readTrustSnapshot: () => ({ trustedEnvironments: [authority], readiness: "ready" }),
+            },
+          }),
+        );
+      } finally {
+        fetch.mockRestore();
+      }
+    }).pipe(Effect.provide(services())),
 );

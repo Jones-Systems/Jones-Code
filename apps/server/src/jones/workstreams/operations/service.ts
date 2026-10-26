@@ -24,6 +24,8 @@ import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Callers from "../native/runtime/recordedCaller.ts";
+import type { CallerEvidence } from "../native/runtime/admission.ts";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import {
@@ -58,6 +60,12 @@ export class WorkstreamOperations extends Context.Service<
     readonly read: (
       input: WorkstreamOperationReadRequest,
     ) => Effect.Effect<WorkstreamOperationReadResponse>;
+    readonly resumeRecorded: (
+      operationId: string,
+    ) => Effect.Effect<
+      void,
+      OperationConflict | OperationInternalError | Callers.RecordedCallerFence
+    >;
     readonly setupStatus: () => Effect.Effect<WorkstreamSetupStatus>;
   }
 >()("t3/jones/workstreams/operations/service/WorkstreamOperations") {}
@@ -85,6 +93,7 @@ type Child = {
   readonly principalId: string;
 };
 type Entry = {
+  caller?: CallerEvidence;
   durable?: OperationStore.Operation;
   readonly request: WorkstreamOperationRequest;
   readonly digest: string;
@@ -157,7 +166,14 @@ const make = Effect.gen(function* () {
   const admission = yield* Semaphore.make(1);
   const entries = new Map<string, Entry>();
   const locks = new Map<string, Entry>();
-  const assignments = new Map<string, { observed: WorkstreamOperationObserved; expires: number }>();
+  const assignments = new Map<
+    string,
+    {
+      observed: WorkstreamOperationObserved;
+      expires: number;
+      recordedCaller?: Callers.RecordedCallerV1 | null;
+    }
+  >();
   const digest = (body: string) =>
     crypto.digest("SHA-256", new TextEncoder().encode(body)).pipe(Effect.map(Hex.encode));
   const queue: { priority: number; run: Effect.Effect<void> }[] = [];
@@ -170,6 +186,20 @@ const make = Effect.gen(function* () {
         ? native.executor.dispatch(entry.durable, child.command.command_id, child.body)
         : gateway.resubmit(child.command.command_id, child.body)
       ).pipe(
+        (effect) =>
+          entry.caller
+            ? effect.pipe(Effect.provideService(Callers.RecoveryCaller, entry.caller))
+            : effect,
+        (effect) =>
+          entry.durable?.recorded_caller
+            ? effect.pipe(
+                Effect.provideService(Callers.RecordedAdmission, entry.durable.recorded_caller),
+              )
+            : effect,
+        (effect) =>
+          native?.callers
+            ? effect.pipe(Effect.provideService(Callers.RecordedCallers, native.callers))
+            : effect,
         Effect.matchEffect({
           onSuccess: (value) => Deferred.succeed(done, value),
           onFailure: (error) => Deferred.fail(done, error),
@@ -364,6 +394,7 @@ const make = Effect.gen(function* () {
       : { kind: "unassigned" };
     assignments.set(threadKey(request.thread), {
       observed: value,
+      recordedCaller: entry.durable?.recorded_caller ?? null,
       expires: current ? Date.parse(current.expires_at) : (yield* ports.now) + 60_000,
     });
     return value;
@@ -510,6 +541,22 @@ const make = Effect.gen(function* () {
     if (read.witness_version > child.command.expected_registry_version) {
       delete entry.unknown;
       return null;
+    }
+    if (native && entry.durable?.recorded_caller) {
+      // Proven absence at the pinned home permits only the retained ID/body.
+      const response = yield* write(entry, child);
+      if (response.kind !== "receipt") return yield* invalidReceipt();
+      const receipt = response.receipt;
+      if (
+        !validReceipt(entry, child.kind, child.command.command_id, receipt) ||
+        receipt.request_sha256 !== child.digest ||
+        receipt.actor.principal_id !== child.principalId ||
+        receipt.server_generation !== child.command.expected_server_generation
+      )
+        return yield* invalidReceipt();
+      record(entry, receipt);
+      if (receipt.state !== "pending" && receipt.state !== "unresolved") delete entry.unknown;
+      return receipt;
     }
     return yield* new WorkstreamGatewayError({
       reason: "unknown-effect",
@@ -849,6 +896,7 @@ const make = Effect.gen(function* () {
       : { kind: "unassigned" };
     assignments.set(threadKey(request.thread), {
       observed: value,
+      recordedCaller: entry.durable?.recorded_caller ?? null,
       expires: Date.parse(registrationState.expires_at),
     });
     yield* update(entry, { observed: value });
@@ -1103,6 +1151,20 @@ const make = Effect.gen(function* () {
       : new OperationInternalError({});
   const launch = Effect.fn("WorkstreamOperations.launch")(function* (entry: Entry) {
     yield* execute(entry).pipe(
+      (effect) =>
+        native?.callers
+          ? effect.pipe(Effect.provideService(Callers.RecordedCallers, native.callers))
+          : effect,
+      (effect) =>
+        entry.caller
+          ? effect.pipe(Effect.provideService(Callers.RecoveryCaller, entry.caller))
+          : effect,
+      (effect) =>
+        entry.durable?.recorded_caller
+          ? effect.pipe(
+              Effect.provideService(Callers.RecordedAdmission, entry.durable.recorded_caller),
+            )
+          : effect,
       Effect.catch(() =>
         Effect.gen(function* () {
           entry.phase = "sealing";
@@ -1127,6 +1189,25 @@ const make = Effect.gen(function* () {
     input: WorkstreamOperationSubmitRequest,
   ) {
     return yield* Effect.gen(function* () {
+      // Capture before consulting retained outcomes; same-kind callers are distinct owners.
+      const current = native?.callers
+        ? yield* native.callers
+            .captureCaller()
+            .pipe(Effect.mapError(() => new OperationInternalError({})))
+        : null;
+      const caller =
+        native?.callers && current
+          ? yield* native.callers
+              .readmitRecorded(current)
+              .pipe(Effect.mapError(() => new OperationInternalError({})))
+          : null;
+      if (caller)
+        yield* caller
+          .check(
+            "workstreams:write",
+            input.request.kind === "set_primary" ? input.request.thread.thread_id : null,
+          )
+          .pipe(Effect.mapError(() => new OperationInternalError({})));
       const hash = yield* digest(canonicalJson(input.request)).pipe(
         Effect.mapError(() => new OperationInternalError({})),
       );
@@ -1139,6 +1220,12 @@ const make = Effect.gen(function* () {
           .pipe(Effect.mapError(durableError));
         if (saved) entry = yield* restore(saved);
       }
+      if (
+        entry &&
+        native?.callers &&
+        !Callers.sameRecordedCaller(entry.durable?.recorded_caller, current)
+      )
+        return yield* new OperationConflict({ code: "operation_id_conflict" });
       if (entry && entry.digest !== hash)
         return yield* new OperationConflict({ code: "operation_id_conflict" });
       if (
@@ -1217,10 +1304,31 @@ const make = Effect.gen(function* () {
             if (native) {
               const saved = yield* native.entries
                 .accept(input.request, Object.values(ids).flat(), at)
-                .pipe(Effect.mapError(durableError));
+                .pipe(
+                  (effect) =>
+                    native.callers
+                      ? effect.pipe(Effect.provideService(Callers.RecordedCallers, native.callers))
+                      : effect,
+                  Effect.mapError(durableError),
+                );
               entry = yield* restore(saved);
             } else entries.set(input.request.operation_id, entry);
           }
+        }
+        if (caller) {
+          // A live duplicate owns the same entry, but cannot replace its original ceiling.
+          entry.caller =
+            native?.callers && entry.durable?.recorded_caller
+              ? yield* native.callers
+                  .readmitRecorded(entry.durable.recorded_caller)
+                  .pipe(Effect.mapError(() => new OperationInternalError({})))
+              : caller;
+          yield* entry.caller
+            .check(
+              "workstreams:write",
+              entry.request.kind === "set_primary" ? entry.request.thread.thread_id : null,
+            )
+            .pipe(Effect.mapError(() => new OperationInternalError({})));
         }
         if (entry.phase === "finished") {
           entry.done = yield* Deferred.make<void>();
@@ -1270,6 +1378,31 @@ const make = Effect.gen(function* () {
       yield* Effect.raceFirst(Deferred.await(admitted.done), ports.sleep(input.wait_ms));
     return admitted.result;
   });
+  const resumeRecorded = Effect.fn("WorkstreamOperations.resumeRecorded")(function* (id: string) {
+    if (!native?.callers) return yield* new Callers.RecordedCallerFence({ code: "missing" });
+    const saved = yield* native.entries.read(id).pipe(Effect.mapError(durableError));
+    if (!saved?.operation.recorded_caller)
+      return yield* new Callers.RecordedCallerFence({ code: "missing" });
+    if (!["accepted", "dispatching", "in_progress", "reconciling"].includes(saved.operation.state))
+      return;
+    const at = saved.operation.next_poll_at;
+    if (at !== null && (!Number.isFinite(Date.parse(at)) || Date.parse(at) > (yield* ports.now)))
+      return;
+    const record = saved.operation.recorded_caller;
+    const caller = yield* native.callers.readmitRecorded(record);
+    yield* caller
+      .check(
+        "workstreams:write",
+        saved.request.kind === "set_primary" ? saved.request.thread.thread_id : null,
+      )
+      .pipe(Effect.mapError(() => new Callers.RecordedCallerFence({ code: "not_granted" })));
+    // The normal admission semaphore/maps/locks/queue remain the sole execution owner.
+    yield* Callers.withRecordedCaller(
+      record,
+      caller,
+      submit({ request: saved.request, wait_ms: 0 }),
+    ).pipe(Effect.provideService(Callers.RecordedCallers, native.callers));
+  });
   const read = Effect.fn("WorkstreamOperations.read")(function* (
     input: WorkstreamOperationReadRequest,
   ): Effect.fn.Return<WorkstreamOperationReadResponse> {
@@ -1279,12 +1412,23 @@ const make = Effect.gen(function* () {
       const saved = yield* native.entries.read(input.operation_id).pipe(Effect.orDie);
       if (saved) yield* restore(saved).pipe(Effect.orDie);
     }
-    if ("operation_id" in input)
-      return { operation: entries.get(input.operation_id)?.result ?? null };
+    const visible = (entry: Entry) =>
+      native?.callers
+        ? native.callers.visible(
+            entry.durable?.recorded_caller,
+            entry.request.kind === "set_primary" ? entry.request.thread.thread_id : null,
+          )
+        : Effect.succeed(true);
+    if ("operation_id" in input) {
+      const entry = entries.get(input.operation_id);
+      return { operation: entry && (yield* visible(entry)) ? entry.result : null };
+    }
     if ("open" in input)
       return {
-        operations: [...entries.values()]
-          .filter((e) => e.phase !== "finished")
+        operations: (yield* Effect.filter(
+          [...entries.values()].filter((e) => e.phase !== "finished"),
+          visible,
+        ))
           .slice(0, 100)
           .map((e) => e.result),
       };
@@ -1300,9 +1444,16 @@ const make = Effect.gen(function* () {
             e.request.kind === "set_primary" &&
             threadKey(e.request.thread) === key,
         );
+    const assignmentVisible =
+      !native?.callers ||
+      (cached && (yield* native.callers.visible(cached.recordedCaller, input.thread.thread_id)));
+    const openVisible = open && (yield* visible(open));
     return {
-      assignment: cached && cached.expires > now ? cached.observed : { kind: "unverified" },
-      open_operation: open?.result ?? null,
+      assignment:
+        assignmentVisible && cached && cached.expires > now
+          ? cached.observed
+          : { kind: "unverified" },
+      open_operation: openVisible ? open.result : null,
     };
   });
   let setupCache: { at: number; value: WorkstreamSetupStatus } | undefined;
@@ -1384,7 +1535,7 @@ const make = Effect.gen(function* () {
   });
   // Native replay is owned by the recovery worker with retained caller/destination admission.
   // Service construction must not dispatch records without that evidence.
-  return WorkstreamOperations.of({ submit, read, setupStatus });
+  return WorkstreamOperations.of({ submit, read, resumeRecorded, setupStatus });
 });
 
 export const layer = Layer.effect(WorkstreamOperations, make);
