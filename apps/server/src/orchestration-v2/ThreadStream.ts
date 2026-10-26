@@ -50,7 +50,6 @@ export function boundedSnapshotResponseFields(input: {
     historyCursor: bounded.historyCursor,
     hasMoreHistory: bounded.hasMoreHistory,
     latestLocalTurnOrdinal: bounded.latestLocalTurnOrdinal,
-    payloadBudgetExceeded: bounded.payloadBudgetExceeded,
     ...(compactProjection === null ? {} : { turnItemsOmitLocalVisible: true as const }),
   };
 }
