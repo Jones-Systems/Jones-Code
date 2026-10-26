@@ -3577,7 +3577,8 @@
         "apps/server/src/jones/workstreams/native/runtime/peerSessionPinSetup.test.ts",
         "apps/server/src/jones/workstreams/native/forwarding/guard.twoServer.test.ts",
         "apps/server/src/jones/workstreams/native/forwarding/peerReadAdmission.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/peerMcpAuthentication.test.ts"
+        "apps/server/src/jones/workstreams/native/runtime/peerMcpAuthentication.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/peerHomeReadClient.test.ts"
       ],
       "commands": [
         "vp test run apps/server/src/jones/workstreams/native/compat/http.test.ts packages/contracts/src/jones/workstreamsHttp.test.ts apps/server/src/jones/workstreams/native/conformance/httpParity.test.ts apps/server/src/workstreams/http.test.ts --maxWorkers=1 --no-file-parallelism",

@@ -51,12 +51,15 @@ const fixture = (
     body: { id: unknown; method: string },
     request: HttpClientRequest.HttpClientRequest,
   ) => Response,
+  linkLayer = links,
+  onRequest?: (method: string) => void,
 ) => {
   let opens = 0;
   const http = HttpClient.make((request) =>
     Effect.sync(() => {
       if (request.body._tag !== "Uint8Array") throw new Error("Expected JSON request");
       const body = JSON.parse(new TextDecoder().decode(request.body.body));
+      onRequest?.(body.method);
       const response =
         body.method === "initialize"
           ? initialized(body.id, `session-${++opens}`)
@@ -67,10 +70,120 @@ const fixture = (
     }),
   );
   return PeerMcpClient.layer.pipe(
-    Layer.provide(links),
+    Layer.provide(linkLayer),
     Layer.provide(Layer.succeed(HttpClient.HttpClient, http)),
   );
 };
+
+it.effect.each([
+  { name: "omitted", expectedGeneration: undefined, refused: false },
+  { name: "matching", expectedGeneration: "generation-1", refused: false },
+  { name: "mismatched", expectedGeneration: "generation-0", refused: true },
+])("$name captured generation gates all MCP HTTP effects", ({ expectedGeneration, refused }) => {
+  const methods: Array<string> = [];
+  return Effect.gen(function* () {
+    const client = yield* PeerMcpClient.PeerMcpClient;
+    const result = yield* client
+      .call({ ...input, ...(expectedGeneration === undefined ? {} : { expectedGeneration }) })
+      .pipe(Effect.result);
+    if (refused) {
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") {
+        expect(result.failure.code).toBe("invalid_request");
+        expect(result.failure.message).toContain("not dispatched");
+      }
+      expect(methods).toEqual([]);
+    } else {
+      expect(result).toMatchObject({ _tag: "Success", success: { count: 1 } });
+      expect(methods).toEqual(["initialize", "notifications/initialized", "tools/call"]);
+    }
+  }).pipe(
+    Effect.provide(
+      fixture(
+        (body) => answer(body.id, { content: content({ count: 1 }) }),
+        links,
+        (method) => methods.push(method),
+      ),
+    ),
+  );
+});
+
+it.effect(
+  "refuses an admitted generation replaced during resolution even when the new link is current",
+  () => {
+    let generation = "generation-1";
+    const expectedGeneration = generation;
+    let resolutions = 0;
+    const methods: Array<string> = [];
+    const replacingLinks = Layer.mock(PeerLinks.PeerLinks)({
+      resolve: () =>
+        Effect.sync(() => {
+          resolutions++;
+          generation = "generation-2";
+          return {
+            url: "https://replacement.invalid",
+            token: "synthetic-replacement-token",
+            generation,
+            link: {},
+          } as PeerLinks.ResolvedPeerLink;
+        }),
+      currentGeneration: () => Effect.sync(() => Option.some(generation)),
+      recordOutcome: () => Effect.void,
+    });
+    return Effect.gen(function* () {
+      const client = yield* PeerMcpClient.PeerMcpClient;
+      const failure = yield* client.call({ ...input, expectedGeneration }).pipe(Effect.flip);
+      expect(failure.code).toBe("invalid_request");
+      expect(failure.message).toContain("not dispatched");
+      expect(resolutions).toBe(1);
+      expect(generation).toBe("generation-2");
+      expect(methods).toEqual([]);
+    }).pipe(
+      Effect.provide(
+        fixture(
+          (body) => answer(body.id, { content: content({ count: 1 }) }),
+          replacingLinks,
+          (method) => methods.push(method),
+        ),
+      ),
+    );
+  },
+);
+
+it.effect("a matching capture still refuses relinking immediately before tool dispatch", () => {
+  let checks = 0;
+  const methods: Array<string> = [];
+  const relinkingLinks = Layer.mock(PeerLinks.PeerLinks)({
+    resolve: () =>
+      Effect.succeed({
+        url: "https://peer.invalid",
+        token: "synthetic-token",
+        generation: "generation-1",
+        link: {},
+      } as PeerLinks.ResolvedPeerLink),
+    currentGeneration: () =>
+      Effect.sync(() => Option.some(++checks >= 3 ? "generation-2" : "generation-1")),
+    recordOutcome: () => Effect.void,
+  });
+  return Effect.gen(function* () {
+    const client = yield* PeerMcpClient.PeerMcpClient;
+    const failure = yield* client
+      .call({ ...input, expectedGeneration: "generation-1" })
+      .pipe(Effect.flip);
+    expect(failure.code).toBe("invalid_request");
+    expect(failure.message).toContain("not dispatched");
+    expect(checks).toBe(3);
+    expect(methods).toEqual(["initialize", "notifications/initialized"]);
+  }).pipe(
+    Effect.provide(
+      fixture(
+        (body) => answer(body.id, { content: content({ count: 1 }) }),
+        relinkingLinks,
+        (method) => methods.push(method),
+      ),
+    ),
+  );
+});
 
 it.effect(
   "carries a caller's origin per request and preserves it on explicit retry without leaking it",

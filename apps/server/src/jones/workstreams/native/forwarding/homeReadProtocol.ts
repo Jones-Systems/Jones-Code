@@ -105,27 +105,37 @@ export const layer = Layer.effect(
 );
 
 /** Additive adapter; existing bare-page callers and tools keep their own independently decoded ports. */
-export const homeReadPortLayer = Layer.effect(
-  Member.HomeReadPort,
-  Effect.gen(function* () {
-    const client = yield* HomeReadResultClient;
-    return Member.HomeReadPort.of({
-      read: Effect.fn("NativeReadProtocol.member")(function* (home, request, placementContract) {
-        const wrapped = yield* decodeRequest(
-          {
-            contract: WORKSTREAMS_HOME_READ_RESULT_CONTRACT,
-            request,
-            ...(placementContract === undefined ? {} : { placement_contract: placementContract }),
-          },
-          { onExcessProperty: "error" },
-        ).pipe(Effect.mapError((cause) => new RegistryError({ code: "invalid_request", cause })));
-        const raw = yield* client.read(home, wrapped);
-        const result = yield* decodeResult(raw, { onExcessProperty: "error" }).pipe(
-          Effect.mapError((cause) => new RegistryError({ code: "invalid_response", cause })),
-        );
-        const { contract: _contract, ...read } = result;
-        return yield* Routes.validateReadResult(request, read, placementContract);
+export const homeReadPortLayer = Layer.unwrap(
+  Effect.sync(() =>
+    Layer.effect(
+      Member.HomeReadPort,
+      Effect.gen(function* () {
+        const client = yield* HomeReadResultClient;
+        return Member.HomeReadPort.of({
+          read: Effect.fn("NativeReadProtocol.member")(
+            function* (home, request, placementContract) {
+              const wrapped = yield* decodeRequest(
+                {
+                  contract: WORKSTREAMS_HOME_READ_RESULT_CONTRACT,
+                  request,
+                  ...(placementContract === undefined
+                    ? {}
+                    : { placement_contract: placementContract }),
+                },
+                { onExcessProperty: "error" },
+              ).pipe(
+                Effect.mapError((cause) => new RegistryError({ code: "invalid_request", cause })),
+              );
+              const raw = yield* client.read(home, wrapped);
+              const result = yield* decodeResult(raw, { onExcessProperty: "error" }).pipe(
+                Effect.mapError((cause) => new RegistryError({ code: "invalid_response", cause })),
+              );
+              const { contract: _contract, ...read } = result;
+              return yield* Routes.validateReadResult(request, read, placementContract);
+            },
+          ),
+        });
       }),
-    });
-  }),
+    ),
+  ),
 );

@@ -346,6 +346,12 @@ export const make = Effect.gen(function* () {
           Effect.mapError(fromLinkError),
           Effect.tapError(() => retireObsolete(input.environmentId).pipe(Effect.ignore)),
         );
+        if (
+          input.expectedGeneration !== undefined &&
+          input.expectedGeneration !== resolved.generation
+        ) {
+          return yield* changed();
+        }
         generation = resolved.generation;
         const limitHeader = {
           [McpInvocationContext.MODE_LIMIT_HEADER]: `${input.limits.runtimeMode}/${input.limits.interactionMode}`,

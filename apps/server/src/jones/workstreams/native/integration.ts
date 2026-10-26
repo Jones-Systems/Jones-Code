@@ -88,14 +88,15 @@ export const nativeSourceProvidersLayer = Layer.merge(
 
 /** Share the opaque peer boundary before constructing consumers of the local Session. */
 export const nativeSessionLayer = Layer.unwrap(
-  Effect.map(Effect.serviceOption(PeerReadBoundary.PeerReadBoundary), (boundary) =>
-    Option.isNone(boundary)
+  Effect.gen(function* () {
+    const boundary = yield* Effect.serviceOption(PeerReadBoundary.PeerReadBoundary);
+    return Option.isNone(boundary)
       ? NativeSession.layer
       : PeerReadBoundary.sessionLayer.pipe(
           Layer.provide(NativeSession.layer),
           Layer.provide(Layer.succeed(PeerReadBoundary.PeerReadBoundary, boundary.value)),
-        ),
-  ),
+        );
+  }),
 );
 
 /** Requires genuine native authentication; no tuple-only authority or default session. */

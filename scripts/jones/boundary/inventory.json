@@ -2168,7 +2168,9 @@
     "apps/server/src/jones/workstreams/native/forwarding/peerReadAdmission.test.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/runtime/peerMcpAuthentication.test.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/forwarding/peerReadAdmission.ts": "jones-owned",
-    "apps/server/src/jones/workstreams/native/runtime/peerMcpAuthentication.ts": "jones-owned"
+    "apps/server/src/jones/workstreams/native/runtime/peerMcpAuthentication.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/forwarding/peerHomeReadClient.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/forwarding/peerHomeReadClient.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

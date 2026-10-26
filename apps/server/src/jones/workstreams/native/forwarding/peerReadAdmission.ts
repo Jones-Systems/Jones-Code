@@ -131,12 +131,16 @@ const make = Effect.gen(function* () {
 /** @public Root constructs once with the genuine Guard and native home transaction. */
 export const layer = Layer.effect(PeerReadBoundary, make);
 /** @public Coherent native reads consume this port from the same boundary instance. */
-export const homeAdmissionLayer = Layer.effect(
-  Protocol.HomePeerReadAdmission,
-  Effect.gen(function* () {
-    const boundary = yield* PeerReadBoundary;
-    return Protocol.HomePeerReadAdmission.of({ current: boundary.current });
-  }),
+export const homeAdmissionLayer = Layer.unwrap(
+  Effect.sync(() =>
+    Layer.effect(
+      Protocol.HomePeerReadAdmission,
+      Effect.gen(function* () {
+        const boundary = yield* PeerReadBoundary;
+        return Protocol.HomePeerReadAdmission.of({ current: boundary.current });
+      }),
+    ),
+  ),
 );
 /** @public Wrap the existing local Session before constructing every read consumer. */
 export const sessionLayer = Layer.effect(
