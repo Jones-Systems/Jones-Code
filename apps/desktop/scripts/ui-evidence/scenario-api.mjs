@@ -469,6 +469,14 @@ export function createScenarioContext({
       await page.emulateMedia({
         colorScheme: actual.dark ? "dark" : "light",
       });
+      // Use the app's actual preference handler in this private synthetic profile.
+      // Server default-theme adoption can select light independently of native media.
+      await page.evaluate((appearance) => {
+        localStorage.setItem("t3code:theme", "system");
+        localStorage.setItem("t3code:theme-appearance-mode", appearance);
+        localStorage.removeItem("t3code:theme-halves:v1");
+        window.dispatchEvent(new StorageEvent("storage", { key: "t3code:theme" }));
+      }, value);
       await page.waitForFunction(
         (dark) => matchMedia("(prefers-color-scheme: dark)").matches === dark,
         actual.dark,
@@ -487,6 +495,8 @@ export function createScenarioContext({
       if (finalNative.themeSource !== value || finalNative.dark !== actual.dark)
         throw new Error("Final native theme fixture readback mismatch");
       state.themeFixture = {
+        preferenceFixture:
+          "private profile system palette and explicit appearance via app storage handler",
         native: finalNative,
         cssMedia: actual.dark ? "dark" : "light",
         kind: "Native theme and CSS media fixture; no user preference persistence claim",

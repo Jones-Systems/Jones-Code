@@ -520,7 +520,7 @@ export async function runInner() {
                   try {
                     bridge = await Promise.race([
                       contents.executeJavaScript(
-                        "({desktopBridge:typeof window.desktopBridge,threadMonitor:typeof window.threadMonitor,readyState:document.readyState})",
+                        "({desktopBridge:typeof window.desktopBridge,threadMonitor:typeof window.threadMonitor,mainMonitor:typeof window.desktopBridge?.threadMonitor,readyState:document.readyState})",
                       ),
                       new Promise((resolve) => {
                         probeTimer = setTimeout(() => resolve("timed-out"), 500);
