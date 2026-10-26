@@ -14,13 +14,14 @@ import {
   launchManagedElectron,
 } from "./support/secret-service.mjs";
 import { isolationProbe } from "./probe.mjs";
+import { startWindowManager } from "./window-manager.mjs";
+import { waitForMainPage } from "./main-window.mjs";
 import {
   captureApplicationProcesses,
   closeApplicationGeneration,
   assertRestartIdentity,
 } from "./runtime.mjs";
 import { createScenarioContext, loadScenario } from "./scenario-api.mjs";
-
 export function generationProgress(artifacts, appendFile = NodeFSP.appendFile) {
   return async (generation, phase, work) => {
     if (
@@ -41,8 +42,15 @@ export function generationProgress(artifacts, appendFile = NodeFSP.appendFile) {
     const record = (state) =>
       appendFile(
         `${artifacts}/restart-progress.ndjson`,
-        `${JSON.stringify({ generation, phase, state })}\n`,
-        { mode: 0o600, flush: true },
+        `${JSON.stringify({
+          generation,
+          phase,
+          state,
+        })}\n`,
+        {
+          mode: 0o600,
+          flush: true,
+        },
       );
     // The launch ordinal is intended only; requested does not prove a process was spawned.
     await record(phase === "launch" ? "requested" : "entered");
@@ -51,14 +59,12 @@ export function generationProgress(artifacts, appendFile = NodeFSP.appendFile) {
     return result;
   };
 }
-
 export async function launchWithProgress({ index, progress, launch, window, bridge, setup }) {
   const generation = await progress(index, "launch", launch);
   await progress(index, "window", window);
   await progress(index, "bridge", bridge);
   return progress(index, "setup", () => setup(generation));
 }
-
 export async function restartWithProgress({
   previous,
   progress,
@@ -78,12 +84,14 @@ export async function restartWithProgress({
   });
   return replacement;
 }
-
 async function startXvfb(size) {
   const child = NodeChildProcess.spawn(
     "/usr/bin/Xvfb",
     ["-displayfd", "3", "-nolisten", "tcp", "-screen", "0", `${size.width}x${size.height}x24`],
-    { stdio: ["ignore", "ignore", "pipe", "pipe"], env: process.env },
+    {
+      stdio: ["ignore", "ignore", "pipe", "pipe"],
+      env: process.env,
+    },
   );
   try {
     const display = await new Promise((resolve, reject) => {
@@ -103,7 +111,10 @@ async function startXvfb(size) {
         }
       });
     });
-    return { child, display };
+    return {
+      child,
+      display,
+    };
   } catch (error) {
     child.kill("SIGTERM");
     throw error;
@@ -133,15 +144,21 @@ async function sampleResources() {
       if (!["ENOENT", "ESRCH", "EACCES"].includes(error.code)) throw error;
     }
   }
-  return { ticks, pssKiB, at: performance.now() };
+  return {
+    ticks,
+    pssKiB,
+    at: performance.now(),
+  };
 }
 export async function runInner() {
   const configuration = JSON.parse(await NodeFSP.readFile("/harness/config.json", "utf8"));
-  let app, page, xvfb, ctx, timer, processCapture, secretService;
+  let app, page, xvfb, ctx, timer, processCapture, secretService, windowManagerChild;
   const managedWait = (promise) => (secretService ? secretService.wait(promise) : promise);
   const generations = [];
   let phase = "isolation";
-  let readiness = { status: "not-requested" };
+  let readiness = {
+    status: "not-requested",
+  };
   const start = performance.now();
   const result = {
     status: "failed",
@@ -167,6 +184,16 @@ export async function runInner() {
     }
     const scenario = await loadScenario("/harness/scenario.mjs");
     xvfb = await startXvfb(configuration.size);
+    if (configuration.managedWindowManager) {
+      phase = "window-manager-setup";
+      result.windowManager = await startWindowManager(
+        configuration.managedWindowManager,
+        xvfb.display,
+        (child) => {
+          windowManagerChild = child;
+        },
+      );
+    }
     const { _electron } = await import("playwright-core");
     const progress = generationProgress("/artifacts");
     const launchApplication = () =>
@@ -188,14 +215,23 @@ export async function runInner() {
                   `--force-device-scale-factor=${configuration.scale}`,
                   ...(secretService ? ["--password-store=gnome-libsecret"] : []),
                 ],
-                env: { ...process.env, DISPLAY: xvfb.display, ...serviceEnvironment },
+                env: {
+                  ...process.env,
+                  DISPLAY: xvfb.display,
+                  ...serviceEnvironment,
+                },
                 chromiumSandbox: true,
                 timeout: 60000,
               }),
             register: (launched) => {
               app = launched;
               processCapture = captureProcess(app.process());
-              const owned = { index: generations.length, app, processCapture, closed: false };
+              const owned = {
+                index: generations.length,
+                app,
+                processCapture,
+                closed: false,
+              };
               generations.push(owned);
               return owned;
             },
@@ -204,7 +240,7 @@ export async function runInner() {
         },
         window: async () => {
           phase = "first-window";
-          page = await managedWait(app.firstWindow({ timeout: 60000 }));
+          page = await managedWait(waitForMainPage(app));
         },
         bridge: async () => {
           phase = "desktop-bridge";
@@ -256,7 +292,12 @@ export async function runInner() {
             throw new Error("Electron wrote outside its private data roots");
           result.isolation.assertedPaths = paths;
           generation.paths = paths;
-          return { electronApp: app, page, restoreConnectivity, generation };
+          return {
+            electronApp: app,
+            page,
+            restoreConnectivity,
+            generation,
+          };
         },
       });
     const identifyGeneration = async (generation) => {
@@ -264,7 +305,11 @@ export async function runInner() {
       const path = "/scratch/t3home/userdata/statev2.sqlite";
       const stat = await NodeFSP.lstat(path);
       if (!stat.isFile()) throw new Error("Synthetic database is not a regular file");
-      generation.database = { path, device: stat.dev, inode: stat.ino };
+      generation.database = {
+        path,
+        device: stat.dev,
+        inode: stat.ino,
+      };
     };
     const restartApplication = async () => {
       const previous = generations.at(-1);
@@ -278,12 +323,16 @@ export async function runInner() {
         },
         diagnostics: async (generation) => {
           const artifacts = `/artifacts/generation-${generation.index}`;
-          await NodeFSP.mkdir(artifacts, { mode: 0o700 });
+          await NodeFSP.mkdir(artifacts, {
+            mode: 0o700,
+          });
           generation.diagnostics = await writeStartupDiagnostics({
             artifacts,
             processCapture: generation.processCapture,
             logs: await captureSyntheticLogs(),
-            readiness: { status: "scenario-restart" },
+            readiness: {
+              status: "scenario-restart",
+            },
             phase,
           });
         },
@@ -335,7 +384,10 @@ export async function runInner() {
       // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone evidence script has no Effect runtime.
       arch: NodeOS.arch(),
     };
-    result.runtime.xvfb = { ...configuration.size, depth: 24 };
+    result.runtime.xvfb = {
+      ...configuration.size,
+      depth: 24,
+    };
     let previous = await sampleResources();
     const idleStart = previous;
     let sampling = false;
@@ -378,11 +430,15 @@ export async function runInner() {
     phase = "scenario";
     await managedWait(scenario.run(ctx));
     result.resources.scenarioSeconds = (performance.now() - captureStart) / 1000;
-    result.window = await app.evaluate(({ BrowserWindow, nativeTheme }) => ({
-      bounds: BrowserWindow.getAllWindows()[0].getBounds(),
-      theme: nativeTheme.shouldUseDarkColors ? "dark" : "light",
-      themeSource: nativeTheme.themeSource,
-    }));
+    const mainWindow = await app.browserWindow(page);
+    result.window = await app.evaluate(
+      ({ nativeTheme }, win) => ({
+        bounds: win.getBounds(),
+        theme: nativeTheme.shouldUseDarkColors ? "dark" : "light",
+        themeSource: nativeTheme.themeSource,
+      }),
+      mainWindow,
+    );
     result.window.viewport = await page.evaluate(() => ({
       width: innerWidth,
       height: innerHeight,
@@ -399,7 +455,9 @@ export async function runInner() {
         await NodeFSP.writeFile(
           "/artifacts/secret-service-failure.json",
           JSON.stringify(secretService.snapshot(), null, 2),
-          { mode: 0o600 },
+          {
+            mode: 0o600,
+          },
         );
       } catch {
         result.secretServiceFailureEvidence = "unavailable";
@@ -478,6 +536,8 @@ export async function runInner() {
       } finally {
         for (const generation of generations) generation.processCapture.dispose();
       }
+      await stop(windowManagerChild);
+      if (result.windowManager) result.windowManager.closed = true;
       await stop(xvfb?.child);
       result.resources.teardownSeconds = (performance.now() - teardown) / 1000;
     } finally {
@@ -487,7 +547,9 @@ export async function runInner() {
             NodeFSP.writeFile(
               "/artifacts/secret-service-before-cleanup.json",
               JSON.stringify(evidence, null, 2),
-              { mode: 0o600 },
+              {
+                mode: 0o600,
+              },
             ),
           );
         } catch (error) {

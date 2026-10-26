@@ -1,3 +1,5 @@
+import { requireMonitorGuardedSettle } from "../jones/threadMonitor/guardedSettle.ts";
+import type { GuardedThreadSettlement } from "@t3tools/contracts/jones/guardedThreadSettlement";
 import { requireQueuedRunStart } from "../jones/queue/commands.ts";
 export { promoteQueuedBatch, type PromoteQueuedBatchInput } from "../jones/queue/commands.ts";
 import { remapComposerContextAttachments } from "@t3tools/shared/composerContextReferences";
@@ -89,7 +91,9 @@ export interface ThreadCommandInput extends CommandMetadata {
 export type DeleteThreadInput = ThreadCommandInput;
 export type ArchiveThreadInput = ThreadCommandInput;
 export type UnarchiveThreadInput = ThreadCommandInput;
-export type SettleThreadInput = ThreadCommandInput;
+export interface SettleThreadInput extends ThreadCommandInput {
+  readonly guard?: GuardedThreadSettlement;
+}
 
 export interface UnsettleThreadInput extends ThreadCommandInput {
   readonly reason: "user";
@@ -449,7 +453,13 @@ export const unarchiveThread = Effect.fn("EnvironmentCommands.unarchiveThread")(
 export const settleThread = Effect.fn("EnvironmentCommands.settleThread")(function* (
   input: SettleThreadInput,
 ) {
-  return yield* simpleThreadCommand("thread.settle", input);
+  if (input.guard !== undefined) yield* requireMonitorGuardedSettle();
+  return yield* dispatch({
+    type: "thread.settle",
+    commandId: yield* allocateCommandId(input),
+    threadId: input.threadId,
+    ...(input.guard === undefined ? {} : { guard: input.guard }),
+  });
 });
 
 export const pinThread = Effect.fn("EnvironmentCommands.pinThread")(function* (

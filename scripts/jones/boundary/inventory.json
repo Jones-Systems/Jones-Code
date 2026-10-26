@@ -2030,7 +2030,16 @@
     "apps/server/src/jones/terminal/ShellIdleExpiry.test.ts": "jones-owned",
     "apps/web/src/components/chat/useChatTerminalActions.ts": "hook",
     "apps/server/src/jones/terminal/ShellIdlePrompt.ts": "jones-owned",
-    "apps/server/src/jones/terminal/ShellIdlePrompt.test.ts": "jones-owned"
+    "apps/server/src/jones/terminal/ShellIdlePrompt.test.ts": "jones-owned",
+    "apps/desktop/src/electron/ElectronWindow.test.ts": "jones-tests-in-upstream",
+    "apps/desktop/src/electron/ElectronWindow.ts": "hook",
+    "apps/desktop/src/window/DesktopWindow.test.ts": "jones-tests-in-upstream",
+    "apps/desktop/src/window/DesktopWindow.ts": "hook",
+    "apps/desktop/vite.config.ts": "accepted-shared",
+    "apps/web/src/AppRoot.tsx": "hook",
+    "apps/web/src/components/WorkspacePageHeader.tsx": "hook",
+    "apps/web/src/components/chat/useProposedPlanSend.ts": "hook",
+    "apps/web/src/connection/platform.ts": "hook"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

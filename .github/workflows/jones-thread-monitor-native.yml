@@ -1,0 +1,118 @@
+name: Jones thread monitor native smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/jones-thread-monitor-native.yml
+      - apps/desktop/scripts/jones-thread-monitor-mac-smoke*
+      - apps/desktop/scripts/ui-evidence/scenario-api.mjs
+      - apps/desktop/scripts/ui-evidence/main-window.mjs
+      - apps/desktop/scripts/ui-evidence/provenance.mjs
+      - apps/desktop/src/jones/threadMonitor/**
+      - apps/desktop/src/electron/ElectronWindow.ts
+      - apps/desktop/src/electron/ElectronProtocol.ts
+      - apps/desktop/src/window/DesktopWindow.ts
+      - apps/desktop/src/main.ts
+      - apps/desktop/src/ipc/DesktopIpc.ts
+      - apps/desktop/src/ipc/DesktopIpcHandlers.ts
+      - apps/desktop/src/app/DesktopApp.ts
+      - apps/desktop/src/app/DesktopLifecycle.ts
+      - apps/desktop/src/preview/Manager.ts
+      - apps/desktop/src/preload.ts
+      - apps/desktop/vite.config.ts
+      - apps/web/src/jones/threadMonitor/**
+      - apps/web/src/AppRoot.tsx
+      - apps/web/src/connection/platform.ts
+      - apps/web/src/lib/backgroundActivityReporter.ts
+      - apps/web/src/components/chat/useProposedPlanSend.ts
+      - apps/web/src/components/chat/PanelLayoutControls.tsx
+      - apps/web/src/components/ChatView.tsx
+      - apps/web/src/components/RightPanelTabs.tsx
+      - apps/web/src/components/WorkspacePageHeader.tsx
+      - apps/web/src/components/pullRequest/PullRequestsPage.tsx
+      - apps/web/thread-monitor.html
+      - apps/web/vite.config.ts
+      - packages/contracts/src/jones/desktopThreadMonitor*
+      - packages/contracts/src/jones/guardedThreadSettlement*
+      - packages/contracts/src/ipc.ts
+      - packages/contracts/src/environment.ts
+      - packages/contracts/src/orchestrationV2.ts
+      - packages/contracts/src/index.ts
+      - packages/contracts/package.json
+      - packages/client-runtime/src/jones/threadMonitor/**
+      - packages/client-runtime/src/operations/commands.ts
+      - packages/client-runtime/package.json
+      - apps/server/src/jones/threadMonitor/**
+      - apps/server/src/environment/ServerEnvironment.ts
+      - apps/server/src/orchestration-v2/Orchestrator.ts
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jones-thread-monitor-native-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mac-smoke:
+    name: macOS thread monitor native evidence (advisory)
+    if: >-
+      github.repository == 'Jones-Systems/Jones-Code' &&
+      (github.event_name == 'workflow_dispatch' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      JONES_MONITOR_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      T3CODE_COMMIT_HASH: ${{ github.event.pull_request.head.sha || github.sha }}
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      T3CODE_DISABLE_AUTO_UPDATE: "true"
+      T3CODE_DEV_SEED: "0"
+    steps:
+      - name: Checkout exact public feature head
+        shell: bash
+        env:
+          GIT_CONFIG_NOSYSTEM: "1"
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          [[ "$JONES_MONITOR_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git init .
+          git remote add origin https://github.com/Jones-Systems/Jones-Code.git
+          git sparse-checkout init --no-cone
+          printf '%s\n' '/*' '!/.repos/' | git sparse-checkout set --no-cone --stdin
+          git -c protocol.version=2 fetch --no-tags --depth=1 origin "$JONES_MONITOR_SOURCE_SHA"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$JONES_MONITOR_SOURCE_SHA"
+          printf 'JONES_MONITOR_SOURCE_TREE=%s\n' "$(git rev-parse HEAD^{tree})" >> "$GITHUB_ENV"
+
+      - name: Setup pinned Node, pnpm and Vite+
+        uses: voidzero-dev/setup-vp@8a7496fd44e8a1b0a88a7459e36213b2fefc1d15
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Ensure Electron runtime
+        run: vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Check smoke child environment boundary
+        run: node --test --test-concurrency=1 apps/desktop/scripts/jones-thread-monitor-mac-smoke.test.mjs apps/desktop/scripts/ui-evidence/main-window.test.mjs
+
+      - name: Build affected desktop and server renderer
+        run: vp run build:desktop
+
+      - name: Exercise actual native windows with synthetic state
+        run: node apps/desktop/scripts/jones-thread-monitor-mac-smoke.mjs
+
+      - name: Upload synthetic native evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: thread-monitor-mac-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/thread-monitor-mac/
+          if-no-files-found: warn
+          retention-days: 7

@@ -29,6 +29,11 @@ packaged OS notifications.
 The [usage metrics entry](usage.md) covers totals, model percentages, cache-write
 details, and their focused shared-renderer verification.
 
+The [desktop thread monitor entry](desktop-thread-monitor.md) covers the separate
+right-edge native window, scoped actions, retained drafts and removal cleanup.
+Its native journeys require feature-revision qualification with a real window
+manager; renderer-only checks do not prove minimize or stacking.
+
 The [host-status companion entry](host-status.md) covers telemetry continuity
 across thread, draft, panel and Settings navigation, with focused runtime evidence.
 

@@ -1,3 +1,4 @@
+import { setMonitorAwareBackgroundThrottling } from "../jones/threadMonitor/throttle.ts";
 /**
  * Desktop side of the in-app browser preview.
  *
@@ -701,7 +702,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   ) {
     if (window.isDestroyed()) return;
     yield* attempt({ operation: "frameCapture.setBackgroundThrottling" }, () =>
-      window.webContents.setBackgroundThrottling(enabled),
+      setMonitorAwareBackgroundThrottling(window.webContents, enabled),
     );
   });
   const setFrameCaptureBackgroundThrottling = Effect.fnUntraced(function* (enabled: boolean) {
@@ -719,7 +720,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         operation: "frameCapture.setBackgroundThrottling",
         webContentsId: wc.id,
       },
-      () => wc.setBackgroundThrottling(enabled),
+      () => setMonitorAwareBackgroundThrottling(wc, enabled),
     );
   });
   const restoreFrameCaptureWebContentsBackgroundThrottling = Effect.fnUntraced(function* (

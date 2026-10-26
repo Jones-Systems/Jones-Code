@@ -3462,6 +3462,51 @@
         "vp run --filter @t3tools/client-runtime typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-desktop-thread-monitor",
+      "tests": [
+        "apps/desktop/scripts/jones-thread-monitor-mac-smoke.test.mjs",
+        "apps/desktop/scripts/ui-evidence/main-window.test.mjs",
+        "apps/desktop/scripts/ui-evidence/thread-monitor-provider.test.mjs",
+        "apps/desktop/scripts/ui-evidence/window-manager.test.mjs",
+        "apps/desktop/src/jones/threadMonitor/broker.test.ts",
+        "apps/desktop/src/jones/threadMonitor/host.test.ts",
+        "apps/desktop/src/jones/threadMonitor/policy.test.ts",
+        "apps/desktop/src/jones/threadMonitor/protocol.test.ts",
+        "apps/desktop/src/jones/threadMonitor/throttle.test.ts",
+        "apps/desktop/src/jones/threadMonitor/transport.test.ts",
+        "apps/server/src/jones/threadMonitor/GuardedSettle.integration.test.ts",
+        "apps/server/src/jones/threadMonitor/guardedSettle.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/web/src/jones/threadMonitor/MonitorUI.browser.test.tsx",
+        "apps/web/src/jones/threadMonitor/actions.test.ts",
+        "apps/web/src/jones/threadMonitor/answers.test.ts",
+        "apps/web/src/jones/threadMonitor/peerStore.test.ts",
+        "apps/web/src/jones/threadMonitor/planFollowUp.test.ts",
+        "apps/web/src/jones/threadMonitor/store.test.ts",
+        "apps/web/src/jones/threadMonitor/viewState.test.ts",
+        "packages/client-runtime/src/jones/threadMonitor/guardedSettle.test.ts",
+        "packages/client-runtime/src/jones/threadMonitor/lifecycle.test.ts",
+        "packages/client-runtime/src/jones/threadMonitor/model.test.ts",
+        "packages/contracts/src/jones/desktopThreadMonitor.test.ts",
+        "packages/contracts/src/jones/guardedThreadSettlement.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/contracts/src/jones/desktopThreadMonitor.test.ts packages/contracts/src/jones/guardedThreadSettlement.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run packages/client-runtime/src/jones/threadMonitor/*.test.ts apps/server/src/jones/threadMonitor/*.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/desktop/src/jones/threadMonitor/*.test.ts apps/desktop/src/window/DesktopWindow.test.ts apps/desktop/src/electron/ElectronWindow.test.ts apps/desktop/src/preview/Manager.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/web/src/jones/threadMonitor/*.test.ts apps/web/src/jones/threadMonitor/*.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "node --test --test-concurrency=1 apps/desktop/scripts/ui-evidence/main-window.test.mjs apps/desktop/scripts/ui-evidence/window-manager.test.mjs apps/desktop/scripts/jones-thread-monitor-mac-smoke.test.mjs",
+        "vp run --filter @t3tools/contracts typecheck",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "vp run --filter t3 typecheck",
+        "vp run --filter @t3tools/desktop typecheck",
+        "vp run --filter @t3tools/web typecheck",
+        "node scripts/jones/check-boundary.ts --strict",
+        "node --test apps/desktop/scripts/ui-evidence/thread-monitor-provider.test.mjs",
+        "vp test run apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts -t \"publishes approval artifacts before a consumer\" --maxWorkers=1 --no-file-parallelism"
+      ]
     }
   ]
 }

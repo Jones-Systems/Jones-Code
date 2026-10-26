@@ -146,11 +146,32 @@ export default defineConfig({
       outExtensions: () => ({ js: ".cjs" }),
       define: publicConfigDefine,
       entry: ["src/preload.ts"],
+      outputOptions: { codeSplitting: false },
       deps: {
         // Sandboxed Electron preloads cannot reliably resolve package imports
         // from inside the packaged ASAR. Bundle Clerk's preload bridge into the
         // preload artifact instead of leaving a runtime require() behind.
-        alwaysBundle: (id) => id === "@clerk/electron" || id.startsWith("@clerk/electron/"),
+        alwaysBundle: (id) =>
+          id === "@clerk/electron" ||
+          id.startsWith("@clerk/electron/") ||
+          id === "effect" ||
+          id.startsWith("effect/") ||
+          id.startsWith("@t3tools/contracts"),
+      },
+    },
+    {
+      // The isolated peer gets no Clerk or application bridge; keep its sandbox preload self-contained.
+      format: "cjs",
+      outDir: "dist-electron",
+      dts: false,
+      sourcemap: true,
+      outExtensions: () => ({ js: ".cjs" }),
+      entry: { "jones/threadMonitor/preload": "src/jones/threadMonitor/preload.ts" },
+      clean: false,
+      outputOptions: { codeSplitting: false },
+      deps: {
+        alwaysBundle: (id) => id !== "electron" && !id.startsWith("node:"),
+        neverBundle: (id) => id === "electron" || id.startsWith("node:"),
       },
     },
     {

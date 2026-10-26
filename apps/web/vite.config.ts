@@ -325,6 +325,12 @@ export default defineConfig(() => {
     },
     build: {
       outDir: "dist",
+      rolldownOptions: {
+        input: {
+          app: new URL("./index.html", import.meta.url).pathname,
+          threadMonitor: new URL("./thread-monitor.html", import.meta.url).pathname,
+        },
+      },
       emptyOutDir: true,
       manifest: true,
       sourcemap: buildSourcemap,

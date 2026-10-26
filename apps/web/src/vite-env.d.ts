@@ -1,5 +1,6 @@
 /// <reference types="vite-plus/client" />
 
+import type { DesktopThreadMonitorPeerBridge } from "@t3tools/contracts/jones/desktopThreadMonitor";
 import type { DesktopBridge } from "@t3tools/contracts";
 
 interface ImportMetaEnv {
@@ -26,5 +27,6 @@ interface ImportMeta {
 declare global {
   interface Window {
     desktopBridge?: DesktopBridge;
+    threadMonitor?: DesktopThreadMonitorPeerBridge;
   }
 }

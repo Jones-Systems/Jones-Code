@@ -1,3 +1,4 @@
+import { THREAD_MONITOR_GUARDED_SETTLE_CAPABILITY } from "@t3tools/contracts/jones/guardedThreadSettlement";
 import { LINKED_THREADS_CAPABILITY } from "@t3tools/contracts/jones/linkedThreadsCapability";
 import { WORKSTREAM_OPERATIONS_CONTRACT } from "@t3tools/contracts/jones/workstreamOperations";
 import { QUEUED_STEER_BATCH_LIMITS } from "@t3tools/contracts";
@@ -240,6 +241,7 @@ export const make = Effect.gen(function* () {
       settlementOrigins: SETTLEMENT_ORIGINS_CAPABILITY,
       // Startup refuses to serve until Jones migrations, including the restore table, have run.
       settlementRestore: SETTLEMENT_RESTORE_CAPABILITY,
+      threadMonitorGuardedSettle: THREAD_MONITOR_GUARDED_SETTLE_CAPABILITY,
       currentRuntimeStop: {
         targetRequired: true,
         supportedDrivers: ["codex", "claudeAgent"],

@@ -1,3 +1,4 @@
+import { GuardedThreadSettlement } from "./jones/guardedThreadSettlement.ts";
 import { QueuedSteerBatchCommand } from "./jones/queuedSteerBatch.ts";
 import { SettlementRestoreCommand } from "./jones/settlementRestore.ts";
 import { ThreadTurnDispatchGuard } from "./providerQueue.ts";
@@ -2795,6 +2796,7 @@ export const OrchestrationV2Command = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("thread.settle"),
+    guard: Schema.optional(GuardedThreadSettlement),
     commandId: CommandId,
     threadId: ThreadId,
     settledAt: Schema.optional(Schema.DateTimeUtc),

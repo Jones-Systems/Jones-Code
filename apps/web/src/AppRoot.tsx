@@ -5,6 +5,7 @@ import { subscribeComposerDraftModelReconciliation } from "./composerDraftStore"
 import { environmentThreadShells } from "./state/threads";
 import { environmentShell } from "./state/shell";
 
+import { MonitorController } from "./jones/threadMonitor/MonitorController";
 import { FleetController } from "./jones/fleetUpdates/FleetController";
 import { CompanionController } from "./jones/previewCompanion/CompanionController";
 import { BrowserProfileReporter } from "./browser/BrowserProfileReporter";
@@ -32,6 +33,7 @@ export function AppRoot({ router }: { readonly router: AppRouter }) {
   return (
     <AppAtomRegistryProvider>
       <RouterProvider router={router} />
+      <MonitorController router={router} />
       <CompanionController />
       <FleetController />
       <ElectronBrowserHost />
