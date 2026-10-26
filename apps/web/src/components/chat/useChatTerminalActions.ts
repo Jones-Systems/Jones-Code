@@ -16,6 +16,11 @@ import {
   type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
+import {
+  isShellRunTerminal,
+  SHELL_RUN_TERMINAL_PREFIX,
+} from "@t3tools/contracts/jones/shellDestinationFence";
+import { randomUUID } from "../../lib/utils";
 import { projectScriptTerminalInput } from "@t3tools/shared/projectScripts";
 import { type SetStateAction } from "react";
 import {
@@ -201,6 +206,7 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
       env?: Record<string, string>;
       worktreePath?: string | null;
       preferNewTerminal?: boolean;
+      terminalId?: string;
       rememberAsLastInvoked?: boolean;
       shellHistory?: "preserve" | "suppress";
     },
@@ -222,7 +228,11 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
             // Server sessions cover drawer terminals this client has not opened yet, such as a
             // worktree setup shell; the helper drops the panel-owned ones.
             drawerTerminalIds: [
-              ...new Set([...terminalUiState.terminalIds, ...activeServerOrderedTerminalIds]),
+              ...new Set(
+                [...terminalUiState.terminalIds, ...activeServerOrderedTerminalIds].filter(
+                  (id) => !isShellRunTerminal(activeThreadId, id),
+                ),
+              ),
             ],
             activeTerminalId: terminalUiState.activeTerminalId,
             panelTerminalIds,
@@ -250,6 +260,7 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
         ? { size: { cols: SCRIPT_TERMINAL_COLS, rows: SCRIPT_TERMINAL_ROWS } }
         : { terminalId: reusableTerminalId }),
       location: { cwd: targetCwd, worktreePath: targetWorktreePath },
+      ...(options?.terminalId ? { terminalId: options.terminalId } : {}),
       ...(options?.env ? { extraEnv: options.env } : {}),
     });
     if (!launched) return;
@@ -313,7 +324,13 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
         icon: "play",
         runOnWorktreeCreate: false,
       },
-      { rememberAsLastInvoked: false, shellHistory: "preserve" },
+      {
+        rememberAsLastInvoked: false,
+        shellHistory: "preserve",
+        // Keep manual/project-script terminals outside command idle expiry.
+        preferNewTerminal: true,
+        terminalId: `${SHELL_RUN_TERMINAL_PREFIX}${randomUUID()}`,
+      },
     );
   };
   const runShellCommandStable = useStableCallback(runShellCommand);
