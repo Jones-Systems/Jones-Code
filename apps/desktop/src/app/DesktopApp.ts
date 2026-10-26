@@ -1,5 +1,4 @@
 import * as Cause from "effect/Cause";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -28,6 +27,7 @@ import * as DesktopPreReadyPlatform from "./DesktopPreReadyPlatform.ts";
 import * as DesktopShutdown from "./DesktopShutdown.ts";
 import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
+import * as CompanionConfig from "../jones/previewCompanion/CompanionConfig.ts";
 import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
 import * as DesktopState from "./DesktopState.ts";
 import * as DesktopRemoteUpdates from "../updates/DesktopRemoteUpdates.ts";
@@ -36,6 +36,7 @@ import * as DesktopSnapShot from "../snapShot/DesktopSnapShot.ts";
 import * as DesktopWslBackend from "../wsl/DesktopWslBackend.ts";
 import * as DesktopRendererHistory from "../telemetry/DesktopRendererHistory.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { prepareLocalBackendsForQuit } from "../jones/updates/jonesQuitPreparation.ts";
 
 const DEFAULT_DESKTOP_BACKEND_PORT = 3773;
 const MAX_TCP_PORT = 65_535;
@@ -147,19 +148,21 @@ const handleFatalStartupError = Effect.fn("desktop.startup.handleFatalStartupErr
 const fatalStartupCause = <E>(stage: string, cause: Cause.Cause<E>) =>
   handleFatalStartupError(stage, Cause.pretty(cause)).pipe(Effect.andThen(Effect.failCause(cause)));
 
-const stopAllPoolInstances = Effect.fn("desktop.app.stopAllPoolInstances")(
+export const stopAllPoolInstances = Effect.fn("desktop.app.stopAllPoolInstances")(
   function* (): Effect.fn.Return<void, never, DesktopBackendPool.DesktopBackendPool> {
     const pool = yield* DesktopBackendPool.DesktopBackendPool;
     const instances = yield* pool.list;
-    yield* Effect.forEach(
-      instances,
-      (instance) => instance.stop({ timeout: Duration.seconds(5) }),
-      { concurrency: "unbounded" },
-    );
+    yield* Effect.forEach(instances, (instance) => instance.stop(), { concurrency: "unbounded" });
   },
 );
 
-const bootstrap = Effect.gen(function* () {
+export const prepareAndStopAllPoolInstances = Effect.fn(
+  "desktop.app.prepareAndStopAllPoolInstances",
+)(() => prepareLocalBackendsForQuit().pipe(Effect.ensuring(stopAllPoolInstances())));
+
+export const bootstrapWithIpcRegistration = Effect.fn("desktop.bootstrap")(function* <E, R>(
+  registerIpc: Effect.Effect<void, E, R>,
+) {
   const state = yield* DesktopState.DesktopState;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
@@ -168,7 +171,10 @@ const bootstrap = Effect.gen(function* () {
   const appActivation = yield* DesktopAppActivation.DesktopAppActivation;
   yield* logBootstrapInfo("bootstrap start");
 
+  yield* CompanionConfig.prepareStartup;
   const settings = yield* desktopSettings.get;
+  // The renderer is served from the bundled client (or Vite in development)
+  // rather than through the local backend, so the window can open without one.
   const electronProtocol = yield* ElectronProtocol.ElectronProtocol;
   yield* electronProtocol.registerDesktopProtocol({
     scheme: ElectronProtocol.getDesktopScheme(environment.isDevelopment),
@@ -177,7 +183,7 @@ const bootstrap = Effect.gen(function* () {
       : { assetDirectory: environment.clientAssetsDir }),
     clerkFrontendApiHostname: DesktopClerk.desktopClerkFrontendApiHostname,
   });
-  yield* installDesktopIpcHandlers();
+  yield* registerIpc;
   yield* logBootstrapInfo("bootstrap ipc handlers registered");
   // Before any window: the preload merges these items before the app reads storage.
   yield* (yield* DesktopLegacyLocalStorage.DesktopLegacyLocalStorage).load(
@@ -239,6 +245,11 @@ const bootstrap = Effect.gen(function* () {
   }
 
   if (!(yield* Ref.get(state.quitting))) {
+    // The main window waits for the primary backend. In wsl-only mode that is
+    // the WSL backend, which can be slow to cold-boot — show a "Connecting to
+    // WSL" splash immediately so the app feels responsive instead of presenting
+    // no window until WSL is ready. (Dual mode opens fast off the Windows
+    // primary, so no splash there.)
     if (settings.wslOnly === true && settings.wslBackendEnabled === true) {
       yield* desktopWindow.showConnectingSplash;
     }
@@ -248,9 +259,15 @@ const bootstrap = Effect.gen(function* () {
       Effect.tap(() => logBootstrapInfo("desktop app control socket ready")),
       Effect.catch((error) => logStartupError("desktop app control socket unavailable", { error })),
     );
+    // Bring up the WSL backend if the user previously enabled it. The
+    // primary is already starting; reconcile fires off the WSL register
+    // in parallel rather than blocking primary readiness on a possibly
+    // slow first wsl.exe spawn.
     yield* Effect.forkScoped(wslBackend.reconcile);
   }
-}).pipe(Effect.withSpan("desktop.bootstrap"));
+});
+
+const bootstrap = bootstrapWithIpcRegistration(installDesktopIpcHandlers());
 
 const startup = Effect.gen(function* () {
   const appIdentity = yield* DesktopAppIdentity.DesktopAppIdentity;
@@ -339,8 +356,12 @@ const scopedProgram = Effect.scoped(
     const rendererHistory = yield* DesktopRendererHistory.DesktopRendererHistory;
 
     yield* Effect.addFinalizer(() =>
-      // Quit can outrun layer finalizers; stop pooled backends here so they receive SIGTERM before OS teardown.
-      stopAllPoolInstances().pipe(
+      // Stop every backend in the pool, not just the primary. The
+      // electronApp.quit() path can race ahead of the layer-scope
+      // cascade, so leaving the WSL instance for its parent scope
+      // finalizer means it gets hard-killed by the OS instead of
+      // receiving SIGTERM + grace.
+      prepareAndStopAllPoolInstances().pipe(
         Effect.ensuring(rendererHistory.shutdown),
         Effect.ensuring(shutdown.markComplete),
       ),
