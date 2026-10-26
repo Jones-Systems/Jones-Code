@@ -141,6 +141,10 @@
     {
       "from": "apps/server/src/orchestration-v2/EventSink.ts",
       "to": "apps/server/src/jones/threadResultDependencies/ChangeTracking.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/OrchestratorMcpService.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/RemoteRequestProtocol.ts"
     }
   ]
 }

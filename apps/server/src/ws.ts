@@ -1093,6 +1093,7 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
           ...forSubscriber.snapshot,
           projects: enriched.projects,
         } as OrchestrationV2ShellSnapshot,
+        currentThreads: base.threads,
         resolvedRepositoryIdentityRoots: enriched.resolvedRepositoryIdentityRoots,
       };
     });
@@ -1194,7 +1195,7 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
         const ids = [...new Set(Array.from(changes).flatMap((change) => [...change.threadIds]))];
         if (ids.length === 0) return [];
         const loaded = yield* loadSnapshot();
-        return dependencyRefreshItems(loaded.snapshot, ids);
+        return dependencyRefreshItems(loaded.snapshot, ids, loaded.currentThreads);
       })),
       Stream.flatMap(Stream.fromIterable),
     );
@@ -1203,7 +1204,7 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
       const ids = yield* resultDependencies.changedThreads(input.afterSequence!);
       if (ids.length === 0) return [];
       const loaded = yield* loadSnapshot();
-      return dependencyRefreshItems(loaded.snapshot, ids);
+      return dependencyRefreshItems(loaded.snapshot, ids, loaded.currentThreads);
     })).pipe(Stream.flatMap(Stream.fromIterable));
 
     // Subscribe before loading for racing enrichments; initial refresh covers pre-subscription completions and cold HTTP snapshots.

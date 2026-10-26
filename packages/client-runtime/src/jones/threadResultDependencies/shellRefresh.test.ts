@@ -2,6 +2,7 @@ import { ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import { v2ShellSnapshot, v2ThreadShell } from "../../state/orchestrationV2TestFixtures.ts";
 import { applyShellStreamEvent } from "../../state/shellReducer.ts";
+import { threadFamilyRowsMissingFromShell } from "../../state/threadFamilies.ts";
 import { advanceThreadRefreshWatermarks, shellRefreshSubscription } from "./shellRefresh.ts";
 
 const task = {
@@ -20,6 +21,21 @@ const refresh = (sequence: number, thread = waiting) => ({
 });
 
 describe("dependency shell refresh", () => {
+  it("CR-R3: a cleared shell overrides a mounted family's cached Waiting row", () => {
+    const families = [{ snapshotSequence: 10, threads: [waiting] }];
+    const cleared = applyShellStreamEvent(
+      { ...snapshot, threads: [waiting] },
+      refresh(10, { ...waiting, pendingBackgroundTasks: [] }),
+    );
+    const fallback = threadFamilyRowsMissingFromShell({
+      shellThreads: cleared.threads,
+      families,
+      removedAt: new Map(),
+    });
+    expect(fallback).toEqual([]);
+    expect([...cleared.threads, ...fallback][0]?.pendingBackgroundTasks).toEqual([]);
+  });
+
   it("CR-R3: removes an omitted child at equal sequence without skipping replay or treating it as deleted", () => {
     const current = { ...snapshot, threads: [waiting] };
     const omitted = { kind: "thread.omitted" as const, sequence: 10, location: "active" as const, threadId: waiting.id };

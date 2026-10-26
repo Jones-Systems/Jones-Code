@@ -2319,6 +2319,7 @@
     {
       "id": "thread-result-dependencies",
       "tests": [
+        "apps/server/src/jones/threadResultDependencies/AdmissionObservation.integration.test.ts",
         "apps/server/src/jones/threadResultDependencies/DependencyReactor.test.ts",
         "apps/server/src/jones/threadResultDependencies/DependencyStore.test.ts",
         "apps/server/src/jones/threadResultDependencies/Orchestrator.integration.test.ts",

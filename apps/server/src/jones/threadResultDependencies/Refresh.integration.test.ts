@@ -75,7 +75,7 @@ it.effect("quiet reconnect selects equal-sequence Jones changes and emits only s
   assert.deepEqual(refreshItems({ schemaVersion: 1, snapshotSequence: sequence, projects: [], threads: [], archivedThreads: threads }, ids), ids.map((threadId) => ({ kind: "thread.omitted", sequence, location: "active", threadId })));
 }).pipe(Effect.provide(layer)));
 
-it.effect("CR-R3: the actual filtered shell subscription removes an eventlessly stopped child live and on quiet reconnect", () => Effect.gen(function* () {
+it.effect("CR-R3: the actual filtered shell subscription clears an eventlessly stopped child live and on quiet reconnect", () => Effect.gen(function* () {
   const f = yield* Fixture.seed;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const child = { ...f.waiter, lineage: { rootThreadId: f.receiver.id, parentThreadId: f.receiver.id, relationshipToParent: "subagent" as const } };
@@ -115,8 +115,10 @@ it.effect("CR-R3: the actual filtered shell subscription removes an eventlessly 
     assert.equal(yield* f.store.sequence, sequence);
     assert.deepEqual((yield* f.projection.getThreadShell(child.id))?.pendingBackgroundTasks, []);
     yield* TestClock.adjust("25 millis");
-    const omitted = yield* Stream.fromQueue(output).pipe(Stream.filter((item) => item.kind === "thread.omitted" && item.threadId === child.id), Stream.runHead);
-    assert.deepEqual(Option.getOrThrow(omitted), { kind: "thread.omitted", sequence, location: "active", threadId: child.id });
+    const refreshed = Option.getOrThrow(yield* Stream.fromQueue(output).pipe(Stream.filter((item) => item.kind === "thread.refreshed" && item.thread.id === child.id), Stream.runHead));
+    assert(refreshed.kind === "thread.refreshed");
+    assert.equal(refreshed.sequence, sequence);
+    assert.deepEqual(refreshed.thread.pendingBackgroundTasks, []);
     assert.isTrue(Option.isNone(yield* Queue.poll(legacyOutput)));
     yield* Fiber.interrupt(live);
     yield* Fiber.interrupt(legacy);
@@ -127,7 +129,7 @@ it.effect("CR-R3: the actual filtered shell subscription removes an eventlessly 
     }));
     const resumed = yield* resume(true);
     assert.isFalse(resumed.some((item) => item.kind === "snapshot"));
-    assert.isTrue(resumed.some((item) => item.kind === "thread.omitted" && item.threadId === child.id && item.sequence === sequence));
+    assert.isTrue(resumed.some((item) => item.kind === "thread.refreshed" && item.thread.id === child.id && item.sequence === sequence && item.thread.pendingBackgroundTasks.length === 0));
     assert.deepEqual(yield* resume(false), [{ kind: "synchronized" }]);
   }).pipe(Effect.provide(shellServices));
 }).pipe(Effect.provide(runtime)));
