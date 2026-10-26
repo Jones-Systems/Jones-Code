@@ -111,14 +111,22 @@ it("assigns colliding native IDs independently, moves and removes memberships ac
     });
     const receiptA = await submit(a, attachA);
     expect(receiptA.state).toBe("committed");
-    expect(await read(b, `/commands/${attachA.command_id}`, WorkstreamReceipt)).toEqual(receiptA);
+    const retainedResponse = await get(b, `/commands/${attachA.command_id}`);
+    expect(retainedResponse.status).toBe(200);
+    const retainedBytes = await retainedResponse.text();
+    expect(decodeReceipt(JSON.parse(retainedBytes))).toEqual(receiptA);
+    const beforeReplay = await read(b, "", T3WorkstreamListResult);
+    const submissionsBeforeReplay = control.observations.submissions;
     const staleReplay = await fetch(`${b}/api/workstreams/commands`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ command: attachA }),
       signal: AbortSignal.timeout(5_000),
     });
-    expect(staleReplay.status).toBe(409);
+    expect(staleReplay.status).toBe(200);
+    expect(await staleReplay.text()).toBe(retainedBytes);
+    expect(await read(b, "", T3WorkstreamListResult)).toEqual(beforeReplay);
+    expect(control.observations.submissions).toBe(submissionsBeforeReplay);
     let memberships = await read(b, "/ws-core-v1/memberships", WorkstreamMembershipPage);
     expect(memberships.items.filter((item) => item.closed === null)).toHaveLength(1);
     const attachB = await commandFor(b, {
