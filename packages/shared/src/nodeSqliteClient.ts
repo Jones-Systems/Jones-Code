@@ -41,7 +41,15 @@ export interface SqliteClientConfig {
   /** Ignored for in-memory databases, which cannot share a second connection. */
   readonly readerWorker?: boolean | undefined;
   readonly readerStartupTimeout?: Duration.Input | undefined;
-  /** Ignored for in-memory databases. */
+  /**
+   * Fail marked reads when an enabled reader is unavailable instead of running
+   * them on the synchronous writer. Ignored when readerWorker is disabled or
+   * the database is in memory; existing writer transactions retain affinity.
+   */
+  readonly readerFailureMode?: "fallback" | "fail" | undefined;
+  /**
+   * Ignored for in-memory databases.
+   */
   readonly checkpointWorker?: boolean | undefined;
 }
 
@@ -306,9 +314,15 @@ const makeReader = Effect.fnUntraced(function* (options: SqliteClientConfig) {
         readonly worker: NodeWorkerThreads.Worker;
         readonly connection: Connection;
         readonly started: Promise<ReaderStartup>;
+        readonly stop: (message: string) => void;
       }
     | undefined;
+  const clock = yield* Clock.Clock;
   let unavailable = false;
+  let closed = false;
+  let retiring: Promise<void> | undefined;
+  let retryAt = 0n;
+  let retryDelayMs = 1000;
   let nextRequestId = 0;
 
   const start = () => {
@@ -330,9 +344,9 @@ const makeReader = Effect.fnUntraced(function* (options: SqliteClientConfig) {
       { readonly endsTransaction: boolean; readonly resume: (reply: ReaderReply) => void }
     >();
     const stop = (message: string) => {
+      if (stoppedMessage !== undefined) return;
       stoppedMessage = message;
       announce({ type: "unavailable", message });
-      if (current?.worker === worker) current = undefined;
       for (const [id, request] of pending) {
         request.resume(
           request.endsTransaction
@@ -343,6 +357,7 @@ const makeReader = Effect.fnUntraced(function* (options: SqliteClientConfig) {
       pending.clear();
     };
     worker.on("message", (reply: ReaderReply | ReaderStartup) => {
+      if (stoppedMessage !== undefined) return;
       if ("type" in reply) {
         announce(reply);
         if (pending.size === 0) worker.unref();
@@ -355,7 +370,10 @@ const makeReader = Effect.fnUntraced(function* (options: SqliteClientConfig) {
       request.resume(reply);
     });
     worker.on("error", (cause) => stop(`Database reader failed: ${cause.message}`));
-    worker.on("exit", (code) => stop(`Database reader exited with code ${code}`));
+    worker.on("exit", (code) => {
+      stop(`Database reader exited with code ${code}`);
+      if (current?.worker === worker) current = undefined;
+    });
 
     const request = (input: ReaderRequest) =>
       Effect.withFiber<ReadonlyArray<any>, SqlError>((fiber) => {
@@ -426,13 +444,18 @@ const makeReader = Effect.fnUntraced(function* (options: SqliteClientConfig) {
         return Stream.die(new UnsupportedNodeSqliteOperationError());
       },
     });
-    current = { worker, connection, started };
+    current = { worker, connection, started, stop };
     return current;
   };
 
   yield* Effect.addFinalizer(() =>
     Effect.promise(async () => {
-      await current?.worker.terminate();
+      closed = true;
+      const reader = current;
+      current = undefined;
+      reader?.stop("Database reader scope closed");
+      await reader?.worker.terminate();
+      await retiring;
     }),
   );
 
@@ -440,23 +463,46 @@ const makeReader = Effect.fnUntraced(function* (options: SqliteClientConfig) {
     options.readerStartupTimeout ?? Duration.seconds(10),
   );
 
-  const turnOff = (reader: typeof current, reason: string) =>
+  const turnOff = (reader: typeof current, reason: string, permanent = true) =>
     Effect.suspend(() => {
       if (reader !== undefined) {
-        if (current === reader) current = undefined;
-        void reader.worker.terminate();
+        if (current !== reader) return Effect.succeed(undefined);
+        current = undefined;
+        // Retire before terminating: a queued ready/reply cannot revive this connection.
+        reader.stop(reason);
+        const cleanup = Promise.resolve()
+          .then(() => reader.worker.terminate())
+          .then(
+            () => {},
+            () => {
+              // Failed cleanup leaves worker lifetime unknown, so never start a replacement.
+              unavailable = true;
+            },
+          );
+        retiring = cleanup;
+        void cleanup.then(() => {
+          if (retiring === cleanup) retiring = undefined;
+        });
       }
       // @effect-diagnostics-next-line effectSucceedWithVoid:off - The connection result distinguishes undefined from void.
       if (unavailable) return Effect.succeed(undefined);
-      unavailable = true;
-      return Effect.logWarning("SQLite reader worker unavailable; reads use the main connection", {
+      unavailable = permanent;
+      if (!permanent) {
+        // Retry on later demand only, after cleanup and a capped exponential cooldown.
+        retryAt = clock.monotonicTimeNanosUnsafe() + BigInt(retryDelayMs) * 1000000n;
+        retryDelayMs = Math.min(retryDelayMs * 2, 30000);
+      }
+      return Effect.logWarning("SQLite reader worker unavailable", {
         reason,
+        readerFailureMode: options.readerFailureMode ?? "fallback",
       }).pipe(Effect.as(undefined));
     });
 
   return Effect.suspend((): Effect.Effect<Connection | undefined> => {
     // @effect-diagnostics-next-line effectSucceedWithVoid:off - The connection result distinguishes undefined from void.
-    if (unavailable) return Effect.succeed(undefined);
+    if (closed || unavailable || retiring !== undefined) return Effect.succeed(undefined);
+    // @effect-diagnostics-next-line effectSucceedWithVoid:off - The connection result distinguishes undefined from void.
+    if (clock.monotonicTimeNanosUnsafe() < retryAt) return Effect.succeed(undefined);
     let reader: NonNullable<typeof current>;
     try {
       reader = current ?? start();
@@ -475,16 +521,20 @@ const makeReader = Effect.fnUntraced(function* (options: SqliteClientConfig) {
       }),
       (startup): Effect.Effect<Connection | undefined> =>
         // A late ready event must not hand out a worker retired by another acquire timeout.
-        unavailable || current !== reader
+        closed || unavailable || current !== reader
           ? // @effect-diagnostics-next-line effectSucceedWithVoid:off - The connection result distinguishes undefined from void.
             Effect.succeed(undefined)
           : Option.isSome(startup) && startup.value.type === "ready"
-            ? Effect.succeed(reader.connection)
+            ? Effect.sync(() => {
+                retryDelayMs = 1000;
+                return reader.connection;
+              })
             : turnOff(
                 reader,
                 Option.isSome(startup) && startup.value.type === "unavailable"
                   ? startup.value.message
                   : `worker did not open the database within ${Duration.toMillis(startupTimeout)} ms`,
+                Option.isSome(startup),
               ),
     );
   });
@@ -492,6 +542,7 @@ const makeReader = Effect.fnUntraced(function* (options: SqliteClientConfig) {
 
 const CHECKPOINT_FRAMES = 1000;
 const CHECKPOINT_IDLE_MS = 100;
+const CHECKPOINT_BUSY_TIMEOUT_MS = 1000;
 const CHECKPOINT_BACKPRESSURE_FRAMES = 10 * CHECKPOINT_FRAMES;
 
 const readSafeSqliteInteger = (value: unknown) => {
@@ -518,7 +569,8 @@ const initialize = () => {
   if (db !== undefined) return;
   // The writer switches to WAL after constructing the client.
   db = new DatabaseSync(workerData.filename);
-  db.exec("PRAGMA busy_timeout = 5000;");
+  // Bound startup contention before the first lock-taking prepare.
+  db.exec("PRAGMA busy_timeout = " + workerData.busyTimeoutMs + ";");
   const mode = String(db.prepare("PRAGMA journal_mode").get().journal_mode).toLowerCase();
   if (mode !== "wal") throw new Error("database uses journal_mode " + mode + ", not wal");
   // macOS requires F_FULLFSYNC to flush the drive cache.
@@ -526,6 +578,7 @@ const initialize = () => {
   frames = db.prepare("PRAGMA wal_checkpoint(NOOP)");
   checkpoint = db.prepare("PRAGMA wal_checkpoint(PASSIVE)");
   truncate = db.prepare("PRAGMA wal_checkpoint(TRUNCATE)");
+  db.exec("PRAGMA busy_timeout = 5000;");
 };
 const atCeiling = (state) => state.log >= workerData.backpressureFrames;
 const exceedsSizeLimit = () =>
@@ -649,6 +702,7 @@ const startCheckpointWorker = Effect.fnUntraced(function* (
           filename,
           frames: CHECKPOINT_FRAMES,
           backpressureFrames: CHECKPOINT_BACKPRESSURE_FRAMES,
+          busyTimeoutMs: CHECKPOINT_BUSY_TIMEOUT_MS,
           idleMs: CHECKPOINT_IDLE_MS,
         },
       }),
@@ -1091,12 +1145,29 @@ const make = Effect.fn("makeWithDatabase")(function* (
 
   const writer = { name: "writer" as const, lock: semaphore, connection };
   let activeWriter: ConnectionOwner | undefined;
+  type RouteTarget = {
+    readonly name: Acquired["connection"];
+    readonly lock: typeof semaphore;
+    readonly connection: Connection;
+  };
   const route = Effect.withFiber((fiber) =>
     acquireReader !== undefined && Context.get(fiber.context, ReadOnly)
-      ? Effect.map(acquireReader, (readerConnection) =>
+      ? Effect.flatMap(acquireReader, (readerConnection): Effect.Effect<RouteTarget, SqlError> =>
           readerConnection === undefined
-            ? writer
-            : { name: "reader" as const, lock: readerSemaphore, connection: readerConnection },
+            ? options.readerFailureMode === "fail"
+              ? Effect.fail(
+                  failed(
+                    new Error("Database reader is unavailable"),
+                    readerFailureMessages.open,
+                    "open",
+                  ),
+                )
+              : Effect.succeed(writer)
+            : Effect.succeed({
+                name: "reader" as const,
+                lock: readerSemaphore,
+                connection: readerConnection,
+              }),
         )
       : Effect.succeed(writer),
   );

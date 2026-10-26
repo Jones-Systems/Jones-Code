@@ -46,6 +46,9 @@ export const AuthAccessWriteScope = "access:write" as const;
 export const AuthRelayReadScope = "relay:read" as const;
 export const AuthRelayWriteScope = "relay:write" as const;
 export const AuthEnvironmentScope = Schema.Literals([
+  "workstreams:native:context",
+  "workstreams:native:settlement",
+  "workstreams:native:reconciliation",
   AuthOrchestrationReadScope,
   AuthOrchestrationOperateScope,
   AuthSettingsWriteScope,
@@ -108,10 +111,20 @@ const legacyParents: Partial<Record<AuthEnvironmentScope, AuthEnvironmentScope>>
   [AuthTerminalReadScope]: AuthTerminalOperateScope,
 };
 
+// Wire presentation only: these native permissions were never implied by legacy grants.
+const legacyNativeDenialScopes: Partial<Record<AuthEnvironmentScope, AuthEnvironmentScope>> = {
+  "workstreams:native:context": AuthOrchestrationReadScope,
+  "workstreams:native:settlement": AuthOrchestrationOperateScope,
+  "workstreams:native:reconciliation": AuthOrchestrationOperateScope,
+};
+
 /** Keep permission denials decodable by clients with the original scope enum. */
 export function authScopeRequiredResponse(requiredPermission: AuthEnvironmentScope) {
   return {
-    requiredScope: legacyParents[requiredPermission] ?? requiredPermission,
+    requiredScope:
+      legacyNativeDenialScopes[requiredPermission] ??
+      legacyParents[requiredPermission] ??
+      requiredPermission,
     requiredPermission,
   };
 }
@@ -145,7 +158,6 @@ export function sessionHasLegacyPermissions(session: SessionGrantInput): boolean
   );
 }
 
-// Shell and full-access agent scopes already confer access and relay authority.
 export const AuthStandardClientScopes = [
   AuthOrchestrationReadScope,
   AuthOrchestrationOperateScope,
@@ -160,6 +172,9 @@ export const AuthStandardClientScopes = [
   AuthFilesystemReadScope,
   AuthFilesystemWriteScope,
   AuthRelayReadScope,
+] as const;
+export const AuthAdministrativeScopes = [
+  ...AuthStandardClientScopes,
   AuthAccessReadScope,
   AuthAccessWriteScope,
   AuthRelayWriteScope,
@@ -431,8 +446,16 @@ export const AuthMcpAuthorizationServerMetadata = Schema.Struct({
 });
 export type AuthMcpAuthorizationServerMetadata = typeof AuthMcpAuthorizationServerMetadata.Type;
 
+/**
+ * The `software_id` another T3 Code environment registers with when it links
+ * to this one. Its session is then a peer link: the work it starts here stays
+ * within that link. Claiming it only ever adds limits.
+ */
+export const MCP_PEER_LINK_SOFTWARE_ID = "t3code-peer-link";
+
 export const AuthMcpClientRegistration = Schema.Struct({
   client_name: Schema.optionalKey(Schema.String),
+  software_id: Schema.optionalKey(Schema.String),
   redirect_uris: Schema.optionalKey(Schema.Array(Schema.String)),
   token_endpoint_auth_method: Schema.optionalKey(Schema.String),
 });

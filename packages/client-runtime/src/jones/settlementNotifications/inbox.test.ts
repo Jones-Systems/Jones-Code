@@ -53,7 +53,7 @@ describe("settlement inbox", () => {
       withEntries(first, gone, other),
       env,
       new Map([[first.threadId, "New title"]]),
-      new Set(),
+      new Set([gone.threadId]),
     );
     expect(refreshed.entries).toEqual([
       { ...first, title: "New title" },
@@ -70,7 +70,13 @@ describe("settlement inbox", () => {
     const elsewhere = entry("child", 200, otherEnv);
     const missing = entry("missing");
     const inbox = dismiss(withEntries(child, elsewhere, missing), [entry("older").id]);
-    const refreshed = refreshThreads(inbox, env, new Map(), new Set(), new Set([child.threadId]));
+    const refreshed = refreshThreads(
+      inbox,
+      env,
+      new Map(),
+      new Set([missing.threadId]),
+      new Set([child.threadId]),
+    );
     expect(refreshed.entries).toEqual([{ ...missing, threadGone: true }, elsewhere]);
     expect(refreshed.acknowledged).toEqual([child.id, entry("older").id]);
     expect(refreshThreads(refreshed, env, new Map(), new Set(), new Set([child.threadId]))).toBe(

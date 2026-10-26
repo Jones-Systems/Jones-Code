@@ -3,6 +3,7 @@ import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 
 import type { EnvironmentShellState } from "../../state/shell.ts";
+import { settlementThreadEvidence, type SettlementThreadFamilyEvidence } from "./threadEvidence.ts";
 import {
   SEQUENCE_RESET_MS,
   type EnvironmentSettlementBaseline,
@@ -33,6 +34,7 @@ export function observeEnvironment(
     state: EnvironmentShellState;
     nowMs: number;
     staleSince: number | null;
+    families?: ReadonlyArray<SettlementThreadFamilyEvidence>;
   },
 ): ObserveResult {
   if (input.state.status !== "live" || Option.isNone(input.state.snapshot)) return { kind: "skip" };
@@ -43,12 +45,14 @@ export function observeEnvironment(
     if (input.nowMs - staleSince < SEQUENCE_RESET_MS) return { kind: "skip", staleSince };
   }
 
-  const threads: Record<string, number | null> = {};
+  // Omitted shell rows retain their prior epoch until a removal or family read proves absence.
+  const threads: Record<string, number | null> = lowerSequence ? {} : { ...prev?.threads };
   const threadTitles = new Map<ThreadId, string>();
-  const goneThreadIds = new Set<ThreadId>();
+  const evidence = settlementThreadEvidence(input.state, input.families);
+  const goneThreadIds = evidence.gone;
   const arrivals: SettlementArrival[] = [];
-  let watermarkMs: number | null = null;
-  for (const thread of [...snapshot.threads, ...snapshot.archivedThreads]) {
+  let watermarkMs: number | null = lowerSequence ? null : (prev?.watermarkMs ?? null);
+  for (const thread of evidence.threads) {
     const updatedAtMs = DateTime.toEpochMillis(thread.updatedAt);
     watermarkMs = watermarkMs === null ? updatedAtMs : Math.max(watermarkMs, updatedAtMs);
     const settledAtMs =
@@ -81,11 +85,7 @@ export function observeEnvironment(
       });
     }
   }
-  if (prev !== null) {
-    for (const id of Object.keys(prev.threads)) {
-      if (!Object.hasOwn(threads, id)) goneThreadIds.add(id as ThreadId);
-    }
-  }
+  for (const id of goneThreadIds) delete threads[id];
   const baseline: EnvironmentSettlementBaseline = {
     version: 1,
     environmentId: input.environmentId,

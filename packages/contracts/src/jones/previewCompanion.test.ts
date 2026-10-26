@@ -63,6 +63,8 @@ const events = [
   { type: "cdp", ...tab, message: '{"id":1,"result":{}}' },
 ];
 const commands = [
+  { type: "turn", threadId: tab.threadId, active: true },
+  { type: "turn", threadId: tab.threadId, active: false },
   { type: "cdp", ...tab, message: '{"id":1,"method":"Page.enable"}' },
   { type: "release", ...tab },
   { type: "pointer", ...tab, phase: "move", x: 1.5, y: -2 },

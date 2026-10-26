@@ -2,6 +2,7 @@ import * as Schema from "effect/Schema";
 import { GitPreparePullRequestThreadInput, GitRunStackedActionInput } from "./git.ts";
 import {
   AuthAccessWriteScope,
+  AuthDiagnosticsReadScope,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthPreviewOperateScope,
@@ -14,9 +15,18 @@ import { WS_METHODS } from "./rpc.ts";
 
 /** Incremental client enforcement; the server still authorizes every request. */
 export const CLIENT_GUARDED_RPC_SCOPES = {
+  [ORCHESTRATION_V2_WS_METHODS.linkThreads]: AuthOrchestrationOperateScope,
+  [ORCHESTRATION_V2_WS_METHODS.unlinkThreads]: AuthOrchestrationOperateScope,
+  [ORCHESTRATION_V2_WS_METHODS.acceptThreadHandoff]: AuthOrchestrationOperateScope,
   [WS_METHODS.previewClose]: AuthPreviewOperateScope,
   [WS_METHODS.serverRunStorageCleanup]: AuthSettingsWriteScope,
   [WS_METHODS.serverCheckOtlpEndpoint]: AuthSettingsWriteScope,
+  [WS_METHODS.serverReadTokenAccounting]: AuthDiagnosticsReadScope,
+  [ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime]: AuthOrchestrationOperateScope,
+  [ORCHESTRATION_V2_WS_METHODS.previewProviderConversationReselection]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_V2_WS_METHODS.reselectProviderConversation]: AuthOrchestrationOperateScope,
+  [ORCHESTRATION_V2_WS_METHODS.readCurrentRuntimeStopTarget]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_V2_WS_METHODS.observeCurrentThreadRuntimeStop]: AuthOrchestrationReadScope,
   [WS_METHODS.pullRequestsRunAction]: AuthSourceControlWriteScope,
   [WS_METHODS.pullRequestsUpdate]: AuthSourceControlWriteScope,
   [WS_METHODS.pullRequestsComment]: AuthSourceControlWriteScope,
@@ -52,6 +62,9 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: AuthOrchestrationOperateScope,
   // A guest link hands thread access to someone outside, like a pairing link.
   [WS_METHODS.guestShareCreate]: AuthAccessWriteScope,
+
+  [WS_METHODS.peerLinksLink]: AuthAccessWriteScope,
+  [WS_METHODS.peerLinksUnlink]: AuthAccessWriteScope,
 } as const;
 export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
 
