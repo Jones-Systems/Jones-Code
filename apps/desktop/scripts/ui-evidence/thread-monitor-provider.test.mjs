@@ -302,3 +302,21 @@ NodeTest.test(
     NodeAssert.equal(p.ledger.filter((e) => e.event === "start").length, 0);
   },
 );
+
+NodeTest.test(
+  "optional config and diagnostic reads reject honestly without killing the request fixture",
+  () => {
+    const p = peer();
+    for (const [index, method] of ["config/read", "server/diagnostics"].entries()) {
+      const id = 900 + index;
+      p.protocol.handle({ id, method });
+      NodeAssert.deepEqual(p.frames.at(-1), {
+        id,
+        error: { code: -32601, message: "Synthetic optional read unavailable" },
+      });
+    }
+    p.start(fixture.once);
+    NodeAssert.equal(p.request().method, "item/commandExecution/requestApproval");
+    NodeAssert.equal(p.ledger.filter((entry) => entry.event === "completed").length, 0);
+  },
+);

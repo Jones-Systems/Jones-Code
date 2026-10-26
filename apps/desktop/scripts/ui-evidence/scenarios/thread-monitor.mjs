@@ -255,7 +255,23 @@ export default async function threadMonitor(ctx) {
             const width = document.documentElement.clientWidth;
             const counts = [...document.querySelectorAll(".count-strip > span")].map((element) => {
               const rect = element.getBoundingClientRect();
-              return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+              const textRects = [...element.querySelectorAll(".count-name, strong")].flatMap(
+                (label) => {
+                  const range = document.createRange();
+                  range.selectNodeContents(label);
+                  return [...range.getClientRects()].map((text) => ({
+                    left: text.left,
+                    right: text.right,
+                  }));
+                },
+              );
+              return {
+                left: rect.left,
+                right: rect.right,
+                top: rect.top,
+                bottom: rect.bottom,
+                textRects,
+              };
             });
             const root = document.querySelector("[data-thread-monitor]");
             return {
@@ -276,6 +292,15 @@ export default async function threadMonitor(ctx) {
               geometry.counts.every((r) => r.left >= 0 && r.right <= geometry.width + 1),
             "All four top counts fit",
           );
+          ctx.assert(
+            geometry.counts.every((tile) =>
+              tile.textRects.every(
+                (text) => text.left >= tile.left - 1 && text.right <= tile.right + 1,
+              ),
+            ),
+            "Actual count labels and numbers stay inside their own tiles",
+          );
+
           evidence.observations.reflow.push({
             theme,
             textPercent: percent,

@@ -63,6 +63,40 @@ async function expand(container: HTMLElement) {
   await userEvent.click(notch);
 }
 describe("real monitor renderer interactions", () => {
+  it("keeps the actual aggregate label and number text inside each tile at 320px and 200% text", async () => {
+    using _now = vi.spyOn(Date, "now").mockReturnValue(NOW);
+    const { store, container } = setup();
+    const previousSize = document.documentElement.style.fontSize;
+    await using _screen = await render(<MonitorUI store={store} />, { container, router: false });
+    try {
+      await expand(container);
+      await act(() => container.querySelector<HTMLButtonElement>(".section-toggle")!.focus());
+      for (const width of [320, 384]) {
+        container.style.width = width + "px";
+        for (const size of ["100%", "200%"]) {
+          document.documentElement.style.fontSize = size;
+          const tiles = [...container.querySelectorAll<HTMLElement>(".count-strip > span")];
+          expect(tiles).toHaveLength(4);
+          for (const tile of tiles) {
+            const bounds = tile.getBoundingClientRect();
+            for (const text of tile.querySelectorAll(".count-name, strong")) {
+              const range = document.createRange();
+              range.selectNodeContents(text);
+              const rects = [...range.getClientRects()];
+              expect(rects.length).toBeGreaterThan(0);
+              for (const rect of rects) {
+                expect(rect.left).toBeGreaterThanOrEqual(bounds.left - 1);
+                expect(rect.right).toBeLessThanOrEqual(bounds.right + 1);
+              }
+            }
+          }
+        }
+      }
+    } finally {
+      document.documentElement.style.fontSize = previousSize;
+    }
+  });
+
   it("retains the peer expansion and editor contract when Hide is requested with a focused draft", async () => {
     using _now = vi.spyOn(Date, "now").mockReturnValue(NOW);
     const { store, intents, rows, container } = setup();

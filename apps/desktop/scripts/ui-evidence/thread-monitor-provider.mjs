@@ -305,6 +305,13 @@ export function createMonitorProtocol({ write, trace, id, now }, spec) {
         ],
         nextCursor: null,
       });
+    if (method === "config/read" || method === "server/diagnostics") {
+      trace({ event: "unsupported-read", method });
+      return write({
+        id: rpcId,
+        error: { code: -32601, message: "Synthetic optional read unavailable" },
+      });
+    }
     if (method === "thread/start" || method === "thread/resume") {
       if (nativeThreadId || params.cwd !== cwd || (params.model != null && params.model !== model))
         throw new Error("Unexpected synthetic session context");
@@ -344,7 +351,10 @@ export function createMonitorProtocol({ write, trace, id, now }, spec) {
       return reply({
         goal: null,
       });
-    if (method !== "turn/start") throw new Error("Unsupported synthetic method");
+    if (method !== "turn/start")
+      throw new Error(
+        "Unsupported synthetic method: " + (/^[a-zA-Z/]+$/.test(method) ? method : "invalid"),
+      );
     if (
       !nativeThreadId ||
       params.threadId !== nativeThreadId ||
@@ -523,7 +533,13 @@ export async function runMonitorPeer(makeProtocol, spec) {
     input.close();
     process.exit(code);
   };
-  const failed = () => finish("failure", 1);
+  const failed = (error) => {
+    trace({
+      event: "failure-reason",
+      reason: String(error?.message ?? "Synthetic fixture failed").slice(0, 256),
+    });
+    finish("failure", 1);
+  };
   let released = false;
   const timer = setInterval(() => {
     try {
@@ -532,16 +548,16 @@ export async function runMonitorPeer(makeProtocol, spec) {
         released = true;
         protocol.release();
       }
-    } catch {
-      failed();
+    } catch (error) {
+      failed(error);
     }
   }, 50);
   input.on("line", (line) => {
     try {
       if (Buffer.byteLength(line) > 1048576) throw new Error("Frame bound");
       protocol.handle(JSON.parse(line));
-    } catch {
-      failed();
+    } catch (error) {
+      failed(error);
     }
   });
   input.on("close", () => finish("stdin-closed"));

@@ -854,6 +854,10 @@ fieldset,
   margin: 0;
 }
 .count-strip .count-name {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  text-align: center;
   color: var(--u-muted);
 }
 .count-strip strong {
