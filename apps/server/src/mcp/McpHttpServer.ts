@@ -11,6 +11,11 @@ import {
   LINKED_MESSAGE_ORIGIN_HEADER,
   withLinkedMessageOrigin,
 } from "../jones/peerTransport/LinkedMessageOrigin.ts";
+import {
+  LINKED_REQUEST_CONTEXT_HEADER,
+  IncomingLinkedRequestContext,
+  bindLinkedRequestContext,
+} from "../jones/peerTransport/LinkedRequestContext.ts";
 import * as UserResponseRequest from "../jones/mcp/userResponseRequest/UserResponseRequestMcpService.ts";
 import { handlers as userResponseRequestHandlers } from "../jones/mcp/userResponseRequest/handlers.ts";
 import { UserResponseRequestToolkit } from "../jones/mcp/userResponseRequest/tools.ts";
@@ -258,6 +263,10 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
       );
     return yield* httpEffect.pipe(
       Effect.provideService(McpInvocationContext.McpInvocationContext, attributed),
+      Effect.provideService(
+        IncomingLinkedRequestContext,
+        bindLinkedRequestContext(attributed, request.headers[LINKED_REQUEST_CONTEXT_HEADER]),
+      ),
       Effect.map(normalizeMcpHttpResponse),
     );
   }) satisfies McpAuthMiddleware;

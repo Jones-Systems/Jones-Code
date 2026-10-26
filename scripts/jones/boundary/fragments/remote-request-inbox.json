@@ -12,6 +12,10 @@
     {
       "from": "apps/web/src/routeTree.gen.ts",
       "to": "apps/web/src/routes/requests.tsx"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/peerTransport/LinkedRequestContext.ts"
     }
   ]
 }

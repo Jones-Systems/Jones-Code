@@ -2031,7 +2031,12 @@
     "apps/server/src/jones/terminal/ShellIdleExpiry.test.ts": "jones-owned",
     "apps/web/src/components/chat/useChatTerminalActions.ts": "hook",
     "apps/server/src/jones/terminal/ShellIdlePrompt.ts": "jones-owned",
-    "apps/server/src/jones/terminal/ShellIdlePrompt.test.ts": "jones-owned"
+    "apps/server/src/jones/terminal/ShellIdlePrompt.test.ts": "jones-owned",
+    "packages/contracts/src/jones/remoteAdmission.test.ts": "jones-owned",
+    "apps/server/src/jones/peerTransport/LinkedRequestContext.ts": "jones-owned",
+    "apps/server/src/jones/peerTransport/LinkedRequestContext.test.ts": "jones-owned",
+    "apps/server/src/jones/peerTransport/LinkedRequestContext.http.test.ts": "jones-owned",
+    "apps/server/src/jones/peerTransport/LinkedMcpProbe.testkit.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
