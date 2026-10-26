@@ -12,7 +12,8 @@ const messages = {
     "Xcode setup is incomplete. Open Xcode on the device host and finish installing its required components, then refresh devices.",
   missing: "Xcode command line tools were not found. Install and select Xcode on the device host.",
   timeout: "The Xcode setup check timed out. Check Xcode on the device host, then refresh devices.",
-  unavailable: "Could not verify Xcode setup. Check the selected Xcode on the device host, then refresh devices.",
+  unavailable:
+    "Could not verify Xcode setup. Check the selected Xcode on the device host, then refresh devices.",
 };
 
 // simctl can invoke first-launch installation itself and wait indefinitely for authorization.
@@ -42,8 +43,10 @@ export const availableHubPlatform = (platforms: ReadonlyArray<DevicePlatformAvai
 };
 
 export const unavailablePlatformReason = (platforms: ReadonlyArray<DevicePlatformAvailability>) =>
-  platforms.map((platform) => platform.reason).filter(Boolean).join("\n") ||
-  "No device platforms are available on this host.";
+  platforms
+    .map((platform) => platform.reason)
+    .filter(Boolean)
+    .join("\n") || "No device platforms are available on this host.";
 
 // The SSH host executes this beside its existing bounded spawnSync runner.
 export const remoteXcodeReadinessSource = `

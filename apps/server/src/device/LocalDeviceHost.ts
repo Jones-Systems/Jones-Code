@@ -107,7 +107,11 @@ interface RunningHost {
 
 const platformReason = Effect.fn("LocalDeviceHost.platformReason")(function* (
   platform: DevicePlatform,
-): Effect.fn.Return<string | null, never, FileSystem.FileSystem | Path.Path> {
+): Effect.fn.Return<
+  string | null,
+  never,
+  FileSystem.FileSystem | Path.Path | ProcessRunner.ProcessRunner
+> {
   const hostPlatform = yield* HostProcess.Platform;
   if (platform === "ios") {
     if (hostPlatform !== "darwin") return "iOS Simulators need macOS with Xcode.";
@@ -487,33 +491,32 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
     );
 
   // Waits for the hub's lifetime and re-forks on restart; a span would nest across restarts.
-  const superviseHub: (hub: HubProcess) => Effect.Effect<void> =
-    Effect.fnUntraced(
-      function* (hub: HubProcess) {
-        yield* Effect.result(hub.child.exitCode);
-        const running = yield* Ref.get(runningRef);
-        if (running?.hub.child.pid !== hub.child.pid) return;
-        const uptime = (yield* Clock.currentTimeMillis) - hub.startedAtMillis;
-        const delay = yield* Ref.modify(restartDelayRef, (current) => {
-          if (uptime >= HUB_RESTART_STABLE_UPTIME_MS) return [0, 0];
-          const next = current === 0 ? 1_000 : Math.min(current * 2, HUB_RESTART_MAX_DELAY_MS);
-          return [current, next];
-        });
-        yield* Effect.logWarning("Device hub exited; restarting", {
-          pid: Number(hub.child.pid),
-          delayMs: delay,
-        });
-        yield* Effect.sleep(Duration.millis(delay));
-        yield* startLock.withPermits(1)(
-          Effect.gen(function* () {
-            const current = yield* Ref.get(runningRef);
-            if (current?.hub.child.pid !== hub.child.pid) return;
-            yield* ensureHubReady(() => Effect.void);
-          }),
-        );
-      },
-      Effect.catchCause((cause) => Effect.logWarning("Device hub supervisor failed", { cause })),
-    );
+  const superviseHub: (hub: HubProcess) => Effect.Effect<void> = Effect.fnUntraced(
+    function* (hub: HubProcess) {
+      yield* Effect.result(hub.child.exitCode);
+      const running = yield* Ref.get(runningRef);
+      if (running?.hub.child.pid !== hub.child.pid) return;
+      const uptime = (yield* Clock.currentTimeMillis) - hub.startedAtMillis;
+      const delay = yield* Ref.modify(restartDelayRef, (current) => {
+        if (uptime >= HUB_RESTART_STABLE_UPTIME_MS) return [0, 0];
+        const next = current === 0 ? 1_000 : Math.min(current * 2, HUB_RESTART_MAX_DELAY_MS);
+        return [current, next];
+      });
+      yield* Effect.logWarning("Device hub exited; restarting", {
+        pid: Number(hub.child.pid),
+        delayMs: delay,
+      });
+      yield* Effect.sleep(Duration.millis(delay));
+      yield* startLock.withPermits(1)(
+        Effect.gen(function* () {
+          const current = yield* Ref.get(runningRef);
+          if (current?.hub.child.pid !== hub.child.pid) return;
+          yield* ensureHubReady(() => Effect.void);
+        }),
+      );
+    },
+    Effect.catchCause((cause) => Effect.logWarning("Device hub supervisor failed", { cause })),
+  );
 
   const daemonFilePath = () => path.join(agentDeviceStateDir(path, config.stateDir), "daemon.json");
 
@@ -659,7 +662,10 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
         Effect.provideService(Path.Path, path),
         Effect.provideService(HostProcess.Platform, hostPlatform),
       ));
-    const platforms = yield* Effect.all([platformAvailability("ios"), platformAvailability("android")]);
+    const platforms = yield* Effect.all([
+      platformAvailability("ios"),
+      platformAvailability("android"),
+    ]);
     if (!platforms.some((platform) => platform.available)) {
       if (running) {
         yield* Ref.set(runningRef, null);
