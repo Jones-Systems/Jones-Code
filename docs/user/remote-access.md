@@ -332,6 +332,7 @@ The evaluator runs without task tools. Qualified Claude instances and managed
 Codex instances with ChatGPT authorization support evaluation. CLI-backed Codex
 instances are excluded because their public integration cannot disable all task
 tools. An existing CLI login does not automatically authorize managed Codex.
+Settings lists configured instances that cannot be selected, with the reason each one reports.
 
 If evaluation fails or is interrupted, the request remains held as an evaluator
 service failure. New failures include a reason such as a timeout, account-access
