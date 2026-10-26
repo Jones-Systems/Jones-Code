@@ -77,6 +77,7 @@ export interface Workspace {
   name: string;
   directory: string;
   script: string | undefined;
+  nativeScript?: string;
 }
 export interface Command {
   executable: string;
@@ -179,11 +180,14 @@ export function selectWorkspaces(
   workspaces: Workspace[],
   args: ReturnType<typeof parseArguments>,
 ) {
-  const eligible = workspaces.filter(
-    (workspace) =>
+  const eligible = workspaces.filter((workspace) => {
+    const expected = workspaceCommand(root, workspace.directory);
+    return (
       workspace.directory !== root &&
-      workspace.script === workspaceCommand(root, workspace.directory),
-  );
+      (workspace.script === expected ||
+        (workspace.script === "vp run tsrs:typecheck" && workspace.nativeScript === expected))
+    );
+  });
   const selected = args.all
     ? eligible
     : args.selectors.map((selector) => {
@@ -391,6 +395,9 @@ export async function discoverWorkspaces(
           object(manifest.scripts) && typeof manifest.scripts.typecheck === "string"
             ? manifest.scripts.typecheck
             : undefined,
+        ...(object(manifest.scripts) && typeof manifest.scripts["typecheck:native"] === "string"
+          ? { nativeScript: manifest.scripts["typecheck:native"] }
+          : {}),
       };
     }),
   );

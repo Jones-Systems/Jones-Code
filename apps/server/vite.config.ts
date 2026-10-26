@@ -1,3 +1,4 @@
+import { typecheckTask } from "../../scripts/jones/tsrs/task-cache.ts";
 import "vite-plus/test/config";
 import { defineConfig, mergeConfig } from "vite-plus";
 
@@ -70,6 +71,7 @@ export default mergeConfig(
   defineConfig({
     run: {
       tasks: {
+        "tsrs:typecheck": typecheckTask(packageJson.scripts["typecheck:native"]),
         build: {
           command: "node scripts/cli.ts build",
           dependsOn: ["@t3tools/web#build"],

@@ -6,9 +6,24 @@ compiler admission before cached recursive tasks. `pnpm typecheck:incremental`
 uses the same pinned compiler and Go assignment in a separate v2 namespace.
 Marketing continues using `astro check`.
 
+Manifest workspaces expose `typecheck` as `vp run tsrs:typecheck`; their
+`typecheck:native` slot retains the exact verified compiler command. Package
+Vite configurations read that slot and apply the shared task-cache policy.
+Web and desktop retain their existing `typecheck` task names. For example,
+`pnpm --filter effect-acp typecheck` uses the configured task. Compiler argument forwarding remains under
+qualification. Root commands still run uncached admission first.
+Automatic input and output tracking remain enabled. Only package build-info
+files and the exact workspace patch lock/reclaim files are excluded; source,
+configuration, manifests, libraries and compiler binary identity stay tracked.
+Cached tasks must never restore mutation locks or build-info files.
+
 The candidate integration remains under
 [qualification](https://github.com/Jones-Systems/Jones-Code/issues/711) before
-main adoption. The initial 33-surface direct screen preserved incumbent
+main adoption. A retained native build-info regression currently blocks adoption:
+changing an Effect rule from off to error can miss the required diagnostic, while
+a fresh check detects it. The cache correctly invalidates the configuration input;
+the compiler then reuses stale native state. No remedy is qualified yet.
+The initial 33-surface direct screen preserved incumbent
 errors/warnings and non-standard-library coverage after constructive fixture
 corrections, but complete rule, lifecycle, cache, performance and platform gates
 remain. No complete current-workflow speed improvement has been qualified.
@@ -134,7 +149,9 @@ is not resolved by compiler substitution.
 The incremental runner uses guarded raw JSONC inputs rather than unsupported
 TSRS `--showConfig`. Its v2 identity includes exact pins, patched binary bytes,
 adjacent standard libraries, checker options, workspace and installed dependency
-bindings, and recognized project/base configuration bytes. Every retained check
+bindings, and recognized project/base configuration bytes. Workspace discovery
+accepts only the exact public alias/native-command pair or the original exact
+launcher command; it never evaluates package configuration code. Every retained check
 still executes the verified compiler. Success may atomically retain a bounded
 build-info envelope; failures preserve the earlier seed. `--fresh` reads and
 publishes no retained state. Retained mode refuses unsupported hosts instead of

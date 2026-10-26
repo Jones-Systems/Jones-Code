@@ -1,3 +1,4 @@
+import { typecheckTask } from "../../scripts/jones/tsrs/task-cache.ts";
 import "vite-plus/test/config";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Vite resolves the fixed custody artifact synchronously outside an Effect runtime.
 import * as NodePath from "node:path";
@@ -63,11 +64,7 @@ export default defineConfig({
         dependsOn: ["t3#build"],
         cache: false,
       },
-      // tsc (tsc-rs) rewrites the tsbuildinfo it reads, which keeps a task out of the cache.
-      typecheck: {
-        command: "node ../../scripts/jones/tsrs/typecheck.ts --noEmit",
-        cache: { input: [{ auto: true }, "!*.tsbuildinfo"] },
-      },
+      typecheck: typecheckTask("node ../../scripts/jones/tsrs/typecheck.ts --noEmit"),
     },
   },
   pack: [

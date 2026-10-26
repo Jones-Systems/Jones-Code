@@ -249,6 +249,41 @@ NodeTest.test(
       compilerSeam(f, () => NodeAssert.fail("No compiler expected")),
     );
     NodeAssert.deepEqual(result, f.workspaces);
+    const project = f.projects[0];
+    const filename = NodePath.join(project.directory, "package.json");
+    const manifest = JSON.parse(NodeFS.readFileSync(filename, "utf8"));
+    manifest.scripts["typecheck:native"] = manifest.scripts.typecheck;
+    manifest.scripts.typecheck = "vp run tsrs:typecheck";
+    write(filename, JSON.stringify(manifest));
+    const aliased = await discoverWorkspaces(
+      f.root,
+      signal(),
+      compilerSeam(f, () => NodeAssert.fail("No compiler expected")),
+    );
+    NodeAssert.deepEqual(
+      selectWorkspaces(f.root, aliased, parseArguments(["--all"])).selected.map((p) => p.name),
+      f.projects.map((p) => p.name),
+    );
+    const selectedAlias = aliased.find((p) => p.name === project.name);
+    NodeAssert.equal(selectedAlias.nativeScript, workspaceCommand(f.root, project.directory));
+    NodeAssert.throws(
+      () =>
+        selectWorkspaces(
+          f.root,
+          [{ ...selectedAlias, nativeScript: "tsc --noEmit" }],
+          parseArguments([project.name]),
+        ),
+      /Unsupported/,
+    );
+    NodeAssert.throws(
+      () =>
+        selectWorkspaces(
+          f.root,
+          [{ ...selectedAlias, script: "vp run tsrs:typecheck --other" }],
+          parseArguments([project.name]),
+        ),
+      /Unsupported/,
+    );
     await NodeAssert.rejects(
       discoverWorkspaces(f.root, signal(), async () => ({ code: 1, stdout: "discovery failure" })),
       /discovery failed/,
