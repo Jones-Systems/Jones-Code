@@ -36,6 +36,7 @@ const command = (
 const makeDebuggee = (
   options: {
     readonly deferFocus?: boolean;
+    readonly focusedFrame?: boolean;
     readonly refuse?: (method: string, sessionId: string | undefined) => boolean;
   } = {},
 ) => {
@@ -72,6 +73,7 @@ const makeDebuggee = (
       }),
   });
   const webContents = Object.assign(new NodeEvents.EventEmitter(), {
+    focusedFrame: options.focusedFrame ? {} : null,
     getURL: () => "http://localhost/",
     getTitle: () => "Page",
     getUserAgent: () => "Electron",
@@ -173,6 +175,121 @@ describe("DesktopBrowserHost", () => {
       expect(decodeCdpReply((reply as { message: string }).message).id).toBe(2);
     }).pipe(Effect.scoped),
   );
+
+  for (const revocation of ["assignment", "disconnect", "release", "detach"] as const) {
+    it.effect(
+      `drops commands awaiting focus after ${revocation} without disturbing a fresh relay`,
+      () =>
+        Effect.gen(function* () {
+          const host = yield* DesktopBrowserHost.make;
+          const debuggee = makeDebuggee({ deferFocus: true, focusedFrame: true });
+          const otherKey = { threadId: "thread-2", tabId: "tab-2" };
+          const companion = revocation === "assignment" || revocation === "disconnect";
+          if (companion) host.replaceCompanionAssignments([key, otherKey]);
+          host.attach(key, debuggee.tab);
+          const reader = yield* host.events.pipe(
+            Stream.map((line) => decodeEvent(new TextDecoder().decode(line))),
+            Stream.filter((event) => event.type === "cdp"),
+            Stream.take(1),
+            Stream.runCollect,
+            Effect.forkScoped,
+          );
+          yield* Effect.yieldNow;
+          const painting = yield* watchPainting(host);
+
+          yield* command(host, 1, "Runtime.evaluate");
+          yield* command(host, 2, "Input.insertText");
+          yield* command(host, 3, "Page.startScreencast");
+          expect(debuggee.sent).toEqual([]);
+          expect(debuggee.focusEmulation).toEqual([true]);
+
+          if (revocation === "assignment") host.replaceCompanionAssignments([otherKey]);
+          else if (revocation === "disconnect") host.replaceCompanionAssignments([]);
+          else if (revocation === "release") {
+            yield* host.handleCommandLine(encodeJson({ type: "release", ...key }));
+          } else host.detach(key);
+
+          if (companion) host.replaceCompanionAssignments([key, otherKey]);
+          host.attach(key, debuggee.tab);
+          yield* command(host, 4, "Page.startScreencast");
+          debuggee.settleFocus();
+          yield* settle;
+          expect(debuggee.sent).toEqual([4]);
+          expect(painting).toEqual([true, false, true]);
+
+          debuggee.release();
+          expect(yield* Fiber.join(reader)).toEqual([
+            {
+              type: "cdp",
+              ...key,
+              message: encodeJson({
+                id: 4,
+                result: { method: "Page.startScreencast" },
+                sessionId: "t3-preview-page",
+              }),
+            },
+          ]);
+          yield* TestClock.adjust("1 minute");
+          expect(debuggee.focusEmulation.at(-1)).toBe(true);
+          expect(painting.at(-1)).toBe(true);
+        }).pipe(Effect.scoped),
+    );
+  }
+
+  for (const sessionId of ["t3-preview-page-1", "child-frame"] as const) {
+    it.effect(`drops commands from ${sessionId} detached while focus was changing`, () =>
+      Effect.gen(function* () {
+        const host = yield* DesktopBrowserHost.make;
+        const debuggee = makeDebuggee({ deferFocus: true, focusedFrame: true });
+        host.attach(key, debuggee.tab);
+        const reader = yield* host.events.pipe(
+          Stream.map((line) => decodeEvent(new TextDecoder().decode(line))),
+          Stream.filter((event) => event.type === "cdp" && decodeCdpReply(event.message).id === 7),
+          Stream.take(1),
+          Stream.runCollect,
+          Effect.forkScoped,
+        );
+        yield* Effect.yieldNow;
+        const raw = (message: Record<string, unknown>) =>
+          host.handleCommandLine(encodeJson({ type: "cdp", ...key, message: encodeJson(message) }));
+
+        yield* raw({ id: 1, method: "Target.attachToTarget", params: { targetId: "GUEST" } });
+        yield* settle;
+        yield* raw({ id: 2, method: "Runtime.evaluate", params: { id: 2 }, sessionId });
+        yield* raw({ id: 3, method: "Input.insertText", params: { id: 3 }, sessionId });
+        yield* raw({ id: 4, method: "Page.startScreencast", params: { id: 4 }, sessionId });
+        expect(debuggee.sent).toEqual([]);
+        expect(debuggee.focusEmulation).toEqual([true]);
+        yield* raw({ id: 5, method: "Target.detachFromTarget", params: { sessionId } });
+        debuggee.settleFocus();
+        yield* settle;
+        expect(debuggee.sent).toEqual([]);
+
+        yield* raw({ id: 6, method: "Target.attachToTarget", params: { targetId: "GUEST" } });
+        yield* settle;
+        yield* raw({
+          id: 7,
+          method: "Runtime.evaluate",
+          params: { id: 7 },
+          sessionId: "t3-preview-page-2",
+        });
+        yield* settle;
+        expect(debuggee.sent).toEqual([7]);
+        debuggee.release();
+        expect(yield* Fiber.join(reader)).toEqual([
+          {
+            type: "cdp",
+            ...key,
+            message: encodeJson({
+              id: 7,
+              result: { method: "Runtime.evaluate" },
+              sessionId: "t3-preview-page-2",
+            }),
+          },
+        ]);
+      }).pipe(Effect.scoped),
+    );
+  }
 
   it.effect("sends a page one screenshot at a time", () =>
     Effect.gen(function* () {

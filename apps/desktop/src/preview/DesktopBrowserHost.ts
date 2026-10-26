@@ -386,10 +386,21 @@ export const make = Effect.gen(function* () {
           // Waits for focus emulation; insertText and other non-CDP input would not queue behind it.
           const forward = (current?: () => boolean) => {
             const change = tab.focusChange;
-            const run = () =>
-              current === undefined || current()
+            const run = () => {
+              if (
+                tab.relay !== relay ||
+                tabs.get(keyOf(tab.key)) !== tab ||
+                (owner !== undefined && detachedOwners.has(owner)) ||
+                (sessionId !== undefined && detachedOwners.has(sessionId))
+              ) {
+                return Promise.reject(
+                  new Error("The preview connection that sent this command closed."),
+                );
+              }
+              return current === undefined || current()
                 ? send(method, params, sessionId)
                 : Promise.reject(new Error("The page this screenshot was for has moved on."));
+            };
             return change === null ? run() : change.then(run);
           };
           return method === "Page.captureScreenshot"
