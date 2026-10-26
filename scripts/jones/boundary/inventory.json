@@ -2005,7 +2005,9 @@
     "packages/client-runtime/src/jones/sync/producerGuard.ts": "jones-owned",
     "packages/client-runtime/src/state/threads-sync.test.ts": "jones-tests-in-upstream",
     "packages/client-runtime/src/state/shell-sync.test.ts": "jones-tests-in-upstream",
-    "packages/client-runtime/src/state/shell.ts": "hook"
+    "packages/client-runtime/src/state/shell.ts": "hook",
+    "packages/shared/src/jones/sqliteWriterAdmission.fixture.ts": "jones-owned",
+    "packages/shared/src/jones/sqliteWriterAdmission.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
