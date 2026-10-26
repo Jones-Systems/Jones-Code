@@ -12,6 +12,7 @@ import * as WsServerBrowser from "../preview/ServerBrowser.ts";
 import * as OrchestrationHttpApi from "./http.ts";
 import * as EnvironmentAuth from "../auth/http.ts";
 import * as WebSocketRpc from "../ws.ts";
+import * as WsGuestShareService from "../guest/GuestShareService.ts";
 import * as ShellMaterialization from "../jones/orchestration/shellMaterialization.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import * as ProviderRegistryMock from "../provider/testUtils/providerRegistryMock.ts";
@@ -565,6 +566,7 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
   const deniedRpcOwners = Layer.mergeAll(
     Layer.mock(DocumentText.DocumentText)({ ensure: denyRpcWork }),
     Layer.mock(ShellMaterialization.ShellMaterialization)({}),
+    Layer.mock(WsGuestShareService.GuestShareService)({}),
     Layer.mock(WsDirectEndpoints.DirectEndpoints)({}),
     Layer.mock(WsPeerLinks.PeerLinks)({}),
     Layer.mock(WsMcpAppRequests.McpAppRequests)({}),
@@ -1286,9 +1288,10 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
         const order: string[] = [];
         const rpcOwners = Layer.mergeAll(
           Layer.mock(DocumentText.DocumentText)({
-            ensure: () => Effect.void,
+            ensure: (path) => Effect.succeed(new Map<string, string>().get(path)),
           }),
           Layer.mock(ShellMaterialization.ShellMaterialization)({}),
+          Layer.mock(WsGuestShareService.GuestShareService)({}),
           Layer.mock(WsDirectEndpoints.DirectEndpoints)({}),
           Layer.mock(WsPeerLinks.PeerLinks)({}),
           Layer.mock(WsMcpAppRequests.McpAppRequests)({}),

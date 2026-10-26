@@ -51,7 +51,9 @@ const fixture = (
   Effect.gen(function* () {
     const received: OrchestrationV2ServerCommand[] = [];
     const services = Layer.mergeAll(
-      Layer.mock(DocumentText.DocumentText)({ ensure: () => Effect.void }),
+      Layer.mock(DocumentText.DocumentText)({
+        ensure: (path) => Effect.succeed(new Map<string, string>().get(path)),
+      }),
       Layer.mock(Threads.ThreadManagementService)({
         getThreadShell: () => Effect.succeed(null),
         dispatch: (input) => {
