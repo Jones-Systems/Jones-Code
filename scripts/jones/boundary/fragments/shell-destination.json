@@ -55,6 +55,10 @@
     {
       "from": "apps/server/src/terminal/Manager.ts",
       "to": "apps/server/src/jones/terminal/ShellIdlePrompt.ts"
+    },
+    {
+      "from": "apps/web/src/components/ThreadTerminalDrawer.tsx",
+      "to": "apps/web/src/jones/shellDestination/TerminalContentsFrame.tsx"
     }
   ]
 }

@@ -161,10 +161,18 @@ starts a new terminal without attaching or changing the old association. Native 
 The chip uses the clicking client's exact-ID connection catalog. Its label is
 authoritative; an unknown or mismatched agent label is shown as a claim and cannot
 select a computer. The toolbar retains its existing insets and actions. Status
-and long labels wrap within the block; the inline terminal has a 256px viewport
+and long labels wrap within the block; the inline terminal has a 256px frame
 and a wrapping header with destination, destination cwd, status, Close and Run
 again. Check narrow widths, keyboard focus and enlarged text alongside an ordinary
 shell block and Mermaid block, which share the toolbar/frame.
+The inline terminal's bottom-right **Copy terminal contents** button uses the
+message-copy confirmation. Run a synthetic command, click Copy, then paste into
+an isolated text field: expect the current plain text including retained
+scrollback, with soft-wrapped lines rejoined and the selection unchanged. Append
+more output and copy again to check freshness. The ordinary drawer does not
+enable this footer. The Jones terminal-contents unit and browser fixtures cover
+formatting and the real surface/button interaction; they do not qualify a live
+remote connection or the native desktop shell.
 Command terminals close on the owning server after thirty minutes of observed idle
 shell time, confirmed by prompt/preexec hooks in Bash 4.4+ or Zsh. Shell
 builtins running without children remain protected. Unsupported shells, old
