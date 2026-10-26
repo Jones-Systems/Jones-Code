@@ -148,10 +148,7 @@ describe("settlement notification controller", () => {
         expect(decodeSettlementInbox(h.data.inbox!).acknowledged).toEqual([]);
         expect(decodeSettlementInbox(h.data.inbox!).entries).toHaveLength(4);
 
-        controller.observe(env, {
-          ...shell(2, rows, archived),
-          removedAt: new Map([[entry("missing").threadId, 2]]),
-        });
+        controller.observe(env, shell(2, rows, archived));
         await controller.flush();
         expect(decodeSettlementInbox(h.data.inbox!).acknowledged).toEqual([local.id, remote.id]);
         const reloaded = createSettlementNotificationController({ store: h.store });
@@ -220,7 +217,10 @@ describe("settlement notification controller", () => {
         .sort(),
     );
     expect(decodeSettlementInbox(h.data.inbox!).acknowledged).toEqual([]);
-    controller.observe(env, shell(2, rows, archived));
+    controller.observe(env, {
+      ...shell(2, rows, archived),
+      removedAt: new Map([[entry("missing").threadId, 2]]),
+    });
     await controller.flush();
     const persisted = decodeSettlementInbox(h.data.inbox!);
     expect(persisted.acknowledged).toEqual(

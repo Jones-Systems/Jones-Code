@@ -50,6 +50,7 @@ export function observeEnvironment(
   const threadTitles = new Map<ThreadId, string>();
   const evidence = settlementThreadEvidence(input.state, input.families);
   const goneThreadIds = evidence.gone;
+  for (const id of goneThreadIds) delete threads[id];
   const arrivals: SettlementArrival[] = [];
   let watermarkMs: number | null = lowerSequence ? null : (prev?.watermarkMs ?? null);
   for (const thread of evidence.threads) {
@@ -85,7 +86,6 @@ export function observeEnvironment(
       });
     }
   }
-  for (const id of goneThreadIds) delete threads[id];
   const baseline: EnvironmentSettlementBaseline = {
     version: 1,
     environmentId: input.environmentId,

@@ -138,6 +138,7 @@ describe("settlement detection", () => {
         "linked-only",
       ]);
       expect(result.baseline.threads).toEqual({
+        "thread-a": null,
         parent: 200,
         fork: 200,
         "mcp-child": 300,
@@ -152,6 +153,7 @@ describe("settlement detection", () => {
       expect(result.baseline.watermarkMs).toBe(1_100);
       expect(result.threadTitles.get(thread("nested").id)).toBe("nested");
       expect(result.goneThreadIds.has(thread("deleted-child").id)).toBe(true);
+      expect(result.goneThreadIds.has(thread("thread-a").id)).toBe(false);
     }
   });
 
