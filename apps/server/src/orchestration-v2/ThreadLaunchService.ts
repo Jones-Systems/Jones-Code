@@ -571,7 +571,7 @@ const make = Effect.gen(function* () {
         "fail-run",
         threadId,
       )("Workspace-failure policy changed; retain the shell.");
-    const control = yield* Schema.decodeUnknownEffect(LegacyNoTerminalControl)({
+    const control = yield* Schema.decodeEffect(LegacyNoTerminalControl)({
       version: 1,
       type: "no_control",
       policy: receivingPolicy,
@@ -617,7 +617,7 @@ const make = Effect.gen(function* () {
     const validated =
       deletion === undefined
         ? undefined
-        : yield* Schema.decodeUnknownEffect(LegacyFailureDeletionProvenance)(deletion).pipe(
+        : yield* Schema.decodeEffect(LegacyFailureDeletionProvenance)(deletion).pipe(
             Effect.mapError(mapError(input, "fail-run", threadId)),
           );
     const { deletion: _oldDeletion, ...original } = decision;
@@ -1619,7 +1619,7 @@ const make = Effect.gen(function* () {
               cause.operation !== "openTerminal" ||
               !isTerminalInputValidationError(cause.cause)
             )
-              return yield* Effect.fail(mapError(input, "run-setup-script", threadId)(cause));
+              return yield* mapError(input, "run-setup-script", threadId)(cause);
             const proof = cause.cause;
             const current = yield* threads
               .getThreadRecords(threadId, ["runs"], { runIds: [runId] })

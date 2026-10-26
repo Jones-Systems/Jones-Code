@@ -267,7 +267,7 @@ function makeHarness(options: HarnessOptions = {}) {
               ? Option.some(otherProject)
               : Option.none(),
         ),
-      getByWorkspaceRoot: () => Effect.succeed(Option.some(boundProject)),
+      getByWorkspaceRoot: () => Effect.succeedSome(boundProject),
       snapshot: Effect.die("unused"),
       getShell: () => Effect.die("unused"),
       listShells: () => Effect.die("unused"),
@@ -1157,7 +1157,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                 .mockImplementation((id) =>
                   (!renameCase || renameStage) &&
                   id.endsWith(scenario.includes("intent_readback_lost") ? ":intent" : ":outcome")
-                    ? Effect.succeed(Option.none())
+                    ? Effect.succeedNone
                     : actualReceipt(id),
                 )
             : undefined;
@@ -3640,7 +3640,7 @@ it.effect("replays an accepted send after the project disables the instance", ()
 it.effect("replays an accepted message.dispatch after the project disables the instance", () => {
   const harness = makeHarness();
   const layerFiles = ServerConfig.layerTest(process.cwd(), { prefix: "t3-dispatch-retry-" }).pipe(
-    Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
   );
   return Effect.gen(function* () {
     const launches = yield* ThreadLaunch.ThreadLaunchService;
