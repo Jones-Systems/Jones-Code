@@ -17,11 +17,8 @@ it.each([
   "rollback-tampered",
   "rollback-adhoc",
 ])("native signing admission: %s", (scenario) => {
-  const result = NodeChildProcess.spawnSync(
-    "python3",
-    [
-      "-c",
-      `${definitions}
+  const result = NodeChildProcess.spawnSync("python3", ["-", scenario], {
+    input: `${definitions}
 import tempfile
 from types import SimpleNamespace
 scenario = sys.argv[1]
@@ -61,10 +58,9 @@ with tempfile.TemporaryDirectory(prefix='jones-signing-test-') as temporary:
             assert '2CUPSQS986' in requirement and PRODUCTION_BUNDLE_ID in requirement
             assert '1.2.840.113635.100.6.1.13' in requirement
 `,
-      scenario,
-    ],
-    { encoding: "utf8", timeout: 10_000 },
-  );
+    encoding: "utf8",
+    timeout: 10_000,
+  });
   expect(result.stderr).toBe("");
   expect(result.status).toBe(0);
 });

@@ -43,11 +43,8 @@ for (const fault of [
   "rollback-tampered",
 ]) {
   NodeTest.test(`native transaction refuses ${fault} before rename`, () => {
-    const result = NodeChildProcess.spawnSync(
-      "python3",
-      [
-        "-c",
-        `${definitions}
+    const result = NodeChildProcess.spawnSync("python3", ["-", fault], {
+      input: `${definitions}
 import tempfile
 from types import SimpleNamespace
 fault = sys.argv[1]
@@ -87,10 +84,9 @@ with tempfile.TemporaryDirectory(prefix='jones-signing-oracle-') as temporary:
             assert '--deep' in argv and '--strict' in argv
             assert '2CUPSQS986' in argv[argv.index('-R') + 1]
 `,
-        fault,
-      ],
-      { encoding: "utf8", timeout: 10_000 },
-    );
+      encoding: "utf8",
+      timeout: 10_000,
+    });
     NodeAssert.equal(result.status, 0, result.stderr);
   });
 }
