@@ -1,12 +1,14 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigate } from "@tanstack/react-router";
-import type { EnvironmentId } from "@t3tools/contracts";
-import { useEffect, useRef } from "react";
+import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import type { SettlementOriginResolver } from "@t3tools/client-runtime/jones/settlement-notifications";
 import { resolveSettlementOrigins } from "./resolveOrigins";
 import { toastManager } from "../../components/ui/toast";
 import { useEnvironmentIds } from "../../state/environments";
 import { environmentShell } from "../../state/shell";
+import { threadFamilies } from "../../state/threads";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { getSettlementNotificationController } from "./controller";
 import { SettlementNotificationToastContent } from "./SettlementNotificationToastContent";
 
@@ -126,6 +128,21 @@ export function SettlementNotificationCoordinator() {
   ));
 }
 
+// The family atom keys each read to the current authoritative shell generation. A pending or
+// failed read stays unknown; it must never be presented to the controller as an empty family.
+const notificationFamiliesAtom = Atom.family((key: string) => {
+  const [environmentId, threadIds] = JSON.parse(key) as [EnvironmentId, ThreadId[]];
+  return Atom.make((get) => {
+    const state = get(environmentShell.stateValueAtom(environmentId));
+    return threadIds.flatMap((threadId) => {
+      const result = get(threadFamilies.familyAtom(environmentId, threadId));
+      return state.generation > 0 && AsyncResult.isSuccess(result) && !result.waiting
+        ? [{ threadId, generation: state.generation, family: result.value }]
+        : [];
+    });
+  });
+});
+
 function EnvironmentObserver({
   environmentId,
   controller,
@@ -134,10 +151,23 @@ function EnvironmentObserver({
   controller: Controller;
 }) {
   const state = useAtomValue(environmentShell.stateValueAtom(environmentId));
+  const snapshot = useSyncExternalStore(
+    controller.subscribe,
+    controller.getSnapshot,
+    controller.getSnapshot,
+  );
+  const key = JSON.stringify([
+    environmentId,
+    snapshot.visible
+      .filter((entry) => entry.environmentId === environmentId)
+      .map((entry) => entry.threadId)
+      .sort(),
+  ]);
+  const families = useAtomValue(notificationFamiliesAtom(key));
   useEffect(() => {
     const resolveOrigins: SettlementOriginResolver = (arrivals) =>
       resolveSettlementOrigins(environmentId, arrivals);
-    controller.observe(environmentId, state, { resolveOrigins });
-  }, [controller, environmentId, state]);
+    controller.observe(environmentId, state, { resolveOrigins, families });
+  }, [controller, environmentId, state, families]);
   return null;
 }

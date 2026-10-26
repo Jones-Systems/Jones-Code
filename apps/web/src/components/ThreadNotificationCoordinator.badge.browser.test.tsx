@@ -1,6 +1,7 @@
 import { RegistryContext } from "@effect/atom-react";
 import { WORKING_EXIT_GRACE_MS } from "@t3tools/client-runtime/state/thread-inbox";
 import { EnvironmentId } from "@t3tools/contracts";
+import { pendingSubagentRequestsByThread } from "@t3tools/shared/jones/threadAttention";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import { Atom, AtomRegistry } from "effect/reactivity";
@@ -17,6 +18,7 @@ const state = vi.hoisted(() => ({
   sound: vi.fn(),
   badge: vi.fn(),
   environmentIds: ["one", "two"],
+  noDelegated: new Set(),
 }));
 vi.mock(import("@tanstack/react-router"), async (original) => ({
   ...(await original()),
@@ -41,6 +43,20 @@ vi.mock(import("../state/environments"), async (original) => ({
   ...(await original()),
   useEnvironmentIds: (() => state.environmentIds) as never,
 }));
+vi.mock(import("../state/threads"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    environmentThreadShells: {
+      ...actual.environmentThreadShells,
+      pendingSubagentRequestsAtom: ((id: string) => requestsAtom(id)) as never,
+    },
+  };
+});
+vi.mock(import("../state/entities"), async (original) => ({
+  ...(await original()),
+  useDelegatedUnderParent: (() => state.noDelegated) as never,
+}));
 vi.mock(import("../hooks/useSettings"), async (original) => ({
   ...(await original()),
   useClientSettings: ((
@@ -59,6 +75,14 @@ import { ThreadNotificationCoordinator } from "./ThreadNotificationCoordinator";
 
 let registry: AtomRegistry.AtomRegistry;
 const shellAtom = Atom.family((_id: string) => Atom.make<unknown>(null));
+const requestsAtom = Atom.family((id: string) =>
+  Atom.make((get) => {
+    const snapshot = get(shellAtom(id)) as ReturnType<typeof shell> | null;
+    const threads =
+      snapshot && Option.isSome(snapshot.snapshot) ? snapshot.snapshot.value.threads : [];
+    return pendingSubagentRequestsByThread(threads as never);
+  }),
+);
 state.shells = { set: (id, value) => registry.set(shellAtom(id), value) };
 
 class TestNotification extends EventTarget {
@@ -239,4 +263,40 @@ it("holds a completion through a continuation gap and notifies once it settles",
   expect(TestNotification.sent).toEqual([]);
   await vi.advanceTimersByTimeAsync(1);
   expect(TestNotification.sent.map((sent) => sent.title)).toEqual(["Thread completed"]);
+});
+
+it("alerts on the parent when its delegated subagent asks for approval", async () => {
+  await using app = setup();
+  state.environmentIds = ["one"];
+  state.mode = "notifications-and-sound";
+  state.inApp = true;
+  focused = true;
+  const parent = toV2ThreadShell(thread);
+  const delegatedShell = (approval: boolean) => ({
+    status: "live",
+    snapshot: Option.some({
+      threads: [
+        parent,
+        {
+          ...toV2ThreadShell({ ...thread, id: "child", hasPendingApprovals: approval }),
+          title: "Review the login form",
+          creationSource: "mcp",
+          lineage: {
+            rootThreadId: "thread",
+            parentThreadId: "thread",
+            relationshipToParent: "subagent",
+          },
+        },
+      ],
+    }),
+  });
+  state.shells.set("one", delegatedShell(false));
+  await app.render();
+  state.shells.set("one", delegatedShell(true));
+  await app.render();
+  await app.render();
+  expect(state.toast).toHaveBeenCalledTimes(1);
+  expect(state.toast).toHaveBeenLastCalledWith(
+    expect.objectContaining({ title: "Approval needed", description: "Test thread" }),
+  );
 });

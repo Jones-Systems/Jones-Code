@@ -1,4 +1,13 @@
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
+import { importedHistoryContinuationEligible } from "@t3tools/client-runtime/jones/imported-history/continuation";
+import { ContinuationChoiceBanner } from "../jones/importedHistory/ContinuationChoiceBanner";
+import { useParentLink } from "../jones/remoteAgentLineage/useParentLink";
+import { listenForWorkspaceFileDragEnd } from "../jones/questionAnswer/workspaceFileDragLifecycle";
+import { ComposerPendingUserInputPanel } from "./chat/ComposerPendingUserInputPanel";
+import {
+  INERT_QUESTION_COMPOSER_PROPS,
+  pendingQuestionBlocksSteering,
+} from "../jones/questionAnswer/questionAnswerCard";
 import { ScrollToEndButton, WorkspaceFileDropOverlay } from "./chat/TimelineOverlays";
 import { usePasteToFocusComposer } from "./chat/usePasteToFocusComposer";
 import { announcedRun, isDetailBehindShell } from "./chat/threadActivityAnnouncement";
@@ -608,6 +617,10 @@ export default function ChatView(props: ChatViewProps) {
   const [restingComposerControlsHost, setRestingComposerControlsHost] =
     useState<HTMLDivElement | null>(null);
   const [restingComposerControlsVisible, setRestingComposerControlsVisible] = useState(false);
+  const [shortcutControlsHost, setShortcutControlsHost] = useState<HTMLDivElement | null>(null);
+  const [shortcutWorkspaceElement, setShortcutWorkspaceElement] = useState<HTMLDivElement | null>(
+    null,
+  );
   const citeAssistantText = (
     citation: AssistantCitation,
     sourceAnchor: AssistantCitationSourceAnchor,
@@ -656,8 +669,7 @@ export default function ChatView(props: ChatViewProps) {
   useEffect(() => {
     if (!isWorkspaceFileDragActive) return;
     const clearWorkspaceFileDrag = () => setIsWorkspaceFileDragActive(false);
-    window.addEventListener("dragend", clearWorkspaceFileDrag);
-    return () => window.removeEventListener("dragend", clearWorkspaceFileDrag);
+    return listenForWorkspaceFileDragEnd(clearWorkspaceFileDrag);
   }, [isWorkspaceFileDragActive]);
   const shouldUsePlanSidebarSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const isMobileViewport = useMediaQuery("max-sm");
@@ -682,6 +694,12 @@ export default function ChatView(props: ChatViewProps) {
   const getTimelineScrollableNode = () => legendListRef.current?.getScrollableNode() ?? null;
   const getTimelineScrollableNodeStable = useStableCallback(getTimelineScrollableNode);
   const [composerOverlayElement, setComposerOverlayElement] = useState<HTMLDivElement | null>(null);
+  const attachComposerOverlay = useStableCallback((element: HTMLDivElement | null) => {
+    setComposerOverlayElement(element);
+    setShortcutWorkspaceElement(
+      element?.closest<HTMLDivElement>("[data-chat-workspace-drop-target]") ?? null,
+    );
+  });
   const [composerTimelineInset, setComposerTimelineInset] = useState(0);
   const composerTimelineInsetRef = useRef(0);
   const [composerReservedHeight, setComposerReservedHeight] = useState(0);
@@ -777,19 +795,13 @@ export default function ChatView(props: ChatViewProps) {
       ? run.id
       : null;
   })();
-  const parentSubagentThreadId =
-    activeThread?.lineage.relationshipToParent === "subagent"
-      ? activeThread.lineage.parentThreadId
-      : null;
-  const parentSubagentEnvironmentId = activeThread?.environmentId ?? null;
-  const parentSubagentThreadRef = (() => {
-    if (parentSubagentEnvironmentId === null || parentSubagentThreadId === null) {
-      return null;
-    }
-    return scopeThreadRef(parentSubagentEnvironmentId, parentSubagentThreadId);
-  })();
-  const parentSubagentThread = useQuietThreadShell(parentSubagentThreadRef);
-  // Workflow threads open with a script; their replacement plan lives on the parent's coordinator row.
+  const parentThreadLink = useParentLink(
+    activeThread?.environmentId ?? environmentId,
+    activeThread,
+  );
+  const workflowOpeningEnvironmentId = activeThread?.environmentId ?? null;
+  // A workflow coordinator's thread opens with its script; the plan that replaces it lives on
+  // the parent's coordinator row, so the parent's detail loads only for such a thread.
   const workflowOpeningParentId =
     serverProjection === null
       ? null
@@ -798,9 +810,9 @@ export default function ChatView(props: ChatViewProps) {
           messages: serverProjection.messages,
         });
   const workflowOpeningParentProjection = useQuietThreadProjection(
-    workflowOpeningParentId === null || parentSubagentEnvironmentId === null
+    workflowOpeningParentId === null || workflowOpeningEnvironmentId === null
       ? null
-      : scopeThreadRef(parentSubagentEnvironmentId, workflowOpeningParentId),
+      : scopeThreadRef(workflowOpeningEnvironmentId, workflowOpeningParentId),
   );
   const workflowOpening =
     serverProjection === null || workflowOpeningParentId === null
@@ -810,13 +822,6 @@ export default function ChatView(props: ChatViewProps) {
           messages: serverProjection.messages,
           parentSubagents: workflowOpeningParentProjection?.projection.subagents ?? null,
         });
-  const parentThreadLink =
-    parentSubagentThreadRef === null
-      ? null
-      : {
-          threadId: parentSubagentThreadRef.threadId,
-          title: parentSubagentThread?.title ?? "Parent thread",
-        };
   const threadError = isServerThread
     ? (localServerError ?? serverRuntime?.lastError ?? null)
     : localDraftError;
@@ -1191,6 +1196,7 @@ export default function ChatView(props: ChatViewProps) {
       })
     : EMPTY_AUTO_UPDATE_ENVIRONMENTS;
   const systemComposerBannerItems = useSystemComposerBanners({
+    clientUpdateEnvironment: activeThread ? activeEnvironment : primaryEnvironment,
     activeEnvironment,
     activeEnvironmentUnavailable,
     activeEnvironmentUnavailableState,
@@ -1208,17 +1214,18 @@ export default function ChatView(props: ChatViewProps) {
     ),
   );
   const activeThreadModelInstanceId = activeThread?.modelSelection.instanceId;
-  const { selectedProviderEntry, requestedDriverKind } = resolveComposerProviderSelection({
-    entries: providerInstanceEntries,
-    candidateInstanceIds: [
-      selectedProviderByThreadId,
-      activeRuntime?.providerInstanceId,
-      activeThreadModelInstanceId,
-      activeProjectDefaultModelSelection?.instanceId,
-    ],
-    lockedProvider,
-    lockedInstanceId: activeRuntime?.providerInstanceId ?? activeThreadModelInstanceId,
-  });
+  const { selectedProviderEntry, requestedDriverKind, lockedContinuationGroupKey } =
+    resolveComposerProviderSelection({
+      entries: providerInstanceEntries,
+      candidateInstanceIds: [
+        selectedProviderByThreadId,
+        activeRuntime?.providerInstanceId,
+        activeThreadModelInstanceId,
+        activeProjectDefaultModelSelection?.instanceId,
+      ],
+      lockedProvider,
+      lockedInstanceId: activeRuntime?.providerInstanceId ?? activeThreadModelInstanceId,
+    });
   const selectedProvider = selectedProviderEntry?.driverKind ?? requestedDriverKind;
   const activeProviderInstanceId = selectedProviderEntry?.instanceId ?? null;
   const activeProviderStatus = selectedProviderEntry?.snapshot ?? null;
@@ -1257,14 +1264,12 @@ export default function ChatView(props: ChatViewProps) {
     activePendingDraftAnswers,
     activePendingQuestionIndex,
     activePendingProgress,
-    activePendingResolvedAnswers,
     activePendingIsResponding,
     respondingRequestIds,
     onRespondToApproval: onRespondToApprovalStable,
     onDismissUserInput: onDismissUserInputStable,
     onSelectActivePendingUserInputOption: onSelectActivePendingUserInputOptionStable,
     onChangeActivePendingUserInputCustomAnswer,
-    onAdvanceActivePendingUserInput,
     onAdvanceActivePendingUserInputStable,
     onPreviousActivePendingUserInputQuestion: onPreviousActivePendingUserInputQuestionStable,
   } = usePendingThreadRequests({
@@ -1275,8 +1280,6 @@ export default function ChatView(props: ChatViewProps) {
     supportsQuestionAttachments,
     composerDraftTarget,
     setComposerDraftPrompt,
-    promptRef,
-    composerRef,
     setThreadError,
   });
   const activeProposedPlan = (() => {
@@ -1804,6 +1807,10 @@ export default function ChatView(props: ChatViewProps) {
   };
   const sendAppMessageStable = useStableCallback(sendAppMessage);
   const queuedRunsControlRef = useRef<QueuedRunsControlHandle>(null);
+  const onSteerNextQueuedMessage = () => {
+    if (sendInFlightRef.current) return false;
+    return queuedRunsControlRef.current?.steerNext(false) ?? false;
+  };
 
   const {
     activatePanelTerminalStable,
@@ -2733,6 +2740,11 @@ export default function ChatView(props: ChatViewProps) {
     openProviderSetupStable,
     toggleInteractionModeStable,
   } = useComposerSelection({
+    providerInstanceEntries,
+    lockedContinuationGroupKey,
+    isEnvironmentChanging,
+    activeEnvironmentUnavailable,
+    isRevertingCheckpoint,
     environmentId,
     composerDraftTarget,
     draftThread,
@@ -2754,6 +2766,7 @@ export default function ChatView(props: ChatViewProps) {
     scheduleComposerFocus,
   });
   const { onResume, isResuming } = useComposerResume({
+    isImportedHistory: importedHistoryContinuationEligible(serverProjection),
     environmentId,
     routeThreadKey,
     currentRouteThreadKeyRef,
@@ -2790,7 +2803,9 @@ export default function ChatView(props: ChatViewProps) {
     activeEnvironmentUnavailable,
     defaultRuntimeMode,
   });
-  const { onSend } = useComposerSend({
+  const { onSend, importedHistoryChoice, onImportedHistoryChoice } = useComposerSend({
+    isImportedHistory: importedHistoryContinuationEligible(serverProjection),
+    steeringBlockedByQuestion: pendingQuestionBlocksSteering(pendingUserInputs),
     environmentId,
     routeThreadKey,
     currentRouteThreadKeyRef,
@@ -2843,7 +2858,7 @@ export default function ChatView(props: ChatViewProps) {
     pendingApprovals,
     respondingRequestIds,
     activePendingProgress,
-    onAdvanceActivePendingUserInput,
+    onAdvanceActivePendingUserInput: onAdvanceActivePendingUserInputStable,
     onRespondToApproval: onRespondToApprovalStable,
     beginLocalDispatch,
     resetLocalDispatch,
@@ -2927,6 +2942,7 @@ export default function ChatView(props: ChatViewProps) {
           editingRunId={queuedRunEdit.editingRunId}
           onEditQueuedRun={queuedRunEdit.beginEdit}
           onCancelEdit={queuedRunEdit.cancelEdit}
+          onImportedHistoryChoice={onImportedHistoryChoice}
         />
       </>
     ) : null;
@@ -2946,7 +2962,6 @@ export default function ChatView(props: ChatViewProps) {
     clientSettingsHydrated &&
     !needsLoadBalancing &&
     !activeEnvironmentUnavailable &&
-    !activePendingProgress &&
     !feedbackUploading;
   useEffect(() => {
     if (
@@ -3301,7 +3316,13 @@ export default function ChatView(props: ChatViewProps) {
                   !paintOnlyDisplayedTimeline &&
                   isDetailBehindShell(activeLatestRun, activeThreadShell?.latestRun ?? null)
                 }
-                runningRunId={paintOnlyDisplayedTimeline ? null : activeRunningTurnId}
+                runningRunId={
+                  paintOnlyDisplayedTimeline ||
+                  (serverActivityRun?.status === "waiting" &&
+                    serverActivityRun.providerSettlement != null)
+                    ? null
+                    : activeRunningTurnId
+                }
                 turnDiffSummaries={
                   paintOnlyDisplayedTimeline ? EMPTY_HELD_TURN_DIFF_SUMMARIES : turnDiffSummaries
                 }
@@ -3385,9 +3406,10 @@ export default function ChatView(props: ChatViewProps) {
             </div>
 
             <div
-              ref={setComposerOverlayElement}
+              ref={attachComposerOverlay}
               inert={isRevertingCheckpoint}
               data-chat-composer-overlay="true"
+              data-chat-composer-layout={isDraftHeroState ? "hero" : "docked"}
               className={
                 isDraftHeroState
                   ? "pointer-events-none absolute inset-0 z-20 flex items-center"
@@ -3399,6 +3421,14 @@ export default function ChatView(props: ChatViewProps) {
                   data-chat-composer-stack="true"
                   className="group/composer-stack pointer-events-auto relative z-10 mx-auto w-full max-w-(--chat-content-max-width)"
                 >
+                  {importedHistoryContinuationEligible(serverProjection) && activeThread ? (
+                    <ContinuationChoiceBanner
+                      key={`${activeThread.environmentId}:${activeThread.id}`}
+                      environmentId={activeThread.environmentId}
+                      threadId={activeThread.id}
+                      {...importedHistoryChoice}
+                    />
+                  ) : null}
                   {isDraftHeroState ? (
                     <div className="absolute inset-x-0 bottom-full">
                       <div
@@ -3447,11 +3477,7 @@ export default function ChatView(props: ChatViewProps) {
                               modelLabel={providerSubagentModelLabel}
                               effortLabel={providerSubagentEffortLabel}
                               status={providerSubagentStatus}
-                              onOpenParent={
-                                parentThreadLink
-                                  ? () => onOpenRelatedThread(parentThreadLink.threadId)
-                                  : null
-                              }
+                              onOpenParent={parentThreadLink?.open ?? null}
                             />
                           ) : null}
                           {!composerMounted ? null : (
@@ -3531,12 +3557,45 @@ export default function ChatView(props: ChatViewProps) {
                               environmentUnavailable={activeEnvironmentUnavailableState}
                               activePendingApproval={activePendingApproval}
                               pendingApprovals={pendingApprovals}
-                              pendingUserInputs={pendingUserInputs}
-                              activePendingProgress={activePendingProgress}
-                              activePendingResolvedAnswers={activePendingResolvedAnswers}
-                              activePendingIsResponding={activePendingIsResponding}
-                              activePendingDraftAnswers={activePendingDraftAnswers}
-                              activePendingQuestionIndex={activePendingQuestionIndex}
+                              {...INERT_QUESTION_COMPOSER_PROPS}
+                              steeringBlockedByQuestion={pendingQuestionBlocksSteering(
+                                pendingUserInputs,
+                              )}
+                              questionCard={
+                                pendingUserInputs.length > 0 ? (
+                                  <ComposerPendingUserInputPanel
+                                    pendingUserInputs={pendingUserInputs}
+                                    cwd={gitCwd ?? undefined}
+                                    threadRef={routeThreadRef}
+                                    disabled={!canOperateThread}
+                                    respondingRequestIds={
+                                      activePendingIsResponding &&
+                                      activePendingUserInput &&
+                                      activePendingUserInput.responseCapability !== "not_resumable"
+                                        ? [
+                                            ...respondingRequestIds,
+                                            activePendingUserInput.requestId,
+                                          ]
+                                        : respondingRequestIds
+                                    }
+                                    answers={activePendingDraftAnswers}
+                                    questionIndex={activePendingQuestionIndex}
+                                    onToggleOption={onSelectActivePendingUserInputOptionStable}
+                                    onChangeCustomAnswer={
+                                      onChangeActivePendingUserInputCustomAnswer
+                                    }
+                                    onPrevious={onPreviousActivePendingUserInputQuestionStable}
+                                    onAdvance={onAdvanceActivePendingUserInputStable}
+                                    onDismiss={onDismissUserInputStable}
+                                    attachmentCapabilities={{
+                                      supportsQuestionAttachments,
+                                      attachmentUploadsCapabilityKnown,
+                                      supportsAttachmentUploads,
+                                      maxFileAttachmentBytes,
+                                    }}
+                                  />
+                                ) : null
+                              }
                               respondingRequestIds={respondingRequestIds}
                               showPlanFollowUpPrompt={showPlanFollowUpPrompt}
                               activeProposedPlan={activeProposedPlan}
@@ -3572,6 +3631,8 @@ export default function ChatView(props: ChatViewProps) {
                               }
                               threadPullRequests={(activeThreadShell ?? activeThread)?.pullRequests}
                               restingControlsHost={restingComposerControlsHost}
+                              shortcutControlsHost={shortcutControlsHost}
+                              shortcutWorkspaceElement={shortcutWorkspaceElement}
                               restingControlsHaveLeadingContext={
                                 mountComposerContextStrip &&
                                 (isGitRepo || showComposerEnvironmentIndicator)
@@ -3590,6 +3651,7 @@ export default function ChatView(props: ChatViewProps) {
                               onPageScrollKeyUp={onComposerPageScrollKeyUpStable}
                               onPageScrollRelease={onComposerPageScrollReleaseStable}
                               onCompactContext={onComposerCompactContextStable}
+                              onSteerNextQueuedMessage={onSteerNextQueuedMessage}
                               onSend={onComposerSendStable}
                               onResume={onComposerResumeStable}
                               onInterrupt={onInterruptStable}
@@ -3672,7 +3734,7 @@ export default function ChatView(props: ChatViewProps) {
                                         setPendingServerThreadBranch,
                                     }
                                   : {})}
-                                envLocked={envLocked}
+                                envLocked={envLocked || isSendBusy}
                                 onComposerFocusRequest={scheduleComposerFocusStable}
                                 {...(canCheckoutPullRequestIntoThread
                                   ? { onCheckoutPullRequestRequest: openPullRequestDialogStable }
@@ -3698,11 +3760,28 @@ export default function ChatView(props: ChatViewProps) {
                         </div>
                       </div>
                     </ComposerSurface.Shell>
-                    <div
-                      aria-hidden
-                      className="h-[calc(env(safe-area-inset-bottom)+1rem)] sm:h-[calc(env(safe-area-inset-bottom)+1.25rem)]"
-                    />
+                    {isDraftHeroState ? (
+                      <div
+                        aria-hidden
+                        className="h-[calc(env(safe-area-inset-bottom)+1rem)] sm:h-[calc(env(safe-area-inset-bottom)+1.25rem)]"
+                      />
+                    ) : null}
                   </div>
+                </div>
+              </div>
+              <div
+                className={cn(
+                  "w-full ps-(--workspace-gutter-start) pe-(--workspace-gutter-end)",
+                  isDraftHeroState && "absolute inset-x-0 bottom-0",
+                )}
+              >
+                <div
+                  ref={setShortcutControlsHost}
+                  data-chat-composer-shortcut-host="true"
+                  className="relative w-full"
+                />
+                <div aria-hidden className="pb-safe">
+                  <div className="h-4 sm:h-5" />
                 </div>
               </div>
             </div>

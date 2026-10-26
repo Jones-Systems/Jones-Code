@@ -309,9 +309,11 @@ export function AttachmentFilePreview(props: {
     </Suspense>
   ) : kind === "pdf" || kind === "html" ? (
     <BrowserDocumentFrame
+      key={props.file ? revision : undefined}
       src={url}
       title={props.name}
       pdf={kind === "pdf"}
+      onRetry={() => setRevision((value) => value + 1)}
       htmlRender={props.htmlRender === true}
       threadRef={props.threadRef}
     />

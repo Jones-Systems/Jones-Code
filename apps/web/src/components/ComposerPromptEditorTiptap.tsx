@@ -58,6 +58,7 @@ import {
   expandCollapsedComposerCursor,
   pastedPathQueryLength,
 } from "~/composer-logic";
+import { createEditorSerializationCache } from "~/jones/composer/editorSerializationCache";
 import { useStableCallback } from "~/hooks/useStableCallback";
 import { caretLineDirection, ComposerTextDirectionExtension } from "~/composer-text-direction";
 import {
@@ -1028,9 +1029,20 @@ function ComposerPromptEditorTiptapInner(
     onSubmitAndSend: onCitationSubmitAndSend ?? (() => {}),
   };
 
+  const serializationRef = useRef<{
+    editor: TiptapEditor;
+    read: ReturnType<typeof createEditorSerializationCache>;
+  } | null>(null);
+  const readEditorDoc = (current: TiptapEditor) => {
+    if (serializationRef.current?.editor !== current) {
+      serializationRef.current = { editor: current, read: createEditorSerializationCache() };
+    }
+    return serializationRef.current.read(current.state.doc);
+  };
+
   const handleEditorChange = (updated: TiptapEditor) => {
-    const map = serializeEditorDoc(updated.state.doc);
-    const contextIds = literalText ? [] : map.contextIds;
+    const map = readEditorDoc(updated);
+    const contextIds = literalText ? [] : [...map.contextIds];
     const { from, to } = updated.state.selection;
     const fromFlat = pmToFlat(map, from);
     const toFlat = pmToFlat(map, to);
@@ -1080,13 +1092,9 @@ function ComposerPromptEditorTiptapInner(
       [updated.state.selection.$from.nodeBefore, updated.state.selection.$from.nodeAfter].some(
         (node) => node?.isInline && node.isAtom && !node.isText && node.type.name !== "hardBreak",
       );
-    readCallbacks().onChange(
-      nextValue,
-      nextCursor,
-      nextExpandedCursor,
-      suppressTrigger,
-      contextIds,
-    );
+    readCallbacks().onChange(nextValue, nextCursor, nextExpandedCursor, suppressTrigger, [
+      ...contextIds,
+    ]);
   };
 
   const editorAttributes = {
@@ -1385,7 +1393,9 @@ function ComposerPromptEditorTiptapInner(
             !literalText && importFragment
               ? importPastedComposerText(clipboardData, importFragment)
               : pastedText;
-          const tokens = literalText ? [] : collectComposerPromptInlineTokens(`${text}\n`);
+          const tokens = literalText
+            ? []
+            : collectComposerPromptInlineTokens(`${text}\n`, text.length);
           const isChip = (token: (typeof tokens)[number] | undefined) =>
             token?.type === "mention" ||
             (token?.type === "skill" && skillLabelFor(token.value) !== null);
@@ -1474,8 +1484,8 @@ function ComposerPromptEditorTiptapInner(
 
   const readSnapshot = () => {
     const snapshot = snapshotRef.current;
-    if (!editor) return snapshot;
-    const map = serializeEditorDoc(editor.state.doc);
+    if (!editor) return { ...snapshot, contextIds: [...snapshot.contextIds] };
+    const map = readEditorDoc(editor);
     const { from, to } = editor.state.selection;
     const fromFlat = pmToFlat(map, from);
     const expandedCursor = Math.max(0, Math.min(map.value.length, flatToMarkdown(map, fromFlat)));
@@ -1483,7 +1493,7 @@ function ComposerPromptEditorTiptapInner(
       value: map.value,
       cursor: collapseExpandedComposerCursor(map.value, expandedCursor, literalText),
       expandedCursor,
-      contextIds: literalText ? [] : map.contextIds,
+      contextIds: literalText ? [] : [...map.contextIds],
     };
     const toFlat = pmToFlat(map, to);
     selectionRangeRef.current = {
@@ -1491,7 +1501,7 @@ function ComposerPromptEditorTiptapInner(
       end: Math.max(next.expandedCursor, flatToMarkdown(map, toFlat)),
     };
     snapshotRef.current = next;
-    return next;
+    return { ...next, contextIds: [...next.contextIds] };
   };
 
   // Save citation drafts before controlled rewrites unmount their node views.
@@ -1522,7 +1532,7 @@ function ComposerPromptEditorTiptapInner(
         })
         .setMeta("addToHistory", false),
     );
-    onCitationDraftSave(replacedValue, serializeEditorDoc(current.state.doc).value);
+    onCitationDraftSave(replacedValue, readEditorDoc(current).value);
   });
 
   // The one place the controlled value reaches the editor. Imperative handlers compare against
@@ -1571,7 +1581,7 @@ function ComposerPromptEditorTiptapInner(
         },
       );
     }
-    const map = serializeEditorDoc(editor.state.doc);
+    const map = readEditorDoc(editor);
     const flat = markdownToFlat(map, normalizedExpandedCursor);
     editor.commands.setTextSelection(flatToPm(map, flat));
     if (isFocused) scrollTiptapCaretIntoView(editor);
@@ -1605,6 +1615,7 @@ function ComposerPromptEditorTiptapInner(
     expandEditorCursor,
     initialExpandedCursor,
     literalText,
+    readEditorDoc,
     richText,
     skillLabelFor,
     value,
@@ -1640,7 +1651,7 @@ function ComposerPromptEditorTiptapInner(
     const boundedCursor = clampEditorCursor(snapshotRef.current.value, nextCursor);
     const expandedCursor =
       exactExpandedCursor ?? expandEditorCursor(snapshotRef.current.value, boundedCursor);
-    const map = serializeEditorDoc(editor.state.doc);
+    const map = readEditorDoc(editor);
     editor.commands.setTextSelection(flatToPm(map, markdownToFlat(map, expandedCursor)));
     scrollTiptapCaretIntoView(editor);
     if (boundedCursor === snapshotRef.current.cursor) return;
@@ -1659,7 +1670,7 @@ function ComposerPromptEditorTiptapInner(
       boundedCursor,
       snapshotRef.current.expandedCursor,
       literalText,
-      snapshotRef.current.contextIds,
+      [...snapshotRef.current.contextIds],
     );
   };
 
@@ -1689,7 +1700,7 @@ function ComposerPromptEditorTiptapInner(
       requestCitationComment: (request) => {
         citationRequestRef.current = request;
         if (!editor) return;
-        const map = serializeEditorDoc(editor.state.doc);
+        const map = readEditorDoc(editor);
         if (map.value !== request.value) return;
         const target = map.runs.find(
           (run) =>

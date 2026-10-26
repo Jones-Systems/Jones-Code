@@ -8,40 +8,61 @@
 // You should NOT make any changes in this file as it will be overwritten.
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
-import { Route as rootRouteImport } from './routes/__root'
-import { Route as WelcomeRouteImport } from './routes/welcome'
-import { Route as PairRouteImport } from './routes/pair'
-import { Route as GuestRouteImport } from './routes/guest'
-import { Route as ConnectAgentRouteImport } from './routes/connect-agent'
-import { Route as ConnectRouteImport } from './routes/connect'
-import { Route as ChatRouteImport } from './routes/_chat'
-import { Route as ChatIndexRouteImport } from './routes/_chat.index'
-import { Route as ProjectsProjectKeyRouteImport } from './routes/projects.$projectKey'
-import { Route as ChatUsageRouteImport } from './routes/_chat.usage'
-import { Route as ChatSettingsRouteImport } from './routes/_chat.settings'
-import { Route as ChatPullRequestsRouteImport } from './routes/_chat.pull-requests'
-import { Route as ChatNewRouteImport } from './routes/_chat.new'
-import { Route as ChatSettingsStorageRouteImport } from './routes/_chat.settings.storage'
-import { Route as ChatSettingsSourceControlRouteImport } from './routes/_chat.settings.source-control'
-import { Route as ChatSettingsSnapShotRouteImport } from './routes/_chat.settings.snap-shot'
-import { Route as ChatSettingsScheduledTasksRouteImport } from './routes/_chat.settings.scheduled-tasks'
-import { Route as ChatSettingsProvidersRouteImport } from './routes/_chat.settings.providers'
-import { Route as ChatSettingsProjectsRouteImport } from './routes/_chat.settings.projects'
-import { Route as ChatSettingsOpenSourceLicensesRouteImport } from './routes/_chat.settings.open-source-licenses'
-import { Route as ChatSettingsKeybindingsRouteImport } from './routes/_chat.settings.keybindings'
-import { Route as ChatSettingsIntegrationsRouteImport } from './routes/_chat.settings.integrations'
-import { Route as ChatSettingsGeneralRouteImport } from './routes/_chat.settings.general'
-import { Route as ChatSettingsDiagnosticsRouteImport } from './routes/_chat.settings.diagnostics'
-import { Route as ChatSettingsConnectionsRouteImport } from './routes/_chat.settings.connections'
-import { Route as ChatSettingsBetaRouteImport } from './routes/_chat.settings.beta'
-import { Route as ChatSettingsArchivedRouteImport } from './routes/_chat.settings.archived'
-import { Route as ChatSettingsAppearanceRouteImport } from './routes/_chat.settings.appearance'
-import { Route as ChatDraftDraftIdRouteImport } from './routes/_chat.draft.$draftId'
-import { Route as ChatEnvironmentIdThreadIdRouteImport } from './routes/_chat.$environmentId.$threadId'
+import { Route as rootRouteImport } from './routes/__root';
+import { Route as WorkQueueRouteImport } from './routes/work-queue';
+import { Route as WelcomeRouteImport } from './routes/welcome';
+import { Route as VoiceReviewRouteImport } from './routes/voice-review';
+import { Route as RequestsRouteImport } from './routes/requests';
+import { Route as PairRouteImport } from './routes/pair';
+import { Route as GuestRouteImport } from './routes/guest';
+import { Route as DesignRequestsRouteImport } from './routes/design-requests';
+import { Route as ConnectAgentRouteImport } from './routes/connect-agent';
+import { Route as ConnectRouteImport } from './routes/connect';
+import { Route as ChatRouteImport } from './routes/_chat';
+import { Route as ChatIndexRouteImport } from './routes/_chat.index';
+import { Route as ProjectsProjectKeyRouteImport } from './routes/projects.$projectKey';
+import { Route as ChatUsageRouteImport } from './routes/_chat.usage';
+import { Route as ChatSettingsRouteImport } from './routes/_chat.settings';
+import { Route as ChatPullRequestsRouteImport } from './routes/_chat.pull-requests';
+import { Route as ChatNewRouteImport } from './routes/_chat.new';
+import { Route as ChatConversationsRouteImport } from './routes/_chat.conversations';
+import { Route as ChatSettingsStorageRouteImport } from './routes/_chat.settings.storage';
+import { Route as ChatSettingsSourceControlRouteImport } from './routes/_chat.settings.source-control';
+import { Route as ChatSettingsSnapShotRouteImport } from './routes/_chat.settings.snap-shot';
+import { Route as ChatSettingsScheduledTasksRouteImport } from './routes/_chat.settings.scheduled-tasks';
+import { Route as ChatSettingsProvidersRouteImport } from './routes/_chat.settings.providers';
+import { Route as ChatSettingsProjectsRouteImport } from './routes/_chat.settings.projects';
+import { Route as ChatSettingsOpenSourceLicensesRouteImport } from './routes/_chat.settings.open-source-licenses';
+import { Route as ChatSettingsKeybindingsRouteImport } from './routes/_chat.settings.keybindings';
+import { Route as ChatSettingsJonesCodeRouteImport } from './routes/_chat.settings.jones-code';
+import { Route as ChatSettingsIntegrationsRouteImport } from './routes/_chat.settings.integrations';
+import { Route as ChatSettingsGeneralRouteImport } from './routes/_chat.settings.general';
+import { Route as ChatSettingsDiagnosticsRouteImport } from './routes/_chat.settings.diagnostics';
+import { Route as ChatSettingsConnectionsRouteImport } from './routes/_chat.settings.connections';
+import { Route as ChatSettingsBetaRouteImport } from './routes/_chat.settings.beta';
+import { Route as ChatSettingsArchivedRouteImport } from './routes/_chat.settings.archived';
+import { Route as ChatSettingsAppearanceRouteImport } from './routes/_chat.settings.appearance';
+import { Route as ChatDraftDraftIdRouteImport } from './routes/_chat.draft.$draftId';
+import { Route as ChatEnvironmentIdThreadIdRouteImport } from './routes/_chat.$environmentId.$threadId';
 
+const WorkQueueRoute = WorkQueueRouteImport.update({
+  id: '/work-queue',
+  path: '/work-queue',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const WelcomeRoute = WelcomeRouteImport.update({
   id: '/welcome',
   path: '/welcome',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const VoiceReviewRoute = VoiceReviewRouteImport.update({
+  id: '/voice-review',
+  path: '/voice-review',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const RequestsRoute = RequestsRouteImport.update({
+  id: '/requests',
+  path: '/requests',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PairRoute = PairRouteImport.update({
@@ -52,6 +73,11 @@ const PairRoute = PairRouteImport.update({
 const GuestRoute = GuestRouteImport.update({
   id: '/guest',
   path: '/guest',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DesignRequestsRoute = DesignRequestsRouteImport.update({
+  id: '/design-requests',
+  path: '/design-requests',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ConnectAgentRoute = ConnectAgentRouteImport.update({
@@ -98,6 +124,11 @@ const ChatNewRoute = ChatNewRouteImport.update({
   path: '/new',
   getParentRoute: () => ChatRoute,
 } as any)
+const ChatConversationsRoute = ChatConversationsRouteImport.update({
+  id: '/conversations',
+  path: '/conversations',
+  getParentRoute: () => ChatRoute,
+} as any)
 const ChatSettingsStorageRoute = ChatSettingsStorageRouteImport.update({
   id: '/storage',
   path: '/storage',
@@ -139,6 +170,11 @@ const ChatSettingsOpenSourceLicensesRoute =
 const ChatSettingsKeybindingsRoute = ChatSettingsKeybindingsRouteImport.update({
   id: '/keybindings',
   path: '/keybindings',
+  getParentRoute: () => ChatSettingsRoute,
+} as any)
+const ChatSettingsJonesCodeRoute = ChatSettingsJonesCodeRouteImport.update({
+  id: '/jones-code',
+  path: '/jones-code',
   getParentRoute: () => ChatSettingsRoute,
 } as any)
 const ChatSettingsIntegrationsRoute =
@@ -193,9 +229,14 @@ export interface FileRoutesByFullPath {
   '/': typeof ChatIndexRoute
   '/connect': typeof ConnectRoute
   '/connect-agent': typeof ConnectAgentRoute
+  '/design-requests': typeof DesignRequestsRoute
   '/guest': typeof GuestRoute
   '/pair': typeof PairRoute
+  '/requests': typeof RequestsRoute
+  '/voice-review': typeof VoiceReviewRoute
   '/welcome': typeof WelcomeRoute
+  '/work-queue': typeof WorkQueueRoute
+  '/conversations': typeof ChatConversationsRoute
   '/new': typeof ChatNewRoute
   '/pull-requests': typeof ChatPullRequestsRoute
   '/settings': typeof ChatSettingsRouteWithChildren
@@ -210,6 +251,7 @@ export interface FileRoutesByFullPath {
   '/settings/diagnostics': typeof ChatSettingsDiagnosticsRoute
   '/settings/general': typeof ChatSettingsGeneralRoute
   '/settings/integrations': typeof ChatSettingsIntegrationsRoute
+  '/settings/jones-code': typeof ChatSettingsJonesCodeRoute
   '/settings/keybindings': typeof ChatSettingsKeybindingsRoute
   '/settings/open-source-licenses': typeof ChatSettingsOpenSourceLicensesRoute
   '/settings/projects': typeof ChatSettingsProjectsRoute
@@ -222,9 +264,14 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/connect': typeof ConnectRoute
   '/connect-agent': typeof ConnectAgentRoute
+  '/design-requests': typeof DesignRequestsRoute
   '/guest': typeof GuestRoute
   '/pair': typeof PairRoute
+  '/requests': typeof RequestsRoute
+  '/voice-review': typeof VoiceReviewRoute
   '/welcome': typeof WelcomeRoute
+  '/work-queue': typeof WorkQueueRoute
+  '/conversations': typeof ChatConversationsRoute
   '/new': typeof ChatNewRoute
   '/pull-requests': typeof ChatPullRequestsRoute
   '/settings': typeof ChatSettingsRouteWithChildren
@@ -240,6 +287,7 @@ export interface FileRoutesByTo {
   '/settings/diagnostics': typeof ChatSettingsDiagnosticsRoute
   '/settings/general': typeof ChatSettingsGeneralRoute
   '/settings/integrations': typeof ChatSettingsIntegrationsRoute
+  '/settings/jones-code': typeof ChatSettingsJonesCodeRoute
   '/settings/keybindings': typeof ChatSettingsKeybindingsRoute
   '/settings/open-source-licenses': typeof ChatSettingsOpenSourceLicensesRoute
   '/settings/projects': typeof ChatSettingsProjectsRoute
@@ -254,9 +302,14 @@ export interface FileRoutesById {
   '/_chat': typeof ChatRouteWithChildren
   '/connect': typeof ConnectRoute
   '/connect-agent': typeof ConnectAgentRoute
+  '/design-requests': typeof DesignRequestsRoute
   '/guest': typeof GuestRoute
   '/pair': typeof PairRoute
+  '/requests': typeof RequestsRoute
+  '/voice-review': typeof VoiceReviewRoute
   '/welcome': typeof WelcomeRoute
+  '/work-queue': typeof WorkQueueRoute
+  '/_chat/conversations': typeof ChatConversationsRoute
   '/_chat/new': typeof ChatNewRoute
   '/_chat/pull-requests': typeof ChatPullRequestsRoute
   '/_chat/settings': typeof ChatSettingsRouteWithChildren
@@ -272,6 +325,7 @@ export interface FileRoutesById {
   '/_chat/settings/diagnostics': typeof ChatSettingsDiagnosticsRoute
   '/_chat/settings/general': typeof ChatSettingsGeneralRoute
   '/_chat/settings/integrations': typeof ChatSettingsIntegrationsRoute
+  '/_chat/settings/jones-code': typeof ChatSettingsJonesCodeRoute
   '/_chat/settings/keybindings': typeof ChatSettingsKeybindingsRoute
   '/_chat/settings/open-source-licenses': typeof ChatSettingsOpenSourceLicensesRoute
   '/_chat/settings/projects': typeof ChatSettingsProjectsRoute
@@ -287,9 +341,14 @@ export interface FileRouteTypes {
     | '/'
     | '/connect'
     | '/connect-agent'
+    | '/design-requests'
     | '/guest'
     | '/pair'
+    | '/requests'
+    | '/voice-review'
     | '/welcome'
+    | '/work-queue'
+    | '/conversations'
     | '/new'
     | '/pull-requests'
     | '/settings'
@@ -304,6 +363,7 @@ export interface FileRouteTypes {
     | '/settings/diagnostics'
     | '/settings/general'
     | '/settings/integrations'
+    | '/settings/jones-code'
     | '/settings/keybindings'
     | '/settings/open-source-licenses'
     | '/settings/projects'
@@ -316,9 +376,14 @@ export interface FileRouteTypes {
   to:
     | '/connect'
     | '/connect-agent'
+    | '/design-requests'
     | '/guest'
     | '/pair'
+    | '/requests'
+    | '/voice-review'
     | '/welcome'
+    | '/work-queue'
+    | '/conversations'
     | '/new'
     | '/pull-requests'
     | '/settings'
@@ -334,6 +399,7 @@ export interface FileRouteTypes {
     | '/settings/diagnostics'
     | '/settings/general'
     | '/settings/integrations'
+    | '/settings/jones-code'
     | '/settings/keybindings'
     | '/settings/open-source-licenses'
     | '/settings/projects'
@@ -347,9 +413,14 @@ export interface FileRouteTypes {
     | '/_chat'
     | '/connect'
     | '/connect-agent'
+    | '/design-requests'
     | '/guest'
     | '/pair'
+    | '/requests'
+    | '/voice-review'
     | '/welcome'
+    | '/work-queue'
+    | '/_chat/conversations'
     | '/_chat/new'
     | '/_chat/pull-requests'
     | '/_chat/settings'
@@ -365,6 +436,7 @@ export interface FileRouteTypes {
     | '/_chat/settings/diagnostics'
     | '/_chat/settings/general'
     | '/_chat/settings/integrations'
+    | '/_chat/settings/jones-code'
     | '/_chat/settings/keybindings'
     | '/_chat/settings/open-source-licenses'
     | '/_chat/settings/projects'
@@ -379,19 +451,44 @@ export interface RootRouteChildren {
   ChatRoute: typeof ChatRouteWithChildren
   ConnectRoute: typeof ConnectRoute
   ConnectAgentRoute: typeof ConnectAgentRoute
+  DesignRequestsRoute: typeof DesignRequestsRoute
   GuestRoute: typeof GuestRoute
   PairRoute: typeof PairRoute
+  RequestsRoute: typeof RequestsRoute
+  VoiceReviewRoute: typeof VoiceReviewRoute
   WelcomeRoute: typeof WelcomeRoute
+  WorkQueueRoute: typeof WorkQueueRoute
   ProjectsProjectKeyRoute: typeof ProjectsProjectKeyRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/work-queue': {
+      id: '/work-queue'
+      path: '/work-queue'
+      fullPath: '/work-queue'
+      preLoaderRoute: typeof WorkQueueRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/welcome': {
       id: '/welcome'
       path: '/welcome'
       fullPath: '/welcome'
       preLoaderRoute: typeof WelcomeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/voice-review': {
+      id: '/voice-review'
+      path: '/voice-review'
+      fullPath: '/voice-review'
+      preLoaderRoute: typeof VoiceReviewRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/requests': {
+      id: '/requests'
+      path: '/requests'
+      fullPath: '/requests'
+      preLoaderRoute: typeof RequestsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/pair': {
@@ -406,6 +503,13 @@ declare module '@tanstack/react-router' {
       path: '/guest'
       fullPath: '/guest'
       preLoaderRoute: typeof GuestRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/design-requests': {
+      id: '/design-requests'
+      path: '/design-requests'
+      fullPath: '/design-requests'
+      preLoaderRoute: typeof DesignRequestsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/connect-agent': {
@@ -471,6 +575,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatNewRouteImport
       parentRoute: typeof ChatRoute
     }
+    '/_chat/conversations': {
+      id: '/_chat/conversations'
+      path: '/conversations'
+      fullPath: '/conversations'
+      preLoaderRoute: typeof ChatConversationsRouteImport
+      parentRoute: typeof ChatRoute
+    }
     '/_chat/settings/storage': {
       id: '/_chat/settings/storage'
       path: '/storage'
@@ -525,6 +636,13 @@ declare module '@tanstack/react-router' {
       path: '/keybindings'
       fullPath: '/settings/keybindings'
       preLoaderRoute: typeof ChatSettingsKeybindingsRouteImport
+      parentRoute: typeof ChatSettingsRoute
+    }
+    '/_chat/settings/jones-code': {
+      id: '/_chat/settings/jones-code'
+      path: '/jones-code'
+      fullPath: '/settings/jones-code'
+      preLoaderRoute: typeof ChatSettingsJonesCodeRouteImport
       parentRoute: typeof ChatSettingsRoute
     }
     '/_chat/settings/integrations': {
@@ -601,6 +719,7 @@ interface ChatSettingsRouteChildren {
   ChatSettingsDiagnosticsRoute: typeof ChatSettingsDiagnosticsRoute
   ChatSettingsGeneralRoute: typeof ChatSettingsGeneralRoute
   ChatSettingsIntegrationsRoute: typeof ChatSettingsIntegrationsRoute
+  ChatSettingsJonesCodeRoute: typeof ChatSettingsJonesCodeRoute
   ChatSettingsKeybindingsRoute: typeof ChatSettingsKeybindingsRoute
   ChatSettingsOpenSourceLicensesRoute: typeof ChatSettingsOpenSourceLicensesRoute
   ChatSettingsProjectsRoute: typeof ChatSettingsProjectsRoute
@@ -619,6 +738,7 @@ const ChatSettingsRouteChildren: ChatSettingsRouteChildren = {
   ChatSettingsDiagnosticsRoute: ChatSettingsDiagnosticsRoute,
   ChatSettingsGeneralRoute: ChatSettingsGeneralRoute,
   ChatSettingsIntegrationsRoute: ChatSettingsIntegrationsRoute,
+  ChatSettingsJonesCodeRoute: ChatSettingsJonesCodeRoute,
   ChatSettingsKeybindingsRoute: ChatSettingsKeybindingsRoute,
   ChatSettingsOpenSourceLicensesRoute: ChatSettingsOpenSourceLicensesRoute,
   ChatSettingsProjectsRoute: ChatSettingsProjectsRoute,
@@ -634,6 +754,7 @@ const ChatSettingsRouteWithChildren = ChatSettingsRoute._addFileChildren(
 )
 
 interface ChatRouteChildren {
+  ChatConversationsRoute: typeof ChatConversationsRoute
   ChatNewRoute: typeof ChatNewRoute
   ChatPullRequestsRoute: typeof ChatPullRequestsRoute
   ChatSettingsRoute: typeof ChatSettingsRouteWithChildren
@@ -644,6 +765,7 @@ interface ChatRouteChildren {
 }
 
 const ChatRouteChildren: ChatRouteChildren = {
+  ChatConversationsRoute: ChatConversationsRoute,
   ChatNewRoute: ChatNewRoute,
   ChatPullRequestsRoute: ChatPullRequestsRoute,
   ChatSettingsRoute: ChatSettingsRouteWithChildren,
@@ -659,9 +781,13 @@ const rootRouteChildren: RootRouteChildren = {
   ChatRoute: ChatRouteWithChildren,
   ConnectRoute: ConnectRoute,
   ConnectAgentRoute: ConnectAgentRoute,
+  DesignRequestsRoute: DesignRequestsRoute,
   GuestRoute: GuestRoute,
   PairRoute: PairRoute,
+  RequestsRoute: RequestsRoute,
+  VoiceReviewRoute: VoiceReviewRoute,
   WelcomeRoute: WelcomeRoute,
+  WorkQueueRoute: WorkQueueRoute,
   ProjectsProjectKeyRoute: ProjectsProjectKeyRoute,
 }
 export const routeTree = rootRouteImport

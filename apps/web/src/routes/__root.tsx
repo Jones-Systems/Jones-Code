@@ -1,3 +1,4 @@
+import { ProviderUpdateNotice } from "../jones/updates/ProviderUpdateNotice";
 import { PermissionUpdateNotice } from "../components/PermissionUpdateNotice";
 import { type ServerLifecycleWelcomePayload } from "@t3tools/contracts";
 import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime/environment";
@@ -241,6 +242,7 @@ function RootRouteView() {
           <SshPasswordPromptDialog />
           <SnapShotCoordinator />
           <ThreadNotificationCoordinator />
+          <ProviderUpdateNotice />
           <SettlementNotificationCoordinator />
           <RemoteAdmissionNotifications />
           <ReopenClosedViewShortcut />

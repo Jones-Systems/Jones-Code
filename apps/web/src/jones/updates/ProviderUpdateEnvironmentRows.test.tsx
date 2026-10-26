@@ -1,4 +1,4 @@
-import type { Dispatch, ReactElement, SetStateAction } from "react";
+import type { Dispatch, SetStateAction } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   AuthProvidersManageScope,
@@ -14,11 +14,11 @@ import { buildLocalEnvironmentUpdateGroups } from "~/components/ProviderUpdateLa
 import type {
   LocalEnvironmentUpdateGroup,
   ProviderUpdateCandidate,
-  ProviderUpdateRowStatus,
 } from "~/components/ProviderUpdateLaunchNotification.logic";
 
 const testState = vi.hoisted(() => ({
   groups: [] as LocalEnvironmentUpdateGroup[],
+  disconnected: false,
   permittedEnvironmentIds: new Set<EnvironmentId>(),
   updateProvider: vi.fn(),
 }));
@@ -79,6 +79,7 @@ vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react")>();
   return {
     ...actual,
+    useSyncExternalStore: (_subscribe: unknown, getSnapshot: () => unknown) => getSnapshot(),
     useCallback: hooks.useCallback,
     useMemo: hooks.useMemo,
     useRef: hooks.useRef,
@@ -95,6 +96,7 @@ vi.mock("~/state/server", () => ({
 }));
 
 vi.mock("~/state/session", () => ({
+  useEnvironmentsWithScope: () => testState.permittedEnvironmentIds,
   readEnvironmentScope: (environmentId: EnvironmentId, scope: AuthEnvironmentScope) =>
     scope === AuthProvidersManageScope && testState.permittedEnvironmentIds.has(environmentId),
   useEnvironmentScope: (environmentId: EnvironmentId | null, scope: AuthEnvironmentScope) =>
@@ -107,14 +109,41 @@ vi.mock("~/state/use-atom-command", () => ({
   useAtomCommand: () => testState.updateProvider,
 }));
 
-vi.mock("~/components/ProviderUpdateLaunchNotification.environments", () => ({
-  useLocalEnvironmentUpdateGroups: () => ({
-    groups: testState.groups,
-    isAnySettling: false,
+vi.mock("~/state/environments", () => ({
+  useEnvironments: () => ({
+    environments: testState.groups.map((group) => ({
+      environmentId: group.environmentId,
+      label: group.label,
+      entry: { enabled: true, target: { _tag: "PrimaryConnectionTarget" } },
+      connection: { phase: "connected" },
+    })),
   }),
+  useEnvironmentProviders: () =>
+    new Map(testState.groups.map((group) => [group.environmentId, group.providers])),
 }));
-
-import { ProviderUpdateEnvironmentRows } from "~/components/ProviderUpdateEnvironmentRows";
+vi.mock("~/state/presentation", () => ({
+  environmentPresentations: {
+    presentationAtom: (id: EnvironmentId) => id,
+    providersByEnvironmentAtom: "providers",
+  },
+}));
+vi.mock("~/rpc/atomRegistry", () => ({
+  appAtomRegistry: {
+    get: (atom: unknown) =>
+      atom === "providers"
+        ? new Map(testState.groups.map((group) => [group.environmentId, group.providers]))
+        : {
+            entry: { enabled: true },
+            connection: { phase: testState.disconnected ? "offline" : "connected" },
+          },
+  },
+}));
+vi.mock("~/components/ui/toast", () => ({
+  toastManager: { add: vi.fn() },
+  stackedThreadToast: (value: unknown) => value,
+}));
+import { useProviderUpdates } from "~/components/ProviderUpdatesAction";
+import { getProviderUpdateRunOutcome } from "~/components/ProviderUpdateLaunchNotification.logic";
 
 const environmentId = "env-wsl" as EnvironmentId;
 
@@ -156,11 +185,6 @@ function provider(updateStatus?: "succeeded"): ServerProvider {
     : result;
 }
 
-type RowElement = ReactElement<{
-  readonly status: ProviderUpdateRowStatus;
-  readonly onUpdate: () => void;
-}>;
-
 async function flushPromises(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
@@ -171,6 +195,7 @@ describe("ProviderUpdateEnvironmentRows", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     hooks.reset();
+    testState.disconnected = false;
     testState.permittedEnvironmentIds.clear();
     testState.permittedEnvironmentIds.add(environmentId);
     testState.updateProvider.mockReset();
@@ -190,6 +215,20 @@ describe("ProviderUpdateEnvironmentRows", () => {
   afterEach(() => {
     vi.useRealTimers();
   });
+
+  it.each(["connection", "permission"])(
+    "rejects loss of %s between render and dispatch",
+    async (lost) => {
+      hooks.beginRender();
+      const updates = useProviderUpdates();
+      if (lost === "connection") testState.disconnected = true;
+      else testState.permittedEnvironmentIds.clear();
+      const runs = await updates.updateAll({ quiet: true });
+      expect(testState.updateProvider).not.toHaveBeenCalled();
+      expect(runs).toHaveLength(1);
+      expect(getProviderUpdateRunOutcome(runs[0]!)).toMatchObject({ status: "failed" });
+    },
+  );
 
   it.each(["npm install -g @openai/codex@latest", "bun add -g @openai/codex@latest"])(
     "dispatches and completes every environment instance with sibling command %s",
@@ -219,16 +258,9 @@ describe("ProviderUpdateEnvironmentRows", () => {
           })),
         }),
       );
-      const renderRows = () => {
-        hooks.beginRender();
-        return (
-          ProviderUpdateEnvironmentRows({}) as ReactElement<{
-            readonly children: RowElement[];
-          }>
-        ).props.children;
-      };
-
-      for (const row of renderRows()) row.props.onUpdate();
+      hooks.beginRender();
+      const updates = useProviderUpdates();
+      const runs = await updates.updateAll({ quiet: true });
       await flushPromises();
 
       expect(
@@ -242,7 +274,13 @@ describe("ProviderUpdateEnvironmentRows", () => {
         [secondEnvironmentId, "personal"],
         [secondEnvironmentId, "work"],
       ]);
-      expect(renderRows().map((row) => row.props.status.kind)).toEqual(["success", "success"]);
+      expect(updates.machines).toHaveLength(2);
+      expect(runs.map((run) => getProviderUpdateRunOutcome(run).status)).toEqual([
+        "updated",
+        "updated",
+        "updated",
+        "updated",
+      ]);
     },
   );
 });

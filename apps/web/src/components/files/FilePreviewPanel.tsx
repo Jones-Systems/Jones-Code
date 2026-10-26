@@ -207,7 +207,12 @@ function WorkspaceImagePreview(props: {
   return assetUrl._tag === "Success" && imageUrl !== null ? (
     <MediaActions source={actionsSource}>
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        <PreviewImage key={imageUrl} src={imageUrl} name={props.alt} />
+        <PreviewImage
+          key={imageUrl}
+          src={imageUrl}
+          name={props.alt}
+          onError={() => setFailedUrl(imageUrl)}
+        />
       </div>
     </MediaActions>
   ) : (
@@ -234,6 +239,8 @@ function WorkspaceBrowserPreview(props: {
     absolutePath: props.absolutePath,
   });
   const assetUrl = useAssetUrlState(props.environmentId, resource);
+  const refresh = useAssetUrlRefresh(props.environmentId, resource);
+  const [retryRevision, setRetryRevision] = useState(0);
   const revisionSuffix =
     props.workspaceMutationId === null
       ? ""
@@ -255,6 +262,12 @@ function WorkspaceBrowserPreview(props: {
   }
   return (
     <BrowserDocumentFrame
+      key={retryRevision}
+      onRetry={async () => {
+        const url = await refresh();
+        if (!url) throw new Error("Reconnect to the environment and try again.");
+        setRetryRevision((value) => value + 1);
+      }}
       src={`${assetUrl.url}${revisionSuffix}`}
       documentKey={`${props.environmentId}:${resource._tag}:${props.threadRef.threadId}:${props.absolutePath}:${props.workspaceMutationId}`}
       title={props.title}

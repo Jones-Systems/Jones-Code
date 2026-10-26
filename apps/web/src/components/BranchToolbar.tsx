@@ -1,3 +1,4 @@
+import { MachineIcon, MachineOrigin } from "../jones/remoteAgentLineage/MachineIdentity";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import { formatFilePathForClipboard } from "@t3tools/client-runtime/media-actions";
 import { readLocalApi } from "../localApi";
@@ -14,6 +15,7 @@ import {
   ScaleIcon,
 } from "lucide-react";
 import {
+  type ReactNode,
   type Ref,
   type MouseEvent as ReactMouseEvent,
   memo,
@@ -148,6 +150,7 @@ function showWorkspaceContextMenu(event: ReactMouseEvent, workspacePath: string)
 }
 
 interface RunContextSelectorProps {
+  origin?: ReactNode;
   displayMode?: "toolbar" | "panel";
   workspaceRoot?: string;
   forceNewWorktree: boolean;
@@ -171,6 +174,7 @@ interface RunContextSelectorProps {
 }
 
 const RunContextSelector = memo(function RunContextSelector({
+  origin,
   displayMode = "toolbar",
   workspaceRoot,
   forceNewWorktree,
@@ -243,6 +247,12 @@ const RunContextSelector = memo(function RunContextSelector({
             className={isPanel ? THREAD_DETAILS_PANEL_ICON_CLASS : "size-3 shrink-0 mx-0!"}
             aria-hidden="true"
           />
+        ) : isPanel ? (
+          <MachineIcon
+            label={activeEnvironment?.label}
+            kind={activeEnvironment?.machine}
+            className={THREAD_DETAILS_PANEL_ICON_CLASS}
+          />
         ) : (
           <EnvironmentMachineIcon
             kind={activeEnvironment?.machine ?? "server"}
@@ -278,6 +288,7 @@ const RunContextSelector = memo(function RunContextSelector({
       </ComposerContextLabel>
       {/* Trailing in the panel, so every row label starts on the same edge. */}
       {isPanel && showEnvironmentIndicator ? workspaceIcon : null}
+      {isPanel ? origin : null}
     </>
   );
 
@@ -720,6 +731,7 @@ export const BranchToolbar = memo(function BranchToolbar({
         {panelSection !== "branch" ? (
           <RunContextSelector
             displayMode="panel"
+            origin={<MachineOrigin environmentId={environmentId} threadId={threadId} />}
             workspaceRoot={activeProject.workspaceRoot}
             forceNewWorktree={forceNewWorktree}
             autoEnvironmentLabel={autoEnvironmentLabel}

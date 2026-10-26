@@ -1,5 +1,10 @@
-import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
-import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import { planWritableSidebarReorder } from "../jones/workstreams/sidebarThreadDrop";
+import {
+  threadRuntimeIsActive,
+  resolveThreadWorkingStartedAt,
+} from "@t3tools/client-runtime/state/models";
+import { resolveThreadAttentionPill } from "@t3tools/shared/jones/threadAttention";
+import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
 import * as React from "react";
 import {
@@ -16,7 +21,6 @@ import { foldSearchQuery, rankSearchItems, scoreThreadSearch } from "@t3tools/sh
 import type { ContextMenuItem, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import type { AsyncResult } from "effect/reactivity";
-import { planPinnedReorder } from "@t3tools/client-runtime/state/thread-sort";
 import {
   effectiveSnoozed,
   type ThreadSnoozeShell,
@@ -31,6 +35,41 @@ import type { SidebarThreadSummary, Thread } from "../types";
 import { normalizeSearchText } from "../lib/utils";
 import { isLatestRunSettled } from "../session-logic";
 import { observeIntersection } from "../lib/observeIntersection";
+
+export function filterSidebarOperatingThreads<T>(
+  threads: ReadonlyArray<T>,
+  activeOnly: boolean,
+  isOperating: (thread: T) => boolean,
+): ReadonlyArray<T> {
+  return activeOnly ? threads.filter(isOperating) : threads;
+}
+
+export function isSidebarThreadOperating(
+  thread: Pick<
+    SidebarThreadSummary,
+    | "archivedAt"
+    | "runtime"
+    | "latestRun"
+    | "interactionMode"
+    | "hasPendingApprovals"
+    | "hasPendingUserInput"
+    | "hasActionableProposedPlan"
+    | "pendingBackgroundTasks"
+  >,
+): boolean {
+  if (thread.archivedAt !== null) return false;
+  // The projected roster is independent activity, even while the foreground waits.
+  if (thread.pendingBackgroundTasks.length > 0) return true;
+  if (thread.hasPendingApprovals || thread.hasPendingUserInput) return false;
+  if (
+    thread.interactionMode === "plan" &&
+    thread.hasActionableProposedPlan &&
+    isLatestRunSettled(thread.latestRun, thread.runtime)
+  ) {
+    return false;
+  }
+  return threadRuntimeIsActive(thread.runtime);
+}
 
 export function shouldNavigateAfterThreadPark(input: {
   readonly threadKey: string;
@@ -284,20 +323,6 @@ export function planSidebarThreadDrop(input: {
   if (input.supportsSettlement === false && (target.section === "settled" || activeSettled)) {
     return { kind: "none" };
   }
-  const arrange = (
-    order: readonly string[],
-    keysById: ReadonlyMap<string, string | null | undefined>,
-    writable: ReadonlySet<string> | undefined,
-  ) => {
-    if (!writable) return planPinnedReorder({ orderedIds: order, keysById, movedId: activeKey });
-    if (!writable.has(activeKey)) return null;
-    const assignments = planPinnedReorder({
-      orderedIds: order.filter((key) => writable.has(key) || keysById.get(key) != null),
-      keysById,
-      movedId: activeKey,
-    });
-    return assignments.every(({ id }) => writable.has(id)) ? assignments : null;
-  };
   switch (target.section) {
     case "active": {
       if (input.activeTimeOrdered) {
@@ -320,7 +345,12 @@ export function planSidebarThreadDrop(input: {
       ) {
         return { kind: "none" };
       }
-      const assignments = arrange(order, activeKeysById, activeReorderableKeys);
+      const assignments = planWritableSidebarReorder(
+        order,
+        activeKeysById,
+        activeKey,
+        activeReorderableKeys,
+      );
       if (assignments === null) return { kind: "none" };
       return {
         kind: "move-active",
@@ -342,7 +372,12 @@ export function planSidebarThreadDrop(input: {
       ) {
         return { kind: "none" };
       }
-      const assignments = arrange(order, pinnedKeysById, reorderableKeys);
+      const assignments = planWritableSidebarReorder(
+        order,
+        pinnedKeysById,
+        activeKey,
+        reorderableKeys,
+      );
       if (assignments === null) return { kind: "none" };
       if (activeSection === "pinned") {
         return assignments.length === 0
@@ -523,16 +558,27 @@ export function resolveSidebarRowThreadId(
   return thread?.id ?? threadId;
 }
 
+/**
+ * `delegatedUnderParent` holds the tasks linked environments run for a thread
+ * the sidebar lists, by thread key; they show under that thread, as subagents do.
+ */
 export function filterSidebarV2VisibleThreads<
-  T extends Pick<SidebarThreadSummary, "archivedAt" | "lineage"> & {
-    environmentId: string;
+  T extends Pick<SidebarThreadSummary, "archivedAt" | "environmentId" | "id" | "lineage"> & {
     projectId: string;
   },
->(threads: readonly T[], scopedProjectKeys: ReadonlySet<string> | null): T[] {
+>(
+  threads: readonly T[],
+  scopedProjectKeys: ReadonlySet<string> | null,
+  delegatedUnderParent: ReadonlySet<string> = new Set(),
+): T[] {
   return threads.filter(
     (thread) =>
       thread.archivedAt === null &&
-      !isSidebarSubagentThread(thread) &&
+      !isShownUnderParent(
+        { environmentId: thread.environmentId, threadId: thread.id },
+        thread.lineage,
+        delegatedUnderParent,
+      ) &&
       (scopedProjectKeys === null ||
         scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
   );
@@ -597,11 +643,11 @@ type ThreadStatusInput = Pick<
   | "hasPendingApprovals"
   | "hasPendingUserInput"
   | "pendingSubagentRequest"
-  | "pendingGuestMessageCount"
   | "interactionMode"
   | "latestRun"
   | "runtime"
 > & {
+  pendingGuestMessageCount?: number | undefined;
   lastVisitedAt?: string | null | undefined;
   pendingBackgroundTasks?: SidebarThreadSummary["pendingBackgroundTasks"] | undefined;
   blockedOnThreadWait?: boolean | undefined;
@@ -873,13 +919,8 @@ export function shouldRecedeSidebarThread(input: {
 
 type SidebarThreadStatusInput = Pick<
   SidebarThreadSummary,
-  | "hasPendingApprovals"
-  | "hasPendingUserInput"
-  | "pendingSubagentRequest"
-  | "pendingGuestMessageCount"
-  | "runtime"
-  | "blockedOnThreadWait"
->;
+  "hasPendingApprovals" | "hasPendingUserInput" | "pendingSubagentRequest" | "runtime"
+> & { blockedOnThreadWait?: boolean | undefined; pendingGuestMessageCount?: number | undefined };
 
 export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): SidebarThreadStatus {
   if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") {
@@ -1062,106 +1103,73 @@ export function resolveWorkingStartedAt(
 export function resolveThreadStatusPill(input: {
   thread: ThreadStatusInput;
 }): ThreadStatusPill | null {
-  const { thread } = input;
-
-  if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") {
-    return {
-      label: "Pending Approval",
-      colorClass: "text-amber-600 dark:text-amber-300/90",
-      dotClass: "bg-amber-500 dark:bg-amber-300/90",
-      pulse: false,
-    };
-  }
-
-  if (thread.hasPendingUserInput || thread.pendingSubagentRequest === "user_input") {
-    return {
-      label: "Awaiting Input",
-      colorClass: "text-indigo-600 dark:text-indigo-300/90",
-      dotClass: "bg-indigo-500 dark:bg-indigo-300/90",
-      pulse: false,
-    };
-  }
-
-  if ((thread.pendingGuestMessageCount ?? 0) > 0) {
+  const guestRequest =
+    (input.thread.pendingGuestMessageCount ?? 0) > 0 &&
+    !input.thread.hasPendingApprovals &&
+    input.thread.pendingSubagentRequest !== "approval" &&
+    !input.thread.hasPendingUserInput &&
+    input.thread.pendingSubagentRequest !== "user_input";
+  if (guestRequest)
     return {
       label: "Guest Request",
       colorClass: "text-guest-foreground",
       dotClass: "bg-guest",
       pulse: false,
     };
-  }
-
-  if (
-    (thread.runtime?.status === "running" && thread.blockedOnThreadWait !== true) ||
-    thread.runtime?.status === "waiting"
-  ) {
-    return {
-      label: "Working",
-      colorClass: "text-sky-600 dark:text-sky-300/80",
-      dotClass: "bg-sky-500 dark:bg-sky-300/80",
-      pulse: true,
-    };
-  }
-
-  if (
-    thread.runtime?.status === "preparing" ||
-    thread.runtime?.status === "starting" ||
-    thread.runtime?.status === "queued"
-  ) {
-    return {
-      label: "Connecting",
-      colorClass: "text-sky-600 dark:text-sky-300/80",
-      dotClass: "bg-sky-500 dark:bg-sky-300/80",
-      pulse: true,
-    };
-  }
-
-  if (
-    (thread.runtime?.status === "running" && thread.blockedOnThreadWait === true) ||
-    backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])
-  ) {
-    return {
-      label: "Waiting",
-      colorClass: "text-sidebar-muted-foreground",
-      dotClass: "bg-sidebar-muted-foreground",
-      pulse: false,
-    };
-  }
-
-  if (hasUnseenFailure(thread)) {
-    return {
-      label: "Failed",
-      colorClass: "text-red-600 dark:text-red-300/90",
-      dotClass: "bg-red-500 dark:bg-red-300/90",
-      pulse: false,
-    };
-  }
-
-  const hasPlanReadyPrompt =
-    !thread.hasPendingUserInput &&
-    thread.interactionMode === "plan" &&
-    isLatestRunSettled(thread.latestRun, thread.runtime) &&
-    thread.hasActionableProposedPlan;
-  if (hasPlanReadyPrompt) {
-    return {
-      label: "Plan Ready",
-      colorClass: "text-violet-600 dark:text-violet-300/90",
-      dotClass: "bg-violet-500 dark:bg-violet-300/90",
-      pulse: false,
-    };
-  }
-
-  if (hasUnseenCompletion(thread)) {
-    return {
-      label: "Completed",
-      colorClass: "text-emerald-600 dark:text-emerald-300/90",
-      dotClass: "bg-emerald-500 dark:bg-emerald-300/90",
-      pulse: false,
-    };
-  }
-
-  return null;
+  const attention = resolveThreadAttentionPill(input);
+  const label =
+    attention === "Working" &&
+    input.thread.runtime?.status === "running" &&
+    input.thread.blockedOnThreadWait === true
+      ? "Waiting"
+      : (attention === null || attention === "Completed") && hasUnseenFailure(input.thread)
+        ? "Failed"
+        : attention;
+  return label === null ? null : { label, ...THREAD_PILL_STYLES[label] };
 }
+
+const THREAD_PILL_STYLES = {
+  Failed: {
+    colorClass: "text-red-600 dark:text-red-300/90",
+    dotClass: "bg-red-500 dark:bg-red-300/90",
+    pulse: false,
+  },
+  "Pending Approval": {
+    colorClass: "text-amber-600 dark:text-amber-300/90",
+    dotClass: "bg-amber-500 dark:bg-amber-300/90",
+    pulse: false,
+  },
+  "Awaiting Input": {
+    colorClass: "text-indigo-600 dark:text-indigo-300/90",
+    dotClass: "bg-indigo-500 dark:bg-indigo-300/90",
+    pulse: false,
+  },
+  Working: {
+    colorClass: "text-sky-600 dark:text-sky-300/80",
+    dotClass: "bg-sky-500 dark:bg-sky-300/80",
+    pulse: true,
+  },
+  Connecting: {
+    colorClass: "text-sky-600 dark:text-sky-300/80",
+    dotClass: "bg-sky-500 dark:bg-sky-300/80",
+    pulse: true,
+  },
+  Waiting: {
+    colorClass: "text-sidebar-muted-foreground",
+    dotClass: "bg-sidebar-muted-foreground",
+    pulse: false,
+  },
+  "Plan Ready": {
+    colorClass: "text-violet-600 dark:text-violet-300/90",
+    dotClass: "bg-violet-500 dark:bg-violet-300/90",
+    pulse: false,
+  },
+  Completed: {
+    colorClass: "text-emerald-600 dark:text-emerald-300/90",
+    dotClass: "bg-emerald-500 dark:bg-emerald-300/90",
+    pulse: false,
+  },
+} as const;
 
 export function resolveProjectStatusIndicator(
   statuses: ReadonlyArray<ThreadStatusPill | null>,
@@ -1312,15 +1320,17 @@ export function sortLogicalProjectsForSidebar<
 
 export function sortSidebarV2ProjectGroups<
   TProject extends LogicalSidebarProject,
-  TThread extends ScopedSidebarThread & Pick<SidebarThreadSummary, "lineage">,
+  TThread extends ScopedSidebarThread &
+    Pick<SidebarThreadSummary, "environmentId" | "id" | "lineage">,
 >(
   projects: readonly TProject[],
   threads: readonly TThread[],
   sortOrder: SidebarProjectSortOrder,
+  delegatedUnderParent: ReadonlySet<string>,
 ): TProject[] {
   return sortLogicalProjectsForSidebar(
     projects,
-    filterSidebarV2VisibleThreads(threads, null),
+    filterSidebarV2VisibleThreads(threads, null, delegatedUnderParent),
     sortOrder,
   );
 }
