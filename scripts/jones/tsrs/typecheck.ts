@@ -3,7 +3,7 @@ import * as NodeURL from "node:url";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Identity from "./identity.ts";
-import { classifyArguments } from "./build-info.ts";
+import { classifyArguments, runWithBuildInfo } from "./build-info.ts";
 import { acquireLock, runChild } from "./patch.ts";
 
 const FALLBACK_LIMITATION =
@@ -82,18 +82,27 @@ export async function typecheck(
   classifyArguments(args);
   const target = Identity.hostTarget();
   if (target) {
-    return launchVerified(
-      await Identity.resolveInstalled(root, target),
+    const installed = await Identity.resolveInstalled(root, target);
+    return runWithBuildInfo({
+      root: installed.root,
+      cwd,
+      args,
+      compiler: installed,
       signal,
-      (compiler, spawned) =>
-        runChild({
-          executable: compiler.executable,
-          args: [...args, ...Identity.CHECKER_OPTIONS],
-          cwd,
-          signal,
-          spawned,
-        }),
-    );
+      run: (effectiveArgs, seen) =>
+        launchVerified(installed, signal, (compiler, spawned) =>
+          runChild({
+            executable: compiler.executable,
+            args: [...effectiveArgs, ...Identity.CHECKER_OPTIONS],
+            cwd,
+            signal,
+            spawned: async () => {
+              seen();
+              await spawned();
+            },
+          }),
+        ),
+    });
   }
   return runFallback(root, cwd, args, signal);
 }

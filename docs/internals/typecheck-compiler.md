@@ -12,16 +12,18 @@ Vite configurations read that slot and apply the shared task-cache policy.
 Web and desktop retain their existing `typecheck` task names. For example,
 `pnpm --filter effect-acp typecheck` uses the configured task. The launcher accepts only qualified one-shot checking arguments. Root commands still run uncached admission first.
 Automatic input and output tracking remain enabled. Only package build-info
-files and the exact workspace patch lock/reclaim files are excluded; source,
+files, private `.jones-tsrs-*.tsbuildinfo` files, the ordinary build-info namespace
+and the exact workspace patch lock/reclaim files are excluded; source,
 configuration, manifests, libraries and compiler binary identity stay tracked.
 Cached tasks must never restore mutation locks or build-info files.
 
 The candidate integration remains under
 [qualification](https://github.com/Jones-Systems/Jones-Code/issues/711) before
-main adoption. A retained native build-info regression currently blocks adoption:
-changing an Effect rule from off to error can miss the required diagnostic, while
-a fresh check detects it. The cache correctly invalidates the configuration input;
-the compiler then reuses stale native state. No remedy is qualified yet.
+main adoption. Unguarded native build-info reuse can miss a required Effect
+diagnostic after an off-to-error configuration change. The ordinary adapter
+therefore binds native state to raw configuration bytes and uses private working
+files. Its focused regression and representation controls pass; complete current
+workflow qualification remains pending.
 The initial 33-surface direct screen preserved incumbent
 errors/warnings and non-standard-library coverage after constructive fixture
 corrections, but complete rule, lifecycle, cache, performance and platform gates
@@ -47,6 +49,36 @@ or spawn. They cannot bypass project configuration or the build-info guard.
 Use `pnpm typecheck:incremental` for repeated retained checks. Editor APIs,
 application emission, bundling and runtime entry points retain their existing
 interfaces.
+
+## Native state and output compatibility
+
+Incremental/composite one-shot checks retain a checksummed envelope in
+`node_modules/.cache/jones/tsrs/build-info/v1`. Its identity binds the compiler,
+platform, arguments, logical output and every admitted raw configuration input,
+including inherited Effect settings. Existing unbound native files never become
+seeds. A cache miss still runs the compiler; nonincremental checks remain
+nonincremental. The supported configuration topology is finite: no inheritance,
+the terminal worktree base, or the qualified mobile Expo base. Unknown topology,
+project references and unqualified output relocation refuse explicitly.
+
+The native working file is created exclusively in the logical output directory.
+Only its `options.tsBuildInfoFile` self-reference changes between private and
+logical names; other JSON values and their relative-path base stay intact. The
+public destination contains raw native build info. Custom destinations must be
+`.tsbuildinfo` files beside the project config, and `.jones-tsrs-` is reserved.
+Symlinks, hard links, foreign ownership or changed output parents are refused.
+Configuration drift cannot yield successful retention. Failed checks preserve
+the preceding valid envelope. Short accounting/publication locks do not span
+compiler execution.
+
+State lives for the worktree dependency-cache lifetime, with 16 MiB native,
+24 MiB envelope and 1 GiB aggregate admission bounds, plus a 4096-entry cap.
+Accounting charges external private allocations, crash residue and retained raw
+outputs as well as envelopes. Admission is not a kernel write quota. Unresolved
+residue or a full budget causes refusal, with no eviction or sweeper. Normal
+cleanup removes only invocation-owned files after confirmed exit. Unknown exit
+or ownership preserves exact paths/accounting for investigation; do not delete
+shared build-info or coordination files to bypass that refusal.
 
 ## Publisher and rationale
 
