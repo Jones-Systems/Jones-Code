@@ -1196,7 +1196,8 @@
         "apps/web/src/jones/threadReadDwell/ThreadVisitWatermark.browser.test.tsx",
         "apps/web/src/jones/threadReadDwell/markUnread.browser.test.tsx",
         "packages/client-runtime/src/jones/threadReadDwell.test.ts",
-        "apps/web/src/jones/threadStatusFilter/useThreadStatusFilter.browser.test.tsx"
+        "apps/web/src/jones/threadStatusFilter/useThreadStatusFilter.browser.test.tsx",
+        "apps/mobile/src/jones/threadVisits/tracker.test.ts"
       ],
       "scope": "A shared three-second foreground-view dwell owns automatic visit acknowledgement in web and native mobile; rapid navigation cancels, streaming cannot starve initial acknowledgement, explicit unread suppresses the current view, and current/legacy status-filter retention preserves the selected matching row until navigation."
     },
@@ -1224,7 +1225,8 @@
         "apps/server/src/jones/platformCompatibility/mcp/toolkits/orchestrator/tools.test.ts",
         "packages/client-runtime/src/jones/providerSettlementCompatibility.test.ts",
         "packages/client-runtime/src/jones/toolSummaryCompatibility.test.ts",
-        "packages/contracts/src/jones/orchestrationCompatibility.test.ts"
+        "packages/contracts/src/jones/orchestrationCompatibility.test.ts",
+        "packages/client-runtime/src/jones/settlementNotifications/threadEvidence.test.ts"
       ],
       "scope": "Persistent device-local settlement inbox from confirmed active and archived shell snapshots. First-use silent baseline, supported offline catch-up, exact-ID clicked dismissals, unbounded pending and acknowledgement retention, commutative merge and serialized inbox-before-baseline writes. Capability-gated server origin evidence suppresses manual app settlements across clients; only validated client origins are silent, with bounded conservative fallback and classification-gated baseline persistence. Web/desktop and native mobile hooks share the core; explicit-dismiss toast behavior prevents Escape/swipe removal. Subagent lineage suppresses new arrivals and tombstones saved child entries after a confirmed shell observation, including additive web storage, cross-tab and delayed classification merges; top-level threads, forks and unknown offline entries remain. No provider/focus exclusions, baseline GC or server history claims. Deferred self-settlement project items are stored atomically in sparse Jones rows keyed by the original acceptance; exact settlement identity resolves plain-text bullets without changing upstream payloads. Web settlement rows retain independently collapsed compact remaining-work bullets through toast updates; only expanded aggregate settlement panels opt into intrinsic width capped at twice the viewport toast width and available screen width."
     },
