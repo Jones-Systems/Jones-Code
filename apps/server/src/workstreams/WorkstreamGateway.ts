@@ -471,7 +471,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
     ) {
       const invalid = (detail: string) =>
         new WorkstreamGatewayError({ reason: "invalid-response", detail });
-      const request = yield* Schema.decodeUnknownEffect(T3PlacementLoadRequest)(input, {
+      const request = yield* Schema.decodeEffect(T3PlacementLoadRequest)(input, {
         onExcessProperty: "error",
       }).pipe(Effect.mapError(() => invalid("Invalid placement inventory.")));
       const authorized = yield* authorize("workstreams:read");
@@ -500,7 +500,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
             ...(cursor === undefined ? {} : { cursor }),
           })
           .pipe(Effect.mapError(transportFailure));
-        const page = yield* Schema.decodeUnknownEffect(T3PlacementPage)(raw, {
+        const page = yield* Schema.decodeEffect(T3PlacementPage)(raw, {
           onExcessProperty: "error",
         }).pipe(
           Effect.mapError(
@@ -604,7 +604,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
       };
       if (Buffer.byteLength(canonicalJson(result)) > WORKSTREAM_MAX_RESPONSE_BYTES)
         return yield* invalid("Placement response workload exceeded.");
-      return yield* Schema.decodeUnknownEffect(T3PlacementResult)(result, {
+      return yield* Schema.decodeEffect(T3PlacementResult)(result, {
         onExcessProperty: "error",
       }).pipe(
         Effect.mapError(
@@ -750,7 +750,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
         if (!transport.readCommandReceipt) return yield* recoveryFailure(undefined);
         const result = yield* transport.readCommandReceipt({ commandId, ...contractInput });
         if (result.kind === "receipt") {
-          const receipt = yield* Schema.decodeUnknownEffect(WorkstreamReceipt)(result.receipt, {
+          const receipt = yield* Schema.decodeEffect(WorkstreamReceipt)(result.receipt, {
             onExcessProperty: "error",
           });
           yield* validateReceipt(receipt, commandId, undefined, undefined, authorized.binding);
@@ -764,7 +764,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
     ): Effect.fn.Return<WorkstreamRecoverySubmitResult, WorkstreamGatewayError> {
       return yield* Effect.gen(function* () {
         const authorized = yield* authorize("workstreams:write");
-        const command = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(WorkstreamCommand))(
+        const command = yield* Schema.decodeEffect(Schema.fromJsonString(WorkstreamCommand))(
           retainedBody,
           { onExcessProperty: "error" },
         );
@@ -779,7 +779,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
           ...contractInput,
         });
         if (result.kind === "receipt") {
-          const receipt = yield* Schema.decodeUnknownEffect(WorkstreamReceipt)(result.receipt, {
+          const receipt = yield* Schema.decodeEffect(WorkstreamReceipt)(result.receipt, {
             onExcessProperty: "error",
           });
           yield* validateReceipt(
@@ -866,7 +866,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
       const capabilities = yield* transport.getCountsCapabilities().pipe(
         Effect.mapError(transportFailure),
         Effect.flatMap((value) =>
-          Schema.decodeUnknownEffect(WorkstreamCountsCapabilities)(value, {
+          Schema.decodeEffect(WorkstreamCountsCapabilities)(value, {
             onExcessProperty: "error",
           }).pipe(
             Effect.mapError(
@@ -896,7 +896,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
       const counts = yield* transport.getRegistryCounts().pipe(
         Effect.mapError(transportFailure),
         Effect.flatMap((value) =>
-          Schema.decodeUnknownEffect(WorkstreamRegistryCounts)(value, {
+          Schema.decodeEffect(WorkstreamRegistryCounts)(value, {
             onExcessProperty: "error",
           }).pipe(
             Effect.mapError(

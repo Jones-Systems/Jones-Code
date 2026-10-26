@@ -641,9 +641,10 @@ const makeLaptop = (
             Layer.mock(ProjectService.ProjectService)({
               // A cold enrichment cache: the project itself reports no identity yet.
               getById: () =>
-                Effect.succeed(
-                  Option.some({ workspaceRoot: "/home/me/app", repositoryIdentity: null } as never),
-                ),
+                Effect.succeedSome({
+                  workspaceRoot: "/home/me/app",
+                  repositoryIdentity: null,
+                } as never),
             }),
           ),
           Layer.provide(

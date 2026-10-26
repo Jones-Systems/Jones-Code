@@ -28,6 +28,7 @@ export class CompanionBrowserChannel extends Context.Service<
       readonly attachmentGeneration: number;
     } | null>;
     readonly endpoint: (key: DesktopTabKey) => Effect.Effect<string, never, Scope.Scope>;
+    readonly turn: (threadId: string, active: boolean) => Effect.Effect<void>;
     readonly pointer: (
       key: DesktopTabKey,
       pointer: { readonly phase: "move" | "click"; readonly x: number; readonly y: number },
@@ -51,6 +52,7 @@ const make = Effect.gen(function* () {
   >();
   const inbound = new Map<string, Queue.Queue<string>>();
   let attachmentGeneration = 0;
+  const activeTurns = new Set<string>();
   const detach = Effect.fn("CompanionBrowserChannel.detach")(function* (key: DesktopTabKey) {
     attached.delete(keyOf(key));
     const queue = inbound.get(keyOf(key));
@@ -82,6 +84,17 @@ const make = Effect.gen(function* () {
             attachmentGeneration: ++attachmentGeneration,
             runtimeIdentity: status.runtimeIdentity,
           });
+          if (activeTurns.has(key.threadId))
+            yield* registry
+              .send(
+                message.hostId,
+                {
+                  type: "browser",
+                  command: { type: "turn", threadId: key.threadId, active: true },
+                },
+                message.generation,
+              )
+              .pipe(Effect.ignore);
           yield* PubSub.publish(changes, { key, attached: true });
         } else if (event.type === "detached") {
           yield* detach(key);
@@ -149,6 +162,26 @@ const make = Effect.gen(function* () {
                 : Effect.void,
             ),
         });
+      }),
+    turn: (threadId, active) =>
+      Effect.gen(function* () {
+        if (active) activeTurns.add(threadId);
+        else activeTurns.delete(threadId);
+        const hosts = new Map<string, number>();
+        for (const entry of attached.values())
+          if (entry.key.threadId === threadId) hosts.set(entry.hostId, entry.generation);
+        yield* Effect.forEach(
+          hosts,
+          ([hostId, generation]) =>
+            registry
+              .send(
+                hostId,
+                { type: "browser", command: { type: "turn", threadId, active } },
+                generation,
+              )
+              .pipe(Effect.ignore),
+          { discard: true },
+        );
       }),
     pointer: (key, pointer) =>
       Effect.suspend(() => {

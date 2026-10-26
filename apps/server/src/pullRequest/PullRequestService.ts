@@ -1,3 +1,5 @@
+import * as GitHubRest from "@t3tools/source-control-github/server/GitHubRest";
+import * as PullRequestCiStatus from "../jones/pullRequestCi/PullRequestCiStatus.ts";
 import { isSshRemoteUrl } from "@t3tools/shared/sourceControl";
 import { parseDiffFilePaths } from "@t3tools/source-control-core/server/diffFileRevisions";
 import * as Cache from "effect/Cache";
@@ -21,6 +23,8 @@ import {
   resolvePullRequestAuthorFilter,
   type OrchestrationProjectShell,
   type ProjectId,
+  type PullRequestCiStatusInput,
+  type PullRequestCiStatusResult,
   type PullRequestAction,
   type PullRequestActionInput,
   type PullRequestActivity,
@@ -173,6 +177,9 @@ type CredentialRef = PullRequestRef & { readonly [credentialNamespace]?: string 
 export class PullRequestService extends Context.Service<
   PullRequestService,
   {
+    readonly ciStatus: (
+      input: PullRequestCiStatusInput,
+    ) => Effect.Effect<PullRequestCiStatusResult, PullRequestError>;
     readonly list: (
       input: PullRequestListInput,
     ) => Effect.Effect<PullRequestListResult, PullRequestError>;
@@ -436,7 +443,14 @@ function toPullRequestErrorWith(
     return new PullRequestOperationError({
       operation,
       detail: error.detail,
-      ...(error.reason === "not-found" ? { reason: "not-found" as const } : {}),
+      ...(error.reason === "not-found" || error.reason === "rate-limited"
+        ? { reason: error.reason }
+        : {}),
+      ...(error.reason === "rate-limited" &&
+      error.retryAt !== undefined &&
+      Number.isFinite(error.retryAt)
+        ? { retryAt: error.retryAt }
+        : {}),
       cause: error,
     });
   };
@@ -696,6 +710,7 @@ export const make = Effect.gen(function* () {
   const filesViewedStore = yield* PullRequestFilesViewed.PullRequestFilesViewedRepository;
   const readCache = yield* PullRequestReadCache.PullRequestReadCache;
   const clock = yield* Clock.Clock;
+  const githubCi = yield* Effect.serviceOption(GitHubRest.GitHubRest);
 
   /**
    * Where each project's remote is served from, by the remote's recognised base URL: a remote no
@@ -1544,6 +1559,13 @@ export const make = Effect.gen(function* () {
       })
       .pipe(Effect.mapError(toPullRequestError("routeIdentity")));
     return { ...identity, host, provider: api.kind };
+  });
+
+  const ciStatus = yield* PullRequestCiStatus.createCiStatus({
+    listWorkspaceProjects,
+    registry,
+    githubCi,
+    rateLimits,
   });
 
   const withRoutingCredential: PullRequestService["Service"]["withRoutingCredential"] = Effect.fn(
@@ -3616,6 +3638,7 @@ export const make = Effect.gen(function* () {
     );
 
   return PullRequestService.of({
+    ciStatus,
     routing,
     routingIdentity,
     withRoutingCredential,

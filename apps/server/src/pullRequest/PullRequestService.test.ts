@@ -122,7 +122,7 @@ it.effect("reuses rich reads for sixty seconds with their original observation",
     const service = yield* makeService({
       projects: [project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" })],
       providers: [
-        fakeProvider(SourceControlProviderKind.make("github"), {
+        fakePullRequestProvider(SourceControlProviderKind.make("github"), {
           getChangeRequest: () =>
             Effect.sync(() => {
               reads.detail++;
@@ -180,7 +180,7 @@ it.effect("does not cache rich read failures or infer pauses from error text", (
           project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" }),
         ],
         providers: [
-          fakeProvider(SourceControlProviderKind.make("github"), {
+          fakePullRequestProvider(SourceControlProviderKind.make("github"), {
             getChangeRequestPreview: () =>
               Effect.suspend(() => {
                 reads++;
@@ -219,7 +219,7 @@ it.effect("caches narrow previews and invalidates them after refresh or mutation
     const service = yield* makeService({
       projects: [project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" })],
       providers: [
-        fakeProvider(SourceControlProviderKind.make("github"), {
+        fakePullRequestProvider(SourceControlProviderKind.make("github"), {
           getViewer: () => Effect.die("preview must not read the viewer"),
           getChangeRequestPreview: () =>
             Effect.sync(() => {
@@ -265,7 +265,7 @@ it.effect("keeps cached previews available and pauses uncached previews until qu
     const service = yield* makeService({
       projects: [project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" })],
       providers: [
-        fakeProvider(SourceControlProviderKind.make("github"), {
+        fakePullRequestProvider(SourceControlProviderKind.make("github"), {
           getChangeRequestPreview: ({ number }) =>
             Effect.gen(function* () {
               reads++;
@@ -312,7 +312,7 @@ it.effect("reuses only unexpired detail for previews", () =>
     const service = yield* makeService({
       projects: [project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" })],
       providers: [
-        fakeProvider(SourceControlProviderKind.make("github"), {
+        fakePullRequestProvider(SourceControlProviderKind.make("github"), {
           getChangeRequest: () => Effect.succeed(hostedChangeRequest("Description")),
           getChangeRequestPreview: () =>
             Effect.sync(() => {
@@ -344,7 +344,7 @@ it.effect("shares detail and activity for a minute, and for ten once merged", ()
     const service = yield* makeService({
       projects: [project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" })],
       providers: [
-        fakeProvider(SourceControlProviderKind.make("github"), {
+        fakePullRequestProvider(SourceControlProviderKind.make("github"), {
           getChangeRequest: ({ number }) =>
             Effect.sync(() => {
               reads.push(`detail #${number}`);
@@ -405,7 +405,7 @@ it.effect("re-reads an open pull request after a turn, but not a merged one", ()
     const service = yield* makeService({
       projects: [project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" })],
       providers: [
-        fakeProvider(SourceControlProviderKind.make("github"), {
+        fakePullRequestProvider(SourceControlProviderKind.make("github"), {
           getChangeRequest: ({ number }) =>
             Effect.sync(() => {
               reads.push(`detail #${number}`);
