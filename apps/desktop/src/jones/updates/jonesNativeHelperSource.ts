@@ -471,11 +471,15 @@ def launch(active, descriptor=None):
     if type(pid) is not int or pid <= 0 or not (isinstance(bundle, str) and bundle and isinstance(executable, str) and executable) \
             or os.path.realpath(bundle) != os.path.realpath(active['appPath']) or os.path.realpath(executable) != os.path.realpath(active['executablePath']):
         raise RuntimeError('LaunchServices did not prove the launched Jones Code; launch effect is unknown.')
-    identity = process_identity(pid)
-    if identity is None: raise RuntimeError('Native app exited before its identity was captured; OS consent may be required.')
-    if not any((' ' + path + ' ') in (' ' + identity + ' ') for path in (active['executablePath'], executable)):
+    try: identity, _ = kernel_process_sample(pid)
+    except KernelProcessError as failure:
+        if failure.diagnostic['error'] != 'process-exited': raise
+        raise RuntimeError('Native app exited before its identity was captured; OS consent may be required.') from None
+    try: matches = os.path.samefile(identity['executable'], active['executablePath'])
+    except OSError: matches = False
+    if not matches:
         raise RuntimeError('Launched process identity does not match Jones Code; launch effect is unknown.')
-    return {'pid': pid, 'identity': identity}
+    return identity
 
 LAUNCH_SERVICES_SCRIPT = r'''ObjC.import("AppKit");
 function reply(value) {
@@ -1483,7 +1487,8 @@ def activate(intent_file):
         try: launch(expected)
         except Exception as relaunch_failure:
             detail = 'Native reopen could not be proved.' if 'preEffect' in journal else str(relaunch_failure)
-            try: record('rolled-back', relaunch='failed', message=journal.get('message', '') + ' Jones Code was not reopened automatically: ' + detail)
+            diagnostics = {'relaunchDiagnostics': {key: value for key, value in relaunch_failure.diagnostic.items() if isinstance(value, (str, int))}} if isinstance(relaunch_failure, KernelProcessError) else {}
+            try: record('rolled-back', relaunch='failed', message=journal.get('message', '') + ' Jones Code was not reopened automatically: ' + detail, **diagnostics)
             except Exception: pass
         else:
             if 'preEffect' in journal: record('rolled-back', preEffect=dict(journal['preEffect'], relaunch='started'))
@@ -1543,6 +1548,7 @@ def activate(intent_file):
             time.sleep(0.1)
         startup_unknown = True
         receipt = read(tx / 'trial-receipt.json')
+        receipt_written_ns = (tx / 'trial-receipt.json').stat().st_mtime_ns
         if not isinstance(receipt, dict) or type(receipt.get('startupGateProtocol')) is not int or receipt['startupGateProtocol'] != STARTUP_GATE_PROTOCOL:
             raise RuntimeError('Candidate startup dispatch has unknown effects; the required gate was not proved.')
         startup_unknown = False
@@ -1554,8 +1560,20 @@ def activate(intent_file):
         proof = receipt.get('backendProcess')
         if not isinstance(proof, dict) or set(proof) != {'pid', 'identity'} or type(proof.get('pid')) is not int or proof['pid'] <= 0 or not isinstance(proof.get('identity'), str) or not proof['identity'].strip():
             raise RuntimeError('Candidate did not prove the exact backend process.')
-        backend_process = proof
         record('validated', trialReceipt=receipt)
+        # The persisted server receipt stays legacy for independent builds. Bind
+        # its live writer here, before keeping any authority to stop that PID.
+        try: backend, parent = kernel_process_sample(proof['pid'])
+        except KernelProcessError as failure:
+            if failure.diagnostic['error'] != 'process-exited': raise
+            raise RuntimeError('Candidate backend stopped before commit.') from None
+        backend_started_ns = backend['startSec'] * 1000000000 + backend['startUsec'] * 1000
+        candidate_started_ns = candidate['startSec'] * 1000000000 + candidate['startUsec'] * 1000
+        if parent != candidate['pid'] or not candidate_started_ns <= backend_started_ns <= receipt_written_ns:
+            raise RuntimeError('Candidate did not prove the exact backend process.')
+        if not alive(candidate): raise RuntimeError('Candidate app stopped.')
+        backend_process = backend
+        record('validated', backendWriter=backend_process)
         if not alive(backend_process): raise RuntimeError('Candidate backend stopped before commit.')
         if not same_binding(read(manifest_path), expected): raise RuntimeError('Active manifest changed before commit.')
         durable(manifest_path, next_active)
@@ -1566,6 +1584,8 @@ def activate(intent_file):
                     **{key: descriptor[key] for key in ('protocol', 'startupGateProtocol', 'transactionId', 'stagedHandle', 'home', 'databasePath', 'profile', 'environmentId', 'version', 'sourceSha', 'sourceTree', 'listener')}), True)
         record('resumed')
     except Exception as failure:
+        if isinstance(failure, KernelProcessError):
+            journal['diagnostics'] = {key: value for key, value in failure.diagnostic.items() if isinstance(value, (str, int))}
         try:
             # Error evidence has its own small reserve. Before durable resume,
             # retain recovery headroom until candidate shutdown is proved.
@@ -1609,7 +1629,7 @@ def activate(intent_file):
         try:
             record('rollback-intent')
             proofs = [candidate] if candidate else []
-            # Only a validated startup-gate receipt supplies the backend proof, independently of app ownership.
+            # Only a validated receipt joined to its live kernel writer supplies backend authority.
             if backend_process is not None: proofs.append(backend_process)
             preserve_restart_tunnel(expected, intent['transactionId'])
             stop_exact(proofs)
@@ -1621,7 +1641,8 @@ def activate(intent_file):
             if incoming is not None and previous is not None: restore_bundle(expected, incoming, previous)
             record('rolled-back', message='Update rolled back: ' + str(failure))
         except Exception as recovery_failure:
-            record('blocked', message='Paired recovery could not be proved; retained state requires reconciliation: ' + str(recovery_failure))
+            diagnostics = {'recoveryDiagnostics': {key: value for key, value in recovery_failure.diagnostic.items() if isinstance(value, (str, int))}} if isinstance(recovery_failure, KernelProcessError) else {}
+            record('blocked', message='Paired recovery could not be proved; retained state requires reconciliation: ' + str(recovery_failure), **diagnostics)
         else:
             release_writer_exclusion(exclusive_writers)
             relaunch_previous()
@@ -1763,7 +1784,8 @@ def manual_install(plan_path, plan_sha256, apply=False, clone_required=False):
         message = str(failure)
         try: release_recovery_reserve(reserves, 'journal')
         except Exception: message += '; recovery reserve ownership uncertain'
-        record('held', stoppedAt=receipt['phase'], message=message)
+        diagnostics = {'diagnostics': {key: value for key, value in failure.diagnostic.items() if isinstance(value, (str, int))}} if isinstance(failure, KernelProcessError) else {}
+        record('held', stoppedAt=receipt['phase'], message=message, **diagnostics)
         raise
     finally:
         release_writer_exclusion(writers)
