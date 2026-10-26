@@ -196,7 +196,7 @@ it.effect("does not dispatch to a server that omits the optional reader capabili
   ),
 );
 
-it.effect("keeps saved accounting validation and dispatch on the same session", () =>
+it.effect("rejects saved accounting when its validated session is replaced before dispatch", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const harness = yield* makeHarness();
@@ -258,9 +258,38 @@ it.effect("keeps saved accounting validation and dispatch on the same session", 
       const read = yield* Fiber.join(readFiber);
 
       expect(replacementReads).toBe(0);
+      expect(harness.reads()).toBe(0);
+      expect(read._tag).toBe("Failure");
+      if (read._tag === "Failure") {
+        expect(Cause.pretty(read.cause)).toContain(
+          "connection changed before the request was issued",
+        );
+      }
+      const replacementRead = yield* Effect.promise(() =>
+        harness.atoms.readTokenAccounting.run(harness.registry, {
+          environmentId: target.environmentId,
+          input: {},
+        }),
+      );
+      expect(replacementRead._tag).toBe("Failure");
+      if (replacementRead._tag === "Failure") {
+        expect(Cause.pretty(replacementRead.cause)).toContain(
+          "does not advertise a saved accounting reader",
+        );
+      }
+      expect(replacementReads).toBe(0);
+      expect(harness.reads()).toBe(0);
+      yield* SubscriptionRef.set(harness.sessionRef, Option.some(validatedSession));
+      const explicitRead = yield* Effect.promise(() =>
+        harness.atoms.readTokenAccounting.run(harness.registry, {
+          environmentId: target.environmentId,
+          input: {},
+        }),
+      );
+      expect(explicitRead._tag).toBe("Success");
+      if (explicitRead._tag === "Success") expect(explicitRead.value).toEqual(result);
       expect(harness.reads()).toBe(1);
-      expect(read._tag).toBe("Success");
-      if (read._tag === "Success") expect(read.value).toEqual(result);
+      expect(replacementReads).toBe(0);
     }),
   ),
 );
