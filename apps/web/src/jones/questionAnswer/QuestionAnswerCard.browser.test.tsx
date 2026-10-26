@@ -64,6 +64,7 @@ function Harness({
           existing[id],
           value,
           questions.find((q) => q.id === id),
+          { notes: capability === "message" },
         ),
       })),
     onPrevious: () => setIndex((i) => Math.max(0, i - 1)),
@@ -93,6 +94,7 @@ function Harness({
           respondingRequestIds={[]}
           answers={answers}
           questionIndex={index}
+          onSelectQuestion={setIndex}
           {...cardCallbacks}
           onToggleOption={(id, value) =>
             setAnswers((existing) => ({
@@ -101,12 +103,18 @@ function Harness({
                 questions.find((q) => q.id === id)!,
                 existing[id],
                 value,
+                { notes: capability === "message" },
               ),
             }))
           }
           onAdvance={() => {
             if (index < questions.length - 1) setIndex(index + 1);
-            else setResult(buildPendingUserInputAnswers(questions, answers));
+            else
+              setResult(
+                buildPendingUserInputAnswers(questions, answers, {
+                  notes: capability === "message",
+                }),
+              );
           }}
           onDismiss={() => setDismissed(true)}
         />
@@ -200,7 +208,7 @@ it("sending the thread message leaves the question and its written answer pendin
   expect(answerField().value).toBe("Keep this answer");
 });
 
-it("aligns the one-line answer and Send with the option content, then caps growth at four lines", async () => {
+it("aligns the one-line answer and Send with the option content, then caps growth at ten lines", async () => {
   await using _fixture = await setupTest();
   container.style.width = "680px";
   await act(
@@ -238,8 +246,8 @@ it("aligns the one-line answer and Send with the option content, then caps growt
 
   await typeAnswer("One\nTwo");
   expect(field.getBoundingClientRect().height).toBeCloseTo(2 * lineHeight + inset, 0);
-  await typeAnswer("One\nTwo\nThree\nFour\nFive\nSix");
-  expect(field.getBoundingClientRect().height).toBeCloseTo(4 * lineHeight + inset, 0);
+  await typeAnswer(Array.from({ length: 12 }, (_, i) => `Line ${i}`).join("\n"));
+  expect(field.getBoundingClientRect().height).toBeCloseTo(10 * lineHeight + inset, 0);
   expect(field.scrollHeight).toBeGreaterThan(field.clientHeight);
   field.scrollTop = field.scrollHeight;
   expect(field.scrollTop).toBeGreaterThan(0);

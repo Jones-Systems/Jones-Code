@@ -357,3 +357,31 @@ This verifies avatar rendering and pointer pass-through, not live child-thread
 navigation, provider execution, native mobile, or packaged desktop behavior.
 PR attachments retain the reviewed before/after evidence. The temporary browser
 fixture was removed after capture; no live application state was used.
+
+## Structured owner questions
+
+`t3_request_user_response` accepts a brief Markdown instruction or 1–5 structured
+questions, with optional impact descriptions on choices. Involved context belongs
+in the preceding chat message. Web and desktop share the question card; mobile
+uses the same sequential answer semantics. Existing routed Markdown keeps PR and
+thread links actionable.
+
+Start with nothing selected. Choose or type an answer, then use **Continue**;
+selection and digit shortcuts never advance or send. The progress buttons beside
+`i/N` jump to any question and expand a collapsed card, including its current
+question. **Back**, jumps and collapse preserve drafts. On the final question,
+**Send** remains blocked until every question has an answer, with a reason naming
+the first missing answer. Native permission prompts remain separate.
+
+For message-mode owner requests, text supplements a selected choice as a note;
+**Sends:** previews the reply. **Clear choice** keeps the text as the whole answer.
+Enter adds a newline and only the explicit controls continue or send. Replies
+have no length cap; the field scrolls after ten lines on web and within a bounded
+height on mobile. Live provider questions keep their existing replacement and
+field-key semantics, with select-only choices.
+
+Evidence: focused automated contracts, server delivery, helper and headless-browser
+checks cover these behaviors. Integrated renderer journeys and native mobile
+checks are **pending root verification** on the candidate revision; the earlier
+Needs-input-count fixture without a visible card proves no answering journey.
+Packaged desktop is **unverified**. Gallery publication is out of scope.
