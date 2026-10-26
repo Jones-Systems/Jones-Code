@@ -2183,8 +2183,14 @@
     },
     {
       "id": "tsrs-typecheck",
-      "tests": ["scripts/jones/tsrs/identity.node-test.mjs"],
-      "scope": "Pinned official Effect-TS TSRS identity and private-install patch recovery, launcher and uncached CI admission. Compiler commands remain on the incumbent until complete adoption qualification."
+      "tests": [
+        "scripts/jones/tsrs/identity.node-test.mjs",
+        "packages/client-runtime/src/jones/sync/commandIsolation.test.ts",
+        "packages/client-runtime/src/state/fileMetadata.test.ts",
+        "packages/client-runtime/src/state/projectCommands.test.ts",
+        "packages/client-runtime/src/state/threadCommands.test.ts"
+      ],
+      "scope": "Pinned official Effect-TS TSRS identity and private-install patch recovery, launcher and uncached CI admission. Five complete ConnectionTarget fixture values retain existing test behavior and configured Effect diagnostics; no other application repair. Compiler commands remain on the incumbent until full adoption qualification."
     }
   ]
 }

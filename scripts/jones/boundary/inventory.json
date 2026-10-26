@@ -2046,7 +2046,9 @@
     "apps/web/src/components/files/office/document.worker.ts": "accepted-shared",
     "apps/web/src/components/files/office/word-protocol.ts": "accepted-shared",
     "scripts/jones/boundary/fragments/tsrs-typecheck.json": "jones-owned",
-    "docs/internals/typecheck-compiler.md": "policy"
+    "docs/internals/typecheck-compiler.md": "policy",
+    "packages/client-runtime/src/state/fileMetadata.test.ts": "jones-tests-in-upstream",
+    "packages/client-runtime/src/state/projectCommands.test.ts": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
