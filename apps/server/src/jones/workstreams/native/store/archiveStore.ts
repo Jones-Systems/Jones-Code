@@ -1,3 +1,12 @@
+// @effect-diagnostics nodeBuiltinImport:off -- SHA-256 verifies retained snapshot evidence.
+// @effect-diagnostics preferSchemaOverJson:off -- Compare parsed evidence without changing retained payload spelling.
+import * as NodeCrypto from "node:crypto";
+import {
+  WORKSTREAMS_LEGACY_RECEIPTS_CONTRACT,
+  WorkstreamsLegacyReceiptIdentity,
+  WorkstreamsLegacyReceiptProof,
+} from "@t3tools/contracts/jones/workstreamsLegacyReceipts";
+import { WorkstreamsSnapshotRow } from "@t3tools/contracts/jones/workstreamsSnapshot";
 import { canonicalWorkstreamsSnapshotJson } from "@t3tools/contracts/jones/workstreamsSnapshot";
 import { WorkstreamReceipt } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -7,6 +16,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 import * as NativeSql from "./sql.ts";
+import { readLegacyLedger } from "./legacyReconciliationStore.ts";
 
 type Failure = SqlError | NativeSql.StoreError | NativeSql.CryptoError;
 export interface ImportManifest {
@@ -19,10 +29,27 @@ const Manifest = Schema.Struct({
   owners: Schema.Array(Schema.Struct({ owner_id: Schema.String })),
 });
 const decodeManifest = Schema.decodeUnknownEffect(Manifest);
+const decodeEvidence = Schema.decodeUnknownEffect(
+  Schema.Struct({ source: WorkstreamsSnapshotRow }),
+);
+const decodeIdentity = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(WorkstreamsLegacyReceiptIdentity),
+);
+const decodeOpenEvidence = Schema.decodeUnknownEffect(Schema.Struct({ receipt: Schema.Unknown }));
+const decodeProof = Schema.decodeUnknownEffect(WorkstreamsLegacyReceiptProof);
+const sha256 = (value: string) => NodeCrypto.createHash("sha256").update(value).digest("hex");
 const decodeReceipt = Schema.decodeUnknownEffect(WorkstreamReceipt);
 export class ArchiveStore extends Context.Service<
   ArchiveStore,
   {
+    readonly contains: (
+      scope: NativeSql.OwnerScope,
+      commandId: string,
+    ) => Effect.Effect<boolean, Failure>;
+    readonly evidence: (
+      scope: NativeSql.OwnerScope,
+      commandId: string,
+    ) => Effect.Effect<WorkstreamsLegacyReceiptProof | null, Failure>;
     readonly receipt: (
       scope: NativeSql.OwnerScope,
       commandId: string,
@@ -69,6 +96,192 @@ export class ArchiveStore extends Context.Service<
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const db = yield* NativeSql.NativeSql;
+  const contains = Effect.fn("ArchiveStore.contains")(
+    (scope: NativeSql.OwnerScope, commandId: string) =>
+      db.transaction(
+        scope,
+        Effect.gen(function* () {
+          const rows = yield* sql`
+        SELECT command_id FROM jones_workstreams_legacy_receipts
+        WHERE registry_instance_id=${scope.registry_instance_id} AND owner_id=${scope.owner_id} AND command_id=${commandId}
+        UNION ALL SELECT command_id FROM jones_workstreams_receipts
+        WHERE registry_instance_id=${scope.registry_instance_id} AND owner_id=${scope.owner_id} AND command_id=${commandId} AND origin='legacy_open'
+        UNION ALL SELECT a.record_key AS command_id FROM jones_workstreams_legacy_archive a
+        JOIN jones_workstreams_import_runs r ON r.import_run_id=a.import_run_id
+        WHERE r.registry_instance_id=${scope.registry_instance_id} AND a.class='workstream_command_receipts'
+        AND a.record_key=${canonicalWorkstreamsSnapshotJson([scope.owner_id, commandId])}`;
+          return rows.length > 0;
+        }),
+      ),
+  );
+  const evidence = Effect.fn("ArchiveStore.evidence")(
+    (scope: NativeSql.OwnerScope, commandId: string) =>
+      db.transaction(
+        scope,
+        Effect.gen(function* () {
+          const recordKey = canonicalWorkstreamsSnapshotJson([scope.owner_id, commandId]);
+          const rows = yield* sql<{
+            import_run_id: string;
+            snapshot_id: string;
+            canonical_sha256: string;
+            archive_version: number;
+            envelope: string;
+          }>`
+        SELECT a.*, r.snapshot_id FROM jones_workstreams_legacy_archive a
+        JOIN jones_workstreams_import_runs r ON r.import_run_id=a.import_run_id
+        WHERE r.registry_instance_id=${scope.registry_instance_id} AND a.class='workstream_command_receipts' AND a.record_key=${recordKey}`;
+          if (!rows.length) return null;
+          let proof: WorkstreamsLegacyReceiptProof | null = null;
+          for (const row of rows) {
+            const raw = yield* db.openJson(
+              {
+                ...scope,
+                purpose: "legacy_archive",
+                record_id: canonicalWorkstreamsSnapshotJson([
+                  row.import_run_id,
+                  "workstream_command_receipts",
+                  recordKey,
+                ]),
+                revision: 1,
+              },
+              row.envelope,
+            );
+            const archived = yield* decodeEvidence(raw).pipe(
+              Effect.mapError(() => new NativeSql.StoreError({ reason: "invalid_payload" })),
+            );
+            const source = archived.source;
+            const value = yield* decodeIdentity(source.row.payload).pipe(
+              Effect.mapError(() => new NativeSql.StoreError({ reason: "invalid_payload" })),
+            );
+            if (
+              row.archive_version !== 1 ||
+              source.class !== "workstream_command_receipts" ||
+              canonicalWorkstreamsSnapshotJson(source.key) !== recordKey ||
+              sha256(canonicalWorkstreamsSnapshotJson(source)) !== row.canonical_sha256 ||
+              source.row.command_id !== commandId ||
+              source.row.owner_id !== scope.owner_id ||
+              value.command_id !== commandId ||
+              value.owner_id !== scope.owner_id ||
+              value.actor.principal_id !== source.row.principal_id ||
+              value.state !== source.row.state ||
+              ["request_sha256", "server_generation", "operation", "registry_version"].some(
+                (field) =>
+                  source.row[field] !== undefined &&
+                  source.row[field] !== value[field as keyof typeof value],
+              )
+            )
+              return yield* new NativeSql.StoreError({ reason: "invalid_payload" });
+            const next = yield* decodeProof({
+              contract: WORKSTREAMS_LEGACY_RECEIPTS_CONTRACT,
+              command_id: commandId,
+              owner_id: scope.owner_id,
+              principal_id: value.actor.principal_id,
+              operation: value.operation,
+              state: value.state,
+              request_sha256: value.request_sha256,
+              server_generation: value.server_generation,
+              registry_version: value.registry_version ?? null,
+              payload: source.row.payload,
+              request_bytes: "unknown",
+              provenance: {
+                registry_instance_id: scope.registry_instance_id,
+                import_run_id: row.import_run_id,
+                snapshot_id: row.snapshot_id,
+                archive_version: 1,
+                record_key: recordKey,
+                canonical_row_sha256: row.canonical_sha256,
+                ciphertext_sha256: source.row.ciphertext_sha256,
+              },
+            }).pipe(Effect.mapError(() => new NativeSql.StoreError({ reason: "invalid_payload" })));
+            if (
+              proof &&
+              (proof.payload !== next.payload ||
+                proof.provenance.canonical_row_sha256 !== next.provenance.canonical_row_sha256)
+            )
+              return yield* new NativeSql.StoreError({ reason: "idempotency_conflict" });
+            proof = next;
+          }
+          const stored = yield* sql<{
+            envelope: string;
+            registry_version: number | null;
+            principal_id: string;
+            request_sha256: string;
+            server_generation: number;
+            state: string;
+            operation: string;
+            canonical_sha256: string;
+            original_ciphertext_sha256: string;
+            import_run_id: string;
+          }>`
+        SELECT * FROM jones_workstreams_legacy_receipts WHERE registry_instance_id=${scope.registry_instance_id} AND owner_id=${scope.owner_id} AND command_id=${commandId}`;
+          const open = yield* sql<{
+            envelope: string;
+            registry_version: number | null;
+            principal_id: string;
+            request_sha256: string;
+            server_generation: number;
+            state: string;
+            operation: string;
+            origin: string;
+          }>`
+        SELECT * FROM jones_workstreams_receipts WHERE registry_instance_id=${scope.registry_instance_id} AND owner_id=${scope.owner_id} AND command_id=${commandId}`;
+          const delta = proof
+            ? (yield* readLegacyLedger(scope, proof.provenance.import_run_id).pipe(
+                Effect.provideService(NativeSql.NativeSql, db),
+                Effect.provideService(SqlClient.SqlClient, sql),
+              )).deltas.find((d) => d.binding.command_id === commandId)
+            : undefined;
+          const projection = delta?.changes.find((c) => c.after.table === "receipts")?.after;
+          if (
+            delta &&
+            (!projection ||
+              delta.binding.receipt_row_sha256 !== proof?.provenance.canonical_row_sha256)
+          )
+            return yield* new NativeSql.StoreError({ reason: "invalid_payload" });
+          const metadata = stored[0] ?? open[0];
+          if (
+            !proof ||
+            !metadata ||
+            (stored.length && open.length) ||
+            metadata.principal_id !== proof.principal_id ||
+            metadata.request_sha256 !== proof.request_sha256 ||
+            metadata.server_generation !== proof.server_generation ||
+            metadata.state !== (projection?.data.state ?? proof.state) ||
+            metadata.operation !== proof.operation ||
+            metadata.registry_version !==
+              (projection?.data.registry_version ?? proof.registry_version) ||
+            (stored[0] &&
+              (stored[0].canonical_sha256 !== proof.provenance.canonical_row_sha256 ||
+                stored[0].original_ciphertext_sha256 !== proof.provenance.ciphertext_sha256 ||
+                stored[0].import_run_id !== proof.provenance.import_run_id)) ||
+            (open[0] && open[0].origin !== "legacy_open")
+          )
+            return yield* new NativeSql.StoreError({ reason: "invalid_payload" });
+          const decrypted = yield* db.openJson(
+            {
+              ...scope,
+              purpose: stored.length ? "legacy_receipt" : "receipt",
+              record_id: commandId,
+              revision: metadata.registry_version ?? 0,
+            },
+            metadata.envelope,
+          );
+          const payload = stored.length
+            ? decrypted
+            : (yield* decodeOpenEvidence(decrypted).pipe(
+                Effect.mapError(() => new NativeSql.StoreError({ reason: "invalid_payload" })),
+              )).receipt;
+          if (
+            NativeSql.jsonText(payload) !==
+            NativeSql.jsonText(
+              delta ? delta.receipt : JSON.parse(proof.payload.replace(/^\uFEFF/, "")),
+            )
+          )
+            return yield* new NativeSql.StoreError({ reason: "invalid_payload" });
+          return proof;
+        }),
+      ),
+  );
   const receipt = Effect.fn("ArchiveStore.receipt")(
     (scope: NativeSql.OwnerScope, commandId: string) =>
       db.transaction(
@@ -279,7 +492,16 @@ const make = Effect.gen(function* () {
         }),
       ),
   );
-  return ArchiveStore.of({ receipt, coverage, startImport, archive, readArchive, addReceipt });
+  return ArchiveStore.of({
+    contains,
+    evidence,
+    receipt,
+    coverage,
+    startImport,
+    archive,
+    readArchive,
+    addReceipt,
+  });
 });
 /** @public Canonical service layer. */
 export const layer = Layer.effect(ArchiveStore, make);

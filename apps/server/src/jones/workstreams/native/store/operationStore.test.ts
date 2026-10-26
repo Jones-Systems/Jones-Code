@@ -1,8 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Native SQLite reopen proof uses one scoped, cleanup-owned temporary root.
 import * as NodeFSP from "node:fs/promises";
-import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { expect, it } from "@effect/vitest";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as NativeSql from "./sql.ts";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as OperationStore from "./operationStore.ts";
@@ -16,12 +17,10 @@ it.effect(
   () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const dir = yield* Effect.acquireRelease(
-          Effect.tryPromise(() =>
-            NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "nw-j1-recovery-")),
-          ),
-          (path) => Effect.promise(() => NodeFSP.rm(path, { recursive: true, force: true })),
-        );
+        const parent = NodePath.resolve("node_modules/.cache/nw-recorded-recovery/store-files");
+        yield* Effect.promise(() => NodeFSP.mkdir(parent, { recursive: true }));
+        const dir = yield* Effect.promise(() => NodeFSP.mkdtemp(NodePath.join(parent, "store-")));
+        // Retained synthetic SQLite evidence; root owns cleanup after delivery.
         const filename = NodePath.join(dir, "native.sqlite");
         const { state: _bindingState, ...destination } = binding;
         const input: OperationStore.OperationInput = {
@@ -114,4 +113,60 @@ it.effect(
         }).pipe(Effect.provide(testLayer({ filename })));
       }),
     ),
+);
+
+it.effect(
+  "versioned encrypted payloads leave historical admission absent and never backfill it on duplicate acceptance",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient,
+        db = yield* NativeSql.NativeSql;
+      yield* (yield* BindingStore.BindingStore).bind(binding, null);
+      const operations = yield* OperationStore.OperationStore;
+      const { state: _state, ...destination } = binding;
+      const input: OperationStore.OperationInput = {
+        operation_id: "command-new-format-001",
+        kind: "command",
+        thread_environment_id: null,
+        thread_id: null,
+        origin: { kind: "app" },
+        destination,
+        child_command_ids: ["command:child-00000"],
+        request_body: '{ "exact": "protected-request-sentinel" }',
+        accepted_at: now,
+      };
+      const saved = yield* operations.accept(input);
+      expect(saved.recorded_caller).toBeNull();
+      const [row] = yield* sql<
+        Record<string, string | number | null>
+      >`SELECT * FROM jones_workstreams_operations WHERE operation_id = ${input.operation_id}`;
+      const payload = yield* db.openJson(
+        {
+          ...scope,
+          key_scope: "local",
+          purpose: "operation_request",
+          record_id: input.operation_id,
+          revision: 1,
+        },
+        String(row!.request_envelope),
+      );
+      expect(payload).toEqual({
+        version: 2,
+        request_body: input.request_body,
+        principal_id: binding.principal_id,
+        recorded_caller: null,
+      });
+      const id = "command-historical-001";
+      const envelope = yield* db.sealJson(
+        { ...scope, key_scope: "local", purpose: "operation_request", record_id: id, revision: 1 },
+        { request_body: input.request_body, principal_id: binding.principal_id },
+      );
+      yield* sql`INSERT INTO jones_workstreams_operations ${sql.insert({ ...row!, operation_id: id, request_envelope: envelope })}`;
+      const historical = yield* operations.read(id);
+      expect(historical?.recorded_caller).toBeNull();
+      expect(historical?.request_body).toBe(input.request_body);
+      expect(yield* operations.accept({ ...input, operation_id: id })).toEqual(historical);
+      expect(String(row!.request_envelope)).not.toContain("protected-request-sentinel");
+    }).pipe(Effect.provide(testLayer())),
 );

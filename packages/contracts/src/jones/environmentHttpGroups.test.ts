@@ -1,3 +1,4 @@
+import { WorkstreamsHttpResponseContractHeaders } from "./workstreamsHttp.ts";
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
@@ -91,6 +92,7 @@ describe("Jones environment HTTP registration", () => {
       ["operationRead", "POST", "/api/workstreams/operations/read"],
       ["setupStatus", "GET", "/api/workstreams/setup-status"],
       ["threadPlacements", "POST", "/api/workstreams/thread-placements"],
+      ["legacyReceiptLookup", "POST", "/api/workstreams/legacy-receipts/v1/lookup"],
       ["list", "GET", "/api/workstreams"],
       ["references", "GET", "/api/workstreams/references"],
       ["reference", "GET", "/api/workstreams/references/:nativeReferenceId"],
@@ -125,9 +127,26 @@ describe("Jones environment HTTP registration", () => {
       authorization: Schema.optionalKey(Schema.String),
       dpop: Schema.optionalKey(Schema.String),
     });
+    const placementHeaders = Schema.Struct({
+      ...bearerHeaders.fields,
+      "x-t3-workstreams-placement-contract": Schema.optionalKey(
+        Schema.Literal("workstreams-t3-placement/2.0.0"),
+      ),
+    });
+    const responseHeaders = Schema.Struct({
+      ...bearerHeaders.fields,
+      ...WorkstreamsHttpResponseContractHeaders.fields,
+    });
     for (const endpoint of routes) {
       expect(endpoint.middlewares.has(EnvironmentAuthenticatedAuth)).toBe(true);
-      expect(endpoint.headers?.ast).toEqual(bearerHeaders.ast);
+      expect(endpoint.headers?.ast).toEqual(
+        endpoint === groups.workstreams.endpoints.threadPlacements
+          ? placementHeaders.ast
+          : endpoint === groups.workstreams.endpoints.command ||
+              endpoint === groups.workstreams.endpoints.submit
+            ? responseHeaders.ast
+            : bearerHeaders.ast,
+      );
     }
   });
 });

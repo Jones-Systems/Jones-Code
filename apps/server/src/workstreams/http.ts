@@ -1,3 +1,7 @@
+import * as HttpCompatibility from "../jones/workstreams/native/compat/http.ts";
+import * as NativeStartup from "../jones/workstreams/native/runtime/startup.ts";
+import * as NativeRuntimeEntry from "../jones/workstreams/native/runtime/entry.ts";
+import { nativePersistenceLayer } from "../jones/workstreams/native/integration.ts";
 import { decodeRegistryBinding } from "@t3tools/shared/jones/workstreamsRegistryBinding";
 import * as WorkstreamOperations from "../jones/workstreams/operations/service.ts";
 import * as WorkstreamOperationsLive from "../jones/workstreams/operations/live.ts";
@@ -86,7 +90,14 @@ export const workstreamResponseHeadersLayer = HttpRouter.middleware(
     Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
       if (isWorkstreamHttpTarget(request.originalUrl)) yield* appendWorkstreamResponseHeaders;
-      return yield* withWorkstreamBodyLimit(httpEffect, request);
+      return yield* HttpCompatibility.withResponseContract(
+        withWorkstreamBodyLimit(httpEffect, request),
+        {
+          method: request.method,
+          path: workstreamHttpPath(request.originalUrl),
+          headers: request.headers,
+        },
+      );
     }),
   { global: true },
 );
@@ -155,7 +166,7 @@ export const workstreamRegistrationContextLayerLive = Layer.effect(
   Layer.provide(workstreamControlPlaneLayer),
 );
 
-export const workstreamOperationsLayerLive = WorkstreamOperationsLive.layer.pipe(
+const workstreamOperationsLayerLive = WorkstreamOperationsLive.layer.pipe(
   Layer.provide(
     Layer.effect(
       Activation,
@@ -185,6 +196,25 @@ export const workstreamOperationsLayerLive = WorkstreamOperationsLive.layer.pipe
     ),
   ),
   Layer.provide(workstreamControlPlaneLayer),
+);
+
+// Resolve explicit native selection before constructing any Control Plane service.
+const workstreamStartupLayer = NativeStartup.layer.pipe(Layer.provide(nativePersistenceLayer));
+export const workstreamSelectedServicesLayer = NativeStartup.chooseLayer({
+  legacy: () =>
+    Layer.mergeAll(
+      workstreamGatewayLayerLive,
+      workstreamRegistrationContextLayerLive,
+      workstreamOperationsLayerLive.pipe(
+        Layer.provide(workstreamGatewayLayerLive),
+        Layer.provide(workstreamRegistrationContextLayerLive),
+      ),
+    ),
+  home: NativeStartup.homeServicesLayer,
+  unavailable: NativeStartup.unavailableServicesLayer,
+}).pipe(
+  Layer.provideMerge(workstreamStartupLayer),
+  Layer.provide(workstreamNativeAuthorityLayerLive),
 );
 
 const internal = <A>(
@@ -299,9 +329,43 @@ export const workstreamHttpApiLayer = HttpApiBuilder.group(
         }),
       )
       .handle("threadPlacements", (args) =>
-        read(args.endpoint.name).pipe(
-          Effect.andThen(internal("threadPlacements", gateway.readThreadPlacements(args.payload))),
-        ),
+        Effect.gen(function* () {
+          yield* read(args.endpoint.name);
+          const contract = args.headers["x-t3-workstreams-placement-contract"];
+          if (contract === undefined)
+            return yield* internal("threadPlacements", gateway.readThreadPlacements(args.payload));
+          const native = yield* Effect.serviceOption(NativeRuntimeEntry.Entry);
+          if (Option.isNone(native))
+            return yield* new EnvironmentHttpConflictError({
+              message: "workstreams_native_unavailable",
+            });
+          return yield* native.value
+            .placementResponse(args.payload, contract)
+            .pipe(
+              Effect.mapError(
+                () =>
+                  new EnvironmentHttpConflictError({ message: "workstreams_native_unavailable" }),
+              ),
+            );
+        }),
+      )
+      .handle("legacyReceiptLookup", (args) =>
+        Effect.gen(function* () {
+          yield* read(args.endpoint.name);
+          const native = yield* Effect.serviceOption(NativeRuntimeEntry.Entry);
+          if (Option.isNone(native))
+            return yield* new EnvironmentHttpConflictError({
+              message: "workstreams_legacy_receipts_unavailable",
+            });
+          return yield* native.value.lookupLegacyReceipt(args.payload).pipe(
+            Effect.mapError(
+              () =>
+                new EnvironmentHttpConflictError({
+                  message: "workstreams_legacy_receipts_unavailable",
+                }),
+            ),
+          );
+        }),
       )
       .handle("list", (args) =>
         read(args.endpoint.name).pipe(
@@ -370,6 +434,7 @@ export const workstreamHttpApiLayer = HttpApiBuilder.group(
       .handle("command", (args) =>
         read(args.endpoint.name).pipe(
           Effect.andThen(internal("command", gateway.pollCommand(args.params.commandId))),
+          Effect.tap(HttpCompatibility.receiptStatus),
         ),
       )
       .handle("submit", (args) =>
@@ -378,15 +443,14 @@ export const workstreamHttpApiLayer = HttpApiBuilder.group(
           yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
           // Only gateway checks before dispatch establish no effect; transport and replay failures do not.
           return yield* gateway.submit(args.payload.command).pipe(
+            Effect.tap(HttpCompatibility.receiptStatus),
             Effect.catch(
               (
                 error,
               ): Effect.Effect<never, EnvironmentHttpConflictError | EnvironmentInternalError> =>
                 error.reason === "version-conflict" || error.reason === "authorization-not-current"
-                  ? Effect.fail(
-                      new EnvironmentHttpConflictError({
-                        message: "workstream_command_not_current",
-                      }),
+                  ? Effect.flatMap(HttpCompatibility.conflictMessage(error.reason), (message) =>
+                      Effect.fail(new EnvironmentHttpConflictError({ message })),
                     )
                   : failEnvironmentInternal("internal_error", {
                       operation: "submit",

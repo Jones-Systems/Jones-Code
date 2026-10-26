@@ -30,6 +30,7 @@ import {
   DecisionSnapshotCollector,
 } from "./collector.ts";
 
+const encodeUnknownJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const filesystemDelay = vi.hoisted(() => ({ path: null as string | null }));
 const decodeUsageFixtureState = Schema.decodeUnknownSync(
   Schema.fromJsonString(
@@ -638,7 +639,7 @@ if __name__ == '__main__':
   it("bounds the actual composer and usage lifecycle through delayed startup, nested cleanup and a concurrent loser", async () => {
     await lifecycleRelease(async (binding) => {
       const scratch = NodePath.dirname(binding.releaseDirectory);
-      const native = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))({
+      const native = encodeUnknownJson({
         schema: "codex.decision-snapshot-native/v1",
         authority_effect: "none",
         provenance: "fixture",
@@ -996,5 +997,71 @@ if __name__ == '__main__':
         runBoundCollector(binding, "display", "", monotonicSeconds() + 6, cancellation.signal),
       ).rejects.toMatchObject({ reason: "timeout" });
     });
+  });
+});
+
+import { validateNativeRegistryRead } from "./collector.ts";
+import type { WorkstreamsNativeReadEnvelope } from "@t3tools/contracts/jones/workstreamsNativeRead";
+const readEnvelope: WorkstreamsNativeReadEnvelope = {
+  contract: "workstreams-read/1.0.0",
+  registry: {
+    registry_instance_id: "11111111-1111-4111-8111-111111111111",
+    owner_id: "owner:test",
+    canonical_origin: "https://native.workstreams.invalid",
+    server_generation: 1,
+    registry_version: 7,
+  },
+  provenance: {
+    authority: "native-home",
+    home_environment_id: "home:test",
+    served_by_environment_id: "home:test",
+    source: "live",
+    stale: false,
+    observed_at: "2026-01-01T00:00:00Z",
+  },
+  coverage: { registry: "complete", sources: [] },
+};
+describe("native registry collector provenance", () => {
+  it("preserves one exact native home version and refuses mixed timestamps, versions and unsupported contracts", () => {
+    const counts = {
+      context: { owner_id: "owner:test", server_generation: 1, registry_version: 7 },
+      observed_at: readEnvelope.provenance.observed_at,
+    };
+    const input = {
+      envelope: readEnvelope,
+      counts,
+      canonicalOrigin: readEnvelope.registry.canonical_origin,
+    };
+    expect(validateNativeRegistryRead(input)).toEqual(readEnvelope);
+    expect(() =>
+      validateNativeRegistryRead({
+        ...input,
+        counts: { ...counts, observed_at: "2026-01-01T00:00:01Z" },
+      }),
+    ).toThrow();
+    expect(() =>
+      validateNativeRegistryRead({
+        ...input,
+        counts: { ...counts, context: { ...counts.context, registry_version: 8 } },
+      }),
+    ).toThrow();
+    expect(() =>
+      validateNativeRegistryRead({
+        ...input,
+        envelope: {
+          ...readEnvelope,
+          contract: "unsupported",
+        } as unknown as WorkstreamsNativeReadEnvelope,
+      }),
+    ).toThrow();
+    expect(() =>
+      validateNativeRegistryRead({
+        ...input,
+        envelope: {
+          ...readEnvelope,
+          provenance: { ...readEnvelope.provenance, source: "cache", stale: true },
+        },
+      }),
+    ).toThrow();
   });
 });

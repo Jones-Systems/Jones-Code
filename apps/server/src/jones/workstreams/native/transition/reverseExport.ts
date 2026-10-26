@@ -5,6 +5,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as NativeSql from "../store/sql.ts";
 import * as Archive from "../store/archiveStore.ts";
 import * as Registry from "../store/registryStore.ts";
+import { readLegacyLedger } from "../store/legacyReconciliationStore.ts";
+import { readTarget } from "./archive.ts";
 import * as Keys from "../crypto/keyProvider.ts";
 import {
   canonical,
@@ -39,10 +41,9 @@ const revisions: Record<string, string> = {
   receipts: "registry_version",
   legacy_receipts: "registry_version",
   external_reservations: "admitted_registry_version",
+  external_results: "admitted_registry_version",
 };
-export const currentTarget = Effect.fn("WorkstreamsTransition.currentTarget")(function* (
-  target: Target,
-) {
+const currentTarget = Effect.fn("WorkstreamsTransition.currentTarget")(function* (target: Target) {
   const sql = yield* SqlClient.SqlClient,
     db = yield* NativeSql.NativeSql;
   const rows = yield* sql<
@@ -50,6 +51,14 @@ export const currentTarget = Effect.fn("WorkstreamsTransition.currentTarget")(fu
   >`SELECT * FROM ${sql(`jones_workstreams_${target.table}`)} WHERE ${sql.and(Object.entries(target.key).map(([k, v]) => sql`${sql(k)}=${v}`))}`;
   const row = rows[0];
   if (!row) return yield* new TransitionError({ reason: "reverse_record_missing" });
+  if (target.table === "external_results") {
+    const reservation = yield* sql<{
+      admitted_registry_version: number;
+    }>`SELECT admitted_registry_version FROM jones_workstreams_external_reservations WHERE registry_instance_id=${String(row.registry_instance_id)} AND owner_id=${String(row.owner_id)} AND command_id=${String(row.command_id)}`;
+    if (!reservation[0])
+      return yield* new TransitionError({ reason: "reverse_result_reservation_missing" });
+    row.admitted_registry_version = reservation[0].admitted_registry_version;
+  }
   const field = revisions[target.table],
     revision = field ? Number(row[field] ?? 0) : (target.context?.revision ?? 1);
   const value = target.context
@@ -95,6 +104,12 @@ const nativeClasses: Record<
     name: "workstream_command_receipts",
     keys: ["command_id"],
     purpose: "receipt",
+    recordId: "single",
+  },
+  external_results: {
+    name: "workstream_external_results",
+    keys: ["command_id"],
+    purpose: "external_result",
     recordId: "single",
   },
   history: {
@@ -153,6 +168,9 @@ function sqlTimestamps(row: Record<string, unknown>): Record<string, unknown> {
     }
   return row;
 }
+function cpReservationEffect(effect: unknown) {
+  return effect === "request_native_t3_settlement" ? "native_t3_settlement" : effect;
+}
 function cpRow(
   name: string,
   data: Readonly<Record<string, string | number | null>>,
@@ -184,6 +202,8 @@ function cpRow(
     else if (k === "ciphertext_sha256") row[k] = digest(String(data.envelope));
     else if (k === "value") row[k] = value;
     else if (k === "permissions" || k === "workstream_ids") row[k] = JSON.parse(String(data[k]));
+    else if (k === "effect" && name === "workstream_external_reservations")
+      row[k] = cpReservationEffect(data[k]);
     else if (Object.hasOwn(data, k)) row[k] = data[k];
     else if (k === "created_by")
       row[k] = (value.created_by as { principal_id: string }).principal_id;
@@ -365,6 +385,21 @@ export const prepareReverse = Effect.fn("WorkstreamsTransition.prepareReverse")(
           audit_high_water: high[0]!.high,
         });
       }
+      for (const owner of p.snapshot.header.owners) {
+        const ledger = yield* readLegacyLedger(
+          { ...archiveScope(p), owner_id: owner.owner_id },
+          p.import_run_id,
+        );
+        for (const delta of ledger.deltas)
+          for (const change of delta.changes.filter((c) => c.after.table !== "references")) {
+            const current = yield* readTarget(change.after);
+            if (
+              canonical(current.data) !== canonical(change.after.data) ||
+              (change.after.context && canonical(current.value) !== canonical(change.after.value))
+            )
+              return yield* new TransitionError({ reason: "reverse_reconciliation_mismatch" });
+          }
+      }
       const principals = yield* sql<{
         principal_id: string;
       }>`SELECT DISTINCT principal_id FROM jones_workstreams_principals WHERE registry_instance_id=${archiveScope(p).registry_instance_id}`;
@@ -376,7 +411,7 @@ export const prepareReverse = Effect.fn("WorkstreamsTransition.prepareReverse")(
       if (open[0]!.count) return yield* new TransitionError({ reason: "reverse_open_effects" });
       const rows: SnapshotRow[] = [],
         seen = new Map<string, Set<string>>();
-      for (const source of p.snapshot.rows) {
+      sourceRows: for (const source of p.snapshot.rows) {
         const scope = {
           ...archiveScope(p),
           owner_id: String(source.row.owner_id ?? archiveScope(p).owner_id),
@@ -395,6 +430,9 @@ export const prepareReverse = Effect.fn("WorkstreamsTransition.prepareReverse")(
           const ids = seen.get(target.table) ?? new Set<string>();
           ids.add(canonical(target.key));
           seen.set(target.table, ids);
+          // Published queue tombstones represent CP logical absence, including archived entries.
+          if (target.table === "rollup_queue" && current.row.failure_code === "published")
+            continue sourceRows;
           // Secondary history-scope records have no independent CP row.
           if (target.table === "history_scopes") continue;
           const targetValue = current.value as Record<string, unknown> | null;
@@ -418,6 +456,13 @@ export const prepareReverse = Effect.fn("WorkstreamsTransition.prepareReverse")(
               )
                 row[k] =
                   k === "workstream_ids" ? JSON.parse(String(current.row[k])) : current.row[k];
+            if (target.table === "references") {
+              // Native routing stores seven fields; the four CP discriminators live in identity.
+              // Reproject the complete tuple after verification changes an archived null route.
+              const projected = cpRow(source.class, current.row, current.value).row;
+              for (const k of Object.keys(row).filter((k) => k.startsWith("routing_")))
+                row[k] = projected[k];
+            }
             if (typeof row.payload === "string" && row.payload !== source.row.payload) {
               const rev = Number(
                 current.row[revisions[target.table] ?? ""] ??
@@ -442,6 +487,8 @@ export const prepareReverse = Effect.fn("WorkstreamsTransition.prepareReverse")(
               if (Object.hasOwn(current.row, k)) row[k] = current.row[k];
           }
         }
+        if (source.class === "workstream_external_reservations")
+          row.effect = cpReservationEffect(row.effect);
         if (source.class === "workstream_registry_context") {
           const o = owners.find((o) => o.owner_id === row.owner_id)!;
           row = {
@@ -462,6 +509,7 @@ export const prepareReverse = Effect.fn("WorkstreamsTransition.prepareReverse")(
           Record<string, string | number | null>
         >`SELECT * FROM ${sql(`jones_workstreams_${table}`)} WHERE registry_instance_id=${archiveScope(p).registry_instance_id}`;
         for (const data of native) {
+          if (table === "rollup_queue" && data.failure_code === "published") continue;
           const key = Object.fromEntries(
             ["registry_instance_id", "owner_id", ...config.keys].map((k) => [k, data[k]!]),
           ) as Record<string, string | number>;

@@ -156,7 +156,7 @@ export function publicPrObservation(value: PrObservation): PrObservation {
   };
 }
 
-export function decodeStoredPrObservation(
+function decodeStoredPrObservation(
   value: StoredPrObservation,
   ownerId: string,
   referenceId: string,

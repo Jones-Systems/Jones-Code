@@ -1,11 +1,17 @@
 import * as Context from "effect/Context";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
+import { requireNativeRecoveryReceipt } from "../domain/externalIntents.ts";
+import type { ExternalIntent, RegistryExternalResult } from "../domain/state.ts";
+import { canonicalJson } from "../domain/validation.ts";
 import * as ReceiptStore from "./receiptStore.ts";
 import * as HistoryStore from "./historyStore.ts";
 import * as NativeSql from "./sql.ts";
+import * as Recorded from "../runtime/recordedCaller.ts";
 
 export interface Reservation {
   readonly command_id: string;
@@ -15,7 +21,11 @@ export interface Reservation {
   readonly server_generation: number;
   readonly admitted_registry_version: number;
   readonly intent: unknown;
+  readonly recovery?: NonNullable<
+    Effect.Success<ReturnType<typeof Recorded.unwrapEffectIntent>>["recovery"]
+  >;
 }
+const decodeRequest = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown));
 type Failure = SqlError | NativeSql.StoreError | NativeSql.CryptoError;
 export class EffectStore extends Context.Service<
   EffectStore,
@@ -43,9 +53,16 @@ export class EffectStore extends Context.Service<
       registryVersion: number,
       history: readonly HistoryStore.HistoryEvent[],
     ) => Effect.Effect<void, Failure>;
+    readonly completeRetainedNativeSettlement: (
+      scope: NativeSql.OwnerScope,
+      receipt: ReceiptStore.ReceiptRecord,
+      expected: { readonly server_generation: number; readonly registry_version: number },
+      history: readonly HistoryStore.HistoryEvent[],
+    ) => Effect.Effect<void, Failure>;
   }
 >()("t3/jones/workstreams/native/store/effectStore") {}
 const make = Effect.gen(function* () {
+  const recoveryCrypto = yield* Crypto.Crypto;
   const sql = yield* SqlClient.SqlClient;
   const db = yield* NativeSql.NativeSql;
   const receipts = yield* ReceiptStore.ReceiptStore;
@@ -68,6 +85,10 @@ const make = Effect.gen(function* () {
             },
             row.envelope,
           );
+          const decoded = yield* Recorded.unwrapEffectIntent(intent).pipe(
+            Effect.provideService(Crypto.Crypto, recoveryCrypto),
+            Effect.mapError(() => new NativeSql.StoreError({ reason: "invalid_payload" })),
+          );
           result.push({
             command_id: row.command_id,
             principal_id: row.principal_id,
@@ -75,7 +96,8 @@ const make = Effect.gen(function* () {
             effect: row.effect,
             server_generation: row.server_generation,
             admitted_registry_version: row.admitted_registry_version,
-            intent,
+            intent: decoded.intent,
+            ...(decoded.recovery ? { recovery: decoded.recovery } : {}),
           });
         }
         return result;
@@ -117,6 +139,24 @@ const make = Effect.gen(function* () {
           const saved = yield* receipts.save(scope, receipt, null);
           if (!["pending", "unresolved"].includes(saved.receipt.state))
             return yield* new NativeSql.StoreError({ reason: "conflict" });
+          if (reservation.recovery) {
+            const decoded = yield* Recorded.unwrapEffectIntent(reservation.recovery).pipe(
+              Effect.provideService(Crypto.Crypto, recoveryCrypto),
+              Effect.mapError(() => new NativeSql.StoreError({ reason: "invalid_payload" })),
+            );
+            const record = reservation.recovery.recorded_caller;
+            if (
+              receipt.origin !== "native" ||
+              receipt.request_body !== reservation.recovery.request_body ||
+              receipt.receipt.request_sha256 !== reservation.recovery.request_sha256 ||
+              canonicalJson(decoded.intent) !== canonicalJson(reservation.intent) ||
+              record.destination.registry_instance_id !== scope.registry_instance_id ||
+              record.destination.owner_id !== scope.owner_id ||
+              record.destination.home_generation !== reservation.server_generation ||
+              record.registry_principal_id !== reservation.principal_id
+            )
+              return yield* new NativeSql.StoreError({ reason: "invalid_payload" });
+          }
           const envelope = yield* db.sealJson(
             {
               ...scope,
@@ -124,9 +164,9 @@ const make = Effect.gen(function* () {
               record_id: reservation.command_id,
               revision: reservation.admitted_registry_version,
             },
-            reservation.intent,
+            reservation.recovery ?? reservation.intent,
           );
-          const { intent: _intent, ...row } = reservation;
+          const { intent: _intent, recovery: _recovery, ...row } = reservation;
           yield* sql`INSERT INTO jones_workstreams_external_reservations ${sql.insert({ ...scope, ...row, state: "active", envelope })}`;
         }),
       ),
@@ -181,6 +221,16 @@ const make = Effect.gen(function* () {
         }),
       ),
   );
+  const writeCompletion = Effect.fn("EffectStore.writeCompletion")(function* (
+    scope: NativeSql.OwnerScope,
+    receipt: ReceiptStore.ReceiptRecord,
+    registryVersion: number,
+    events: readonly HistoryStore.HistoryEvent[],
+  ) {
+    yield* receipts.save(scope, receipt, registryVersion);
+    for (const event of events) yield* historyStore.append(scope, event);
+    yield* sql`UPDATE jones_workstreams_external_reservations SET state = 'released' WHERE registry_instance_id = ${scope.registry_instance_id} AND owner_id = ${scope.owner_id} AND command_id = ${receipt.receipt.command_id}`;
+  });
   const complete = Effect.fn("EffectStore.complete")(
     (
       scope: NativeSql.OwnerScope,
@@ -221,13 +271,119 @@ const make = Effect.gen(function* () {
             )
           )
             return yield* new NativeSql.StoreError({ reason: "invalid_payload" });
-          yield* receipts.save(scope, receipt, registryVersion);
-          for (const event of events) yield* historyStore.append(scope, event);
-          yield* sql`UPDATE jones_workstreams_external_reservations SET state = 'released' WHERE registry_instance_id = ${scope.registry_instance_id} AND owner_id = ${scope.owner_id} AND command_id = ${reservation.command_id}`;
+          yield* writeCompletion(scope, receipt, registryVersion, events);
         }),
       ),
   );
-  return EffectStore.of({ reserve, active, saveResult, result, complete });
+  const completeRetainedNativeSettlement = Effect.fn(
+    "EffectStore.completeRetainedNativeSettlement",
+  )(
+    (
+      scope: NativeSql.OwnerScope,
+      receipt: ReceiptStore.ReceiptRecord,
+      expected: { readonly server_generation: number; readonly registry_version: number },
+      events: readonly HistoryStore.HistoryEvent[],
+    ) =>
+      db.transaction(
+        scope,
+        Effect.gen(function* () {
+          const value = receipt.receipt;
+          if (value.state !== "committed")
+            return yield* new NativeSql.StoreError({ reason: "invalid_payload" });
+          const reservation = (yield* active(scope)).find(
+            (item) => item.command_id === value.command_id,
+          );
+          const retained = yield* result(scope, value.command_id);
+          const prior = yield* receipts.read(scope, value.command_id);
+          if (!reservation || retained === null || !prior)
+            return yield* new NativeSql.StoreError({ reason: "not_found" });
+          const contexts = yield* sql<{
+            server_generation: number;
+            registry_version: number;
+            state: string;
+          }>`SELECT server_generation,registry_version,state FROM jones_workstreams_registries WHERE registry_instance_id = ${scope.registry_instance_id} AND owner_id = ${scope.owner_id}`;
+          const context = contexts[0];
+          if (
+            !context ||
+            context.state !== "active" ||
+            context.server_generation !== expected.server_generation ||
+            context.server_generation !== reservation.server_generation ||
+            !Number.isSafeInteger(expected.registry_version) ||
+            expected.registry_version < reservation.admitted_registry_version ||
+            context.registry_version !== expected.registry_version + (value.changed ? 1 : 0) ||
+            value.registry_version !== context.registry_version
+          )
+            return yield* new NativeSql.StoreError({ reason: "conflict" });
+          yield* Effect.try({
+            try: () => {
+              const intent = reservation.intent as ExternalIntent;
+              if (
+                reservation.effect !== "request_native_t3_settlement" ||
+                intent.kind !== "native_t3_settlement" ||
+                intent.owner_id !== scope.owner_id ||
+                intent.command.command_id !== reservation.command_id ||
+                intent.actor.principal_id !== reservation.principal_id ||
+                intent.authorization.server_generation !== reservation.server_generation ||
+                prior.receipt.server_generation !== reservation.server_generation ||
+                intent.reference.native_reference_id !== reservation.native_reference_id ||
+                intent.admitted_registry_version !== reservation.admitted_registry_version ||
+                intent.command.expected_registry_version !==
+                  reservation.admitted_registry_version ||
+                prior.origin !== "native" ||
+                receipt.origin !== prior.origin ||
+                receipt.request_body !== prior.request_body ||
+                canonicalJson(decodeRequest(prior.request_body)) !== canonicalJson(intent.command)
+              )
+                throw new NativeSql.StoreError({ reason: "invalid_payload" });
+              requireNativeRecoveryReceipt(
+                prior.receipt,
+                intent,
+                retained as RegistryExternalResult,
+                value,
+                { ...context, owner_id: scope.owner_id },
+              );
+              const event = events[0];
+              if (
+                events.length !== 1 ||
+                !event ||
+                event.command_id !== value.command_id ||
+                event.registry_version !== value.registry_version ||
+                event.occurred_at !== value.completed_at ||
+                event.workstream_ids.length !== 0 ||
+                canonicalJson(event.value) !==
+                  canonicalJson({
+                    event_id: event.event_id,
+                    command_id: value.command_id,
+                    actor: value.actor,
+                    operation: value.operation,
+                    occurred_at: value.completed_at,
+                    registry_version: value.registry_version,
+                    changed: value.changed,
+                    workstream_versions: value.effects.workstream_versions,
+                    native_reference_id: value.effects.native_reference_id,
+                    membership_ids: value.effects.membership_ids,
+                    declaration_id: value.effects.declaration_id,
+                    declaration_revision: value.effects.declaration_revision,
+                    edge_id: value.effects.edge_id,
+                    lifecycle_declaration: value.effects.lifecycle_declaration,
+                  })
+              )
+                throw new NativeSql.StoreError({ reason: "invalid_payload" });
+            },
+            catch: () => new NativeSql.StoreError({ reason: "invalid_payload" }),
+          });
+          yield* writeCompletion(scope, receipt, value.registry_version, events);
+        }),
+      ),
+  );
+  return EffectStore.of({
+    reserve,
+    active,
+    saveResult,
+    result,
+    complete,
+    completeRetainedNativeSettlement,
+  });
 });
 /** @public Canonical service layer; provider calls remain outside store transactions. */
 export const layer = Layer.effect(EffectStore, make);

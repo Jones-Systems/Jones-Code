@@ -3,14 +3,35 @@
   "feature": "workstreams-native-authority",
   "jonesOwnedPaths": [
     "packages/client-runtime/src/state/workstreams/native.ts",
-    "packages/client-runtime/src/state/workstreams/native.test.ts"
+    "packages/client-runtime/src/state/workstreams/native.test.ts",
+    "apps/mobile/src/features/workstreams/summary.test.ts",
+    "apps/mobile/src/features/workstreams/summary.ts",
+    "apps/web/src/jones/workstreams/WorkstreamSummaryPanel.browser.test.tsx",
+    "apps/web/src/jones/workstreams/WorkstreamSummaryPanel.tsx",
+    "docs/operations/workstreams-rollups.md"
   ],
-  "hookPaths": [],
+  "hookPaths": ["apps/server/src/httpCors.ts"],
   "tombstones": [],
   "allowedImports": [
     {
+      "from": "packages/contracts/src/environmentHttp.ts",
+      "to": "packages/contracts/src/jones/workstreamsHttp.ts"
+    },
+    {
       "from": "packages/contracts/src/environment.ts",
       "to": "packages/contracts/src/jones/workstreamsNative.ts"
+    },
+    {
+      "from": "packages/contracts/src/environmentHttp.ts",
+      "to": "packages/contracts/src/jones/workstreamsNativePlacement.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/workstreams/native/runtime/startup.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/workstreams/native/integration.ts"
     }
   ]
 }

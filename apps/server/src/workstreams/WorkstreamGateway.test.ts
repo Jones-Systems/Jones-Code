@@ -25,6 +25,9 @@ import {
 import { makeSyntheticWorkstreamTransport } from "./SyntheticWorkstreamTransport.ts";
 import { makeControlPlaneWorkstreamTransport } from "./ControlPlaneWorkstreamTransport.ts";
 
+const decodeWorkstreamDetail = Schema.decodeUnknownEffect(WorkstreamDetail);
+const decodeReferenceDetail = Schema.decodeUnknownEffect(WorkstreamReferenceDetail);
+
 const binding = {
   registryId: "fixture-registry",
   ownerId: "owner-fixture",
@@ -103,8 +106,8 @@ it.effect("recovers its own lost commit after version advance with identical ret
       "unknown-effect",
     );
     expect((yield* gateway.readSession()).registryVersion).toBe(12);
-    // Legacy refusal cannot answer whether the previous dispatch committed.
-    expect((yield* gateway.submit(command).pipe(Effect.flip)).reason).toBe("version-conflict");
+    // This legacy fixture has no authenticated receipt lookup; absence of that seam stays unknown.
+    expect((yield* gateway.submit(command).pipe(Effect.flip)).reason).toBe("unknown-effect");
     const replay = yield* gateway.resubmit(command.command_id, body);
     expect(replay.kind).toBe("receipt");
     if (replay.kind !== "receipt") throw new Error("Expected replay receipt");
@@ -408,8 +411,8 @@ it.effect("returns schema-valid typed detail and reference fixtures", () =>
       ...contract,
       nativeReferenceId: "reference-fixture",
     });
-    yield* Schema.decodeUnknownEffect(WorkstreamDetail)(rawDetail);
-    yield* Schema.decodeUnknownEffect(WorkstreamReferenceDetail)(rawReference);
+    yield* decodeWorkstreamDetail(rawDetail);
+    yield* decodeReferenceDetail(rawReference);
 
     const gateway = yield* make(transport, { binding });
     const detail = yield* gateway.readDetail("ws-core-v1");
@@ -429,7 +432,13 @@ it.effect("refuses mutations while offline or against stale generation and revis
     const offline = yield* offlineGateway.submit(updateCommand()).pipe(Effect.flip);
     expect(offline.reason).toBe("offline");
 
-    const gateway = yield* make(makeSyntheticWorkstreamTransport(), { binding });
+    const gateway = yield* make(
+      {
+        ...makeSyntheticWorkstreamTransport(),
+        readCommandReceipt: () => Effect.succeed<WorkstreamReceiptRead>({ kind: "absent" }),
+      },
+      { binding },
+    );
     const stale = yield* gateway
       .submit(updateCommand({ expected_registry_version: 10 }))
       .pipe(Effect.flip);
@@ -947,5 +956,102 @@ it.effect("rejects an authorization revision change during initial authorization
       { binding: mutableBinding },
     );
     expect((yield* gateway.readRegistryCounts().pipe(Effect.flip)).reason).toBe("stale");
+  }),
+);
+
+it.effect.each([
+  "retained",
+  "owner",
+  "principal",
+  "generation",
+  "command",
+  "digest",
+  "operation",
+  "read-only",
+  "write-only",
+  "revoked-during-lookup",
+  "read-revoked-during-lookup",
+  "absent",
+  "unknown",
+  "unavailable",
+] as const)("stale POST replay fences %s evidence without another dispatch", (variant) =>
+  Effect.gen(function* () {
+    const fixture = makeSyntheticWorkstreamTransport();
+    const calls: string[] = [];
+    let permissions: readonly ("workstreams:read" | "workstreams:write")[] = [
+      "workstreams:read",
+      "workstreams:write",
+    ];
+    let replay = false;
+    const gateway = yield* make(
+      {
+        ...fixture,
+        getCapabilities: (input) =>
+          fixture.getCapabilities(input).pipe(
+            Effect.map((value) => {
+              if (replay) calls.push("witness");
+              return { ...value, permissions };
+            }),
+          ),
+        submitCommand: (input) => {
+          calls.push("dispatch");
+          return fixture.submitCommand(input);
+        },
+        readCommandReceipt: (input) =>
+          Effect.gen(function* () {
+            calls.push("lookup");
+            if (variant === "absent") return { kind: "absent" as const };
+            if (variant === "unknown" || variant === "unavailable")
+              return yield* new WorkstreamTransportError({
+                operation: "receipt",
+                effect: "no-effect",
+                detail: variant,
+              });
+            const receipt = yield* fixture.getCommand(input);
+            if (variant === "revoked-during-lookup") permissions = ["workstreams:read"];
+            if (variant === "read-revoked-during-lookup") permissions = ["workstreams:write"];
+            return {
+              kind: "receipt" as const,
+              receipt: {
+                ...receipt,
+                ...(variant === "owner" ? { owner_id: "other-owner" } : {}),
+                ...(variant === "principal" ? { actor: { principal_id: "other-principal" } } : {}),
+                ...(variant === "generation" ? { server_generation: 8 } : {}),
+                ...(variant === "command" ? { command_id: "other-command-0001" } : {}),
+                ...(variant === "digest" ? { request_sha256: "0".repeat(64) } : {}),
+                ...(variant === "operation" ? { operation: "create_workstream" as const } : {}),
+              },
+            };
+          }),
+      },
+      { binding },
+    );
+    const command = updateCommand();
+    const retained = yield* gateway.submit(command);
+    calls.length = 0;
+    replay = true;
+    if (variant === "read-only") permissions = ["workstreams:read"];
+    if (variant === "write-only") permissions = ["workstreams:write"];
+    const result = yield* gateway.submit(command).pipe(Effect.result);
+    if (variant === "retained") {
+      expect(result._tag).toBe("Success");
+      if (result._tag === "Success") expect(result.success).toEqual(retained);
+      expect(calls).toEqual(["witness", "witness", "lookup", "witness"]);
+    } else {
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure")
+        expect(result.failure.reason).toBe(
+          variant === "read-only" || variant === "revoked-during-lookup"
+            ? "authorization-not-current"
+            : variant === "digest" || variant === "operation"
+              ? "idempotency-conflict"
+              : variant === "absent"
+                ? "version-conflict"
+                : "unknown-effect",
+        );
+    }
+    expect(calls).not.toContain("dispatch");
+    if (variant === "write-only" || variant === "read-only") expect(calls).not.toContain("lookup");
+    if (variant === "absent") expect(calls).toEqual(["witness", "witness", "lookup", "witness"]);
   }),
 );

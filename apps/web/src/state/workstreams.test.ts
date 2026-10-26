@@ -26,6 +26,7 @@ import {
   WorkstreamActionError,
   workstreamFailureMessage,
   workstreamOperationFailure,
+  workstreamCommandNoEffect,
 } from "../jones/workstreams/workstreamActionSnapshot";
 import { placements } from "../components/workstreams/nativeWorkstreamActions.fixtures";
 
@@ -112,7 +113,7 @@ describe("proof request batching", () => {
       ],
     ]);
     expect(JSON.stringify(batches)).not.toContain("private");
-    expect(nativePlacementBatches([...threads].reverse())).toEqual(batches);
+    expect(nativePlacementBatches(threads.toReversed())).toEqual(batches);
     expect(nativePlacementBatches([])).toEqual([]);
   });
 
@@ -621,5 +622,27 @@ describe("Workstream assignment diagnostics", () => {
     expect(workstreamFailureMessage(new WorkstreamActionError("unknown"))).toContain(
       "effect is unknown",
     );
+  });
+});
+
+describe("definitive Workstream POST refusals", () => {
+  it.each(["workstream_command_not_current", "version_conflict"])(
+    "recognizes the decoded %s refusal as stale",
+    (message) => {
+      expect(workstreamCommandNoEffect(new EnvironmentHttpConflictError({ message }))).toBe(
+        "stale",
+      );
+    },
+  );
+
+  it("keeps ambiguous and malformed failures unknown", () => {
+    for (const cause of [
+      new EnvironmentHttpConflictError({ message: "idempotency_conflict" }),
+      new Error("version_conflict"),
+      { message: "version_conflict" },
+      { _tag: "EnvironmentHttpConflictError", message: 409 },
+    ]) {
+      expect(workstreamCommandNoEffect(cause)).toBeNull();
+    }
   });
 });

@@ -61,7 +61,7 @@ export class LinkedPrObserver extends Context.Service<
 
 export const GITHUB_PR_OBSERVATION_TIMEOUT_MS = 15_000;
 export const GITHUB_PR_OBSERVATION_BODY_LIMIT_BYTES = 262_144;
-export const GITHUB_PR_ETAG_LIMIT_BYTES = 512;
+const GITHUB_PR_ETAG_LIMIT_BYTES = 512;
 
 const OWNER_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$/;
 const REPOSITORY_PATTERN = /^[a-z0-9._-]{1,100}$/;

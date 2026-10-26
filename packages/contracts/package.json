@@ -7,6 +7,10 @@
   ],
   "type": "module",
   "exports": {
+    "./jones/workstreamsHttp": {
+      "types": "./src/jones/workstreamsHttp.ts",
+      "import": "./src/jones/workstreamsHttp.ts"
+    },
     "./jones/workstreamOperations": {
       "types": "./src/jones/workstreamOperations.ts",
       "import": "./src/jones/workstreamOperations.ts"
@@ -98,6 +102,14 @@
     "./jones/workstreamsRollups": {
       "types": "./src/jones/workstreamsRollups.ts",
       "import": "./src/jones/workstreamsRollups.ts"
+    },
+    "./jones/workstreamsLegacyReconciliation": {
+      "types": "./src/jones/workstreamsLegacyReconciliation.ts",
+      "import": "./src/jones/workstreamsLegacyReconciliation.ts"
+    },
+    "./jones/workstreamsLegacyReceipts": {
+      "types": "./src/jones/workstreamsLegacyReceipts.ts",
+      "import": "./src/jones/workstreamsLegacyReceipts.ts"
     }
   },
   "scripts": {

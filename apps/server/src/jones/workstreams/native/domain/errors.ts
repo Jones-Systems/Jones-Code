@@ -1,4 +1,4 @@
-export const REGISTRY_ERROR_SHAPES = {
+const REGISTRY_ERROR_SHAPES = {
   unauthorized: { status: 401, recovery: "stop" },
   forbidden: { status: 403, recovery: "stop" },
   not_found: { status: 404, recovery: "stop" },
@@ -49,10 +49,6 @@ export function requireDomain(
   message?: string,
 ): asserts condition {
   if (!condition) throw new WorkstreamDomainError(code, message);
-}
-
-export function isDomainErrorCode(value: string): value is DomainErrorCode {
-  return Object.hasOwn(REGISTRY_ERROR_SHAPES, value);
 }
 
 export function registryError(

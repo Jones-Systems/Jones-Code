@@ -1,5 +1,8 @@
+import { WorkstreamReceipt } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import type * as Wire from "@t3tools/contracts";
 import { requireDomain } from "./errors.ts";
+const isNativeReceipt = Schema.is(WorkstreamReceipt);
 export type AuditEvent = typeof Wire.WorkstreamAuditEvent.Type;
 export type Command = typeof Wire.WorkstreamCommand.Type;
 export type CommittedReceipt = typeof Wire.WorkstreamCommittedReceipt.Type;
@@ -217,7 +220,9 @@ export function lookupReceipt(
   ] as const) {
     if (receipt) {
       requireDomain(
-        receipt.command_id === commandId && receipt.owner_id === snapshot.context.owner_id,
+        isNativeReceipt(receipt) &&
+          receipt.command_id === commandId &&
+          receipt.owner_id === snapshot.context.owner_id,
         "unknown_effect",
       );
       return { kind: "present", source, receipt };

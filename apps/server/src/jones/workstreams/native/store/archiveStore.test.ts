@@ -1,3 +1,4 @@
+import { WORKSTREAMS_LEGACY_RECEIPTS_CONTRACT } from "@t3tools/contracts/jones/workstreamsLegacyReceipts";
 import { WORKSTREAMS_SNAPSHOT_CLASSES } from "@t3tools/contracts/jones/workstreamsSnapshot";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -89,5 +90,49 @@ it.effect("a missing home content key produces unknown rather than an absence wi
       kind: "unknown",
       reason: "key_unavailable",
     });
+    expect(
+      (yield* receipts.lookupLegacy(scope, "principal:test", {
+        contract: WORKSTREAMS_LEGACY_RECEIPTS_CONTRACT,
+        command_id: "missing",
+        expected_server_generation: 1,
+      })).result,
+    ).toEqual({ kind: "unknown", reason: "key_unavailable" });
   }).pipe(Effect.provide(testLayer({ keys: new Map() }))),
+);
+it.effect("archive presence reserves an unreadable ID before native receipt decoding", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const archive = yield* ArchiveStore.ArchiveStore;
+    const receipts = yield* ReceiptStore.ReceiptStore;
+    const id = "command:unreadable-0000";
+    yield* archive.startImport(scope, {
+      import_run_id: "run:unreadable",
+      snapshot_id: "snapshot:unreadable",
+      snapshot_sha256: hash,
+      producer: "control-plane",
+      contract_version: "1.0.0",
+      manifest: {
+        registry: { registry_instance_id: scope.registry_instance_id },
+        owners: [{ owner_id: scope.owner_id }],
+      },
+    });
+    yield* archive.archive(scope, {
+      import_run_id: "run:unreadable",
+      class: "workstream_command_receipts",
+      record_key: JSON.stringify([scope.owner_id, id]),
+      canonical_sha256: hash,
+      value: { retained: "unrepresentable" },
+    });
+    expect(yield* archive.contains(scope, id)).toBe(true);
+    expect(yield* archive.contains({ ...scope, owner_id: "different.owner" }, id)).toBe(false);
+    expect(yield* receipts.save(scope, pending(id), null).pipe(Effect.flip)).toMatchObject({
+      reason: "idempotency_conflict",
+    });
+    expect(Exit.isFailure(yield* Effect.exit(receipts.lookup(scope, id, 1)))).toBe(true);
+    const sql = yield* SqlClient.SqlClient;
+    expect(
+      (yield* sql<{ count: number }>`SELECT count(*) AS count FROM jones_workstreams_receipts`)[0]!
+        .count,
+    ).toBe(0);
+  }).pipe(Effect.provide(testLayer())),
 );

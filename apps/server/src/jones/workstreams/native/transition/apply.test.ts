@@ -167,11 +167,15 @@ it.effect("activation refuses an incomplete import without changing its durable 
 );
 
 it.effect(
-  "the immutable X1 full vector is rejected before writes because its receipt command IDs violate the native frozen contract",
+  "the immutable X1 full vector retains original receipt IDs without native command admission",
   () =>
     Effect.gen(function* () {
-      const result = yield* Effect.exit(prepare(vectors.full_snapshot.canonical_jsonl));
-      expect(Exit.isFailure(result)).toBe(true);
+      const result = yield* prepare(vectors.full_snapshot.canonical_jsonl);
+      expect(
+        result.snapshot.rows
+          .filter((r) => r.class === "workstream_command_receipts")
+          .map((r) => r.row.command_id),
+      ).toEqual(["command:0", "command:1", "command:2"]);
       const sql = yield* SqlClient.SqlClient;
       expect(
         (yield* sql<{
@@ -467,4 +471,78 @@ it.effect("operator service exposes the same transactional empty-import API", ()
     yield* service.apply(p);
     expect((yield* service.readback(p)).state).toBe("verified");
   }).pipe(Effect.provide(Transition.layer.pipe(Layer.provideMerge(testLayer({ keys: keys() }))))),
+);
+
+it.effect(
+  "reverse omits published queue tombstones while retaining archived and new dirty rows",
+  () =>
+    Effect.gen(function* () {
+      const p = yield* prepare();
+      yield* apply(p);
+      yield* readback(p);
+      yield* activate(p, {
+        activation_id: "activation:rollup-reverse",
+        plan_sha256: p.plan_sha256,
+        home_environment_id: p.home_environment_id,
+        generations: p.snapshot.header.owners.map((o) => ({
+          owner_id: o.owner_id,
+          server_generation: o.server_generation,
+        })),
+      });
+      const registryStore = yield* RegistryStore.RegistryStore;
+      const scope = { registry_instance_id: registry, owner_id: "synthetic.owner" };
+      const first = p.snapshot.rows.find((r) => r.class === "workstreams")!;
+      for (const [i, id] of ["workstream:native-published", "workstream:native-dirty"].entries()) {
+        yield* registryStore.put(
+          scope,
+          "records",
+          {
+            metadata: { workstream_id: id, version: 1, sort_order: 10 + i },
+            value: {
+              ...JSON.parse(String(first.row.payload)),
+              workstream_id: id,
+              sort_order: 10 + i,
+            },
+          },
+          null,
+        );
+      }
+      yield* registryStore.advance(scope, { server_generation: 7, registry_version: 7 });
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE jones_workstreams_rollup_queue SET state='dead_letter', failure_code='published', failed_at='2026-10-25T12:10:00.000Z' WHERE workstream_id='workstream:0'`;
+      yield* sql`INSERT INTO jones_workstreams_rollup_queue SELECT registry_instance_id,owner_id,'workstream:native-published',manifest_sha256,state,attempt_id,fence,lease_expires_at,failure_code,failed_at,updated_at FROM jones_workstreams_rollup_queue WHERE workstream_id='workstream:0'`;
+      yield* sql`INSERT INTO jones_workstreams_rollup_queue SELECT registry_instance_id,owner_id,'workstream:native-dirty',manifest_sha256,'pending',NULL,fence,NULL,NULL,NULL,updated_at FROM jones_workstreams_rollup_queue WHERE workstream_id='workstream:0'`;
+      yield* sql`UPDATE jones_workstreams_registries SET state='fenced'`;
+      const input = {
+        snapshot_id: "80000000-0000-4000-8000-000000000001",
+        exported_at: "2026-10-25T13:00:00.000Z",
+        revision: "0b1b4717897ca82c581251713b6b687375cea074",
+        fence_epoch: 3,
+        stream_key_id: "synthetic-transition-key",
+        representable_principals: [
+          "20000000-0000-4000-8000-000000000001",
+          "20000000-0000-4000-8000-000000000002",
+        ],
+      };
+      const result = yield* prepareReverse(p, input);
+      const rows = result.snapshot.rows.filter((r) => r.class === "workstream_rollup_queue");
+      expect(rows.map((r) => r.row.workstream_id).sort()).toEqual([
+        "workstream:1",
+        "workstream:2",
+        "workstream:native-dirty",
+      ]);
+      expect(rows.some((r) => r.row.failure_code === "published")).toBe(false);
+      for (const original of p.snapshot.rows.filter(
+        (r) => r.class === "workstream_rollup_queue" && r.row.workstream_id !== "workstream:0",
+      ))
+        expect(rows.find((r) => r.row.workstream_id === original.row.workstream_id)).toEqual(
+          original,
+        );
+      expect(
+        (yield* sql<{
+          count: number;
+        }>`SELECT count(*) AS count FROM jones_workstreams_rollup_queue`)[0]!.count,
+      ).toBe(5);
+      expect((yield* prepareReverse(p, input)).canonical_jsonl).toBe(result.canonical_jsonl);
+    }).pipe(Effect.provide(testLayer({ keys: keys() }))),
 );

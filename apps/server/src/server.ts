@@ -58,11 +58,9 @@ import { fixPath } from "./os-jank.ts";
 import * as Ws from "./ws.ts";
 import * as ShellMaterialization from "./jones/orchestration/shellMaterialization.ts";
 import {
-  workstreamOperationsLayerLive,
-  workstreamGatewayLayerLive,
+  workstreamSelectedServicesLayer,
   workstreamHttpApiLayer,
   workstreamNativeAuthorityLayerLive,
-  workstreamRegistrationContextLayerLive,
   workstreamResponseHeadersLayer,
 } from "./workstreams/http.ts";
 import * as NativeWorkstreams from "./jones/workstreams/runtimeIntegration/native.ts";
@@ -111,6 +109,8 @@ import * as DesktopBrowserChannel from "./preview/DesktopBrowserChannel.ts";
 import * as ServerBrowserStream from "./preview/ServerBrowserStream.ts";
 import * as PreviewBrowser from "./preview/PreviewBrowser.ts";
 import * as ProcessRunner from "./processRunner.ts";
+import * as NativeSourceStartup from "./jones/workstreams/native/runtime/startup.ts";
+import * as NativeSourceIntegration from "./jones/workstreams/native/integration.ts";
 import * as GitManager from "./git/GitManager.ts";
 import * as EnvironmentTheme from "./environmentTheme.ts";
 import * as Keybindings from "./keybindings.ts";
@@ -541,7 +541,22 @@ const layerScheduledTaskWebhookOrigin = Layer.effect(
   }),
 );
 
+const layerNativeSourceLookup = Layer.unwrap(
+  Effect.map(NativeSourceStartup.Startup, (selection) =>
+    selection.mode === "native-home"
+      ? NativeSourceIntegration.nativeSourceEnrollmentLayer
+      : Layer.empty,
+  ),
+).pipe(
+  Layer.provideMerge(
+    NativeSourceStartup.layer.pipe(
+      Layer.provideMerge(NativeSourceIntegration.nativePersistenceLayer),
+    ),
+  ),
+);
+
 const layerOrchestrationV2Runtime = RuntimeLayer.layerProduction.pipe(
+  Layer.provide(layerNativeSourceLookup),
   Layer.provide(layerScheduledTaskWebhookOrigin),
   Layer.provide(workstreamNativeAuthorityLayerLive),
   Layer.provide(ProviderEventIngestor.layerAnalytics),
@@ -725,7 +740,10 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
   ),
 );
 
-const layerRuntimeDependencies = layerRuntimeCoreDependencies.pipe(
+const layerRuntimeDependencies = NativeWorkstreams.nativeWorkstreamsRuntimeLayer.pipe(
+  Layer.provideMerge(layerNativeSourceLookup),
+  Layer.provide(workstreamNativeAuthorityLayerLive),
+  Layer.provideMerge(layerRuntimeCoreDependencies),
   Layer.provideMerge(layerUsage),
   Layer.provideMerge(JonesHttp.tokenAccountingLayer),
   Layer.provideMerge(layerBackground),
@@ -810,11 +828,9 @@ const layerMakeRoutes = Layer.mergeAll(
     ),
     Layer.provide(DesktopBrowserChannel.layer),
     Layer.provide(PreviewBrowser.layer),
-    Layer.provide(workstreamOperationsLayerLive),
+    Layer.provide(workstreamSelectedServicesLayer),
   )
   .pipe(
-    Layer.provide(workstreamGatewayLayerLive),
-    Layer.provide(workstreamRegistrationContextLayerLive),
     // Same layer identity as the gateway's, so the config descriptor reads the same authority.
     Layer.provide(workstreamNativeAuthorityLayerLive),
     Layer.provide(ThreadHandoff.layer.pipe(Layer.provide(HandoffLaunch.layer))),

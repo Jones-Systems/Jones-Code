@@ -1,12 +1,20 @@
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Archive from "../store/archiveStore.ts";
+import { readLegacyLedger } from "../store/legacyReconciliationStore.ts";
 import { canonical, digest, TransitionError } from "./canonical.ts";
 import { archiveScope } from "./archive.ts";
 import { loadManifest } from "./apply.ts";
 import { readback } from "./readback.ts";
 import type { ImportPlan } from "./plan.ts";
 export interface ActivationIntent {
+  readonly reconciliation?: {
+    readonly delta_root: string;
+    readonly registry_versions: readonly {
+      readonly owner_id: string;
+      readonly registry_version: number;
+    }[];
+  };
   readonly activation_id: string;
   readonly plan_sha256: string;
   readonly home_environment_id: string;
@@ -57,7 +65,40 @@ export const activate = Effect.fn("WorkstreamsTransition.activate")(function* (
           return yield* new TransitionError({ reason: "activation_receipt_missing" });
         return { state: "activated" as const, activation_id: intent.activation_id, replayed: true };
       }
-      yield* readback(p);
+      const verified = yield* readback(p);
+      if (
+        verified.reconciliation.count &&
+        (!intent.reconciliation ||
+          intent.reconciliation.delta_root !== verified.reconciliation.delta_root ||
+          canonical(intent.reconciliation.registry_versions) !==
+            canonical(verified.reconciliation.registry_versions))
+      )
+        return yield* new TransitionError({ reason: "activation_reconciliation_identity" });
+      const covered = new Set<string>();
+      for (const owner of p.snapshot.header.owners) {
+        const ledger = yield* readLegacyLedger(
+          { ...archiveScope(p), owner_id: owner.owner_id },
+          p.import_run_id,
+        );
+        for (const delta of ledger.deltas)
+          covered.add(canonical([owner.owner_id, delta.binding.command_id]));
+      }
+      const originalOpen = p.snapshot.rows.filter(
+        (r) => r.class === "workstream_external_reservations" && r.row.state === "active",
+      );
+      const originalReceipts = p.snapshot.rows.filter(
+        (r) =>
+          r.class === "workstream_command_receipts" &&
+          ["pending", "unresolved"].includes(String(r.row.state)),
+      );
+      if (
+        originalOpen.length !== p.snapshot.header.open_effects ||
+        originalReceipts.length !== originalOpen.length ||
+        originalOpen.some((r) => !covered.has(canonical([r.row.owner_id, r.row.command_id]))) ||
+        originalReceipts.some((r) => !covered.has(canonical([r.row.owner_id, r.row.command_id]))) ||
+        covered.size !== originalOpen.length
+      )
+        return yield* new TransitionError({ reason: "open_effects" });
       if (p.snapshot.header.producer.system === "jones-native") {
         const extensions = yield* archive.readArchive(
           archiveScope(p),
@@ -73,8 +114,7 @@ export const activate = Effect.fn("WorkstreamsTransition.activate")(function* (
       const open = yield* sql<{
         count: number;
       }>`SELECT (SELECT count(*) FROM jones_workstreams_receipts WHERE registry_instance_id=${archiveScope(p).registry_instance_id} AND state IN ('pending','unresolved')) + (SELECT count(*) FROM jones_workstreams_external_reservations WHERE registry_instance_id=${archiveScope(p).registry_instance_id} AND state='active') + (SELECT count(*) FROM jones_workstreams_operations WHERE dest_registry_instance_id=${archiveScope(p).registry_instance_id} AND state IN ('accepted','dispatching','in_progress','reconciling')) AS count`;
-      if (open[0]!.count || p.snapshot.header.open_effects)
-        return yield* new TransitionError({ reason: "open_effects" });
+      if (open[0]!.count) return yield* new TransitionError({ reason: "open_effects" });
       yield* archive.archive(archiveScope(p), {
         import_run_id: p.import_run_id,
         class: "jones.activation",
@@ -84,7 +124,7 @@ export const activate = Effect.fn("WorkstreamsTransition.activate")(function* (
       });
       for (const owner of expected) {
         const changed =
-          yield* sql`UPDATE jones_workstreams_registries SET state='active' WHERE registry_instance_id=${archiveScope(p).registry_instance_id} AND owner_id=${owner.owner_id} AND state='importing' AND server_generation=${owner.server_generation} AND registry_version=${p.snapshot.header.owners.find((o) => o.owner_id === owner.owner_id)!.registry_version} RETURNING owner_id`;
+          yield* sql`UPDATE jones_workstreams_registries SET state='active' WHERE registry_instance_id=${archiveScope(p).registry_instance_id} AND owner_id=${owner.owner_id} AND state='importing' AND server_generation=${owner.server_generation} AND registry_version=${verified.reconciliation.registry_versions.find((o) => o.owner_id === owner.owner_id)!.registry_version} RETURNING owner_id`;
         if (changed.length !== 1) return yield* new TransitionError({ reason: "activation_cas" });
       }
       yield* sql`UPDATE jones_workstreams_import_runs SET state='activated' WHERE import_run_id=${p.import_run_id} AND state='verified'`;

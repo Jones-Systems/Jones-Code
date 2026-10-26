@@ -1,0 +1,8 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "workstreams-native-read-projection",
+  "jonesOwnedPaths": ["docs/operations/workstreams-read-projection.md"],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": []
+}

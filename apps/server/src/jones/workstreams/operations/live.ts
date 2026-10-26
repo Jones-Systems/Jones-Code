@@ -2,6 +2,8 @@ import { ThreadId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Callers from "../native/runtime/recordedCaller.ts";
 import * as Random from "effect/Random";
 import * as ServerEnvironment from "../../../environment/ServerEnvironment.ts";
 import * as ProjectionStore from "../../../orchestration-v2/ProjectionStore.ts";
@@ -19,8 +21,13 @@ const portsLayer = Layer.effect(
     const registration = yield* RegistrationContext.WorkstreamsRegistrationContext;
     const activation = yield* Activation;
     const execution = yield* ExecutionContext;
+    const callers = yield* Effect.serviceOption(Callers.RecordedCallers);
     return Ports.of({
-      ...(execution.mode === "native" ? { native: execution } : {}),
+      ...(execution.mode === "native"
+        ? {
+            native: { ...execution, ...(Option.isSome(callers) ? { callers: callers.value } : {}) },
+          }
+        : {}),
       environmentId: yield* environment.getEnvironmentId,
       activation: activation.status,
       registryId: activation.registryId,

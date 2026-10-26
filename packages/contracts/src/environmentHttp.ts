@@ -1,3 +1,4 @@
+import { WorkstreamsHttpResponseContractHeaders } from "./jones/workstreamsHttp.ts";
 import { ThreadAttention } from "./jones/threadAttention.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import { MessageId } from "./baseSchemas.ts";
@@ -105,6 +106,11 @@ import {
   WorkstreamReceipt,
 } from "./workstreams.ts";
 import { T3PlacementLoadRequest, T3PlacementResult } from "./workstreamPlacements.ts";
+import {
+  WorkstreamsLegacyReceiptLookupRequest,
+  WorkstreamsLegacyReceiptLookupResult,
+} from "./jones/workstreamsLegacyReceipts.ts";
+import { WorkstreamsNativePlacementResult } from "./jones/workstreamsNativePlacement.ts";
 
 const OptionalBearerHeaders = Schema.Struct({
   authorization: Schema.optionalKey(Schema.String),
@@ -882,14 +888,32 @@ const {
   EnvironmentHttpBadRequestError,
 });
 
+const WorkstreamsHttpCommandHeaders = Schema.Struct({
+  ...OptionalBearerHeaders.fields,
+  ...WorkstreamsHttpResponseContractHeaders.fields,
+});
+
 class EnvironmentWorkstreamsHttpApi extends EnvironmentWorkstreamAppearanceHttpApi.add(
   HttpApiEndpoint.post("threadPlacements", "/api/workstreams/thread-placements", {
-    headers: OptionalBearerHeaders,
+    headers: Schema.Struct({
+      ...OptionalBearerHeaders.fields,
+      "x-t3-workstreams-placement-contract": Schema.optionalKey(
+        Schema.Literal("workstreams-t3-placement/2.0.0"),
+      ),
+    }),
     payload: T3PlacementLoadRequest,
-    success: T3PlacementResult,
-    error: EnvironmentWorkstreamSnapshotErrors,
+    success: Schema.Union([WorkstreamsNativePlacementResult, T3PlacementResult]),
+    error: EnvironmentWorkstreamPagedSnapshotErrors,
   }).middleware(EnvironmentAuthenticatedAuth),
 )
+  .add(
+    HttpApiEndpoint.post("legacyReceiptLookup", "/api/workstreams/legacy-receipts/v1/lookup", {
+      headers: OptionalBearerHeaders,
+      payload: WorkstreamsLegacyReceiptLookupRequest,
+      success: WorkstreamsLegacyReceiptLookupResult,
+      error: EnvironmentWorkstreamPagedSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
   .add(
     HttpApiEndpoint.get("list", "/api/workstreams", {
       headers: OptionalBearerHeaders,
@@ -960,17 +984,17 @@ class EnvironmentWorkstreamsHttpApi extends EnvironmentWorkstreamAppearanceHttpA
   )
   .add(
     HttpApiEndpoint.get("command", "/api/workstreams/commands/:commandId", {
-      headers: OptionalBearerHeaders,
+      headers: WorkstreamsHttpCommandHeaders,
       params: T3WorkstreamCommandPollParams,
-      success: WorkstreamReceipt,
+      success: [WorkstreamReceipt, WorkstreamReceipt.pipe(HttpApiSchema.status(202))],
       error: EnvironmentWorkstreamSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
     HttpApiEndpoint.post("submit", "/api/workstreams/commands", {
-      headers: OptionalBearerHeaders,
+      headers: WorkstreamsHttpCommandHeaders,
       payload: T3WorkstreamCommandRequest,
-      success: WorkstreamReceipt,
+      success: [WorkstreamReceipt, WorkstreamReceipt.pipe(HttpApiSchema.status(202))],
       error: EnvironmentWorkstreamCommandErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}

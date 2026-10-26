@@ -1,6 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Context from "effect/Context";
+import * as Exit from "effect/Exit";
+import * as Layer from "effect/Layer";
+import * as Scope from "effect/Scope";
+import * as Scheduler from "effect/Scheduler";
+import * as Tracer from "effect/Tracer";
 import * as Deferred from "effect/Deferred";
 import * as TestClock from "effect/testing/TestClock";
 import type { WorkstreamCommand } from "@t3tools/contracts";
@@ -714,4 +720,114 @@ it.effect("serializes writes and prioritizes app/CLI/agent ahead of queued write
       yield* TestClock.adjust(1000);
     }),
   ),
+);
+
+it.effect("scope shutdown cancels executor waits and runs their finalizers", () =>
+  Effect.gen(function* () {
+    const cp = fakeControlPlane();
+    cp.seedRegistration();
+    cp.state.verified = false;
+    cp.state.verificationPending = true;
+    cp.decide(
+      command(childId(request, "ver"), cp.state.version, {
+        operation: "verify_reference",
+        native_reference_id: "reference",
+        expected_attestation_version: 0,
+      }),
+    );
+    const waiting = yield* Deferred.make<void>();
+    const stopped = yield* Deferred.make<void>();
+    cp.state.onSleep = () =>
+      Deferred.succeed(waiting, undefined).pipe(
+        Effect.andThen(Effect.never),
+        Effect.ensuring(Deferred.succeed(stopped, undefined)),
+      );
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        yield* (yield* WorkstreamOperations).submit({ request, wait_ms: 0 });
+        yield* Deferred.await(waiting);
+      }).pipe(Effect.provide(cp.layer)),
+    );
+    expect(yield* Deferred.isDone(stopped)).toBe(true);
+    expect(cp.state.writes).toEqual([]);
+  }),
+);
+
+it.effect("scope shutdown cancels provider work after executor handoff", () =>
+  Effect.gen(function* () {
+    const cp = fakeControlPlane();
+    const dispatched = yield* Deferred.make<void>();
+    const stopped = yield* Deferred.make<void>();
+    cp.state.beforeSend = () =>
+      Deferred.succeed(dispatched, undefined).pipe(
+        Effect.andThen(Effect.never),
+        Effect.ensuring(Deferred.succeed(stopped, undefined)),
+      );
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        yield* (yield* WorkstreamOperations).submit({ request: createRequest, wait_ms: 0 });
+        yield* Deferred.await(dispatched);
+      }).pipe(Effect.provide(cp.layer)),
+    );
+    expect(yield* Deferred.isDone(stopped)).toBe(true);
+    expect(cp.state.writes).toHaveLength(1);
+    expect(cp.state.creates).toBe(0);
+  }),
+);
+
+it.effect("scope shutdown finalizes a handed-off executor before its first scheduled step", () =>
+  Effect.gen(function* () {
+    const cp = fakeControlPlane();
+    const owner = yield* Scope.make();
+    yield* Effect.addFinalizer((exit) => Scope.close(owner, exit));
+    const context = yield* Layer.buildWithScope(cp.layer, owner);
+    const service = Context.get(context, WorkstreamOperations);
+    const underlying = yield* Scheduler.Scheduler;
+    const held: (() => void)[] = [];
+    let child: Fiber.Fiber<unknown, unknown> | undefined;
+    let parentId: number | undefined;
+    const scheduler: Scheduler.Scheduler = {
+      executionMode: underlying.executionMode,
+      makeDispatcher: () => {
+        const dispatcher = underlying.makeDispatcher();
+        return {
+          scheduleTask: (task, priority) => {
+            const current = Fiber.getCurrent();
+            const span = current && Context.getOption(current.context, Tracer.ParentSpan);
+            if (
+              held.length === 0 &&
+              current?.id === parentId &&
+              span?._tag === "Some" &&
+              span.value._tag === "Span" &&
+              span.value.name === "WorkstreamOperations.launch"
+            )
+              held.push(task);
+            else dispatcher.scheduleTask(task, priority);
+          },
+          flush: () => dispatcher.flush(),
+        };
+      },
+      shouldYield: (fiber) => {
+        parentId ??= fiber.id;
+        if (fiber.id !== parentId) child ??= fiber;
+        return underlying.shouldYield(fiber);
+      },
+    };
+    yield* service
+      .submit({ request: createRequest, wait_ms: 0 })
+      .pipe(Effect.provideService(Scheduler.Scheduler, scheduler));
+    expect(held).toHaveLength(1);
+    expect(child).toBeUndefined();
+    const closing = yield* Deferred.make<void>();
+    yield* Scope.addFinalizer(owner, Deferred.succeed(closing, undefined));
+    const shutdown = yield* Scope.close(owner, Exit.void).pipe(Effect.forkChild);
+    yield* Deferred.await(closing);
+    expect(owner.state._tag).toBe("Closed");
+    yield* Effect.sync(() => held[0]!());
+    yield* Fiber.join(shutdown);
+    expect(child).toBeDefined();
+    expect(child?.pollUnsafe()).toMatchObject({ _tag: "Failure" });
+    expect(cp.state.writes).toEqual([]);
+    expect(cp.state.creates).toBe(0);
+  }),
 );
