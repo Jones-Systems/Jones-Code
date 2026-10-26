@@ -13,6 +13,8 @@ import {
   decodeStagedQualifiedRuntime,
   QualifiedRuntimeBlockedError,
   type StagedQualifiedRuntime,
+  decodeQualifiedRuntimeReceipt,
+  type QualifiedRuntimeReceipt,
 } from "../../cloud/qualifiedRuntime.ts";
 import { decodeMigrationPlan, type MigrationPlan } from "../migrationPlan.ts";
 
@@ -73,6 +75,12 @@ export type PreparationJob =
       readonly activeVersion: string;
       readonly host: PreparationHost;
     }
+  | {
+      readonly kind: "verify-runtime";
+      readonly baseDir: string;
+      readonly version: string;
+      readonly host: PreparationHost;
+    }
   | { readonly kind: "sweep"; readonly cacheRoot: string };
 
 export interface PreparationRequest {
@@ -111,6 +119,7 @@ export type PreparationOutcome =
       /** Extraction scratch the worker could not remove; the job directory removal owns it. */
       readonly leftover?: string;
     }
+  | { readonly kind: "verify-runtime"; readonly receipt: QualifiedRuntimeReceipt }
   | { readonly kind: "verify"; readonly staged: StagedQualifiedRuntime }
   | ({ readonly kind: "sweep" } & PreparationSweep);
 
@@ -162,6 +171,15 @@ function decodeJob(value: unknown): PreparationJob | undefined {
   if (r?.kind === "sweep")
     return absolute(r.cacheRoot) ? { kind: "sweep", cacheRoot: r.cacheRoot } : undefined;
   const host = decodeHost(r?.host);
+  if (r?.kind === "verify-runtime")
+    return host !== undefined &&
+      absolute(r.baseDir) &&
+      typeof r.version === "string" &&
+      /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-preview\.[0-9]+\.[0-9]+(?:\.[0-9]+)?$/.test(
+        r.version,
+      )
+      ? { kind: "verify-runtime", baseDir: r.baseDir, version: r.version, host }
+      : undefined;
   if (r === undefined || host === undefined || typeof r.activeVersion !== "string")
     return undefined;
   if (r.kind === "verify")
@@ -195,6 +213,7 @@ export function decodePreparationRequest(
   if (
     r === undefined ||
     job === undefined ||
+    (job.kind === "verify-runtime" && job.baseDir !== r?.baseDir) ||
     r.protocol !== PREPARATION_PROTOCOL ||
     typeof r.jobId !== "string" ||
     !JOB_ID.test(r.jobId) ||
@@ -267,6 +286,10 @@ function decodeOutcome(
     return count(r.removed) && count(r.retained) && count(r.failed)
       ? { kind: "sweep", removed: r.removed, retained: r.retained, failed: r.failed }
       : undefined;
+  if (r.kind === "verify-runtime") {
+    const receipt = decodeQualifiedRuntimeReceipt(r.receipt);
+    return receipt === undefined ? undefined : { kind: "verify-runtime", receipt };
+  }
   const staged = decodeStagedQualifiedRuntime(r.staged);
   if (staged === undefined) return undefined;
   if (r.kind === "verify") return { kind: "verify", staged };

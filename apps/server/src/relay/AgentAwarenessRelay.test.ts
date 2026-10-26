@@ -1,4 +1,10 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
   EnvironmentId,
@@ -35,6 +41,7 @@ import {
   RELAY_URL_SECRET,
 } from "../cloud/config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -141,6 +148,7 @@ const makeTestRelay = Effect.fnUntraced(function* (
     readonly failSecretRead?: (name: string) => boolean;
     readonly linked?: boolean;
     readonly readShell?: (threadId: ThreadId) => Effect.Effect<OrchestrationV2ThreadShell | null>;
+    readonly readSnapshot?: ThreadManagementService.ThreadManagementService["Service"]["getShellSnapshot"];
     readonly domainEvents?: Stream.Stream<OrchestrationV2DomainEvent>;
   } = {},
 ) {
@@ -182,10 +190,18 @@ const makeTestRelay = Effect.fnUntraced(function* (
       Effect.sync(() => shellReads.push(threadId)).pipe(
         Effect.andThen(options.readShell?.(threadId) ?? Ref.get(currentShell)),
       ),
-    getShellSnapshot: () =>
-      Effect.sync(() => {
+    getShellSnapshot: (query) =>
+      Effect.suspend(() => {
         catchUp.shellSnapshotReads += 1;
-        return { schemaVersion: 2, snapshotSequence: 1, threads: [], archivedThreads: [] };
+        return (
+          options.readSnapshot?.(query) ??
+          Effect.succeed({
+            schemaVersion: 2,
+            snapshotSequence: 1,
+            threads: [],
+            archivedThreads: [],
+          })
+        );
       }),
     readShellSnapshot: unused,
     ensureLegacyTranscript: unused,
@@ -643,3 +659,95 @@ describe("AgentAwarenessRelay", () => {
     }).pipe(Effect.scoped, Effect.provide(ProjectionStore.layerMemory)),
   );
 });
+
+// A small synthetic database exercises the relay hook's actual connection
+// routing. SQLite and its worker close before the scoped directory is removed.
+const relayDatabase = Layer.unwrap(
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "jones-relay-reader-" });
+    return NodeSqliteClient.layer({
+      filename: path.join(directory, "state.sqlite"),
+      readerWorker: true,
+      readerFailureMode: "fail",
+    });
+  }),
+);
+
+it.live("catch-up requests active shells on the file reader while the writer is held", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`PRAGMA journal_mode = WAL`;
+    yield* sql`CREATE TABLE relay_fixture (value INTEGER NOT NULL)`;
+    yield* sql`INSERT INTO relay_fixture VALUES (1)`;
+    yield* sql`SELECT value FROM relay_fixture`.pipe(NodeSqliteClient.readOnly);
+    const completed = yield* Deferred.make<void>();
+    const { relay, catchUp } = yield* makeTestRelay({
+      readSnapshot: (query) =>
+        Effect.gen(function* () {
+          assert.deepStrictEqual(query, { location: "active" });
+          const rows = yield* sql.withTransaction(
+            sql<{ value: number }>`SELECT value FROM relay_fixture`,
+          );
+          assert.equal(rows[0]?.value, 1);
+          yield* Deferred.succeed(completed, undefined);
+          return { schemaVersion: 2, snapshotSequence: 1, threads: [], archivedThreads: [] };
+        }).pipe(
+          Effect.mapError(
+            (cause) => new Orchestrator.OrchestratorProjectionError({ threadId: THREAD_ID, cause }),
+          ),
+        ),
+    });
+    const held = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const writer = yield* Effect.forkScoped(
+      sql.withTransaction(
+        Deferred.succeed(held, undefined).pipe(Effect.andThen(Deferred.await(release))),
+      ),
+    );
+    yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined));
+    yield* Deferred.await(held);
+    yield* relay.start();
+    const result = yield* Deferred.await(completed).pipe(Effect.timeoutOption("5 seconds"));
+    // Release before asserting: a regression can leave connection acquisition waiting.
+    yield* Deferred.succeed(release, undefined);
+    yield* Fiber.join(writer);
+    assert.isTrue(Option.isSome(result), "Relay catch-up waited behind the writer");
+    assert.equal(catchUp.shellSnapshotReads, 1);
+  }).pipe(Effect.provide(relayDatabase), Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.live("unavailable file reader fails catch-up without a writer fallback, including retry", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    // Deliberately retain DELETE journal mode: strict readers require WAL.
+    yield* sql`CREATE TABLE relay_fixture (value INTEGER NOT NULL)`;
+    yield* sql`INSERT INTO relay_fixture VALUES (1)`;
+    const outcomes = yield* Queue.unbounded<boolean>();
+    let successes = 0;
+    const { relay, catchUp } = yield* makeTestRelay({
+      readSnapshot: (query) =>
+        Effect.gen(function* () {
+          assert.deepStrictEqual(query, { location: "active" });
+          yield* sql.withTransaction(sql`SELECT value FROM relay_fixture`);
+          successes += 1;
+          return { schemaVersion: 2, snapshotSequence: 1, threads: [], archivedThreads: [] };
+        }).pipe(
+          Effect.onExit((exit) => Queue.offer(outcomes, exit._tag === "Success")),
+          Effect.mapError(
+            (cause) => new Orchestrator.OrchestratorProjectionError({ threadId: THREAD_ID, cause }),
+          ),
+        ),
+    });
+    yield* relay.start();
+    const first = yield* Queue.take(outcomes).pipe(Effect.timeoutOption("5 seconds"));
+    assert.deepStrictEqual(first, Option.some(false));
+    yield* relay.requestCatchUp();
+    const retry = yield* Queue.take(outcomes).pipe(Effect.timeoutOption("5 seconds"));
+    assert.deepStrictEqual(retry, Option.some(false));
+    assert.equal(catchUp.shellSnapshotReads, 2);
+    assert.equal(successes, 0);
+    assert.lengthOf(yield* sql`SELECT value FROM relay_fixture`, 1);
+  }).pipe(Effect.provide(relayDatabase), Effect.scoped, Effect.provide(NodeServices.layer)),
+);

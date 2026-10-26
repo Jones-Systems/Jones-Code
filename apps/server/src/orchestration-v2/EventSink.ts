@@ -1,4 +1,5 @@
 import type { ThreadSelfConfigurationCommitContext } from "../jones/threadConfiguration/ThreadSelfConfiguration.ts";
+import type { TaskContinuationCommitContext } from "../jones/taskContinuation/commitContext.ts";
 import * as HistoricalTerminalHistory from "../jones/orchestration/HistoricalTerminalHistory.ts";
 import type { ProviderConversationReselectionCommitContext } from "../jones/runtime/ProviderConversationReselection.ts";
 import * as CheckoutIntent from "../jones/ordinaryCheckout/CheckoutIntent.ts";
@@ -359,6 +360,7 @@ export interface EventSinkV2Shape {
     EventSinkV2Error
   >;
   readonly commitCommand: (input: {
+    readonly taskContinuation?: TaskContinuationCommitContext | undefined;
     readonly selfSettlementProjectRemaining?: SelfSettlementProjectRemaining;
     readonly settlementRestore?: { readonly settleCommandId: CommandId };
     readonly ordinaryCheckoutCommand?: CheckoutIntent.IntentCommand;
@@ -1254,6 +1256,7 @@ const layerBase: Layer.Layer<
             input = { ...input, events: yield* input.threadSelfConfiguration.revalidate() };
           if (input.providerConversationReselection)
             yield* input.providerConversationReselection.revalidate(input);
+          if (input.taskContinuation) yield* input.taskContinuation.accept(input);
 
           if (imported !== undefined && choice !== undefined && choice.rejectionReason !== null) {
             const receipt: CommandReceiptStore.CommandReceiptV2 = {

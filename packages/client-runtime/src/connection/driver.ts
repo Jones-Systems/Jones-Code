@@ -14,15 +14,10 @@ import type {
 } from "./model.ts";
 import { ConnectionTransientError } from "./model.ts";
 import * as ConnectionResolver from "./resolver.ts";
-import {
-  connectionRoutes,
-  routeEntry,
-  routeHttpBaseUrl,
-  sendsTokenInClear,
-  usableRoutes,
-} from "./routes.ts";
+import { connectionRoutes, routeEntry, routeHttpBaseUrl, usableRoutes } from "./routes.ts";
 import * as RpcSession from "../rpc/session.ts";
 import { fetchRemoteEnvironmentDescriptor } from "../environment/descriptor.ts";
+import { preflightBetterRoute } from "../jones/connection/betterRouteRecovery.ts";
 import { withRouteAttemptBudget } from "../jones/connection/routeAttemptBudget.ts";
 
 export type ConnectionDriverProgress =
@@ -178,18 +173,7 @@ export const make = Effect.gen(function* () {
   });
 
   const preflight = (entry: ConnectionCatalogEntry, route: ConnectionRoute) =>
-    (sendsTokenInClear(connectionRoutes(entry), route)
-      ? Effect.succeed("silent" as const)
-      : checkRoute(entry, route)
-    ).pipe(
-      Effect.flatMap((check) =>
-        check === "answered"
-          ? resolver.prepare(routeEntry(entry, route)).pipe(
-              Effect.as(true),
-              Effect.orElseSucceed(() => false),
-            )
-          : Effect.succeed(false),
-      ),
+    preflightBetterRoute(entry, route, checkRoute(entry, route), resolver.prepare).pipe(
       Effect.withSpan("ConnectionDriver.preflight"),
     );
 
