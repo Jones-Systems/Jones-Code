@@ -17,19 +17,39 @@ and the exact workspace patch lock/reclaim files are excluded; source,
 configuration, manifests, libraries and compiler binary identity stay tracked.
 Cached tasks must never restore mutation locks or build-info files.
 
-The candidate integration remains under
-[qualification](https://github.com/Jones-Systems/Jones-Code/issues/711) before
-main adoption. Unguarded native build-info reuse can miss a required Effect
-diagnostic after an off-to-error configuration change. The ordinary adapter
-therefore binds native state to raw configuration bytes and uses private working
-files. Its focused regression and representation controls pass; complete current
-workflow qualification remains pending.
-The initial 33-surface direct screen preserved incumbent
-errors/warnings and non-standard-library coverage after constructive fixture
-corrections, but complete rule, lifecycle, cache, performance and platform gates
-remain. No complete current-workflow speed improvement has been qualified.
-Schema-class connection targets in partial supervisor doubles still use genuine
-Schema instances; diagnostic settings stay unchanged.
+Unguarded native build-info reuse can miss a required Effect diagnostic after
+an off-to-error configuration change. The ordinary adapter therefore binds
+native state to raw configuration bytes and uses private working files. This
+preserves configured diagnostics while allowing reuse under unchanged inputs.
+
+## Measured workflow cost
+
+Three alternating paired runs compared this integration (`774acf87`) with
+`main` at `b581fdc2` on Linux x64, Node 26.12.1 and pnpm 12.14.0, using two
+CPU cores. Median wall times for the actual root typecheck command were:
+
+| Task-cache state      | Incumbent | Effect-patched TSRS |             Difference |
+| --------------------- | --------: | ------------------: | ---------------------: |
+| Empty task cache      |   97.22 s |             74.29 s |  22.93 s saved (23.6%) |
+| Fully warm task cache |    1.58 s |              4.30 s | 2.72 s additional cost |
+
+Native build-info and operating-system caches were warm in the empty-task-cache
+comparison. These are workload measurements, not cold-machine results or a
+saving on every build. Uncached compiler admission and the nested task dispatch
+add overhead even when checking is cached. The full-check benefit is the reason
+for selecting this combination despite that warm-cache cost.
+
+During the empty-task-cache runs, median sampled process-tree RSS fell from
+5.28 GiB to 2.38 GiB (about 55%). This sums process RSS every 50 ms, can count
+shared pages more than once, and can miss shorter peaks; it is not unique memory
+usage. Warm-cache RSS increased from about 0.31 GiB to 0.62 GiB.
+
+Separate single observations of `pnpm typecheck:incremental --all` took
+68.33 s versus 64.73 s with retained state, and 84.44 s versus 72.47 s with
+`--fresh`. These are not repeated medians. The pinned Go assignment with two
+checkers preserved diagnostics across repeatability controls; the sampled
+four-checker runs provided no reason to increase the count. No whole-market
+“fastest compiler” claim follows from these measurements.
 
 ## One-shot CLI scope
 
@@ -83,7 +103,7 @@ shared build-info or coordination files to bypass that refusal.
 ## Publisher and rationale
 
 [Cloudflare's announcement](https://blog.cloudflare.com/typescript-rust-port)
-describes Oxc's `tsrs`. The candidate combines that compiler with a replacement
+describes Oxc's `tsrs`. This integration combines that compiler with a replacement
 binary published by the **official Effect-TS organization**, which also owns
 [Effect](https://github.com/Effect-TS/effect). The replacement is distributed by
 [Effect-TS/tsgo](https://github.com/Effect-TS/tsgo/tree/999942fa41462eb46dfcb2d718e7671db8e14156),
@@ -98,7 +118,7 @@ types does not prove preservation of Effect's custom diagnostics. That is why
 stock TSRS or a different fast checker cannot replace the incumbent based on
 vendor timings alone. Compatibility and total workflow cost decide adoption.
 
-The candidate checks types and diagnostics. It does not speed up runtime code,
+The compiler checks types and diagnostics. It does not speed up runtime code,
 replace Vite's bundling, or establish a saving on every build. Fresh compiler
 runs, retained checks, and task-cache hits are different workloads.
 
@@ -124,7 +144,7 @@ A version string or `.original` file alone does not prove patched identity.
 
 Supported replacements are Linux x64/arm64 with glibc 2.35 or newer, and macOS
 arm64. Musl, Windows and macOS x64 have no artifact in this pinned Effect
-release. The candidate launcher selects the exact incumbent fallback on an
+release. The launcher selects the exact incumbent fallback on an
 unsupported local host. Its `--admit` mode refuses unsupported CI hosts; the
 root uncached admission task runs before cached work, even with top-level
 `--cache`. Compiler
@@ -135,7 +155,7 @@ The pinned local fallback is `@tsc-rs/typescript@0.8.0`. It misses the configure
 `deterministicKeys` error TS377049: an unsupported host can report success for
 an invalid service key that supported-platform checking rejects. Its observed
 Effect 4 corpus coverage is 48 of 49 applicable configured rules, compared with
-49 of 49 for the official Effect-patched TSRS candidate. The remaining configured
+49 of 49 for the official Effect-patched TSRS. The remaining configured
 `missingEffectServiceDependency` rule supports Effect 3 only and is not applicable
 to the installed Effect 4; it is not counted as passed. The original strict
 fallback-parity criterion failed; the versioned Q2-R1 qualification retains this
