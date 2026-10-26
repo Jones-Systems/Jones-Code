@@ -57,6 +57,7 @@ import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as DocumentText from "../provider/DocumentText.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
@@ -529,6 +530,7 @@ const boxToolkitLayer = (thread: BoxThread) => {
     ),
     Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
     Layer.provide(ServerSettings.layerTest()),
+    Layer.provide(DocumentText.layer),
     Layer.provide(NodeServices.layer),
   );
 };
@@ -670,6 +672,7 @@ const makeLaptop = (
       Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
       Layer.provide(Layer.mock(ThreadLaunch.ThreadLaunchService)({})),
       Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+      Layer.provide(DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
       Layer.fresh,
     );
     const here = yield* Layer.build(layerHere);

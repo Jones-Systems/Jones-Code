@@ -185,6 +185,15 @@ export const ProjectSetupScriptRunnerError = Schema.Union([
 ]);
 export type ProjectSetupScriptRunnerError = typeof ProjectSetupScriptRunnerError.Type;
 
+class ProjectSetupScriptTerminalExitedError extends Schema.TaggedError<ProjectSetupScriptTerminalExitedError>()(
+  "ProjectSetupScriptTerminalExitedError",
+  {},
+) {
+  override get message(): string {
+    return "The setup terminal exited before its command was written";
+  }
+}
+
 export class ProjectSetupScriptRunner extends Context.Service<
   ProjectSetupScriptRunner,
   {
@@ -809,9 +818,7 @@ export const make = Effect.gen(function* () {
       selectedCompletionShell === "powershell" ? Effect.succeed("ready" as const) : readiness.wait
     ).pipe(
       Effect.flatMap((shell) =>
-        shell === "exited"
-          ? Effect.fail(new Error("The setup terminal exited before its command was written"))
-          : write,
+        shell === "exited" ? Effect.fail(new ProjectSetupScriptTerminalExitedError()) : write,
       ),
       Effect.mapError(
         (cause) =>

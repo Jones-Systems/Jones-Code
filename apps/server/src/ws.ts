@@ -135,6 +135,7 @@ import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as ThreadManagementService from "./orchestration-v2/ThreadManagementService.ts";
 import * as ShellMaterialization from "./jones/orchestration/shellMaterialization.ts";
+import type * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as CommandOutputHub from "./orchestration-v2/CommandOutputHub.ts";
 import * as McpAppRequests from "./mcpApps/McpAppRequests.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
@@ -3573,6 +3574,7 @@ type WsLayerServices =
       | DatabaseStorage.DatabaseStorage
       | DeviceService.DeviceService
       | DirectEndpoints.DirectEndpoints
+      | DocumentText.DocumentText
       | EffectOutbox.EffectOutboxV2
       | EnvironmentAuth.EnvironmentAuth
       | EnvironmentTheme.EnvironmentThemeService

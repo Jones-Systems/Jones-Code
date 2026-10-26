@@ -3613,7 +3613,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     withThreadLock(
       supplied.threadId,
       Effect.gen(function* () {
-        const binding = yield* Schema.decodeUnknownEffect(LegacyNoTerminalControl)(supplied).pipe(
+        const binding = yield* Schema.decodeEffect(LegacyNoTerminalControl)(supplied).pipe(
           Effect.mapError(
             () =>
               new LegacyTerminalControlError({

@@ -93,6 +93,7 @@ it.effect("attributes a launched thread's first message to the calling thread", 
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
       Layer.mock(GitVcsDriver.GitVcsDriver)({}),
       NodeServices.layer,
+      DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
       ServerConfig.layerTest(process.cwd(), { prefix: "t3-source-link-" }).pipe(
         Layer.provide(NodeServices.layer),
       ),
@@ -172,6 +173,7 @@ it.effect("launches a scratch thread into the Scratch project", () =>
       }),
       Layer.mock(GitVcsDriver.GitVcsDriver)({}),
       NodeServices.layer,
+      DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
       ServerConfig.layerTest(process.cwd(), { prefix: "t3-scratch-launch-" }).pipe(
         Layer.provide(NodeServices.layer),
       ),
