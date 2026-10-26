@@ -275,11 +275,9 @@ const MacSigningConfig = Config.all({
 });
 
 /**
- * Apple Silicon requires signed Mach-O executables: development builds use ad hoc
- * signing without an identity, or Developer ID plus notarization when configured.
- * Hardened-runtime loading requires native addons to share that identity.
- * Explicit Jones production builds use the complete-distribution signing and
- * notarization gate instead.
+ * Apple Silicon needs signed Mach-O files; development builds use ad hoc signing.
+ * Developer ID notarization requires native addons to share that identity.
+ * Explicit Jones production builds sign and notarize the complete distribution.
  */
 const signMacArchiveContents = Effect.fn("signMacArchiveContents")(function* (input: {
   readonly repoRoot: string;

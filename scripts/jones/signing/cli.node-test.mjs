@@ -199,7 +199,7 @@ NodeTest.test(
       NodeAssert.deepEqual(NodeFS.readFileSync(f.entitlements), originalEntitlements);
       const signatures = f.calls.filter(({ args }) => args.includes("--sign"));
       NodeAssert.equal(signatures.length, f.names.length);
-      NodeAssert.equal(new Set([...f.identifiers.values()]).size, f.names.length);
+      NodeAssert.equal(new Set(f.identifiers.values()).size, f.names.length);
       for (const { args } of signatures) {
         NodeAssert.equal(args[args.indexOf("--sign") + 1], JONES_MACOS_IDENTITY);
         NodeAssert.ok(args.includes("--timestamp") && args.includes("runtime"));
