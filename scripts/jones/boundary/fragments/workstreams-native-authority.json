@@ -3,7 +3,12 @@
   "feature": "workstreams-native-authority",
   "jonesOwnedPaths": [
     "packages/client-runtime/src/state/workstreams/native.ts",
-    "packages/client-runtime/src/state/workstreams/native.test.ts"
+    "packages/client-runtime/src/state/workstreams/native.test.ts",
+    "apps/mobile/src/features/workstreams/summary.test.ts",
+    "apps/mobile/src/features/workstreams/summary.ts",
+    "apps/web/src/jones/workstreams/WorkstreamSummaryPanel.browser.test.tsx",
+    "apps/web/src/jones/workstreams/WorkstreamSummaryPanel.tsx",
+    "docs/operations/workstreams-rollups.md"
   ],
   "hookPaths": [],
   "tombstones": [],

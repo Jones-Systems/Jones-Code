@@ -411,7 +411,7 @@ export const prepareReverse = Effect.fn("WorkstreamsTransition.prepareReverse")(
       if (open[0]!.count) return yield* new TransitionError({ reason: "reverse_open_effects" });
       const rows: SnapshotRow[] = [],
         seen = new Map<string, Set<string>>();
-      for (const source of p.snapshot.rows) {
+      sourceRows: for (const source of p.snapshot.rows) {
         const scope = {
           ...archiveScope(p),
           owner_id: String(source.row.owner_id ?? archiveScope(p).owner_id),
@@ -430,6 +430,9 @@ export const prepareReverse = Effect.fn("WorkstreamsTransition.prepareReverse")(
           const ids = seen.get(target.table) ?? new Set<string>();
           ids.add(canonical(target.key));
           seen.set(target.table, ids);
+          // Published queue tombstones represent CP logical absence, including archived entries.
+          if (target.table === "rollup_queue" && current.row.failure_code === "published")
+            continue sourceRows;
           // Secondary history-scope records have no independent CP row.
           if (target.table === "history_scopes") continue;
           const targetValue = current.value as Record<string, unknown> | null;
@@ -506,6 +509,7 @@ export const prepareReverse = Effect.fn("WorkstreamsTransition.prepareReverse")(
           Record<string, string | number | null>
         >`SELECT * FROM ${sql(`jones_workstreams_${table}`)} WHERE registry_instance_id=${archiveScope(p).registry_instance_id}`;
         for (const data of native) {
+          if (table === "rollup_queue" && data.failure_code === "published") continue;
           const key = Object.fromEntries(
             ["registry_instance_id", "owner_id", ...config.keys].map((k) => [k, data[k]!]),
           ) as Record<string, string | number>;

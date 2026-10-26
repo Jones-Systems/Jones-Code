@@ -1,3 +1,7 @@
+import * as RollupEvidence from "../rollups/evidence.ts";
+import * as RollupGeneration from "../rollups/generation.ts";
+import * as RollupSummary from "../rollups/summaryRead.ts";
+import * as RollupApplication from "../rollups/application.ts";
 import * as Context from "effect/Context";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
@@ -230,6 +234,8 @@ export const chooseLayer = <L, LE, LR, H, HE, HR, U, UE, UR>(factories: {
 import * as NativeIntegration from "../integration.ts";
 import * as NativeSession from "../registry/session.ts";
 import * as NativeEntry from "./entry.ts";
+import * as NativeReadRoutes from "../read/routes.ts";
+import * as NativeReadExport from "../read/export.ts";
 import * as NativeAdmission from "./admission.ts";
 import * as ReferenceResolver from "../providers/referenceResolver.ts";
 import * as GitHub from "../providers/githubPrObserver.ts";
@@ -253,6 +259,17 @@ import { NativeHome as Home } from "../mode/authorityMode.ts";
 /** One home, SQL resource and operations instance. Authorization remains request-local. */
 export const homeServicesLayer = (
   selection: Selection & { readonly home: NativeHome["Service"] },
+  rollupPorts: Layer.Layer<
+    | RollupEvidence.RollupEvidenceProvider
+    | RollupGeneration.RollupGenerationProvider
+    | RollupSummary.SummaryAuthorizer
+    | RollupApplication.RollupAdmission
+  > = Layer.mergeAll(
+    RollupEvidence.unconfiguredLayer,
+    RollupGeneration.unconfiguredLayer,
+    RollupSummary.unconfiguredAuthorizerLayer,
+    RollupApplication.admissionLayer,
+  ),
 ) => {
   const admission = NativeAdmission.layer.pipe(Layer.provideMerge(NativeSession.layer));
   const enrolledSource = Layer.effect(
@@ -311,7 +328,10 @@ export const homeServicesLayer = (
   );
   const entry = NativeEntry.layer.pipe(
     Layer.provideMerge(
-      NativeIntegration.nativeHomeRuntimeLayer.pipe(Layer.provideMerge(providers)),
+      NativeIntegration.nativeHomeRuntimeLayer.pipe(
+        Layer.provideMerge(NativeIntegration.nativeRollupRuntimeLayer),
+        Layer.provideMerge(providers),
+      ),
     ),
     Layer.provide(
       Layer.effect(
@@ -347,15 +367,20 @@ export const homeServicesLayer = (
     Layer.provideMerge(operations),
     Layer.provide(NativeEffects.rawRecoveryLayer),
   );
+  const reads = Layer.mergeAll(NativeReadRoutes.authorizedLayer, NativeReadExport.layer).pipe(
+    Layer.provide(NativeAdmission.callerBoundaryLayer),
+  );
   return Layer.mergeAll(
     NativeEntry.gatewayLayer,
     NativeEntry.registrationLayer,
     operations,
     recovery,
+    reads,
   ).pipe(
     Layer.provideMerge(entry),
     Layer.provide(Layer.succeed(Home, selection.home)),
     Layer.provide(Layer.succeed(Startup, selection)),
+    Layer.provide(rollupPorts),
   );
 };
 
