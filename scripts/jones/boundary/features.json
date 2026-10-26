@@ -2167,6 +2167,19 @@
         "packages/client-runtime/src/jones/providerWorkspaceRefresh.test.ts"
       ],
       "scope": "Targeted upstream backport abd9d9f9709b8873f542f53dd12d26b33690d5e1 (#24899): optional provider workspace snapshot negotiation and folder-scoped replies, shared scan completion, deleted-cwd settlement, bounded client refresh retries and lazy timeline images. Preserve legacy payloads, per-environment capability gating and Jones connection/discovery owners; no full upstream import or migration. Jones retry repair retains independent environment/instance/cwd failure windows across selection and TTL renewal in a shared client-runtime helper, with a narrow package export and two platform hooks; at most 64 live policy records defer overflow rather than evicting active budgets."
+    },
+    {
+      "id": "upstream-24589-long-turn-history-caps",
+      "tests": [
+        "apps/server/src/jones/orchestration/historyPaging.test.ts",
+        "apps/server/src/orchestration-v2/threadHistoryPaging.test.ts",
+        "apps/server/src/orchestration-v2/ProjectionStore.test.ts",
+        "apps/server/src/orchestration-v2/ThreadStream.test.ts",
+        "apps/server/src/orchestration-v2/ThreadFind.test.ts",
+        "apps/server/integration/transferBudgetV2.integration.test.ts",
+        "packages/client-runtime/src/platform/orchestrationCache.test.ts"
+      ],
+      "scope": "Targeted upstream backport 553203c57b780cef9fb30ad835d759befe0dcb7c (#24589): cap every long-turn snapshot and history page by row and encoded-byte budgets, preserve cursor/interrupt dependencies, remove unused full-projection overflow encoding, and expire old thread caches. Jones keyset selection retains its extracted budget and keyed interrupt lookup; no contracts, schema or migrations change. No full upstream import."
     }
   ]
 }

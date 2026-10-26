@@ -7,12 +7,15 @@ import type {
 } from "@t3tools/contracts";
 
 /**
- * Item/byte budgets only apply to histories without turn starts; tool activity
- * must not split an ordinary conversation turn.
+ * Every window stops at the byte budget. A window that holds a user turn also
+ * stops at `maxUserTurns` or `maxTurnItems` rows, which keeps ordinary turns
+ * whole (V1 kept 500 activities). Any other window, such as an agent-driven
+ * thread or the inside of one very long turn, stops at `maxItems` rows.
  */
 export const THREAD_HISTORY_PAGE_POLICY = {
   maxUserTurns: 10,
   maxItems: 75,
+  maxTurnItems: 500,
   maxEncodedBytes: 1_048_576,
 } as const;
 
@@ -24,12 +27,16 @@ export function isConversationHistoryItem(item: Pick<OrchestrationV2TurnItem, "t
 export const THREAD_HISTORY_MAX_RAW_TURNS = 150;
 
 export const THREAD_HISTORY_SNAPSHOT_ROW_LIMIT = THREAD_HISTORY_PAGE_POLICY.maxItems + 2;
+/** The snapshot query's row limit once the history has a user turn. */
+export const THREAD_HISTORY_TURN_SNAPSHOT_ROW_LIMIT = THREAD_HISTORY_PAGE_POLICY.maxTurnItems + 2;
 
 const THREAD_HISTORY_CURSOR_MAX_LENGTH = 4_096;
 
 export type ThreadHistoryPagePolicy = {
   readonly maxUserTurns?: number | undefined;
   readonly maxItems: number;
+  /** Defaults to `maxItems`. */
+  readonly maxTurnItems?: number | undefined;
   readonly maxEncodedBytes: number;
 };
 
@@ -64,7 +71,6 @@ export type BoundedProjectionResult = {
   readonly historyCursor: string | null;
   readonly hasMoreHistory: boolean;
   readonly latestLocalTurnOrdinal: number | null;
-  readonly payloadBudgetExceeded: boolean;
 };
 
 export class InvalidThreadHistoryCursorError extends Error {
@@ -77,27 +83,6 @@ export class InvalidThreadHistoryCursorError extends Error {
 
 function bytesOfJson(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value), "utf8");
-}
-
-/**
- * Proves overflow without serializing: a string's UTF-16 length never exceeds
- * its UTF-8 JSON bytes, and local items are encoded once per array they sit in.
- */
-function timelineTextExceedsBudget(
-  projection: OrchestrationV2ThreadProjection,
-  budget: number,
-): boolean {
-  let length = 0;
-  const exceeds = (item: OrchestrationV2TurnItem): boolean => {
-    if ("text" in item) {
-      length += item.text.length;
-    }
-    return length > budget;
-  };
-  return (
-    projection.visibleTurnItems.some((row) => exceeds(row.item)) ||
-    projection.turnItems.some(exceeds)
-  );
 }
 
 export function projectedRowEncodedBytes(row: HistoryRow): number {
@@ -218,8 +203,11 @@ export function createThreadHistoryPageBudget(
     turnStart: boolean;
     encodedBytes: number;
   }) => boolean;
+  readonly keep: () => number;
 } {
   const turnLimit = hasUserTurns ? policy.maxUserTurns : undefined;
+  const maxItems =
+    turnLimit === undefined ? policy.maxItems : (policy.maxTurnItems ?? policy.maxItems);
   let selected = 0;
   let encodedBytes = 0;
   let userTurns = 0;
@@ -228,9 +216,10 @@ export function createThreadHistoryPageBudget(
     accept(row) {
       if (
         selected > 0 &&
-        (turnLimit === undefined
-          ? selected >= policy.maxItems || encodedBytes + row.encodedBytes > policy.maxEncodedBytes
-          : userTurns >= turnLimit || rawTurns >= THREAD_HISTORY_MAX_RAW_TURNS)
+        (selected >= maxItems ||
+          encodedBytes + row.encodedBytes > policy.maxEncodedBytes ||
+          (turnLimit !== undefined &&
+            (userTurns >= turnLimit || rawTurns >= THREAD_HISTORY_MAX_RAW_TURNS)))
       ) {
         return false;
       }
@@ -240,12 +229,13 @@ export function createThreadHistoryPageBudget(
       if (row.turnStart) rawTurns += 1;
       return true;
     },
+    // Inside a long turn, the selected window contains no user-turn start.
+    keep: () => (userTurns === 0 ? Math.min(selected, policy.maxItems) : selected),
   };
 }
 
 /**
- * Histories without turn starts use row budgets and always admit at least one
- * row so oversized items cannot deadlock paging.
+ * Always admit at least one row so oversized items cannot deadlock paging.
  */
 function selectOlderTimelinePage<Row extends HistoryRow>(input: {
   readonly items: ReadonlyArray<Row>;
@@ -272,13 +262,14 @@ function selectOlderTimelinePage<Row extends HistoryRow>(input: {
       !budget.accept({
         userTurn: isThreadHistoryUserTurn(row.item),
         turnStart: turnStarts[index]!,
-        encodedBytes: hasUserTurns && policy.maxUserTurns !== undefined ? 0 : rowCost(row),
+        encodedBytes: rowCost(row),
       })
     ) {
       break;
     }
     selected.push(row);
   }
+  selected.splice(budget.keep());
   selected.reverse();
 
   const oldest = selected[0];
@@ -334,6 +325,44 @@ function findCursorIndex(
   return Math.min(cursor.p, items.length);
 }
 
+/**
+ * Older pages allow twice the turns, and a targeted page widens further so it
+ * reaches `throughEntryId`. Callers that re-bound a page must reuse this policy
+ * or they drop the target again.
+ */
+export function olderHistoryPagePolicy<Row extends HistoryRow>(input: {
+  readonly items: ReadonlyArray<Row>;
+  readonly cursor: string;
+  readonly policy?: ThreadHistoryPagePolicy | undefined;
+  readonly throughEntryId?: string | undefined;
+}): ThreadHistoryPagePolicy {
+  const policy = input.policy ?? {
+    ...THREAD_HISTORY_PAGE_POLICY,
+    maxUserTurns: OLDER_THREAD_USER_TURN_LIMIT,
+  };
+  if (input.throughEntryId === undefined) return policy;
+  const anchorIndex = findCursorIndex(input.items, decodeThreadHistoryCursor(input.cursor));
+  const targetIndex = input.items.findIndex(
+    (row) => (row.item.messageId ?? row.item.id) === input.throughEntryId,
+  );
+  if (targetIndex < 0 || targetIndex >= anchorIndex) return policy;
+  const turns = input.items
+    .slice(targetIndex, anchorIndex)
+    .filter((row) => isThreadHistoryUserTurn(row.item)).length;
+  return {
+    ...policy,
+    maxUserTurns: Math.min(
+      OLDER_THREAD_USER_TURN_LIMIT * 2,
+      Math.max(
+        OLDER_THREAD_USER_TURN_LIMIT,
+        turns + (isThreadHistoryUserTurn(input.items[targetIndex]!.item) ? 0 : 1),
+      ),
+    ),
+    maxItems: policy.maxItems * 2,
+    maxTurnItems: (policy.maxTurnItems ?? policy.maxItems) * 2,
+  };
+}
+
 export function selectHistoryPageFromCursor<Row extends HistoryRow>(input: {
   readonly items: ReadonlyArray<Row>;
   readonly cursor: string;
@@ -343,39 +372,40 @@ export function selectHistoryPageFromCursor<Row extends HistoryRow>(input: {
   readonly throughEntryId?: string | undefined;
 }): SelectTimelinePageResult<Row> {
   const decoded = decodeThreadHistoryCursor(input.cursor);
-  const anchorIndex = findCursorIndex(input.items, decoded);
-  let policy = input.policy ?? {
-    ...THREAD_HISTORY_PAGE_POLICY,
-    maxUserTurns: OLDER_THREAD_USER_TURN_LIMIT,
-  };
-  if (input.throughEntryId !== undefined) {
-    const targetIndex = input.items.findIndex(
-      (row) => (row.item.messageId ?? row.item.id) === input.throughEntryId,
-    );
-    if (targetIndex >= 0 && targetIndex < anchorIndex) {
-      const turns = input.items
-        .slice(targetIndex, anchorIndex)
-        .filter((row) => isThreadHistoryUserTurn(row.item)).length;
-      policy = {
-        ...policy,
-        maxUserTurns: Math.min(
-          OLDER_THREAD_USER_TURN_LIMIT * 2,
-          Math.max(
-            OLDER_THREAD_USER_TURN_LIMIT,
-            turns + (isThreadHistoryUserTurn(input.items[targetIndex]!.item) ? 0 : 1),
-          ),
-        ),
-        maxItems: policy.maxItems * 2,
-      };
-    }
-  }
   return selectOlderTimelinePage({
     items: input.items,
-    exclusiveEndIndex: anchorIndex,
+    exclusiveEndIndex: findCursorIndex(input.items, decoded),
     snapshotSequence: input.snapshotSequence,
     ...(input.rowEncodedBytes === undefined ? {} : { rowEncodedBytes: input.rowEncodedBytes }),
-    policy,
+    policy: olderHistoryPagePolicy(input),
   });
+}
+
+/**
+ * Row and byte budgets can split a turn between an interrupt result and its
+ * older request. Clients read a superseded result without a request as a
+ * legacy steer and hide it, so a page carries the requests its results need.
+ */
+export function missingInterruptRequests<Row extends HistoryRow>(
+  items: ReadonlyArray<Row>,
+  page: ReadonlyArray<Pick<HistoryRow, "item" | "sourceThreadId" | "sourceItemId">>,
+): Row[] {
+  const runs = new Set<string>();
+  for (const row of page) {
+    if (row.item.type === "run_interrupt_result" && row.item.runId != null)
+      runs.add(row.item.runId);
+  }
+  for (const row of page) {
+    if (row.item.type === "run_interrupt_request" && row.item.runId != null)
+      runs.delete(row.item.runId);
+  }
+  if (runs.size === 0) return [];
+  return items.filter(
+    (row) =>
+      row.item.type === "run_interrupt_request" &&
+      row.item.runId != null &&
+      runs.has(row.item.runId),
+  );
 }
 
 function isLocalProjectedRow(
@@ -556,11 +586,7 @@ export function buildBoundedThreadProjection(input: {
     policy.maxEncodedBytes / 2,
     policy.maxEncodedBytes - dependencyReserve - controlBytes - 1_024,
   );
-  const windowPolicy: ThreadHistoryPagePolicy = {
-    maxUserTurns: policy.maxUserTurns,
-    maxItems: policy.maxItems,
-    maxEncodedBytes: windowBudget,
-  };
+  const windowPolicy: ThreadHistoryPagePolicy = { ...policy, maxEncodedBytes: windowBudget };
 
   const window = selectRecentTimelineWindow({
     items: controlProjection.visibleTurnItems,
@@ -631,9 +657,5 @@ export function buildBoundedThreadProjection(input: {
     historyCursor: window.nextCursor,
     hasMoreHistory: window.hasMoreHistory,
     latestLocalTurnOrdinal,
-    payloadBudgetExceeded:
-      controlBytes > policy.maxEncodedBytes ||
-      timelineTextExceedsBudget(projection, policy.maxEncodedBytes) ||
-      bytesOfJson(projection) > policy.maxEncodedBytes,
   };
 }
