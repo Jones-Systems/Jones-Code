@@ -33,6 +33,16 @@ vi.mock("electron", async (importOriginal) => ({
   },
 }));
 
+// Window-only tests isolate the native monitor adapter; its lifecycle/security
+// behavior is covered by jones/threadMonitor/host.test.ts and real native smoke.
+vi.mock("../jones/threadMonitor/host.ts", () => ({
+  attachThreadMonitor: ({ main }: { main: Electron.BrowserWindow }) => ({
+    dispose: vi.fn(),
+    setMainBackgroundThrottling: (enabled: boolean) =>
+      main.webContents.setBackgroundThrottling(enabled),
+  }),
+}));
+
 import * as DesktopAssets from "../app/DesktopAssets.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";

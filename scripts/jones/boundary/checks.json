@@ -358,11 +358,13 @@
         "apps/web/src/hostStatus.test.ts",
         "apps/web/src/components/chat/HostStatusIndicators.browser.test.tsx",
         "apps/web/src/jones/hostStatus/GlobalHostStatusIndicators.browser.test.tsx",
-        "packages/client-runtime/src/state/environmentHttpAuth.test.ts"
+        "packages/client-runtime/src/state/environmentHttpAuth.test.ts",
+        "apps/web/src/jones/hostStatus/responsiveLayout.test.ts",
+        "apps/web/src/jones/hostStatus/ResponsiveHostStatusPills.browser.test.tsx"
       ],
       "commands": [
-        "vp test run apps/server/src/hostStatus/gateway.test.ts apps/web/src/hostStatus.test.ts packages/client-runtime/src/state/environmentHttpAuth.test.ts",
-        "vp test run --root apps/web --config vite.config.ts --project browser src/components/chat/HostStatusIndicators.browser.test.tsx src/jones/hostStatus/GlobalHostStatusIndicators.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
+        "vp test run apps/server/src/hostStatus/gateway.test.ts apps/web/src/hostStatus.test.ts packages/client-runtime/src/state/environmentHttpAuth.test.ts apps/web/src/jones/hostStatus/responsiveLayout.test.ts",
+        "vp test run --root apps/web --config vite.config.ts --project browser src/components/chat/HostStatusIndicators.browser.test.tsx src/jones/hostStatus/GlobalHostStatusIndicators.browser.test.tsx src/jones/hostStatus/ResponsiveHostStatusPills.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -1988,7 +1990,9 @@
         "apps/web/src/jones/questionAnswer/ComposerPendingUserInputPanel.permissions.browser.test.tsx",
         "apps/web/src/pendingUserInput.test.ts",
         "apps/web/src/composer-logic.test.ts",
-        "apps/web/src/reactCompilerCoverage.test.ts"
+        "apps/web/src/reactCompilerCoverage.test.ts",
+        "apps/mobile/src/jones/questionAnswer/sequentialQuestions.test.ts",
+        "apps/mobile/src/lib/threadActivity.test.ts"
       ],
       "commands": [
         "cd apps/web && vp test run src/reactCompilerCoverage.test.ts --project unit --maxWorkers=1 -t 'compiles apps/web/src/jones/questionAnswer/'",
@@ -1998,7 +2002,8 @@
         "vp run --filter @t3tools/mobile typecheck",
         "node scripts/jones/check-boundary.ts --strict",
         "cd apps/web && vp test run src/jones/questionAnswer/QuestionAnswerCard.browser.test.tsx src/jones/questionAnswer/QuestionAnswerInteractions.browser.test.tsx src/components/chat/ComposerPendingUserInputPanel.navigation.browser.test.tsx src/jones/questionAnswer/ComposerPendingUserInputPanel.permissions.browser.test.tsx --project browser --maxWorkers=1",
-        "vp test run apps/web/src/jones/questionAnswer/ComposerPendingUserInputPanel.permissions.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
+        "vp test run apps/web/src/jones/questionAnswer/ComposerPendingUserInputPanel.permissions.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/mobile/src/jones/questionAnswer/sequentialQuestions.test.ts apps/mobile/src/lib/threadActivity.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -2472,7 +2477,8 @@
         "apps/server/src/jones/orchestration/userInputRequestRecord.test.ts",
         "apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.test.ts",
         "packages/shared/src/t3McpToolPresentation.test.ts",
-        "packages/provider-core/src/jones/orchestrationInstructions.test.ts"
+        "packages/provider-core/src/jones/orchestrationInstructions.test.ts",
+        "apps/server/src/jones/mcp/userResponseRequest/questions.test.ts"
       ],
       "commands": [
         "vp test run packages/contracts/src/jones/userResponseRequest.test.ts apps/server/src/jones/orchestration/userInputRequestRecord.test.ts apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.test.ts packages/shared/src/t3McpToolPresentation.test.ts packages/provider-core/src/jones/orchestrationInstructions.test.ts --maxWorkers=1 --no-file-parallelism",
@@ -2480,7 +2486,8 @@
         "vp run --filter t3 typecheck",
         "vp run --filter @t3tools/shared typecheck",
         "vp run --filter @t3tools/provider-core typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp test run apps/server/src/jones/mcp/userResponseRequest/questions.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -3490,6 +3497,55 @@
         "vp run --filter t3 typecheck",
         "vp run --filter @t3tools/client-runtime typecheck",
         "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-desktop-thread-monitor",
+      "tests": [
+        "apps/desktop/scripts/jones-thread-monitor-mac-smoke.test.mjs",
+        "apps/desktop/scripts/ui-evidence/main-window.test.mjs",
+        "apps/desktop/scripts/ui-evidence/thread-monitor-provider.test.mjs",
+        "apps/desktop/scripts/ui-evidence/window-manager.test.mjs",
+        "apps/desktop/src/jones/threadMonitor/broker.test.ts",
+        "apps/desktop/src/jones/threadMonitor/host.test.ts",
+        "apps/desktop/src/jones/threadMonitor/policy.test.ts",
+        "apps/desktop/src/jones/threadMonitor/protocol.test.ts",
+        "apps/desktop/src/jones/threadMonitor/throttle.test.ts",
+        "apps/desktop/src/jones/threadMonitor/transport.test.ts",
+        "apps/server/src/jones/threadMonitor/GuardedSettle.integration.test.ts",
+        "apps/server/src/jones/threadMonitor/guardedSettle.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/ShellStream.test.ts",
+        "apps/web/src/jones/threadMonitor/MonitorUI.browser.test.tsx",
+        "apps/web/src/jones/threadMonitor/actions.test.ts",
+        "apps/web/src/jones/threadMonitor/answers.test.ts",
+        "apps/web/src/jones/threadMonitor/peerStore.test.ts",
+        "apps/web/src/jones/threadMonitor/planFollowUp.test.ts",
+        "apps/web/src/jones/threadMonitor/store.test.ts",
+        "apps/web/src/jones/threadMonitor/viewState.test.ts",
+        "packages/client-runtime/src/jones/threadMonitor/guardedSettle.test.ts",
+        "packages/client-runtime/src/jones/threadMonitor/lifecycle.test.ts",
+        "packages/client-runtime/src/jones/threadMonitor/model.test.ts",
+        "packages/contracts/src/jones/desktopThreadMonitor.test.ts",
+        "packages/contracts/src/jones/guardedThreadSettlement.test.ts",
+        "packages/shared/src/jones/threadAttention.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/contracts/src/jones/desktopThreadMonitor.test.ts packages/contracts/src/jones/guardedThreadSettlement.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run packages/client-runtime/src/jones/threadMonitor/*.test.ts apps/server/src/jones/threadMonitor/*.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/desktop/src/jones/threadMonitor/*.test.ts apps/desktop/src/window/DesktopWindow.test.ts apps/desktop/src/electron/ElectronWindow.test.ts apps/desktop/src/preview/Manager.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/web/src/jones/threadMonitor/*.test.ts apps/web/src/jones/threadMonitor/*.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "node --test --test-concurrency=1 apps/desktop/scripts/ui-evidence/main-window.test.mjs apps/desktop/scripts/ui-evidence/window-manager.test.mjs apps/desktop/scripts/jones-thread-monitor-mac-smoke.test.mjs",
+        "vp run --filter @t3tools/contracts typecheck",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "vp run --filter t3 typecheck",
+        "vp run --filter @t3tools/desktop typecheck",
+        "vp run --filter @t3tools/web typecheck",
+        "node scripts/jones/check-boundary.ts --strict",
+        "node --test apps/desktop/scripts/ui-evidence/thread-monitor-provider.test.mjs",
+        "vp test run apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts -t \"publishes approval artifacts before a consumer\" --maxWorkers=1 --no-file-parallelism",
+        "vp test run packages/shared/src/jones/threadAttention.test.ts packages/client-runtime/src/jones/threadMonitor/model.test.ts --maxWorkers=1 --no-file-parallelism",
+        "cd apps/server && vp test run src/orchestration-v2/ShellStream.test.ts src/jones/threadMonitor/guardedSettle.test.ts src/jones/threadMonitor/GuardedSettle.integration.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {

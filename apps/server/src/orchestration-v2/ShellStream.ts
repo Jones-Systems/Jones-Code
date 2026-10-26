@@ -21,6 +21,7 @@ import {
   OrchestrationV2ThreadShell as ThreadShellSchema,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import { hasPendingGuestMessages } from "@t3tools/shared/jones/threadAttention";
 import type * as Arr from "effect/Array";
 import type * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -91,6 +92,7 @@ export function omitIdleSubagentShells(
     (thread) =>
       thread.lineage.relationshipToParent !== "subagent" ||
       isLiveSubagentShell(thread) ||
+      hasPendingGuestMessages(thread) ||
       parentIds.has(thread.id),
   );
 }

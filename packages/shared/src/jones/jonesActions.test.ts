@@ -330,6 +330,48 @@ describe("Jones Actions qualification", () => {
       }),
     ).toMatchObject({ state: "blocked", reason: "unavailable" });
   });
+  it.each(["linux", "darwin"] as const)(
+    "skips installed-source run details across the bounded %s discovery pages",
+    async (platform) => {
+      const f = fixture({ platform, run: { head_sha: OLD } });
+      const run = (await f.transport.api(`${ROOT}/actions/runs/101`)) as Record<string, unknown>;
+      const calls: string[] = [];
+      const workflow =
+        platform === "darwin" ? "artifact-desktop-mac.yml" : "artifact-cli-linux.yml";
+      const client = new JonesActionsClient({
+        now: () => NOW,
+        transport: {
+          ...f.transport,
+          async api(endpoint) {
+            calls.push(endpoint);
+            if (endpoint.includes(`/actions/workflows/${workflow}/runs?`)) {
+              const page = Number(new URLSearchParams(endpoint.split("?")[1]).get("page"));
+              return {
+                workflow_runs: Array.from({ length: 50 }, (_, index) => ({
+                  ...run,
+                  id: 1000 + (page - 1) * 50 + index,
+                })),
+              };
+            }
+            if (endpoint.startsWith(`${ROOT}/actions/runs/`))
+              return { ...run, id: Number(endpoint.split("/").at(-1)) };
+            return f.transport.api(endpoint);
+          },
+        },
+      });
+      expect(await check(client, platform)).toMatchObject({
+        state: "blocked",
+        reason: "unavailable",
+      });
+      expect(calls.filter((endpoint) => endpoint.startsWith(`${ROOT}/actions/runs/`))).toEqual([]);
+      expect(calls).toHaveLength(5);
+    },
+  );
+  it("retains pending-build reporting for an installed-source rerun", async () => {
+    const f = fixture({ run: { head_sha: OLD, status: "in_progress", conclusion: null } });
+    expect(await check(f.client)).toMatchObject({ state: "building" });
+    expect(f.calls.some((endpoint) => endpoint.startsWith(`${ROOT}/actions/runs/`))).toBe(false);
+  });
   it("reports an already installed requested source only after canonical qualification", async () => {
     const input = {
       installedSource: OLD,

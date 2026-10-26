@@ -319,3 +319,34 @@ export function pendingSubagentRequestsByThread(
   for (const task of delegated) flag(task.parentThreadId, task.request, new Set());
   return requests.size === 0 ? EMPTY_SUBAGENT_REQUESTS : requests;
 }
+
+export function hasPendingGuestMessages(
+  thread: Pick<OrchestrationV2ThreadShell, "pendingGuestMessageCount">,
+): boolean {
+  return (thread.pendingGuestMessageCount ?? 0) > 0;
+}
+
+// Guest messages outlive provider work, including on provider-native children.
+// Callers supply one environment's shells; lineage IDs never cross that scope.
+export function pendingSubagentGuestAttentionByThread(
+  threads: ReadonlyArray<OrchestrationV2ThreadShell>,
+): ReadonlySet<ThreadId> {
+  const ancestors = new Set<ThreadId>();
+  let byId: ReadonlyMap<ThreadId, OrchestrationV2ThreadShell> | undefined;
+  for (const child of threads) {
+    if (child.lineage.relationshipToParent !== "subagent" || !hasPendingGuestMessages(child))
+      continue;
+    byId ??= new Map(threads.map((thread) => [thread.id, thread] as const));
+    const seen = new Set([child.id]);
+    let parentId = child.lineage.parentThreadId;
+    while (parentId !== null && !seen.has(parentId)) {
+      seen.add(parentId);
+      const parent = byId.get(parentId);
+      if (parent === undefined) break;
+      ancestors.add(parentId);
+      parentId =
+        parent.lineage.relationshipToParent === "subagent" ? parent.lineage.parentThreadId : null;
+    }
+  }
+  return ancestors;
+}

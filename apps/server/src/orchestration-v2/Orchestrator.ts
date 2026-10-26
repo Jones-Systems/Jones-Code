@@ -1,3 +1,7 @@
+import {
+  readMonitorSettlementBlocker,
+  monitorSettlementBlockerMessage,
+} from "../jones/threadMonitor/guardedSettle.ts";
 import { hasRetainedGoalStopTarget } from "../jones/goals/stopTarget.ts";
 import { executionProjection } from "../jones/threadConfiguration/executionSelection.ts";
 import * as RemoteObservationHooks from "../jones/remoteDelegation/ObservationHooks.ts";
@@ -3292,6 +3296,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
     }
     if (command.type === "thread.settle") {
+      if (command.guard !== undefined) {
+        const blocker = yield* readMonitorSettlementBlocker(
+          projectionStore,
+          command.threadId,
+          command.guard.expectedUpdatedAt,
+        ).pipe(mapDispatchError(command));
+        if (blocker !== null)
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: monitorSettlementBlockerMessage[blocker],
+          });
+      }
       const projection = yield* loadProjectionForCommand(
         command,
         ["runs", "runtimeRequests", "messages"],

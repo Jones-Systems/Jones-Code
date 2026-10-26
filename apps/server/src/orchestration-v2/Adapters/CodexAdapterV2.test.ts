@@ -2028,6 +2028,16 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         assert.equal(pending.status, "pending");
         assert.equal(nodeEvent?.node.status, "waiting");
         assert.equal(itemEvent?.turnItem.status, "waiting");
+        assert.equal(itemEvent?.turnItem.type, "approval_request");
+        if (itemEvent?.turnItem.type !== "approval_request") {
+          return yield* Effect.die("Command approval item was not published.");
+        }
+        assert.deepEqual(itemEvent.turnItem.options, [
+          { decision: "cancel", label: "Cancel" },
+          { decision: "decline", label: "Deny" },
+          { decision: "acceptForSession", label: "Always allow this session" },
+          { decision: "accept", label: "Approve once" },
+        ]);
         yield* harness.runtime.respondToRuntimeRequest({
           requestId: pending.id,
           decision: "accept",

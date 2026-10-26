@@ -1,3 +1,4 @@
+import { codexCommandApprovalOptions } from "../../jones/threadMonitor/codexCommandApprovalOptions.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import { GoalNotificationNotDelivered } from "../../jones/goals/GoalNotificationDelivery.ts";
 import * as ControlAdmission from "../../jones/orchestration/ControlAdmission.ts";
@@ -5989,6 +5990,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               nativeItemId: payload.itemId,
               nativeRequestId,
               requestKind: "command",
+              options: codexCommandApprovalOptions,
               ...((payload.reason ?? payload.command) === undefined
                 ? {}
                 : { prompt: payload.reason ?? payload.command }),

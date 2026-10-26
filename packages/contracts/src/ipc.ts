@@ -1,3 +1,4 @@
+import type { DesktopThreadMonitorMainBridge } from "./jones/desktopThreadMonitor.ts";
 import type { FleetDesktopRequest, FleetDesktopState } from "./jones/fleetUpdates/campaign.ts";
 import * as Schema from "effect/Schema";
 import type { DesktopCompanionBridge } from "./jones/previewCompanion.ts";
@@ -1068,6 +1069,7 @@ export const SystemSettingsPaneSchema = Schema.Literals(["full-disk-access"]);
 export type SystemSettingsPane = typeof SystemSettingsPaneSchema.Type;
 
 export interface DesktopBridge {
+  threadMonitor?: DesktopThreadMonitorMainBridge;
   previewCompanion?: DesktopCompanionBridge;
   getAppBranding: () => DesktopAppBranding | null;
   getPreviewAutomationRuntimeIdentity?: () => Promise<PreviewAutomationRuntimeIdentity>;

@@ -346,7 +346,8 @@ export class JonesActionsClient {
             building = true;
             continue;
           }
-          if (listed.conclusion !== "success") continue;
+          if (listed.conclusion !== "success" || listed.head_sha === input.installedSource)
+            continue;
           const run = record(
             await this.transport.api(`${API_ROOT}/actions/runs/${positive(listed.id)}`),
           );

@@ -195,7 +195,7 @@
         "apps/web/src/jones/threadStatusFilter/useThreadStatusFilter.browser.test.tsx",
         "apps/web/src/jones/threadStatusFilter/ThreadActivitySettings.browser.test.tsx"
       ],
-      "scope": "Current and legacy sidebar headers cycle scoped working, needs-input and unseen-done counts. Needs input requires an explicit pending own or live child request; a proposed plan alone does not qualify. Two pointer clicks within 250 ms hide working threads while preserving idle rows and count meanings; keyboard activation cycles and rapid third clicks are consumed. Small shared hooks replace the activity toggle and retain selection clearing and draft suppression. Jones adapters consume upstream row classifiers, visit watermarks and snooze metadata without changing their status precedence. Optional device-local activity windows limit counts and positive selections to real user/run activity, include acknowledged successful completions with reliable completion timestamps, expire within a minute, and preserve All and Hide working escape views."
+      "scope": "Current and legacy sidebar headers cycle scoped working, needs-input and unseen-done counts. Needs input requires an explicit pending own or live child request; a proposed plan alone does not qualify. Two pointer clicks within 250 ms hide working threads while preserving idle rows and count meanings; keyboard activation cycles and rapid third clicks are consumed. Small shared hooks replace the activity toggle and retain selection clearing and draft suppression. Jones adapters consume upstream row classifiers, visit watermarks and snooze metadata without changing their status precedence. Optional device-local activity windows limit counts and positive selections to real user/run activity, include acknowledged successful completions with reliable completion timestamps, expire within a minute, and preserve All and Hide working escape views. The current sidebar passes one presentation flag to its shared row so working rows retain normal emphasis only in the Working filter; this small accepted shared edit avoids duplicating row styling. Other filters and statuses retain existing emphasis."
     },
     {
       "id": "provider-order",
@@ -227,9 +227,11 @@
         "apps/server/src/hostStatus/gateway.test.ts",
         "apps/web/src/hostStatus.test.ts",
         "apps/web/src/components/chat/HostStatusIndicators.browser.test.tsx",
-        "apps/web/src/jones/hostStatus/GlobalHostStatusIndicators.browser.test.tsx"
+        "apps/web/src/jones/hostStatus/GlobalHostStatusIndicators.browser.test.tsx",
+        "apps/web/src/jones/hostStatus/responsiveLayout.test.ts",
+        "apps/web/src/jones/hostStatus/ResponsiveHostStatusPills.browser.test.tsx"
       ],
-      "scope": "Host status badges discover a registered connected gateway with configured VPS telemetry using shared HTTP authentication. Gateway selection survives thread switches and temporary disconnection; explicit removal clears selection and old samples."
+      "scope": "Host status badges discover a registered connected gateway with configured VPS telemetry using shared HTTP authentication. Gateway selection survives thread switches and temporary disconnection; explicit removal clears selection and old samples. Host chips retain both readings through measured spacing, individual name reductions, diagonal and vertical layouts; the title keeps priority and expansion restores full detail."
     },
     {
       "id": "desktop-background-preparation",
@@ -1182,9 +1184,11 @@
         "apps/web/src/components/chat/ComposerPendingUserInputPanel.navigation.browser.test.tsx",
         "apps/web/src/jones/questionAnswer/ComposerPendingUserInputPanel.permissions.browser.test.tsx",
         "apps/web/src/pendingUserInput.test.ts",
-        "apps/web/src/composer-logic.test.ts"
+        "apps/web/src/composer-logic.test.ts",
+        "apps/mobile/src/jones/questionAnswer/sequentialQuestions.test.ts",
+        "apps/mobile/src/lib/threadActivity.test.ts"
       ],
-      "scope": "Dedicated question-card written answers and isolated answer attachments; the main web and mobile composers retain ordinary thread messages. Live questions force queue delivery to preserve waiting provider tools and needs-input state. Existing option, collapse, literal-answer, and permission behavior remains. The legacy ChatComposer question branches stay inert through its slot hook to bound upstream divergence. No server, wire, persistence, or runtime activation change. Workspace file-drag overlays clear on capture-phase drops without rerouting nested reply attachments."
+      "scope": "Dedicated question-card written answers and isolated answer attachments; the main web and mobile composers retain ordinary thread messages. Live questions force queue delivery to preserve waiting provider tools and needs-input state. Collapse, literal-answer, attachment and permission behavior remains. The legacy ChatComposer question branches stay inert through its slot hook to bound upstream divergence. The card reuses existing answer contracts and persisted request shapes without runtime activation. Workspace file-drag overlays clear on capture-phase drops without rerouting nested reply attachments. Structured owner requests use sequential progress-button navigation, explicit Continue/Send and message-mode choice notes, newline editing and all-question gating. Native provider replacement semantics remain; option selection never advances. Integrated UI and native evidence are separately root-owned."
     },
     {
       "id": "compact-sidebar-header",
@@ -1486,9 +1490,10 @@
         "apps/server/src/jones/orchestration/userInputRequestRecord.test.ts",
         "apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.test.ts",
         "packages/shared/src/t3McpToolPresentation.test.ts",
-        "packages/provider-core/src/jones/orchestrationInstructions.test.ts"
+        "packages/provider-core/src/jones/orchestrationInstructions.test.ts",
+        "apps/server/src/jones/mcp/userResponseRequest/questions.test.ts"
       ],
-      "scope": "Provider-neutral self-only durable owner response MCP tool. Jones-owned service creates existing message-capable user input through an internal serialized command with active-run/root/provider validation; no public command, database schema or UI changes. Contract export, internal union, orchestrator dispatch, HTTP registration and tool presentation/instruction hooks are narrow shared edits. Existing shared presentation/instruction tests cover their consumed hooks. Jones-local integration uses the existing replay harness with scoped synthetic state cleanup and real receipts, projections, recovery and response dispatch. Permission prompts remain authoritative; eligible live retries only. Provider-session attachment validates distinct MCP credential identities; detached and foreign callers remain refused."
+      "scope": "Provider-neutral self-only durable owner response MCP tool. Jones-owned service creates existing message-capable user input through an internal serialized command with active-run/root/provider validation; no public command or database schema changes. Contract export, internal union, orchestrator dispatch, HTTP registration and tool presentation/instruction hooks are narrow shared edits. Existing shared presentation/instruction tests cover their consumed hooks. Jones-local integration uses the existing replay harness with scoped synthetic state cleanup and real receipts, projections, recovery and response dispatch. Permission prompts remain authoritative; eligible live retries only. Provider-session attachment validates distinct MCP credential identities; detached and foreign callers remain refused. Additive 1–5-question input, per-prompt 1500-code-point bounds and multiline legacy input preserve legacy normalization. Batch integration proves incomplete rejection, ordered long reply, durable pending provider-start intent and replay deduplication without an effect worker."
     },
     {
       "id": "thread-reference-only",
@@ -2201,6 +2206,42 @@
         "packages/client-runtime/src/state/threads-sync.test.ts"
       ],
       "scope": "Targeted upstream backport 553203c57b780cef9fb30ad835d759befe0dcb7c (#24589): cap every long-turn snapshot and history page by row and encoded-byte budgets, preserve cursor/interrupt dependencies, remove unused full-projection overflow encoding, and expire old thread caches. Jones keyset selection retains its extracted budget and keyed interrupt lookup; no contracts, schema or migrations change. No full upstream import."
+    },
+    {
+      "id": "desktop-thread-monitor",
+      "tests": [
+        "apps/desktop/scripts/jones-thread-monitor-mac-smoke.test.mjs",
+        "apps/desktop/scripts/ui-evidence/main-window.test.mjs",
+        "apps/desktop/scripts/ui-evidence/runner-restart-progress.test.mjs",
+        "apps/desktop/scripts/ui-evidence/thread-monitor-provider.test.mjs",
+        "apps/desktop/scripts/ui-evidence/window-manager.test.mjs",
+        "apps/desktop/src/jones/threadMonitor/broker.test.ts",
+        "apps/desktop/src/jones/threadMonitor/host.test.ts",
+        "apps/desktop/src/jones/threadMonitor/policy.test.ts",
+        "apps/desktop/src/jones/threadMonitor/protocol.test.ts",
+        "apps/desktop/src/jones/threadMonitor/throttle.test.ts",
+        "apps/desktop/src/jones/threadMonitor/transport.test.ts",
+        "apps/server/src/jones/orchestration/QueuedSteerBatch.integration.test.ts",
+        "apps/server/src/jones/threadMonitor/GuardedSettle.integration.test.ts",
+        "apps/server/src/jones/threadMonitor/guardedSettle.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/ShellStream.test.ts",
+        "apps/web/src/jones/threadMonitor/MonitorUI.browser.test.tsx",
+        "apps/web/src/jones/threadMonitor/actions.test.ts",
+        "apps/web/src/jones/threadMonitor/answers.test.ts",
+        "apps/web/src/jones/threadMonitor/peerStore.test.ts",
+        "apps/web/src/jones/threadMonitor/planFollowUp.test.ts",
+        "apps/web/src/jones/threadMonitor/store.test.ts",
+        "apps/web/src/jones/threadMonitor/viewState.test.ts",
+        "packages/client-runtime/src/jones/threadMonitor/guardedSettle.test.ts",
+        "packages/client-runtime/src/jones/threadMonitor/lifecycle.test.ts",
+        "packages/client-runtime/src/jones/threadMonitor/model.test.ts",
+        "packages/client-runtime/src/operations/commands.test.ts",
+        "packages/contracts/src/jones/desktopThreadMonitor.test.ts",
+        "packages/contracts/src/jones/guardedThreadSettlement.test.ts",
+        "packages/shared/src/jones/threadAttention.test.ts"
+      ],
+      "scope": "Independent always-visible native desktop monitor with top-level four-group counts, native Jones theme, collapsed sections, hover/focus replies and real request/plan actions. Main renderer retains the sole authenticated environment runtime; bounded typed IPC and generation/epoch fences isolate the peer. Safe server-locked guarded settlement and genuine placement restoration preserve pending work. Main-native visibility drives activity and a monitor-aware throttle lease keeps minimized updates live; private Linux/macOS harnesses qualify actual windows separately from source tests. No database, deployment or installed-app changes. Guest-only completed children remain in filtered shell snapshots and raise scoped ancestor attention without provider requests. ShellStream keeps the narrow shared guest eligibility hook; snapshot/live-event regressions use its existing integration harness as an explicit upstream-test exception."
     },
     {
       "id": "tsrs-typecheck",

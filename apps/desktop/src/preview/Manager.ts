@@ -1,3 +1,11 @@
+import { setMonitorAwareBackgroundThrottling } from "../jones/threadMonitor/throttle.ts";
+/**
+ * Desktop side of the in-app browser preview.
+ *
+ * Hosts per-tab Chromium WebContents references (the actual <webview>
+ * elements live in the renderer; we only attach listeners and forward state
+ * here). Single layer-scoped browser session partition.
+ */
 import * as NodeZlib from "node:zlib";
 import {
   DesktopPreviewRecordingInputSchema,
@@ -661,7 +669,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   ) {
     if (window.isDestroyed()) return;
     yield* attempt({ operation: "frameCapture.setBackgroundThrottling" }, () =>
-      window.webContents.setBackgroundThrottling(enabled),
+      setMonitorAwareBackgroundThrottling(window.webContents, enabled),
     );
   });
   const setFrameCaptureBackgroundThrottling = Effect.fnUntraced(function* (enabled: boolean) {
@@ -679,7 +687,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         operation: "frameCapture.setBackgroundThrottling",
         webContentsId: wc.id,
       },
-      () => wc.setBackgroundThrottling(enabled),
+      () => setMonitorAwareBackgroundThrottling(wc, enabled),
     );
   });
   const restoreFrameCaptureWebContentsBackgroundThrottling = Effect.fnUntraced(function* (

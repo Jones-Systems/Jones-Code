@@ -124,3 +124,6 @@ export * from "./jones/remoteTaskObservation.ts";
 
 export * from "./jones/linkedThreadsCapability.ts";
 export * from "./jones/linkedThreads.ts";
+
+export * from "./jones/desktopThreadMonitor.ts";
+export * from "./jones/guardedThreadSettlement.ts";

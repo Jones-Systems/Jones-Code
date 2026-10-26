@@ -20,6 +20,8 @@ import { dispatchFailure, unavailable } from "../../../mcp/threadAccess.ts";
 import * as Sessions from "../../../orchestration-v2/ProviderSessionManager.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 
+import { normalizeUserResponseQuestions } from "./questions.ts";
+
 export class UserResponseRequestMcpService extends Context.Service<
   UserResponseRequestMcpService,
   {
@@ -49,14 +51,8 @@ const make = Effect.gen(function* () {
           const requestId = RuntimeRequestId.make(`user-response:${key}`);
           const requestNodeId = NodeId.make(`user-response:${key}`);
           const turnItemId = TurnItemId.make(`user-response:${key}`);
-          const question: OrchestrationV2UserInputQuestion = {
-            id: "response",
-            header: "Action needed",
-            question: input.instruction,
-            options: (input.choices ?? []).map((label) => ({ label, description: label })),
-            allowCustomAnswer: true,
-            required: true,
-          };
+          const normalized = normalizeUserResponseQuestions(input);
+          const questions = normalized.questions ?? [normalized.question];
           const read = () =>
             threads
               .getThreadRecords(scope.thread.threadId, [
@@ -98,7 +94,7 @@ const make = Effect.gen(function* () {
             (existing.type !== "user_input_request" ||
               existing.requestId !== requestId ||
               existing.responseMode !== "message" ||
-              encodeQuestions(existing.questions) !== encodeQuestions([question]))
+              encodeQuestions(existing.questions) !== encodeQuestions(questions))
           ) {
             return yield* refused(
               "This clientRequestId already belongs to a different response request.",
@@ -116,7 +112,7 @@ const make = Effect.gen(function* () {
               requestId,
               requestNodeId,
               turnItemId,
-              question,
+              ...normalized,
             })
             .pipe(Effect.mapError(dispatchFailure));
           const after = yield* read();
@@ -126,7 +122,7 @@ const make = Effect.gen(function* () {
             item?.type !== "user_input_request" ||
             item.requestId !== requestId ||
             item.responseMode !== "message" ||
-            encodeQuestions(item.questions) !== encodeQuestions([question]) ||
+            encodeQuestions(item.questions) !== encodeQuestions(questions) ||
             request?.kind !== "user_input" ||
             request.responseCapability.type !== "message" ||
             request.nodeId !== requestNodeId
