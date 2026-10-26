@@ -75,7 +75,7 @@ const installedSourceAncestryAtom = Atom.family((key: string): AncestryAtom => {
     .atom((get) => {
       const prepared = get(environmentSession.preparedConnectionValueAtom(environmentId));
       return prepared._tag === "None" || prepared.value.environmentId !== environmentId
-        ? Effect.succeed(undefined)
+        ? Effect.void
         : readInstalledSourceAncestry(prepared.value, pair);
     })
     .pipe(

@@ -668,7 +668,7 @@ export function makeCompatibilityHintStore(
     routeBinding: string,
     kind: "outdated-update" | null,
   ) {
-    yield* Schema.decodeUnknownEffect(StoredConnectionCompatibilityHint)({
+    yield* Schema.decodeEffect(StoredConnectionCompatibilityHint)({
       environmentId,
       routeBinding,
       kind: kind ?? "outdated-update",

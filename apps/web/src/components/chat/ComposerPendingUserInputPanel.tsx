@@ -304,7 +304,6 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
                     key={`${activeQuestion.id}:${optionValue}`}
                     type="button"
                     aria-pressed={isSelected}
-                    disabled={disabled || isResponding}
                     disabled={responseDisabled}
                     onClick={() => {
                       handleOptionSelection(activeQuestion.id, optionValue);

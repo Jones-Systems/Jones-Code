@@ -196,7 +196,9 @@ describe("filterSidebarOperatingThreads", () => {
     const active = filterSidebarOperatingThreads(visible, true, isSidebarThreadOperating);
     expect(visible.filter(isSidebarThreadOperating)).toHaveLength(2);
     expect(active.map((item) => item.id)).toEqual(["parent", "match"]);
-    expect(searchSidebarThreads(active, "Needle").map((item) => item.id)).toEqual(["match"]);
+    const matches = searchSidebarThreads(active, "Needle");
+    expect(matches.titleMatches.map((item) => item.id)).toEqual(["match"]);
+    expect(matches.contentMatches).toEqual([]);
     expect(visible.filter(isSidebarThreadOperating)).toHaveLength(2);
   });
 });

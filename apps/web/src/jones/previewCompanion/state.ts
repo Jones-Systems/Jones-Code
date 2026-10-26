@@ -35,7 +35,7 @@ class CompanionEnvironmentUnavailable extends Data.TaggedError("CompanionEnviron
 const preparedConnection = Effect.gen(function* () {
   const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
   const prepared = yield* SubscriptionRef.get(supervisor.prepared);
-  if (Option.isNone(prepared)) return yield* Effect.fail(new CompanionEnvironmentUnavailable());
+  if (Option.isNone(prepared)) return yield* new CompanionEnvironmentUnavailable();
   return prepared.value;
 });
 
