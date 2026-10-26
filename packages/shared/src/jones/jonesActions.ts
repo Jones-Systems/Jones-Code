@@ -191,6 +191,57 @@ function canonicalArtifactRun(
 function canonicalCiRun(run: Record<string, unknown>): boolean {
   return canonicalRun(run, ".github/workflows/ci.yml") && run.event === "push";
 }
+function newestArtifactRun(left: Record<string, unknown>, right: Record<string, unknown>): number {
+  const createdAt = (run: Record<string, unknown>) =>
+    typeof run.created_at === "string" ? Date.parse(run.created_at) || 0 : 0;
+  return createdAt(right) - createdAt(left) || positive(right.id) - positive(left.id);
+}
+
+async function* discoverArtifactRuns(
+  transport: JonesActionsTransport,
+  approved: ReturnType<typeof spec>,
+  targetSource: string | undefined,
+): AsyncGenerator<Record<string, unknown>> {
+  const streams = approved.events.map((event) => ({
+    event,
+    page: 0,
+    complete: false,
+    runs: [] as Array<Record<string, unknown>>,
+  }));
+  const seen = new Set<number>();
+  while (true) {
+    for (const stream of streams) {
+      if (stream.runs.length > 0 || stream.complete) continue;
+      const runs = rows(
+        await transport.api(
+          `${API_ROOT}/actions/workflows/${NodePath.posix.basename(approved.workflow)}/runs?branch=main&event=${stream.event}${targetSource === undefined ? "" : `&head_sha=${targetSource}`}&per_page=50&page=${++stream.page}`,
+        ),
+        "workflow_runs",
+      );
+      stream.complete = runs.length < 50 || stream.page === 3;
+      stream.runs = runs
+        .filter(
+          (run) =>
+            canonicalArtifactRun(run, approved) &&
+            run.event === stream.event &&
+            (targetSource === undefined || run.head_sha === targetSource),
+        )
+        .sort(newestArtifactRun);
+    }
+    // Refill every drained frontier before choosing: its next page may precede another stream.
+    if (streams.some((stream) => stream.runs.length === 0 && !stream.complete)) continue;
+    const frontier = streams
+      .filter((stream) => stream.runs.length > 0)
+      .sort((left, right) => newestArtifactRun(left.runs[0]!, right.runs[0]!))[0];
+    if (frontier === undefined) return;
+    const run = frontier.runs.shift()!;
+    const id = positive(run.id);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    yield run;
+  }
+}
+
 function safeTransportError(error: unknown): JonesActionsError {
   return error instanceof JonesActionsError ? error : new JonesActionsError("unavailable");
 }
@@ -305,124 +356,110 @@ export class JonesActionsClient {
         throw new JonesActionsError("unqualified");
       if ((targetSource ?? mainSource) === input.installedSource) return { state: "no-new" };
       let building = false;
-      for (let page = 1; page <= 3; page++) {
-        const runs = rows(
-          await this.transport.api(
-            `${API_ROOT}/actions/workflows/${NodePath.posix.basename(approved.workflow)}/runs?branch=main${input.platform === "linux" ? "&event=push" : ""}${targetSource === undefined ? "" : `&head_sha=${targetSource}`}&per_page=50&page=${page}`,
-          ),
-          "workflow_runs",
-        );
-        for (const listed of runs) {
-          if (
-            !canonicalArtifactRun(listed, approved) ||
-            (targetSource !== undefined && listed.head_sha !== targetSource)
-          )
-            continue;
-          if (listed.status !== "completed") {
-            building = true;
-            continue;
-          }
-          if (listed.conclusion !== "success" || listed.head_sha === input.installedSource)
-            continue;
-          const run = record(
-            await this.transport.api(`${API_ROOT}/actions/runs/${positive(listed.id)}`),
-          );
-          if (
-            !canonicalArtifactRun(run, approved) ||
-            run.status !== "completed" ||
-            run.conclusion !== "success"
-          )
-            continue;
-          const candidateSource = source(run.head_sha);
-          if (
-            (targetSource !== undefined && candidateSource !== targetSource) ||
-            candidateSource === input.installedSource ||
-            !(await this.descends(input.installedSource, candidateSource)) ||
-            !(await this.descends(candidateSource, mainSource))
-          )
-            continue;
-          const ciRuns = rows(
-            await this.transport.api(
-              `${API_ROOT}/actions/workflows/ci.yml/runs?branch=main&event=push&head_sha=${candidateSource}&per_page=100&page=1`,
-            ),
-            "workflow_runs",
-          );
-          const sourceCi = ciRuns.filter(
-            (item) => canonicalCiRun(item) && item.head_sha === candidateSource,
-          );
-          const ci = sourceCi.find(
-            (item) => item.status === "completed" && item.conclusion === "success",
-          );
-          if (!ci) {
-            // Unlisted or unfinished main CI can still qualify this build; a completed failure cannot.
-            if (sourceCi.length === 0 || sourceCi.some((item) => item.status !== "completed"))
-              building = true;
-            continue;
-          }
-          const runId = positive(run.id),
-            runAttempt = positive(run.run_attempt);
-          const artifacts = rows(
-            await this.transport.api(
-              `${API_ROOT}/actions/runs/${runId}/artifacts?per_page=100&page=1`,
-            ),
-            "artifacts",
-          );
-          for (const artifact of artifacts) {
-            const name = text(artifact.name);
-            const prefix = `${approved.name}-${runId}-${runAttempt}--`;
-            if (!name.startsWith(prefix)) continue;
-            const version = name.slice(prefix.length);
-            if (!PREVIEW.test(version) || !version.endsWith(`.${runId}.${runAttempt}`)) continue;
-            const expiresAt = text(artifact.expires_at);
-            if (
-              artifact.expired !== false ||
-              !Number.isFinite(Date.parse(expiresAt)) ||
-              Date.parse(expiresAt) <= this.now()
-            )
-              continue;
-            const artifactRun = record(artifact.workflow_run);
-            if (
-              artifactRun.id !== runId ||
-              artifactRun.head_sha !== candidateSource ||
-              artifactRun.head_branch !== "main" ||
-              artifactRun.repository_id !== record(run.repository).id ||
-              artifactRun.head_repository_id !== record(run.repository).id
-            )
-              continue;
-            const commit = record(
-              await this.transport.api(`${API_ROOT}/git/commits/${candidateSource}`),
-            );
-            if (commit.sha !== candidateSource) throw new JonesActionsError("unqualified");
-            const artifactBytes = positive(artifact.size_in_bytes);
-            if (artifactBytes > MAX_ARCHIVE_BYTES) throw new JonesActionsError("integrity");
-            const buildStartedAt = parseJonesBuildStartedAt(run.run_started_at);
-            return {
-              state: "available",
-              ...(buildStartedAt === undefined ? {} : { buildStartedAt }),
-              candidate: {
-                schema: 1,
-                repository: JONES_ACTIONS_REPOSITORY,
-                source: candidateSource,
-                tree: source(record(commit.tree).sha),
-                installedSource: input.installedSource,
-                workflow: approved.workflow,
-                workflowId: positive(run.workflow_id),
-                runId,
-                runAttempt,
-                ciRunId: positive(ci.id),
-                artifactId: positive(artifact.id),
-                artifactName: name,
-                artifactDigest: digest(artifact.digest),
-                artifactBytes,
-                expiresAt,
-                version,
-                platform: input.platform,
-                architecture: input.architecture,
-              },
-            };
-          }
+      const ciObservations = new Map<string, Array<Record<string, unknown>>>();
+      for await (const listed of discoverArtifactRuns(this.transport, approved, targetSource)) {
+        if (listed.status !== "completed") {
+          building = true;
+          continue;
         }
-        if (runs.length < 50) break;
+        if (listed.conclusion !== "success" || listed.head_sha === input.installedSource) continue;
+        const run = record(
+          await this.transport.api(`${API_ROOT}/actions/runs/${positive(listed.id)}`),
+        );
+        if (
+          !canonicalArtifactRun(run, approved) ||
+          run.status !== "completed" ||
+          run.conclusion !== "success"
+        )
+          continue;
+        const candidateSource = source(run.head_sha);
+        if (
+          (targetSource !== undefined && candidateSource !== targetSource) ||
+          candidateSource === input.installedSource ||
+          !(await this.descends(input.installedSource, candidateSource)) ||
+          !(await this.descends(candidateSource, mainSource))
+        )
+          continue;
+        const ciEndpoint = `${API_ROOT}/actions/workflows/ci.yml/runs?branch=main&event=push&head_sha=${candidateSource}&per_page=100&page=1`;
+        let ciRuns = ciObservations.get(ciEndpoint);
+        if (ciRuns === undefined) {
+          ciRuns = rows(await this.transport.api(ciEndpoint), "workflow_runs");
+          ciObservations.set(ciEndpoint, ciRuns);
+        }
+        const sourceCi = ciRuns.filter(
+          (item) => canonicalCiRun(item) && item.head_sha === candidateSource,
+        );
+        const ci = sourceCi.find(
+          (item) => item.status === "completed" && item.conclusion === "success",
+        );
+        if (!ci) {
+          // Unlisted or unfinished main CI can still qualify this build; a completed failure cannot.
+          if (sourceCi.length === 0 || sourceCi.some((item) => item.status !== "completed"))
+            building = true;
+          continue;
+        }
+        const runId = positive(run.id),
+          runAttempt = positive(run.run_attempt);
+        const artifacts = rows(
+          await this.transport.api(
+            `${API_ROOT}/actions/runs/${runId}/artifacts?per_page=100&page=1`,
+          ),
+          "artifacts",
+        );
+        for (const artifact of artifacts) {
+          const name = text(artifact.name);
+          const prefix = `${approved.name}-${runId}-${runAttempt}--`;
+          if (!name.startsWith(prefix)) continue;
+          const version = name.slice(prefix.length);
+          if (!PREVIEW.test(version) || !version.endsWith(`.${runId}.${runAttempt}`)) continue;
+          const expiresAt = text(artifact.expires_at);
+          if (
+            artifact.expired !== false ||
+            !Number.isFinite(Date.parse(expiresAt)) ||
+            Date.parse(expiresAt) <= this.now()
+          )
+            continue;
+          const artifactRun = record(artifact.workflow_run);
+          if (
+            artifactRun.id !== runId ||
+            artifactRun.head_sha !== candidateSource ||
+            artifactRun.head_branch !== "main" ||
+            artifactRun.repository_id !== record(run.repository).id ||
+            artifactRun.head_repository_id !== record(run.repository).id
+          )
+            continue;
+          const commit = record(
+            await this.transport.api(`${API_ROOT}/git/commits/${candidateSource}`),
+          );
+          if (commit.sha !== candidateSource) throw new JonesActionsError("unqualified");
+          const artifactBytes = positive(artifact.size_in_bytes);
+          if (artifactBytes > MAX_ARCHIVE_BYTES) throw new JonesActionsError("integrity");
+          const buildStartedAt = parseJonesBuildStartedAt(run.run_started_at);
+          return {
+            state: "available",
+            ...(buildStartedAt === undefined ? {} : { buildStartedAt }),
+            candidate: {
+              schema: 1,
+              repository: JONES_ACTIONS_REPOSITORY,
+              source: candidateSource,
+              tree: source(record(commit.tree).sha),
+              installedSource: input.installedSource,
+              workflow: approved.workflow,
+              workflowId: positive(run.workflow_id),
+              runId,
+              runAttempt,
+              ciRunId: positive(ci.id),
+              artifactId: positive(artifact.id),
+              artifactName: name,
+              artifactDigest: digest(artifact.digest),
+              artifactBytes,
+              expiresAt,
+              version,
+              platform: input.platform,
+              architecture: input.architecture,
+            },
+          };
+        }
       }
       return building
         ? { state: "building", retryAfterMs: 240000 }
