@@ -1565,3 +1565,126 @@ it.effect.each([
     expect(egress).not.toHaveBeenCalled();
   }).pipe(Effect.scoped),
 );
+
+it.effect.each(["verify_reference", "native_t3_settlement", "refresh_linked_pr"] as const)(
+  "generic recovery refuses archive-backed %s before result lookup or provider effects",
+  (kind) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse(Fixture.now));
+      yield* seed;
+      const h = yield* harness;
+      let action: WorkstreamAction;
+      if (kind === "refresh_linked_pr") {
+        const workstream = yield* h.create("imported recovery guard");
+        yield* (yield* Store.RegistryStore).appendPlain(scope, "source_bindings", {
+          provider: "github",
+          source_instance_id: "github-synthetic",
+          binding_version: 1,
+          authority_namespace: "github-authority",
+          store_generation: 1,
+          state: "active",
+        });
+        const ref = (yield* h.committed({
+          operation: "register_reference",
+          identity: {
+            provider: "github",
+            source_instance_id: "github-synthetic",
+            resource_kind: "pull_request",
+            id_kind: "external",
+            native_id: "jones/example#7",
+            account_provenance: { kind: "not_account_scoped" },
+          },
+          pr_locator: {
+            host: "github.com",
+            repository_owner: "jones",
+            repository_name: "example",
+            number: 7,
+          },
+        })).effects.native_reference_id!;
+        yield* h.verify(ref);
+        const membership = (yield* h.committed({
+          operation: "link_secondary",
+          workstream_id: workstream,
+          expected_version: 1,
+          native_reference_id: ref,
+        })).effects.membership_ids[0]!;
+        action = {
+          operation: "refresh_linked_pr",
+          workstream_id: workstream,
+          expected_version: 2,
+          membership_id: membership,
+          expected_observation_version: 0,
+        };
+      } else {
+        const ref = yield* h.register();
+        if (kind === "native_t3_settlement") {
+          yield* h.verify(ref);
+          action = {
+            operation: "request_native_t3_settlement",
+            native_reference_id: ref,
+            expected_attestation_version: 1,
+            native_action: "settle",
+          };
+        } else {
+          action = {
+            operation: "verify_reference",
+            native_reference_id: ref,
+            expected_attestation_version: 0,
+          };
+        }
+      }
+      const command = yield* h.command(action);
+      const accepted = yield* h.registry.submit(caller, JSON.stringify(command));
+      expect(accepted.intent?.kind).toBe(kind);
+      if (!accepted.intent) throw new Error("Expected retained external intent");
+      const archive = yield* Archive.ArchiveStore;
+      yield* archive.startImport(scope, {
+        import_run_id: "guard-import",
+        snapshot_id: "guard-snapshot",
+        snapshot_sha256: Fixture.hash,
+        producer: "control-plane",
+        contract_version: "1.0.0",
+        manifest: {
+          registry: { registry_instance_id: scope.registry_instance_id },
+          owners: [{ owner_id: scope.owner_id }],
+        },
+      });
+      // Even an unreadable historical payload reserves its ID and cannot be
+      // interpreted as permission to use the native attempt-not-found path.
+      yield* archive.archive(scope, {
+        import_run_id: "guard-import",
+        class: "workstream_command_receipts",
+        record_key: JSON.stringify([scope.owner_id, command.command_id]),
+        canonical_sha256: Fixture.hash,
+        value: { retained: "unrepresentable historical receipt" },
+      });
+      const effects = yield* Effects.EffectStore;
+      const active = yield* effects.active(scope);
+      const history = yield* (yield* History.HistoryStore).page(scope, { limit: 100 });
+      const snapshot = yield* h.registry.snapshot(caller);
+      const resolver = yield* Resolver.ReferenceResolver;
+      const settlement = yield* Settlement.SourceSettlement;
+      const github = yield* GitHub.LinkedPrObserver;
+      const spies = yield* Effect.acquireRelease(
+        Effect.sync(() => [
+          vi.spyOn(effects, "result"),
+          vi.spyOn(resolver, "resolve"),
+          vi.spyOn(settlement, "lookup"),
+          vi.spyOn(settlement, "settle"),
+          vi.spyOn(github, "observe"),
+          vi.spyOn(h.registry, "complete"),
+        ]),
+        (values) => Effect.sync(() => values.forEach((spy) => spy.mockRestore())),
+      );
+      expect(
+        (yield* (yield* Runner.EffectRunner).run(accepted.intent).pipe(Effect.flip)).code,
+      ).toBe("unknown_effect");
+      expect((yield* (yield* Runner.EffectRunner).recover().pipe(Effect.flip)).code).toBe(
+        "unknown_effect",
+      );
+      expect(spies.every((spy) => spy.mock.calls.length === 0)).toBe(true);
+      expect(yield* effects.active(scope)).toEqual(active);
+      expect(yield* (yield* History.HistoryStore).page(scope, { limit: 100 })).toEqual(history);
+      expect(yield* h.registry.snapshot(caller)).toEqual(snapshot);
+    }).pipe(Effect.provide(runtime({ github: true }).layer), Effect.scoped),
+);

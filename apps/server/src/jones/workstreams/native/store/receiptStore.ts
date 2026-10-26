@@ -70,6 +70,8 @@ const make = Effect.gen(function* () {
         }>`SELECT * FROM jones_workstreams_receipts WHERE registry_instance_id = ${scope.registry_instance_id} AND owner_id = ${scope.owner_id} AND command_id = ${commandId}`;
         const row = rows[0];
         if (!row) return null;
+        if (row.origin === "legacy_open" && ["committed", "rejected"].includes(row.state))
+          return yield* new NativeSql.StoreError({ reason: "invalid_payload" });
         const value = yield* db.openJson(
           {
             ...scope,
@@ -237,6 +239,11 @@ const make = Effect.gen(function* () {
                 return yield* new NativeSql.StoreError({ reason: "idempotency_conflict" });
               if (proof.server_generation > contexts[0].server_generation)
                 return yield* new NativeSql.StoreError({ reason: "invalid_payload" });
+              const effective = yield* sql<{
+                state: string;
+              }>`SELECT state FROM jones_workstreams_receipts WHERE registry_instance_id=${scope.registry_instance_id} AND owner_id=${scope.owner_id} AND command_id=${request.command_id} AND origin='legacy_open'`;
+              if (effective[0] && ["committed", "rejected"].includes(effective[0].state))
+                return wrap({ kind: "unknown", reason: "import_incomplete" });
               return wrap({
                 kind: "legacy_present",
                 source:

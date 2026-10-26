@@ -7,6 +7,12 @@
   },
   "baseline": "05b697f6a2012497ae790425e197fbd1fcef7de7",
   "paths": {
+    "apps/server/src/jones/workstreams/native/store/legacyReconciliationStore.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/store/legacyReconciliationStore.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/transition/reconcileLegacyOpen.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/transition/reconcileLegacyOpen.ts": "jones-owned",
+    "packages/contracts/src/jones/workstreamsLegacyReconciliation.test.ts": "jones-owned",
+    "packages/contracts/src/jones/workstreamsLegacyReconciliation.ts": "jones-owned",
     "packages/contracts/src/jones/workstreamsLegacyReceipts.ts": "jones-owned",
     "packages/contracts/src/jones/workstreamsLegacyReceipts.test.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/transition/legacyReceipts.test.ts": "jones-owned",

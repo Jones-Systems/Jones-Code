@@ -16,6 +16,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 import * as NativeSql from "./sql.ts";
+import { readLegacyLedger } from "./legacyReconciliationStore.ts";
 
 type Failure = SqlError | NativeSql.StoreError | NativeSql.CryptoError;
 export interface ImportManifest {
@@ -224,6 +225,19 @@ const make = Effect.gen(function* () {
             origin: string;
           }>`
         SELECT * FROM jones_workstreams_receipts WHERE registry_instance_id=${scope.registry_instance_id} AND owner_id=${scope.owner_id} AND command_id=${commandId}`;
+          const delta = proof
+            ? (yield* readLegacyLedger(scope, proof.provenance.import_run_id).pipe(
+                Effect.provideService(NativeSql.NativeSql, db),
+                Effect.provideService(SqlClient.SqlClient, sql),
+              )).deltas.find((d) => d.binding.command_id === commandId)
+            : undefined;
+          const projection = delta?.changes.find((c) => c.after.table === "receipts")?.after;
+          if (
+            delta &&
+            (!projection ||
+              delta.binding.receipt_row_sha256 !== proof?.provenance.canonical_row_sha256)
+          )
+            return yield* new NativeSql.StoreError({ reason: "invalid_payload" });
           const metadata = stored[0] ?? open[0];
           if (
             !proof ||
@@ -232,9 +246,10 @@ const make = Effect.gen(function* () {
             metadata.principal_id !== proof.principal_id ||
             metadata.request_sha256 !== proof.request_sha256 ||
             metadata.server_generation !== proof.server_generation ||
-            metadata.state !== proof.state ||
+            metadata.state !== (projection?.data.state ?? proof.state) ||
             metadata.operation !== proof.operation ||
-            metadata.registry_version !== proof.registry_version ||
+            metadata.registry_version !==
+              (projection?.data.registry_version ?? proof.registry_version) ||
             (stored[0] &&
               (stored[0].canonical_sha256 !== proof.provenance.canonical_row_sha256 ||
                 stored[0].original_ciphertext_sha256 !== proof.provenance.ciphertext_sha256 ||
@@ -258,7 +273,9 @@ const make = Effect.gen(function* () {
               )).receipt;
           if (
             NativeSql.jsonText(payload) !==
-            NativeSql.jsonText(JSON.parse(proof.payload.replace(/^\uFEFF/, "")))
+            NativeSql.jsonText(
+              delta ? delta.receipt : JSON.parse(proof.payload.replace(/^\uFEFF/, "")),
+            )
           )
             return yield* new NativeSql.StoreError({ reason: "invalid_payload" });
           return proof;

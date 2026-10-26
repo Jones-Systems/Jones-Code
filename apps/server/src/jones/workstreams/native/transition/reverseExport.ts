@@ -5,6 +5,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as NativeSql from "../store/sql.ts";
 import * as Archive from "../store/archiveStore.ts";
 import * as Registry from "../store/registryStore.ts";
+import { readLegacyLedger } from "../store/legacyReconciliationStore.ts";
+import { readTarget } from "./archive.ts";
 import * as Keys from "../crypto/keyProvider.ts";
 import {
   canonical,
@@ -39,6 +41,7 @@ const revisions: Record<string, string> = {
   receipts: "registry_version",
   legacy_receipts: "registry_version",
   external_reservations: "admitted_registry_version",
+  external_results: "admitted_registry_version",
 };
 const currentTarget = Effect.fn("WorkstreamsTransition.currentTarget")(function* (target: Target) {
   const sql = yield* SqlClient.SqlClient,
@@ -48,6 +51,14 @@ const currentTarget = Effect.fn("WorkstreamsTransition.currentTarget")(function*
   >`SELECT * FROM ${sql(`jones_workstreams_${target.table}`)} WHERE ${sql.and(Object.entries(target.key).map(([k, v]) => sql`${sql(k)}=${v}`))}`;
   const row = rows[0];
   if (!row) return yield* new TransitionError({ reason: "reverse_record_missing" });
+  if (target.table === "external_results") {
+    const reservation = yield* sql<{
+      admitted_registry_version: number;
+    }>`SELECT admitted_registry_version FROM jones_workstreams_external_reservations WHERE registry_instance_id=${String(row.registry_instance_id)} AND owner_id=${String(row.owner_id)} AND command_id=${String(row.command_id)}`;
+    if (!reservation[0])
+      return yield* new TransitionError({ reason: "reverse_result_reservation_missing" });
+    row.admitted_registry_version = reservation[0].admitted_registry_version;
+  }
   const field = revisions[target.table],
     revision = field ? Number(row[field] ?? 0) : (target.context?.revision ?? 1);
   const value = target.context
@@ -93,6 +104,12 @@ const nativeClasses: Record<
     name: "workstream_command_receipts",
     keys: ["command_id"],
     purpose: "receipt",
+    recordId: "single",
+  },
+  external_results: {
+    name: "workstream_external_results",
+    keys: ["command_id"],
+    purpose: "external_result",
     recordId: "single",
   },
   history: {
@@ -362,6 +379,21 @@ export const prepareReverse = Effect.fn("WorkstreamsTransition.prepareReverse")(
           registry_version: c.registry_version,
           audit_high_water: high[0]!.high,
         });
+      }
+      for (const owner of p.snapshot.header.owners) {
+        const ledger = yield* readLegacyLedger(
+          { ...archiveScope(p), owner_id: owner.owner_id },
+          p.import_run_id,
+        );
+        for (const delta of ledger.deltas)
+          for (const change of delta.changes.filter((c) => c.after.table !== "references")) {
+            const current = yield* readTarget(change.after);
+            if (
+              canonical(current.data) !== canonical(change.after.data) ||
+              (change.after.context && canonical(current.value) !== canonical(change.after.value))
+            )
+              return yield* new TransitionError({ reason: "reverse_reconciliation_mismatch" });
+          }
       }
       const principals = yield* sql<{
         principal_id: string;

@@ -3,6 +3,12 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Archive from "../store/archiveStore.ts";
 import * as Registry from "../store/registryStore.ts";
+import {
+  readLegacyLedger,
+  targetAddress,
+  reconciliationDigest,
+} from "../store/legacyReconciliationStore.ts";
+import type { Target } from "./archive.ts";
 import { canonical, compareKeys, digest, TransitionError } from "./canonical.ts";
 import { archiveScope, readTarget, type ArchivedRow } from "./archive.ts";
 import { loadManifest } from "./apply.ts";
@@ -19,6 +25,12 @@ export const readback = Effect.fn("WorkstreamsTransition.readback")(function* (p
         return yield* new TransitionError({ reason: "import_incomplete" });
       const sources: SnapshotRow[] = [],
         counts = new Map<string, number>();
+      const targets = new Map<string, Target>();
+      const versions = new Map(
+        p.snapshot.header.owners.map((o) => [o.owner_id, o.registry_version]),
+      );
+      const roots: [string, string][] = [];
+      let reconciled = 0;
       for (const owner of p.snapshot.header.owners) {
         for (const table of [
           "records",
@@ -94,14 +106,10 @@ export const readback = Effect.fn("WorkstreamsTransition.readback")(function* (p
           )
             return yield* new TransitionError({ reason: "archive_digest_mismatch" });
           for (const target of archived.targets) {
-            const stored = yield* readTarget(target);
-            if (
-              canonical(stored.data) !== canonical(target.data) ||
-              (target.context && JSON.stringify(stored.value) !== JSON.stringify(target.value))
-            )
-              return yield* new TransitionError({ reason: "target_digest_mismatch" });
-            const ownerKey = canonical([target.table, target.data.owner_id]);
-            counts.set(ownerKey, (counts.get(ownerKey) ?? 0) + 1);
+            const id = targetAddress(target);
+            if (targets.has(id))
+              return yield* new TransitionError({ reason: "duplicate_baseline_target" });
+            targets.set(id, target);
           }
           section.push(archived.source);
         }
@@ -111,6 +119,42 @@ export const readback = Effect.fn("WorkstreamsTransition.readback")(function* (p
         sources.push(...section);
         if (run.state === "applied")
           yield* sql`UPDATE jones_workstreams_import_classes SET state='verified',observed_sha256=${c.sha256} WHERE import_run_id=${p.import_run_id} AND class=${c.class} AND state='applied'`;
+      }
+      for (const owner of p.snapshot.header.owners) {
+        const ledger = yield* readLegacyLedger(
+          { ...archiveScope(p), owner_id: owner.owner_id },
+          p.import_run_id,
+        );
+        roots.push([owner.owner_id, ledger.root]);
+        for (const delta of ledger.deltas) {
+          if (
+            delta.before_registry_version !== versions.get(owner.owner_id) ||
+            delta.binding.home_environment_id !== p.home_environment_id ||
+            delta.binding.home_generation !==
+              owner.server_generation +
+                (p.snapshot.header.producer.system === "jones-native" ? 1 : 0)
+          )
+            return yield* new TransitionError({ reason: "reconciliation_context_mismatch" });
+          for (const change of delta.changes) {
+            const id = targetAddress(change.after),
+              before = targets.get(id) ?? null;
+            if (canonical(before) !== canonical(change.before))
+              return yield* new TransitionError({ reason: "reconciliation_delta_mismatch" });
+            targets.set(id, change.after);
+          }
+          versions.set(owner.owner_id, delta.after_registry_version);
+          reconciled++;
+        }
+      }
+      for (const target of targets.values()) {
+        const stored = yield* readTarget(target);
+        if (
+          canonical(stored.data) !== canonical(target.data) ||
+          (target.context && JSON.stringify(stored.value) !== JSON.stringify(target.value))
+        )
+          return yield* new TransitionError({ reason: "target_digest_mismatch" });
+        const ownerKey = canonical([target.table, target.data.owner_id]);
+        counts.set(ownerKey, (counts.get(ownerKey) ?? 0) + 1);
       }
       for (const [key, count] of counts) {
         const [table, owner] = JSON.parse(key) as [string, string];
@@ -129,13 +173,21 @@ export const readback = Effect.fn("WorkstreamsTransition.readback")(function* (p
           context.server_generation !==
             owner.server_generation +
               (p.snapshot.header.producer.system === "jones-native" ? 1 : 0) ||
-          context.registry_version !== owner.registry_version
+          context.registry_version !== versions.get(owner.owner_id)
         )
           return yield* new TransitionError({ reason: "registry_readback_mismatch" });
       }
       if (run.state === "applied")
         yield* sql`UPDATE jones_workstreams_import_runs SET state='verified' WHERE import_run_id=${p.import_run_id}`;
       return {
+        reconciliation: {
+          delta_root: reconciliationDigest(roots),
+          count: reconciled,
+          registry_versions: [...versions].map(([owner_id, registry_version]) => ({
+            owner_id,
+            registry_version,
+          })),
+        },
         snapshot_sha256: p.snapshot.snapshot_sha256,
         classes: p.snapshot.classes,
         rows: sources,

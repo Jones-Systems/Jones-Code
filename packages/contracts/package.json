@@ -99,6 +99,10 @@
       "types": "./src/jones/workstreamsRollups.ts",
       "import": "./src/jones/workstreamsRollups.ts"
     },
+    "./jones/workstreamsLegacyReconciliation": {
+      "types": "./src/jones/workstreamsLegacyReconciliation.ts",
+      "import": "./src/jones/workstreamsLegacyReconciliation.ts"
+    },
     "./jones/workstreamsLegacyReceipts": {
       "types": "./src/jones/workstreamsLegacyReceipts.ts",
       "import": "./src/jones/workstreamsLegacyReceipts.ts"

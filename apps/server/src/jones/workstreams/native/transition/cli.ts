@@ -10,6 +10,7 @@ import * as Keys from "../crypto/keyProvider.ts";
 import { plan } from "./plan.ts";
 import { apply } from "./apply.ts";
 import { readback } from "./readback.ts";
+import { reconcileLegacyOpen, LegacySourceLookup } from "./reconcileLegacyOpen.ts";
 import { activate } from "./activate.ts";
 import { prepareReverse, reverseExport } from "./reverseExport.ts";
 import {
@@ -29,6 +30,7 @@ export class WorkstreamsTransition extends Context.Service<
     readonly plan: Bound<typeof plan>;
     readonly apply: Bound<typeof apply>;
     readonly readback: Bound<typeof readback>;
+    readonly reconcileLegacyOpen: Bound<typeof reconcileLegacyOpen>;
     readonly activate: Bound<typeof activate>;
     readonly prepareReverse: Bound<typeof prepareReverse>;
     readonly reverseExport: Bound<typeof reverseExport>;
@@ -41,6 +43,7 @@ export class WorkstreamsTransition extends Context.Service<
   }
 >()("t3/jones/workstreams/native/transition/cli/WorkstreamsTransition") {}
 const make = Effect.gen(function* () {
+  const sourceLookup = yield* LegacySourceLookup;
   const sql = yield* SqlClient.SqlClient,
     db = yield* NativeSql.NativeSql,
     registry = yield* Registry.RegistryStore,
@@ -71,6 +74,10 @@ const make = Effect.gen(function* () {
     plan: (...args) => provide(plan(...args)),
     apply: (...args) => provide(apply(...args)),
     readback: (...args) => provide(readback(...args)),
+    reconcileLegacyOpen: (...args) =>
+      provide(reconcileLegacyOpen(...args)).pipe(
+        Effect.provideService(LegacySourceLookup, sourceLookup),
+      ),
     activate: (...args) => provide(activate(...args)),
     prepareReverse: (...args) => provide(prepareReverse(...args)),
     reverseExport: (...args) => provide(reverseExport(...args)),

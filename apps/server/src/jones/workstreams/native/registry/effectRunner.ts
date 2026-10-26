@@ -10,6 +10,7 @@ import { NativeHome } from "../mode/authorityMode.ts";
 import * as Registry from "./service.ts";
 import * as Session from "./session.ts";
 import * as EffectStore from "../store/effectStore.ts";
+import * as ArchiveStore from "../store/archiveStore.ts";
 import * as Resolver from "../providers/referenceResolver.ts";
 import * as Settlement from "../providers/localSettlement.ts";
 import * as GitHub from "../providers/githubPrObserver.ts";
@@ -36,6 +37,7 @@ const make = Effect.gen(function* () {
   const home = yield* NativeHome;
   const scope = { registry_instance_id: home.registry_instance_id, owner_id: home.owner_id };
   const store = yield* EffectStore.EffectStore;
+  const archive = yield* ArchiveStore.ArchiveStore;
   const registry = yield* Registry.Registry;
   const resolver = yield* Resolver.ReferenceResolver;
   const settlement = yield* Settlement.SourceSettlement;
@@ -148,6 +150,13 @@ const make = Effect.gen(function* () {
   const runIntent = Effect.fn("NativeEffects.run")((intent: ExternalIntent, recovery: boolean) =>
     lock.withPermit(
       Effect.gen(function* () {
+        // Imported evidence must use the fenced lookup-only legacy reconciler, before any provider lookup or dispatch.
+        const imported = yield* archive
+          .contains(scope, intent.command.command_id)
+          .pipe(
+            Effect.mapError((cause) => new Session.RegistryError({ code: "unavailable", cause })),
+          );
+        if (imported) return yield* new Session.RegistryError({ code: "unknown_effect" });
         const existing = yield* store
           .result(scope, intent.command.command_id)
           .pipe(
