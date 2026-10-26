@@ -333,7 +333,7 @@ export function createSettlementNotificationController(deps: {
         state,
         nowMs: now(),
         staleSince: staleSince.get(environmentId) ?? null,
-        families: families.get(environmentId),
+        families: families.get(environmentId) ?? [],
       });
       if (result.kind === "skip") {
         if (result.staleSince === undefined) staleSince.delete(environmentId);

@@ -703,12 +703,10 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
     });
     const baseBranch = result.isRepo ? resolveDefaultWorktreeBaseBranch(result.refs) : null;
     if (baseBranch === null) {
-      return yield* Effect.fail(
-        new OrchestrationDispatchCommandError({
-          message:
-            "Unable to select a base branch for the new worktree. Choose a base ref and retry.",
-        }),
-      );
+      return yield* new OrchestrationDispatchCommandError({
+        message:
+          "Unable to select a base branch for the new worktree. Choose a base ref and retry.",
+      });
     }
     prepareWorktree = { ...prepareWorktree, baseBranch };
   }

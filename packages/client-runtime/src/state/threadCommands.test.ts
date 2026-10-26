@@ -467,6 +467,7 @@ describe("earlier thread history loads", () => {
         readonly reply: Deferred.Deferred<ThreadHistoryController.ThreadHistoryLoadEarlierResult>;
       }>();
       yield* h.historyController.register(ENVIRONMENT_ID, THREAD_ID, {
+        reconcilePendingWork: () => Effect.void,
         loadEarlier: (throughEntryId) =>
           Effect.gen(function* () {
             const reply =
