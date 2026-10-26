@@ -144,3 +144,14 @@ it("reinjects ACP guidance only when mode or tool availability changes", () => {
   assert.notInclude(withoutMcp, "Jones Code collaborative browser");
   assert.notInclude(withoutMcp, "Jones Code orchestration");
 });
+
+it("keeps compatible upstream delivery and cancellation rules", () => {
+  for (const text of [
+    "Follow a running delegate's `next` instruction",
+    "Start no subagents unless your task says to",
+    '`delivery: "file"`',
+    "cancel it and start no replacement",
+    "Use a PNG file and its path",
+  ])
+    assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, text);
+});

@@ -28,7 +28,12 @@ import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/compat";
 import type * as EffectAcpProtocol from "effect-acp/protocol";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
-import { AgentScope, AgentScopeThreadId, RAISE_OOM_SCORE_LINE } from "@t3tools/shared/AgentScope";
+import {
+  AgentScope,
+  AgentScopeThreadId,
+  RAISE_OOM_SCORE_LINE,
+  type AgentScopeCommand,
+} from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
@@ -205,6 +210,11 @@ export interface AcpLinuxCgroupLease {
 export interface AcpLinuxCgroupController {
   readonly create: () => AcpLinuxCgroupLease | undefined;
 }
+
+export const AcpLinuxCgroupControllerRef = Context.Reference<AcpLinuxCgroupController>(
+  "@t3tools/provider-acp/LinuxCgroupController",
+  { defaultValue: makeLinuxCgroupController },
+);
 
 export interface AcpPosixOwnershipRoot {
   captureAttempted?: boolean;
@@ -437,7 +447,7 @@ function tryCreateLinuxCgroupLease(
   };
 }
 
-export function makeLinuxCgroupController(): AcpLinuxCgroupController {
+function makeLinuxCgroupController(): AcpLinuxCgroupController {
   return {
     create: () => {
       let currentRelative: string | undefined;
@@ -1371,12 +1381,14 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
           ...(options.spawn.env ? { env: options.spawn.env } : {}),
           extendEnv: options.spawn.extendEnv ?? true,
         });
+
+  const defaultLinuxCgroupController = yield* AcpLinuxCgroupControllerRef;
   const linuxCgroupLease =
     options.ownDescendantProcessGroups === true && options.processGroupPlatform === "linux"
       ? yield* Effect.sync(() => {
           try {
             if (options.linuxCgroupController === null) return undefined;
-            return (options.linuxCgroupController ?? makeLinuxCgroupController()).create();
+            return (options.linuxCgroupController ?? defaultLinuxCgroupController).create();
           } catch {
             return undefined;
           }
@@ -1418,13 +1430,23 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
           threadId: yield* AgentScopeThreadId,
           env: { ...process.env, ...options.spawn.env },
         });
-  const scopedSpawnCommand =
+  const scopedSpawnCommand: AgentScopeCommand & { readonly shell: boolean } =
     scopedLaunch === undefined ? spawnCommand : { ...scopedLaunch, shell: false };
   // Finalizers run in reverse order: reap detached work after terminating the agent.
   const scopeUnit = scopedLaunch?.unit;
   const stopScope =
     scopeUnit === undefined ? Effect.void : yield* Effect.cached(agentScope.stop(scopeUnit));
   yield* Scope.addFinalizer(runtimeScope, stopScope);
+
+  const stopAgentScope = scopedSpawnCommand.stop?.pipe(
+    Effect.mapError(
+      (cause) =>
+        new AcpProcessGroupTerminationError({
+          detail: "Agent scope retirement remains unknown",
+          cause,
+        }),
+    ),
+  );
   const containedSpawnCommand =
     linuxCgroupLease === undefined
       ? scopedSpawnCommand
@@ -1592,6 +1614,9 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
       if (grace !== 0) yield* Effect.sleep(grace);
       return yield* terminateLinuxCgroupLease(linuxCgroupLease);
     }
+
+    if (options.ownDescendantProcessGroups === true && stopAgentScope !== undefined)
+      return yield* stopAgentScope;
     if (options.ownDescendantProcessGroups === true) {
       return yield* terminatePosixProcessTree(options.processGroupTerminationGrace ?? "1 second");
     }
@@ -1616,7 +1641,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
         : linuxCgroupLease !== undefined
           ? terminateLinuxCgroupLease(linuxCgroupLease)
           : options.ownDescendantProcessGroups === true
-            ? terminatePosixProcessTree(0, hostPlatform)
+            ? (stopAgentScope ?? terminatePosixProcessTree(0, hostPlatform))
             : signalOwnedProcessGroup("SIGKILL").pipe(Effect.asVoid);
     yield* Scope.addFinalizer(
       runtimeScope,
