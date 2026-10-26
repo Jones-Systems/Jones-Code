@@ -41,6 +41,13 @@ import {
   CodexSettings,
   ProviderInstanceId,
 } from "@t3tools/contracts";
+import {
+  makeShellIdlePromptIntegration,
+  type ShellIdlePrompt,
+} from "../jones/terminal/ShellIdlePrompt.ts";
+import { ShellIdleExpiry } from "../jones/terminal/ShellIdleExpiry.ts";
+import { isShellRunTerminal } from "@t3tools/contracts/jones/shellDestinationFence";
+import * as Clock from "effect/Clock";
 import { makeTerminalHistoryWorker } from "../jones/terminal/TerminalHistoryWorker.ts";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { AgentScope } from "@t3tools/shared/AgentScope";
@@ -316,6 +323,9 @@ export class TerminalManager extends Context.Service<
 >()("t3/terminal/Manager/TerminalManager") {}
 
 interface TerminalSubprocessInspectResult {
+  // Expiry requires positive identity and no children, including prompt helpers.
+  readonly rootCommand?: string | null;
+  readonly hasAnyChildren?: boolean;
   readonly hasRunningSubprocess: boolean;
   readonly childCommand: string | null;
   readonly processIds: ReadonlyArray<number>;
@@ -357,6 +367,9 @@ export interface TerminalStartInput extends TerminalOpenInput {
 }
 
 interface TerminalSessionState {
+  shellName?: string | null;
+  idlePrompt?: ShellIdlePrompt;
+  idleExpiryEnabled?: boolean;
   threadId: string;
   terminalId: string;
   cwd: string;
@@ -542,7 +555,7 @@ function advanceEventSequence(session: TerminalSessionState): {
 }
 
 function terminalActivityMark(session: TerminalSessionState): number {
-  return session.eventSequence + session.inputCount;
+  return session.eventSequence + session.inputCount + (session.idlePrompt?.revision ?? 0);
 }
 
 interface QuietTerminalSession {
@@ -802,6 +815,10 @@ function deriveSubprocessInspectResult(
   const commandName = (pid: number) =>
     normalizeChildCommandName(snapshot.commandById.get(pid) ?? "", platform);
   const shellName = commandName(terminalPid);
+  const idleInspection = {
+    rootCommand: shellName,
+    hasAnyChildren: (snapshot.childrenByParent.get(terminalPid)?.length ?? 0) > 0,
+  };
   // Async prompt themes fork the shell into a helper that waits with no
   // children of its own. That copy is not a command the user started.
   const childPid = (snapshot.childrenByParent.get(terminalPid) ?? []).find(
@@ -811,7 +828,7 @@ function deriveSubprocessInspectResult(
       (snapshot.childrenByParent.get(pid)?.length ?? 0) > 0,
   );
   if (childPid === undefined) {
-    return { hasRunningSubprocess: false, childCommand: null, processIds: [] };
+    return { ...idleInspection, hasRunningSubprocess: false, childCommand: null, processIds: [] };
   }
   const processIds = new Set<number>([terminalPid]);
   const pending = [terminalPid];
@@ -826,6 +843,7 @@ function deriveSubprocessInspectResult(
   }
   const normalized = commandName(childPid);
   return {
+    ...idleInspection,
     hasRunningSubprocess: true,
     childCommand: normalized ? truncateTerminalWireLabel(normalized) : null,
     processIds: [...processIds],
@@ -1703,6 +1721,14 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   const unregisterTerminal = options.unregisterTerminal ?? (() => Effect.void);
 
   yield* fileSystem.makeDirectory(logsDir, { recursive: true }).pipe(Effect.orDie);
+  const idlePromptIntegration = yield* makeShellIdlePromptIntegration().pipe(
+    Effect.asSome,
+    Effect.catch(() =>
+      Effect.logWarning("terminal idle prompt setup unavailable").pipe(
+        Effect.as(Option.none<Effect.Success<ReturnType<typeof makeShellIdlePromptIntegration>>>()),
+      ),
+    ),
+  );
 
   const managerStateRef = yield* SynchronizedRef.make<TerminalManagerState>({
     sessions: new Map(),
@@ -2334,11 +2360,23 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       );
     }
 
+    const prompt =
+      session.idleExpiryEnabled && Option.isSome(idlePromptIntegration)
+        ? yield* idlePromptIntegration.value
+            .prepare(normalizeChildCommandName(candidate.shell, platform), spawnEnv)
+            .pipe(
+              Effect.catch(() =>
+                Effect.logWarning("terminal idle prompt tracking unavailable").pipe(
+                  Effect.as({ env: spawnEnv, tracker: undefined }),
+                ),
+              ),
+            )
+        : { env: spawnEnv, tracker: undefined };
     const launch = yield* agentScope.wrap({
       command: candidate.shell,
       args: candidate.args ?? [],
       name: "terminal",
-      env: spawnEnv,
+      env: prompt.env,
       survivesRestart: true,
     });
     const attempt = yield* Effect.result(
@@ -2348,11 +2386,13 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         cwd: session.cwd,
         cols: session.cols,
         rows: session.rows,
-        env: spawnEnv,
+        env: prompt.env,
       }),
     );
 
     if (attempt._tag === "Success") {
+      if (prompt.tracker) session.idlePrompt = prompt.tracker;
+      else delete session.idlePrompt;
       return {
         process: attempt.success,
         shellLabel: formatShellCandidate(candidate),
@@ -2387,6 +2427,11 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       "terminal.cwd": input.cwd,
     });
 
+    delete session.idlePrompt;
+    session.idleExpiryEnabled =
+      legacy === undefined &&
+      nativeSetup === undefined &&
+      isShellRunTerminal(session.threadId, session.terminalId);
     const startingAt = yield* nowIso;
     yield* modifyManagerState((state) => {
       session.status = "starting";
@@ -2567,6 +2612,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
               sequence: session.eventSequence,
             };
             yield* modifyManagerState((state) => {
+              session.shellName = normalizeChildCommandName(spawnResult.shellLabel, platform);
               session.process = ptyProcess;
               session.pid = processPid;
               session.status = "running";
@@ -2580,7 +2626,9 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
                 session.legacyExitObserved = false;
               }
               // onExit may replay an exit immediately; accept it before subscribing.
-              session.unsubscribeData = spawnResult.process.onData((data) => {
+              session.unsubscribeData = spawnResult.process.onData((raw) => {
+                const data = session.idlePrompt?.output(raw) ?? raw;
+                if (data.length === 0) return;
                 if (!enqueueProcessEvent(session, processPid, { type: "output", data })) {
                   return;
                 }
@@ -2783,6 +2831,66 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
 
   // Two unchanged snapshots cover children forked just after the first snapshot.
   // Process identity prevents a restarted shell from inheriting quiet state.
+  const idleExpiry = new ShellIdleExpiry();
+  const isExpiryIdle = (
+    session: TerminalSessionState,
+    inspected: TerminalSubprocessInspectResult,
+  ) =>
+    session.idleExpiryEnabled === true &&
+    session.idlePrompt?.atPrompt === true &&
+    session.nativeSetupControl === undefined &&
+    session.legacyOwnedControl === undefined &&
+    session.status === "running" &&
+    session.pendingProcessEventIndex >= session.pendingProcessEvents.length &&
+    !inspected.hasRunningSubprocess &&
+    inspected.hasAnyChildren === false &&
+    session.shellName != null &&
+    inspected.rootCommand === session.shellName;
+
+  const expireIdleShell = Effect.fn("terminal.expireIdleShell")(function* (
+    session: TerminalSessionState,
+    process: PtyAdapter.PtyProcess,
+    terminalPid: number,
+    mark: number,
+  ) {
+    yield* withThreadLock(
+      session.threadId,
+      Effect.gen(function* () {
+        const live = yield* getSession(session.threadId, session.terminalId);
+        if (
+          Option.isNone(live) ||
+          live.value !== session ||
+          session.process !== process ||
+          session.pid !== terminalPid ||
+          terminalActivityMark(session) !== mark
+        ) {
+          idleExpiry.reset(session);
+          return;
+        }
+        // Fresh under the write/open/close lock. Cached quiet polls cannot authorize a kill.
+        const { inspector, snapshotSucceeded } = yield* acquireSubprocessInspector;
+        const inspected = yield* inspector(terminalPid);
+        const due = idleExpiry.observe(
+          session,
+          process,
+          terminalActivityMark(session),
+          snapshotSucceeded && isExpiryIdle(session, inspected),
+          yield* Clock.currentTimeMillis,
+        );
+        if (
+          !due ||
+          session.process !== process ||
+          session.pid !== terminalPid ||
+          terminalActivityMark(session) !== mark ||
+          session.pendingProcessEventIndex < session.pendingProcessEvents.length
+        )
+          return;
+        idleExpiry.reset(session);
+        yield* closeSession(session.threadId, session.terminalId, false);
+      }),
+    ).pipe(Effect.catch(() => Effect.sync(() => idleExpiry.reset(session))));
+  });
+
   let quietSessions = new WeakMap<TerminalSessionState, QuietTerminalSession>();
   let skippedQuietTicks = 0;
   const isQuiet = (session: TerminalSessionState & { pid: number }) => {
@@ -2813,9 +2921,13 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     if (runningSessions.length === 0) {
       return true;
     }
+    const sampledAt = yield* Clock.currentTimeMillis;
     if (
       runningSessions.every(({ session }) => isQuiet(session)) &&
-      skippedQuietTicks < QUIET_SUBPROCESS_SNAPSHOT_EVERY_TICKS - 1
+      skippedQuietTicks < QUIET_SUBPROCESS_SNAPSHOT_EVERY_TICKS - 1 &&
+      !runningSessions.some(({ session, process, mark }) =>
+        idleExpiry.isDue(session, process, mark, sampledAt),
+      )
     ) {
       skippedQuietTicks += 1;
       return true;
@@ -2840,6 +2952,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
 
     if (Option.isNone(inspectorOption)) {
       quietSessions = new WeakMap();
+      idleExpiry.reset();
       return false;
     }
 
@@ -2869,6 +2982,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         session.pid !== terminalPid ||
         session.process !== process
       ) {
+        idleExpiry.reset(session);
         return;
       }
 
@@ -2917,6 +3031,15 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       if (Option.isSome(event)) {
         yield* publishEvent(event.value);
       }
+
+      const due = idleExpiry.observe(
+        session,
+        process,
+        mark,
+        snapshotSucceeded && terminalActivityMark(session) === mark && isExpiryIdle(session, next),
+        yield* Clock.currentTimeMillis,
+      );
+      if (due && process) yield* expireIdleShell(session, process, terminalPid, mark);
 
       if (
         snapshotSucceeded &&
@@ -3555,6 +3678,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         terminalId,
       });
     }
+    session.idlePrompt?.input();
     session.inputCount += 1;
     yield* Effect.try({
       try: () => process.write(input.data),
