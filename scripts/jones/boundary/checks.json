@@ -3570,7 +3570,11 @@
         "packages/contracts/src/jones/workstreamsPeerAuthority.test.ts",
         "packages/contracts/src/jones/workstreamsForwardReadmission.test.ts",
         "packages/contracts/src/jones/workstreamsHomeReadResult.test.ts",
-        "apps/server/src/jones/persistence/Migrations/128_JonesWorkstreamsPeerSessionPins.test.ts"
+        "apps/server/src/jones/persistence/Migrations/128_JonesWorkstreamsPeerSessionPins.test.ts",
+        "apps/server/src/jones/workstreams/native/store/peerSessionPinStore.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/peerSessionPins.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/peerSessionPinSetup.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/guard.twoServer.test.ts"
       ],
       "commands": [
         "vp test run apps/server/src/jones/workstreams/native/compat/http.test.ts packages/contracts/src/jones/workstreamsHttp.test.ts apps/server/src/jones/workstreams/native/conformance/httpParity.test.ts apps/server/src/workstreams/http.test.ts --maxWorkers=1 --no-file-parallelism",
@@ -3590,7 +3594,8 @@
         "vp test run apps/server/src/jones/persistence/Migrations/127_JonesWorkstreamsRollupAttempts.test.ts apps/server/src/jones/workstreams/native/rollups/store.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/server/src/jones/workstreams/native/rollups/manifestSource.test.ts apps/server/src/jones/workstreams/native/rollups/application.test.ts apps/server/src/jones/workstreams/native/rollups/bindings.test.ts apps/server/src/jones/workstreams/native/rollups/store.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/server/src/jones/workstreams/native/runtime/rollupWorker.test.ts apps/server/src/jones/workstreams/native/runtime/entry.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run packages/contracts/src/jones/workstreamsPeerAuthority.test.ts packages/contracts/src/jones/workstreamsForwardReadmission.test.ts packages/contracts/src/jones/workstreamsHomeReadResult.test.ts apps/server/src/jones/persistence/Migrations/128_JonesWorkstreamsPeerSessionPins.test.ts --maxWorkers=1 --no-file-parallelism"
+        "vp test run packages/contracts/src/jones/workstreamsPeerAuthority.test.ts packages/contracts/src/jones/workstreamsForwardReadmission.test.ts packages/contracts/src/jones/workstreamsHomeReadResult.test.ts apps/server/src/jones/persistence/Migrations/128_JonesWorkstreamsPeerSessionPins.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/jones/workstreams/native/store/peerSessionPinStore.test.ts apps/server/src/jones/workstreams/native/runtime/peerSessionPins.test.ts apps/server/src/jones/workstreams/native/runtime/peerSessionPinSetup.test.ts apps/server/src/jones/workstreams/native/forwarding/guard.twoServer.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {

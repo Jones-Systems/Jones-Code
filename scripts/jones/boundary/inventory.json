@@ -2151,7 +2151,15 @@
     "packages/contracts/src/jones/workstreamsPeerAuthority.test.ts": "jones-owned",
     "packages/contracts/src/jones/workstreamsHomeReadResult.ts": "jones-owned",
     "packages/contracts/src/jones/workstreamsPeerAuthority.ts": "jones-owned",
-    "packages/contracts/src/jones/workstreamsForwardReadmission.ts": "jones-owned"
+    "packages/contracts/src/jones/workstreamsForwardReadmission.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/store/peerSessionPinStore.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/store/peerSessionPinStore.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/runtime/peerSessionPins.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/runtime/peerSessionPins.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/runtime/peerSessionPinSetup.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/runtime/peerSessionPinSetup.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/forwarding/guard.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/forwarding/guard.twoServer.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

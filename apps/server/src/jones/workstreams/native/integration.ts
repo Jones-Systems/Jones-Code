@@ -25,6 +25,7 @@ import * as Envelope from "./crypto/envelope.ts";
 import * as IdentityIndex from "./crypto/identityIndex.ts";
 import * as NativeSql from "./store/sql.ts";
 import * as RegistryStore from "./store/registryStore.ts";
+import * as PeerSessionPinStore from "./store/peerSessionPinStore.ts";
 import * as ArchiveStore from "./store/archiveStore.ts";
 import * as ReceiptStore from "./store/receiptStore.ts";
 import * as HistoryStore from "./store/historyStore.ts";
@@ -51,6 +52,7 @@ export const nativePersistenceLayer = Layer.mergeAll(
   operationLayer,
   IdentityIndex.layer,
   SourceEnrollmentStore.layer,
+  PeerSessionPinStore.layer,
 ).pipe(Layer.provideMerge(sqlLayer));
 
 /** Selected native composition only; reuses application SQL and key resources. */
