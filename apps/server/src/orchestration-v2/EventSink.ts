@@ -1,4 +1,5 @@
 import type { ThreadTitleCommitContext } from "../jones/threadTitle/commitContext.ts";
+import type { CodexFailoverCommitContext } from "../jones/codexFailover/CodexFailover.ts";
 import type { ThreadSelfConfigurationCommitContext } from "../jones/threadConfiguration/ThreadSelfConfiguration.ts";
 import type { TaskContinuationCommitContext } from "../jones/taskContinuation/commitContext.ts";
 import * as HistoricalTerminalHistory from "../jones/orchestration/HistoricalTerminalHistory.ts";
@@ -351,6 +352,7 @@ export interface EventSinkV2Shape {
     EventSinkV2Error
   >;
   readonly commitCommand: (input: {
+    readonly codexFailover?: CodexFailoverCommitContext | undefined;
     readonly taskContinuation?: TaskContinuationCommitContext | undefined;
     readonly threadTitle?: ThreadTitleCommitContext | undefined;
     readonly selfSettlementProjectRemaining?: SelfSettlementProjectRemaining;
@@ -1239,6 +1241,8 @@ const layerBase: Layer.Layer<
 
           if (input.threadSelfConfiguration)
             input = { ...input, events: yield* input.threadSelfConfiguration.revalidate() };
+          if (input.codexFailover?.revalidate)
+            input = { ...input, events: yield* input.codexFailover.revalidate(input) };
           if (input.providerConversationReselection)
             yield* input.providerConversationReselection.revalidate(input);
           if (input.taskContinuation) yield* input.taskContinuation.accept(input);
@@ -1296,6 +1300,7 @@ const layerBase: Layer.Layer<
             );
           }
           const outcomes = yield* applyStoredEvents(storedEvents);
+          if (input.codexFailover?.accept) yield* input.codexFailover.accept(input);
           if (Option.isSome(admission)) yield* admission.value.admit(input.effects, input.events);
           yield* effectOutbox.enqueue(input.effects);
           const receipt: CommandReceiptStore.CommandReceiptV2 = {

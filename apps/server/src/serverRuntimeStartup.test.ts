@@ -196,6 +196,7 @@ it.effect.each([
           reconcile: () => Effect.succeed(recovery),
         }),
         Layer.mock(Orchestrator.OrchestratorV2)({
+          recoverCodexFailover: Effect.void,
           recoverDelegatedTasks: Effect.void,
           recoverPlannedUpdateQueues: Effect.void,
         }),
@@ -494,6 +495,7 @@ it.effect("holds recovery, activation and queued commands before the trial grant
         ),
         importLegacyShells: record("legacy"),
         recover: record("provider"),
+        recoverCodexFailover: record("codex-failover"),
         recoverDelegatedTasks: record("delegated"),
         startEffectWorker: record("worker"),
         autoBootstrap: record("bootstrap"),
@@ -511,6 +513,7 @@ it.effect("holds recovery, activation and queued commands before the trial grant
         "reservation",
         "legacy",
         "provider",
+        "codex-failover",
         "delegated",
         "worker",
         "bootstrap",

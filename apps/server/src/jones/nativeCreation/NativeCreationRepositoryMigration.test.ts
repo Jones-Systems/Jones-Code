@@ -44,6 +44,7 @@ it.effect("records additive fork migration 3 without changing upstream migration
         { migration_id: 122, name: "ThreadLinks" },
         { migration_id: 123, name: "WorkspaceLifecycle" },
         { migration_id: 124, name: "TaskContinuations" },
+        { migration_id: 129, name: "CodexFailover" },
         { migration_id: 130, name: "ThreadTitleRefinement" },
       ],
     );
