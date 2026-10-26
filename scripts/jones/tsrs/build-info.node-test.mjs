@@ -897,3 +897,100 @@ NodeTest.test(
     );
   },
 );
+
+for (const mode of ["cli", "configuration"])
+  NodeTest.test(
+    `N01 composite ${mode} incremental false still qualifies private output`,
+    async (t) => {
+      const { root, directory, config } = await fixture(t);
+      await NodeFSP.writeFile(
+        config,
+        JSON.stringify({
+          extends: "../tsconfig.base.json",
+          compilerOptions: { composite: true, incremental: mode === "cli" },
+          files: ["source.ts"],
+        }),
+      );
+      const args = mode === "cli" ? ["--incremental", "false"] : [];
+      const selected = await projectConfiguration(root, directory, classifyArguments(args));
+      NodeAssert.equal(selected.output, NodePath.join(directory, "tsconfig.tsbuildinfo"));
+      for (const output of [
+        NodePath.join(directory, ".jones-tsrs-caller.tsbuildinfo"),
+        NodePath.join(root, "outside.tsbuildinfo"),
+      ])
+        await NodeAssert.rejects(
+          projectConfiguration(
+            root,
+            directory,
+            classifyArguments([...args, "--tsBuildInfoFile", output]),
+          ),
+          /Custom build-info output/,
+        );
+      const ordinary = JSON.parse(await NodeFSP.readFile(config, "utf8"));
+      ordinary.compilerOptions.composite = false;
+      await NodeFSP.writeFile(config, JSON.stringify(ordinary));
+      NodeAssert.equal(
+        (await projectConfiguration(root, directory, classifyArguments(args))).output,
+        undefined,
+      );
+    },
+  );
+
+NodeTest.test(
+  "N01 native composite false options retain diagnostics and guarded output",
+  async (t) => {
+    for (const mode of ["cli", "configuration"]) {
+      const f = await nativeFixture(t);
+      const config = JSON.parse(await NodeFSP.readFile(f.config, "utf8"));
+      config.compilerOptions.composite = true;
+      config.compilerOptions.incremental = mode === "cli";
+      await NodeFSP.writeFile(f.config, JSON.stringify(config));
+      await NodeFSP.writeFile(
+        NodePath.join(f.directory, "source.ts"),
+        'import { value } from "./value.ts";\nexport const result = value;\n',
+      );
+      const output = NodePath.join(f.directory, `${mode}.tsbuildinfo`);
+      const args = [
+        "--noEmit",
+        "--pretty",
+        "false",
+        ...(mode === "cli" ? ["--incremental", "false"] : []),
+        "--tsBuildInfoFile",
+        output,
+      ];
+      NodeAssert.equal(await f.invoke(args), 2);
+      NodeAssert.match(f.outputs.at(-1).stdout, /TS6379/);
+      NodeAssert.match(f.log.at(-1), /\.jones-tsrs-[a-f0-9-]+\.tsbuildinfo/);
+      const raw = JSON.parse(await NodeFSP.readFile(output, "utf8"));
+      NodeAssert.equal(NodePath.resolve(f.directory, raw.options.tsBuildInfoFile), output);
+      NodeAssert.equal(
+        (await NodeFSP.readdir(f.directory)).some((name) => name.startsWith(".jones-tsrs-")),
+        false,
+      );
+      const paths = statePaths(f.root, f.directory, output);
+      await NodeAssert.rejects(NodeFSP.stat(paths.entry), { code: "ENOENT" });
+      NodeAssert.equal(
+        (await NodeFSP.readdir(paths.namespace)).some(
+          (name) => name.endsWith(".run.json") || name.endsWith(".tmp") || name.endsWith(".lock"),
+        ),
+        false,
+      );
+      let spawned = false;
+      await NodeAssert.rejects(
+        f.invoke(
+          [
+            ...args,
+            "--tsBuildInfoFile",
+            NodePath.join(f.directory, ".jones-tsrs-caller.tsbuildinfo"),
+          ],
+          async () => {
+            spawned = true;
+            return 0;
+          },
+        ),
+        /Custom build-info output/,
+      );
+      NodeAssert.equal(spawned, false);
+    }
+  },
+);

@@ -116,7 +116,8 @@ export async function projectConfiguration(root: string, cwd: string, args: Chec
     throw new Error(
       "The one-shot launcher requires --noEmit or noEmit:true in the project configuration.",
     );
-  const incremental = args.incremental ?? options.incremental ?? options.composite ?? false;
+  const incremental =
+    (args.incremental ?? options.incremental) === true || options.composite === true;
   let output: string | undefined;
   if (incremental) {
     // None of the admitted repository projects uses output relocation. Avoid
