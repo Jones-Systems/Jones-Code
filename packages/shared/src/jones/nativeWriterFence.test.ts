@@ -727,3 +727,50 @@ it("retained capabilities expose generation and lease loss with typed codes", as
       "opaque application state",
     );
   }));
+
+it.each(["intent-only", "intent", "preparing", "quiescent"])(
+  "preserves journal-only settlement for closed kernel roles in %s",
+  async (phase) =>
+    fixture(async (root, input) => {
+      const { directory, transactionId, intent } = await interruptedFixture(root, phase);
+      const roles = {
+        ...intent,
+        processes: [
+          { pid: 41, role: "main" },
+          { pid: 42, role: "backend" },
+        ],
+      };
+      const intentPath = NodePath.join(directory, "intent.json");
+      await NodeFSP.writeFile(intentPath, JSON.stringify(roles));
+      if (phase !== "intent-only")
+        await NodeFSP.writeFile(
+          NodePath.join(directory, "journal.json"),
+          JSON.stringify({ intent: roles, phase }),
+        );
+      const before = await NodeFSP.readFile(intentPath, "utf8");
+      expect(refusal(input)).toMatchObject({ code: "transaction-settleable", transactionId });
+      expect(await NodeFSP.readFile(intentPath, "utf8")).toBe(before);
+      for (const processes of [
+        [{ pid: 41, role: "backend" }],
+        [
+          { pid: 41, role: "main" },
+          { pid: 41, role: "backend" },
+        ],
+        [{ pid: true, role: "main" }],
+        [{ pid: 41, role: "main", extra: 1 }],
+        [
+          { pid: 41, role: "main" },
+          { pid: 42, identity: "legacy" },
+        ],
+      ]) {
+        const invalid = { ...roles, processes };
+        await NodeFSP.writeFile(intentPath, JSON.stringify(invalid));
+        if (phase !== "intent-only")
+          await NodeFSP.writeFile(
+            NodePath.join(directory, "journal.json"),
+            JSON.stringify({ intent: invalid, phase }),
+          );
+        expect(refusal(input).code).not.toBe("transaction-settleable");
+      }
+    }),
+);

@@ -3800,3 +3800,180 @@ print('darwin-owned-child')
     },
   );
 });
+
+it("retains original kernel proofs when checking exited or replaced writers", () => {
+  runPython(
+    kernelScenario(String.raw`
+proof = {'pid':4321, 'startSec':1234567890, 'startUsec':654321, 'executable':'/Applications/Jones Code.app/Contents/MacOS/Jones'}
+def forbidden(*args, **kwargs): raise AssertionError('kernel proof reached legacy inspection or signaling')
+process_identity = process_start = forbidden
+with patch('sys.platform', 'darwin'):
+    lib, load = library()
+    with patch('ctypes.CDLL', load): assert alive(proof)
+    for field, replacement in [('startSec', 1), ('startUsec', 1), ('executable', '/replacement')]:
+        changed = dict(proof, **{field:replacement})
+        lib, load = library()
+        with patch('ctypes.CDLL', load), patch.object(os, 'kill', forbidden):
+            assert not alive(changed)
+            assert process_exited(changed)
+            stop_exact([changed])
+    for fault in ['bsd-esrch', 'path-esrch', 'zombie']:
+        lib, load = library(fault)
+        with patch('ctypes.CDLL', load), patch.object(os, 'kill', forbidden):
+            assert not alive(proof)
+            assert process_exited(proof)
+            stop_exact([proof])
+    for fault in ['bsd-eperm', 'bsd-io', 'path-eperm', 'birth-race', 'exec-race']:
+        lib, load = library(fault)
+        with patch('ctypes.CDLL', load), patch.object(os, 'kill', forbidden):
+            try: stop_exact([proof])
+            except KernelProcessError as error: assert error.diagnostic['error'] == 'process-inspection-failed'
+            else: raise AssertionError('inspection failure permitted signaling')
+assert proof == {'pid':4321, 'startSec':1234567890, 'startUsec':654321, 'executable':'/Applications/Jones Code.app/Contents/MacOS/Jones'}
+print('original-kernel-proof-preserved')
+`),
+    [],
+    { encoding: "utf8", timeout: 10000 },
+  );
+});
+
+it("joins original kernel requesters to closed roles and proves the complete helper parentage", () => {
+  runPython(
+    kernelScenario(String.raw`
+main = {'pid': 4321, 'startSec': 12, 'startUsec': 34, 'executable': '/Jones'}
+backend = dict(main, pid=8765, executable='/node')
+roles = [{'pid': 4321, 'role': 'main'}, {'pid': 8765, 'role': 'backend'}]
+prepare = {'processes': [backend, main]}
+originals = original_role_proofs(roles, prepare)
+assert originals == [main, backend] and prepare['processes'] == [backend, main]
+assert valid_process_proofs([main, backend]) and valid_process_proofs([{'pid': 1, 'identity': 'legacy'}])
+assert not valid_process_proofs([main, {'pid': 1, 'identity': 'legacy'}])
+for invalid in ([], roles + [roles[0]], [{'pid': True, 'role': 'main'}], [{'pid': 4321, 'role': 'backend'}], [dict(roles[0], extra=True)], [roles[0], backend]):
+    assert not valid_process_roles(invalid), invalid
+    try: original_role_proofs(invalid, prepare)
+    except SelectionRefused: pass
+    else: raise AssertionError('Invalid roles accepted')
+for invalid in ([dict(main, pid=True)], [dict(main, startUsec=1000000)], [dict(main, startSec=-1)], [dict(main, executable='relative')], [dict(main, extra=1)], [main, main]):
+    assert not valid_kernel_processes(invalid), invalid
+os.getppid = lambda: 4321
+seen = []
+def sample(pid):
+    seen.append(pid)
+    return (main, 1) if pid == 4321 else (backend, 4321)
+kernel_process_sample = sample
+assert capture_activation_processes({'processes': roles}, originals) == originals
+assert seen == [4321, 8765]
+for fault in ('backend-exited', 'backend-reused', 'backend-parent', 'main-reused', 'main-exited', 'inspection'):
+    def observation(pid):
+        if pid == 4321:
+            if fault == 'main-exited': raise KernelProcessError('process-exited', 'proc_pidinfo')
+            return (dict(main, startUsec=35) if fault == 'main-reused' else main), 1
+        if fault == 'backend-exited': raise KernelProcessError('process-exited', 'proc_pidinfo')
+        if fault == 'inspection': raise KernelProcessError('process-inspection-failed', 'proc_pidpath', 1)
+        return (dict(backend, executable='/replacement') if fault == 'backend-reused' else backend), (9 if fault == 'backend-parent' else 4321)
+    kernel_process_sample = observation
+    try: captured = capture_activation_processes({'processes': roles}, originals)
+    except KernelProcessError: assert fault in ('backend-parent', 'main-reused', 'main-exited', 'inspection')
+    else: assert fault in ('backend-exited', 'backend-reused') and captured == originals
+os.getppid = lambda: 999
+try: capture_activation_processes({'processes': roles}, originals)
+except KernelProcessError as error: assert error.diagnostic['call'] == 'helper-parent'
+else: raise AssertionError('Foreign helper parent accepted')
+`),
+    [],
+    { encoding: "utf8", timeout: 10000 },
+  );
+});
+
+it.each(["parent", "main-reused", "inspection"])(
+  "terminalizes kernel capture failure before storage or signals: %s",
+  async (fault) => {
+    const f = await fixture();
+    try {
+      const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const setup = activationScenario.split("\nevents = []")[0];
+      const scenario = String.raw`
+mode = sys.argv[3]
+originals = [{'pid': 123, 'startSec': 10, 'startUsec': 20, 'executable': '/Jones'}, {'pid': 124, 'startSec': 30, 'startUsec': 40, 'executable': '/node'}]
+intent['processes'] = [{'pid': 123, 'role': 'main'}, {'pid': 124, 'role': 'backend'}]
+seed_record(tx / 'intent.json', intent)
+seed_record(tx / 'prepare-request.json', {'protocol': 1, 'transactionId': transaction_id, 'stagedHandle': staged['handle'], 'claimSha256': digest(tx / 'prepare-intent.json'), 'processes': originals}, True)
+intent_raw = (tx / 'intent.json').read_bytes()
+prepare_raw = (tx / 'prepare-request.json').read_bytes()
+os.getppid = lambda: 123
+def observe(pid):
+    if mode == 'inspection': raise KernelProcessError('process-inspection-failed', 'proc_pidinfo', 1)
+    if pid == 123: return dict(originals[0], startUsec=21) if mode == 'main-reused' else originals[0], 1
+    return originals[1], 999
+kernel_process_sample = observe
+def forbidden(*args): raise AssertionError('Incomplete ownership reached native effect')
+storage_preflight = stop_exact = os.kill = launch = forbidden
+activate(tx / 'intent.json')
+journal = read(tx / 'journal.json')
+assert journal['phase'] == 'rolled-back' and journal['intent'] == intent
+assert journal['preEffect']['step'] == 'stop-processes' and journal['preEffect']['relaunch'] == 'skipped'
+assert journal['preEffect']['diagnostics']['error'] == 'process-inspection-failed'
+assert journal['preEffect']['diagnostics']['call'] in ('backend-parent', 'main-identity', 'proc_pidinfo')
+assert 'capturedProcesses' not in journal and not (tx / 'previous-pair').exists()
+assert (tx / 'intent.json').read_bytes() == intent_raw and (tx / 'prepare-request.json').read_bytes() == prepare_raw
+assert read(manifest_path) == expected
+`;
+      runPython(definitions + "\n" + setup + "\n" + scenario, [f.directory, "success", fault], {
+        encoding: "utf8",
+        timeout: 10000,
+      });
+    } finally {
+      await f.cleanup();
+    }
+  },
+);
+
+it("keeps role recovery joined to the original request bytes without recapturing historical PIDs", async () => {
+  const f = await fixture();
+  try {
+    const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+    const setup = activationScenario.split("\nevents = []")[0];
+    const scenario = String.raw`
+originals = [{'pid': 123, 'startSec': 10, 'startUsec': 20, 'executable': '/Jones'}]
+intent['processes'] = [{'pid': 123, 'role': 'main'}]
+(tx / 'intent.json').unlink()
+seed_record(tx / 'activation-request.json', intent, True)
+prepare = {'protocol': 1, 'transactionId': transaction_id, 'stagedHandle': staged['handle'], 'claimSha256': digest(tx / 'prepare-intent.json'), 'processes': originals}
+seed_record(tx / 'prepare-request.json', prepare, True)
+raw = (tx / 'prepare-request.json').read_bytes()
+def forbidden(*args): raise AssertionError('Historical role was recaptured or signaled')
+kernel_process_sample = process_identity = process_start = os.kill = forbidden
+assert original_activation_proofs(intent, tx, claim) == originals
+_, plan, records, evidence = preparation_context(expected, transaction_id, True)
+assert records['prepare-request.json'][1] == raw and plan['records']['prepare-request.json'] == hashlib.sha256(raw).hexdigest()
+assert records['activation-request.json'][0] == intent and evidence is None
+for field, changed in [('claimSha256', '0' * 64), ('processes', [dict(originals[0], pid=999)]), ('processes', [{'pid': 123, 'identity': 'legacy'}])]:
+    seed_record(tx / 'prepare-request.json', dict(prepare, **{field: changed}))
+    try: original_activation_proofs(intent, tx, claim)
+    except SelectionRefused: pass
+    else: raise AssertionError('Role recovered without its original binding')
+seed_record(tx / 'prepare-request.json', prepare)
+for name in ('prepare-dispatched.json', 'continuation.json', 'activation-request.json'): (tx / name).unlink()
+seen = []
+def exited(pid):
+    seen.append(pid)
+    raise KernelProcessError('process-exited', 'proc_pidinfo')
+kernel_process_identity = exited
+_, plan, records, evidence = preparation_context(expected, transaction_id)
+assert evidence == 'requester-exited' and seen == [123]
+assert (tx / 'prepare-request.json').read_bytes() == raw
+seed_record(tx / 'intent.json', intent, True)
+seed_record(tx / 'journal.json', {'intent': intent, 'phase': 'preparing'}, True)
+result = settle_interrupted_activation(transaction_id)
+assert result == {'protocol': 1, 'status': 'settled'}, result
+assert read(tx / 'journal.json')['intent'] == intent and seen == [123]
+assert (tx / 'prepare-request.json').read_bytes() == raw
+`;
+    runPython(definitions + "\n" + setup + "\n" + scenario, [f.directory, "success"], {
+      encoding: "utf8",
+      timeout: 10000,
+    });
+  } finally {
+    await f.cleanup();
+  }
+});

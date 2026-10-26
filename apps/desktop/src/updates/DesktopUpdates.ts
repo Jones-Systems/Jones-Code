@@ -15,6 +15,7 @@ import {
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   JonesDesktopUpdateController,
+  jonesNativeProcessRoles,
   type JonesDesktopDownloadSelection,
   type JonesDesktopDownloadResult,
 } from "../jones/updates/JonesDesktopUpdates.ts";
@@ -23,7 +24,6 @@ import {
   prepareJonesNativeInstall,
 } from "../jones/updates/jonesNativePreparation.ts";
 import { createJonesDesktopPreparation } from "../jones/updates/desktopPreparationRuntime.ts";
-import { runNativeCommand } from "../jones/updates/jonesMacStaging.ts";
 import { errorTag } from "@t3tools/shared/observability";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -477,26 +477,12 @@ export const make = Effect.gen(function* () {
       },
       processProofs: async () => {
         const instances = await Effect.runPromiseWith(context)(pool.list);
-        const pids = [process.pid];
+        const pids: number[] = [];
         for (const instance of instances) {
           const snapshot = await Effect.runPromiseWith(context)(instance.snapshot);
           if (Option.isSome(snapshot.activePid)) pids.push(snapshot.activePid.value);
         }
-        return Promise.all(
-          pids.map(async (pid) => ({
-            pid,
-            identity: (
-              await runNativeCommand("/bin/ps", [
-                "-p",
-                String(pid),
-                "-o",
-                "lstart=",
-                "-o",
-                "command=",
-              ])
-            ).trim(),
-          })),
-        );
+        return jonesNativeProcessRoles(process.pid, pids);
       },
       listener: async () => {
         const primary = await Effect.runPromiseWith(context)(pool.primary);
