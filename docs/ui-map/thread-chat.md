@@ -165,6 +165,22 @@ and long labels wrap within the block; the inline terminal has a 256px viewport
 and a wrapping header with destination, destination cwd, status, Close and Run
 again. Check narrow widths, keyboard focus and enlarged text alongside an ordinary
 shell block and Mermaid block, which share the toolbar/frame.
+Command terminals close on the owning server after thirty minutes of observed idle
+shell time, confirmed by prompt/preexec hooks in Bash 4.4+ or Zsh. Shell
+builtins running without children remain protected. Unsupported shells, old
+sessions without hooks, or startup configuration overriding the hooks stay open.
+Input, output and detected commands reset the interval. Running
+subprocesses, shell helpers, a replaced root command or uncertain inspection keep
+the terminal open; disconnecting the client does not disable cleanup. Expiry
+retains history on the server but removes the live session. The inline card then
+shows unavailable; explicit Run again allocates a fresh terminal. Revisiting a
+source drawer command attaches without launch fields and cannot recreate its
+expired shell. Ordinary manually opened terminals retain their existing lifetime.
+New sessions on updated servers recognize the reserved remote IDs; existing
+shell processes without the new prompt hooks remain open. The fresh source-drawer
+identity requires an updated web/desktop client. Source delivery does not update
+installed clients or servers.
+
 The composer [code-block node](../../apps/web/src/components/chat/ComposerCodeBlockNodeView.tsx)
 also uses the frame. [File previews](../../apps/web/src/components/files/FileMarkdownPreview.tsx),
 [pull-request Markdown](../../apps/web/src/components/pullRequest/PullRequestMarkdown.tsx),

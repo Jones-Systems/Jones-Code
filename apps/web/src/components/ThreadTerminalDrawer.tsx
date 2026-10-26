@@ -1,3 +1,4 @@
+import { isShellRunTerminal } from "@t3tools/contracts/jones/shellDestinationFence";
 import { useAtomValue } from "@effect/atom-react";
 import {
   isAtomCommandInterrupted,
@@ -536,7 +537,9 @@ function TerminalSessionViewport({
     terminal: {
       threadId,
       terminalId,
-      ...(attachExistingOnly ? { restartIfNotRunning: false } : { cwd }),
+      ...(attachExistingOnly || isShellRunTerminal(threadId, terminalId)
+        ? { restartIfNotRunning: false }
+        : { cwd }),
       ...(worktreePath !== undefined ? { worktreePath } : {}),
       ...(runtimeEnv ? { env: runtimeEnv } : {}),
       ...(providerInstanceId ? { providerInstanceId } : {}),

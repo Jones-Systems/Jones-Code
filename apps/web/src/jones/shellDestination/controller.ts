@@ -2,7 +2,8 @@ import type { ShellDestination } from "./model";
 import { shellCommandEligibility } from "./model";
 import { ShellRunStore, legacyShellRunKey, type ShellRun } from "./runStore";
 
-export const SHELL_RUN_THREAD_ID = "jones-shell-run";
+import { SHELL_RUN_THREAD_ID } from "@t3tools/contracts/jones/shellDestinationFence";
+export { SHELL_RUN_THREAD_ID };
 type Target = { environmentId: string; input: { threadId: string; terminalId: string } };
 export interface ShellTerminalPort {
   readonly open: (target: Target & { input: { cwd: string } }) => Promise<boolean>;

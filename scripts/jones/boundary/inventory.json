@@ -2025,7 +2025,12 @@
     "apps/server/src/orchestration-v2/ThreadStream.test.ts": "accepted-shared",
     "apps/server/src/orchestration-v2/threadHistoryPaging.test.ts": "accepted-shared",
     "packages/client-runtime/src/platform/orchestrationCache.ts": "accepted-shared",
-    "packages/client-runtime/src/platform/orchestrationCache.test.ts": "accepted-shared"
+    "packages/client-runtime/src/platform/orchestrationCache.test.ts": "accepted-shared",
+    "apps/server/src/jones/terminal/ShellIdleExpiry.ts": "jones-owned",
+    "apps/server/src/jones/terminal/ShellIdleExpiry.test.ts": "jones-owned",
+    "apps/web/src/components/chat/useChatTerminalActions.ts": "hook",
+    "apps/server/src/jones/terminal/ShellIdlePrompt.ts": "jones-owned",
+    "apps/server/src/jones/terminal/ShellIdlePrompt.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -2741,6 +2746,26 @@
     {
       "from": "apps/server/src/terminal/Manager.ts",
       "to": "apps/server/src/jones/terminal/TerminalHistoryWorker.ts"
+    },
+    {
+      "from": "apps/server/src/terminal/Manager.ts",
+      "to": "apps/server/src/jones/terminal/ShellIdleExpiry.ts"
+    },
+    {
+      "from": "apps/server/src/terminal/Manager.ts",
+      "to": "packages/contracts/src/jones/shellDestinationFence.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useChatTerminalActions.ts",
+      "to": "packages/contracts/src/jones/shellDestinationFence.ts"
+    },
+    {
+      "from": "apps/web/src/components/ThreadTerminalDrawer.tsx",
+      "to": "packages/contracts/src/jones/shellDestinationFence.ts"
+    },
+    {
+      "from": "apps/server/src/terminal/Manager.ts",
+      "to": "apps/server/src/jones/terminal/ShellIdlePrompt.ts"
     }
   ]
 }
