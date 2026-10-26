@@ -161,12 +161,12 @@ describe("host status metrics", () => {
     const { availableMemoryBytes: _memory, ...olderSample } = available;
     expect(hostStatusMetrics(olderSample)).toMatchObject({
       cpu: "23%",
-      ram: "—",
+      ram: "N/A",
       ramHealth: "unavailable",
     });
     expect(hostStatusMetrics(undefined)).toMatchObject({
-      cpu: "—",
-      ram: "—",
+      cpu: "N/A",
+      ram: "N/A",
       cpuHealth: "unavailable",
       ramHealth: "unavailable",
       health: "unavailable",
@@ -198,7 +198,7 @@ describe("host status metrics", () => {
       });
       const { swapIoBytesPerSecond: _swap, ...olderMac } = mac;
       expect(hostStatusMetrics(olderMac)).toMatchObject({
-        ram: "— mb/s",
+        ram: "N/A mb/s",
         ramHealth: "unavailable",
         health: "healthy",
       });
@@ -210,8 +210,8 @@ describe("host status metrics", () => {
     expect(hostStatusMetrics(available).cpu).toBe("23%");
     vi.advanceTimersByTime(1);
     expect(hostStatusMetrics(available)).toMatchObject({
-      cpu: "—",
-      ram: "—",
+      cpu: "N/A",
+      ram: "N/A",
       health: "unavailable",
       detail: "Host status sample is stale",
     });

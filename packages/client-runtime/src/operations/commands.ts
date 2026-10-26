@@ -11,7 +11,7 @@ import {
   OrchestrationDispatchCommandError,
   WS_METHODS,
   type ChatAttachment,
-  type MessageId,
+  MessageId,
   type ModelSelection,
   type NodeId,
   type OrchestrationV2Command,
@@ -29,6 +29,7 @@ import {
   type ThreadId,
   type ThreadEnvMode,
   type UploadChatAttachment,
+  type GuestMessageId,
 } from "@t3tools/contracts";
 import { resolveDefaultWorktreeBaseBranch } from "@t3tools/shared/git";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
@@ -118,6 +119,9 @@ export interface UnsnoozeThreadInput extends ThreadCommandInput {
 
 export interface VisitThreadInput extends ThreadCommandInput {
   readonly visitedAt: string;
+  /** Counts toward search frecency; `searchQuery` is the palette query that picked it. */
+  readonly opened?: boolean;
+  readonly searchQuery?: string;
 }
 
 export type MarkThreadUnreadInput = ThreadCommandInput;
@@ -172,6 +176,7 @@ export interface StartThreadTurnInput extends ThreadCommandInput {
     readonly text: string;
     readonly attachments: ReadonlyArray<ChatAttachment | UploadChatAttachment>;
     readonly context?: import("@t3tools/contracts").OrchestrationMessageContext;
+    readonly idleCompaction?: import("@t3tools/contracts").OrchestrationV2IdleCompaction;
   };
   readonly modelSelection?: ModelSelection;
   readonly modelSelectionExplicit?: boolean;
@@ -192,6 +197,7 @@ export interface InterruptThreadTurnInput extends ThreadCommandInput {
 export interface RespondToThreadApprovalInput extends ThreadCommandInput {
   readonly requestId: RuntimeRequestId;
   readonly decision: ProviderApprovalDecision;
+  readonly feedback?: string;
 }
 
 export interface RespondToThreadUserInputInput extends ThreadCommandInput {
@@ -420,7 +426,8 @@ function simpleThreadCommand(
     | "thread.unarchive"
     | "thread.settle"
     | "thread.pin"
-    | "thread.unpin",
+    | "thread.unpin"
+    | "thread.guest-share.close",
   input: ThreadCommandInput,
 ) {
   return allocateCommandId(input).pipe(
@@ -432,6 +439,45 @@ export const deleteThread = Effect.fn("EnvironmentCommands.deleteThread")(functi
   input: DeleteThreadInput,
 ) {
   return yield* simpleThreadCommand("thread.delete", input);
+});
+
+export type CloseGuestShareInput = ThreadCommandInput;
+export const closeGuestShare = Effect.fn("EnvironmentCommands.closeGuestShare")(function* (
+  input: CloseGuestShareInput,
+) {
+  return yield* simpleThreadCommand("thread.guest-share.close", input);
+});
+
+export interface ResolveGuestMessageInput extends ThreadCommandInput {
+  readonly guestMessageId: GuestMessageId;
+  readonly decision: "send" | "dismiss";
+  readonly creationSource?: "web" | "mobile";
+}
+/** Send runs the guest's text as a normal turn; the server supplies the text, not the client. */
+export const resolveGuestMessage = Effect.fn("EnvironmentCommands.resolveGuestMessage")(function* (
+  input: ResolveGuestMessageInput,
+) {
+  const commandId = yield* allocateCommandId(input);
+  if (input.decision === "dismiss") {
+    return yield* dispatch({
+      type: "thread.guest-message.dismiss",
+      commandId,
+      threadId: input.threadId,
+      guestMessageId: input.guestMessageId,
+    });
+  }
+  return yield* dispatch({
+    type: "message.dispatch",
+    commandId,
+    threadId: input.threadId,
+    messageId: MessageId.make(commandId),
+    guestMessageId: input.guestMessageId,
+    text: "",
+    attachments: [],
+    dispatchMode: { type: "queue_after_active" },
+    createdBy: "user",
+    creationSource: input.creationSource ?? "web",
+  });
 });
 
 export const archiveThread = Effect.fn("EnvironmentCommands.archiveThread")(function* (
@@ -548,6 +594,8 @@ export const visitThread = Effect.fn("EnvironmentCommands.visitThread")(function
     commandId: yield* allocateCommandId(input),
     threadId: input.threadId,
     visitedAt: input.visitedAt,
+    ...(input.opened ? { opened: true } : {}),
+    ...(input.searchQuery ? { searchQuery: input.searchQuery } : {}),
   });
 });
 
@@ -655,12 +703,10 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
     });
     const baseBranch = result.isRepo ? resolveDefaultWorktreeBaseBranch(result.refs) : null;
     if (baseBranch === null) {
-      return yield* Effect.fail(
-        new OrchestrationDispatchCommandError({
-          message:
-            "Unable to select a base branch for the new worktree. Choose a base ref and retry.",
-        }),
-      );
+      return yield* new OrchestrationDispatchCommandError({
+        message:
+          "Unable to select a base branch for the new worktree. Choose a base ref and retry.",
+      });
     }
     prepareWorktree = { ...prepareWorktree, baseBranch };
   }
@@ -727,6 +773,9 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
         : { manualContinuationOfRunId: input.manualContinuationOfRunId }),
       text: input.message.text,
       ...(context ? { context } : {}),
+      ...(input.message.idleCompaction === undefined
+        ? {}
+        : { idleCompaction: input.message.idleCompaction }),
       attachments,
       ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
       ...(input.modelSelectionExplicit === undefined
@@ -797,6 +846,9 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
     messageId: input.message.messageId,
     text: input.message.text,
     ...(context ? { context } : {}),
+    ...(input.message.idleCompaction === undefined
+      ? {}
+      : { idleCompaction: input.message.idleCompaction }),
     attachments,
     ...(shouldSendTitleSeed ? { titleSeed: input.titleSeed } : {}),
     ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
@@ -820,7 +872,7 @@ export const interruptThreadTurn = Effect.fn("EnvironmentCommands.interruptThrea
     const projection = yield* getProjection(input.threadId);
     const subagent = projection.subagents.find((agent) => agent.id === input.subagentId);
     if (subagent?.origin === "app_owned" && subagent.childThreadId !== null) {
-      // The parent ends the task even when its child lost track of it (#19002). Older
+      // The parent ends the task even when its child lost track of it. Older
       // servers reject this for app-owned tasks, so the child stop below still runs.
       if (subagent.runId !== null) {
         yield* dispatch({
@@ -915,6 +967,7 @@ export const respondToThreadApproval = Effect.fn("EnvironmentCommands.respondToT
       threadId: input.threadId,
       requestId: input.requestId,
       decision: input.decision,
+      ...(input.feedback === undefined ? {} : { feedback: input.feedback }),
     });
   },
 );

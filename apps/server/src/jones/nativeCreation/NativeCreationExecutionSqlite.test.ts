@@ -32,7 +32,7 @@ it.effect("foreign ledger history cannot reconstruct execution authority from ol
         ),
     };
     const methods = makeNativeExecutionMethods(sql, owner);
-    const reference = yield* Schema.decodeUnknownEffect(NativeCreationExecutionReferenceV2)({
+    const reference = yield* Schema.decodeEffect(NativeCreationExecutionReferenceV2)({
       version: 2,
       claimId: "old-claim",
       stageCommandId: "old-command",
@@ -55,7 +55,7 @@ import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
+
 import * as TestClock from "effect/testing/TestClock";
 import * as AuthSessions from "../../persistence/AuthSessions.ts";
 import { runMigrations } from "../../persistence/Migrations.ts";
@@ -88,7 +88,7 @@ const fixture = Effect.gen(function* () {
   yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe(now)));
   const repository = yield* Repository.NativeCreationRepository;
   const sql = yield* SqlClient.SqlClient;
-  const binding = yield* Schema.decodeUnknownEffect(NativePreparationBinding)({
+  const binding = yield* Schema.decodeEffect(NativePreparationBinding)({
     backend_instance: "sql-fixture-backend",
     environment_id: "sql-fixture-environment",
     project_id: "sql-fixture-project",
@@ -122,7 +122,7 @@ const fixture = Effect.gen(function* () {
       }),
     ),
   );
-  const historical = yield* Schema.decodeUnknownEffect(NativeCreationHistoricalBinding)({
+  const historical = yield* Schema.decodeEffect(NativeCreationHistoricalBinding)({
     backendInstance: binding.backend_instance,
     environmentId: binding.environment_id,
     projectId: binding.project_id,
@@ -158,7 +158,7 @@ const fixture = Effect.gen(function* () {
     Effect.succeed(historical),
   );
   yield* sql`INSERT INTO native_creation_automation_enrollments(session_id,enrolled_at) VALUES(${actor},${now})`;
-  const command = yield* Schema.decodeUnknownEffect(OrchestrationV2Command)({
+  const command = yield* Schema.decodeEffect(OrchestrationV2Command)({
     type: "prepared-run.release",
     commandId: `${prepared.commandId}:native:v2:message`,
     threadId: prepared.threadId,
@@ -170,7 +170,7 @@ const fixture = Effect.gen(function* () {
     prepared.commandId,
     command.commandId,
   ]);
-  const normalized = yield* Schema.decodeUnknownEffect(OrchestrationV2Command)({
+  const normalized = yield* Schema.decodeEffect(OrchestrationV2Command)({
     type: "message.dispatch",
     createdBy: "user",
     creationSource: "server",
@@ -184,7 +184,7 @@ const fixture = Effect.gen(function* () {
   });
   yield* repository.recordNormalizedCommand(claimId, normalized);
   yield* repository.reserveCommand(claimId, command);
-  const reference = yield* Schema.decodeUnknownEffect(NativeCreationExecutionReferenceV2)({
+  const reference = yield* Schema.decodeEffect(NativeCreationExecutionReferenceV2)({
     version: 2,
     claimId,
     stageCommandId: command.commandId,
@@ -239,7 +239,7 @@ const fixture = Effect.gen(function* () {
       VALUES('sql-provider-thread',${command.threadId},'codex','sql-provider-session','active',${now},${providerPayload})`;
     yield* sql`INSERT INTO orchestration_v2_projection_provider_session_bindings(provider_session_id,thread_id) VALUES('sql-provider-session',${command.threadId})`;
   });
-  const evidence = yield* Schema.decodeUnknownEffect(NativeCreationWholeOperationEvidence)({
+  const evidence = yield* Schema.decodeEffect(NativeCreationWholeOperationEvidence)({
     version: 1,
     outcome: "confirmed_success",
     effectId: reference.effectId,
@@ -252,7 +252,7 @@ const fixture = Effect.gen(function* () {
     attemptId: "sql-attempt",
     coverage: "whole_operation",
   });
-  const session = yield* Schema.decodeUnknownEffect(AuthSessions.AuthSessionRecord)({
+  const session = yield* Schema.decodeEffect(AuthSessions.AuthSessionRecord)({
     sessionId: actor,
     subject: "Synthetic native actor",
     scopes: ["orchestration:operate"],
@@ -292,7 +292,7 @@ const fixture = Effect.gen(function* () {
       Layer.succeed(
         AuthSessions.AuthSessionRepository,
         AuthSessions.AuthSessionRepository.of({
-          getById: () => Effect.succeed(Option.some(session)),
+          getById: () => Effect.succeedSome(session),
           create: () => Effect.void,
           createReplacingActive: () => Effect.succeed([]),
           createIfAbsent: () => Effect.void,
@@ -366,7 +366,7 @@ it.effect(
     Effect.gen(function* () {
       const f = yield* fixture;
       const wrongCommand = { ...f.command, runId: f.command.runId };
-      const mismatched = yield* Schema.decodeUnknownEffect(OrchestrationV2Command)({
+      const mismatched = yield* Schema.decodeEffect(OrchestrationV2Command)({
         ...wrongCommand,
         runId: "other-run",
       });

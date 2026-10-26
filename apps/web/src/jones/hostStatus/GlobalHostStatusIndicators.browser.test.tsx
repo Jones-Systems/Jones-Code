@@ -185,7 +185,7 @@ it.each(["upstream_unavailable", "invalid_response", "stale"] as const)(
     await render();
     expect(requests(local)).toHaveLength(2);
     expect(requests(remote)).toHaveLength(0);
-    expect(vps()?.textContent).toBe("VPS · — · —");
+    expect(vps()?.textContent).toBe("VPS · N/A · N/A");
     connections.environmentIds = [local, remote, other];
     connections.connectedEnvironmentIds = [remote, other];
     connections.primaryEnvironmentId = other;
@@ -203,7 +203,7 @@ it("retains a disconnected source on failure and recovers its values without pro
   fetchStatus.mockRejectedValue(new Error("disconnected"));
   await render();
   await advance(10_000);
-  expect(vps()?.textContent).toBe("VPS · — · —");
+  expect(vps()?.textContent).toBe("VPS · N/A · N/A");
   expect(requests(local)).toHaveLength(1);
   fetchStatus.mockResolvedValue(available(41));
   await advance(10_000);
@@ -321,7 +321,7 @@ it("retains fresh values across a true remount without a redundant request and e
   await advance(19_999);
   expect(vps()?.textContent).toBe("VPS · 23% · 4");
   await advance(1);
-  expect(vps()?.textContent).toBe("VPS · — · —");
+  expect(vps()?.textContent).toBe("VPS · N/A · N/A");
   expect(vps()?.getAttribute("aria-label")).toContain("stale");
 });
 
@@ -352,7 +352,7 @@ it("retains values and cadence across hide/show and revalidates stale values on 
     visibility = "visible";
     document.dispatchEvent(new Event("visibilitychange"));
   });
-  expect(vps()?.textContent).toBe("VPS · — · —");
+  expect(vps()?.textContent).toBe("VPS · N/A · N/A");
   expect(fetchStatus).toHaveBeenCalledTimes(count + 1);
 });
 
@@ -368,5 +368,5 @@ it("clears the retained sample when its gateway is removed and re-added", async 
   connections.connectedEnvironmentIds = [remote];
   fetchStatus.mockResolvedValueOnce(available(41)).mockImplementation(() => new Promise(() => {}));
   await render();
-  expect(vps()?.textContent).toBe("VPS · — · —");
+  expect(vps()?.textContent).toBe("VPS · N/A · N/A");
 });

@@ -106,12 +106,10 @@ export const makeHome = (prefix: string) =>
   });
 
 /**
- * Real independently scoped HTTP/MCP servers and disk SQLite, in the caller's Node process.
- * Pairing, OAuth, link fencing, dispatch and persistence are production services.
- * Descriptor build/platform metadata and unused toolkit dependencies are substitutes.
- * No workstream registry/native enrollment is claimed; loopbackControlPlane's injected
- * auth/authority/build/registry fixture is a separate workstreams boundary, not peer auth.
- * Closing the caller's scope stops this listener and closes SQLite before its home is removed.
+ * Real scoped HTTP/MCP listeners and disk SQLite run in the caller's Node process with production auth,
+ * link fencing, dispatch and persistence. Descriptor build/platform metadata and unused toolkit services are substitutes.
+ * Workstream registry/enrollment is unclaimed; loopbackControlPlane's injected authority is a separate boundary.
+ * Scope close stops the listener and SQLite before home removal.
  */
 export const startServer = (
   home: string,
@@ -201,7 +199,7 @@ export const startServer = (
       Layer.provide(McpOAuth.layerMcpClientAuthenticator),
       Layer.provide(
         Layer.mock(McpSessionRegistry.McpSessionRegistry)({
-          resolve: () => Effect.succeed(undefined),
+          resolve: () => Effect.undefined,
         }),
       ),
       Layer.provide(Layer.mock(ThreadLaunch.ThreadLaunchService)({})),

@@ -135,6 +135,14 @@
     {
       "from": "apps/server/src/orchestration-v2/EffectOutboxEnqueue.ts",
       "to": "apps/server/src/jones/nativeCreation/NativeCreationExecutionTypes.ts"
+    },
+    {
+      "from": "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
+      "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
+    },
+    {
+      "from": "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
+      "to": "apps/server/src/terminal/NativeSetupControl.ts"
     }
   ]
 }

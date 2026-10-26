@@ -297,7 +297,7 @@ describe("imported application attachment inventory", () => {
     ).toBe(true);
     expect(
       Option.isNone(
-        Schema.decodeUnknownOption(ImportedApplicationAttachmentBirthV1)({ ...birth, sequence: 0 }),
+        Schema.decodeOption(ImportedApplicationAttachmentBirthV1)({ ...birth, sequence: 0 }),
       ),
     ).toBe(true);
     expect(

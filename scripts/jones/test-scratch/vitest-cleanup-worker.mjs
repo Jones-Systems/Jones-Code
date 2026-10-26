@@ -34,7 +34,7 @@ test('temporary transformed modules: ${mode}', () => {
   const scratch = ${JSON.stringify(scratch)};
   const files = NodeFS.readdirSync(scratch, { recursive: true }).filter(name =>
     /^[0-9a-f]{40}$/.test(NodePath.basename(name)) &&
-    /(?:^|[/\\\\])(?:ssr|client)(?:[/\\\\])/.test(name) &&
+    /(?:^|[/\\\\])(?:__vitest__|ssr|client)(?:[/\\\\])/.test(name) &&
     NodeFS.statSync(NodePath.join(scratch, name)).isFile() &&
     NodeFS.statSync(NodePath.join(scratch, name)).size > 0);
   NodeFS.writeFileSync(${JSON.stringify(observation)}, JSON.stringify(files));

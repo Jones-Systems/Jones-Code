@@ -25,6 +25,7 @@ import type { InstallPreviewFixture } from "./install-preview-bridge";
 
 function ObservedUpdate({ fixture }: { readonly fixture: InstallPreviewFixture }) {
   const state = useDesktopUpdateState();
+  // oxlint-disable-next-line t3code/react-effect-budget -- Expose production update atom observations to the mounted install fixture controller.
   useEffect(() => fixture.observe(state), [fixture, state]);
   return (
     <output data-testid="observed-update" className="block font-mono text-xs">
@@ -178,6 +179,7 @@ function FixtureScreen({ fixture }: { readonly fixture: InstallPreviewFixture })
       setFailure(error instanceof Error ? error.message : String(error));
     }
   };
+  // oxlint-disable-next-line t3code/react-effect-budget -- Register fixture mount readiness after the production controls commit.
   useEffect(() => fixture.mounted(isElectron), [fixture]);
   return (
     <ToastProvider>
@@ -200,7 +202,7 @@ function FixtureScreen({ fixture }: { readonly fixture: InstallPreviewFixture })
               aria-label="Production Settings update controls"
               data-testid="settings-updates"
             >
-              <h2 className="mb-2 font-medium">Settings — About</h2>
+              <h2 className="mb-2 font-medium">Settings. About</h2>
               <SettingsGroup>
                 <AboutVersionSection />
               </SettingsGroup>

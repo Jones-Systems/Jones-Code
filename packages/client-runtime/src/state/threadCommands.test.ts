@@ -16,9 +16,12 @@ import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Scope from "effect/Scope";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { Atom, AtomRegistry } from "effect/reactivity";
 
@@ -83,11 +86,14 @@ const SNAPSHOT: OrchestrationV2ShellSnapshot = {
   ],
 };
 
-const makeHarness = Effect.fn("TestThreadCommands.makeHarness")(function* () {
+const makeHarness = Effect.fn("TestThreadCommands.makeHarness")(function* (options?: {
+  readonly reconcilePendingWork?: (threadId: ThreadId) => Effect.Effect<void>;
+}) {
   const requests = yield* Queue.unbounded<{
     command: OrchestrationV2Command;
     reply: Deferred.Deferred<{ sequence: number }, Error>;
   }>();
+  const reconciled = yield* Queue.unbounded<ThreadId>();
   const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
     target: { environmentId: ENVIRONMENT_ID },
     session: yield* SubscriptionRef.make(
@@ -108,7 +114,6 @@ const makeHarness = Effect.fn("TestThreadCommands.makeHarness")(function* () {
   ).pipe(Effect.provide(ThreadHistoryController.layer));
   const runtime = Atom.runtime(
     Layer.mergeAll(
-      Layer.succeed(ThreadHistoryController.ThreadHistoryController, historyController),
       Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, {
         run: (_environmentId, effect) =>
           Effect.provideService(effect, EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
@@ -120,6 +125,14 @@ const makeHarness = Effect.fn("TestThreadCommands.makeHarness")(function* () {
           digest: (_algorithm, data) => Effect.succeed(data),
         }),
       ),
+      Layer.succeed(
+        ThreadHistoryController.ThreadHistoryController,
+        ThreadHistoryController.ThreadHistoryController.of({
+          ...historyController,
+          reconcilePendingWork: (_environmentId, threadId) =>
+            options?.reconcilePendingWork?.(threadId) ?? Queue.offer(reconciled, threadId),
+        }),
+      ),
     ),
   );
   const snapshotAtom = Atom.family((_environmentId: EnvironmentId) => Atom.make(SNAPSHOT));
@@ -128,7 +141,63 @@ const makeHarness = Effect.fn("TestThreadCommands.makeHarness")(function* () {
   yield* Effect.addFinalizer(() => Effect.sync(() => registry.dispose()));
   const visibleAtom = commands.snapshotAtom(ENVIRONMENT_ID);
   registry.mount(visibleAtom);
-  return { registry, commands, snapshotAtom, visibleAtom, requests, historyController };
+  return { registry, commands, snapshotAtom, visibleAtom, requests, reconciled, historyController };
+});
+
+describe("interrupt turn", () => {
+  // A stale cached item has nothing left to interrupt, so the server can reject Stop.
+  it.effect("reconciles pending work when the server rejects the interrupt", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      const result = h.commands.interruptTurn.run(h.registry, {
+        environmentId: ENVIRONMENT_ID,
+        input: { threadId: THREAD_ID, runId: RunId.make("finished-run") },
+      });
+      const request = yield* Queue.take(h.requests);
+      expect(request.command.type).toBe("run.interrupt");
+      yield* Deferred.fail(request.reply, new Error("Run is not interruptible"));
+      expect((yield* Effect.promise(() => result))._tag).toBe("Failure");
+      expect(yield* Queue.take(h.reconciled)).toBe(THREAD_ID);
+    }),
+  );
+
+  // Mirrors the thread state's handler: the lookup runs in the thread's scope and is joined.
+  const stopWithBlockedLookup = Effect.fn("stopWithBlockedLookup")(function* () {
+    const threadScope = yield* Scope.make();
+    const asked = yield* Deferred.make<void>();
+    const h = yield* makeHarness({
+      reconcilePendingWork: () =>
+        Deferred.succeed(asked, undefined).pipe(
+          Effect.andThen(Effect.never),
+          Effect.forkIn(threadScope),
+          Effect.flatMap(Fiber.join),
+        ),
+    });
+    const result = h.commands.interruptTurn.run(h.registry, {
+      environmentId: ENVIRONMENT_ID,
+      input: { threadId: THREAD_ID, runId: RunId.make("running-run") },
+    });
+    const request = yield* Queue.take(h.requests);
+    yield* Deferred.succeed(request.reply, { sequence: 1 });
+    yield* Deferred.await(asked);
+    return { threadScope, result };
+  });
+
+  it.effect("resolves Stop without waiting for the pending work lookup", () =>
+    Effect.gen(function* () {
+      const { threadScope, result } = yield* stopWithBlockedLookup();
+      expect((yield* Effect.promise(() => result))._tag).toBe("Success");
+      yield* Scope.close(threadScope, Exit.void);
+    }),
+  );
+
+  it.effect("keeps an accepted Stop when the thread closes during the lookup", () =>
+    Effect.gen(function* () {
+      const { threadScope, result } = yield* stopWithBlockedLookup();
+      yield* Scope.close(threadScope, Exit.void);
+      expect((yield* Effect.promise(() => result))._tag).toBe("Success");
+    }),
+  );
 });
 
 describe("remote thread lifecycle commands", () => {
@@ -395,6 +464,7 @@ describe("earlier thread history loads", () => {
         readonly reply: Deferred.Deferred<ThreadHistoryController.ThreadHistoryLoadEarlierResult>;
       }>();
       yield* h.historyController.register(ENVIRONMENT_ID, THREAD_ID, {
+        reconcilePendingWork: () => Effect.void,
         loadEarlier: (throughEntryId) =>
           Effect.gen(function* () {
             const reply =

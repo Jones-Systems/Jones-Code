@@ -26,6 +26,10 @@
     {
       "from": "apps/server/src/storageCleanup.ts",
       "to": "apps/server/src/jones/cleanup/DeletionWorktreeRemoval.ts"
+    },
+    {
+      "from": "apps/server/src/storageCleanup.test.ts",
+      "to": "apps/server/src/jones/cleanup/DeletionAdmission.ts"
     }
   ]
 }

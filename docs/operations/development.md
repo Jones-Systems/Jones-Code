@@ -300,15 +300,12 @@ In `apps/web`, a test that renders React or touches the DOM is named `*.browser.
 and runs in headless Chromium with the React Compiler on, like the app. There is no jsdom; other
 `*.test.ts` files run in Node.
 
-TypeScript workspaces typecheck with tsc-rs, which has Effect diagnostics built in.
-Keep `typescript`, `@effect/tsgo`, and the `effect-tsgo patch` prepare step: editors
-still use them for Effect quick fixes and refactors. Keep `@effect/tsgo` on the
-effect-tsgo version that tsc-rs ports (see the tsc-rs README), or the two disagree
-on rule names.
-Marketing keeps `astro check` for Astro files.
+TypeScript workspaces typecheck with `tsc`. The `typescript` catalog entry is
+`@tsc-rs/typescript`, the Rust TypeScript drop-in with Effect diagnostics, quick
+fixes, and refactors built in. Marketing keeps `astro check` for Astro files.
 
 For repeated local checks, use `pnpm typecheck:incremental packages/shared apps/server`
-(or `--all` for workspaces whose checker is exactly `tsc-rs --noEmit`). This opt-in
+(or `--all` for workspaces whose checker is exactly `tsc --noEmit`). This opt-in
 command retains native incremental state while still running TypeScript and Effect
 checks every time. It excludes the root recursive command and Astro. Retained mode
 supports the repository base config and the qualified Expo base; use `--fresh` to

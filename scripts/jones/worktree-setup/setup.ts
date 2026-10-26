@@ -111,11 +111,9 @@ export async function setupWorktree(
       "Storage admission covers the worktree filesystem; separately configured shared package stores are not measured.",
     );
     admit("Install");
-    // `shell` resolves `vp` through PATH, including Windows command shims.
-    // Setup has no one answering install prompts. Pass pnpm's confirmation flag
-    // through vp and leave stdin closed so other prompts fail instead of hanging.
-    // Install exactly the locked dependencies so setup never rewrites the lockfile.
-    // A stale lockfile must fail setup rather than silently resolving a new one.
+    // Resolve vp through shell PATH, including Windows command shims.
+    // Pass pnpm's confirmation flag through vp; closed stdin makes other prompts fail instead of hang.
+    // Require the locked dependency graph: a stale lockfile must fail, never be rewritten.
     const status = await dependencies.run("vp i --frozen-lockfile -- --yes", [], {
       cwd: worktree,
       shell: true,

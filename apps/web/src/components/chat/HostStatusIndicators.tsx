@@ -56,6 +56,7 @@ function EnvironmentHostStatusIndicators({ environmentId }: { environmentId: Env
   const [visibleCount, setVisibleCount] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const measurementRef = useRef<HTMLDivElement>(null);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own host-status observation and retire callbacks when the selected environment changes.
   useEffect(() => {
     let active = true;
     const stop = observeHostStatus(
@@ -71,6 +72,7 @@ function EnvironmentHostStatusIndicators({ environmentId }: { environmentId: Env
       stop();
     };
   }, [environmentId, cache]);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Measure committed host-status bubbles and own resize observation for overflow fitting.
   useLayoutEffect(() => {
     const container = containerRef.current;
     const measurement = measurementRef.current;

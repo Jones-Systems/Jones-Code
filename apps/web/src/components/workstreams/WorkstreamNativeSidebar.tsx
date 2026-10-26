@@ -99,6 +99,7 @@ export function WorkstreamNativeSidebar({
     setError(null);
     setBusy(false);
   }
+  // oxlint-disable-next-line t3code/react-effect-budget -- Cancel the pointer sensor and pending request when the sidebar binding retires or unmounts.
   useLayoutEffect(() => {
     bindingRef.current = binding;
     sensorRef.current?.cancel();
@@ -260,9 +261,11 @@ export function WorkstreamNativeSidebar({
     return { destination, neighbor, after, sameGroup };
   };
   const pointerActions = useRef({ locate, run, move, reorder: props.reorder, canReorder });
+  // oxlint-disable-next-line t3code/react-effect-budget -- Expose committed drag actions to the long-lived pointer sensor without replacing its gesture owner.
   useLayoutEffect(() => {
     pointerActions.current = { locate, run, move, reorder: props.reorder, canReorder };
   });
+  // oxlint-disable-next-line t3code/react-effect-budget -- Register and clear the sidebar's external-drop bridge for its mounted lifetime.
   useLayoutEffect(() => {
     if (!externalDropRef) return;
     externalDropRef.current = {
@@ -392,6 +395,7 @@ export function WorkstreamNativeSidebar({
       },
     };
   };
+  // oxlint-disable-next-line t3code/react-effect-budget -- Register the mounted assignment menu and revoke its imperative handle on unmount.
   useLayoutEffect(() => {
     if (!assignmentMenuRef) return;
     assignmentMenuRef.current = assignmentMenu;

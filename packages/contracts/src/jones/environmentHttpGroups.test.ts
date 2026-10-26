@@ -150,7 +150,7 @@ it("requires an explicit native attempt without changing ordinary install reques
     ...base,
     transactionId: "b".repeat(64),
   });
-  expect(Schema.decodeUnknownSync(JonesUpdateInstallInput)(base)).toEqual(base);
+  expect(Schema.decodeSync(JonesUpdateInstallInput)(base)).toEqual(base);
 });
 
 it("selects an exact source by full commit only and keeps older capability shapes decodable", () => {
@@ -161,10 +161,11 @@ it("selects an exact source by full commit only and keeps older capability shape
     expect(() => decode({ targetSource: invalid })).toThrow();
   expect(() => decode({})).toThrow();
   const legacy = { check: true, download: true, install: false };
-  expect(Schema.decodeUnknownSync(JonesUpdateCapability)(legacy)).toEqual(legacy);
-  expect(Schema.decodeUnknownSync(JonesUpdateCapability)({ ...legacy, exactSource: true })).toEqual(
-    { ...legacy, exactSource: true },
-  );
+  expect(Schema.decodeSync(JonesUpdateCapability)(legacy)).toEqual(legacy);
+  expect(Schema.decodeSync(JonesUpdateCapability)({ ...legacy, exactSource: true })).toEqual({
+    ...legacy,
+    exactSource: true,
+  });
 });
 
 it("requires the complete immutable binding for an optional staged replacement", () => {
@@ -200,7 +201,7 @@ it("requires the complete immutable binding for an optional staged replacement",
     exactSource: true,
     replaceStaged: true,
   };
-  expect(Schema.decodeUnknownSync(JonesUpdateCapability)(capability)).toEqual(capability);
+  expect(Schema.decodeSync(JonesUpdateCapability)(capability)).toEqual(capability);
 });
 
 it("accepts both explicitly versioned registration responses on the local HTTP boundary", () => {

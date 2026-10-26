@@ -1064,13 +1064,8 @@ describe("DesktopBackendManager", () => {
         yield* instance.start;
 
         assert.equal(yield* Queue.take(starts), 1);
-        let restartScheduled = false;
-        while (!restartScheduled) {
-          restartScheduled = (yield* instance.snapshot).restartScheduled;
-          if (!restartScheduled) {
-            yield* Effect.yieldNow;
-          }
-        }
+        yield* TestClock.adjust(Duration.zero);
+        assert.isTrue((yield* instance.snapshot).restartScheduled);
 
         yield* instance.start;
         assert.equal(yield* Queue.take(starts), 2);
@@ -1111,13 +1106,8 @@ describe("DesktopBackendManager", () => {
         yield* instance.start;
         assert.equal(yield* Queue.take(starts), 1);
 
-        let restartScheduled = false;
-        while (!restartScheduled) {
-          restartScheduled = (yield* instance.snapshot).restartScheduled;
-          if (!restartScheduled) {
-            yield* Effect.yieldNow;
-          }
-        }
+        yield* TestClock.adjust(Duration.zero);
+        assert.isTrue((yield* instance.snapshot).restartScheduled);
 
         yield* instance.stop();
         yield* TestClock.adjust(Duration.millis(500));

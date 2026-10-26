@@ -385,7 +385,7 @@ it("keeps restart pending until a host outcome arrives and presents rollback rea
     jonesUpdatePresentation({ ...staged, phase: "installing", updateId: "native-id" }),
   ).toMatchObject({
     busy: true,
-    message: "Installing — server restarting. Waiting for the launcher outcome.",
+    message: "Installing. Server restarting. Waiting for the launcher outcome.",
     outcomeMessage: undefined,
   });
   expect(
