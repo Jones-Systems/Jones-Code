@@ -10,8 +10,7 @@ Manifest workspaces expose `typecheck` as `vp run tsrs:typecheck`; their
 `typecheck:native` slot retains the exact verified compiler command. Package
 Vite configurations read that slot and apply the shared task-cache policy.
 Web and desktop retain their existing `typecheck` task names. For example,
-`pnpm --filter effect-acp typecheck` uses the configured task. Compiler argument forwarding remains under
-qualification. Root commands still run uncached admission first.
+`pnpm --filter effect-acp typecheck` uses the configured task. The launcher accepts only qualified one-shot checking arguments. Root commands still run uncached admission first.
 Automatic input and output tracking remain enabled. Only package build-info
 files and the exact workspace patch lock/reclaim files are excluded; source,
 configuration, manifests, libraries and compiler binary identity stay tracked.
@@ -29,6 +28,25 @@ corrections, but complete rule, lifecycle, cache, performance and platform gates
 remain. No complete current-workflow speed improvement has been qualified.
 Schema-class connection targets in partial supervisor doubles still use genuine
 Schema instances; diagnostic settings stay unchanged.
+
+## One-shot CLI scope
+
+The same argument contract applies to the supported compiler and local fallback.
+Default project discovery and `-p`/`--project` directory or config-file selection
+are supported, along with `--noEmit`, `--pretty`, `--incremental`, and
+`--tsBuildInfoFile`. Boolean flags take an optional lowercase `true` or `false`;
+repeated options use the last value. The native case-insensitive option names
+and one- or two-dash spellings are accepted. `--noEmit false` is outside this
+checking interface. Diagnostic output flags are limited to `--diagnostics`,
+`--extendedDiagnostics`, `--listFiles`, `--explainFiles`, and `--traceResolution`.
+`--version` is informational; `--admit` remains a separate admission command.
+
+Build/watch modes and aliases, response files, positional source files, equals
+syntax, null values and unknown options fail explicitly before compiler lookup
+or spawn. They cannot bypass project configuration or the build-info guard.
+Use `pnpm typecheck:incremental` for repeated retained checks. Editor APIs,
+application emission, bundling and runtime entry points retain their existing
+interfaces.
 
 ## Publisher and rationale
 

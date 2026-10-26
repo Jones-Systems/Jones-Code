@@ -2180,12 +2180,13 @@
       "id": "tsrs-typecheck",
       "tests": [
         "scripts/jones/tsrs/identity.node-test.mjs",
+        "scripts/jones/tsrs/build-info.node-test.mjs",
         "packages/client-runtime/src/jones/sync/commandIsolation.test.ts",
         "packages/client-runtime/src/state/fileMetadata.test.ts",
         "packages/client-runtime/src/state/projectCommands.test.ts",
         "packages/client-runtime/src/state/threadCommands.test.ts"
       ],
-      "scope": "Pinned official Effect-TS TSRS identity, private-install patch recovery, verified launcher on all33 CLI surfaces and uncached CI admission. Pure task-cache helper retains automatic input/output tracking and excludes only buildinfo and exact patch lock/reclaim metadata;31 public aliases retain exact native commands. Five complete ConnectionTarget fixture values preserve existing tests. Unsupported local fallback has the explicit Q2-R1 TS377049 limitation; full adoption qualification is required before main integration."
+      "scope": "Pinned official Effect-TS TSRS identity, private-install patch recovery, verified launcher on all33 CLI surfaces and uncached CI admission. Pure task-cache helper retains automatic input/output tracking and excludes only buildinfo and exact patch lock/reclaim metadata;31 public aliases retain exact native commands. Five complete ConnectionTarget fixture values preserve existing tests. Unsupported local fallback has the explicit Q2-R1 TS377049 limitation; full adoption qualification is required before main integration. One-shot CLI grammar refuses unqualified modes before candidate/fallback lookup. Shared finite raw-config and bounded seed utilities preserve retained v2 identity; configuration-bound ordinary native-state handling remains under qualification."
     }
   ]
 }

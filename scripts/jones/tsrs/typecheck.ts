@@ -3,6 +3,7 @@ import * as NodeURL from "node:url";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Identity from "./identity.ts";
+import { classifyArguments } from "./build-info.ts";
 import { acquireLock, runChild } from "./patch.ts";
 
 const FALLBACK_LIMITATION =
@@ -78,8 +79,7 @@ export async function typecheck(
   args: string[],
   signal: AbortSignal,
 ): Promise<number> {
-  if (args.some((arg) => /^(?:--checkerAssignment|--checkers)(?:=|$)/.test(arg)))
-    throw new Error("Checker assignment/count are pinned by the repository launcher.");
+  classifyArguments(args);
   const target = Identity.hostTarget();
   if (target) {
     return launchVerified(
@@ -104,6 +104,7 @@ export async function runFallback(
   args: string[],
   signal: AbortSignal,
 ): Promise<number> {
+  classifyArguments(args);
   const compiler = await Identity.resolveFallback(root);
   process.stderr.write(
     `[tsrs] Unsupported host; using pinned ${Identity.FALLBACK.name}@${Identity.FALLBACK.version} with built-in Effect diagnostics (local, non-authoritative). ${FALLBACK_LIMITATION}\n`,

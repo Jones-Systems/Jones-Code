@@ -1,13 +1,35 @@
+import * as Scope from "effect/Scope";
+import { configurationInputs } from "../tsrs/config-inputs.ts";
+export { configurationInputs } from "../tsrs/config-inputs.ts";
+import {
+  hostPath,
+  hostFileSystem,
+  fileInfo,
+  object,
+  errorCode,
+  digest,
+  canonical,
+  contained,
+  safeDirectory,
+  readBounded,
+  writePrivateFile,
+  readSeed,
+  encodeEnvelope,
+  admitNamespace,
+} from "../tsrs/seed-files.ts";
+export {
+  digest,
+  readSeed,
+  encodeEnvelope,
+  admitNamespace,
+  validNativePayload,
+} from "../tsrs/seed-files.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
-import * as NodePath from "@effect/platform-node/NodePath";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import * as ByteSize from "effect/ByteSize";
 import * as Crypto from "effect/Crypto";
 import * as FileSystem from "effect/FileSystem";
-import * as Path from "effect/Path";
 import type * as PlatformError from "effect/PlatformError";
-import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -18,46 +40,13 @@ import * as Fiber from "effect/Fiber";
 import * as CompilerIdentity from "../tsrs/identity.ts";
 import { launchVerified } from "../tsrs/typecheck.ts";
 import * as NodeOS from "node:os";
-import * as NodeModule from "node:module";
-
-// These adapters are the standalone CLI's Effect-to-Promise boundary. Services
-// come from their installed Node layers, rather than hidden native imports.
-function hostPath(): Path.Path {
-  return Effect.runSync(Effect.provide(Path.Path, NodePath.layer));
-}
-
-function hostFileSystem<A, E>(
-  operation: (fs: FileSystem.FileSystem) => Effect.Effect<A, E, Scope.Scope>,
-): Promise<A> {
-  return Effect.runPromise(
-    Effect.scoped(Effect.flatMap(FileSystem.FileSystem, operation)).pipe(
-      Effect.provide(NodeFileSystem.layer),
-    ),
-  );
-}
-
-async function fileInfo(filename: string): Promise<FileSystem.File.Info> {
-  // stat follows links. Reject them explicitly before inspecting their targets.
-  const linked = await hostFileSystem((fs) => fs.readLink(filename)).then(
-    () => true,
-    (error: unknown) => {
-      if (errorCode(error) === "EINVAL") return false;
-      throw error;
-    },
-  );
-  if (linked) throw new Error(`Unsafe cache entry symlink: ${filename}`);
-  return hostFileSystem((fs) => fs.stat(filename));
-}
 
 export const RAW_LIMIT = 16 * 1024 * 1024;
 export const ENVELOPE_LIMIT = 24 * 1024 * 1024;
 export const NAMESPACE_LIMIT = 1024 * 1024 * 1024;
 const SCHEMA = "jones-incremental-typecheck/v2";
-const OPTIONS = ["--noEmit", "--incremental", ...CompilerIdentity.CHECKER_OPTIONS];
 const BUILD_VERSION = CompilerIdentity.BUILD_VERSION;
-const EXPO_MANIFEST_HASH = "b64e612beee02fbbf0aa883e9d3d767a2213abb5093d5bd04a2aef87868fd2ba";
-const EXPO_STORE_PATH =
-  "node_modules/.pnpm/expo@58.0.14_277a83826bb26ba15256633fefeb0bc2/node_modules/expo";
+const OPTIONS = ["--noEmit", "--incremental", ...CompilerIdentity.CHECKER_OPTIONS];
 
 export const HELP = `Usage: pnpm typecheck:incremental <workspace-name-or-relative-path>... | --all
 Options: --fresh (no retained reads or publication), --help
@@ -72,7 +61,6 @@ or mobile's qualified Expo base/binding. Unknown topology fails closed; --fresh
 bypasses only retained identity/reuse/publication. Configs are bounded to 1 MiB.
 `;
 
-type JsonObject = Record<string, unknown>;
 export interface Workspace {
   name: string;
   directory: string;
@@ -93,50 +81,8 @@ export interface CommandResult {
 }
 export type Runner = (command: Command) => Promise<CommandResult>;
 
-function object(value: unknown): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function errorCode(error: unknown): string | undefined {
-  if (!object(error)) return undefined;
-  if (typeof error.code === "string") return error.code;
-  if (object(error.reason)) return errorCode(error.reason.cause);
-  return undefined;
-}
-
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-export function digest(bytes: string | Buffer): string {
-  return Buffer.from(
-    Effect.runSync(
-      Effect.flatMap(Crypto.Crypto, (crypto) =>
-        crypto.digest("SHA-256", typeof bytes === "string" ? Buffer.from(bytes) : bytes),
-      ).pipe(Effect.provide(NodeCrypto.layer)),
-    ),
-  ).toString("hex");
-}
-
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (object(value)) {
-    return `{${Object.keys(value)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value) ?? "null";
-}
-
-function contained(root: string, target: string): boolean {
-  const relative = hostPath().relative(root, target);
-  return (
-    relative === "" ||
-    (!hostPath().isAbsolute(relative) &&
-      relative !== ".." &&
-      !relative.startsWith(`..${hostPath().sep}`))
-  );
 }
 
 export function parseArguments(args: string[]) {
@@ -416,173 +362,6 @@ export async function resolveCompiler(root: string) {
 
 type Compiler = Awaited<ReturnType<typeof resolveCompiler>>;
 
-// Validate JSONC shape and duplicate decoded keys, never resolve or merge it.
-// Unsupported inheritance must not silently enable retained cache reuse.
-function configObject(bytes: Buffer, filename: string): JsonObject {
-  const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes).replace(/^\uFEFF/, "");
-  let cursor = 0;
-  const invalid = (): never => {
-    throw new Error(`Unsupported or ambiguous JSONC config at offset ${cursor}: ${filename}`);
-  };
-  const whitespace = () => {
-    for (;;) {
-      while (/[ \t\r\n]/.test(text[cursor] ?? "x")) cursor++;
-      if (text.startsWith("//", cursor)) {
-        const end = text.indexOf("\n", cursor + 2);
-        cursor = end < 0 ? text.length : end + 1;
-      } else if (text.startsWith("/*", cursor)) {
-        const end = text.indexOf("*/", cursor + 2);
-        if (end < 0) invalid();
-        cursor = end + 2;
-      } else return;
-    }
-  };
-  const string = (): string => {
-    if (text[cursor] !== '"') invalid();
-    const start = cursor++;
-    while (cursor < text.length) {
-      const char = text[cursor++];
-      if (char === "\\") cursor++;
-      else if (char === '"') {
-        try {
-          return JSON.parse(text.slice(start, cursor)) as string;
-        } catch {
-          invalid();
-        }
-      }
-    }
-    return invalid();
-  };
-  const value = (depth: number): unknown => {
-    if (depth > 64) invalid();
-    whitespace();
-    const char = text[cursor];
-    if (char === '"') return string();
-    if (char === "{" || char === "[") {
-      cursor++;
-      const end = char === "{" ? "}" : "]";
-      const record: JsonObject = Object.create(null);
-      const list: unknown[] = [];
-      const keys = new Set<string>();
-      whitespace();
-      while (text[cursor] !== end) {
-        if (char === "{") {
-          const key = string();
-          if (depth === 0 && key === "extends" && keys.has(key)) invalid();
-          keys.add(key);
-          whitespace();
-          if (text[cursor++] !== ":") invalid();
-          record[key] = value(depth + 1);
-        } else list.push(value(depth + 1));
-        whitespace();
-        if (text[cursor] === end) break;
-        if (text[cursor++] !== ",") invalid();
-        whitespace();
-      }
-      cursor++;
-      return char === "{" ? record : list;
-    }
-    const token = /^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/.exec(
-      text.slice(cursor),
-    );
-    if (!token) return invalid();
-    cursor += token[0].length;
-    return JSON.parse(token[0]) as unknown;
-  };
-  const parsed = value(0);
-  whitespace();
-  if (cursor !== text.length || !object(parsed)) return invalid();
-  return parsed;
-}
-
-export async function configurationInputs(
-  root: string,
-  projects: Workspace[],
-): Promise<Map<string, string>> {
-  const files = new Map<string, { config: JsonObject; hash: string }>();
-  const read = async (filename: string) => {
-    const cached = files.get(filename);
-    if (cached) return cached;
-    if (
-      !contained(root, filename) ||
-      (await hostFileSystem((fs) => fs.realPath(filename))) !== filename
-    ) {
-      throw new Error(`Unsupported config path or symlink escape: ${filename}`);
-    }
-    const bytes = await readBounded(filename, 1024 * 1024);
-    if (!bytes) throw new Error(`Missing or oversized config input (1 MiB limit): ${filename}`);
-    const input = { config: configObject(bytes, filename), hash: digest(bytes) };
-    files.set(filename, input);
-    return input;
-  };
-  const identities = new Map<string, string>();
-  for (const project of projects) {
-    const filename = hostPath().join(project.directory, "tsconfig.json");
-    const input = await read(filename);
-    const extendsValue = input.config.extends;
-    if (!Object.hasOwn(input.config, "extends")) {
-      identities.set(project.directory, digest(canonical({ filename, projectHash: input.hash })));
-      continue;
-    }
-    if (typeof extendsValue !== "string")
-      throw new Error(`Unsupported nonliteral or missing extends: ${filename}`);
-    let base: string;
-    let binding: unknown = null;
-    if (
-      extendsValue === "expo/tsconfig.base.json" &&
-      project.directory === hostPath().join(root, "apps", "mobile")
-    ) {
-      const packageBinding = hostPath().join(project.directory, "node_modules", "expo");
-      const packageDirectory = await hostFileSystem((fs) => fs.realPath(packageBinding));
-      if (packageDirectory !== hostPath().join(root, EXPO_STORE_PATH)) {
-        throw new Error(`Unsupported external Expo config binding: ${packageBinding}`);
-      }
-      const require = NodeModule.createRequire(hostPath().join(project.directory, "package.json"));
-      const manifest = hostPath().join(packageDirectory, "package.json");
-      base = hostPath().join(packageDirectory, "tsconfig.base.json");
-      if (
-        (await hostFileSystem((fs) => fs.realPath(require.resolve("expo/package.json")))) !==
-          manifest ||
-        (await hostFileSystem((fs) => fs.realPath(require.resolve(extendsValue)))) !== base
-      ) {
-        throw new Error(`Ambiguous Expo config binding: ${packageBinding}`);
-      }
-      const packageInput = await read(manifest);
-      if (packageInput.config.name !== "expo" || packageInput.hash !== EXPO_MANIFEST_HASH)
-        throw new Error(
-          `Unqualified Expo package identity: ${manifest}; use --fresh until requalified.`,
-        );
-      binding = {
-        path: packageBinding,
-        resolved: packageDirectory,
-        manifest,
-        manifestHash: packageInput.hash,
-      };
-    } else {
-      base = hostPath().join(root, "tsconfig.base.json");
-      if (
-        !extendsValue.startsWith(".") ||
-        hostPath().isAbsolute(extendsValue) ||
-        hostPath().resolve(project.directory, extendsValue) !== base
-      ) {
-        throw new Error(
-          `Unsupported config inheritance in ${filename}: only the worktree tsconfig.base.json or mobile Expo base is recognized.`,
-        );
-      }
-    }
-    const baseInput = await read(base);
-    if (Object.hasOwn(baseInput.config, "extends"))
-      throw new Error(`Unsupported nonterminal config base: ${base}`);
-    identities.set(
-      project.directory,
-      digest(
-        canonical({ filename, projectHash: input.hash, base, baseHash: baseInput.hash, binding }),
-      ),
-    );
-  }
-  return identities;
-}
-
 // Fingerprint metadata, not source bytes or Git HEAD. Native incremental state
 // remains responsible for source, declaration, and module-resolution changes.
 export async function sharedIdentity(
@@ -731,215 +510,6 @@ export function cachePaths(root: string, project: Workspace) {
   );
   const directory = hostPath().join(namespace, digest(canonical([root, project.directory])));
   return { namespace, directory, entry: hostPath().join(directory, "entry.json") };
-}
-
-async function safeDirectory(root: string, directory: string, create: boolean): Promise<void> {
-  if (!contained(root, directory)) throw new Error(`Cache escapes worktree: ${directory}`);
-  let current = root;
-  for (const component of hostPath()
-    .relative(root, directory)
-    .split(hostPath().sep)
-    .filter(Boolean)) {
-    current = hostPath().join(current, component);
-    if (create) {
-      try {
-        await hostFileSystem((fs) => fs.makeDirectory(current));
-      } catch (error) {
-        if (errorCode(error) !== "EEXIST") throw error;
-      }
-    }
-    const stat = await fileInfo(current);
-    if (stat.type !== "Directory") throw new Error(`Unsafe cache directory: ${current}`);
-  }
-}
-
-export async function admitNamespace(
-  root: string,
-  namespace: string,
-  additional: number,
-): Promise<void> {
-  await safeDirectory(root, namespace, true);
-  let bytes = 0;
-  const walk = async (directory: string): Promise<void> => {
-    for (const name of await hostFileSystem((fs) => fs.readDirectory(directory))) {
-      const filename = hostPath().join(directory, name);
-      let stat: FileSystem.File.Info;
-      try {
-        stat = await fileInfo(filename);
-      } catch (error) {
-        if (errorCode(error) === "ENOENT") continue;
-        throw error;
-      }
-      if (stat.type !== "Directory" && stat.type !== "File")
-        throw new Error(`Unsafe cache entry: ${filename}`);
-      bytes += ByteSize.toNumberUnsafe(stat.size);
-      if (bytes + additional > NAMESPACE_LIMIT)
-        throw new Error(
-          `Cache capacity admission failed at ${namespace}: requires ${additional} additional bytes within 1 GiB; no automatic fallback or eviction.`,
-        );
-      if (stat.type === "Directory") {
-        try {
-          await walk(filename);
-        } catch (error) {
-          if (errorCode(error) !== "ENOENT") throw error;
-        }
-      }
-    }
-  };
-  await walk(namespace);
-}
-
-async function readBounded(filename: string, limit: number): Promise<Buffer | undefined> {
-  try {
-    await fileInfo(filename);
-    return await hostFileSystem((fs) =>
-      Effect.gen(function* () {
-        const file = yield* fs.open(filename, { flag: "r", noFollow: true });
-        const stat = yield* file.stat;
-        if (stat.type !== "File") throw new Error(`Cache path is not a regular file: ${filename}`);
-        const size = ByteSize.toNumberUnsafe(stat.size);
-        if (size > limit) return undefined;
-        const bytes = Buffer.alloc(size + 1);
-        let offset = 0;
-        while (offset < bytes.length) {
-          const count = yield* file.read(bytes.subarray(offset));
-          if (count === 0) break;
-          offset += count;
-        }
-        return offset === size ? bytes.subarray(0, offset) : undefined;
-      }),
-    );
-  } catch (error) {
-    if (errorCode(error) === "ENOENT") return undefined;
-    throw error;
-  }
-}
-
-export function validNativePayload(bytes: Buffer): boolean {
-  if (bytes.length > RAW_LIMIT) return false;
-  try {
-    const value: unknown = JSON.parse(bytes.toString("utf8"));
-    if (!object(value) || value.version !== BUILD_VERSION || !object(value.options)) return false;
-    if (value.effect !== undefined && !object(value.effect)) return false;
-    if (
-      !Array.isArray(value.fileNames) ||
-      value.fileNames.length === 0 ||
-      !value.fileNames.every((name) => typeof name === "string" && name.length > 0)
-    )
-      return false;
-    if (
-      !Array.isArray(value.fileInfos) ||
-      value.fileInfos.length !== value.fileNames.length ||
-      !value.fileInfos.every(
-        (info) =>
-          (typeof info === "string" && info.length > 0) ||
-          (object(info) && typeof info.version === "string" && info.version.length > 0),
-      )
-    )
-      return false;
-    const count = value.fileNames.length;
-    const id = (index: unknown) =>
-      Number.isInteger(index) && Number(index) >= 1 && Number(index) <= count;
-    for (const key of ["packageJsons", "missingPackageJsons"]) {
-      if (
-        value[key] !== undefined &&
-        (!Array.isArray(value[key]) || !value[key].every((item) => typeof item === "string"))
-      )
-        return false;
-    }
-    if (
-      value.fileIdsList !== undefined &&
-      (!Array.isArray(value.fileIdsList) ||
-        !value.fileIdsList.every((list) => Array.isArray(list) && list.every(id)))
-    )
-      return false;
-    for (const key of [
-      "referencedMap",
-      "semanticDiagnosticsPerFile",
-      "affectedFilesPendingEmit",
-      "emitDiagnosticsPerFile",
-    ]) {
-      if (value[key] !== undefined && !Array.isArray(value[key])) return false;
-    }
-    for (const key of ["target", "module", "moduleResolution", "jsx"]) {
-      if (value.options[key] !== undefined && typeof value.options[key] !== "number") return false;
-    }
-    if (
-      value.options.tsBuildInfoFile !== undefined &&
-      typeof value.options.tsBuildInfoFile !== "string"
-    )
-      return false;
-    return (
-      Array.isArray(value.root) &&
-      value.root.every(
-        (item) =>
-          id(item) ||
-          (Array.isArray(item) &&
-            item.length === 2 &&
-            id(item[0]) &&
-            id(item[1]) &&
-            item[0] <= item[1]),
-      )
-    );
-  } catch {
-    return false;
-  }
-}
-
-export function encodeEnvelope(identity: string, payload: Buffer): Buffer {
-  if (!validNativePayload(payload))
-    throw new Error("Native build info is malformed, incompatible, or exceeds 16 MiB.");
-  const bytes = Buffer.from(
-    JSON.stringify({
-      schema: SCHEMA,
-      identity,
-      checksum: digest(payload),
-      payload: payload.toString("base64"),
-    }),
-  );
-  if (bytes.length > ENVELOPE_LIMIT) throw new Error("Cache envelope exceeds 24 MiB.");
-  return bytes;
-}
-
-export async function readSeed(filename: string, identity: string): Promise<Buffer | undefined> {
-  const bytes = await readBounded(filename, ENVELOPE_LIMIT);
-  if (!bytes) return undefined;
-  try {
-    const envelope: unknown = JSON.parse(bytes.toString("utf8"));
-    if (
-      !object(envelope) ||
-      envelope.schema !== SCHEMA ||
-      envelope.identity !== identity ||
-      typeof envelope.checksum !== "string" ||
-      typeof envelope.payload !== "string" ||
-      envelope.payload.length > Math.ceil(RAW_LIMIT / 3) * 4
-    )
-      return undefined;
-    const payload = Buffer.from(envelope.payload, "base64");
-    if (
-      payload.toString("base64") !== envelope.payload ||
-      digest(payload) !== envelope.checksum ||
-      !validNativePayload(payload)
-    )
-      return undefined;
-    return payload;
-  } catch {
-    return undefined;
-  }
-}
-
-async function writePrivateFile(
-  filename: string,
-  bytes: Buffer,
-  created: () => void,
-): Promise<void> {
-  await hostFileSystem((fs) =>
-    Effect.gen(function* () {
-      const file = yield* fs.open(filename, { flag: "wx", mode: 0o600 });
-      created();
-      yield* file.writeAll(bytes);
-    }),
-  );
 }
 
 export interface CheckProjectOptions {

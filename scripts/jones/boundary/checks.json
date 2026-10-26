@@ -3447,6 +3447,7 @@
       "id": "jones-tsrs-typecheck",
       "tests": [
         "scripts/jones/tsrs/identity.node-test.mjs",
+        "scripts/jones/tsrs/build-info.node-test.mjs",
         "packages/client-runtime/src/jones/sync/commandIsolation.test.ts",
         "packages/client-runtime/src/state/fileMetadata.test.ts",
         "packages/client-runtime/src/state/projectCommands.test.ts",
