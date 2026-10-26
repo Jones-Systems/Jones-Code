@@ -22,6 +22,7 @@ export function withoutEnvironmentThemes(config: ServerConfig): ServerConfig {
 /**
  * Provider pushes, reconnects, and settings writes resend unchanged data.
  * Reuse deep-equal objects so memoized UI can skip unchanged providers, models, and skills.
+ * Object key order must also match: providerInstances uses it for display order.
  */
 export function reuseUnchanged<T>(previous: unknown, next: T): T {
   if (Object.is(previous, next)) return next;
@@ -48,7 +49,9 @@ export function reuseUnchanged<T>(previous: unknown, next: T): T {
   const before = previous as Record<string, unknown>;
   const after = next as Record<string, unknown>;
   const keys = Object.keys(after);
-  let same = keys.length === Object.keys(before).length;
+  const beforeKeys = Object.keys(before);
+  let same =
+    keys.length === beforeKeys.length && keys.every((key, index) => key === beforeKeys[index]);
   const merged: Record<string, unknown> = {};
   for (const key of keys) {
     const reused = reuseUnchanged(before[key], after[key]);

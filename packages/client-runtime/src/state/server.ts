@@ -1333,12 +1333,10 @@ export function createServerEnvironmentAtoms<R, E>(
             const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
             const config = yield* session.initialConfig;
             if (config.environment.capabilities.savedTokenAccounting !== true) {
-              return yield* Effect.fail(
-                new EnvironmentRpcUnavailableError({
-                  environmentId: supervisor.target.environmentId,
-                  message: "This environment does not advertise a saved accounting reader.",
-                }),
-              );
+              return yield* new EnvironmentRpcUnavailableError({
+                environmentId: supervisor.target.environmentId,
+                message: "This environment does not advertise a saved accounting reader.",
+              });
             }
           }),
         }),

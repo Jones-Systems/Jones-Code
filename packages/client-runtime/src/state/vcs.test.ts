@@ -533,12 +533,10 @@ describe("cached VCS refs", () => {
                 yield* Ref.update(calls, (count) => count + 1);
                 if (yield* Ref.get(allowed)) return LIVE_REFS;
                 yield* Deferred.succeed(attempted, undefined);
-                return yield* Effect.fail(
-                  new EnvironmentAuthorizationError({
-                    message: "Missing scope",
-                    requiredScope: AuthSourceControlWriteScope,
-                  }),
-                );
+                return yield* new EnvironmentAuthorizationError({
+                  message: "Missing scope",
+                  requiredScope: AuthSourceControlWriteScope,
+                });
               }),
           } as unknown as WsRpcProtocolClient;
           const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({

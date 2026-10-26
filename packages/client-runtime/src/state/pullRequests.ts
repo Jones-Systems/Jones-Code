@@ -335,6 +335,11 @@ export function createPullRequestEnvironmentAtoms<R, E>(
       staleTimeMs: 0,
       idleTtlMs: 0,
     }),
+    ciStatus: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:pull-requests:ci-status",
+      tag: WS_METHODS.pullRequestsCiStatus,
+      staleTimeMs: 60_000,
+    }),
     list: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:pull-requests:list",
       persistence: persistQuery(PullRequestListResult),

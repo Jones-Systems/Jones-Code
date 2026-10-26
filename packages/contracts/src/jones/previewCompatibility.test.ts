@@ -25,7 +25,7 @@ describe("preview resilience mixed-version wire compatibility", () => {
       supportsPing: true,
       supportsSnapshotBarrier: true,
     };
-    expect(Schema.decodeUnknownSync(LegacyHost)(host)).toEqual({
+    expect(Schema.decodeSync(LegacyHost)(host)).toEqual({
       clientId: host.clientId,
       environmentId: host.environmentId,
       supportedOperations: host.supportedOperations,

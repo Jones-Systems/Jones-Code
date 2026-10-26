@@ -1,7 +1,10 @@
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { expect, it } from "vite-plus/test";
 
-import { matchComposerThreadItems, type ComposerThreadCandidate } from "./composerThreadItems.ts";
+import {
+  matchUpstreamComposerThreadItems as matchComposerThreadItems,
+  type ComposerThreadCandidate,
+} from "./composerThreadItems.ts";
 
 const environmentId = EnvironmentId.make("env-composer");
 

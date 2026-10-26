@@ -8,6 +8,7 @@ import * as Option from "effect/Option";
 
 import type { EnvironmentShellState } from "../../state/shell.ts";
 import { isSettlementChild, observeEnvironment } from "./detect.ts";
+import { settlementThreadEvidence, type SettlementThreadFamilyEvidence } from "./threadEvidence.ts";
 import { addArrivals, dismiss, mergeInbox, refreshThreads, visibleEntries } from "./inbox.ts";
 import {
   SettlementOriginDetails,
@@ -62,6 +63,7 @@ export function createSettlementNotificationController(deps: {
   >();
   const pendingClassifications = new Map<EnvironmentId, number>();
   const confirmed = new Map<EnvironmentId, EnvironmentShellState>();
+  const families = new Map<EnvironmentId, ReadonlyArray<SettlementThreadFamilyEvidence>>();
   const children = new Map<
     EnvironmentId,
     { snapshot: OrchestrationV2ShellSnapshot; ids: ReadonlySet<ThreadId> }
@@ -136,9 +138,8 @@ export function createSettlementNotificationController(deps: {
     if (Option.isNone(state.snapshot)) return false;
     const next = state.snapshot.value;
     const previous = children.get(environmentId);
-    if (previous?.snapshot === next) return false;
     const ids = new Set<ThreadId>();
-    for (const thread of [...next.threads, ...next.archivedThreads]) {
+    for (const thread of settlementThreadEvidence(state, families.get(environmentId)).threads) {
       if (isSettlementChild(thread)) ids.add(thread.id);
     }
     children.set(environmentId, { snapshot: next, ids });
@@ -152,12 +153,10 @@ export function createSettlementNotificationController(deps: {
   ) {
     if (Option.isNone(state.snapshot)) return value;
     const titles = new Map<ThreadId, string>();
-    const gone = new Set<ThreadId>();
+    const evidence = settlementThreadEvidence(state, families.get(environmentId));
+    const gone = evidence.gone;
     const excluded = new Set<ThreadId>();
-    for (const thread of [
-      ...state.snapshot.value.threads,
-      ...state.snapshot.value.archivedThreads,
-    ]) {
+    for (const thread of evidence.threads) {
       if (isSettlementChild(thread)) excluded.add(thread.id);
       if (thread.deletedAt !== null) gone.add(thread.id);
       else titles.set(thread.id, thread.title);
@@ -334,6 +333,7 @@ export function createSettlementNotificationController(deps: {
         state,
         nowMs: now(),
         staleSince: staleSince.get(environmentId) ?? null,
+        families: families.get(environmentId) ?? [],
       });
       if (result.kind === "skip") {
         if (result.staleSince === undefined) staleSince.delete(environmentId);
@@ -447,8 +447,12 @@ export function createSettlementNotificationController(deps: {
     observe(
       environmentId: EnvironmentId,
       state: EnvironmentShellState,
-      options?: { resolveOrigins?: SettlementOriginResolver },
+      options?: {
+        resolveOrigins?: SettlementOriginResolver;
+        families?: ReadonlyArray<SettlementThreadFamilyEvidence>;
+      },
     ): void {
+      families.set(environmentId, options?.families ?? []);
       observations.set(environmentId, { state, ...options });
       // Lineage and delegation are fixed at creation, so cached metadata may hide a child.
       // Only confirmed live state may acknowledge its notice.

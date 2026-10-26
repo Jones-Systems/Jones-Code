@@ -25,6 +25,7 @@ import {
   type PreparedConnection,
 } from "../connection/model.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
+import * as ConnectionWakeups from "../connection/wakeups.ts";
 import * as Persistence from "../platform/persistence.ts";
 import * as RpcSession from "../rpc/session.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
@@ -212,6 +213,122 @@ describe("environment shell synchronization", () => {
       );
       expect(yield* Ref.get(attempts)).toEqual([1, 2]);
     }),
+  );
+
+  it.effect.each(["replacement", "same-session resubscription"] as const)(
+    "fences an applying snapshot and buffered freshness marker across %s",
+    (change) =>
+      Effect.gen(function* () {
+        const applying = yield* Deferred.make<void>();
+        const markerProduced = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const successorStarted = yield* Deferred.make<void>();
+        const subscriptions = yield* Queue.unbounded<number | undefined>();
+        const firstEvents = yield* Queue.unbounded<OrchestrationV2ShellStreamItem>();
+        const nextEvents = yield* Queue.unbounded<OrchestrationV2ShellStreamItem>();
+        const wakeups = yield* Queue.unbounded<ConnectionWakeups.ConnectionWakeup>();
+        let attempts = 0;
+        let loads = 0;
+        const currentSnapshot = { ...LIVE_SHELL_SNAPSHOT, snapshotSequence: 2 };
+        const currentSession: RpcSession.RpcSession = {
+          ...session({} as WsRpcProtocolClient),
+          initialConfig: Effect.gen(function* () {
+            attempts += 1;
+            if (attempts === 2) yield* Deferred.succeed(successorStarted, undefined);
+            return { shellResumeCompletionMarker: true } as never;
+          }),
+          client: {
+            [ORCHESTRATION_V2_WS_METHODS.subscribeShell]: (input: { afterSequence?: number }) =>
+              Stream.fromEffect(Queue.offer(subscriptions, input.afterSequence)).pipe(
+                Stream.drain,
+                Stream.concat(
+                  Stream.fromQueue(attempts === 1 ? firstEvents : nextEvents).pipe(
+                    Stream.tap((item) =>
+                      item.kind === "synchronized"
+                        ? Deferred.succeed(markerProduced, undefined)
+                        : Effect.void,
+                    ),
+                  ),
+                ),
+              ),
+          } as unknown as WsRpcProtocolClient,
+        };
+        const activeSession = yield* SubscriptionRef.make<Option.Option<RpcSession.RpcSession>>(
+          Option.some(currentSession),
+        );
+        const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+          target: TARGET,
+          state: yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE),
+          session: activeSession,
+          prepared: yield* SubscriptionRef.make(Option.some(PREPARED)),
+          connect: Effect.void,
+          disconnect: Effect.void,
+          retryNow: Effect.void,
+        });
+        const cache = Persistence.EnvironmentCacheStore.of({
+          loadShell: () => Effect.succeedNone,
+          saveShell: () => Effect.void,
+          loadThread: () => Effect.succeedNone,
+          saveThread: () => Effect.void,
+          removeThread: () => Effect.void,
+          loadServerConfig: () => Effect.succeedNone,
+          saveServerConfig: () => Effect.void,
+          loadVcsRefs: () => Effect.succeedNone,
+          saveVcsRefs: () => Effect.void,
+          removeVcsRefs: () => Effect.void,
+          clearVcsRefs: () => Effect.void,
+          clear: () => Effect.void,
+        });
+        const shellState = yield* makeEnvironmentShellState().pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          Effect.provideService(Persistence.EnvironmentCacheStore, cache),
+          Effect.provideService(ShellSnapshotLoader.ShellSnapshotLoader, {
+            load: () =>
+              Effect.sync(() => (++loads === 1 ? Option.none() : Option.some(currentSnapshot))),
+          }),
+          Effect.provideService(ConnectionWakeups.ConnectionWakeups, {
+            changes: Stream.fromQueue(wakeups),
+          }),
+        );
+        expect(yield* Queue.take(subscriptions)).toBeUndefined();
+        const semaphore = shellState.semaphore;
+        const withPermit = semaphore.withPermit;
+        semaphore.withPermit = (effect) => {
+          semaphore.withPermit = withPermit;
+          return withPermit(
+            Deferred.succeed(applying, undefined).pipe(
+              Effect.andThen(Deferred.await(release)),
+              Effect.andThen(effect),
+            ),
+          );
+        };
+        yield* Queue.offerAll(firstEvents, [
+          { kind: "snapshot", snapshot: { ...LIVE_SHELL_SNAPSHOT, snapshotSequence: 99 } },
+          { kind: "synchronized" },
+        ]);
+        yield* Deferred.await(applying);
+        yield* Deferred.await(markerProduced);
+        if (change === "replacement") {
+          yield* SubscriptionRef.set(activeSession, Option.some({ ...currentSession }));
+        } else {
+          yield* Queue.offer(wakeups, "application-active");
+        }
+        yield* Deferred.await(successorStarted);
+        yield* Deferred.succeed(release, undefined);
+        expect(yield* Queue.take(subscriptions)).toBe(2);
+        const current = yield* SubscriptionRef.get(shellState);
+        expect(Option.getOrThrow(current.snapshot).snapshotSequence).toBe(2);
+        expect(current.status).toBe("synchronizing");
+        yield* Queue.offerAll(nextEvents, [
+          { kind: "snapshot", snapshot: { ...LIVE_SHELL_SNAPSHOT, snapshotSequence: 1 } },
+          { kind: "synchronized" },
+        ]);
+        const live = yield* SubscriptionRef.changes(shellState).pipe(
+          Stream.filter((value) => value.status === "live"),
+          Stream.runHead,
+        );
+        expect(Option.getOrThrow(Option.getOrThrow(live).snapshot).snapshotSequence).toBe(1);
+      }),
   );
 
   it.effect("flushes the latest live snapshot without blocking connection state updates", () =>
