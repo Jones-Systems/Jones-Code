@@ -14,6 +14,7 @@ export function useThreadReferenceCapture(
 ) {
   const key = composerTargetKey(target);
   const generation = useRef<{ key: string } | null>(null);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Fence reference-excerpt captures to the committed thread identity and retire them on unmount.
   useLayoutEffect(() => {
     generation.current = { key };
     return () => {

@@ -84,6 +84,7 @@ export function CompanionController() {
   const prepared = useAtomValue(
     environmentId ? environmentSession.preparedConnectionValueAtom(environmentId) : noPrepared,
   );
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own the desktop companion bridge subscription and refresh its assigned thread bindings.
   useEffect(() => {
     const bridge = window.desktopBridge?.previewCompanion;
     if (!bridge) return;
@@ -112,6 +113,7 @@ export function CompanionController() {
         }),
     });
   }, []);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Publish ticket-provider readiness to the desktop bridge when connection eligibility changes.
   useEffect(() => {
     if (!state?.config.enabled || !environmentId) return;
     const entry = catalog.entries.get(environmentId);

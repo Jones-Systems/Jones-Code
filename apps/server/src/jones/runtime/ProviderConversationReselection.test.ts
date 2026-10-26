@@ -25,7 +25,6 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Persistence from "../../persistence/Sqlite.ts";
@@ -217,7 +216,7 @@ const fixture = Effect.fnUntraced(function* (attachmentAvailable = true) {
     shutdown: Effect.void,
     isLive: () => Effect.die("unexpected_isLive"),
     open: () => Effect.die("unexpected_open"),
-    get: () => Effect.succeed(Option.none()),
+    get: () => Effect.succeedNone,
     close: () => Effect.die("unexpected_close"),
     closeInstance: () => Effect.die("unexpected_close_instance"),
     release: () => Effect.die("unexpected_release"),

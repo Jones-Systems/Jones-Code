@@ -48,9 +48,7 @@ const StoredQueueState = Schema.Union([
   }),
 ]);
 export const decodeProviderQueueState = Effect.fnUntraced(function* (contents: string) {
-  const state = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(StoredQueueState))(
-    contents,
-  );
+  const state = yield* Schema.decodeEffect(Schema.fromJsonString(StoredQueueState))(contents);
   if (state.version === 2) return state;
   return {
     version: 2 as const,

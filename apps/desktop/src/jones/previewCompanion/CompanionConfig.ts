@@ -84,7 +84,7 @@ const make = Effect.gen(function* () {
           label: "Browser host",
           browserOnly: productLocked,
         }
-      : yield* Schema.decodeUnknownEffect(Schema.fromJsonString(DesktopCompanionConfig))(raw).pipe(
+      : yield* Schema.decodeEffect(Schema.fromJsonString(DesktopCompanionConfig))(raw).pipe(
           Effect.mapError(() => new CompanionConfigError({ operation: "decode" })),
         );
   if (productLocked && !initial.browserOnly) {
@@ -103,7 +103,7 @@ const make = Effect.gen(function* () {
           ) {
             return yield* new CompanionConfigError({ operation: "decode" });
           }
-          const next = yield* Schema.decodeUnknownEffect(DesktopCompanionConfig)({
+          const next = yield* Schema.decodeEffect(DesktopCompanionConfig)({
             ...input,
             hostId: current.hostId,
           }).pipe(Effect.mapError(() => new CompanionConfigError({ operation: "decode" })));

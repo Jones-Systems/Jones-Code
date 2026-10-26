@@ -32,39 +32,12 @@ export {
   type ProviderUpdateCandidate,
 } from "@t3tools/client-runtime/jones/provider-updates";
 
-export function collectProviderUpdatePresentationCandidates(
-  providers: ReadonlyArray<ProviderUpdateCandidate>,
-): ProviderUpdateCandidate[] {
-  return dedupeProvidersByDriver(providers);
-}
-
 export type ProviderSettingsUpdateCandidate = ServerProvider & {
   readonly versionAdvisory: NonNullable<ServerProvider["versionAdvisory"]> & {
     readonly canUpdate: true;
     readonly updateCommand: string;
   };
 };
-
-export type ProviderUpdateToastType = "warning" | "loading" | "error" | "success";
-export type ProviderUpdateToastPhase = "initial" | "running" | "failed" | "unchanged" | "succeeded";
-
-export interface ProviderUpdateToastView {
-  readonly phase: ProviderUpdateToastPhase;
-  readonly type: ProviderUpdateToastType;
-  readonly title: string;
-  readonly description: string;
-  readonly dismissAfterVisibleMs?: number;
-}
-
-/**
- * A non-terminal ("initial"/"running") snapshot never re-polls itself, so
- * storing one pins an update row's spinner indefinitely once its pending flag
- * expires; such phases must be dropped in favor of the live per-environment
- * provider state instead of being persisted.
- */
-export function isTerminalProviderUpdatePhase(phase: ProviderUpdateToastPhase): boolean {
-  return phase === "succeeded" || phase === "failed" || phase === "unchanged";
-}
 
 export type ProviderUpdateSidebarPillTone = "loading" | "warning" | "error" | "success";
 
@@ -118,19 +91,6 @@ function dedupeProvidersByDriver<T extends ServerProvider>(providers: ReadonlyAr
   return [...latestProviderByDriver.values()];
 }
 
-function dedupeProvidersByInstanceId<T extends ServerProvider>(providers: ReadonlyArray<T>): T[] {
-  const latestProviderByInstanceId = new Map<ProviderInstanceId, T>();
-
-  for (const provider of providers) {
-    const current = latestProviderByInstanceId.get(provider.instanceId);
-    if (!current || provider.checkedAt.localeCompare(current.checkedAt) >= 0) {
-      latestProviderByInstanceId.set(provider.instanceId, provider);
-    }
-  }
-
-  return [...latestProviderByInstanceId.values()];
-}
-
 function getProviderUpdatedTitle(provider: Pick<ServerProvider, "driver" | "version">): string {
   const providerName = PROVIDER_DISPLAY_NAMES[provider.driver] ?? provider.driver;
   return provider.version
@@ -177,69 +137,12 @@ function formatProviderList(providers: ReadonlyArray<Pick<ServerProvider, "drive
   return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
 }
 
-/**
- * Install and provider settings reach only installs the server can update.
- * The rest are updated by the app or tool that installed them, so they get
- * their own sentence whatever else the notice offers.
- */
-function describeInitialUpdates(input: {
-  readonly updateProviders: ReadonlyArray<ProviderUpdateCandidate>;
-  readonly oneClickProviders: ReadonlyArray<ProviderUpdateCandidate>;
-}): string {
-  const fromSettings = dedupeProvidersByDriver(
-    input.updateProviders.filter((provider) => provider.versionAdvisory.canUpdate),
-  );
-  const manual = dedupeProvidersByDriver(
-    input.updateProviders.filter((provider) => !provider.versionAdvisory.canUpdate),
-  );
-  return [
-    input.oneClickProviders.length > 0
-      ? "Install the update now or review provider settings."
-      : fromSettings.length > 0
-        ? `${formatProviderList(fromSettings)} can be updated from provider settings.`
-        : null,
-    manual.length > 0
-      ? `Update ${formatProviderList(manual)} with the app or tool that installed ${manual.length === 1 ? "it" : "them"}.`
-      : null,
-  ]
-    .filter((sentence) => sentence !== null)
-    .join(" ");
-}
-
-export function getProviderUpdateInitialToastView(input: {
-  readonly updateProviders: ReadonlyArray<ProviderUpdateCandidate>;
-  readonly oneClickProviders: ReadonlyArray<ProviderUpdateCandidate>;
-}): ProviderUpdateToastView {
-  return {
-    phase: "initial",
-    type: "warning",
-    title: getProviderUpdateInitialToastTitle(dedupeProvidersByDriver(input.updateProviders)),
-    description: describeInitialUpdates(input),
-  };
-}
-
-export function shouldShowPrimaryProviderUpdateToast(view: ProviderUpdateToastView): boolean {
-  return view.phase !== "running";
-}
-
 function getProviderUpdateRunningToastView(providerCount: number): ProviderUpdateToastView {
   return {
     phase: "running",
     type: "loading",
     title: providerCount === 1 ? "Updating provider" : "Updating providers",
     description: "Running provider update command.",
-  };
-}
-
-export function getProviderUpdateRejectedToastView(
-  providerCount: number,
-  message: string,
-): ProviderUpdateToastView {
-  return {
-    phase: "failed",
-    type: "error",
-    title: providerCount === 1 ? "Provider update failed" : "Provider updates failed",
-    description: message,
   };
 }
 
@@ -323,7 +226,7 @@ export function getProviderUpdateRunOutcome(
       line: `${label}: ${error instanceof Error ? error.message : "Provider update failed."}`,
     };
   }
-  const updateState = run.result.value.providers.find(
+  const updateState = dedupeProvidersByInstanceId(run.result.value.providers).find(
     (provider) => provider.instanceId === run.instanceId,
   )?.updateState;
   return updateState?.status === "succeeded"
@@ -334,9 +237,11 @@ export function getProviderUpdateRunOutcome(
       };
 }
 
-export function getProviderUpdateRunToastView(
-  runs: ReadonlyArray<ProviderUpdateRun>,
-): Pick<ProviderUpdateToastView, "type" | "title" | "description"> | null {
+export function getProviderUpdateRunToastView(runs: ReadonlyArray<ProviderUpdateRun>): {
+  readonly type: "success" | "error" | "warning";
+  readonly title: string;
+  readonly description: string;
+} | null {
   const settled = runs
     .map(getProviderUpdateRunOutcome)
     .filter((outcome) => outcome.status !== "interrupted");
@@ -378,39 +283,6 @@ export function getProviderUpdateRunToastView(
   };
 }
 
-export function collectUpdatedProviderSnapshots(input: {
-  readonly results: ReadonlyArray<
-    AtomCommandResult<{ readonly providers: ReadonlyArray<ServerProvider> }, unknown>
-  >;
-  readonly providerInstanceIds: ReadonlySet<ProviderInstanceId>;
-}): ServerProvider[] {
-  const matchedProviders: ServerProvider[] = [];
-
-  for (const result of input.results) {
-    if (result._tag === "Failure") {
-      continue;
-    }
-    for (const provider of result.value.providers) {
-      if (input.providerInstanceIds.has(provider.instanceId)) {
-        matchedProviders.push(provider);
-      }
-    }
-  }
-
-  return dedupeProvidersByInstanceId(matchedProviders);
-}
-
-export function firstFailedProviderUpdateMessage(
-  results: ReadonlyArray<AtomCommandResult<unknown, unknown>>,
-): string | null {
-  const failed = results.find((result) => result._tag === "Failure");
-  if (!failed || failed._tag !== "Failure") {
-    return null;
-  }
-  const error = squashAtomCommandFailure(failed);
-  return error instanceof Error ? error.message : "Provider update failed.";
-}
-
 function getUpdateFinishedAt(provider: ServerProvider): string | null {
   return provider.updateState?.finishedAt ?? null;
 }
@@ -440,11 +312,7 @@ function latestFinishedAtForProviders(providers: ReadonlyArray<ServerProvider>):
   }, null);
 }
 
-/**
- * Collapses terminal update states to the most recently finished instance per
- * driver, so an update on a non-default instance is not hidden behind an
- * older outcome on the driver's default instance.
- */
+/** Use each driver's latest finished instance so an older default-instance result cannot hide it. */
 function latestTerminalProvidersByDriver(providers: ReadonlyArray<ServerProvider>) {
   const latestProviderByDriver = new Map<ProviderDriverKind, ServerProvider>();
 
@@ -462,8 +330,7 @@ export function getProviderUpdateSidebarPillView(
   providers: ReadonlyArray<ServerProvider>,
   options?: ProviderUpdateSidebarPillOptions,
 ): ProviderUpdateSidebarPillView | null {
-  // Update state is recorded per instance, so pick the instances with an
-  // update before collapsing to one entry per driver.
+  // Filter active instances before deduplicating drivers because update state is per instance.
   const activeProviders = dedupeProvidersByDriver(providers.filter(isProviderUpdateActive));
   if (activeProviders.length > 0) {
     const activeProvider = activeProviders[0]!;
@@ -583,17 +450,6 @@ export function getProviderUpdateSidebarPillView(
       })
       .find((candidate) => !options?.dismissedKeys?.has(candidate.key)) ?? null
   );
-}
-
-function getProviderUpdateInitialToastTitle(
-  providers: ReadonlyArray<ProviderUpdateCandidate>,
-): string {
-  if (providers.length === 1) {
-    const provider = providers[0]!;
-    const providerName = PROVIDER_DISPLAY_NAMES[provider.driver] ?? provider.driver;
-    return `Update Available: ${providerName} ${formatVersion(provider.versionAdvisory.latestVersion)}`;
-  }
-  return `Updates Available: ${providers.length} providers`;
 }
 
 function getUnverifiedProviderUpdateDescription(providers: ReadonlyArray<ServerProvider>): string {
@@ -798,4 +654,61 @@ export function resolveEnvironmentUpdateRowStatus(input: {
     return { kind: "loading", text: "Updating…" };
   }
   return { kind: "idle", text: environmentProviderNames(input.group) };
+}
+
+export type ProviderUpdateToastType = "warning" | "loading" | "error" | "success";
+
+export type ProviderUpdateToastPhase = "initial" | "running" | "failed" | "unchanged" | "succeeded";
+
+export interface ProviderUpdateToastView {
+  readonly phase: ProviderUpdateToastPhase;
+  readonly type: ProviderUpdateToastType;
+  readonly title: string;
+  readonly description: string;
+  readonly dismissAfterVisibleMs?: number;
+}
+
+/**
+ * A non-terminal ("initial"/"running") snapshot never re-polls itself, so
+ * storing one pins an update row's spinner indefinitely once its pending flag
+ * expires; such phases must be dropped in favor of the live per-environment
+ * provider state instead of being persisted.
+ */
+export function isTerminalProviderUpdatePhase(phase: ProviderUpdateToastPhase): boolean {
+  return phase === "succeeded" || phase === "failed" || phase === "unchanged";
+}
+
+function dedupeProvidersByInstanceId<T extends ServerProvider>(providers: ReadonlyArray<T>): T[] {
+  const latestProviderByInstanceId = new Map<ProviderInstanceId, T>();
+
+  for (const provider of providers) {
+    const current = latestProviderByInstanceId.get(provider.instanceId);
+    if (!current || provider.checkedAt.localeCompare(current.checkedAt) >= 0) {
+      latestProviderByInstanceId.set(provider.instanceId, provider);
+    }
+  }
+
+  return [...latestProviderByInstanceId.values()];
+}
+
+export function collectUpdatedProviderSnapshots(input: {
+  readonly results: ReadonlyArray<
+    AtomCommandResult<{ readonly providers: ReadonlyArray<ServerProvider> }, unknown>
+  >;
+  readonly providerInstanceIds: ReadonlySet<ProviderInstanceId>;
+}): ServerProvider[] {
+  const matchedProviders: ServerProvider[] = [];
+
+  for (const result of input.results) {
+    if (result._tag === "Failure") {
+      continue;
+    }
+    for (const provider of result.value.providers) {
+      if (input.providerInstanceIds.has(provider.instanceId)) {
+        matchedProviders.push(provider);
+      }
+    }
+  }
+
+  return dedupeProvidersByInstanceId(matchedProviders);
 }

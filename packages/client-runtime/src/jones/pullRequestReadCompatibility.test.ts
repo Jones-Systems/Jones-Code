@@ -32,7 +32,7 @@ import type { RpcSession } from "../rpc/session.ts";
 import { createPullRequestEnvironmentAtoms } from "../state/pullRequests.ts";
 import * as PullRequestDiffLoader from "../state/pullRequestDiffHttp.ts";
 import { createPullRequestRouter } from "../state/pullRequestRouting.ts";
-import { GitHubRoutingPermissions } from "../connection/githubRoutingPermissions.ts";
+import { PullRequestRoutingPermissions } from "../connection/pullRequestRoutingPermissions.ts";
 
 const trustedRouting = {
   get: () => Effect.succeed("read-write" as const),
@@ -218,7 +218,7 @@ it.effect.each(
         number: 7,
       }).pipe(
         Effect.provideService(EnvironmentRegistry.EnvironmentRegistry, environmentRegistry),
-        Effect.provideService(GitHubRoutingPermissions, trustedRouting),
+        Effect.provideService(PullRequestRoutingPermissions, trustedRouting),
         Effect.provideService(RpcPermissionGuard, { authorize: () => Effect.void }),
         Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
         Effect.result,
@@ -320,7 +320,7 @@ it.effect("invalidates recorded readers after an outcome-unknown write without r
       }).pipe(
         Effect.provideService(EnvironmentRegistry.EnvironmentRegistry, environmentRegistry),
         Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-        Effect.provideService(GitHubRoutingPermissions, trustedRouting),
+        Effect.provideService(PullRequestRoutingPermissions, trustedRouting),
         Effect.provideService(RpcPermissionGuard, { authorize: () => Effect.void }),
       );
     }),

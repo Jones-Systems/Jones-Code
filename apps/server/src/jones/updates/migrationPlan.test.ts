@@ -191,20 +191,26 @@ it.effect(
         );
         expect(readMigrationPlan({ databasePath, ...current })).toEqual({
           status: "ready",
-          migrationPlan: { pendingUpstream: [64, 65, 66, 67], pendingJones: [latestJones[0]] },
+          migrationPlan: {
+            pendingUpstream: [64, 65, 66, 67, 68, 69],
+            pendingJones: [latestJones[0]],
+          },
         });
         const beforePreflight = NodeFS.readFileSync(databasePath);
         const preflightMtime = NodeFS.statSync(databasePath).mtimeMs;
         const preflightFiles = NodeFS.readdirSync(root);
         expect(readMigrationPlan({ databasePath, ...current })).toEqual({
           status: "ready",
-          migrationPlan: { pendingUpstream: [64, 65, 66, 67], pendingJones: [latestJones[0]] },
+          migrationPlan: {
+            pendingUpstream: [64, 65, 66, 67, 68, 69],
+            pendingJones: [latestJones[0]],
+          },
         });
         expect(NodeFS.readFileSync(databasePath)).toEqual(beforePreflight);
         expect(NodeFS.statSync(databasePath).mtimeMs).toBe(preflightMtime);
         expect(NodeFS.readdirSync(root)).toEqual(preflightFiles);
-        expect(yield* run(runMigrations({ toMigrationInclusive: 67 }))).toEqual(
-          migrationManifest.filter(([id]) => id >= 64 && id <= 67),
+        expect(yield* run(runMigrations({ toMigrationInclusive: 69 }))).toEqual(
+          migrationManifest.filter(([id]) => id >= 64 && id <= 69),
         );
         expect(readMigrationPlan({ databasePath, ...current })).toEqual({
           status: "ready",

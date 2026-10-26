@@ -395,7 +395,7 @@ describe("Jones build status", () => {
         props: { state: { ...available, phase, message: `${phase} this build` } },
         reason:
           phase === "installing"
-            ? "Installing — server restarting. Waiting for the launcher outcome."
+            ? "Installing. Server restarting. Waiting for the launcher outcome."
             : `${phase} this build`,
       }),
     ),

@@ -26,7 +26,7 @@ function fixture(versionMode = "success") {
       `packages/${name}/package.json`,
       JSON.stringify({
         name: `@fixture/${name}`,
-        scripts: { typecheck: name === "astro" ? "astro check" : "tsc-rs --noEmit" },
+        scripts: { typecheck: name === "astro" ? "astro check" : "tsc --noEmit" },
       }),
     );
     write(
@@ -171,10 +171,10 @@ describe("experimental typecheck", () => {
       "Astro is outside coverage",
     );
     for (const script of [
-      "tsc-rs --noEmit --skipLibCheck",
-      "tsc-rs --noEmit && echo done",
-      "tsc --noEmit",
-      "tsc-rs --noEmit -p other.json",
+      "tsc --noEmit --skipLibCheck",
+      "tsc --noEmit && echo done",
+      "tsc-rs --noEmit",
+      "tsc --noEmit -p other.json",
     ]) {
       write(root, "packages/good/package.json", JSON.stringify({ scripts: { typecheck: script } }));
       expect(() => selectProjects(root, inventory, ["@fixture/good"])).toThrow(

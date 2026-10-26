@@ -141,20 +141,13 @@ vi.mock("./thread-outbox", async () => {
 });
 
 import { appAtomRegistry } from "./atom-registry";
-import {
-  clearPendingThreadCreationOutcome,
-  pendingThreadCreationOutcomesAtom,
-} from "./pending-thread-creation";
+import { pendingThreadCreationOutcomesAtom } from "./pending-thread-creation";
 import {
   decodeQueuedThreadMessage,
   encodeQueuedThreadMessage,
   type QueuedThreadMessage,
 } from "./thread-outbox-model";
-import {
-  clearThreadComposerError,
-  setThreadComposerError,
-  threadComposerErrorsAtom,
-} from "./thread-composer-error";
+import { clearThreadComposerError, threadComposerErrorsAtom } from "./thread-composer-error";
 import * as composerDrafts from "./use-composer-drafts";
 import { recoverFailedThreadDraft } from "./recover-failed-thread-draft";
 import { editingQueuedMessageIdsAtom } from "./use-thread-outbox";

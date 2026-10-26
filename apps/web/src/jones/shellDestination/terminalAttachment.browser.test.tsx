@@ -2,7 +2,8 @@ import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import { nextTerminalAttachSeedState } from "@t3tools/client-runtime/state/terminal";
 import { expect, it, vi } from "vite-plus/test";
-import { render } from "../../../test/render";
+import { act, render } from "../../../test/render";
+import { focusTerminal } from "../../lib/terminalFocus";
 
 const state = vi.hoisted(() => ({ attach: vi.fn(), command: vi.fn(), surface: vi.fn() }));
 vi.mock(import("@effect/atom-react"), async (original) => ({
@@ -54,7 +55,6 @@ it("reattaches a destination run without the launch fields that can create a mis
     terminalLabel: "Run on Mini",
     cwd: "/destination",
     onSessionExited: state.command,
-    focusRequestId: 0,
     autoFocus: false,
     visible: true,
     resizeEpoch: 0,
@@ -77,7 +77,8 @@ it("reattaches a destination run without the launch fields that can create a mis
     status: "error",
     error: "Terminal session not found",
   });
-  await screen.rerender(<TerminalViewport {...props} attachExistingOnly focusRequestId={1} />);
+  await act(() => focusTerminal(threadRef, props.terminalId));
+  await screen.rerender(<TerminalViewport {...props} attachExistingOnly />);
   expect(state.attach.mock.lastCall?.[0].terminal).not.toHaveProperty("cwd");
   expect(state.command).not.toHaveBeenCalled();
   // Reserved command sessions also fail closed without the explicit view flag.

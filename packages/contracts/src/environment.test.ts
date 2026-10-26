@@ -48,7 +48,7 @@ describe("ExecutionEnvironmentDescriptor", () => {
       ...descriptor.capabilities,
       workstreamOperations: { contract: "workstream-operations/1.0.0" },
     });
-    expect(Schema.decodeUnknownSync(ExecutionEnvironmentCapabilities)({})).toEqual({
+    expect(Schema.decodeSync(ExecutionEnvironmentCapabilities)({})).toEqual({
       repositoryIdentity: false,
     });
   });

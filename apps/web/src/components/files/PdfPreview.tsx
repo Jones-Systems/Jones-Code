@@ -99,6 +99,7 @@ export default function PdfPreview({
     setInput(String(next));
   };
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own the PDF viewer, worker requests and DOM event subscriptions until the preview unmounts.
   useEffect(() => {
     const container = containerRef.current;
     const pages = pagesRef.current;

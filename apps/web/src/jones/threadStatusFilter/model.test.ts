@@ -141,6 +141,23 @@ describe("sidebar status filter", () => {
     },
   );
 
+  it("includes guest-only requests in the default current Needs input roster and count", () => {
+    const guest = { ...base, pendingGuestMessageCount: 1 };
+    const classify = (row: StatusThread) => classifyThreadStatus(row, "current");
+    expect(classify(guest)).toBe("input");
+    expect(selectThreadStatus([base, guest], "input", classify)).toEqual({
+      counts: { working: 0, input: 1, done: 0 },
+      threads: [guest],
+    });
+    expect(
+      classifyThreadStatus(guest, "current", false, {
+        threadActivityWindowEnabled: false,
+        threadActivityWindowAmount: 3,
+        threadActivityWindowUnit: "hours",
+      }),
+    ).toBe("input");
+  });
+
   it("cycles every state, including empty states, back to all", () => {
     let filter: ThreadStatusFilter = "all";
     const seen = [];

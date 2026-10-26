@@ -70,7 +70,7 @@ function fixture(t) {
     const manifest = {
       name: `@fixture/${name}`,
       type: "module",
-      scripts: { typecheck: "tsc-rs --noEmit" },
+      scripts: { typecheck: "tsc --noEmit" },
     };
     write(NodePath.join(directory, "package.json"), JSON.stringify(manifest));
     write(
@@ -80,12 +80,13 @@ function fixture(t) {
     write(NodePath.join(directory, "source.ts"), "export const answer: number = 42;\n");
     return { name: manifest.name, directory, script: manifest.scripts.typecheck };
   });
-  const wrapper = NodePath.join(root, "node_modules", "tsc-rs", "package.json");
+  const wrapper = NodePath.join(root, "node_modules", "typescript", "package.json");
+  const platform = `${HostProcess.Platform.defaultValue()}-${HostProcess.Architecture.defaultValue()}`;
   const nativeManifest = NodePath.join(
     NodePath.dirname(wrapper),
     "node_modules",
-    "@tsc-rs",
-    `${HostProcess.Platform.defaultValue()}-${HostProcess.Architecture.defaultValue()}`,
+    "@typescript",
+    `typescript-${platform}`,
     "package.json",
   );
   const executable = NodePath.join(
@@ -93,8 +94,18 @@ function fixture(t) {
     "lib",
     HostProcess.Platform.defaultValue() === "win32" ? "tsc.exe" : "tsc",
   );
-  write(wrapper, JSON.stringify({ name: "tsc-rs", version: "0.7.0" }));
-  write(nativeManifest, JSON.stringify({ version: "0.7.0" }));
+  write(
+    wrapper,
+    JSON.stringify({
+      name: "@tsc-rs/typescript",
+      version: "0.8.0",
+      tscVersion: "7.1.0-dev",
+      optionalDependencies: {
+        [`@typescript/typescript-${platform}`]: `npm:@tsc-rs/${platform}@0.8.0`,
+      },
+    }),
+  );
+  write(nativeManifest, JSON.stringify({ name: `@tsc-rs/${platform}`, version: "0.8.0" }));
   write(executable, "fixture executable, never executed");
   NodeFS.chmodSync(executable, 0o700);
   write(
@@ -157,6 +168,46 @@ function assertOnlyEntry(f) {
 }
 
 NodeTest.test(
+  "compiler resolution requires the pinned Rust TypeScript alias and native package",
+  async (t) => {
+    const f = fixture(t);
+    NodeAssert.deepEqual(await resolveCompiler(f.root), f.compiler);
+    const wrapper = JSON.parse(NodeFS.readFileSync(f.compiler.wrapper, "utf8"));
+    for (const replacement of [
+      { ...wrapper, name: "typescript" },
+      { ...wrapper, version: "0.7.0" },
+      { ...wrapper, tscVersion: "other" },
+      { ...wrapper, optionalDependencies: {} },
+      {
+        ...wrapper,
+        optionalDependencies: {
+          ...wrapper.optionalDependencies,
+          [Object.keys(wrapper.optionalDependencies)[0]]: "npm:@tsc-rs/wrong@0.8.0",
+        },
+      },
+    ]) {
+      write(f.compiler.wrapper, JSON.stringify(replacement));
+      await NodeAssert.rejects(
+        resolveCompiler(f.root),
+        /Expected installed @tsc-rs\/typescript 0\.8\.0/,
+      );
+    }
+    write(f.compiler.wrapper, JSON.stringify(wrapper));
+    const native = JSON.parse(NodeFS.readFileSync(f.compiler.nativeManifest, "utf8"));
+    for (const replacement of [
+      { ...native, name: "wrong-platform" },
+      { ...native, version: "0.7.0" },
+    ]) {
+      write(f.compiler.nativeManifest, JSON.stringify(replacement));
+      await NodeAssert.rejects(resolveCompiler(f.root), /Expected installed @tsc-rs\/.* 0\.8\.0/);
+    }
+    write(f.compiler.nativeManifest, JSON.stringify(native));
+    NodeFS.rmSync(f.compiler.executable);
+    await NodeAssert.rejects(resolveCompiler(f.root));
+  },
+);
+
+NodeTest.test(
   "explicit selection, stable order, deduplication, ambiguous names and unsupported flags/scripts",
   async (t) => {
     const f = fixture(t);
@@ -192,8 +243,9 @@ NodeTest.test(
     );
     for (const script of [
       "astro check",
-      "tsc-rs --noEmit ",
-      "tsc-rs --noEmit && echo done",
+      "tsc --noEmit ",
+      "tsc --noEmit && echo done",
+      "tsc-rs --noEmit",
       undefined,
     ]) {
       NodeAssert.throws(
@@ -1065,7 +1117,7 @@ NodeTest.test(
     const project = {
       name: "@fixture/mobile",
       directory: NodePath.join(f.root, "apps", "mobile"),
-      script: "tsc-rs --noEmit",
+      script: "tsc --noEmit",
     };
     write(NodePath.join(project.directory, "package.json"), '{"name":"@fixture/mobile"}');
     write(

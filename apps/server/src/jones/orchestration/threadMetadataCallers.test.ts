@@ -6,6 +6,7 @@ import {
   EventId,
   ProjectId,
   ProviderInstanceId,
+  SourceControlProviderKind,
   ThreadId,
   type OrchestrationV2AppThread,
   type OrchestrationV2DomainEvent,
@@ -27,6 +28,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Statement from "effect/sql/Statement";
 
 import * as GitManager from "../../git/GitManager.ts";
+import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as OrchestratorMcpService from "../../mcp/OrchestratorMcpService.ts";
 import * as CommandReceiptStore from "../../orchestration-v2/CommandReceiptStore.ts";
@@ -142,7 +144,8 @@ it.effect(
       };
       const identity = {
         canonicalKey: "github.com/acme/project",
-        provider: "github" as const,
+        provider: SourceControlProviderKind.make("github"),
+        displayName: "acme/project",
         locator: {
           source: "git-remote" as const,
           remoteName: "origin",
@@ -170,6 +173,9 @@ it.effect(
       const dependencies = Layer.mergeAll(
         NodeCrypto.layer,
         FileSystem.layerNoop({}),
+        Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+          shouldRunOpportunisticWork: Effect.succeed(true),
+        }),
         Layer.succeed(ThreadMetadataReads.ThreadMetadataReads, {
           ...metadata,
           list: (query = {}) =>
@@ -216,7 +222,7 @@ it.effect(
         }),
         Layer.mock(ProjectStore.ProjectStoreV2)({
           listShells: () => Effect.succeed([project]),
-          getShell: () => Effect.succeed(Option.some(project)),
+          getShell: () => Effect.succeedSome(project),
         }),
         Layer.mock(GitManager.GitManager)({
           branchPullRequest: () =>
