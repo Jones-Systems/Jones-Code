@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import {
   createDeviceMediaRouteManager,
@@ -6,6 +6,7 @@ import {
 } from "@t3tools/client-runtime/device/hub-access";
 import type { DeviceHubAccess } from "@t3tools/client-runtime/state/deviceHubAccess";
 import { useDeviceHubAccess, refreshDeviceHubAccess } from "../../state/device";
+import type { DeviceStreamLifecycle } from "../../components/device/deviceStreamSession";
 
 export function useDeviceStreamRoute(input: {
   readonly environmentId: EnvironmentId;
@@ -35,11 +36,25 @@ export function useDeviceStreamRoute(input: {
   const [selection, setSelection] = useState<{
     owner: typeof owner;
     route: DeviceMediaRoute;
+    manager: ReturnType<typeof createDeviceMediaRouteManager>;
   } | null>(null);
   const route = selection?.owner === owner ? selection.route : null;
   const manager = useRef<ReturnType<typeof createDeviceMediaRouteManager> | null>(null);
   const refreshes = useRef<{ configuration: typeof configuration; count: number } | null>(null);
-  const retire = useEffectEvent(input.retire);
+  const streamRetirement = useRef<(() => void) | null>(null);
+  const bindStream = useCallback((stop: () => void) => {
+    streamRetirement.current?.();
+    streamRetirement.current = stop;
+    return () => {
+      if (streamRetirement.current === stop) streamRetirement.current = null;
+    };
+  }, []);
+  const retire = useEffectEvent(() => {
+    const stop = streamRetirement.current;
+    streamRetirement.current = null;
+    stop?.();
+    input.retire();
+  });
   useEffect(() => {
     if (refreshes.current?.configuration !== configuration) {
       refreshes.current = { configuration, count: 0 };
@@ -68,7 +83,7 @@ export function useDeviceStreamRoute(input: {
       onRoute: (next) => {
         if (!alive) return;
         if (next.phase === "connected") budget.count = 0;
-        setSelection({ owner, route: next });
+        setSelection({ owner, route: next, manager: current });
       },
       refreshAccess: () => {
         if (alive && budget.count++ === 0) refreshDeviceHubAccess(input.environmentId);
@@ -102,5 +117,19 @@ export function useDeviceStreamRoute(input: {
     if (refreshes.current?.configuration === configuration) refreshes.current.count = 0;
     refreshDeviceHubAccess(input.environmentId);
   };
-  return { route, proxy, report, unauthorized, retryAccess };
+  const access = route?.access ?? null;
+  const selectedManager = selection?.owner === owner ? selection.manager : null;
+  const lifecycle = useMemo<DeviceStreamLifecycle | undefined>(
+    () =>
+      access && selectedManager
+        ? {
+            bind: bindStream,
+            report: (channel, connected, detail) =>
+              selectedManager.report(access, channel, connected, detail),
+            unauthorized: () => selectedManager.unauthorized(access),
+          }
+        : undefined,
+    [access, bindStream, selectedManager],
+  );
+  return { route, proxy, report, unauthorized, retryAccess, lifecycle };
 }

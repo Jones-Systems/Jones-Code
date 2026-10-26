@@ -2323,7 +2323,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     stashQueue,
     isStashMenuOpen,
     setIsStashMenuOpen,
-    stashPulse,
+    stashPulseKey,
     restoreStashEntryStable,
     deleteStashEntryStable,
     toggleStashMenuStable,
@@ -2331,26 +2331,25 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     environmentId,
     composerDraftTarget,
     promptRef,
-    composerImagesRef,
-    composerFilesRef,
-    composerTerminalContextsRef,
-    keybindings,
-    terminalOpen,
+    readAttachmentDraft: () => ({
+      images: composerImagesRef.current,
+      files: composerFilesRef.current,
+    }),
+    readTerminalContexts: () => composerTerminalContextsRef.current,
+    routeThreadRef,
     projectSelectionRequired,
-    isRevertingCheckpoint,
     pendingUserInputs,
     activePendingProgress,
     prompt,
     composerMenuOpen,
-    isComposerModelPickerOpen,
     isComposerCollapsedMobile,
     composerPreviewAnnotations,
     composerReviewComments,
     composerThreadContexts,
-    attachmentTargetKeyRef,
-    composerDraftTargetKeyRef,
+    attachmentTargetKey,
+    isComposerDraftTargetOpen: (key) => composerDraftTargetKeyRef.current === key,
     composerEditorRef,
-    isRevertingCheckpointRef,
+    isRevertingCheckpoint: () => isRevertingCheckpointRef.current,
     pendingThreadImportsRef,
     setComposerCursor,
     setComposerTrigger,
@@ -3712,8 +3711,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         <ComposerStashBadge
           count={stashQueue.length}
           menuOpen={isStashMenuOpen}
-          pulseKey={stashPulse.key}
-          pulsing={stashPulse.active}
+          pulseKey={stashPulseKey}
           onToggleMenu={toggleStashMenuStable}
         />
       </ComposerBanner.Dock>
