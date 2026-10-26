@@ -2189,9 +2189,10 @@
         "apps/server/src/jones/workstreams/native/providers/localAttestation.test.ts",
         "apps/server/src/jones/workstreams/native/providers/localSettlement.test.ts",
         "apps/server/src/jones/workstreams/native/providers/referenceResolver.test.ts",
-        "apps/server/src/jones/workstreams/native/providers/synthetic.test.ts"
+        "apps/server/src/jones/workstreams/native/providers/synthetic.test.ts",
+        "apps/server/src/jones/workstreams/native/operations/durableEntries.test.ts"
       ],
-      "scope": "Native registry-home contracts, encrypted persistence and all31 native tables, pure v1 CAS/receipt/history domain and source-admitted provider ports. Source identity remains source-owned; authority stays home-owned. Native command/forwarding registration, end-to-end qualification and fleet adoption remain subsequent integration."
+      "scope": "Native registry-home contracts, encrypted persistence and all31 native tables, pure v1 CAS/receipt/history domain and source-admitted provider ports. Source identity remains source-owned; authority stays home-owned. Native command/forwarding registration, end-to-end qualification and fleet adoption remain subsequent integration. Includes encrypted durable operation intent/recovery, fixed home destination and restart replay; runtime admission and home transport remain composition dependencies."
     }
   ]
 }

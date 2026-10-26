@@ -2066,7 +2066,10 @@
     "apps/server/src/jones/workstreams/native/providers/referenceResolver.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/providers/synthetic.test.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/providers/synthetic.ts": "jones-owned",
-    "apps/server/src/jones/workstreams/native/integration.ts": "jones-owned"
+    "apps/server/src/jones/workstreams/native/integration.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/operations/durableEntries.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/operations/homeExecutor.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/operations/durableEntries.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
