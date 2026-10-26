@@ -6,6 +6,8 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import * as Schema from "effect/Schema";
+import { JonesInstallIntent } from "./jonesActivation.ts";
 import type { DesktopUpdateState } from "@t3tools/contracts";
 import type {
   JonesActionsCandidate,
@@ -1881,3 +1883,59 @@ describe("Jones desktop updates", () => {
     }
   });
 });
+
+it.each(["started", "skipped"] as const)(
+  "reads pre-effect %s journals with current and frozen base decoders",
+  async (relaunch) => {
+    const f = await fixture(true, "rolled-back");
+    try {
+      const journalPath = NodePath.join(
+        f.home,
+        "runtime",
+        "jones-updates",
+        "transactions",
+        handle,
+        "journal.json",
+      );
+      const journal = JSON.parse(await NodeFSP.readFile(journalPath, "utf8"));
+      Object.assign(journal, {
+        preEffect: {
+          phase: "preparing",
+          step: "stop-processes",
+          reason: "preparation-failed",
+          diagnostics: { error: "RuntimeError" },
+          relaunch,
+        },
+        phaseBeforeBlock: "preparing",
+        legacySettlement: {
+          basis: "interrupted-preparation",
+          settledBy: "startup",
+          evidence: { phase: "preparing", manifestUnchanged: true },
+        },
+      });
+      // Frozen pre-C1 decoder from dc0f96bc: optional additions must remain ignorable.
+      const baseJournal = Schema.Struct({
+        intent: JonesInstallIntent,
+        phase: Schema.String,
+        message: Schema.optionalKey(Schema.String),
+        recovery: Schema.optionalKey(
+          Schema.Struct({
+            method: Schema.Literals(["clone", "copy", "sqlite-backup"]),
+            bytes: Schema.Number,
+            startedAt: Schema.Number,
+            completedAt: Schema.Number,
+          }),
+        ),
+      });
+      expect(Schema.decodeUnknownSync(baseJournal)(journal).phase).toBe("rolled-back");
+      await NodeFSP.writeFile(journalPath, JSON.stringify(journal));
+      await f.controller.configure();
+      expect(f.controller.state.jones?.phase).toBe("rolled-back");
+      expect(JSON.stringify(f.controller.state)).toContain(
+        "Update did not start; nothing changed. Transaction " + handle + ".",
+      );
+    } finally {
+      await f.cleanup();
+    }
+  },
+);

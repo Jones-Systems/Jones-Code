@@ -159,14 +159,11 @@ describe("shared paired-state Python source", () => {
     "clones the complete pair with real APFS isolation and restores it by rename",
     () => {
       const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-I", "-c", definitions + "\n" + appleCloneScenario],
-        {
-          encoding: "utf8",
-          timeout: 10_000,
-        },
-      );
+      NodeChildProcess.execFileSync("python3", ["-I", "-"], {
+        input: definitions + "\n" + appleCloneScenario,
+        encoding: "utf8",
+        timeout: 10_000,
+      });
     },
   );
 
@@ -174,14 +171,11 @@ describe("shared paired-state Python source", () => {
     "preserves environment identity and authority boundaries: %s",
     (fault) => {
       const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", definitions + "\n" + identityScenario, fault],
-        {
-          encoding: "utf8",
-          timeout: 10_000,
-        },
-      );
+      NodeChildProcess.execFileSync("python3", ["-", fault], {
+        input: definitions + "\n" + identityScenario,
+        encoding: "utf8",
+        timeout: 10_000,
+      });
     },
   );
 
