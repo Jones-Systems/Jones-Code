@@ -270,7 +270,7 @@ const makeService = Effect.fn("CodexFailover.test.makeService")(function* (
     commandId: CommandId;
     threadId: ThreadId;
   }) => Effect.Effect<RunId | undefined, Failover.CodexFailoverError> = () =>
-    Effect.succeed(undefined);
+    Effect.sync(() => undefined);
   const wrappedSink: Sink.EventSinkV2["Service"] = {
     ...fixture.sink,
     commitCommand: (envelope) => {
@@ -630,7 +630,7 @@ it.effect("startup never continues evidence older than 24 hours", () =>
   Effect.gen(function* () {
     const ctx = yield* makeService();
     const sql = yield* SqlClient.SqlClient;
-    const stale = new Date(DateTime.toEpochMillis(ctx.now) - 86_400_001).toISOString();
+    const stale = DateTime.formatIso(DateTime.subtract(ctx.now, { hours: 24, seconds: 1 }));
     yield* sql`UPDATE jones_codex_failover_evidence SET occurred_at = ${stale}`;
     yield* ctx.service.recoverCodexFailover;
     assert.equal((yield* ctx.store.getEvidence(providerTurnId))?.decision, "stale");

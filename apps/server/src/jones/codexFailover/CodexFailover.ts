@@ -429,7 +429,7 @@ export const make = Effect.fn("CodexFailover.make")(function* <DispatchError, Qu
     readonly threadId: ThreadId;
   }) =>
     !enabled || !command.commandId.startsWith(prefix)
-      ? Effect.succeed(undefined)
+      ? Effect.sync(() => undefined)
       : store
           .getStepByContinueCommand(command.commandId)
           .pipe(

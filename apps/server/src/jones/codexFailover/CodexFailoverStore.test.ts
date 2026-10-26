@@ -15,6 +15,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import { migrationManifest, runMigrations } from "../../persistence/Migrations.ts";
 import migration from "../persistence/Migrations/129_JonesCodexFailover.ts";
