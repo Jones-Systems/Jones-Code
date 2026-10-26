@@ -348,7 +348,7 @@ export const caseCoverage: readonly CaseCoverage[] = [
     file: "httpParity.test.ts",
     test: "mounted HTTP polls persisted %s through real source recovery and terminal byte replay",
     detail:
-      "Mounted raw POST/GET retains pending/unresolved202 bytes, then real source attempt lookup/recovery completes once and terminal200 GET/POST bytes remain exact after advancement. Unresolved is a disclosed encrypted-store fixture of an authentic pending receipt, not claimed runner emission. Current advertised typed-client202 decoding remains a separate red hook gap until root updates endpoint success metadata.",
+      "Mounted raw POST/GET retains unnegotiated pending/unresolved200 and explicitly opted-in202 receipts, then real source attempt lookup/recovery completes once and terminal200 GET/POST bytes remain exact after advancement. Unresolved is a disclosed encrypted-store fixture of an authentic pending receipt, not claimed runner emission. Pinned b9719594 typed clients decode legacy receipts and definitive stale refusals; current-client response-header/schema/export hooks are parent-owned and require composed qualification.",
   },
   {
     ordinal: 37,

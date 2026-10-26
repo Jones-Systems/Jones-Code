@@ -10,9 +10,13 @@
     "apps/web/src/jones/workstreams/WorkstreamSummaryPanel.tsx",
     "docs/operations/workstreams-rollups.md"
   ],
-  "hookPaths": [],
+  "hookPaths": ["apps/server/src/httpCors.ts"],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "packages/contracts/src/environmentHttp.ts",
+      "to": "packages/contracts/src/jones/workstreamsHttp.ts"
+    },
     {
       "from": "packages/contracts/src/environment.ts",
       "to": "packages/contracts/src/jones/workstreamsNative.ts"

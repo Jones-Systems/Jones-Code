@@ -20,6 +20,7 @@ import {
   revokeGrant,
   Store,
   scope,
+  legacyWorkstreamCommandNoEffect,
 } from "./testkit.ts";
 
 it.effect(
@@ -96,8 +97,8 @@ it.effect("mounted HTTP preserves the stale registry version conflict discrimina
         progress: { state: "unknown" },
         sort_order: 0,
       });
-      expect((yield* web.request("/commands", { command })).status).toBe(200);
-      const response = yield* web.request("/commands", {
+      expect((yield* web.modernRequest("/commands", { command })).status).toBe(200);
+      const response = yield* web.modernRequest("/commands", {
         command: { ...command, command_id: "http-stale-registry-0000001" },
       });
       expect(response.status).toBe(409);
@@ -223,7 +224,7 @@ it.effect("mounted HTTP pending receipt polling keeps 202 without executing prov
           canonicalJson(command),
         ),
       );
-      const response = yield* web.request("/commands/" + command.command_id);
+      const response = yield* web.modernRequest("/commands/" + command.command_id);
       expect(yield* json(response)).toMatchObject({
         state: "pending",
         command_id: command.command_id,
@@ -334,7 +335,7 @@ it.effect.each(["pending", "unresolved"] as const)(
           expected_attestation_version: 1,
           native_action: "settle",
         });
-        const first = yield* web.request("/commands", { command });
+        const first = yield* web.modernRequest("/commands", { command });
         expect(first.status).toBe(202);
         const pending = yield* decodeReceiptJson(yield* Effect.promise(() => first.text()));
         expect(pending.state).toBe("pending");
@@ -356,7 +357,7 @@ it.effect.each(["pending", "unresolved"] as const)(
         const before = yield* (yield* Store.RegistryStore).context(scope);
         let waitingBytes = "";
         for (let i = 0; i < 2; i++) {
-          const response = yield* web.request("/commands/" + command.command_id);
+          const response = yield* web.modernRequest("/commands/" + command.command_id);
           expect(response.status).toBe(202);
           expect(response.headers.get("cache-control")).toBe("private, no-store");
           const bytes = yield* Effect.promise(() => response.text());
@@ -364,14 +365,14 @@ it.effect.each(["pending", "unresolved"] as const)(
           if (i === 0) waitingBytes = bytes;
           else expect(bytes).toBe(waitingBytes);
         }
-        const retry = yield* web.request("/commands", { command });
+        const retry = yield* web.modernRequest("/commands", { command });
         expect(retry.status).toBe(202);
         expect(yield* Effect.promise(() => retry.text())).toBe(waitingBytes);
         expect(yield* (yield* Store.RegistryStore).context(scope)).toEqual(before);
         expect(prepared.provider.calls).toHaveLength(1);
         prepared.provider.commit(prepared.provider.calls[0]!.commandId);
         yield* runner.recoverOne(command.command_id);
-        const terminal = yield* web.request("/commands/" + command.command_id);
+        const terminal = yield* web.modernRequest("/commands/" + command.command_id);
         expect(terminal.status).toBe(200);
         const bytes = yield* Effect.promise(() => terminal.text());
         const receipt = yield* decodeReceiptJson(bytes);
@@ -383,8 +384,8 @@ it.effect.each(["pending", "unresolved"] as const)(
         });
         yield* h.create("Advance after terminal receipt");
         for (const response of [
-          yield* web.request("/commands/" + command.command_id),
-          yield* web.request("/commands", { command }),
+          yield* web.modernRequest("/commands/" + command.command_id),
+          yield* web.modernRequest("/commands", { command }),
         ]) {
           expect(response.status).toBe(200);
           expect(yield* Effect.promise(() => response.text())).toBe(bytes);
@@ -412,21 +413,21 @@ it.effect.each(["POST", "GET"] as const)(
           expected_attestation_version: 1,
           native_action: "settle",
         });
-        expect((yield* web.client.setupStatus({ headers: web.headers })).registry.state).toBe(
+        expect((yield* web.modernClient.setupStatus({ headers: web.headers })).registry.state).toBe(
           "ready",
         );
         if (method === "GET")
-          expect((yield* web.request("/commands", { command })).status).toBe(202);
+          expect((yield* web.modernRequest("/commands", { command })).status).toBe(202);
         const receipt =
           method === "POST"
-            ? yield* web.client.submit({ headers: web.headers, payload: { command } })
-            : yield* web.client.command({
+            ? yield* web.modernClient.submit({ headers: web.headers, payload: { command } })
+            : yield* web.modernClient.command({
                 headers: web.headers,
                 params: { commandId: command.command_id },
               });
         expect(receipt.state).toBe("pending");
         expect(
-          (yield* web.client.command({
+          (yield* web.modernClient.command({
             headers: web.headers,
             params: { commandId: command.command_id },
           })).state,
@@ -434,14 +435,14 @@ it.effect.each(["POST", "GET"] as const)(
         expect(prepared.provider.calls).toHaveLength(1);
         prepared.provider.commit(prepared.provider.calls[0]!.commandId);
         yield* (yield* Runner.EffectRunner).recoverOne(command.command_id);
-        const terminal = yield* web.client.command({
+        const terminal = yield* web.modernClient.command({
           headers: web.headers,
           params: { commandId: command.command_id },
         });
         expect(terminal.state).toBe("committed");
-        expect(yield* web.client.submit({ headers: web.headers, payload: { command } })).toEqual(
-          terminal,
-        );
+        expect(
+          yield* web.modernClient.submit({ headers: web.headers, payload: { command } }),
+        ).toEqual(terminal);
         expect(prepared.provider.calls).toHaveLength(1);
       }).pipe(app, Effect.provide(prepared.services));
     }).pipe(Effect.provide(f.layer));
@@ -594,6 +595,151 @@ it.effect("mounted replay never replaces original accepted noncanonical request 
       const again = yield* web.request("/commands/" + command.command_id);
       expect(yield* Effect.promise(() => again.text())).toBe(bytes);
       expect((yield* h.gateway.readMetadata()).items).toHaveLength(1);
+      expect(prepared.provider.calls).toHaveLength(0);
+    }).pipe(app, Effect.provide(prepared.services));
+  }).pipe(Effect.provide(f.layer));
+});
+
+it.effect.each([
+  { method: "POST", state: "pending" },
+  { method: "GET", state: "pending" },
+  { method: "POST", state: "unresolved" },
+  { method: "GET", state: "unresolved" },
+] as const)(
+  "b9719594 200-only typed $method client decodes mounted $state and terminal recovery",
+  ({ method, state }) => {
+    const f = fresh();
+    return Effect.gen(function* () {
+      const prepared = yield* seed(f, true, { nativeOutcome: "pending" });
+      yield* Effect.gen(function* () {
+        const h = yield* harness,
+          web = yield* http;
+        const ref = yield* h.register();
+        yield* h.verify(ref);
+        const command = yield* h.command({
+          operation: "request_native_t3_settlement",
+          native_reference_id: ref,
+          expected_attestation_version: 1,
+          native_action: "settle",
+        });
+        if (method === "GET" || state === "unresolved") {
+          const response = yield* web.request("/commands", { command });
+          expect(response.status).toBe(200);
+          if (state === "unresolved") {
+            const store = yield* Receipts.ReceiptStore;
+            const saved = yield* store.read(scope, command.command_id);
+            if (!saved || saved.receipt.state !== "pending")
+              throw new Error("Missing pending receipt");
+            yield* store.save(scope, { ...saved, receipt: { ...saved.receipt, state } }, null);
+          }
+        }
+        const receipt =
+          method === "POST"
+            ? yield* web.oldClient.submit({ headers: web.headers, payload: { command } })
+            : yield* web.oldClient.command({
+                headers: web.headers,
+                params: { commandId: command.command_id },
+              });
+        expect(receipt.state).toBe(state);
+        const waiting = yield* web.request("/commands/" + command.command_id);
+        expect(waiting.status).toBe(200);
+        const waitingBytes = yield* Effect.promise(() => waiting.text());
+        const replay = yield* web.request("/commands", { command });
+        expect(replay.status).toBe(200);
+        expect(yield* Effect.promise(() => replay.text())).toBe(waitingBytes);
+        expect(prepared.provider.calls).toHaveLength(1);
+        prepared.provider.commit(prepared.provider.calls[0]!.commandId);
+        yield* (yield* Runner.EffectRunner).recoverOne(command.command_id);
+        const terminal = yield* web.oldClient.command({
+          headers: web.headers,
+          params: { commandId: command.command_id },
+        });
+        expect(terminal.state).toBe("committed");
+        yield* h.create("Advance after old-client completion");
+        expect(yield* web.oldClient.submit({ headers: web.headers, payload: { command } })).toEqual(
+          terminal,
+        );
+        const terminalGet = yield* web.request("/commands/" + command.command_id);
+        const terminalBytes = yield* Effect.promise(() => terminalGet.text());
+        const terminalPost = yield* web.request("/commands", { command });
+        expect(terminalPost.status).toBe(200);
+        expect(yield* Effect.promise(() => terminalPost.text())).toBe(terminalBytes);
+        expect(prepared.provider.calls).toHaveLength(1);
+      }).pipe(app, Effect.provide(prepared.services));
+    }).pipe(Effect.provide(f.layer));
+  },
+);
+
+it.effect(
+  "b9719594 classifier clears a definitive absent stale-ID refusal from the real mounted native home",
+  () => {
+    const f = fresh();
+    return Effect.gen(function* () {
+      const prepared = yield* seed(f);
+      yield* Effect.gen(function* () {
+        const h = yield* harness,
+          web = yield* http;
+        const command = yield* h.command({
+          operation: "create_workstream",
+          name: "Absent stale command",
+          lifecycle: "active",
+          progress: { state: "unknown" },
+          sort_order: 0,
+        });
+        yield* h.create("Advance before the absent command");
+        const before = yield* (yield* Store.RegistryStore).context(scope);
+        const result = yield* web.oldClient
+          .submit({ headers: web.headers, payload: { command } })
+          .pipe(Effect.result);
+        expect(result._tag).toBe("Failure");
+        if (result._tag !== "Failure") throw new Error("Stale command dispatched");
+        expect(legacyWorkstreamCommandNoEffect(result.failure)).toBe("stale");
+        const modern = yield* web.modernRequest("/commands", { command });
+        expect(modern.status).toBe(409);
+        expect(yield* json(modern)).toMatchObject({ message: "version_conflict" });
+        expect(yield* (yield* Receipts.ReceiptStore).read(scope, command.command_id)).toBeNull();
+        expect(yield* (yield* Store.RegistryStore).context(scope)).toEqual(before);
+        expect((yield* h.gateway.readMetadata()).items).toHaveLength(1);
+        expect(prepared.provider.calls).toHaveLength(0);
+      }).pipe(app, Effect.provide(prepared.services));
+    }).pipe(Effect.provide(f.layer));
+  },
+);
+
+it.effect.each([
+  "",
+  "workstreams-http-response/9.0.0",
+  "workstreams-http-response/1.0.0, workstreams-http-response/1.0.0",
+  "x".repeat(257),
+])("mounted HTTP rejects unsupported response contract %s before command effects", (contract) => {
+  const f = fresh();
+  return Effect.gen(function* () {
+    const prepared = yield* seed(f);
+    yield* Effect.gen(function* () {
+      const h = yield* harness,
+        web = yield* http;
+      const command = yield* h.command({
+        operation: "create_workstream",
+        name: "Never dispatched",
+        lifecycle: "active",
+        progress: { state: "unknown" },
+        sort_order: 0,
+      });
+      const before = yield* (yield* Store.RegistryStore).context(scope);
+      for (const [path, body] of [
+        ["/commands", { command }],
+        ["/commands/" + command.command_id, undefined],
+      ] as const) {
+        const response = yield* web.request(path, body, true, {
+          "x-t3-workstreams-response-contract": contract,
+        });
+        expect(response.status).toBe(400);
+        expect(yield* Effect.promise(() => response.text())).toBe("");
+        expect(response.headers.get("cache-control")).toBe("private, no-store");
+      }
+      expect(yield* (yield* Store.RegistryStore).context(scope)).toEqual(before);
+      expect(yield* (yield* Receipts.ReceiptStore).read(scope, command.command_id)).toBeNull();
+      expect((yield* h.gateway.readMetadata()).items).toHaveLength(0);
       expect(prepared.provider.calls).toHaveLength(0);
     }).pipe(app, Effect.provide(prepared.services));
   }).pipe(Effect.provide(f.layer));

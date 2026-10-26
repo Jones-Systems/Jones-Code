@@ -1,3 +1,4 @@
+import { WorkstreamsHttpResponseContractHeaders } from "./jones/workstreamsHttp.ts";
 import { ThreadAttention } from "./jones/threadAttention.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import { MessageId } from "./baseSchemas.ts";
@@ -887,6 +888,11 @@ const {
   EnvironmentHttpBadRequestError,
 });
 
+const WorkstreamsHttpCommandHeaders = Schema.Struct({
+  ...OptionalBearerHeaders.fields,
+  ...WorkstreamsHttpResponseContractHeaders.fields,
+});
+
 class EnvironmentWorkstreamsHttpApi extends EnvironmentWorkstreamAppearanceHttpApi.add(
   HttpApiEndpoint.post("threadPlacements", "/api/workstreams/thread-placements", {
     headers: Schema.Struct({
@@ -978,7 +984,7 @@ class EnvironmentWorkstreamsHttpApi extends EnvironmentWorkstreamAppearanceHttpA
   )
   .add(
     HttpApiEndpoint.get("command", "/api/workstreams/commands/:commandId", {
-      headers: OptionalBearerHeaders,
+      headers: WorkstreamsHttpCommandHeaders,
       params: T3WorkstreamCommandPollParams,
       success: [WorkstreamReceipt, WorkstreamReceipt.pipe(HttpApiSchema.status(202))],
       error: EnvironmentWorkstreamSnapshotErrors,
@@ -986,7 +992,7 @@ class EnvironmentWorkstreamsHttpApi extends EnvironmentWorkstreamAppearanceHttpA
   )
   .add(
     HttpApiEndpoint.post("submit", "/api/workstreams/commands", {
-      headers: OptionalBearerHeaders,
+      headers: WorkstreamsHttpCommandHeaders,
       payload: T3WorkstreamCommandRequest,
       success: [WorkstreamReceipt, WorkstreamReceipt.pipe(HttpApiSchema.status(202))],
       error: EnvironmentWorkstreamCommandErrors,

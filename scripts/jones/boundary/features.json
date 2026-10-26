@@ -2215,6 +2215,8 @@
     {
       "id": "workstreams-native-authority",
       "tests": [
+        "apps/server/src/jones/workstreams/native/compat/http.test.ts",
+        "packages/contracts/src/jones/workstreamsHttp.test.ts",
         "apps/mobile/src/features/workstreams/summary.test.ts",
         "apps/server/src/jones/workstreams/native/rollups/application.test.ts",
         "apps/server/src/jones/workstreams/native/rollups/bindings.test.ts",

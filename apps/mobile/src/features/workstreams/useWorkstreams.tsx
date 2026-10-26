@@ -1,3 +1,4 @@
+import { workstreamsHttpResponseHeaders } from "@t3tools/contracts/jones/workstreamsHttp";
 import {
   WorkstreamOperationsClient,
   memoryWorkstreamOperationStorage,
@@ -882,7 +883,11 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
           read(
             snapshot,
             (urls) => urls.command({ params: { commandId } }),
-            (client, headers) => client.command({ headers, params: { commandId } }),
+            (client, headers) =>
+              client.command({
+                headers: { ...headers, ...workstreamsHttpResponseHeaders },
+                params: { commandId },
+              }),
           ),
         assertCurrent: () => assertCurrent(snapshot),
         wait: async () => {},
@@ -919,7 +924,11 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
               snapshot.prepared,
               "POST",
               (urls) => urls.submit(),
-              (client, headers) => client.submit({ headers, payload: { command } }),
+              (client, headers) =>
+                client.submit({
+                  headers: { ...headers, ...workstreamsHttpResponseHeaders },
+                  payload: { command },
+                }),
               controller.signal,
             ),
           poll: (commandId) =>
@@ -927,7 +936,11 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
               snapshot.prepared,
               "GET",
               (urls) => urls.command({ params: { commandId } }),
-              (client, headers) => client.command({ headers, params: { commandId } }),
+              (client, headers) =>
+                client.command({
+                  headers: { ...headers, ...workstreamsHttpResponseHeaders },
+                  params: { commandId },
+                }),
               controller.signal,
             ),
           assertCurrent: () => {

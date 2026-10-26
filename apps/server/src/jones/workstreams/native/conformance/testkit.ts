@@ -1,3 +1,5 @@
+import { workstreamsHttpResponseHeaders } from "@t3tools/contracts/jones/workstreamsHttp";
+import * as HttpClientRequest from "effect/http/HttpClientRequest";
 // @effect-diagnostics nodeBuiltinImport:off -- Fresh synthetic databases are retained under task-owned evidence; cleanup belongs to root.
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
@@ -12,6 +14,9 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as TestClock from "effect/testing/TestClock";
 import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiClient from "effect/http-api/HttpApiClient";
+import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
+import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
+import * as Schema from "effect/Schema";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as HttpRouter from "effect/http/HttpRouter";
@@ -487,6 +492,62 @@ export const revokeGrant = Effect.fn("NativeIngress.revokeGrant")(function* (
   });
 });
 
+// Frozen 200-only endpoint metadata and classifier from b9719594ecd942e2370dedfba32680f36df292a7.
+// Receipt, payload, params and error codecs are byte-identical to that parent; no new endpoint metadata is reused.
+const {
+  WorkstreamReceipt,
+  EnvironmentAuthenticatedAuth,
+  T3WorkstreamCommandPollParams,
+  T3WorkstreamCommandRequest,
+  EnvironmentHttpConflictError,
+  EnvironmentRequestInvalidError,
+  EnvironmentScopeRequiredError,
+  EnvironmentInternalError,
+} = Wire;
+const OptionalBearerHeaders = Schema.Struct({
+  authorization: Schema.optionalKey(Schema.String),
+  dpop: Schema.optionalKey(Schema.String),
+});
+const EnvironmentWorkstreamSnapshotErrors = [
+  EnvironmentScopeRequiredError,
+  EnvironmentInternalError,
+] as const;
+const EnvironmentWorkstreamCommandErrors = [
+  EnvironmentRequestInvalidError,
+  EnvironmentHttpConflictError,
+  EnvironmentScopeRequiredError,
+  EnvironmentInternalError,
+] as const;
+class LegacyWorkstreamsHttpApi extends HttpApiGroup.make("workstreams")
+  .add(
+    HttpApiEndpoint.get("command", "/api/workstreams/commands/:commandId", {
+      headers: OptionalBearerHeaders,
+      params: T3WorkstreamCommandPollParams,
+      success: WorkstreamReceipt,
+      error: EnvironmentWorkstreamSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("submit", "/api/workstreams/commands", {
+      headers: OptionalBearerHeaders,
+      payload: T3WorkstreamCommandRequest,
+      success: WorkstreamReceipt,
+      error: EnvironmentWorkstreamCommandErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+export class LegacyHttpApi extends HttpApi.make("environment").add(LegacyWorkstreamsHttpApi) {}
+
+const isHttpConflict = Schema.is(EnvironmentHttpConflictError);
+const isInvalidRequest = Schema.is(EnvironmentRequestInvalidError);
+const isScopeRequired = Schema.is(EnvironmentScopeRequiredError);
+
+/** Only these decoded POST refusals prove that the gateway did not submit the command. */
+export function legacyWorkstreamCommandNoEffect(cause: unknown): "stale" | "denied" | null {
+  if (isHttpConflict(cause) && cause.message === "workstream_command_not_current") return "stale";
+  if (isInvalidRequest(cause) || isScopeRequired(cause)) return "denied";
+  return null;
+}
+
 class NativeTestApi extends HttpApi.make("environment").add(
   Wire.EnvironmentHttpApi.groups.workstreams,
 ) {}
@@ -572,8 +633,33 @@ export const http = Effect.gen(function* () {
         }),
       ),
     );
-  const client = yield* Effect.flatMap(HttpClient.HttpClient, (httpClient) =>
-    HttpApiClient.group(NativeTestApi, {
+  const makeClient = (modern: boolean) =>
+    Effect.flatMap(HttpClient.HttpClient, (httpClient) =>
+      HttpApiClient.group(NativeTestApi, {
+        group: "workstreams",
+        baseUrl: "http://synthetic",
+        httpClient: modern
+          ? HttpClient.mapRequest(
+              httpClient,
+              HttpClientRequest.setHeaders(workstreamsHttpResponseHeaders),
+            )
+          : httpClient,
+      }),
+    ).pipe(
+      Effect.provide(
+        FetchHttpClient.layer.pipe(
+          Layer.provide(
+            Layer.succeed(FetchHttpClient.Fetch, (input, init) =>
+              web.handler(new Request(input, init)),
+            ),
+          ),
+        ),
+      ),
+    );
+  const client = yield* makeClient(false);
+  const modernClient = yield* makeClient(true);
+  const oldClient = yield* Effect.flatMap(HttpClient.HttpClient, (httpClient) =>
+    HttpApiClient.group(LegacyHttpApi, {
       group: "workstreams",
       baseUrl: "http://synthetic",
       httpClient,
@@ -591,6 +677,10 @@ export const http = Effect.gen(function* () {
   );
   return {
     request,
+    modernRequest: (path: string, payload?: unknown) =>
+      request(path, payload, true, workstreamsHttpResponseHeaders),
+    modernClient,
+    oldClient,
     auth,
     sessionId: issued.sessionId,
     client,

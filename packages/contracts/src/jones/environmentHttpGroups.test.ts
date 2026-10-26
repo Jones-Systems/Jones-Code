@@ -1,3 +1,4 @@
+import { WorkstreamsHttpResponseContractHeaders } from "./workstreamsHttp.ts";
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
@@ -132,12 +133,19 @@ describe("Jones environment HTTP registration", () => {
         Schema.Literal("workstreams-t3-placement/2.0.0"),
       ),
     });
+    const responseHeaders = Schema.Struct({
+      ...bearerHeaders.fields,
+      ...WorkstreamsHttpResponseContractHeaders.fields,
+    });
     for (const endpoint of routes) {
       expect(endpoint.middlewares.has(EnvironmentAuthenticatedAuth)).toBe(true);
       expect(endpoint.headers?.ast).toEqual(
         endpoint === groups.workstreams.endpoints.threadPlacements
           ? placementHeaders.ast
-          : bearerHeaders.ast,
+          : endpoint === groups.workstreams.endpoints.command ||
+              endpoint === groups.workstreams.endpoints.submit
+            ? responseHeaders.ast
+            : bearerHeaders.ast,
       );
     }
   });

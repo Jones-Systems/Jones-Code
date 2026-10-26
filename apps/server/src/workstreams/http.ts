@@ -1,3 +1,4 @@
+import * as HttpCompatibility from "../jones/workstreams/native/compat/http.ts";
 import * as NativeStartup from "../jones/workstreams/native/runtime/startup.ts";
 import * as NativeRuntimeEntry from "../jones/workstreams/native/runtime/entry.ts";
 import { nativePersistenceLayer } from "../jones/workstreams/native/integration.ts";
@@ -14,7 +15,6 @@ import {
   EnvironmentHttpApi,
   EnvironmentInternalError,
   T3_PLACEMENT_MAX_REQUEST_BYTES,
-  type WorkstreamReceipt,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Context from "effect/Context";
@@ -90,7 +90,14 @@ export const workstreamResponseHeadersLayer = HttpRouter.middleware(
     Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
       if (isWorkstreamHttpTarget(request.originalUrl)) yield* appendWorkstreamResponseHeaders;
-      return yield* withWorkstreamBodyLimit(httpEffect, request);
+      return yield* HttpCompatibility.withResponseContract(
+        withWorkstreamBodyLimit(httpEffect, request),
+        {
+          method: request.method,
+          path: workstreamHttpPath(request.originalUrl),
+          headers: request.headers,
+        },
+      );
     }),
   { global: true },
 );
@@ -250,13 +257,6 @@ const pageInput = (payload: {
   if (payload.cursor !== undefined) input.cursor = payload.cursor;
   return input;
 };
-
-const receiptStatus = (receipt: WorkstreamReceipt) =>
-  receipt.state === "pending" || receipt.state === "unresolved"
-    ? HttpEffect.appendPreResponseHandler((_request, response) =>
-        Effect.succeed(HttpServerResponse.setStatus(response, 202)),
-      )
-    : Effect.void;
 
 export const workstreamHttpApiLayer = HttpApiBuilder.group(
   EnvironmentHttpApi,
@@ -434,7 +434,7 @@ export const workstreamHttpApiLayer = HttpApiBuilder.group(
       .handle("command", (args) =>
         read(args.endpoint.name).pipe(
           Effect.andThen(internal("command", gateway.pollCommand(args.params.commandId))),
-          Effect.tap(receiptStatus),
+          Effect.tap(HttpCompatibility.receiptStatus),
         ),
       )
       .handle("submit", (args) =>
@@ -443,19 +443,14 @@ export const workstreamHttpApiLayer = HttpApiBuilder.group(
           yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
           // Only gateway checks before dispatch establish no effect; transport and replay failures do not.
           return yield* gateway.submit(args.payload.command).pipe(
-            Effect.tap(receiptStatus),
+            Effect.tap(HttpCompatibility.receiptStatus),
             Effect.catch(
               (
                 error,
               ): Effect.Effect<never, EnvironmentHttpConflictError | EnvironmentInternalError> =>
                 error.reason === "version-conflict" || error.reason === "authorization-not-current"
-                  ? Effect.fail(
-                      new EnvironmentHttpConflictError({
-                        message:
-                          error.reason === "version-conflict"
-                            ? "version_conflict"
-                            : "workstream_command_not_current",
-                      }),
+                  ? Effect.flatMap(HttpCompatibility.conflictMessage(error.reason), (message) =>
+                      Effect.fail(new EnvironmentHttpConflictError({ message })),
                     )
                   : failEnvironmentInternal("internal_error", {
                       operation: "submit",

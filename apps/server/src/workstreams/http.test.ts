@@ -1,3 +1,4 @@
+import { workstreamsHttpResponseHeaders } from "@t3tools/contracts/jones/workstreamsHttp";
 // @effect-diagnostics nodeBuiltinImport:off -- Tests exercise real POSIX filesystem custody and exact scratch cleanup.
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -329,10 +330,14 @@ it.effect.each([
 const decodeInternalError = Schema.decodeUnknownSync(EnvironmentInternalError);
 const decodeConflictError = Schema.decodeUnknownSync(EnvironmentHttpConflictError);
 
-const submitRequest = (value: unknown = command) =>
+const submitRequest = (value: unknown = command, modern = false) =>
   new Request("http://fixture/api/workstreams/commands", {
     method: "POST",
-    headers: { authorization: "Bearer synthetic-token", "content-type": "application/json" },
+    headers: {
+      authorization: "Bearer synthetic-token",
+      "content-type": "application/json",
+      ...(modern ? workstreamsHttpResponseHeaders : {}),
+    },
     body: JSON.stringify({ command: value }),
   });
 
@@ -353,12 +358,15 @@ it.effect.each(["server", "registry"] as const)(
       [AuthOrchestrationOperateScope],
       async ({ handler, submissions }) => {
         const result = await handler(
-          submitRequest({
-            ...command,
-            ...(version === "server"
-              ? { expected_server_generation: 6 }
-              : { expected_registry_version: 10 }),
-          }),
+          submitRequest(
+            {
+              ...command,
+              ...(version === "server"
+                ? { expected_server_generation: 6 }
+                : { expected_registry_version: 10 }),
+            },
+            true,
+          ),
         );
         expect(submissions.count).toBe(0);
         expect(result.status).toBe(409);
@@ -714,4 +722,90 @@ it.effect(
       expect(calls).toEqual({ reads: 0, writes: 0 });
       expect(submissions.count).toBe(0);
     }),
+);
+
+it.effect("invalid response negotiation never reaches command lookup or submission", () => {
+  let lookups = 0;
+  return withHttpFixture(
+    [AuthOrchestrationReadScope, AuthOrchestrationOperateScope],
+    async ({ handler, calls, submissions }) => {
+      const headers = {
+        authorization: "Bearer synthetic-token",
+        "content-type": "application/json",
+        "x-t3-workstreams-response-contract": "workstreams-http-response/9.0.0",
+      };
+      for (const request of [
+        new Request("http://fixture/api/workstreams/commands", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ command }),
+        }),
+        new Request("http://fixture/api/workstreams/commands/" + command.command_id, { headers }),
+      ]) {
+        const response = await handler(request);
+        expect(response.status).toBe(400);
+        expect(await response.text()).toBe("");
+      }
+      expect(calls).toEqual({ reads: 0, writes: 0 });
+      expect(lookups).toBe(0);
+      expect(submissions.count).toBe(0);
+    },
+    undefined,
+    (transport) => ({
+      ...transport,
+      readCommandReceipt: () => {
+        lookups += 1;
+        return Effect.die("Invalid response negotiation reached lookup");
+      },
+    }),
+  );
+});
+
+it.effect.each([false, true])(
+  "changed authorization keeps its legacy refusal discriminator with modern=%s",
+  (modern) =>
+    withHttpFixture(
+      [AuthOrchestrationOperateScope],
+      async ({ handler, submissions }) => {
+        const response = await handler(submitRequest(command, modern));
+        expect(response.status).toBe(409);
+        expect(await response.json()).toEqual({
+          _tag: "EnvironmentHttpConflictError",
+          message: "workstream_command_not_current",
+        });
+        expect(submissions.count).toBe(0);
+      },
+      undefined,
+      (transport) => ({
+        ...transport,
+        getCapabilities: (input) =>
+          transport
+            .getCapabilities(input)
+            .pipe(Effect.map((value) => ({ ...value, permissions: [] }))),
+      }),
+    ),
+);
+
+it.effect("modern negotiation keeps unverified post-submit failures unknown", () =>
+  withHttpFixture(
+    [AuthOrchestrationOperateScope],
+    async ({ handler, submissions }) => {
+      const response = await handler(submitRequest(command, true));
+      expect(response.status).toBe(500);
+      expect(decodeInternalError(await response.json()).reason).toBe("internal_error");
+      expect(submissions.count).toBe(1);
+    },
+    undefined,
+    (transport) => ({
+      ...transport,
+      submitCommand: () =>
+        Effect.fail(
+          new WorkstreamTransportError({
+            operation: "submit",
+            effect: "no-effect",
+            detail: "workstream_command_not_current",
+          }),
+        ),
+    }),
+  ),
 );

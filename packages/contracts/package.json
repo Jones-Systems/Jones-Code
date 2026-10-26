@@ -7,6 +7,10 @@
   ],
   "type": "module",
   "exports": {
+    "./jones/workstreamsHttp": {
+      "types": "./src/jones/workstreamsHttp.ts",
+      "import": "./src/jones/workstreamsHttp.ts"
+    },
     "./jones/workstreamOperations": {
       "types": "./src/jones/workstreamOperations.ts",
       "import": "./src/jones/workstreamOperations.ts"
