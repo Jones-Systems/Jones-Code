@@ -1,3 +1,4 @@
+import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
 import * as WsProviderMaintenanceRunner from "../provider/providerMaintenanceRunner.ts";
 import * as WsSourceControlDiscovery from "../sourceControl/SourceControlDiscovery.ts";
 import * as WsOtlpEndpointCheck from "../observability/OtlpEndpointCheck.ts";
@@ -1211,6 +1212,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                 }),
               ).pipe(Layer.provide(orchestrator));
               const launch = WsThreadLaunchService.layer.pipe(
+                Layer.provide(ThreadMetadataReads.layer.pipe(Layer.provide(receivingDatabase))),
                 Layer.provide(
                   Layer.mergeAll(
                     external,

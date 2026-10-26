@@ -10,7 +10,7 @@ import {
   WorkstreamsNativeOrigin,
 } from "./workstreamsNative.ts";
 
-export const WORKSTREAMS_SNAPSHOT_CONTRACT = "workstreams-snapshot/1.0.0";
+const WORKSTREAMS_SNAPSHOT_CONTRACT = "workstreams-snapshot/1.0.0";
 export const WORKSTREAMS_SNAPSHOT_CLASSES = [
   "workstream_registry_context",
   "workstream_owner_grants",
@@ -144,7 +144,13 @@ export const WorkstreamsSnapshotRow = closed(
   Schema.Struct({
     class: WorkstreamsSnapshotClass,
     key: Schema.Array(
-      Schema.Union([Schema.String.check(Schema.isMaxLength(4096)), Sequence]),
+      // CP singleton identities have boolean keys; history links use a -1 predecessor sentinel.
+      Schema.Union([
+        Schema.String.check(Schema.isMaxLength(4096)),
+        Schema.Boolean,
+        Schema.Literal(-1),
+        Sequence,
+      ]),
     ).check(Schema.isMinLength(1), Schema.isMaxLength(16)),
     row: CanonicalRow,
   }),

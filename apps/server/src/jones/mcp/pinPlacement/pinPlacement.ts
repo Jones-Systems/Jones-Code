@@ -6,10 +6,12 @@ import {
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import { planPinnedReorder, sortPinnedThreadsByOrderKey } from "@t3tools/shared/jones/pinOrder";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import * as ThreadMetadataReads from "../../orchestration/threadMetadataReads.ts";
 import { dispatchFailure, newCommandId, unavailable } from "../../../mcp/threadAccess.ts";
 import {
   DispatchModeLimit,
@@ -50,7 +52,7 @@ const invalid = (message: string) =>
  * every write; checking here refuses before anything is written.
  */
 const refuseAboveLimit = Effect.fn("jones.mcp.pinPlacement.refuseAboveLimit")(function* (
-  thread: OrchestrationV2ThreadShell,
+  thread: Pick<OrchestrationV2ThreadShell, "id" | "runtimeMode" | "interactionMode">,
   role: string,
 ) {
   const limit = yield* DispatchModeLimit;
@@ -176,12 +178,14 @@ export const pinWithPlacement = Effect.fn("jones.mcp.pinWithPlacement")(function
     }
     yield* refuseAboveLimit(anchor, "Anchor thread");
   }
-  const snapshot = yield* threads
-    .getShellSnapshot({ location: "active" })
-    .pipe(Effect.mapError(unavailable));
-  const shells = new Map<ThreadId, OrchestrationV2ThreadShell>(
-    snapshot.threads.map((thread) => [thread.id, thread]),
-  );
+  const metadata = yield* ThreadMetadataReads.ThreadMetadataReads;
+  const snapshot = yield* metadata
+    .list({ location: "active" })
+    .pipe(NodeSqliteClient.readOnly, Effect.mapError(unavailable));
+  const shells = new Map<
+    ThreadId,
+    Pick<OrchestrationV2ThreadShell, "id" | "runtimeMode" | "interactionMode">
+  >(snapshot.threads.map((thread) => [thread.id, thread]));
   const pinned = snapshot.threads.flatMap((thread): PinnedRow[] =>
     thread.pinnedAt != null && thread.archivedAt === null && thread.deletedAt === null
       ? [

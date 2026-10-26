@@ -1813,9 +1813,28 @@ export const layerWsRpc = (
         const auth = yield* serverAuth.getDescriptor();
         const scratchWorkspaceRoot = yield* managedFolders.scratchRoot;
         const lastEventLoopStall = yield* eventLoopMonitor.latestNoticeableStall;
-        const editorConfig = yield* resolveEditorConfig(
-          yield* resolveAvailableEditorsForConfig(externalLauncher.resolveAvailableEditors()),
-          resolveFileManagerRevealKindForConfig(externalLauncher.resolveFileManagerRevealKind()),
+        const {
+          editorConfig,
+          remoteOpenTargets: targets,
+          directEndpoints: endpoints,
+        } = yield* Effect.all(
+          {
+            editorConfig: resolveAvailableEditorsForConfig(
+              externalLauncher.resolveAvailableEditors(),
+            ).pipe(
+              Effect.flatMap((editors) =>
+                resolveEditorConfig(
+                  editors,
+                  resolveFileManagerRevealKindForConfig(
+                    externalLauncher.resolveFileManagerRevealKind(),
+                  ),
+                ),
+              ),
+            ),
+            remoteOpenTargets: resolveAvailableEditorsForConfig(remoteOpenTargets.resolveTargets()),
+            directEndpoints: resolveAvailableEditorsForConfig(directEndpoints.resolve()),
+          },
+          { concurrency: 3 },
         );
 
         return {
@@ -1827,10 +1846,8 @@ export const layerWsRpc = (
           issues: keybindingsConfig.issues,
           providers,
           ...editorConfig,
-          remoteOpenTargets: yield* resolveAvailableEditorsForConfig(
-            remoteOpenTargets.resolveTargets(),
-          ),
-          directEndpoints: yield* resolveAvailableEditorsForConfig(directEndpoints.resolve()),
+          remoteOpenTargets: targets,
+          directEndpoints: endpoints,
           observability: {
             logsDirectoryPath: config.logsDir,
             localTracingEnabled: true,

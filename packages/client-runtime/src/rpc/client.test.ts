@@ -1,5 +1,6 @@
 import {
   EnvironmentId,
+  ScheduledTaskId,
   type RelayClientInstallProgressEvent,
   type ServerLifecycleStreamEvent,
   WS_METHODS,
@@ -26,7 +27,14 @@ import {
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as RpcSession from "../rpc/session.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
-import { runStream, subscribe, subscribeDynamicWithSession } from "./client.ts";
+import {
+  EnvironmentRpcRequestObserver,
+  RpcPermissionGuard,
+  requestGuarded,
+  runStream,
+  subscribe,
+  subscribeDynamicWithSession,
+} from "./client.ts";
 
 const TARGET = new PrimaryConnectionTarget({
   environmentId: EnvironmentId.make("environment-1"),
@@ -79,6 +87,107 @@ const makeHarness = Effect.fn("TestEnvironmentRpc.makeHarness")(function* () {
 });
 
 describe("environment RPC", () => {
+  it.effect("finishes an issued mutation on its original session without replay", () =>
+    Effect.gen(function* () {
+      const issued = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const calls: string[] = [];
+      const id = ScheduledTaskId.make("task");
+      const makeClient = (name: string) =>
+        ({
+          [WS_METHODS.scheduledTasksDelete]: () =>
+            Effect.sync(() => calls.push(name)).pipe(
+              Effect.andThen(Deferred.succeed(issued, undefined)),
+              Effect.andThen(Deferred.await(release)),
+              Effect.as({ id }),
+            ),
+        }) as unknown as WsRpcProtocolClient;
+      const { activeSession, supervisor } = yield* makeHarness();
+      yield* SubscriptionRef.set(activeSession, Option.some(session(makeClient("first"))));
+      const result = yield* requestGuarded(WS_METHODS.scheduledTasksDelete, { id }).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.provideService(RpcPermissionGuard, { authorize: () => Effect.void }),
+        Effect.forkChild,
+      );
+      yield* Deferred.await(issued);
+      yield* SubscriptionRef.set(activeSession, Option.some(session(makeClient("second"))));
+      yield* Deferred.succeed(release, undefined);
+      expect(yield* Fiber.join(result)).toEqual({ id });
+      expect(calls).toEqual(["first"]);
+    }),
+  );
+
+  it.effect.each(["authorization", "validation", "observation"] as const)(
+    "rejects an unissued mutation when its session changes during %s",
+    (stage) =>
+      Effect.gen(function* () {
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const hold = Deferred.succeed(entered, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        );
+        const issued: string[] = [];
+        const authorized: string[] = [];
+        const validated: RpcSession.RpcSession[] = [];
+        let completedObservations = 0;
+        const makeClient = (name: string) =>
+          ({
+            [WS_METHODS.scheduledTasksDelete]: () => {
+              issued.push(name);
+              return Effect.void;
+            },
+          }) as unknown as WsRpcProtocolClient;
+        const first = session(makeClient("first"));
+        const second = session(makeClient("second"));
+        const { activeSession, supervisor } = yield* makeHarness();
+        yield* SubscriptionRef.set(activeSession, Option.some(first));
+        const result = yield* requestGuarded(
+          WS_METHODS.scheduledTasksDelete,
+          { id: ScheduledTaskId.make("task") },
+          {
+            validateSession: (value) =>
+              Effect.sync(() => validated.push(value)).pipe(
+                Effect.andThen(stage === "validation" ? hold : Effect.void),
+              ),
+          },
+        ).pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          Effect.provideService(RpcPermissionGuard, {
+            authorize: () =>
+              Effect.sync(() => authorized.push("first")).pipe(
+                Effect.andThen(stage === "authorization" ? hold : Effect.void),
+              ),
+          }),
+          Effect.provideService(EnvironmentRpcRequestObserver, {
+            observe: () =>
+              (stage === "observation" ? hold : Effect.void).pipe(
+                Effect.as(
+                  Effect.sync(() => {
+                    completedObservations += 1;
+                  }),
+                ),
+              ),
+          }),
+          Effect.exit,
+          Effect.forkChild,
+        );
+        yield* Deferred.await(entered);
+        yield* SubscriptionRef.set(activeSession, Option.some(second));
+        yield* Deferred.succeed(release, undefined);
+        const exit = yield* Fiber.join(result);
+        expect(Exit.isFailure(exit)).toBe(true);
+        if (Exit.isFailure(exit)) {
+          expect(Cause.squash(exit.cause)).toMatchObject({
+            _tag: "EnvironmentRpcUnavailableError",
+          });
+        }
+        expect(issued).toEqual([]);
+        expect(authorized.length).toBeLessThanOrEqual(1);
+        expect(validated).toEqual([first]);
+        expect(completedObservations).toBe(stage === "observation" ? 1 : 0);
+      }),
+  );
+
   it.effect("binds finite streaming commands to one active session", () =>
     Effect.gen(function* () {
       const firstEvents = yield* Queue.unbounded<RelayClientInstallProgressEvent>();

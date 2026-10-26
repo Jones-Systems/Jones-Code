@@ -1,3 +1,4 @@
+import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
 import * as ThreadSelfConfiguration from "../jones/threadConfiguration/ThreadSelfConfiguration.ts";
 import * as WorkspaceLifecycleRuntime from "../jones/workspaceLifecycle/RuntimeIntegration.ts";
 import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
@@ -54,6 +55,7 @@ import * as ProviderRuntimeRecoveryService from "./ProviderRuntimeRecoveryServic
 import * as ProviderSwitchService from "./ProviderSwitchService.ts";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
 import * as ProviderTurnStartService from "./ProviderTurnStartService.ts";
+import * as TaskContinuationStore from "../jones/taskContinuation/TaskContinuationStore.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as ResourceCleanupService from "./ResourceCleanupService.ts";
@@ -113,6 +115,7 @@ const layerLegacyV1ThreadImporterProvided = LegacyV1ThreadImporter.layer.pipe(
 );
 
 export const layerProjectService = ProjectService.layer.pipe(
+  Layer.provide(ThreadMetadataReads.layer),
   Layer.provide(
     Layer.mergeAll(
       ProjectStore.layer,
@@ -219,6 +222,7 @@ const layerRunExecutionServiceProvided = RunExecutionService.layer.pipe(
 );
 
 const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pipe(
+  Layer.provide(TaskContinuationStore.layer),
   Layer.provide(layerProviderSwitchServiceProvided),
   Layer.provide(ControlAdmission.layer),
   Layer.provide(layerRestartPreparationProvided),
@@ -342,6 +346,7 @@ const layerManagedProjectFoldersProvided = ManagedProjectFolders.layer.pipe(
   Layer.provide(layerProjectService),
 );
 const layerThreadLaunchProvided = ThreadLaunchService.layer.pipe(
+  Layer.provide(ThreadMetadataReads.layer),
   Layer.provide(
     Layer.mergeAll(
       nativeCreationProviderExecutorProvided.pipe(Layer.provide(layerProjectService)),

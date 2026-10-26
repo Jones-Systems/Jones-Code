@@ -404,6 +404,8 @@ export class JonesUpdater {
             candidate,
             ...(buildStartedAt === undefined ? {} : { buildStartedAt }),
           };
+        const { migrationPlan: _previousPlan, ...state } = this.state;
+        this.state = state;
         return {
           state: this.publish({
             phase: "available",

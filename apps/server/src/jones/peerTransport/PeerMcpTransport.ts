@@ -1,5 +1,7 @@
-import { OrchestratorMcpFailure, type PeerLinkError } from "@t3tools/contracts";
+import { OrchestratorMcpFailure, PeerLinkError, type EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
@@ -11,6 +13,7 @@ import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import * as PeerLinks from "../../peer/PeerLinks.ts";
 import type { PeerMcpClient } from "../../peer/PeerMcpClient.ts";
 import { encodeLinkedMessageOrigin, LINKED_MESSAGE_ORIGIN_HEADER } from "./LinkedMessageOrigin.ts";
+import * as InFlight from "./InFlight.ts";
 
 /** The protocol negotiated by this client with the peer's `/mcp`. */
 const PROTOCOL_VERSION = "2025-06-18";
@@ -47,7 +50,7 @@ const Failure = Schema.Struct({
 });
 const decodeJson = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown));
 const encodeSessionKey = Schema.encodeSync(
-  Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String, Schema.String])),
+  Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String, Schema.String, Schema.String])),
 );
 const decodeEnvelope = Schema.decodeUnknownEffect(Envelope);
 const decodeToolResult = Schema.decodeUnknownEffect(ToolResult);
@@ -135,9 +138,13 @@ export const make = Effect.gen(function* () {
   const httpClient = yield* HttpClient.HttpClient;
   const ids = yield* Ref.make(0);
   const nextId = Ref.getAndUpdate(ids, (current) => current + 1);
-  // A session object is its generation: a late 404 must not evict a replacement.
-  // Including the token prevents reusing a session after the link is replaced.
-  const sessions = yield* Ref.make<ReadonlyMap<string, { readonly id: string }>>(new Map());
+  interface SessionEntry {
+    readonly environmentId: EnvironmentId;
+    readonly generation: string;
+    session?: { readonly id: string };
+  }
+  const sessions = new Map<string, SessionEntry>();
+  yield* Effect.addFinalizer(() => Effect.sync(() => sessions.clear()));
 
   const post = (url: string, token: string, body: unknown, headers: Record<string, string>) =>
     httpClient
@@ -240,106 +247,200 @@ export const make = Effect.gen(function* () {
     return { id: sessionId };
   });
 
+  const openings = yield* InFlight.make<
+    { readonly id: string },
+    Effect.Error<ReturnType<typeof openSession>>
+  >();
+  const changed = () =>
+    new OrchestratorMcpFailure({
+      code: "invalid_request",
+      message: "The peer link changed; not dispatched. Resolve the current link before retrying.",
+    });
+  const checkGeneration = (
+    environmentId: EnvironmentId,
+    generation: string,
+    current: Option.Option<string>,
+  ) =>
+    Option.isNone(current)
+      ? Effect.fail(
+          fromLinkError(
+            new PeerLinkError({
+              reason: "unknown_link",
+              message: `This environment is not linked to ${environmentId}. t3_environment_links lists the linked ones.`,
+            }),
+          ),
+        )
+      : current.value === generation
+        ? Effect.void
+        : Effect.fail(changed());
+  const requireCurrent = (environmentId: EnvironmentId, generation: string) =>
+    links.currentGeneration(environmentId).pipe(
+      Effect.mapError(fromLinkError),
+      Effect.flatMap((current) => checkGeneration(environmentId, generation, current)),
+    );
+  const retireObsolete = Effect.fn("PeerMcpTransport.retireObsolete")(function* (
+    environmentId: EnvironmentId,
+  ) {
+    // Snapshot before the SQL read: stale cleanup can only remove those exact entries.
+    const observed = [...sessions].filter(([, entry]) => entry.environmentId === environmentId);
+    const current = yield* links
+      .currentGeneration(environmentId)
+      .pipe(Effect.mapError(fromLinkError));
+    for (const [key, entry] of observed) {
+      if (
+        (Option.isNone(current) || entry.generation !== current.value) &&
+        sessions.get(key) === entry
+      ) {
+        sessions.delete(key);
+        openings.forget(key);
+      }
+    }
+    return current;
+  });
+  const sessionFor = Effect.fn("PeerMcpTransport.sessionFor")(function* (
+    environmentId: EnvironmentId,
+    resolved: PeerLinks.ResolvedPeerLink,
+    limitHeader: Record<string, string>,
+  ) {
+    const current = yield* retireObsolete(environmentId);
+    yield* checkGeneration(environmentId, resolved.generation, current);
+    const key = encodeSessionKey([
+      environmentId,
+      resolved.url,
+      resolved.token,
+      resolved.generation,
+    ]);
+    let entry = sessions.get(key);
+    if (entry === undefined) {
+      entry = { environmentId, generation: resolved.generation };
+      sessions.set(key, entry);
+    }
+    const own = entry;
+    const session =
+      own.session ??
+      (yield* openings.run(
+        key,
+        Effect.gen(function* () {
+          if (own.session !== undefined) return own.session;
+          const opened = yield* openSession(resolved.url, resolved.token, limitHeader);
+          yield* requireCurrent(environmentId, resolved.generation);
+          if (sessions.get(key) !== own) return yield* changed();
+          own.session = opened;
+          return opened;
+        }).pipe(
+          Effect.onExit((exit) =>
+            Effect.sync(() => {
+              if (Exit.isFailure(exit) && sessions.get(key) === own) sessions.delete(key);
+            }),
+          ),
+        ),
+      ));
+    return { key, entry: own, session };
+  });
+
   const call: PeerMcpClient["Service"]["call"] = Effect.fn("PeerMcpTransport.call")(
     function* (input) {
-      const resolved = yield* links
-        .resolve(input.environmentId)
-        .pipe(Effect.mapError(fromLinkError));
-      const limitHeader = {
-        [McpInvocationContext.MODE_LIMIT_HEADER]: `${input.limits.runtimeMode}/${input.limits.interactionMode}`,
-      };
-      const sessionKey = encodeSessionKey([input.environmentId, resolved.url, resolved.token]);
-      const existing = (yield* Ref.get(sessions)).get(sessionKey);
-      const opened = existing ?? (yield* openSession(resolved.url, resolved.token, limitHeader));
-      // Concurrent cold opens may finish together; keep the first published session.
-      const session = yield* Ref.modify(sessions, (current) => {
-        const cached = current.get(sessionKey);
-        return cached === undefined
-          ? [opened, new Map(current).set(sessionKey, opened)]
-          : [cached, current];
-      });
-      const id = yield* nextId;
-      const response = yield* post(
-        resolved.url,
-        resolved.token,
-        {
-          jsonrpc: "2.0",
-          id,
-          method: "tools/call",
-          params: { name: input.tool, arguments: input.arguments },
-        },
-        {
-          ...limitHeader,
-          ...(input.origin === undefined
-            ? {}
-            : {
-                [LINKED_MESSAGE_ORIGIN_HEADER]: encodeLinkedMessageOrigin(input.origin),
+      let generation: string | undefined;
+      return yield* Effect.gen(function* () {
+        const resolved = yield* links.resolve(input.environmentId).pipe(
+          Effect.mapError(fromLinkError),
+          Effect.tapError(() => retireObsolete(input.environmentId).pipe(Effect.ignore)),
+        );
+        generation = resolved.generation;
+        const limitHeader = {
+          [McpInvocationContext.MODE_LIMIT_HEADER]: `${input.limits.runtimeMode}/${input.limits.interactionMode}`,
+        };
+        const {
+          key: sessionKey,
+          entry,
+          session,
+        } = yield* sessionFor(input.environmentId, resolved, limitHeader);
+        const id = yield* nextId;
+        yield* requireCurrent(input.environmentId, resolved.generation);
+        const response = yield* post(
+          resolved.url,
+          resolved.token,
+          {
+            jsonrpc: "2.0",
+            id,
+            method: "tools/call",
+            params: { name: input.tool, arguments: input.arguments },
+          },
+          {
+            ...limitHeader,
+            ...(input.origin === undefined
+              ? {}
+              : {
+                  [LINKED_MESSAGE_ORIGIN_HEADER]: encodeLinkedMessageOrigin(input.origin),
+                }),
+            "mcp-session-id": session.id,
+            "mcp-protocol-version": PROTOCOL_VERSION,
+          },
+        );
+        if (response.status === 404) {
+          yield* Effect.sync(() => {
+            if (sessions.get(sessionKey) === entry && entry.session === session) {
+              sessions.delete(sessionKey);
+            }
+          });
+          // HTTP failure does not prove that a mutation was not committed remotely.
+          return yield* new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message:
+              "The linked environment lost the MCP session (HTTP 404). The call was not replayed. Reconcile its outcome before explicitly retrying with the same operation key.",
+          });
+        }
+        if (response.status !== 200)
+          return yield* new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message: `The linked environment answered HTTP ${response.status}.`,
+          });
+        const envelope = yield* readEnvelope(response, id);
+        const result = yield* decodeToolResult(envelope.result).pipe(Effect.mapError(malformed));
+        const text = result.content
+          .filter((part) => part.type === "text")
+          .map((part) => part.text ?? "")
+          .join("");
+        const hasStructured = Object.hasOwn(result, "structuredContent");
+        if (result.isError === true) {
+          // A refusal keeps the peer's own code, so the agent sees why it was refused.
+          const refused = hasStructured
+            ? decodeFailure(result.structuredContent)
+            : decodeTextFailure(text);
+          return yield* refused._tag === "Some"
+            ? new OrchestratorMcpFailure(refused.value)
+            : new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: text || "The linked environment refused the call.",
+              });
+        }
+        return yield* (
+          hasStructured
+            ? // oxlint-disable-next-line t3code/no-inline-schema-compile -- The caller supplies its result schema per invocation.
+              Schema.decodeUnknownEffect(input.success)(result.structuredContent)
+            : // oxlint-disable-next-line t3code/no-inline-schema-compile -- The caller supplies its result schema per invocation.
+              Schema.decodeUnknownEffect(Schema.fromJsonString(input.success))(text)
+        ).pipe(
+          Effect.mapError(
+            () =>
+              new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message:
+                  "The linked environment's answer did not match this version. Update both environments.",
               }),
-          "mcp-session-id": session.id,
-          "mcp-protocol-version": PROTOCOL_VERSION,
-        },
-      );
-      if (response.status === 404) {
-        yield* Ref.update(sessions, (current) => {
-          if (current.get(sessionKey) !== session) return current;
-          const next = new Map(current);
-          next.delete(sessionKey);
-          return next;
-        });
-        // HTTP failure does not prove that a mutation was not committed remotely.
-        return yield* new OrchestratorMcpFailure({
-          code: "orchestration_error",
-          message:
-            "The linked environment lost the MCP session (HTTP 404). The call was not replayed. Reconcile its outcome before explicitly retrying with the same operation key.",
-        });
-      }
-      if (response.status !== 200)
-        return yield* new OrchestratorMcpFailure({
-          code: "orchestration_error",
-          message: `The linked environment answered HTTP ${response.status}.`,
-        });
-      const envelope = yield* readEnvelope(response, id);
-      const result = yield* decodeToolResult(envelope.result).pipe(Effect.mapError(malformed));
-      const text = result.content
-        .filter((part) => part.type === "text")
-        .map((part) => part.text ?? "")
-        .join("");
-      const hasStructured = Object.hasOwn(result, "structuredContent");
-      if (result.isError === true) {
-        // A refusal keeps the peer's own code, so the agent sees why it was refused.
-        const refused = hasStructured
-          ? decodeFailure(result.structuredContent)
-          : decodeTextFailure(text);
-        return yield* refused._tag === "Some"
-          ? new OrchestratorMcpFailure(refused.value)
-          : new OrchestratorMcpFailure({
-              code: "orchestration_error",
-              message: text || "The linked environment refused the call.",
-            });
-      }
-      return yield* (
-        hasStructured
-          ? // oxlint-disable-next-line t3code/no-inline-schema-compile -- The caller supplies its result schema per invocation.
-            Schema.decodeUnknownEffect(input.success)(result.structuredContent)
-          : // oxlint-disable-next-line t3code/no-inline-schema-compile -- The caller supplies its result schema per invocation.
-            Schema.decodeUnknownEffect(Schema.fromJsonString(input.success))(text)
-      ).pipe(
-        Effect.mapError(
-          () =>
-            new OrchestratorMcpFailure({
-              code: "orchestration_error",
-              message:
-                "The linked environment's answer did not match this version. Update both environments.",
-            }),
-        ),
-      );
-    },
-    (effect, input) =>
-      effect.pipe(
+          ),
+        );
+      }).pipe(
         Effect.tapError((error) =>
-          links.recordOutcome(input.environmentId, { error: error.message }),
+          generation === undefined
+            ? Effect.void
+            : links.recordOutcome(input.environmentId, generation, { error: error.message }),
         ),
-        Effect.tap(() => links.recordOutcome(input.environmentId, { error: null })),
+        Effect.tap(() =>
+          generation === undefined
+            ? Effect.void
+            : links.recordOutcome(input.environmentId, generation, { error: null }),
+        ),
         // Recorded above with the transport's own message; the agent hears it plainly.
         Effect.catchTags({
           HttpClientError: () =>
@@ -350,7 +451,8 @@ export const make = Effect.gen(function* () {
               }),
             ),
         }),
-      ),
+      );
+    },
   );
   return { call };
 });

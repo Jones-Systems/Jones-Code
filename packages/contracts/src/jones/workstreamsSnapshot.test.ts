@@ -21,6 +21,33 @@ describe("lossless snapshot framing", () => {
     expect(JSON.parse(canonical(row)).row.payload).toBe(payload);
     expect(JSON.parse(JSON.parse(canonical(row)).row.payload).confidence).toBe(0.75);
   });
+  it("preserves legacy singleton and history predecessor keys without coercion", () => {
+    const rows = [
+      {
+        class: "workstream_registry_identity",
+        key: [true],
+        row: { singleton: true, registry_instance_id: "12345678-1234-1234-1234-123456789abc" },
+      },
+      {
+        class: "workstream_history_links",
+        key: ["owner-1", "global", -1, "", 1],
+        row: {
+          owner_id: "owner-1",
+          scope_key: "global",
+          predecessor_registry_version: -1,
+          predecessor_event_id: "",
+          valid_from_event_sequence: 1,
+        },
+      },
+    ];
+    for (const row of rows) {
+      expect(decodeWorkstreamsSnapshotRow(row)).toEqual(row);
+      expect(decodeWorkstreamsSnapshotRow(JSON.parse(canonical(row)))).toEqual(row);
+    }
+    for (const key of [[-2], [0.5], [Number.MAX_SAFE_INTEGER + 1], [null], [{}]]) {
+      expect(() => decodeWorkstreamsSnapshotRow({ ...rows[1], key })).toThrow();
+    }
+  });
   it("refuses lossy numbers and structures rather than silently normalizing them", () => {
     const cycle: Record<string, unknown> = {};
     cycle.self = cycle;

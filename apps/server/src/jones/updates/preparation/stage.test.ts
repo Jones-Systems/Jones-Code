@@ -37,20 +37,37 @@ afterEach(async () => {
   for (const home of homes.splice(0)) await home.remove();
 });
 
-it("executes bounded Darwin cleanup even after the preparation signal is aborted", async () => {
+it("preserves bounded Darwin cleanup and diagnostic streams after preparation cancellation", async () => {
   const fixture = await home();
   const actions = await actionsFixture(fixture);
   const controller = new AbortController();
   const cleanup = new AbortController();
   const primary = new Error("Synthetic preparation cancellation.");
   const mount = NodePath.join(fixture.base, "runtime", "owned-mount", "volume");
+  const written: string[] = [];
+  let sequence = 0;
   const spawn = vi.fn(() => {
+    const index = ++sequence;
     const child = Object.assign(new NodeEvents.EventEmitter(), {
+      stdin: new NodeStream.PassThrough(),
       stdout: new NodeStream.PassThrough(),
+      stderr: new NodeStream.PassThrough(),
       pid: 12345,
       kill: vi.fn(),
     });
-    queueMicrotask(() => child.emit("close", 0));
+    child.stdin.on("data", (data: Buffer) => written.push(data.toString("utf8")));
+    queueMicrotask(() => {
+      child.stdout.end('{"images":[]}');
+      child.stderr.end(
+        index === 3
+          ? Buffer.alloc(64 * 1024 + 1, 120)
+          : index === 4
+            ? Buffer.from([0xff])
+            : Buffer.from("native command diagnostic"),
+      );
+      if (index === 5) child.stdin.emit("error", new Error("Synthetic EPIPE"));
+      child.emit("close", 0);
+    });
     return child;
   });
   vi.resetModules();
@@ -71,11 +88,39 @@ it("executes bounded Darwin cleanup even after the preparation signal is aborted
       input: Parameters<typeof extractQualifiedDarwinRuntime>[0],
     ) => {
       controller.abort(primary);
-      await input.run({
+      const detached = await input.run({
         command: "/usr/bin/hdiutil",
         args: ["detach", mount],
         signal: cleanup.signal,
       });
+      expect(detached.stderr).toBe("native command diagnostic");
+      const converted = await input.run({
+        command: "/usr/bin/plutil",
+        args: ["-convert", "json", "-o", "-", "-"],
+        stdin: "synthetic plist",
+        signal: cleanup.signal,
+      });
+      expect(converted.stdout).toBe('{"images":[]}');
+      const limited = await input.run({
+        command: "/usr/bin/hdiutil",
+        args: ["info", "-plist"],
+        signal: cleanup.signal,
+      });
+      expect(limited.truncated).toBe(true);
+      expect(Buffer.byteLength(limited.stderr ?? "")).toBe(64 * 1024);
+      const invalid = await input.run({
+        command: "/usr/bin/hdiutil",
+        args: ["info", "-plist"],
+        signal: cleanup.signal,
+      });
+      expect(invalid.invalidUtf8).toBe(true);
+      const pipe = await input.run({
+        command: "/usr/bin/plutil",
+        args: ["-convert", "json", "-o", "-", "-"],
+        stdin: "synthetic plist",
+        signal: cleanup.signal,
+      });
+      expect(pipe.inputFailed).toBe(true);
       throw primary;
     },
   }));
@@ -94,9 +139,15 @@ it("executes bounded Darwin cleanup even after the preparation signal is aborted
         signal: controller.signal,
       }),
     ).rejects.toBe(primary);
-    expect(spawn).toHaveBeenCalledExactlyOnceWith("/usr/bin/hdiutil", ["detach", mount], {
-      stdio: ["ignore", "pipe", "ignore"],
-    });
+    expect(spawn).toHaveBeenCalledTimes(5);
+    expect(spawn.mock.calls[0]).toEqual([
+      "/usr/bin/hdiutil",
+      ["detach", mount],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    ]);
+    expect(written).toEqual(["synthetic plist", "synthetic plist"]);
     expect(spawn.mock.results[0]!.value.kill).not.toHaveBeenCalled();
     expect(
       (await NodeFSP.readdir(fixture.root)).filter((name) => name.startsWith(".jones-extract-")),

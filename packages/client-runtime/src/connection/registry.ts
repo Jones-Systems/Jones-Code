@@ -385,6 +385,15 @@ export const make = Effect.gen(function* () {
             // Seed the intent to avoid publishing a false switched-off state
             // before an enabled, compatible environment starts connecting.
             initiallyDesired: entry.enabled && entry.unsupportedReason === undefined,
+            betterRouteEntryOwner: {
+              withCurrentEntry: (use) =>
+                withLeaseLock(
+                  environmentId,
+                  Effect.suspend(() =>
+                    use(() => SubscriptionRef.getUnsafe(entries).get(environmentId)),
+                  ),
+                ),
+            },
             learnRoutes: (input) => learnRoutes({ environmentId, ...input }),
           }).pipe(
             Effect.provideService(Connectivity.Connectivity, connectivity),

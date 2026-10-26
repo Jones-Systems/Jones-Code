@@ -1,3 +1,7 @@
+import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
+import * as Logger from "effect/Logger";
+import * as ThreadMetadataReads from "./threadMetadataReads.ts";
 import * as WorktreeSetupTracker from "../../project/WorktreeSetupTracker.ts";
 import * as ProjectCloneTracker from "../../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../../terminal/Manager.ts";
@@ -188,7 +192,9 @@ function makeHarness(options: HarnessOptions = {}) {
         folderForThread: () => Effect.succeed(Option.none()),
       }),
   );
+  const metadata = ThreadMetadataReads.layer.pipe(Layer.provide(database));
   const launch = ThreadLaunch.layer.pipe(
+    Layer.provide(metadata),
     Layer.provide(
       Layer.mergeAll(
         externalServices,
@@ -227,6 +233,7 @@ function makeHarness(options: HarnessOptions = {}) {
   );
   return {
     layer: Layer.mergeAll(
+      metadata,
       launch,
       receipts,
       EventStore.layer.pipe(Layer.provide(database)),
@@ -929,4 +936,159 @@ it.effect.each([
       assert.equal(harness.createWorktree.mock.calls.length, 0);
     }).pipe(Effect.provide(harness.layer));
   }),
+);
+
+it.live(
+  "rename discovers only matching IDs across passes and continues after a guarded child rejects",
+  () =>
+    Effect.gen(function* () {
+      const generation = yield* Deferred.make<void>();
+      const allowGeneration = yield* Deferred.make<void>();
+      const discoveryDone = yield* Deferred.make<void>();
+      const harness = makeHarness({
+        generateBranchName: () =>
+          Deferred.succeed(generation, undefined).pipe(
+            Effect.andThen(Deferred.await(allowGeneration)),
+            Effect.as({ branch: "generated-branch" }),
+          ),
+      });
+      const warnings: unknown[] = [];
+      const logger = Logger.make((options) => {
+        warnings.push(options.message);
+      });
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const metadata = yield* ThreadMetadataReads.ThreadMetadataReads;
+        const sql = yield* SqlClient.SqlClient;
+        const parent = ThreadId.make("metadata-rename:parent");
+        const child = ThreadId.make("metadata-rename:child");
+        const grandchild = ThreadId.make("metadata-rename:grandchild");
+        const archived = ThreadId.make("metadata-rename:archived");
+        const rejected = ThreadId.make("metadata-rename:rejected");
+        const otherPath = ThreadId.make("metadata-rename:other-path");
+        const otherBranch = ThreadId.make("metadata-rename:other-branch");
+        const invalid = ThreadId.make("metadata-rename:invalid");
+        let oldBranch = "";
+        const create = (id: ThreadId, path = "/repo-worktrees/feature", branch = oldBranch) =>
+          threads
+            .dispatch({
+              type: "thread.create",
+              commandId: CommandId.make(`${id}:create`),
+              threadId: id,
+              projectId,
+              title: id,
+              modelSelection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch,
+              worktreePath: path,
+              createdBy: "user",
+              creationSource: "web",
+            })
+            .pipe(
+              Effect.tap(
+                () => sql`UPDATE orchestration_v2_projection_threads
+        SET payload_json = json_set(payload_json, '$.lineage.parentThreadId', ${id === grandchild ? child : parent},
+          '$.lineage.relationshipToParent', 'subagent', '$.lineage.rootThreadId', ${parent})
+        WHERE thread_id = ${id}`,
+              ),
+            );
+        const input = launchInput({
+          command: "metadata-rename:launch",
+          thread: parent,
+          message: "Rename this shared worktree",
+          workspace: { type: "worktree", baseRef: "main" },
+        });
+        yield* launches.launch(input);
+        yield* Deferred.await(generation);
+        const createdBranch = harness.createWorktree.mock.calls[0]![0].newRefName;
+        assert.isDefined(createdBranch);
+        oldBranch = createdBranch;
+        yield* create(child);
+        yield* create(archived);
+        yield* threads.dispatch({
+          type: "thread.archive",
+          commandId: CommandId.make(`${archived}:archive`),
+          threadId: archived,
+        });
+        yield* create(rejected);
+        yield* create(otherPath, "/different");
+        yield* create(otherBranch, "/repo-worktrees/feature", "different");
+        yield* create(invalid, "/different");
+        yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = '{}'
+        WHERE thread_id = ${invalid}`;
+        const actualDispatch = threads.dispatch;
+        const actualListIds = metadata.listIds;
+        const dispatched: ThreadId[] = [];
+        const discoveryStatements: string[] = [];
+        const capture: Statement.Transformer = (statement) => {
+          discoveryStatements.push(statement.compile()[0]);
+          return Effect.succeed(statement);
+        };
+        const dispatchSpy = vi.spyOn(threads, "dispatch").mockImplementation((command) =>
+          Effect.gen(function* () {
+            if (
+              command.type === "thread.metadata.update" &&
+              command.commandId.includes(":branch-rename")
+            ) {
+              dispatched.push(command.threadId);
+              if (command.threadId === child) yield* create(grandchild).pipe(Effect.orDie);
+              if (command.threadId === rejected) {
+                // Keep the row discoverable after a real guard rejection. Only the
+                // visited set prevents this unchanged row from being dispatched again.
+                return yield* actualDispatch({ ...command, expectedBranch: "stale-selection" });
+              }
+            }
+            return yield* actualDispatch(command);
+          }),
+        );
+        const listSpy = vi.spyOn(metadata, "listIds").mockImplementation((query) =>
+          actualListIds(query).pipe(
+            Effect.provideService(Statement.CurrentTransformer, capture),
+            Effect.tap((ids) =>
+              ids.every((id) => id === rejected) && dispatched.includes(grandchild)
+                ? Deferred.succeed(discoveryDone, undefined)
+                : Effect.void,
+            ),
+          ),
+        );
+        yield* Deferred.succeed(allowGeneration, undefined).pipe(
+          Effect.andThen(Deferred.await(discoveryDone).pipe(Effect.timeout("5 seconds"))),
+          Effect.ensuring(
+            Effect.sync(() => {
+              dispatchSpy.mockRestore();
+              listSpy.mockRestore();
+            }),
+          ),
+        );
+        // Parent first; a grandchild inserted during dispatch requires a second discovery pass.
+        assert.equal(dispatched[0], parent);
+        assert.sameMembers(dispatched, [parent, child, grandchild, archived, rejected]);
+        assert.equal(new Set(dispatched).size, dispatched.length);
+        for (const id of [parent, child, grandchild, archived]) {
+          assert.equal((yield* threads.getThreadProjection(id)).thread.branch, "generated-branch");
+        }
+        assert.equal((yield* threads.getThreadProjection(rejected)).thread.branch, oldBranch);
+        assert.equal((yield* threads.getThreadProjection(otherPath)).thread.branch, oldBranch);
+        assert.equal((yield* threads.getThreadProjection(otherBranch)).thread.branch, "different");
+        assert.isTrue(
+          discoveryStatements.some((query) =>
+            query.includes("orchestration_v2_projection_threads"),
+          ),
+        );
+        assert.isFalse(
+          discoveryStatements.some((query) =>
+            /orchestration_events|projection_(runs|turn_items|provider_threads)/.test(query),
+          ),
+        );
+        assert.include(JSON.stringify(warnings), "Shared thread worktree branch update failed");
+      }).pipe(
+        Effect.provide(
+          harness.layer.pipe(
+            Layer.provideMerge(Logger.layer([logger], { mergeWithExisting: false })),
+          ),
+        ),
+      );
+    }),
 );

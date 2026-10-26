@@ -26,6 +26,7 @@ import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
 
 import * as JonesPinPlacement from "../../../jones/mcp/pinPlacement/pinPlacement.ts";
+import * as ThreadMetadataReads from "../../../jones/orchestration/threadMetadataReads.ts";
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTaskService from "../../../scheduledTasks/ScheduledTaskService.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
@@ -62,6 +63,7 @@ const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
   dependencies: [
     McpInvocationContext.McpInvocationContext,
     ThreadManagementService.ThreadManagementService,
+    ThreadMetadataReads.ThreadMetadataReads,
     Crypto.Crypto,
   ],
 })
