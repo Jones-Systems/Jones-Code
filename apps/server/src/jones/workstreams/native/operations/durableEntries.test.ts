@@ -93,6 +93,9 @@ const serviceLayer = (
   filename: string,
   callers?: Callers.RecordedCallers["Service"],
   saved?: (row: OperationStore.Operation) => Effect.Effect<void>,
+  saving?: (
+    checkpoint: DurableEntries.Checkpoint,
+  ) => Effect.Effect<void, DurableEntries.DurableEntryError>,
 ) =>
   Operations.layer.pipe(
     Layer.provide(
@@ -105,9 +108,19 @@ const serviceLayer = (
             native: {
               mode: "native",
               ...(callers ? { callers } : {}),
-              entries: saved
-                ? { ...entries, save: (...args) => entries.save(...args).pipe(Effect.tap(saved)) }
-                : entries,
+              entries:
+                saved || saving
+                  ? {
+                      ...entries,
+                      save: (...args) =>
+                        Effect.gen(function* () {
+                          if (saving) yield* saving(args[1]);
+                          const row = yield* entries.save(...args);
+                          if (saved) yield* saved(row);
+                          return row;
+                        }),
+                    }
+                  : entries,
               executor: yield* HomeExecutor.HomeExecutor,
             },
           });
@@ -819,4 +832,135 @@ it.effect("a live duplicate carries the original permission ceiling into its que
       );
     }).pipe(Effect.provide(f.layer));
   }),
+);
+
+it.effect(
+  "a later autonomous sweep restarts an exited sealing executor after one checkpoint failure and coalesces live retries",
+  () =>
+    withFile((filename) => {
+      const f = callerFixture();
+      return Effect.gen(function* () {
+        const callers = yield* Callers.RecordedCallers;
+        yield* initialize.pipe(Effect.provide(persistence(filename)));
+        const cp = fakeControlPlane();
+        cp.seedRegistration();
+        cp.state.exists = false;
+        const sealing = yield* Deferred.make<void>();
+        const checkpointFailed = yield* Deferred.make<void>();
+        const retryEntered = yield* Deferred.make<void>();
+        const releaseRetry = yield* Deferred.make<void>();
+        const terminal = yield* Deferred.make<void>();
+        let failRestartCheckpoint = false;
+        let checkpointFailures = 0;
+        cp.state.onSleep = (ms) =>
+          ms === 30_000 ? Deferred.succeed(sealing, undefined).pipe(Effect.asVoid) : Effect.void;
+        const services = serviceLayer(
+          cp,
+          filename,
+          callers,
+          (row) =>
+            row.state === "committed"
+              ? Deferred.succeed(terminal, undefined).pipe(Effect.asVoid)
+              : Effect.void,
+          (checkpoint) =>
+            Effect.gen(function* () {
+              if (failRestartCheckpoint && checkpoint.result.state === "in_progress") {
+                failRestartCheckpoint = false;
+                checkpointFailures++;
+                yield* Deferred.succeed(checkpointFailed, undefined);
+                return yield* new DurableEntries.DurableEntryError({ code: "unavailable" });
+              }
+            }),
+        );
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const service = yield* Operations.WorkstreamOperations;
+            const store = yield* OperationStore.OperationStore;
+            yield* service.submit({ request, wait_ms: 0 });
+            yield* Deferred.await(sealing);
+            const original = (yield* store.read(request.operation_id))!;
+            expect(original.state).toBe("reconciling");
+            expect(original.request_body).toBe(canonicalJson(request));
+            failRestartCheckpoint = true;
+            const failed = yield* service.submit({ request, wait_ms: 3000 });
+            yield* Deferred.await(checkpointFailed);
+            expect(checkpointFailures).toBe(1);
+            expect(failed.state).toBe("reconciling");
+            expect((yield* store.read(request.operation_id))?.result_body).toBe(
+              original.result_body,
+            );
+            const conflict = yield* service
+              .submit({
+                request: { ...request, operation_id: "blocked-by-checkpoint-001" },
+                wait_ms: 0,
+              })
+              .pipe(Effect.result);
+            expect(conflict).toMatchObject({
+              _tag: "Failure",
+              failure: {
+                code: "thread_operation_in_progress",
+                open_operation_id: request.operation_id,
+              },
+            });
+            expect(cp.state.writes).toEqual([]);
+            cp.state.exists = true;
+            let retainedBody: string | undefined;
+            cp.state.beforeSend = (command, body) =>
+              Effect.gen(function* () {
+                expect(command.command_id).toBe(childId(request, "mem"));
+                expect(yield* Effect.serviceOption(Callers.RecordedAdmission)).toMatchObject({
+                  _tag: "Some",
+                  value: f.record,
+                });
+                const row = (yield* store.read(request.operation_id).pipe(Effect.orDie))!;
+                expect(JSON.parse(row.result_body!).unknown.body).toBe(body);
+                retainedBody = body;
+                yield* Deferred.succeed(retryEntered, undefined);
+                yield* Deferred.await(releaseRetry);
+              });
+            const workerServices = Recovery.layer.pipe(
+              Layer.provide(Layer.succeed(Operations.WorkstreamOperations, service)),
+              Layer.provide(
+                Layer.succeed(DurableEntries.DurableEntries, yield* DurableEntries.DurableEntries),
+              ),
+              Layer.provide(Layer.succeed(Callers.RecordedCallers, callers)),
+              Layer.provide(emptyRaw),
+            );
+            yield* Effect.gen(function* () {
+              const worker = yield* Recovery.NativeWorkstreamsRecovery;
+              yield* TestClock.adjust(30_000);
+              expect(cp.state.writes).toHaveLength(1);
+              yield* Deferred.await(retryEntered);
+              yield* Effect.all(
+                Array.from({ length: 8 }, (_, index) =>
+                  index % 3 === 0
+                    ? worker.sweep().pipe(Effect.asVoid)
+                    : index % 3 === 1
+                      ? service.resumeRecorded(request.operation_id)
+                      : service.submit({ request, wait_ms: 0 }).pipe(Effect.asVoid),
+                ),
+                { concurrency: "unbounded" },
+              );
+              expect(cp.state.writes).toEqual([retainedBody]);
+              expect(yield* store.open()).toHaveLength(1);
+              yield* Deferred.succeed(releaseRetry, undefined);
+              yield* Deferred.await(terminal);
+              const completed = yield* service.submit({ request, wait_ms: 3000 });
+              expect(completed.state).toBe("committed");
+              const row = (yield* store.read(request.operation_id))!;
+              expect(row.state).toBe("committed");
+              expect(JSON.parse(row.result_body!).result).toEqual(completed);
+              expect(row.request_body).toBe(original.request_body);
+              expect(row.request_sha256).toBe(original.request_sha256);
+              expect(row.child_command_ids).toEqual(original.child_command_ids);
+              expect(row.destination).toEqual(original.destination);
+              expect(row.recorded_caller).toEqual(f.record);
+              expect(cp.state.writes).toEqual([retainedBody]);
+              expect(cp.state.membershipCommits).toBe(1);
+              expect(yield* store.open()).toEqual([]);
+            }).pipe(Effect.provide(workerServices));
+          }).pipe(Effect.provide(services)),
+        );
+      }).pipe(Effect.provide(f.layer));
+    }),
 );

@@ -100,6 +100,7 @@ type Entry = {
   readonly ids: Record<Kind, readonly string[]>;
   result: WorkstreamOperationResult;
   phase: "running" | "sealing" | "finished";
+  executorRunning: boolean;
   done: Deferred.Deferred<void>;
   wake: Deferred.Deferred<void>;
   restartRequested?: boolean;
@@ -1061,13 +1062,11 @@ const make = Effect.gen(function* () {
     delete entry.restartRequested;
     if (native && entry.result.state === "reconciling") {
       entry.phase = "sealing";
-      yield* Deferred.succeed(entry.done, undefined);
       return;
     }
     entry.phase = "finished";
     entry.finishedAt = yield* ports.now;
     releaseLock(entry);
-    yield* Deferred.succeed(entry.done, undefined);
   });
   const prune = (now: number) => {
     for (const [key, value] of assignments) if (value.expires <= now) assignments.delete(key);
@@ -1129,6 +1128,7 @@ const make = Effect.gen(function* () {
       result,
       durable: saved.operation,
       phase: "finished",
+      executorRunning: false,
       finishedAt: Date.parse(saved.operation.updated_at),
       regAbsent: cp?.regAbsent ?? false,
       ...(cp?.epoch === undefined ? {} : { epoch: cp.epoch }),
@@ -1150,6 +1150,7 @@ const make = Effect.gen(function* () {
         })
       : new OperationInternalError({});
   const launch = Effect.fn("WorkstreamOperations.launch")(function* (entry: Entry) {
+    entry.executorRunning = true;
     yield* execute(entry).pipe(
       (effect) =>
         native?.callers
@@ -1166,7 +1167,7 @@ const make = Effect.gen(function* () {
             )
           : effect,
       Effect.catch(() =>
-        Effect.gen(function* () {
+        Effect.sync(() => {
           entry.phase = "sealing";
           entry.result = parseWorkstreamOperationResult({
             ...entry.result,
@@ -1179,8 +1180,12 @@ const make = Effect.gen(function* () {
             result: null,
             poll_after_ms: 30_000,
           });
-          yield* Deferred.succeed(entry.done, undefined);
         }),
+      ),
+      Effect.ensuring(
+        Effect.sync(() => {
+          entry.executorRunning = false;
+        }).pipe(Effect.andThen(Deferred.succeed(entry.done, undefined))),
       ),
       Effect.forkIn(scope),
     );
@@ -1281,6 +1286,7 @@ const make = Effect.gen(function* () {
               digest: hash,
               ids,
               phase: "finished",
+              executorRunning: false,
               regAbsent: false,
               done: yield* Deferred.make<void>(),
               wake: yield* Deferred.make<void>(),
@@ -1357,9 +1363,17 @@ const make = Effect.gen(function* () {
             });
           locks.set(key, entry);
         }
-        // The existing executor owns restart; timer wakes remain closing-only.
-        entry.restartRequested = true;
-        yield* Deferred.succeed(entry.wake, undefined);
+        if (entry.executorRunning) {
+          entry.restartRequested = true;
+          yield* Deferred.succeed(entry.wake, undefined);
+        } else {
+          entry.done = yield* Deferred.make<void>();
+          entry.wake = yield* Deferred.make<void>();
+          entry.phase = "running";
+          delete entry.restartRequested;
+          delete entry.failure;
+          yield* launch(entry);
+        }
       }
       return entry;
     }).pipe(
