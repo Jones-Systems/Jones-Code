@@ -817,8 +817,17 @@ export const make = Effect.gen(function* () {
     const writer = yield* (
       selectedCompletionShell === "powershell" ? Effect.succeed("ready" as const) : readiness.wait
     ).pipe(
-      Effect.flatMap((shell) =>
-        shell === "exited" ? Effect.fail(new ProjectSetupScriptTerminalExitedError()) : write,
+      Effect.flatMap(
+        (
+          shell,
+        ): Effect.Effect<
+          void,
+          | ProjectSetupScriptTerminalExitedError
+          | TerminalError
+          | TerminalManager.LegacyTerminalControlError
+          | NativeSetup.NativeSetupControlError
+        > =>
+          shell === "exited" ? Effect.fail(new ProjectSetupScriptTerminalExitedError()) : write,
       ),
       Effect.mapError(
         (cause) =>

@@ -30,6 +30,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlError from "effect/sql/SqlError";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
@@ -148,10 +149,12 @@ it.effect.each([
             Effect.tap(() =>
               Effect.sync(() => {
                 published.push(
-                  ...events.map((stored) => ({
-                    id: stored.event.id,
-                    sequence: stored.sequence,
-                  })),
+                  ...events
+                    .filter((stored) => "event" in stored)
+                    .map((stored) => ({
+                      id: stored.event.id,
+                      sequence: stored.sequence,
+                    })),
                 );
               }),
             ),
@@ -668,7 +671,7 @@ it.effect.each([
       assert.isTrue(Exit.isFailure(result));
       const failure = Exit.isFailure(result) ? Cause.squash(result.cause) : undefined;
       assert.instanceOf(failure, ProviderEventIngestor.ProviderEventPublishError);
-      if (!(failure instanceof ProviderEventIngestor.ProviderEventPublishError))
+      if (!Schema.is(ProviderEventIngestor.ProviderEventPublishError)(failure))
         return assert.fail("Expected the historical write's publication error");
       assert.equal(failure.providerSessionId, providerSessionId);
       assert.equal(failure.eventCount, 1);

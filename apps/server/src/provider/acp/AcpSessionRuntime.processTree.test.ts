@@ -472,17 +472,19 @@ describe("terminatePosixOwnedProcessTree", () => {
         }
       } finally {
         yield* AcpSessionRuntime.terminateLinuxCgroupLease(lease).pipe(Effect.ignore);
-        try {
-          process.kill(-provider.pid!, "SIGKILL");
-        } catch {}
-        try {
-          process.kill(-sentinel.pid!, "SIGKILL");
-        } catch {}
-        if (detachedChildPid !== undefined && processExists(detachedChildPid)) {
+        yield* Effect.sync(() => {
           try {
-            process.kill(detachedChildPid, "SIGKILL");
+            process.kill(-provider.pid!, "SIGKILL");
           } catch {}
-        }
+          try {
+            process.kill(-sentinel.pid!, "SIGKILL");
+          } catch {}
+          if (detachedChildPid !== undefined && processExists(detachedChildPid)) {
+            try {
+              process.kill(detachedChildPid, "SIGKILL");
+            } catch {}
+          }
+        });
       }
     }).pipe(Effect.scoped),
   );

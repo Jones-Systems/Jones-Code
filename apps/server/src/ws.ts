@@ -3582,6 +3582,7 @@ type WsLayerServices =
       | ExternalLauncher.ExternalLauncher
       | FileSystem.FileSystem
       | GitWorkflowService.GitWorkflowService
+      | GuestShareService.GuestShareService
       | HostResources.HostResources
       | HttpClient.HttpClient
       | Keybindings.Keybindings

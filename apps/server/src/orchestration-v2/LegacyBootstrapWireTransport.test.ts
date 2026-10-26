@@ -1286,7 +1286,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
         const order: string[] = [];
         const rpcOwners = Layer.mergeAll(
           Layer.mock(DocumentText.DocumentText)({
-            ensure: () => Effect.succeed(undefined),
+            ensure: () => Effect.void,
           }),
           Layer.mock(ShellMaterialization.ShellMaterialization)({}),
           Layer.mock(WsDirectEndpoints.DirectEndpoints)({}),
