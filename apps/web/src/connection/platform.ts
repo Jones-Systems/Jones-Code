@@ -1,3 +1,4 @@
+import { clearMonitorEnvironment } from "../jones/threadMonitor/store";
 import {
   ClientCapabilities,
   PlatformConnectionSource,
@@ -792,8 +793,10 @@ const layerEnvironmentOwnedDataCleanup = Layer.succeed(
   Persistence.EnvironmentOwnedDataCleanup,
   Persistence.EnvironmentOwnedDataCleanup.of({
     clear: (environmentId) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
         clearComposerDraftsEnvironment(environmentId);
+        const retired = clearMonitorEnvironment(environmentId);
+        return Effect.promise(() => retired);
       }),
   }),
 );

@@ -14,6 +14,7 @@ import * as IpcChannels from "./ipc/channels.ts";
 import * as CompanionChannels from "./jones/previewCompanion/channels.ts";
 import * as JonesUpdateChannels from "./jones/updates/ipcChannels.ts";
 import { mergeLegacyLocalStorage } from "./legacyLocalStorageMerge.ts";
+import { createThreadMonitorMainBridge } from "./jones/threadMonitor/mainBridge.ts";
 
 const SNAP_SHOT_EVENT_TYPES = new Set([
   "requested",
@@ -76,6 +77,9 @@ function unwrapEnsureSshEnvironmentResult(result: unknown) {
 }
 
 contextBridge.exposeInMainWorld("desktopBridge", {
+  ...(process.isMainFrame && process.argv.includes("--jones-thread-monitor-publisher")
+    ? { threadMonitor: createThreadMonitorMainBridge() }
+    : {}),
   previewCompanion: {
     getState: () => ipcRenderer.invoke(CompanionChannels.GET_STATE),
     configure: (input) => ipcRenderer.invoke(CompanionChannels.CONFIGURE, input),

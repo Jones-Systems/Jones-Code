@@ -30,6 +30,7 @@ import * as BrowserSession from "./BrowserSession.ts";
 import * as DesktopBrowserHost from "./DesktopBrowserHost.ts";
 import * as PreviewManager from "./Manager.ts";
 import * as PreviewPasskeys from "./Passkeys.ts";
+import { monitorThrottleLease } from "../jones/threadMonitor/throttle.ts";
 
 describe("fitPictureInPictureContentSize", () => {
   it("does not collapse toward the minimum size when orientation changes repeatedly", () => {
@@ -1451,6 +1452,51 @@ describe("PreviewManager", () => {
         yield* manager.stopRecording("tab_capture_throttling_2");
         expect(setBackgroundThrottling.mock.calls).toEqual([[false], [true]]);
         expect(secondWebContents.setBackgroundThrottling.mock.calls).toEqual([[false], [true]]);
+      }),
+    ),
+  );
+
+  effectIt.effect("preview capture cannot release a visible monitor throttle lease", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        let throttled = true;
+        const publisher = {
+          getBackgroundThrottling: () => throttled,
+          setBackgroundThrottling: vi.fn((enabled: boolean) => {
+            throttled = enabled;
+          }),
+        };
+        const lease = monitorThrottleLease(publisher);
+        yield* Effect.acquireRelease(
+          Effect.sync(() => lease),
+          (owned) => Effect.sync(() => owned.dispose()),
+        );
+        lease.visible(true);
+        const host = makeTestHostWebContents();
+        const guest = makeTestPreviewWebContents(
+          vi.fn(async () => ({
+            toJPEG: () => Buffer.from("monitor-capture-frame"),
+            getSize: () => ({ width: 1280, height: 720 }),
+          })),
+          41,
+          host,
+        );
+        fromId.mockImplementation((id) => (id === 41 ? guest : null));
+        yield* manager.createTab("tab_monitor_lease");
+        yield* manager.registerWebview("tab_monitor_lease", 41);
+        yield* manager.setMainWindow({
+          isDestroyed: () => false,
+          once: vi.fn(),
+          webContents: publisher,
+        } as never);
+        yield* manager.startRecording("tab_monitor_lease");
+        host.displayMediaHandler()?.({ frame: host.mainFrame }, () => {});
+        expect(throttled).toBe(false);
+        yield* manager.stopRecording("tab_monitor_lease");
+        expect(throttled).toBe(false);
+        lease.visible(false);
+        expect(throttled).toBe(true);
+        expect(guest.setBackgroundThrottling.mock.calls).toEqual([[false], [true]]);
       }),
     ),
   );

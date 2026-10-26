@@ -111,6 +111,7 @@
         "src/compileCache.ts!",
         "src/main.ts!",
         "src/preload.ts!",
+        "src/jones/threadMonitor/preload.ts!",
         "src/preview-pick-preload.ts!",
         "src/preview-pip-preload.ts!",
         "src/mac-permission-preload.ts!",
@@ -126,7 +127,11 @@
         "scripts/ui-evidence/scenarios/sidebar-pin-reload.mjs",
         "scripts/ui-evidence/scenarios/two-servers-one-client.mjs",
         "scripts/ui-evidence/scenarios/thread-self-configure.mjs",
+        "scripts/ui-evidence/scenarios/thread-monitor.mjs",
+        "scripts/ui-evidence/scenarios/thread-monitor-requests.mjs",
         "scripts/ui-evidence/thread-self-configure-support.mjs",
+        // The namespace stages this module and serializes its exported fixture helpers.
+        "scripts/ui-evidence/thread-monitor-provider.mjs",
       ],
       // The injected runtime resolves Playwright by string; release tooling runs
       // electron-builder from this workspace, outside its package scripts.
@@ -148,6 +153,8 @@
         // The PR read fixture HTML loads this synthetic verification entry.
         "src/jones/pullRequestReads/fixtures/pr-read-pause-entry.tsx",
         "src/jones/workstreams/operationsPreview.tsx",
+        // The independent monitor HTML loads this renderer entry by filename.
+        "src/jones/threadMonitor/entry.tsx",
         // Evidence fixtures run under node.
         "test/fixtures/**/*.mjs",
       ],
