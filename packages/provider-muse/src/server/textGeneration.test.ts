@@ -19,6 +19,7 @@ const modelSelection = createModelSelection(
   "muse-spark-1.3-contributor",
   [{ id: "reasoningEffort", value: "high" }],
 );
+const encodeReply = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const titleInput = {
   cwd: "/project/should-not-be-used",
   message: "Fix the login form",
@@ -140,6 +141,31 @@ it.layer(NodeServices.layer)("Muse text generation", (it) => {
       );
       expect(test.host.close).toHaveBeenCalledOnce();
     }),
+  );
+
+  it.effect(
+    "returns the same-call automatic assessment without changing unassessed responses",
+    () =>
+      Effect.gen(function* () {
+        for (const [quality, expected] of [
+          [{ grounded: true, specific: true, recognizable: true }, "sufficient"],
+          [{ grounded: true, specific: false, recognizable: true }, "insufficient"],
+          [
+            { grounded: true, specific: true, recognizable: true, needsRefinement: true },
+            "insufficient",
+          ],
+          [{ grounded: "yes" }, "unknown"],
+          [{}, "unknown"],
+        ] as const) {
+          const test = fixture(finish(encodeReply({ title: "Installation choices", ...quality })));
+          const service = yield* test.make;
+          expect(
+            (yield* service.generateThreadTitle({ ...titleInput, titleAssessment: true }))
+              .assessment,
+          ).toBe(expected);
+          expect(test.host.close).toHaveBeenCalledOnce();
+        }
+      }),
   );
 
   it.effect("uses low effort by default and normalizes stale efforts against the model", () =>
