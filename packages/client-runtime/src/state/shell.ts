@@ -18,6 +18,7 @@ import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { AsyncResult, Atom } from "effect/reactivity";
 
+import { publishInBatches } from "../jones/shellPublication/batchedPublication.ts";
 import * as EnvironmentRegistry from "../connection/registry.ts";
 import { connectionProjectionPhase } from "../connection/model.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
@@ -555,11 +556,13 @@ export function createEnvironmentShellAtoms<R, E>(
   >,
 ) {
   const stateAtom = Atom.family((environmentId: EnvironmentId) =>
-    runtime.atom(shellStateChanges(environmentId), {
-      initialValue: EMPTY_SHELL_STATE,
-    }),
+    // Commit the derived thread graph once per shell publication.
+    publishInBatches(
+      runtime.atom(shellStateChanges(environmentId), {
+        initialValue: EMPTY_SHELL_STATE,
+      }),
+    ),
   );
-
   const stateValueAtom = Atom.family((environmentId: EnvironmentId) =>
     Atom.make((get) =>
       Option.getOrElse(AsyncResult.value(get(stateAtom(environmentId))), () => EMPTY_SHELL_STATE),
