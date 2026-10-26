@@ -7,11 +7,12 @@ state between explicit local checks. Marketing uses `astro check`.
 
 The official Effect-patched TSRS candidate is being qualified separately;
 [it is not yet approved as the default](https://github.com/Jones-Systems/Jones-Code/issues/711).
-The current compatibility gate is five new `schemaClassObjectLiteral`
-(TS377149) warnings in existing client-runtime test doubles. The candidate exits
-2 where the incumbent exits 0. Qualification stops at that difference; changing
-production severities or suppressing the warnings is not a compatibility fix.
-No complete current-workflow speed improvement has been qualified.
+Effect upgrades can add diagnostics even when ordinary TypeScript checks agree.
+Schema-class connection targets in tests use real constructors: a partial
+supervisor double does not make a plain object a complete Schema class instance.
+Preserve diagnostic settings when correcting such fixtures. Adoption still
+requires complete configured-rule, workspace, lifecycle, cache and platform
+qualification. No complete current-workflow speed improvement has been qualified.
 
 ## Publisher and rationale
 
