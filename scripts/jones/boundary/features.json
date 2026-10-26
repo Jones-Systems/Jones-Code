@@ -2113,6 +2113,18 @@
         "apps/server/src/terminal/Manager.test.ts"
       ],
       "scope": "One terminal history writer prioritizes explicit flushes over queued debounce waits, preserves the global background cadence and latest per-terminal coalescing, and keeps drains pending through active/latest writes and cancelled waiters. Manager remains an accepted-shared integration hook."
+    },
+    {
+      "id": "upstream-24899-provider-snapshots-on-demand",
+      "tests": [
+        "apps/server/src/provider/ProviderRegistry.test.ts",
+        "apps/server/src/provider/ClaudeCapabilitiesProbe.test.ts",
+        "apps/server/src/ws.test.ts",
+        "packages/client-runtime/src/state/server.test.ts",
+        "packages/client-runtime/src/rpc/session.test.ts",
+        "packages/client-runtime/src/providerSkills.test.ts"
+      ],
+      "scope": "Targeted upstream backport abd9d9f9709b8873f542f53dd12d26b33690d5e1 (#24899): optional provider workspace snapshot negotiation and folder-scoped replies, shared scan completion, deleted-cwd settlement, bounded client refresh retries and lazy timeline images. Preserve legacy payloads, per-environment capability gating and Jones connection/discovery owners; no full upstream import or migration."
     }
   ]
 }

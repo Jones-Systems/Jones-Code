@@ -1974,7 +1974,15 @@
     "scripts/jones/boundary/fragments/workspace-content-search-slicing.json": "jones-owned",
     "scripts/jones/boundary/fragments/terminal-history-urgent-flush.json": "jones-owned",
     "apps/server/src/jones/terminal/TerminalHistoryWorker.ts": "jones-owned",
-    "apps/server/src/jones/terminal/TerminalHistoryWorker.test.ts": "jones-owned"
+    "apps/server/src/jones/terminal/TerminalHistoryWorker.test.ts": "jones-owned",
+    "apps/server/src/provider/ProviderRegistry.ts": "accepted-shared",
+    "apps/server/src/provider/ClaudeProvider.ts": "accepted-shared",
+    "apps/server/src/provider/ClaudeCapabilitiesProbe.test.ts": "accepted-shared",
+    "packages/client-runtime/src/state/server.test.ts": "accepted-shared",
+    "apps/web/src/components/chat/useProviderWorkspaceSnapshotRefresh.ts": "accepted-shared",
+    "apps/web/src/components/chat/ChatMarkdownMedia.tsx": "accepted-shared",
+    "apps/web/src/components/chat/TimelineUserMessageRow.tsx": "accepted-shared",
+    "apps/mobile/src/features/threads/use-composer-command-menu.ts": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
