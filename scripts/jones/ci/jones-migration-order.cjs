@@ -212,9 +212,10 @@ function runForEvent({
     case "pull_request":
       if (
         event.pull_request?.base?.repo?.full_name !== REPOSITORY ||
-        event.pull_request.base.ref !== "main"
+        typeof event.pull_request.base.ref !== "string" ||
+        !event.pull_request.base.ref.trim()
       ) {
-        throw new Error("PR migration admission requires canonical main as its target");
+        throw new Error("PR migration admission requires a target in the canonical repository");
       }
       // The event's old base SHA and origin/main are not current allocation
       // evidence. Resolve the freshly fetched canonical ref every run.

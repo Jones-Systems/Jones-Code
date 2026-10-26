@@ -182,6 +182,43 @@ test("canonical main advances invalidate a formerly valid allocation and cannot 
     );
   }));
 
+test("stacked PRs qualify unchanged and appended manifests against canonical main", () =>
+  withRepository(({ cwd, git, commit }) => {
+    const baseline = commit(source());
+    git("config", `url.${cwd}.insteadOf`, "https://github.com/Jones-Systems/Jones-Code.git");
+    git("checkout", "-b", "stack-child");
+    const env = {
+      GITHUB_REPOSITORY: "Jones-Systems/Jones-Code",
+      GITHUB_EVENT_NAME: "pull_request",
+    };
+    const event = {
+      pull_request: {
+        base: { ref: "feature/stack-parent", repo: { full_name: "Jones-Systems/Jones-Code" } },
+      },
+    };
+    const run = (candidate, selectedEvent = event) =>
+      runForEvent({
+        cwd,
+        env: { ...env, GITHUB_SHA: candidate },
+        event: selectedEvent,
+        log: () => {},
+      });
+    const unchanged = commit(source());
+    assert.equal(run(unchanged).selection, "unchanged");
+    const appended = commit(source([...identities, [131, "StackNext"]]));
+    assert.deepEqual(run(appended).added, [[131, "StackNext"]]);
+    assert.equal(run(appended).baseline, baseline);
+    const lower = commit(source([...identities, [125, "Late"]].sort(([a], [b]) => a - b)));
+    assert.throws(() => run(lower), /above baseline maximum 130/);
+    const malformed = commit("export const jonesMigrationEntries = compute();");
+    assert.throws(() => run(malformed), /Unsupported or malformed/);
+    for (const base of [
+      { ref: "feature/stack-parent", repo: { full_name: "foreign/repository" } },
+      { repo: { full_name: "Jones-Systems/Jones-Code" } },
+    ])
+      assert.throws(() => run(malformed, { pull_request: { base } }), /canonical repository/);
+  }));
+
 test("main pushes compare before to after, including a lower insertion and unavailable evidence", () =>
   withRepository(({ cwd, commit, git }) => {
     const before = commit(source());
