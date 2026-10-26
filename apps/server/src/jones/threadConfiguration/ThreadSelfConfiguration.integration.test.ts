@@ -10,6 +10,7 @@ import {
   ProviderInstanceId,
   ProviderDriverKind,
   type ModelSelection,
+  type OrchestrationV2ProviderCapabilities,
   type ServerProvider,
   ThreadConfigurationEvidence,
   ThreadSelfConfigurationResult,
@@ -31,6 +32,7 @@ import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as Worker from "../../orchestration-v2/EffectWorker.ts";
 import * as Sink from "../../orchestration-v2/EventSink.ts";
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
+import { ClaudeProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import * as Registry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as Harness from "../../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import * as Catalog from "../../provider/ProviderRegistry.ts";
@@ -145,6 +147,10 @@ function scenario<E>(
   },
   afterRestart?: typeof body,
   pooled = false,
+  source?: {
+    readonly driver: "claude-code";
+    readonly capabilities: OrchestrationV2ProviderCapabilities;
+  },
 ) {
   return Effect.scoped(
     Effect.gen(function* () {
@@ -171,9 +177,10 @@ function scenario<E>(
       const adapters = [
         makeRestartAdapter(
           state,
-          pooled ? CodexProviderCapabilitiesV2 : undefined,
+          source?.capabilities ?? (pooled ? CodexProviderCapabilitiesV2 : undefined),
           providerInstanceId,
           restartRequired,
+          source === undefined ? driver : ProviderDriverKind.make(source.driver),
         ),
         ...(target === undefined
           ? []
@@ -219,7 +226,10 @@ function scenario<E>(
         Layer.provide(
           Layer.mock(Catalog.ProviderRegistry)({
             getProviders: Effect.succeed([
-              catalog,
+              {
+                ...catalog,
+                driver: source === undefined ? driver : ProviderDriverKind.make(source.driver),
+              },
               ...(target === undefined
                 ? []
                 : [
@@ -675,6 +685,59 @@ it.live.each(["implicit", "notification"] as const)(
         assert.isTrue(projection.runs.every((run) => run.status === "completed"));
       }),
     ),
+);
+
+it.live("owner provider selection can leave an active Claude run on the next send", () =>
+  scenario(
+    "self-configure-owner-leaves-claude",
+    false,
+    ({ threadId, state }) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* Worker.OrchestrationEffectWorkerV2;
+        const sink = yield* Sink.EventSinkV2;
+        const active = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+        const ownerSelection: ModelSelection = {
+          ...replacement,
+          instanceId: ProviderInstanceId.make("target-provider"),
+        };
+        const replacementDone = yield* sink.stream({ threadId }).pipe(
+          Stream.filter(
+            ({ event }) =>
+              event.type === "provider-turn.updated" &&
+              event.providerInstanceId === ownerSelection.instanceId &&
+              event.payload.status === "completed",
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("owner-leaves-active-claude"),
+          threadId,
+          messageId: MessageId.make("owner-leaves-active-claude"),
+          text: "Continue with the provider I selected",
+          attachments: [],
+          createdBy: "user",
+          creationSource: "web",
+          modelSelection: ownerSelection,
+          modelSelectionExplicit: true,
+          dispatchMode: { type: "steer_active", targetRunId: active.id },
+        });
+        yield* Fiber.join(replacementDone);
+        yield* worker.drain();
+        const after = yield* orchestrator.getThreadProjection(threadId);
+        assert.deepEqual(after.thread.modelSelection, ownerSelection);
+        assert.deepEqual((yield* Ref.get(state)).started[1]?.selection, ownerSelection);
+        assert.equal(after.messages.filter((m) => m.id === "owner-leaves-active-claude").length, 1);
+        assert.equal(after.attempts.filter((attempt) => attempt.status === "running").length, 0);
+      }),
+    { driver: "codex", compatible: false },
+    undefined,
+    false,
+    { driver: "claude-code", capabilities: ClaudeProviderCapabilitiesV2 },
+  ),
 );
 
 it.live("owner selection supersedes an older agent queue selection at execution", () =>
