@@ -9,6 +9,9 @@ import { expect, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Context from "effect/Context";
+import * as Scheduler from "effect/Scheduler";
+import * as Tracer from "effect/Tracer";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -834,9 +837,9 @@ it.effect("a live duplicate carries the original permission ceiling into its que
   }),
 );
 
-it.effect(
-  "a later autonomous sweep restarts an exited sealing executor after one checkpoint failure and coalesces live retries",
-  () =>
+it.effect.each(["none", "launch-entry", "masked-before-fork", "after-handoff"] as const)(
+  "autonomous recovery survives checkpoint failure and cancellation at %s",
+  (boundary) =>
     withFile((filename) => {
       const f = callerFixture();
       return Effect.gen(function* () {
@@ -918,6 +921,64 @@ it.effect(
                 yield* Deferred.succeed(retryEntered, undefined);
                 yield* Deferred.await(releaseRetry);
               });
+            if (boundary !== "none") {
+              const underlying = yield* Scheduler.Scheduler;
+              let parentId: number | undefined;
+              let launchTicks = 0;
+              let scheduledForks = 0;
+              let cancelled: { forks: number; ticks: number } | undefined;
+              const spanName = (fiber: Fiber.Fiber<unknown, unknown>) => {
+                const span = Context.getOption(fiber.context, Tracer.ParentSpan);
+                return span._tag === "Some" && span.value._tag === "Span" ? span.value.name : null;
+              };
+              const scheduler: Scheduler.Scheduler = {
+                executionMode: underlying.executionMode,
+                makeDispatcher: () => {
+                  const dispatcher = underlying.makeDispatcher();
+                  return {
+                    scheduleTask: (task, priority) => {
+                      const current = Fiber.getCurrent();
+                      if (
+                        current !== undefined &&
+                        current.id === parentId &&
+                        spanName(current) === "WorkstreamOperations.launch"
+                      )
+                        scheduledForks++;
+                      dispatcher.scheduleTask(task, priority);
+                    },
+                    flush: () => dispatcher.flush(),
+                  };
+                },
+                shouldYield: (fiber) => {
+                  parentId ??= fiber.id;
+                  if (fiber.id !== parentId) return underlying.shouldYield(fiber);
+                  const name = spanName(fiber);
+                  if (name === "WorkstreamOperations.launch") launchTicks++;
+                  if (
+                    !cancelled &&
+                    ((boundary === "launch-entry" && launchTicks === 1) ||
+                      (boundary === "masked-before-fork" && launchTicks === 6) ||
+                      (boundary === "after-handoff" &&
+                        scheduledForks === 1 &&
+                        name === "WorkstreamOperations.admit"))
+                  ) {
+                    cancelled = { forks: scheduledForks, ticks: launchTicks };
+                    // The scheduler forces interruption at the real admission/fork handoff.
+                    fiber.interruptUnsafe();
+                    return true;
+                  }
+                  return underlying.shouldYield(fiber);
+                },
+              };
+              const retry = yield* service
+                .submit({ request, wait_ms: 0 })
+                .pipe(Effect.provideService(Scheduler.Scheduler, scheduler), Effect.forkChild);
+              expect(Exit.isFailure(yield* Effect.exit(Fiber.join(retry)))).toBe(true);
+              expect(cancelled).toMatchObject({ forks: boundary === "after-handoff" ? 1 : 0 });
+              if (boundary !== "launch-entry") yield* Deferred.await(retryEntered);
+              expect(cp.state.writes).toHaveLength(boundary === "launch-entry" ? 0 : 1);
+              expect(yield* store.open()).toHaveLength(1);
+            }
             const workerServices = Recovery.layer.pipe(
               Layer.provide(Layer.succeed(Operations.WorkstreamOperations, service)),
               Layer.provide(
@@ -960,6 +1021,99 @@ it.effect(
               expect(yield* store.open()).toEqual([]);
             }).pipe(Effect.provide(workerServices));
           }).pipe(Effect.provide(services)),
+        );
+      }).pipe(Effect.provide(f.layer));
+    }),
+);
+
+it.effect(
+  "cancelling initial checkpoint I/O preserves a retryable entry and the original thread lock",
+  () =>
+    withFile((filename) => {
+      const f = callerFixture();
+      return Effect.gen(function* () {
+        const callers = yield* Callers.RecordedCallers;
+        yield* initialize.pipe(Effect.provide(persistence(filename)));
+        yield* Effect.flatMap(DurableEntries.DurableEntries, (entries) =>
+          entries.accept(request, childIds(request), "1970-01-01T00:00:00.000Z"),
+        ).pipe(Effect.provide(persistence(filename)));
+        const cp = fakeControlPlane();
+        cp.seedRegistration();
+        const checkpointEntered = yield* Deferred.make<void>();
+        const checkpointStopped = yield* Deferred.make<void>();
+        const terminal = yield* Deferred.make<void>();
+        let blockCheckpoint = true;
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const service = yield* Operations.WorkstreamOperations;
+            const store = yield* OperationStore.OperationStore;
+            const first = yield* service.submit({ request, wait_ms: 0 }).pipe(Effect.forkChild);
+            yield* Deferred.await(checkpointEntered);
+            yield* Fiber.interrupt(first);
+            expect(yield* Deferred.isDone(checkpointStopped)).toBe(true);
+            expect(cp.state.writes).toEqual([]);
+            const original = (yield* store.read(request.operation_id))!;
+            expect(original.state).toBe("accepted");
+            expect(
+              yield* service
+                .submit({
+                  request: { ...request, operation_id: "blocked-during-checkpoint" },
+                  wait_ms: 0,
+                })
+                .pipe(Effect.result),
+            ).toMatchObject({
+              _tag: "Failure",
+              failure: { code: "thread_operation_in_progress" },
+            });
+            blockCheckpoint = false;
+            yield* Effect.gen(function* () {
+              yield* Recovery.NativeWorkstreamsRecovery;
+              yield* Deferred.await(terminal);
+              const row = (yield* store.read(request.operation_id))!;
+              expect(row.state).toBe("committed");
+              expect(row.request_body).toBe(original.request_body);
+              expect(row.request_sha256).toBe(original.request_sha256);
+              expect(row.recorded_caller).toEqual(original.recorded_caller);
+              expect(row.destination).toEqual(original.destination);
+              expect(row.child_command_ids).toEqual(original.child_command_ids);
+              expect(cp.state.membershipCommits).toBe(1);
+              expect(cp.state.writes).toHaveLength(1);
+              expect(yield* store.open()).toEqual([]);
+            }).pipe(
+              Effect.provide(
+                Recovery.layer.pipe(
+                  Layer.provide(Layer.succeed(Operations.WorkstreamOperations, service)),
+                  Layer.provide(
+                    Layer.succeed(
+                      DurableEntries.DurableEntries,
+                      yield* DurableEntries.DurableEntries,
+                    ),
+                  ),
+                  Layer.provide(Layer.succeed(Callers.RecordedCallers, callers)),
+                  Layer.provide(emptyRaw),
+                ),
+              ),
+            );
+          }).pipe(
+            Effect.provide(
+              serviceLayer(
+                cp,
+                filename,
+                callers,
+                (row) =>
+                  row.state === "committed"
+                    ? Deferred.succeed(terminal, undefined).pipe(Effect.asVoid)
+                    : Effect.void,
+                (checkpoint) =>
+                  checkpoint.result.state === "in_progress" && blockCheckpoint
+                    ? Deferred.succeed(checkpointEntered, undefined).pipe(
+                        Effect.andThen(Effect.never),
+                        Effect.ensuring(Deferred.succeed(checkpointStopped, undefined)),
+                      )
+                    : Effect.void,
+              ),
+            ),
+          ),
         );
       }).pipe(Effect.provide(f.layer));
     }),

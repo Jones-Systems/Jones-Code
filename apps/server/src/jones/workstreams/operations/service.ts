@@ -1150,7 +1150,12 @@ const make = Effect.gen(function* () {
         })
       : new OperationInternalError({});
   const launch = Effect.fn("WorkstreamOperations.launch")(function* (entry: Entry) {
+    entry.done = yield* Deferred.make<void>();
+    entry.wake = yield* Deferred.make<void>();
+    entry.phase = "running";
     entry.executorRunning = true;
+    delete entry.restartRequested;
+    delete entry.failure;
     yield* execute(entry).pipe(
       (effect) =>
         native?.callers
@@ -1182,14 +1187,17 @@ const make = Effect.gen(function* () {
           });
         }),
       ),
+      // Only bootstrap/finalization is masked; provider work and waits remain cancellable.
+      Effect.interruptible,
       Effect.ensuring(
         Effect.sync(() => {
           entry.executorRunning = false;
+          if (entry.phase === "running") entry.phase = "sealing";
         }).pipe(Effect.andThen(Deferred.succeed(entry.done, undefined))),
       ),
-      Effect.forkIn(scope),
+      Effect.forkIn(scope, { uninterruptible: true }),
     );
-  });
+  }, Effect.uninterruptible);
   const admit = Effect.fn("WorkstreamOperations.admit")(function* (
     input: WorkstreamOperationSubmitRequest,
   ) {
@@ -1337,10 +1345,9 @@ const make = Effect.gen(function* () {
             .pipe(Effect.mapError(() => new OperationInternalError({})));
         }
         if (entry.phase === "finished") {
-          entry.done = yield* Deferred.make<void>();
-          entry.phase = "running";
+          // Persistence may yield or fail before handoff; keep this entry retryable.
+          entry.phase = "sealing";
           delete entry.finishedAt;
-          delete entry.failure;
           if (entry.request.kind === "set_primary")
             locks.set(threadKey(entry.request.thread), entry);
           yield* update(entry, {
@@ -1367,11 +1374,6 @@ const make = Effect.gen(function* () {
           entry.restartRequested = true;
           yield* Deferred.succeed(entry.wake, undefined);
         } else {
-          entry.done = yield* Deferred.make<void>();
-          entry.wake = yield* Deferred.make<void>();
-          entry.phase = "running";
-          delete entry.restartRequested;
-          delete entry.failure;
           yield* launch(entry);
         }
       }
