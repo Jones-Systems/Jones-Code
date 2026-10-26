@@ -3,9 +3,9 @@
   "upstream": {
     "repository": "pingdotgg/t3code",
     "ref": "refs/heads/main",
-    "commit": "05b697f6a2012497ae790425e197fbd1fcef7de7"
+    "commit": "f88b33a16de988f86782343b348631d11432ddf2"
   },
-  "baseline": "05b697f6a2012497ae790425e197fbd1fcef7de7",
+  "baseline": "f88b33a16de988f86782343b348631d11432ddf2",
   "paths": {
     "apps/desktop/src/updates/DesktopUpdates.test.ts": "jones-tests-in-upstream",
     "scripts/jones/incremental-typecheck/cli.ts": "jones-owned",
@@ -2025,7 +2025,10 @@
     "apps/server/src/orchestration-v2/ThreadStream.test.ts": "accepted-shared",
     "apps/server/src/orchestration-v2/threadHistoryPaging.test.ts": "accepted-shared",
     "packages/client-runtime/src/platform/orchestrationCache.ts": "accepted-shared",
-    "packages/client-runtime/src/platform/orchestrationCache.test.ts": "accepted-shared"
+    "packages/client-runtime/src/platform/orchestrationCache.test.ts": "accepted-shared",
+    ".github/workflows/relay-preview-cleanup.yml": "upstream-deleted",
+    ".github/workflows/relay-preview.yml": "upstream-deleted",
+    ".github/workflows/stale-needs-more-info.yml": "upstream-deleted"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -2049,16 +2052,13 @@
     "apps/server/src/observability/RpcInstrumentation.test.ts",
     "apps/server/src/preview/DesktopBrowserChannel.test.ts",
     "apps/server/src/preview/testing/DesktopPipeLifecycle.fixture.ts",
-    "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
     "apps/server/src/testUtils/weightedShardSequencer.test.ts",
     "apps/server/src/testkit/RpcInitialMemory.fixture.mjs",
     "apps/web/src/components/ProviderUpdateEnvironmentRows.test.tsx",
     "apps/web/src/components/ThreadNotificationCoordinator.browser.test.tsx",
     "apps/web/src/components/chat/ComposerPendingUserInputPanel.permissions.browser.test.tsx",
     "apps/web/src/components/device/DeviceStreamView.browser.test.tsx",
-    "apps/web/src/components/files/AttachmentFilePreview.browser.test.tsx",
     "apps/web/src/components/pullRequest/PullRequestDetailPanel.browser.test.tsx",
-    "apps/web/src/components/settings/ProjectSettingsPanel.browser.test.tsx",
     "apps/web/src/components/sidebar/SidebarUpdatePill.test.tsx",
     "apps/web/src/hooks/useLiveRefresh.test.ts",
     "apps/web/src/components/usage/UsageProviderChart.interaction.test.tsx",
@@ -2085,9 +2085,7 @@
     "apps/web/src/components/settings/IntegrationsSettings.browser.test.tsx",
     "apps/web/src/components/usage/UsagePage.browser.test.tsx",
     "apps/web/src/lib/composerContextReferences.test.ts",
-    "packages/client-runtime/src/composerThreadItems.test.ts",
     "packages/contracts/src/environmentHttp.test.ts",
-    "packages/provider-core/src/server/runtimeInstructions.test.ts",
     "packages/ssh/src/runnerProcess.test.ts",
     "apps/mobile/src/lib/uniwind-dev-refresh.test.ts",
     "apps/mobile/src/lib/uniwind-platform-variants.fixture.cjs",
@@ -2115,7 +2113,10 @@
     "apps/web/src/jones/composer/ReasoningEffortShortcuts.test.tsx",
     "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.test.tsx",
     "apps/web/src/jones/hostStatus/GlobalHostStatusIndicators.test.tsx",
-    "apps/web/src/jones/usage/SavedTokenAccounting.test.tsx"
+    "apps/web/src/jones/usage/SavedTokenAccounting.test.tsx",
+    ".github/workflows/relay-preview-cleanup.yml",
+    ".github/workflows/relay-preview.yml",
+    ".github/workflows/stale-needs-more-info.yml"
   ],
   "allowedImports": [
     {
