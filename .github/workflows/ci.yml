@@ -181,7 +181,17 @@ jobs:
         run: vp run --filter @t3tools/desktop ensure:electron
 
       - name: Typecheck
+        id: typecheck
         run: vpr typecheck
+
+      - name: Report typecheck task details
+        if: ${{ failure() && steps.typecheck.outcome == 'failure' }}
+        run: vp run --last-details
+
+      - name: Diagnose server typecheck
+        if: ${{ failure() && steps.typecheck.outcome == 'failure' }}
+        working-directory: apps/server
+        run: node ../../scripts/jones/tsrs/typecheck.ts --noEmit --pretty false
 
   build:
     needs: linux_changes
