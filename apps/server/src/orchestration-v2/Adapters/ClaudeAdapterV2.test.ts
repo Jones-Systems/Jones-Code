@@ -14802,19 +14802,41 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Effect.forkScoped,
         );
         const start = (ordinal: number) =>
-          runtime.startTurn(
-            makeClaudeTestTurnInput({
-              threadId,
-              providerThread: row,
-              now: DateTime.makeUnsafe("2026-09-01T00:00:00Z"),
-              attemptId: RunAttemptId.make(`rewind-${reset}-${ordinal}`),
-              text: `Prompt ${ordinal}`,
-              attachments: [],
-              providerTurnOrdinal: ordinal,
-            }),
+          Effect.scoped(
+            runtime.startTurn(
+              makeClaudeTestTurnInput({
+                threadId,
+                providerThread: row,
+                now: DateTime.makeUnsafe("2026-09-01T00:00:00Z"),
+                attemptId: RunAttemptId.make(`rewind-${reset}-${ordinal}`),
+                text: `Prompt ${ordinal}`,
+                attachments: [],
+                providerTurnOrdinal: ordinal,
+              }),
+            ),
           );
         for (let ordinal = 1; ordinal <= 3; ordinal++) {
           yield* start(ordinal);
+          yield* changes.until(
+            () =>
+              events.some(
+                (event) =>
+                  event.type === "provider_thread.updated" &&
+                  event.providerThread.nativeMetadata?.claudeAttachmentBudget !== undefined,
+              ),
+            "scoped attachment budget persistence",
+          );
+          const budgetUpdate = events.find(
+            (event) =>
+              event.type === "provider_thread.updated" &&
+              event.providerThread.nativeMetadata?.claudeAttachmentBudget !== undefined,
+          );
+          assert.equal(budgetUpdate?.runtimeEvidence?.runtimeGeneration, "query-generation-1");
+          assert.equal(
+            budgetUpdate?.type === "provider_thread.updated" &&
+              budgetUpdate.providerThread.runtimeIdentity?.runtimeGeneration,
+            "query-generation-1",
+          );
           if (ordinal === 1)
             yield* Queue.offer(
               queues[0]!,

@@ -4866,12 +4866,20 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         }, Effect.asVoid);
 
         const persistAttachmentBudget = Effect.fnUntraced(function* (nativeThreadId: string) {
-          const providerThread = (yield* Ref.get(lastProviderThreadByNativeThread)).get(
-            nativeThreadId,
-          );
+          const producer = boundQueriesByNativeThread.get(nativeThreadId);
+          const remembered = (yield* Ref.get(lastProviderThreadByNativeThread)).get(nativeThreadId);
+          const providerThread =
+            producer === undefined
+              ? remembered
+              : {
+                  ...(remembered?.id === producer.providerThread.id
+                    ? remembered
+                    : producer.providerThread),
+                  runtimeIdentity: producer.providerThread.runtimeIdentity,
+                };
           if (providerThread === undefined) return;
           const active = yield* Ref.get(activeTurn);
-          yield* emitProviderEvent({
+          const persist = emitProviderEvent({
             type: "provider_thread.updated",
             driver: CLAUDE_PROVIDER,
             providerThread: {
@@ -4880,6 +4888,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               updatedAt: yield* DateTime.now,
             },
           });
+          yield* producer === undefined
+            ? persist
+            : persist.pipe(Effect.provideService(ClaudeProducerContext, producer));
         });
 
         // Usage without input is a placeholder, not a context measurement.
