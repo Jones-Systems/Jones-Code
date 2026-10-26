@@ -246,7 +246,7 @@ describe("project settings permissions", () => {
     async (_state, result, status) => {
       using _fixture = setup();
       await grant(remoteId, result());
-      await using screen = await mountPanel();
+      await using _screen = await mountPanel();
       await vi.waitFor(() => expect(nameInput()).not.toBeNull());
       expect(readEnvironmentScopeAccess(remoteId, AuthOrchestrationOperateScope)).toEqual({
         status,
@@ -283,7 +283,7 @@ describe("project settings permissions", () => {
     "keeps an in-progress edit unsaved when session refresh resolves to %s",
     async (status, result) => {
       using _fixture = setup();
-      await using screen = await mountPanel();
+      await using _screen = await mountPanel();
       await vi.waitFor(() => expect(nameInput()).not.toBeNull());
       await userEvent.fill(nameInput(), "Unsaved rename");
 

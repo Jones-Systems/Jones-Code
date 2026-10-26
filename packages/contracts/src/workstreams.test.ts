@@ -48,7 +48,7 @@ describe("Workstream wire contract", () => {
 
   it("preserves the enabled producer's canonical HTTPS registry origin", () => {
     const registryId = "https://control-plane.example.test:8443";
-    const decoded = Schema.decodeUnknownSync(T3WorkstreamListResult)({
+    const decoded = Schema.decodeSync(T3WorkstreamListResult)({
       binding: {
         registryId,
         ownerId: "owner",
@@ -73,7 +73,7 @@ describe("Workstream wire contract", () => {
       "https://user@control-plane.example.test:8443",
     ]) {
       expect(() =>
-        Schema.decodeUnknownSync(T3WorkstreamListResult)({
+        Schema.decodeSync(T3WorkstreamListResult)({
           ...decoded,
           binding: { ...decoded.binding, registryId: invalidOrigin },
         }),
@@ -146,7 +146,7 @@ describe("Workstream wire contract", () => {
         command_id: "command-refresh-0001",
       },
     } as const;
-    expect(Schema.decodeUnknownSync(WorkstreamReferenceDetail)(fixture).latest_observation).toEqual(
+    expect(Schema.decodeSync(WorkstreamReferenceDetail)(fixture).latest_observation).toEqual(
       fixture.latest_observation,
     );
     expect(() =>

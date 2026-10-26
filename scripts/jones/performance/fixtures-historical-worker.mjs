@@ -1411,7 +1411,7 @@ async function produceCheckedFixture(options, use) {
       if (state) {
         state.status = "closing";
         state.cancellation.abort();
-        await Promise.allSettled([...state.active]);
+        await Promise.allSettled(state.active);
       }
       let closedProof;
       if (result.profile) result.profile.stage = "production-close";
@@ -1668,7 +1668,7 @@ export async function withQualificationFixture(seedContext, options, use) {
     if (state) {
       state.status = "closing";
       state.cancellation.abort();
-      await Promise.allSettled([...state.active]);
+      await Promise.allSettled(state.active);
     }
     if (runtime) {
       try {

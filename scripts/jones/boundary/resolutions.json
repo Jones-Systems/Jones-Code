@@ -3,7 +3,7 @@
   "cases": [
     {
       "from": "apps/mobile/metro.config.js",
-      "sourceSha256": "eb4480334b77f9da2209ca9c2d2f147fb698a0e3ab9ad34f3b6012af9e14f035",
+      "sourceSha256": "fe05172b91723915145ce368720e947d40345ed68f387be4f34ad138b99d5489",
       "expression": "`${pathToFileURL(licenseGeneratorSource).href}?version=${String(generatorVersion)}`",
       "reason": "Metro imports the pinned license generator through a cache-busted file URL; expression evaluation is unsupported.",
       "anchors": [],
@@ -11,7 +11,7 @@
     },
     {
       "from": "apps/mobile/metro.config.js",
-      "sourceSha256": "eb4480334b77f9da2209ca9c2d2f147fb698a0e3ab9ad34f3b6012af9e14f035",
+      "sourceSha256": "fe05172b91723915145ce368720e947d40345ed68f387be4f34ad138b99d5489",
       "expression": "pathToFileURL(path.join(__dirname, \"scripts\", \"generate-device-stream.mts\")).href",
       "reason": "Metro imports its pinned local device-stream generator through a file URL; expression evaluation is unsupported.",
       "anchors": [],
@@ -25,11 +25,11 @@
       "anchors": [
         {
           "path": "apps/mobile/metro.config.js",
-          "sha256": "eb4480334b77f9da2209ca9c2d2f147fb698a0e3ab9ad34f3b6012af9e14f035"
+          "sha256": "fe05172b91723915145ce368720e947d40345ed68f387be4f34ad138b99d5489"
         },
         {
           "path": "scripts/lib/third-party-licenses.ts",
-          "sha256": "161275b7f9e4e0465eedf71526d073ea7b5761e5819646044a51b03064f830bd"
+          "sha256": "7d61eedf82bfc014e79513d8cf72cabd739dfdc7e4924b903e796262aca30a9c"
         }
       ],
       "targets": ["scripts/lib/third-party-licenses.ts"]
@@ -42,7 +42,7 @@
       "anchors": [
         {
           "path": "apps/mobile/metro.config.js",
-          "sha256": "eb4480334b77f9da2209ca9c2d2f147fb698a0e3ab9ad34f3b6012af9e14f035"
+          "sha256": "fe05172b91723915145ce368720e947d40345ed68f387be4f34ad138b99d5489"
         },
         {
           "path": "apps/mobile/scripts/generate-device-stream.mts",
@@ -66,7 +66,7 @@
       "anchors": [
         {
           "path": "apps/server/package.json",
-          "sha256": "34e8316d69b3a237a272d6db90119a3f2d0104549ef6e53e32b156283850e31c"
+          "sha256": "8b8865cff0ea00cec2fc5c6b5271f8b7dc4b9be4340aec431e9a81f297b09180"
         }
       ],
       "targets": []
@@ -92,20 +92,20 @@
       "anchors": [
         {
           "path": "apps/web/package.json",
-          "sha256": "a58a10ba2a3bf73c98401d8430ef46ce092fbf9ae4e7b187ae23d7049341797a"
+          "sha256": "b6a9b82b13e5e1ab3e5715eaf92aaf33cc0e6193b771d04a5acb2d0d944dfd65"
         }
       ],
       "targets": []
     },
     {
       "from": "apps/mobile/src/features/browser/PreviewStreamWebView.tsx",
-      "sourceSha256": "29ddff9b4cbf307480c152bc7085ae3b76678e286abac95a4f0c939089c3f7a6",
+      "sourceSha256": "fd7e0c431133aa3cb974aaff158ff99da81cae5f193a89ba8b6747b454253012",
       "expression": "\"@t3tools/mobile-preview-stream\"",
       "reason": "Metro supplies this generated browser-script module from the pinned generator; generated output is not read or claimed verified.",
       "anchors": [
         {
           "path": "apps/mobile/metro.config.js",
-          "sha256": "eb4480334b77f9da2209ca9c2d2f147fb698a0e3ab9ad34f3b6012af9e14f035"
+          "sha256": "fe05172b91723915145ce368720e947d40345ed68f387be4f34ad138b99d5489"
         },
         {
           "path": "apps/mobile/scripts/generate-device-stream.mts",
@@ -113,7 +113,7 @@
         },
         {
           "path": "apps/mobile/src/features/browser/preview-stream.browser.ts",
-          "sha256": "fb3626f1f3c4cb571137433e4c785374b473c6b0c2b251225f80055455e22d17"
+          "sha256": "9e15ab7f1c800aa1d8918f6d718b375fa59c59b4efb069dfde5ab3c4527f94a8"
         }
       ],
       "targets": [
@@ -125,32 +125,32 @@
       "from": "apps/web/src/components/diffs/codeViewSearch.test.ts",
       "sourceSha256": "5e12e1d7bf27b8611eda2489a80d0b252a4c0959a5ee255d92ce84eeb0f51564",
       "expression": "searchUrl.href",
-      "reason": "Upstream synthetic search test loads the patched Pierre dependency-internal module URL; external dependency loader is unsupported.",
+      "reason": "Upstream synthetic search test loads the pinned patched Pierre dependency-internal module URL; external dependency loader is unsupported.",
       "anchors": [
         {
           "path": "apps/web/package.json",
-          "sha256": "a58a10ba2a3bf73c98401d8430ef46ce092fbf9ae4e7b187ae23d7049341797a"
+          "sha256": "b6a9b82b13e5e1ab3e5715eaf92aaf33cc0e6193b771d04a5acb2d0d944dfd65"
         },
         {
-          "path": "patches/@pierre%2Fdiffs@1.5.2.patch",
-          "sha256": "2ec81ba1e8ce4681095a3473c2bf78e630417740c622720ef624febb467c25fc"
+          "path": "patches/@pierre%2Fdiffs@1.6.1.patch",
+          "sha256": "4645364ddf113e48e8827f3b4966b3b1ff745317011e5a3d904e2d8672dee7dc"
         }
       ],
       "targets": []
     },
     {
       "from": "apps/mobile/src/features/files/SourceFileSurface.tsx",
-      "sourceSha256": "9d01b654a408c243df1fa298286bd749a5ae7e1448389bb3ccdfb46418db1e70",
+      "sourceSha256": "c10deb3ea4ba977727d810fe01e0571fa8ae7a7abfb8f4e478c00968a06e7e69",
       "expression": "\"@t3tools/mobile-source-text\"",
       "reason": "Metro resolves this checked-in native package through the mobile manifest file dependency and the package main/types/react-native index.ts entry. The boundary resolver supports exports maps only; exact source and manifest hashes bind this entry, which still receives boundary checking.",
       "anchors": [
         {
           "path": "apps/mobile/package.json",
-          "sha256": "d26e69a86a23a98d537b54653c0ce1994a1f86a0913746c956b17cf399c67402"
+          "sha256": "18b82eadd4a83812976776464651a493991f757e3cca7efe26ff70b5dcb3ceca"
         },
         {
           "path": "apps/mobile/metro.config.js",
-          "sha256": "eb4480334b77f9da2209ca9c2d2f147fb698a0e3ab9ad34f3b6012af9e14f035"
+          "sha256": "fe05172b91723915145ce368720e947d40345ed68f387be4f34ad138b99d5489"
         },
         {
           "path": "apps/mobile/modules/t3-source-text/package.json",
@@ -161,13 +161,13 @@
     },
     {
       "from": "scripts/npm-launcher/bin.mjs",
-      "sourceSha256": "24debbaa12e0a5b6d475a2261843a14e4da6a9d6819269afc6d7ca0f3effffdb",
+      "sourceSha256": "d91eeca4d001c83c37ca0f26c4de23d817d017a2350468bdf00dd50b2cbc6859",
       "expression": "\"../bin/t3.mjs\"",
       "reason": "The upstream npm package builder copies this compatibility entry to dist/bin.mjs and the checked-in launcher to bin/t3.mjs. The relative import resolves only in that generated package layout; exact source and builder hashes bind the source target, which still receives boundary checking. Generated output is not read or claimed verified.",
       "anchors": [
         {
           "path": "scripts/build-npm-launcher.ts",
-          "sha256": "37ffba6778b35d3574677a02d6ec49684da014b69cf4c81c012b2bdcaa74deef"
+          "sha256": "9d39975c060aa2856a8fb8a7bb52e9ff4cde63652ebc8af3960980d9fbdda011"
         }
       ],
       "targets": ["scripts/npm-launcher/t3.mjs"]
@@ -180,11 +180,45 @@
       "anchors": [
         {
           "path": "apps/web/package.json",
-          "sha256": "a58a10ba2a3bf73c98401d8430ef46ce092fbf9ae4e7b187ae23d7049341797a"
+          "sha256": "b6a9b82b13e5e1ab3e5715eaf92aaf33cc0e6193b771d04a5acb2d0d944dfd65"
         },
         {
           "path": "scripts/package.json",
-          "sha256": "744e66bc27d2f442e7d4af558d26da1da49312d152511a32f571e371f2005982"
+          "sha256": "067f94b0f3d15e9d23037312ab495d51e39a8894bda8d78d8fb641ee8c3e66f6"
+        }
+      ],
+      "targets": []
+    },
+    {
+      "from": "apps/web/src/components/files/AttachmentFilePreview.browser.test.tsx",
+      "sourceSha256": "8b79cbfb982cc7ca8265d3ab1d9a857e8496bb65093c7bd1bac9e95416a59791",
+      "expression": "\"../../../node_modules/@betteroffice/fonts/assets/Carlito-Regular.ttf?url\"",
+      "reason": "Upstream document-rendering fixture loads a real installed external font through a relative node_modules URL. Dependency asset bytes are outside the source boundary; exact test and manifest/catalog hashes bind this unsupported loader, not generated or runtime verification.",
+      "anchors": [
+        {
+          "path": "apps/web/package.json",
+          "sha256": "b6a9b82b13e5e1ab3e5715eaf92aaf33cc0e6193b771d04a5acb2d0d944dfd65"
+        },
+        {
+          "path": "pnpm-workspace.yaml",
+          "sha256": "fcd00a98f907f60334b894225104530c060946f172ee4f9a66f5ddcb234cc8a1"
+        }
+      ],
+      "targets": []
+    },
+    {
+      "from": "apps/mobile/scripts/generate-highlights.mts",
+      "sourceSha256": "337d78c13b66a2bcd52a9d9edae221dffa398095cc342272813a2a3ed17b50a9",
+      "expression": "NodeURL.pathToFileURL(NodePath.join(root, \"dist\", file)).href",
+      "reason": "Upstream native-highlight generator resolves the pinned external highlights package then imports its finite languages.js, theme.js and two named theme modules. Dependency-internal file-URL loading is unsupported; exact source and mobile manifest/catalog hashes bind this loader. Generated code is not read or claimed verified.",
+      "anchors": [
+        {
+          "path": "apps/mobile/package.json",
+          "sha256": "18b82eadd4a83812976776464651a493991f757e3cca7efe26ff70b5dcb3ceca"
+        },
+        {
+          "path": "pnpm-workspace.yaml",
+          "sha256": "fcd00a98f907f60334b894225104530c060946f172ee4f9a66f5ddcb234cc8a1"
         }
       ],
       "targets": []

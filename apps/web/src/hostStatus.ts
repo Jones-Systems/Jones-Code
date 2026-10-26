@@ -41,8 +41,8 @@ export function hostStatusMetrics(sample: HostStatus | undefined) {
           stale: "Host status sample is stale",
         }[host.reason];
     return {
-      cpu: "—",
-      ram: "—",
+      cpu: "N/A",
+      ram: "N/A",
       cpuHealth: "unavailable",
       ramHealth: "unavailable",
       health: "unavailable",
@@ -56,7 +56,7 @@ export function hostStatusMetrics(sample: HostStatus | undefined) {
     const swap = host.swapIoBytesPerSecond;
     const swapMiB = swap === undefined ? undefined : swap / 1024 ** 2;
     const ramHealth = swapMiB === undefined ? "unavailable" : swapMiB > 10 ? "warning" : "healthy";
-    const ram = swapMiB === undefined ? "— mb/s" : `${swapMiB.toFixed(1)} mb/s`;
+    const ram = swapMiB === undefined ? "N/A mb/s" : `${swapMiB.toFixed(1)} mb/s`;
     const health = cpuHealth === "healthy" && ramHealth === "warning" ? "warning" : cpuHealth;
     const availableRam =
       availableMemoryBytes === undefined
@@ -76,7 +76,9 @@ export function hostStatusMetrics(sample: HostStatus | undefined) {
       ? "unavailable"
       : utilizationHealth(100 * (1 - availableMemoryBytes / host.totalMemoryBytes));
   const ram =
-    availableMemoryBytes === undefined ? "—" : String(Math.round(availableMemoryBytes / 1024 ** 3));
+    availableMemoryBytes === undefined
+      ? "N/A"
+      : String(Math.round(availableMemoryBytes / 1024 ** 3));
   const health =
     availableMemoryBytes === undefined
       ? cpuHealth
@@ -89,7 +91,7 @@ export function hostStatusMetrics(sample: HostStatus | undefined) {
     ramHealth,
     cpu,
     ram,
-    detail: `CPU ${cpu} of total cores. Available RAM ${ram === "—" ? "unavailable" : `${ram} GiB (collector estimate, including reclaimable memory)`}. Colors reflect CPU and RAM utilization.`,
+    detail: `CPU ${cpu} of total cores. Available RAM ${ram === "N/A" ? "unavailable" : `${ram} GiB (collector estimate, including reclaimable memory)`}. Colors reflect CPU and RAM utilization.`,
   } as const;
 }
 

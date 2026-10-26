@@ -7,8 +7,6 @@ import {
   resolveDraftEnvModeAfterBranchChange,
   resolveEffectiveEnvMode,
   resolveAutomaticWorktreeBaseBranch,
-  resolveEnvModeLabel,
-  resolveBranchTriggerLabel,
   resolveBranchToolbarPrBranch,
   resolveLocalCheckoutBranchMismatch,
   sanitizeNewRefName,

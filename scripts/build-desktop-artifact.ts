@@ -1602,11 +1602,9 @@ export function resolveKeyringNativeArtifacts(
 }
 
 /**
- * Same nesting problem as the Clerk passkey binaries: pnpm keeps the platform
- * package under `@napi-rs/keyring`, electron-builder only retains collected
- * top-level dependencies, and the generated loader checks for a sibling
- * `keyring.<platform>.node` before falling back to the package. Staging the
- * binary beside `index.js` lets that first branch win.
+ * pnpm nests the platform package under @napi-rs/keyring, but electron-builder retains
+ * only collected top-level dependencies. Stage keyring.<platform>.node beside index.js
+ * so the generated loader's sibling lookup succeeds before package fallback.
  */
 const stageKeyringNativeBinaries = Effect.fn("stageKeyringNativeBinaries")(function* (
   stageAppDir: string,

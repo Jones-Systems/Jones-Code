@@ -9,17 +9,10 @@ import * as Effect from "effect/Effect";
 import type { Caller } from "./threadAccess.ts";
 
 /**
- * Work a linked environment starts here stays within that link, unless the
- * link has full access. An agent reaches this environment through a link as
- * one MCP client session, and everything that session starts, and everything
- * that work starts in turn, carries the session in `linkOrigin`. Below full
- * access such a caller may change only work from the same link: not the
- * user's own threads, projects or settings, nor work from another link, and
- * it may not use this environment's own links. Reads are not fenced.
- *
- * This is a routing rule for T3's own tools. An agent the link starts still
- * runs as this environment's user, which is why a full-access link, whose
- * agents can do anything that user can, is not fenced at all.
+ * Below full access, the MCP session in linkOrigin propagates to all descendant work and fences mutations
+ * to that same link: no user/other-link threads, projects, settings or this environment's own links. Reads are unfenced.
+ * This routes T3 tools, not OS authority: linked agents still run as this environment's user.
+ * Full-access links can exercise that user's authority and are therefore not fenced here.
  */
 
 /** The link a caller acts for: its own session, or the link that started its thread. */

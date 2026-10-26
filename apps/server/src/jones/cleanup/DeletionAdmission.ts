@@ -132,8 +132,8 @@ export const makeDeletionAdmission = Effect.gen(function* () {
     }>`SELECT binding_json,start_json,state FROM jones_deletion_worktree_admissions WHERE effect_id=${effectId}`;
     if (rows.length !== 1) return null;
     return {
-      binding: yield* Schema.decodeUnknownEffect(jsonBinding)(rows[0]!.binding_json),
-      start: yield* Schema.decodeUnknownEffect(jsonStart)(rows[0]!.start_json),
+      binding: yield* Schema.decodeEffect(jsonBinding)(rows[0]!.binding_json),
+      start: yield* Schema.decodeEffect(jsonStart)(rows[0]!.start_json),
       state: rows[0]!.state,
     };
   });
@@ -199,10 +199,10 @@ export const makeDeletionAdmission = Effect.gen(function* () {
       binding.birthSequence >= binding.deletionSequence
     )
       return yield* failure("original_application_birth_changed");
-    const identity = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(ThreadIdentity))(
+    const identity = yield* Schema.decodeEffect(Schema.fromJsonString(ThreadIdentity))(
       binding.deletionPayload,
     );
-    const born = yield* Schema.decodeUnknownEffect(
+    const born = yield* Schema.decodeEffect(
       Schema.fromJsonString(
         Schema.Struct({ id: ThreadId, projectId: ProjectId, createdAt: Schema.String }),
       ),
@@ -211,7 +211,7 @@ export const makeDeletionAdmission = Effect.gen(function* () {
       readonly payload_json: string;
     }>`SELECT payload_json FROM orchestration_v2_projection_threads WHERE thread_id=${binding.threadId}`;
     if (projection.length !== 1) return yield* failure("original_deleted_projection_unavailable");
-    const current = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(ThreadIdentity))(
+    const current = yield* Schema.decodeEffect(Schema.fromJsonString(ThreadIdentity))(
       projection[0]!.payload_json,
     );
     if (

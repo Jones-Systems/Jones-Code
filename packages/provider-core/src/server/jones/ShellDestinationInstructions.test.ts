@@ -21,7 +21,6 @@ describe("shell destination instructions", () => {
     expect(parseShellDestinationFence(opening.slice(JONES_SHELL_LANGUAGE.length + 1))).toEqual({
       _tag: "Valid",
       environmentId: "REPLACE_WITH_DISCOVERED_ENVIRONMENT_ID",
-      label: "Destination machine",
       title: "Check working directory",
     });
     expect(JONES_SHELL_DESTINATION_INSTRUCTIONS).toContain(
@@ -35,7 +34,13 @@ describe("shell destination instructions", () => {
       "`get_invocation_context`",
       "`t3_environment_links`",
       "Never guess IDs, use an ID prefix, or resolve a target from a label",
-      "Labels are display hints only",
+      "Match the discovered ID to the machine the owner requested",
+      "Labels never select or redirect execution",
+      "Prefer omitting it: the client displays its authoritative connected-computer name",
+      "copy the exact discovered label for that same ID",
+      "never invent, abbreviate, or translate it",
+      "A label mismatch disables Play and sends no command",
+      "Do not change the ID or bypass the mismatch guard just to enable Play",
       "Never put target metadata on a `bash`, `sh`, or plain `shell` fence",
       "older clients can execute those commands on the source environment",
       "If the target ID is unknown, use a `text` fence",

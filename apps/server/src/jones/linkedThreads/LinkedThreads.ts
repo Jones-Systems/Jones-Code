@@ -1,4 +1,4 @@
-import { MessageId, type EnvironmentId, type ThreadId } from "@t3tools/contracts";
+import { MessageId, type ThreadId } from "@t3tools/contracts";
 import {
   LinkedThreadsError,
   type ThreadEndpointRef,

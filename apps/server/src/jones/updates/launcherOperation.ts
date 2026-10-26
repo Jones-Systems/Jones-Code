@@ -795,7 +795,7 @@ function retiredParts(value: unknown): string[] | undefined {
     value.length === 0 ||
     value.length > 1024 ||
     NodePath.isAbsolute(value) ||
-    // oxlint-disable-next-line no-control-regex -- Retained evidence paths must exclude control bytes.
+    // Retained evidence paths must exclude control bytes.
     /[\\\x00-\x1f\x7f]/.test(value)
   )
     return undefined;
@@ -948,7 +948,7 @@ async function attachSettlement(
 function redactCauseMessage(input: string): string {
   const redacted = input
     .slice(0, 4096)
-    // oxlint-disable-next-line no-control-regex -- Persisted causes must not contain terminal control bytes.
+    // Persisted causes must not contain terminal control bytes.
     .replace(/[\x00-\x1f\x7f]/g, " ")
     .replace(/\b[A-Za-z]:[\\/][^\s"'<>]*/g, "[path]")
     .replace(/(^|[\s("'=])(?:\/|\\\\|\.{1,2}[\\/]|~[\\/])[^\s"'<>]*/g, "$1[path]");

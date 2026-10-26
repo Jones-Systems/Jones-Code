@@ -67,6 +67,7 @@ export function QuestionAnswerFooter({
   useThreadContextDrop(surfaceRef, threadRef.environmentId, attachments.target, (refs, isActive) =>
     attachments.addThreads(refs, insert, isActive),
   );
+  // oxlint-disable-next-line t3code/react-effect-budget -- Synchronize textarea DOM height with wrapped content and observed width before paint.
   useLayoutEffect(() => {
     const field = fieldRef.current;
     if (!field || !state.showField) return;
@@ -89,7 +90,7 @@ export function QuestionAnswerFooter({
   }, [progress.customAnswer, state.showField]);
 
   return (
-    <ComposerBanner.Body className="pe-3.5">
+    <ComposerBanner.Body className="pe-4">
       <div
         ref={surfaceRef}
         {...threadContextDropTargetProps()}
@@ -113,7 +114,7 @@ export function QuestionAnswerFooter({
             void attachments.addFiles(Array.from(event.dataTransfer.files));
           else insert(event.dataTransfer.getData("text/plain"));
         }}
-        className="ms-2.5 space-y-2 pb-2"
+        className="ms-5 space-y-2 pb-2"
       >
         <div className="flex items-end gap-2">
           {state.showField ? (

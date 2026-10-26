@@ -326,7 +326,7 @@ const make = Effect.gen(function* () {
     record(entry, receipt);
     delete entry.unknown;
     // Readback is descriptive only: later owner moves cannot overwrite the committed outcome.
-    const readback = yield* observed(entry).pipe(Effect.catch(() => Effect.succeed(null)));
+    const readback = yield* observed(entry).pipe(Effect.orElseSucceed(() => null));
     yield* update(entry, {
       state: "committed",
       reason: null,
@@ -851,16 +851,12 @@ const make = Effect.gen(function* () {
           failure = unavailable(error.reason === "not-configured" ? "not_configured" : "offline");
       }
       if (failure) {
-        let finished = yield* closing(entry, failure).pipe(
-          Effect.catch(() => Effect.succeed(false)),
-        );
+        let finished = yield* closing(entry, failure).pipe(Effect.orElseSucceed(() => false));
         while (!finished && !entry.restartRequested) {
           yield* Effect.raceFirst(ports.sleep(30_000), Deferred.await(entry.wake));
           entry.wake = yield* Deferred.make<void>();
           if (!entry.restartRequested)
-            finished = yield* closing(entry, failure).pipe(
-              Effect.catch(() => Effect.succeed(false)),
-            );
+            finished = yield* closing(entry, failure).pipe(Effect.orElseSucceed(() => false));
         }
         if (entry.restartRequested && !settled(entry.result)) {
           delete entry.restartRequested;

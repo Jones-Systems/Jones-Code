@@ -287,6 +287,118 @@ export interface JonesDesktopDownloadResult {
   readonly refusal?: "selection-mismatch";
 }
 
+export type JonesLegacyProcessProof = { readonly pid: number; readonly identity: string };
+export type JonesProcessRole = { readonly pid: number; readonly role: "main" | "backend" };
+export type JonesKernelProcessProof = {
+  readonly pid: number;
+  readonly startSec: number;
+  readonly startUsec: number;
+  readonly executable: string;
+};
+
+const validProcessPid = (pid: unknown): pid is number =>
+  typeof pid === "number" && Number.isInteger(pid) && pid > 0 && pid <= 2147483647;
+
+export function jonesNativeProcessRoles(
+  main: number,
+  backends: readonly number[],
+): JonesProcessRole[] {
+  if (!validProcessPid(main) || backends.some((pid) => !validProcessPid(pid)))
+    throw new Error("Invalid native writer PID.");
+  const pids = [...new Set(backends)].filter((pid) => pid !== main);
+  if (pids.length >= 256) throw new Error("Too many native writers.");
+  return [{ pid: main, role: "main" }, ...pids.map((pid) => ({ pid, role: "backend" as const }))];
+}
+
+export async function captureJonesNativeProcesses(
+  helper: string,
+  supplied: readonly JonesLegacyProcessProof[] | readonly JonesProcessRole[],
+): Promise<{
+  processes: readonly JonesLegacyProcessProof[] | readonly JonesProcessRole[];
+  proofs: readonly JonesLegacyProcessProof[] | readonly JonesKernelProcessProof[];
+}> {
+  const processes = supplied.map((proof) => ({ ...proof }));
+  const roles = processes.some((proof) => "role" in proof);
+  if (!roles) {
+    if (
+      processes.length > 256 ||
+      !processes.every(
+        (proof) =>
+          Object.keys(proof).length === 2 &&
+          Number.isInteger(proof.pid) &&
+          proof.pid > 0 &&
+          "identity" in proof &&
+          typeof proof.identity === "string" &&
+          proof.identity.trim(),
+      )
+    )
+      throw new Error("Invalid legacy native writer proofs.");
+    return {
+      processes: processes as JonesLegacyProcessProof[],
+      proofs: processes as JonesLegacyProcessProof[],
+    };
+  }
+  if (
+    !processes.length ||
+    processes.length > 256 ||
+    !processes.every(
+      (proof) =>
+        Object.keys(proof).length === 2 &&
+        validProcessPid(proof.pid) &&
+        "role" in proof &&
+        (proof.role === "main" || proof.role === "backend"),
+    ) ||
+    new Set(processes.map((proof) => proof.pid)).size !== processes.length ||
+    processes.filter((proof) => "role" in proof && proof.role === "main").length !== 1
+  )
+    throw new Error("Invalid native writer roles.");
+  const deadline = performance.now() + 30000;
+  const proofs: JonesKernelProcessProof[] = [];
+  for (const role of processes) {
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) throw new Error("Native writer capture deadline expired.");
+    const { stdout, stderr } = await new Promise<{ stdout: string; stderr: string }>(
+      (resolve, reject) => {
+        NodeChildProcess.execFile(
+          "/usr/bin/python3",
+          [helper, "--process-identity", String(role.pid)],
+          {
+            encoding: "utf8",
+            maxBuffer: 4096,
+            timeout: Math.max(1, Math.floor(Math.min(5000, remaining))),
+          },
+          (error, stdout, stderr) => (error ? reject(error) : resolve({ stdout, stderr })),
+        );
+      },
+    );
+    if (stderr.trim() || performance.now() > deadline)
+      throw new Error("Native writer inspection failed.");
+    const proof: unknown = JSON.parse(stdout);
+    if (proof === null || typeof proof !== "object" || Array.isArray(proof))
+      throw new Error("Invalid native writer identity.");
+    const value = proof as Record<string, unknown>;
+    if (
+      Object.keys(value).length !== 4 ||
+      !validProcessPid(value.pid) ||
+      value.pid !== role.pid ||
+      typeof value.startSec !== "number" ||
+      !Number.isSafeInteger(value.startSec) ||
+      value.startSec < 0 ||
+      typeof value.startUsec !== "number" ||
+      !Number.isInteger(value.startUsec) ||
+      value.startUsec < 0 ||
+      value.startUsec >= 1000000 ||
+      typeof value.executable !== "string" ||
+      !value.executable.startsWith("/") ||
+      value.executable.includes("\0") ||
+      Buffer.byteLength(value.executable, "utf8") >= 4096
+    )
+      throw new Error("Invalid native writer identity.");
+    proofs.push(value as JonesKernelProcessProof);
+  }
+  return { processes: processes as JonesProcessRole[], proofs };
+}
+
 export interface JonesDesktopUpdateOptions {
   readonly home: string;
   readonly appRoot: string;
@@ -306,7 +418,9 @@ export interface JonesDesktopUpdateOptions {
     transactionId: string,
     active: ActiveInstall,
   ) => Promise<{ readonly phase?: string; readonly message?: string } | void>;
-  readonly processProofs: () => Promise<readonly { pid: number; identity: string }[]>;
+  readonly processProofs: () => Promise<
+    readonly JonesLegacyProcessProof[] | readonly JonesProcessRole[]
+  >;
   readonly listener: () => Promise<string>;
   readonly timestamp: () => Promise<string>;
   readonly client?: Pick<JonesActionsClient, "check" | "stage">;
@@ -1679,7 +1793,11 @@ export class JonesDesktopUpdateController {
         if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
       }
       // Every process that can carry this claim's one backend request, captured before the claim.
-      const requesters = await this.#options.processProofs();
+      const captured = await captureJonesNativeProcesses(
+        helper,
+        await this.#options.processProofs(),
+      );
+      const requesters = captured.proofs;
       await this.#publish("preparing", "downloaded");
       // Claim preparation under the same native lock as discard before the backend can create effects.
       this.#activationBlocked = true;
@@ -1764,7 +1882,7 @@ export class JonesDesktopUpdateController {
         staged,
         expected,
         continuationReceipt,
-        processes: await this.#options.processProofs(),
+        processes: captured.processes,
         listener: await this.#options.listener(),
       };
       const requestPath = NodePath.join(tx, "activation-request.json");

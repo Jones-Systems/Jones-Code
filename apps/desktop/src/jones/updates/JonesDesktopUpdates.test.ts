@@ -15,6 +15,8 @@ import type {
 } from "@t3tools/shared/jones/jonesActions";
 import {
   JonesDesktopUpdateController,
+  captureJonesNativeProcesses,
+  jonesNativeProcessRoles,
   type JonesDesktopUpdateOptions,
 } from "./JonesDesktopUpdates.ts";
 import { createInitialDesktopUpdateState } from "../../updates/updateMachine.ts";
@@ -1975,3 +1977,213 @@ it.each(["started", "skipped"] as const)(
     }
   },
 );
+
+it("captures every original kernel requester sequentially with bounded current-helper queries", async () => {
+  const native = vi.mocked(NodeChildProcess.execFile);
+  const roles = [
+    { pid: 41, role: "main" as const },
+    { pid: 42, role: "backend" as const },
+  ];
+  const calls: number[] = [];
+  native.mockImplementation((command, args, options, callback) => {
+    expect(command).toBe("/usr/bin/python3");
+    expect(args?.slice(0, 2)).toEqual(["/current-helper.py", "--process-identity"]);
+    expect(options).toMatchObject({ encoding: "utf8", maxBuffer: 4096 });
+    expect(
+      options !== null && typeof options === "object" && Number(options.timeout),
+    ).toBeLessThanOrEqual(5000);
+    if (typeof callback !== "function") throw new Error("Missing callback");
+    const pid = Number(args?.[2]);
+    calls.push(pid);
+    callback(
+      null,
+      JSON.stringify({ pid, startSec: 123, startUsec: 456, executable: "/Jones" }),
+      "",
+    );
+    return new NodeChildProcess.ChildProcess();
+  });
+  try {
+    const captured = await captureJonesNativeProcesses("/current-helper.py", roles);
+    expect(calls).toEqual([41, 42]);
+    expect(captured.processes).toEqual(roles);
+    expect(captured.proofs).toEqual(
+      roles.map(({ pid }) => ({ pid, startSec: 123, startUsec: 456, executable: "/Jones" })),
+    );
+    const legacy = [{ pid: 9, identity: "exact legacy bytes" }];
+    expect(await captureJonesNativeProcesses("/current-helper.py", legacy)).toEqual({
+      processes: legacy,
+      proofs: legacy,
+    });
+    expect(calls).toEqual([41, 42]);
+  } finally {
+    native.mockReset();
+  }
+});
+
+it.each([
+  "extra",
+  "pid",
+  "boolean",
+  "usec",
+  "birth",
+  "path",
+  "mixed",
+  "error",
+  "stderr",
+  "deadline",
+])("refuses kernel capture without falling back to legacy inspection: %s", async (fault) => {
+  const native = vi.mocked(NodeChildProcess.execFile);
+  const clock = vi.spyOn(performance, "now");
+  let now = 0;
+  clock.mockImplementation(() => now);
+  native.mockImplementation((_command, args, options, callback) => {
+    expect(args?.[1]).toBe("--process-identity");
+    expect(options).toMatchObject({ maxBuffer: 4096, timeout: 5000 });
+    if (typeof callback !== "function") throw new Error("Missing callback");
+    const proof: Record<string, unknown> = {
+      pid: 41,
+      startSec: 123,
+      startUsec: 456,
+      executable: "/Jones",
+    };
+    if (fault === "extra") proof.extra = 1;
+    if (fault === "pid") proof.pid = 42;
+    if (fault === "boolean") proof.startSec = true;
+    if (fault === "usec") proof.startUsec = 1000000;
+    if (fault === "birth") proof.startSec = -1;
+    if (fault === "path") proof.executable = "relative";
+    if (fault === "mixed") proof.identity = "legacy";
+    if (fault === "deadline") now = 30001;
+    callback(
+      fault === "error" ? new Error("inspection failed") : null,
+      JSON.stringify(proof),
+      fault === "stderr" ? "inspection warning" : "",
+    );
+    return new NodeChildProcess.ChildProcess();
+  });
+  try {
+    await expect(
+      captureJonesNativeProcesses("/current-helper.py", [{ pid: 41, role: "main" }]),
+    ).rejects.toThrow();
+    expect(native).toHaveBeenCalledTimes(1);
+  } finally {
+    native.mockReset();
+    clock.mockRestore();
+  }
+});
+
+it("persists original kernel requesters before preparation and retains the single role capture", async () => {
+  const f = await fixture();
+  const native = vi.mocked(NodeChildProcess.execFile);
+  const spawn = vi.mocked(NodeChildProcess.spawn);
+  const preflight = vi.mocked(preflightJonesCandidateStartupGate);
+  const roles = [
+    { pid: 41, role: "main" as const },
+    { pid: 42, role: "backend" as const },
+  ];
+  const processProofs = vi.fn(async () => roles);
+  const originals = roles.map(({ pid }) => ({
+    pid,
+    startSec: 123,
+    startUsec: 456,
+    executable: "/Jones",
+  }));
+  const order: string[] = [];
+  let transactionId = "";
+  const controller = new JonesDesktopUpdateController({
+    ...f.options,
+    processProofs,
+    prepareNative: async (stagedHandle, id) => {
+      order.push("prepare");
+      transactionId = id;
+      const tx = NodePath.join(controller.updaterRoot, "transactions", id);
+      expect(
+        JSON.parse(await NodeFSP.readFile(NodePath.join(tx, "prepare-request.json"), "utf8"))
+          .processes,
+      ).toEqual(originals);
+      roles[1]!.pid = 99;
+      await NodeFSP.writeFile(
+        NodePath.join(tx, "continuation.json"),
+        JSON.stringify({
+          prepared: true,
+          preparationClaimProtocol: 3,
+          stagedHandle,
+          transactionId: id,
+        }),
+      );
+    },
+  });
+  native.mockImplementation((_command, args, _options, callback) => {
+    if (typeof callback !== "function") throw new Error("Missing callback");
+    if (args?.[0] === "--version") callback(null, "Python 3", "");
+    else if (args?.[1] === "--process-identity") {
+      order.push("identity:" + args[2]);
+      callback(null, JSON.stringify(originals.find((p) => p.pid === Number(args[2]))), "");
+    } else if (args?.[3] === "--claim-preparation") {
+      order.push("claim");
+      callback(null, claimedPreparation(f.home, args[6]), "");
+    } else {
+      expect(args?.[3]).toBe("--claim-activation");
+      const tx = NodePath.join(controller.updaterRoot, "transactions", transactionId);
+      expect(
+        JSON.parse(NodeFS.readFileSync(NodePath.join(tx, "activation-request.json"), "utf8"))
+          .processes,
+      ).toEqual([
+        { pid: 41, role: "main" },
+        { pid: 42, role: "backend" },
+      ]);
+      expect(
+        JSON.parse(NodeFS.readFileSync(NodePath.join(tx, "prepare-request.json"), "utf8"))
+          .processes,
+      ).toEqual(originals);
+      callback(
+        null,
+        JSON.stringify({
+          protocol: 1,
+          operation: "claim-activation",
+          handle,
+          transactionId,
+          status: "claimed",
+          intentPath: NodePath.join(tx, "intent.json"),
+        }),
+        "",
+      );
+    }
+    return new NodeChildProcess.ChildProcess();
+  });
+  spawn.mockImplementation(() => {
+    const child = new NodeChildProcess.ChildProcess();
+    void Promise.resolve().then(() => child.emit("spawn"));
+    return child;
+  });
+  try {
+    await controller.configure();
+    await controller.check();
+    await controller.download();
+    preflight.mockResolvedValueOnce(undefined);
+    expect(await controller.install(handle)).toMatchObject({ accepted: true, failed: false });
+    expect(order).toEqual(["identity:41", "identity:42", "claim", "prepare"]);
+    expect(processProofs).toHaveBeenCalledTimes(1);
+  } finally {
+    native.mockReset();
+    spawn.mockReset();
+    preflight.mockReset();
+    await f.cleanup();
+  }
+});
+
+it("publishes one main role and unique backend roles without replacing the main", () => {
+  expect(jonesNativeProcessRoles(41, [42, 41, 42, 43])).toEqual([
+    { pid: 41, role: "main" },
+    { pid: 42, role: "backend" },
+    { pid: 43, role: "backend" },
+  ]);
+  expect(() => jonesNativeProcessRoles(0, [])).toThrow();
+  expect(() => jonesNativeProcessRoles(41, [1.5])).toThrow();
+  expect(() =>
+    jonesNativeProcessRoles(
+      41,
+      Array.from({ length: 256 }, (_, i) => i + 100),
+    ),
+  ).toThrow();
+});

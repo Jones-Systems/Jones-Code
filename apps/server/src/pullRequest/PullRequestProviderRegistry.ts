@@ -5,34 +5,39 @@ import type { SourceControlProviderKind } from "@t3tools/contracts";
 
 import * as BuiltInDrivers from "../sourceControl/builtInDrivers.ts";
 import type { PullRequestProviderApi } from "@t3tools/source-control-core/server/PullRequestProvider";
+import type { SourceControlCiReader } from "@t3tools/source-control-core/server/driver";
 
 export class PullRequestProviderRegistry extends Context.Service<
   PullRequestProviderRegistry,
   {
     readonly get: (kind: SourceControlProviderKind) => PullRequestProviderApi | null;
+    readonly getCi?: (kind: SourceControlProviderKind) => SourceControlCiReader | null;
     readonly kinds: ReadonlyArray<SourceControlProviderKind>;
   }
 >()("t3/pullRequest/PullRequestProviderRegistry") {}
 
 export function fromProviders(
   providers: ReadonlyArray<PullRequestProviderApi>,
+  ciReaders: ReadonlyMap<SourceControlProviderKind, SourceControlCiReader> = new Map(),
 ): PullRequestProviderRegistry["Service"] {
   const byKind = new Map(providers.map((provider) => [provider.kind, provider]));
   return {
     get: (kind) => byKind.get(kind) ?? null,
+    getCi: (kind) => ciReaders.get(kind) ?? null,
     kinds: providers.map((provider) => provider.kind),
   };
 }
 
-/**
- * @public Service construction is part of the canonical Effect module API.
- */
+/** @public */
 export const make = Effect.gen(function* () {
-  const drivers = yield* Effect.forEach(BuiltInDrivers.BUILT_IN_SOURCE_CONTROL_DRIVERS, (driver) =>
-    driver.make.pipe(Effect.map((instance) => instance.pullRequests)),
-  );
+  const drivers = yield* BuiltInDrivers.SourceControlDrivers;
   return fromProviders(
-    drivers.filter((provider): provider is PullRequestProviderApi => provider !== null),
+    drivers.flatMap(({ instance }) => instance.pullRequests ?? []),
+    new Map(
+      drivers.flatMap(({ driver, instance }) =>
+        instance.ci === undefined ? [] : [[driver.kind, instance.ci] as const],
+      ),
+    ),
   );
 });
 

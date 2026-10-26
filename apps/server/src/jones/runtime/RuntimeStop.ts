@@ -106,7 +106,7 @@ const make = Effect.gen(function* () {
   const observe = Effect.fn("CurrentRuntimeStop.observe")(
     function* (candidate: StopCurrentThreadRuntimeInput) {
       const principal = yield* EnvironmentAuthenticatedPrincipal;
-      const input = yield* Schema.decodeUnknownEffect(StopCurrentThreadRuntimeInput)(candidate, {
+      const input = yield* Schema.decodeEffect(StopCurrentThreadRuntimeInput)(candidate, {
         onExcessProperty: "error",
       }).pipe(Effect.mapError(() => error("invalid_stop_observation")));
       if (input.target.binding.threadId !== input.threadId)
@@ -155,7 +155,7 @@ const make = Effect.gen(function* () {
   const stop = Effect.fn("CurrentRuntimeStop.stop")(
     function* (candidate: StopCurrentThreadRuntimeInput) {
       const principal = yield* EnvironmentAuthenticatedPrincipal;
-      const input = yield* Schema.decodeUnknownEffect(StopCurrentThreadRuntimeInput)(candidate, {
+      const input = yield* Schema.decodeEffect(StopCurrentThreadRuntimeInput)(candidate, {
         onExcessProperty: "error",
       }).pipe(Effect.mapError(() => error("invalid_stop_request")));
       if (input.target.binding.threadId !== input.threadId)

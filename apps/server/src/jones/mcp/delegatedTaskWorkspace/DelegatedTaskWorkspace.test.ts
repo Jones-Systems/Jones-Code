@@ -342,11 +342,9 @@ const hqProjectRecord = {
 } as const;
 
 /**
- * Real orchestrator, thread management and launch preparation over in-memory
- * SQLite; Git, setup scripts and provider execution are fakes. As with the
- * real runner, setup reports a completion only when preparation observes it;
- * that completion blocks until released so each case observes the prepared
- * child before it starts.
+ * Use real orchestrator, thread management and launch preparation over in-memory SQLite;
+ * Git, setup and providers are fakes. Like production, setup completion is reported only when preparation
+ * observes it; block that completion until each case observes the prepared child before launch.
  */
 function makeHarness(
   listWorktreePaths: GitVcsDriver.GitVcsDriver["Service"]["listWorktreePaths"],
@@ -430,7 +428,7 @@ function makeHarness(
               ? Option.some(hqProjectRecord)
               : Option.none(),
         ),
-      getByWorkspaceRoot: () => Effect.succeed(Option.some(projectRecord)),
+      getByWorkspaceRoot: () => Effect.succeedSome(projectRecord),
       snapshot: Effect.die("unused"),
       getShell: () => Effect.die("unused"),
       listShells: () => Effect.die("unused"),
@@ -470,6 +468,7 @@ function makeHarness(
           Effect.andThen(observed ? Effect.void : Deferred.succeed(setupEntered, undefined)),
           Effect.as({
             status: "started" as const,
+            writeCompletion: Effect.void,
             async: options.setupAsync === true,
             scriptId: "setup",
             scriptName: "Setup",
@@ -496,7 +495,7 @@ function makeHarness(
     ProviderRegistryMock.layer([claudeProvider]),
     Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
       namedProjectsRoot: "/projects",
-      folderForThread: () => Effect.succeed(Option.none()),
+      folderForThread: () => Effect.succeedNone,
     }),
   );
   const launch = ThreadLaunch.layer.pipe(

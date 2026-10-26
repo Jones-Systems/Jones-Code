@@ -71,6 +71,84 @@ ${jonesPairedStateSource.syncTree}
 def same_binding(left, right):
     return left == right and left.get('protocol') == PROTOCOL and left.get('owner') == 'desktop'
 
+class KernelProcessError(RuntimeError):
+    def __init__(self, error, call, number=None):
+        self.diagnostic = {'error': error, 'call': call, 'errno': number}
+        super().__init__(error)
+
+def kernel_process_pid(value):
+    if not value or len(value) > 10 or any(c < '0' or c > '9' for c in value) or not 0 < int(value) <= 2147483647:
+        raise argparse.ArgumentTypeError('pid must be a positive decimal integer <= 2147483647')
+    return int(value)
+
+def kernel_process_sample(pid):
+    import ctypes, errno
+    if type(pid) is not int or not 0 < pid <= 2147483647:
+        raise KernelProcessError('process-inspection-failed', 'validate-pid')
+    if sys.platform != 'darwin':
+        raise KernelProcessError('unsupported-platform', 'libSystem')
+    class ProcBsdinfo(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_uint32) for name in (
+            'pbi_flags', 'pbi_status', 'pbi_xstatus', 'pbi_pid', 'pbi_ppid',
+            'pbi_uid', 'pbi_gid', 'pbi_ruid', 'pbi_rgid', 'pbi_svuid', 'pbi_svgid', 'rfu_1')]
+        _fields_ += [('pbi_comm', ctypes.c_char * 16), ('pbi_name', ctypes.c_char * 32)]
+        _fields_ += [(name, ctypes.c_uint32) for name in ('pbi_nfiles', 'pbi_pgid', 'pbi_pjobc', 'e_tdev', 'e_tpgid')]
+        _fields_ += [('pbi_nice', ctypes.c_int32), ('pbi_start_tvsec', ctypes.c_uint64), ('pbi_start_tvusec', ctypes.c_uint64)]
+    # Public proc_info.h layout across the supported Ventura+ dependency floor.
+    offsets = {'pbi_status': 4, 'pbi_pid': 12, 'pbi_ppid': 16, 'pbi_uid': 20,
+               'pbi_comm': 48, 'pbi_name': 64, 'pbi_nfiles': 96, 'pbi_nice': 116,
+               'pbi_start_tvsec': 120, 'pbi_start_tvusec': 128}
+    if ctypes.sizeof(ProcBsdinfo) != 136 or any(getattr(ProcBsdinfo, name).offset != offset for name, offset in offsets.items()):
+        raise KernelProcessError('process-inspection-failed', 'proc_bsdinfo-layout')
+    try:
+        lib = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)
+        lib.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+        lib.proc_pidinfo.restype = ctypes.c_int
+        lib.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+        lib.proc_pidpath.restype = ctypes.c_int
+    except (OSError, AttributeError) as error:
+        raise KernelProcessError('process-inspection-failed', 'libSystem', getattr(error, 'errno', None)) from None
+    def checked_call(name, *arguments):
+        ctypes.set_errno(0)
+        try: result = getattr(lib, name)(*arguments)
+        except OSError as error:
+            number = error.errno
+            raise KernelProcessError('process-exited' if number == errno.ESRCH else 'process-inspection-failed', name, number) from None
+        number = ctypes.get_errno()
+        if result <= 0:
+            raise KernelProcessError('process-exited' if number == errno.ESRCH else 'process-inspection-failed', name, number or None)
+        return result
+    def bsd():
+        sample = ProcBsdinfo()
+        size = checked_call('proc_pidinfo', pid, 3, 0, ctypes.byref(sample), ctypes.sizeof(sample))
+        if size != 136 or sample.pbi_pid != pid or not 0 <= sample.pbi_start_tvusec < 1000000:
+            raise KernelProcessError('process-inspection-failed', 'proc_pidinfo')
+        if sample.pbi_status == 5:
+            raise KernelProcessError('process-exited', 'proc_pidinfo')
+        return (sample.pbi_pid, sample.pbi_start_tvsec, sample.pbi_start_tvusec, sample.pbi_ppid)
+    def executable():
+        buffer = ctypes.create_string_buffer(b'\xff' * 4096, 4096)
+        size = checked_call('proc_pidpath', pid, buffer, 4096)
+        if size >= 4096 or buffer.raw[size] != 0 or b'\0' in buffer.raw[:size]:
+            raise KernelProcessError('process-inspection-failed', 'proc_pidpath')
+        try: value = buffer.raw[:size].decode('utf8', errors='strict')
+        except UnicodeDecodeError: raise KernelProcessError('process-inspection-failed', 'proc_pidpath') from None
+        if not value.startswith('/'):
+            raise KernelProcessError('process-inspection-failed', 'proc_pidpath')
+        return value
+    first = bsd()
+    path = executable()
+    if bsd() != first:
+        raise KernelProcessError('process-inspection-failed', 'proc_pidinfo')
+    if executable() != path:
+        raise KernelProcessError('process-inspection-failed', 'proc_pidpath')
+    # A bounded stable observation, not a live process handle or signal authority.
+    return {'pid': first[0], 'startSec': first[1], 'startUsec': first[2], 'executable': path}, first[3]
+
+def kernel_process_identity(pid):
+    return kernel_process_sample(pid)[0]
+
+
 def process_identity(pid, deadline=None):
     result = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'lstart=', '-o', 'command='], capture_output=True, text=True, timeout=None if deadline is None else max(0.001, deadline - time.monotonic()))
     if result.returncode == 1 and not result.stdout.strip() and not result.stderr.strip(): return None
@@ -90,6 +168,17 @@ def process_start(pid, deadline=None):
     return status, ' '.join(birth.split())
 
 def alive(proof, deadline=None):
+    if valid_kernel_process(proof):
+        if deadline is not None and time.monotonic() >= deadline:
+            raise KernelProcessError('process-inspection-failed', 'deadline')
+        try: current = kernel_process_identity(proof['pid'])
+        except KernelProcessError as failure:
+            if failure.diagnostic['error'] == 'process-exited': return False
+            raise
+        if deadline is not None and time.monotonic() > deadline:
+            raise KernelProcessError('process-inspection-failed', 'deadline')
+        return current == proof
+    if not valid_legacy_processes([proof]): raise SelectionRefused('unknown-state')
     identity = process_identity(proof['pid']) if deadline is None else process_identity(proof['pid'], deadline)
     if identity is None: return False
     if identity == proof['identity']: return True
@@ -102,6 +191,7 @@ def alive(proof, deadline=None):
     raise RuntimeError('Process identity changed; signal withheld.')
 
 def stop_exact(proofs):
+    if proofs and not valid_process_proofs(proofs): raise SelectionRefused('unknown-state')
     for proof in proofs:
         if alive(proof): os.kill(proof['pid'], signal.SIGTERM)
     deadline = time.monotonic() + 90
@@ -386,11 +476,15 @@ def launch(active, descriptor=None):
     if type(pid) is not int or pid <= 0 or not (isinstance(bundle, str) and bundle and isinstance(executable, str) and executable) \
             or os.path.realpath(bundle) != os.path.realpath(active['appPath']) or os.path.realpath(executable) != os.path.realpath(active['executablePath']):
         raise RuntimeError('LaunchServices did not prove the launched Jones Code; launch effect is unknown.')
-    identity = process_identity(pid)
-    if identity is None: raise RuntimeError('Native app exited before its identity was captured; OS consent may be required.')
-    if not any((' ' + path + ' ') in (' ' + identity + ' ') for path in (active['executablePath'], executable)):
+    try: identity, _ = kernel_process_sample(pid)
+    except KernelProcessError as failure:
+        if failure.diagnostic['error'] != 'process-exited': raise
+        raise RuntimeError('Native app exited before its identity was captured; OS consent may be required.') from None
+    try: matches = os.path.samefile(identity['executable'], active['executablePath'])
+    except OSError: matches = False
+    if not matches:
         raise RuntimeError('Launched process identity does not match Jones Code; launch effect is unknown.')
-    return {'pid': pid, 'identity': identity}
+    return identity
 
 LAUNCH_SERVICES_SCRIPT = r'''ObjC.import("AppKit");
 function reply(value) {
@@ -561,7 +655,7 @@ def pre_swap_preparation_recovery(request, request_path, request_sha256, active,
         keys = {'intent', 'phase', 'message', 'storage', 'recoveryReserves', 'incomingBundle', 'previousBundle'} | ({'preSwapPreparationRecovery'} if terminal else set())
         if not set(journal) <= keys or (not terminal and (journal.get('phase') != 'blocked' or hashlib.sha256(journal_raw).hexdigest() != approval['journalSha256'])):
             raise SelectionRefused('activation-incomplete')
-        if set(intent) != {'protocol', 'transactionId', 'expected', 'staged', 'continuationReceipt', 'processes', 'listener'} or type(intent['protocol']) is not int or intent['protocol'] != PROTOCOL or intent['transactionId'] != tx.name or intent['expected'] != active or journal['intent'] != intent or intent['continuationReceipt'] != str(tx / 'continuation.json') or not valid_process_proofs(intent['processes']) or not isinstance(intent['listener'], str) or not intent['listener'].strip():
+        if set(intent) != {'protocol', 'transactionId', 'expected', 'staged', 'continuationReceipt', 'processes', 'listener'} or type(intent['protocol']) is not int or intent['protocol'] != PROTOCOL or intent['transactionId'] != tx.name or intent['expected'] != active or journal['intent'] != intent or intent['continuationReceipt'] != str(tx / 'continuation.json') or not valid_activation_processes(intent['processes']) or not isinstance(intent['listener'], str) or not intent['listener'].strip():
             raise SelectionRefused('unknown-transaction')
         staged = intent['staged']
         claim, claim_raw, _ = records['prepare-intent.json']
@@ -587,7 +681,8 @@ def pre_swap_preparation_recovery(request, request_path, request_sha256, active,
         incoming_binding = dict(staged, appPath=str(incoming), executablePath=str(incoming / pathlib.Path(staged['executablePath']).relative_to(staged['appPath'])))
         bundle_identity(incoming_binding, stable=False)
         if app_digest(stable) != active['appDigest'] or app_digest(incoming) != staged['appDigest']: raise SelectionRefused('running-changed')
-        if any(alive(proof) for proof in intent['processes']): raise SelectionRefused('writer-active')
+        activation_proofs = original_role_proofs(intent['processes'], records.get('prepare-request.json', ({},))[0]) if valid_process_roles(intent['processes']) else intent['processes']
+        if any(alive(proof) for proof in activation_proofs): raise SelectionRefused('writer-active')
         if 'prepare-request.json' in records and any(alive(proof) for proof in records['prepare-request.json'][0]['processes']): raise SelectionRefused('writer-active')
         reserve_identities = []
         reserves = journal.get('recoveryReserves', [])
@@ -768,12 +863,65 @@ def validate_preparation_withdrawal(value, active, transaction_id, claim, claim_
     if json.dumps(value, sort_keys=True, separators=(',', ':')) != json.dumps(expected, sort_keys=True, separators=(',', ':')):
         raise SelectionRefused('withdrawal-mismatch')
 
+def valid_kernel_process(proof):
+    return isinstance(proof, dict) and set(proof) == {'pid', 'startSec', 'startUsec', 'executable'} and type(proof['pid']) is int and 0 < proof['pid'] <= 2147483647 and type(proof['startSec']) is int and 0 <= proof['startSec'] <= 18446744073709551615 and type(proof['startUsec']) is int and 0 <= proof['startUsec'] < 1000000 and isinstance(proof['executable'], str) and proof['executable'].startswith('/') and len(proof['executable'].encode('utf8')) < 4096 and '\0' not in proof['executable']
+
+def unique_processes(proofs):
+    return len({proof['pid'] for proof in proofs}) == len(proofs)
+
+def valid_kernel_processes(proofs):
+    return isinstance(proofs, list) and 0 < len(proofs) <= 256 and all(valid_kernel_process(proof) for proof in proofs) and unique_processes(proofs)
+
+def valid_process_roles(proofs):
+    return isinstance(proofs, list) and 0 < len(proofs) <= 256 and all(isinstance(proof, dict) and set(proof) == {'pid', 'role'} and type(proof['pid']) is int and 0 < proof['pid'] <= 2147483647 and proof['role'] in ('main', 'backend') for proof in proofs) and unique_processes(proofs) and sum(proof['role'] == 'main' for proof in proofs) == 1
+
+def valid_activation_processes(proofs):
+    return valid_process_roles(proofs) or valid_legacy_processes(proofs)
+
+def original_role_proofs(roles, prepare):
+    if not valid_process_roles(roles) or not isinstance(prepare, dict) or not valid_kernel_processes(prepare.get('processes')):
+        raise SelectionRefused('claim-mismatch')
+    originals = {proof['pid']: proof for proof in prepare['processes']}
+    if set(originals) != {role['pid'] for role in roles}: raise SelectionRefused('claim-mismatch')
+    return [originals[role['pid']] for role in roles]
+
+def original_activation_proofs(intent, tx, expected_claim):
+    if not valid_process_roles(intent['processes']):
+        if not valid_legacy_processes(intent['processes']): raise SelectionRefused('unknown-state')
+        return intent['processes']
+    claim, raw, _ = bounded_native_json(tx / 'prepare-intent.json')
+    prepare, _, _ = bounded_native_json(tx / 'prepare-request.json')
+    if claim != expected_claim: raise SelectionRefused('claim-mismatch')
+    if set(prepare) != {'protocol', 'transactionId', 'stagedHandle', 'claimSha256', 'processes'} or type(prepare['protocol']) is not int or prepare['protocol'] != PROTOCOL or prepare['transactionId'] != intent['transactionId'] or prepare['stagedHandle'] != intent['staged']['handle'] or prepare['claimSha256'] != hashlib.sha256(raw).hexdigest():
+        raise SelectionRefused('claim-mismatch')
+    return original_role_proofs(intent['processes'], prepare)
+
+def capture_activation_processes(intent, originals):
+    if not valid_process_roles(intent['processes']): return originals
+    main = next(role['pid'] for role in intent['processes'] if role['role'] == 'main')
+    if main != os.getppid(): raise KernelProcessError('process-inspection-failed', 'helper-parent')
+    for role, original in zip(intent['processes'], originals):
+        try: current, parent = kernel_process_sample(role['pid'])
+        except KernelProcessError as failure:
+            if role['role'] == 'backend' and failure.diagnostic['error'] == 'process-exited': continue
+            raise
+        if current != original:
+            if role['role'] == 'backend': continue
+            raise KernelProcessError('process-inspection-failed', 'main-identity')
+        if role['role'] == 'backend' and parent != main:
+            raise KernelProcessError('process-inspection-failed', 'backend-parent')
+    return originals
+
 def valid_process_proofs(proofs):
+    return valid_kernel_processes(proofs) or valid_legacy_processes(proofs)
+
+def valid_legacy_processes(proofs):
     return isinstance(proofs, list) and 0 < len(proofs) <= 256 and all(
         isinstance(proof, dict) and set(proof) == {'pid', 'identity'} and type(proof['pid']) is int and proof['pid'] > 0 and isinstance(proof['identity'], str) and proof['identity'].strip()
         for proof in proofs)
 
 def process_exited(proof):
+    if valid_kernel_process(proof): return not alive(proof)
     if not isinstance(proof, dict) or set(proof) != {'pid', 'identity'} or type(proof['pid']) is not int or proof['pid'] <= 0 or not isinstance(proof['identity'], str) or not proof['identity'].strip():
         raise SelectionRefused('unknown-state')
     identity = process_identity(proof['pid'])
@@ -820,7 +968,7 @@ def preparation_context(active, transaction_id, allow_dispatched=False):
         if 'continuation.json' in records and 'prepare-dispatched.json' not in records: raise SelectionRefused('unknown-state')
         if 'activation-request.json' in records:
             request = records['activation-request.json'][0]
-            if set(request) != {'protocol', 'transactionId', 'expected', 'staged', 'continuationReceipt', 'processes', 'listener'} or type(request['protocol']) is not int or request['protocol'] != PROTOCOL or request['transactionId'] != transaction_id or request['expected'] != active or request['staged'] != selection['app'] or request['continuationReceipt'] != str(tx / 'continuation.json') or not valid_process_proofs(request['processes']) or not isinstance(request['listener'], str) or not request['listener'].strip():
+            if set(request) != {'protocol', 'transactionId', 'expected', 'staged', 'continuationReceipt', 'processes', 'listener'} or type(request['protocol']) is not int or request['protocol'] != PROTOCOL or request['transactionId'] != transaction_id or request['expected'] != active or request['staged'] != selection['app'] or request['continuationReceipt'] != str(tx / 'continuation.json') or not valid_activation_processes(request['processes']) or not isinstance(request['listener'], str) or not request['listener'].strip():
                 raise SelectionRefused('claim-mismatch')
         if 'prepare-failure.json' in records:
             failure = records['prepare-failure.json'][0]
@@ -830,6 +978,8 @@ def preparation_context(active, transaction_id, allow_dispatched=False):
             request = records['prepare-request.json'][0]
             if set(request) != {'protocol', 'transactionId', 'stagedHandle', 'claimSha256', 'processes'} or type(request['protocol']) is not int or request['protocol'] != PROTOCOL or request['transactionId'] != transaction_id or request['stagedHandle'] != handle or request['claimSha256'] != claim_sha or not valid_process_proofs(request['processes']):
                 raise SelectionRefused('claim-mismatch')
+        if 'activation-request.json' in records and valid_process_roles(records['activation-request.json'][0]['processes']):
+            original_role_proofs(records['activation-request.json'][0]['processes'], records.get('prepare-request.json', ({},))[0])
         if withdrawn:
             validate_preparation_withdrawal(records['preparation-withdrawal.json'][0], active, transaction_id, claim, claim_sha)
             evidence = 'withdrawn'
@@ -841,7 +991,7 @@ def preparation_context(active, transaction_id, allow_dispatched=False):
     if evidence is None and not allow_dispatched and 'prepare-request.json' in records:
         request = records['prepare-request.json'][0]
         proofs = request.get('processes')
-        if set(request) != {'protocol', 'transactionId', 'stagedHandle', 'claimSha256', 'processes'} or type(request['protocol']) is not int or request['protocol'] != PROTOCOL or request['transactionId'] != transaction_id or request['stagedHandle'] != handle or request['claimSha256'] != claim_sha or not isinstance(proofs, list) or not proofs or len(proofs) > 256:
+        if set(request) != {'protocol', 'transactionId', 'stagedHandle', 'claimSha256', 'processes'} or type(request['protocol']) is not int or request['protocol'] != PROTOCOL or request['transactionId'] != transaction_id or request['stagedHandle'] != handle or request['claimSha256'] != claim_sha or not valid_process_proofs(proofs):
             raise SelectionRefused('unknown-state')
         # The desktop and every backend that could receive this claim's one request have exited.
         if all(process_exited(proof) for proof in proofs): evidence = 'requester-exited'
@@ -1179,8 +1329,9 @@ def selection_command(operation, active, handle, selection_path, expected_digest
             if any(type(value.get('protocol')) is not int or type(value.get('preparationClaimProtocol')) is not int for value in (continuation, preparation, dispatched)) or continuation != dict(claim, prepared=True) or preparation != claim or dispatched != claim:
                 raise SelectionRefused('unknown-state')
             proofs = intent.get('processes')
-            if not isinstance(proofs, list) or not proofs or len(proofs) > 256 or any(not isinstance(proof, dict) or type(proof.get('pid')) is not int or proof['pid'] <= 0 or not isinstance(proof.get('identity'), str) or not proof['identity'].strip() for proof in proofs):
+            if not valid_activation_processes(proofs):
                 raise SelectionRefused('unknown-state')
+            original_activation_proofs(intent, transaction, claim)
             if not isinstance(intent.get('listener'), str) or not intent['listener'].strip():
                 raise SelectionRefused('unknown-state')
             if not launch_services_available(): raise SelectionRefused('launch-unavailable')
@@ -1260,7 +1411,7 @@ def settle_interrupted_activation(transaction_id):
                    'recovery-reserve.bin', 'recovery-journal-reserve.bin', 'previous-pair'}
         if not names <= allowed: raise SelectionRefused('unknown-state')
         intent, intent_raw, intent_info = bounded_native_json(tx / 'intent.json')
-        if set(intent) != {'protocol', 'transactionId', 'expected', 'staged', 'continuationReceipt', 'processes', 'listener'} or type(intent['protocol']) is not int or intent['protocol'] != PROTOCOL or intent['transactionId'] != transaction_id or intent['continuationReceipt'] != str(tx / 'continuation.json') or not valid_process_proofs(intent['processes']) or not isinstance(intent['staged'], dict) or not isinstance(intent['listener'], str) or not intent['listener'].strip():
+        if set(intent) != {'protocol', 'transactionId', 'expected', 'staged', 'continuationReceipt', 'processes', 'listener'} or type(intent['protocol']) is not int or intent['protocol'] != PROTOCOL or intent['transactionId'] != transaction_id or intent['continuationReceipt'] != str(tx / 'continuation.json') or not valid_activation_processes(intent['processes']) or not isinstance(intent['staged'], dict) or not isinstance(intent['listener'], str) or not intent['listener'].strip():
             raise SelectionRefused('unknown-state')
         active, manifest_raw, manifest_info = bounded_native_json(manifest_path)
         if not same_binding(active, intent['expected']): raise SelectionRefused('manifest-changed')
@@ -1341,7 +1492,8 @@ def activate(intent_file):
         try: launch(expected)
         except Exception as relaunch_failure:
             detail = 'Native reopen could not be proved.' if 'preEffect' in journal else str(relaunch_failure)
-            try: record('rolled-back', relaunch='failed', message=journal.get('message', '') + ' Jones Code was not reopened automatically: ' + detail)
+            diagnostics = {'relaunchDiagnostics': {key: value for key, value in relaunch_failure.diagnostic.items() if isinstance(value, (str, int))}} if isinstance(relaunch_failure, KernelProcessError) else {}
+            try: record('rolled-back', relaunch='failed', message=journal.get('message', '') + ' Jones Code was not reopened automatically: ' + detail, **diagnostics)
             except Exception: pass
         else:
             if 'preEffect' in journal: record('rolled-back', preEffect=dict(journal['preEffect'], relaunch='started'))
@@ -1352,8 +1504,11 @@ def activate(intent_file):
     startup_unknown = False
     exclusive_writers = []
     recovery_reserves = []
-    preparation_step = 'storage'
+    preparation_step = 'stop-processes'
+    captured_processes = None
     try:
+        captured_processes = capture_activation_processes(intent, original_activation_proofs(intent, tx, claim))
+        preparation_step = 'storage'
         storage = storage_preflight(expected, staged, tx)
         record('preparing', storage=storage)
         preparation_step = 'reserve'
@@ -1364,7 +1519,7 @@ def activate(intent_file):
         record('preparing', incomingBundle=str(incoming), previousBundle=str(previous))
         preserve_restart_tunnel(expected, intent['transactionId'])
         preparation_step = 'stop-processes'
-        stop_exact(intent['processes'])
+        stop_exact(captured_processes)
         preparation_step = 'quiescence'
         prove_quiescence(expected)
         exclusive_writers = acquire_writer_exclusion(expected)
@@ -1398,6 +1553,7 @@ def activate(intent_file):
             time.sleep(0.1)
         startup_unknown = True
         receipt = read(tx / 'trial-receipt.json')
+        receipt_written_ns = (tx / 'trial-receipt.json').stat().st_mtime_ns
         if not isinstance(receipt, dict) or type(receipt.get('startupGateProtocol')) is not int or receipt['startupGateProtocol'] != STARTUP_GATE_PROTOCOL:
             raise RuntimeError('Candidate startup dispatch has unknown effects; the required gate was not proved.')
         startup_unknown = False
@@ -1409,8 +1565,20 @@ def activate(intent_file):
         proof = receipt.get('backendProcess')
         if not isinstance(proof, dict) or set(proof) != {'pid', 'identity'} or type(proof.get('pid')) is not int or proof['pid'] <= 0 or not isinstance(proof.get('identity'), str) or not proof['identity'].strip():
             raise RuntimeError('Candidate did not prove the exact backend process.')
-        backend_process = proof
         record('validated', trialReceipt=receipt)
+        # The persisted server receipt stays legacy for independent builds. Bind
+        # its live writer here, before keeping any authority to stop that PID.
+        try: backend, parent = kernel_process_sample(proof['pid'])
+        except KernelProcessError as failure:
+            if failure.diagnostic['error'] != 'process-exited': raise
+            raise RuntimeError('Candidate backend stopped before commit.') from None
+        backend_started_ns = backend['startSec'] * 1000000000 + backend['startUsec'] * 1000
+        candidate_started_ns = candidate['startSec'] * 1000000000 + candidate['startUsec'] * 1000
+        if parent != candidate['pid'] or not candidate_started_ns <= backend_started_ns <= receipt_written_ns:
+            raise RuntimeError('Candidate did not prove the exact backend process.')
+        if not alive(candidate): raise RuntimeError('Candidate app stopped.')
+        backend_process = backend
+        record('validated', backendWriter=backend_process)
         if not alive(backend_process): raise RuntimeError('Candidate backend stopped before commit.')
         if not same_binding(read(manifest_path), expected): raise RuntimeError('Active manifest changed before commit.')
         durable(manifest_path, next_active)
@@ -1421,6 +1589,8 @@ def activate(intent_file):
                     **{key: descriptor[key] for key in ('protocol', 'startupGateProtocol', 'transactionId', 'stagedHandle', 'home', 'databasePath', 'profile', 'environmentId', 'version', 'sourceSha', 'sourceTree', 'listener')}), True)
         record('resumed')
     except Exception as failure:
+        if isinstance(failure, KernelProcessError):
+            journal['diagnostics'] = {key: value for key, value in failure.diagnostic.items() if isinstance(value, (str, int))}
         try:
             # Error evidence has its own small reserve. Before durable resume,
             # retain recovery headroom until candidate shutdown is proved.
@@ -1445,13 +1615,15 @@ def activate(intent_file):
                     release_recovery_reserve(recovery_reserves)
                     evidence = {'phase': journal['phase'], 'step': preparation_step, 'reason': 'preparation-failed',
                                 'diagnostics': {'error': type(failure).__name__[:64]}, 'relaunch': 'skipped'}
-                    if type(getattr(failure, 'errno', None)) is int: evidence['diagnostics']['errno'] = failure.errno
+                    if isinstance(failure, KernelProcessError):
+                        evidence['diagnostics'] = {key: value for key, value in failure.diagnostic.items() if isinstance(value, (str, int))}
+                    elif type(getattr(failure, 'errno', None)) is int: evidence['diagnostics']['errno'] = failure.errno
                     record('rolled-back', preEffect=evidence, message='Update did not start; nothing changed. Transaction ' + transaction_id + '.')
                 except Exception:
                     record('blocked', message='Pre-effect recovery could not be durably proved; state retained.')
                     return
                 release_writer_exclusion(exclusive_writers)
-                if recorded_processes_exited(intent['processes']):
+                if captured_processes is not None and recorded_processes_exited(captured_processes):
                     relaunch_previous()
                 return
             record('blocked', message='Pre-effect state is uncertain; previous binary and state retained.')
@@ -1462,7 +1634,7 @@ def activate(intent_file):
         try:
             record('rollback-intent')
             proofs = [candidate] if candidate else []
-            # Only a validated startup-gate receipt supplies the backend proof, independently of app ownership.
+            # Only a validated receipt joined to its live kernel writer supplies backend authority.
             if backend_process is not None: proofs.append(backend_process)
             preserve_restart_tunnel(expected, intent['transactionId'])
             stop_exact(proofs)
@@ -1474,7 +1646,8 @@ def activate(intent_file):
             if incoming is not None and previous is not None: restore_bundle(expected, incoming, previous)
             record('rolled-back', message='Update rolled back: ' + str(failure))
         except Exception as recovery_failure:
-            record('blocked', message='Paired recovery could not be proved; retained state requires reconciliation: ' + str(recovery_failure))
+            diagnostics = {'recoveryDiagnostics': {key: value for key, value in recovery_failure.diagnostic.items() if isinstance(value, (str, int))}} if isinstance(recovery_failure, KernelProcessError) else {}
+            record('blocked', message='Paired recovery could not be proved; retained state requires reconciliation: ' + str(recovery_failure), **diagnostics)
         else:
             release_writer_exclusion(exclusive_writers)
             relaunch_previous()
@@ -1534,10 +1707,8 @@ def manual_install_plan(plan_path, plan_sha256, clone_required=False):
     proofs = plan['processes']
     if not isinstance(proofs, list) or not proofs or len(proofs) > 100:
         raise RuntimeError('Manual installation requires captured owned process identities.')
-    for proof in proofs:
-        if set(proof) != {'pid', 'identity'} or type(proof['pid']) is not int or proof['pid'] <= 0 or not isinstance(proof['identity'], str) or not proof['identity']:
-            raise RuntimeError('Manual process identity is invalid.')
-        alive(proof)
+    if not valid_process_proofs(proofs): raise RuntimeError('Manual process identity is invalid.')
+    for proof in proofs: alive(proof)
     if not launch_services_available(): raise RuntimeError('LaunchServices is unavailable; manual installation was not started.')
     if clone_required:
         try: darwin_clonefile()
@@ -1618,7 +1789,8 @@ def manual_install(plan_path, plan_sha256, apply=False, clone_required=False):
         message = str(failure)
         try: release_recovery_reserve(reserves, 'journal')
         except Exception: message += '; recovery reserve ownership uncertain'
-        record('held', stoppedAt=receipt['phase'], message=message)
+        diagnostics = {'diagnostics': {key: value for key, value in failure.diagnostic.items() if isinstance(value, (str, int))}} if isinstance(failure, KernelProcessError) else {}
+        record('held', stoppedAt=receipt['phase'], message=message, **diagnostics)
         raise
     finally:
         release_writer_exclusion(writers)
@@ -1632,8 +1804,9 @@ def manual_install(plan_path, plan_sha256, apply=False, clone_required=False):
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--manifest', required=True)
+parser.add_argument('--manifest')
 action = parser.add_mutually_exclusive_group(required=True)
+action.add_argument('--process-identity', type=kernel_process_pid)
 action.add_argument('--activate')
 action.add_argument('--settle-interrupted-activation')
 action.add_argument('--reconcile-running')
@@ -1660,6 +1833,17 @@ parser.add_argument('--plan-sha256')
 parser.add_argument('--require-clone', action='store_true')
 parser.add_argument('arguments', nargs=argparse.REMAINDER)
 args = parser.parse_args()
+if args.process_identity is not None:
+    if any(value not in (None, False, []) for name, value in vars(args).items() if name != 'process_identity'):
+        parser.error('--process-identity cannot be combined with manifest, other flags or arguments')
+    try:
+        identity = kernel_process_identity(args.process_identity)
+    except KernelProcessError as error:
+        print(json.dumps(error.diagnostic, separators=(',', ':')), file=sys.stderr)
+        raise SystemExit(1)
+    print(json.dumps(identity, separators=(',', ':')))
+    raise SystemExit(0)
+if args.manifest is None: parser.error('--manifest is required for this action')
 if args.require_clone and not (args.inspect_manual_install or args.manual_install): parser.error('--require-clone requires a manual installation action')
 if args.arguments and args.arguments[0] == '--': args.arguments = args.arguments[1:]
 manifest_path = pathlib.Path(args.manifest).resolve(strict=True)

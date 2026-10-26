@@ -67,6 +67,7 @@ export function WorkstreamPicker({
   const [joinedId, setJoinedId] = useState<string | null>(null);
   const request = useRef<AbortController | null>(null);
   const running = useRef(false);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Abort a pending picker request when its dialog unmounts.
   useEffect(
     () => () => {
       request.current?.abort();
@@ -127,6 +128,7 @@ export function WorkstreamPicker({
       } else setMessage(operationMessage(result));
     },
   );
+  // oxlint-disable-next-line t3code/react-effect-budget -- Apply retained operation completion after commit and cancel the queued callback when the picker retires.
   useEffect(() => {
     if (!waiting || operationOpen(waiting)) return;
     let active = true;

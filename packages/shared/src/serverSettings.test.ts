@@ -31,8 +31,9 @@ describe("fallbackTextGenerationModelSelection", () => {
     const providerInstances = {
       [configured]: { driver: ProviderDriverKind.make("codex"), config: {} },
     };
-    const fallback = fallbackTextGenerationModelSelection(providerInstances, (instanceId) =>
-      instanceId === configured ? true : false,
+    const fallback = fallbackTextGenerationModelSelection(
+      providerInstances,
+      (instanceId) => instanceId === configured,
     );
     expect(fallback).toBeNull();
   });
@@ -52,6 +53,16 @@ describe("fallbackTextGenerationModelSelection", () => {
 });
 
 describe("serverSettings helpers", () => {
+  it("translates a shipped client's idle compaction switch into a mode", () => {
+    const off = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, { idleCompaction: "off" });
+    expect([off.idleCompaction, off.compactIdleThreads]).toEqual(["off", false]);
+    // Turning the old switch off keeps "Never" instead of reverting to the default.
+    const stillOff = applyServerSettingsPatch(off, { compactIdleThreads: false });
+    expect(stillOff.idleCompaction).toBe("off");
+    const on = applyServerSettingsPatch(off, { compactIdleThreads: true });
+    expect([on.idleCompaction, on.compactIdleThreads]).toEqual(["beforeCacheExpires", true]);
+  });
+
   it("preserves Work mode through unrelated updates and supports disabling", () => {
     const enabled = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, { workModeEnabled: true });
     expect(

@@ -21,6 +21,8 @@ import {
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
+import type * as Crypto from "effect/Crypto";
+import * as TestClock from "effect/testing/TestClock";
 import * as Effect from "effect/Effect";
 import * as Base64Url from "effect/encoding/Base64Url";
 import * as Exit from "effect/Exit";
@@ -273,7 +275,7 @@ const createManager = (
 ): Effect.Effect<
   ManagerFixture,
   PlatformError.PlatformError,
-  FileSystem.FileSystem | Path.Path | Scope.Scope | ProcessRunner.ProcessRunner
+  FileSystem.FileSystem | Path.Path | Scope.Scope | ProcessRunner.ProcessRunner | Crypto.Crypto
 > =>
   Effect.flatMap(Effect.service(FileSystem.FileSystem), (fs) =>
     Effect.gen(function* () {
@@ -441,7 +443,7 @@ function ownedControl(generation = "terminal-generation:one") {
   const threadId = ThreadId.make("thread-1");
   const releaseCommandId = CommandId.make("legacy-terminal:C");
   const createCommandId = legacyBootstrapCreateCommandId(threadId, releaseCommandId);
-  return Schema.decodeUnknownSync(LegacyOwnedTerminalControl)({
+  return Schema.decodeSync(LegacyOwnedTerminalControl)({
     version: 1,
     threadId,
     runId: "legacy-terminal:run",
@@ -648,12 +650,10 @@ it.layer(
             assert.equal(plan.binding, binding);
             order.push("intent");
             if (scenario === "intent_lost")
-              return yield* Effect.fail(
-                new TerminalManager.LegacyTerminalControlError({
-                  operation: "open",
-                  detail: "Synthetic lost intent",
-                }),
-              );
+              return yield* new TerminalManager.LegacyTerminalControlError({
+                operation: "open",
+                detail: "Synthetic lost intent",
+              });
           }),
         ...(scenario === "missing_hook"
           ? {}
@@ -668,12 +668,10 @@ it.layer(
                   assert.deepEqual(order, ["intent"]);
                   order.push("outcome");
                   if (scenario === "outcome_lost")
-                    return yield* Effect.fail(
-                      new TerminalManager.LegacyTerminalControlError({
-                        operation: "open",
-                        detail: "Synthetic lost outcome",
-                      }),
-                    );
+                    return yield* new TerminalManager.LegacyTerminalControlError({
+                      operation: "open",
+                      detail: "Synthetic lost outcome",
+                    });
                 }),
             }),
         afterSpawn: () =>
@@ -861,6 +859,51 @@ it.layer(
           .pipe(Effect.result);
         assert.equal(replacement._tag, "Failure");
         assert.deepEqual(ptyAdapter.processes[1]!.writes, []);
+      }),
+  );
+  it.effect(
+    "cancellation after a legacy write enters still awaits its durable outcome readback",
+    () =>
+      Effect.gen(function* () {
+        const { manager, ptyAdapter } = yield* createManager();
+        const binding = ownedControl();
+        yield* manager.open(openInput({ terminalId: binding.terminalId }), ownedOpenHooks(binding));
+        const enteredReadback = yield* Deferred.make<void>();
+        const releaseReadback = yield* Deferred.make<void>();
+        const outcomes: Array<{ outcome: string; count: number }> = [];
+        const writer = yield* manager
+          .write(
+            {
+              threadId: binding.threadId,
+              terminalId: binding.terminalId,
+              data: "captured script\r",
+            },
+            {
+              legacyOwnedControl: binding,
+              beforeWrite: () => Effect.void,
+              afterWrite: (outcome, count) =>
+                Deferred.succeed(enteredReadback, undefined).pipe(
+                  Effect.andThen(Deferred.await(releaseReadback)),
+                  Effect.andThen(
+                    Effect.sync(() => {
+                      outcomes.push({ outcome, count });
+                    }),
+                  ),
+                ),
+            },
+          )
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(enteredReadback);
+        const cancellation = yield* Fiber.interrupt(writer).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Effect.yieldNow;
+        assert.deepEqual(ptyAdapter.processes[0]!.writes, ["captured script\r"]);
+        assert.deepEqual(outcomes, []);
+        yield* Deferred.succeed(releaseReadback, undefined);
+        yield* Fiber.join(cancellation);
+        assert.deepEqual(outcomes, [{ outcome: "accepted", count: 1 }]);
+        assert.deepEqual(ptyAdapter.processes[0]!.writes, ["captured script\r"]);
       }),
   );
   it.effect("legacy owned control guard runs a pure body with the exact current generation", () =>
@@ -1395,6 +1438,218 @@ it.layer(
     }),
   );
 
+  // Jones idle-expiry integration stays here to reuse the real manager fixture.
+  it.effect("expires only command-block shells after thirty idle minutes, without a client", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter, getEvents } = yield* createManager(5, {
+        shellResolver: () => "/bin/bash",
+        subprocessPollIntervalMs: 60_000,
+        processTable: Effect.succeed(
+          [9000, 9001, 9002].map((pid) => ({
+            pid,
+            ppid: 1,
+            name: "bash",
+          })),
+        ),
+      });
+      yield* manager.open(openInput({ threadId: "jones-shell-run", terminalId: "run-remote" }));
+      yield* manager.open(openInput({ terminalId: "jones-shell-run-source" }));
+      yield* manager.open(openInput({ terminalId: "manual" }));
+      const closed = yield* Deferred.make<void>();
+      let closeCount = 0;
+      const unsubscribe = yield* manager.subscribe((event) => {
+        if (event.type === "closed" && ++closeCount === 2)
+          return Deferred.succeed(closed, undefined).pipe(Effect.asVoid);
+        return Effect.void;
+      });
+      yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+      for (const [index, p] of ptyAdapter.processes.entries()) {
+        p.onKill = () => p.emitExit({ exitCode: 0, signal: 0 });
+        const prompt = ptyAdapter.spawnInputs[index]!.env.PROMPT_COMMAND?.match(
+          // The fixture extracts the actual private OSC marker.
+          /\x1b]1337;JonesIdle=[a-f0-9-]+:ready\x07/,
+        )?.[0];
+        if (prompt) p.emitData(prompt);
+      }
+      yield* TestClock.adjust("30 minutes");
+      expect(ptyAdapter.processes.map((p) => p.killed)).toEqual([false, false, false]);
+      yield* TestClock.adjust("1 minute");
+      expect(ptyAdapter.processes.map((p) => p.killed)).toEqual([true, true, false]);
+      yield* Deferred.await(closed);
+      expect((yield* getEvents).filter((e) => e.type === "closed")).toHaveLength(2);
+      // Attachment is never launch authority for an expired destination.
+      const attached: TerminalAttachStreamEvent[] = [];
+      const stop = yield* manager.attachStream(
+        {
+          threadId: "jones-shell-run",
+          terminalId: "run-remote",
+          resume: true,
+          restartIfNotRunning: false,
+        },
+        (event) =>
+          Effect.sync(() => {
+            attached.push(event);
+          }),
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(stop));
+      expect(ptyAdapter.spawnInputs).toHaveLength(3);
+      expect(attached.some((e) => e.type === "snapshot")).toBe(false);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("keeps running commands, helpers, exec replacements and unknown shell identity", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        shellResolver: () => "/bin/bash",
+        subprocessPollIntervalMs: 60_000,
+        processTable: Effect.succeed([
+          { pid: 9000, ppid: 1, name: "bash" },
+          { pid: 9100, ppid: 9000, name: "sleep" },
+          { pid: 9001, ppid: 1, name: "bash" },
+          { pid: 9101, ppid: 9001, name: "bash" },
+          { pid: 9002, ppid: 1, name: "sleep" },
+          // 9003 is absent: unknown root identity must keep it open.
+        ]),
+      });
+      for (let n = 0; n < 4; n++) {
+        yield* manager.open(openInput({ threadId: "jones-shell-run", terminalId: `run-${n}` }));
+      }
+      for (const [index, p] of ptyAdapter.processes.entries()) {
+        p.onKill = () => p.emitExit({ exitCode: 0, signal: 0 });
+        const prompt = ptyAdapter.spawnInputs[index]!.env.PROMPT_COMMAND?.match(
+          // The fixture extracts the actual private OSC marker.
+          /\x1b]1337;JonesIdle=[a-f0-9-]+:ready\x07/,
+        )?.[0];
+        if (prompt) p.emitData(prompt);
+      }
+      yield* TestClock.adjust("2 hours");
+      expect(ptyAdapter.processes.map((p) => p.killed)).toEqual([false, false, false, false]);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("restarts the thirty minute interval after terminal input, output and a command", () =>
+    Effect.gen(function* () {
+      let busy = false;
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        shellResolver: () => "/bin/bash",
+        subprocessPollIntervalMs: 60_000,
+        subprocessInspector: () =>
+          Effect.succeed({
+            hasRunningSubprocess: busy,
+            childCommand: busy ? "sleep" : null,
+            processIds: [],
+            rootCommand: "bash",
+            hasAnyChildren: busy,
+          }),
+      });
+      const target = { threadId: "jones-shell-run", terminalId: "run-reset" };
+      yield* manager.open(openInput(target));
+      for (const [index, p] of ptyAdapter.processes.entries()) {
+        p.onKill = () => p.emitExit({ exitCode: 0, signal: 0 });
+        const prompt = ptyAdapter.spawnInputs[index]!.env.PROMPT_COMMAND?.match(
+          // The fixture extracts the actual private OSC marker.
+          /\x1b]1337;JonesIdle=[a-f0-9-]+:ready\x07/,
+        )?.[0];
+        if (prompt) p.emitData(prompt);
+      }
+      yield* TestClock.adjust("29 minutes");
+      yield* manager.write({ ...target, data: "pwd\r" });
+      ptyAdapter.processes[0]!.emitData(
+        "/tmp\n" +
+          ptyAdapter.spawnInputs[0]!.env.PROMPT_COMMAND!.match(
+            // The fixture extracts the actual private OSC marker.
+            /\x1b]1337;JonesIdle=[a-f0-9-]+:ready\x07/,
+          )![0],
+      );
+      yield* TestClock.adjust("2 minutes");
+      expect(ptyAdapter.processes[0]!.killed).toBe(false);
+      busy = true;
+      yield* TestClock.adjust("31 minutes");
+      expect(ptyAdapter.processes[0]!.killed).toBe(false);
+      busy = false;
+      yield* TestClock.adjust("30 minutes");
+      expect(ptyAdapter.processes[0]!.killed).toBe(false);
+      yield* TestClock.adjust("1 minute");
+      expect(ptyAdapter.processes[0]!.killed).toBe(true);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect(
+    "freshly rechecks an expiry candidate and preserves a command started since the poll",
+    () =>
+      Effect.gen(function* () {
+        let expiryWindow = false;
+        let checks = 0;
+        const { manager, ptyAdapter } = yield* createManager(5, {
+          shellResolver: () => "/bin/bash",
+          subprocessPollIntervalMs: 60_000,
+          subprocessInspector: () =>
+            Effect.sync(() => {
+              if (expiryWindow) checks++;
+              // The second inspection in the expiry window is the fresh locked check.
+              const busy = checks >= 2;
+              return {
+                hasRunningSubprocess: busy,
+                childCommand: busy ? "sleep" : null,
+                processIds: [],
+                rootCommand: "bash",
+                hasAnyChildren: busy,
+              };
+            }),
+        });
+        yield* manager.open(openInput({ threadId: "jones-shell-run", terminalId: "run-race" }));
+        for (const [index, p] of ptyAdapter.processes.entries()) {
+          p.onKill = () => p.emitExit({ exitCode: 0, signal: 0 });
+          const prompt = ptyAdapter.spawnInputs[index]!.env.PROMPT_COMMAND?.match(
+            // The fixture extracts the actual private OSC marker.
+            /\x1b]1337;JonesIdle=[a-f0-9-]+:ready\x07/,
+          )?.[0];
+          if (prompt) p.emitData(prompt);
+        }
+        yield* TestClock.adjust("30 minutes");
+        expiryWindow = true;
+        yield* TestClock.adjust("2 minutes");
+        expect(checks).toBeGreaterThanOrEqual(2);
+        expect(ptyAdapter.processes[0]!.killed).toBe(false);
+      }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("never expires a silent builtin or a shell without prompt proof", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        shellResolver: () => "/bin/bash",
+        subprocessPollIntervalMs: 60_000,
+        processTable: Effect.succeed([
+          { pid: 9000, ppid: 1, name: "bash" },
+          { pid: 9001, ppid: 1, name: "bash" },
+        ]),
+      });
+      yield* manager.open(openInput({ threadId: "jones-shell-run", terminalId: "run-builtin" }));
+      yield* manager.open(openInput({ threadId: "jones-shell-run", terminalId: "run-unknown" }));
+      const [builtin, unknown] = ptyAdapter.processes;
+      for (const p of ptyAdapter.processes) p.onKill = () => p.emitExit({ exitCode: 0, signal: 0 });
+      const ready = ptyAdapter.spawnInputs[0]!.env.PROMPT_COMMAND!.match(
+        // The fixture extracts the actual private OSC marker.
+        /\x1b]1337;JonesIdle=[a-f0-9-]+:ready\x07/,
+      )![0];
+      const busy = ptyAdapter.spawnInputs[0]!.env.PS0!;
+      builtin!.emitData(ready);
+      yield* manager.write({
+        threadId: "jones-shell-run",
+        terminalId: "run-builtin",
+        data: "read -r value\r",
+      });
+      builtin!.emitData(ready + busy);
+      yield* TestClock.adjust("2 hours");
+      expect(builtin!.killed).toBe(false);
+      expect(unknown!.killed).toBe(false);
+      builtin!.emitData(ready);
+      yield* TestClock.adjust("31 minutes");
+      expect(builtin!.killed).toBe(true);
+      expect(unknown!.killed).toBe(false);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
   it.effect("caps incrementally appended history without losing partial or empty lines", () =>
     Effect.gen(function* () {
       const { manager, ptyAdapter } = yield* createManager(3);
@@ -1505,6 +1760,62 @@ it.layer(
 
       const reopened = yield* manager.open(openInput());
       assert.equal(reopened.history, "before after after after after\n");
+    }),
+  );
+
+  it.effect("preserves large chunked OSC 52 and DCS strings across reopen", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter, logsDir } = yield* createManager();
+      yield* manager.open(openInput());
+      const process = ptyAdapter.processes[0]!;
+      const outputSeen = yield* Deferred.make<void>();
+      const unsubscribe = yield* manager.subscribe((event) =>
+        event.type === "output" && event.data === "done\n"
+          ? Deferred.succeed(outputSeen, undefined).pipe(Effect.asVoid)
+          : Effect.void,
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+      const sequences = [
+        { prefix: `\u001b]52;c;${"YWJj".repeat(16_384)}\u001b`, terminator: "\\" },
+        { prefix: `\u0090q${"?".repeat(65_536)}`, terminator: "\u009c" },
+      ];
+      const stripped = "\u001b]11;?\u0007\u0090$q m\u009c";
+      const preserved = "\u001b[31m\u009d52;c;YWJj\u009c";
+      const expected =
+        sequences.map(({ prefix, terminator }) => prefix + terminator + preserved).join("") +
+        "done\n";
+
+      // Counts reads of strings larger than one emitted chunk, so rescanning the
+      // pending prefix on every chunk shows up as quadratic work.
+      const charCodeAt = String.prototype.charCodeAt;
+      let largeStringReads = 0;
+      yield* Effect.gen(function* () {
+        // eslint-disable-next-line no-extend-native -- Count reads without retaining millions of spy call records.
+        String.prototype.charCodeAt = function (this: string, index: number) {
+          if (this.length > 4_096) largeStringReads += 1;
+          return charCodeAt.call(this, index);
+        };
+        for (const { prefix, terminator } of sequences) {
+          for (let offset = 0; offset < prefix.length; offset += 4_096) {
+            process.emitData(prefix.slice(offset, offset + 4_096));
+          }
+          process.emitData(terminator + stripped + preserved);
+        }
+        process.emitData("done\n");
+        yield* Deferred.await(outputSeen);
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            // eslint-disable-next-line no-extend-native -- Restore the counting hook even when the test fails.
+            String.prototype.charCodeAt = charCodeAt;
+          }),
+        ),
+      );
+      yield* manager.close({ threadId: "thread-1" });
+
+      expect(largeStringReads).toBeLessThan(2 * expected.length);
+      expect(yield* readFileString(yield* historyLogPath(logsDir))).toBe(expected);
+      expect((yield* manager.open(openInput())).history.startsWith(expected)).toBe(true);
     }),
   );
 

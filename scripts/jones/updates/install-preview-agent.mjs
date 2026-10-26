@@ -165,9 +165,9 @@ export async function createMilestoneChannel({ runId, caseId, files, signal }) {
     NodeAssert.ok(!receipts.has(name), "Duplicate milestone");
     const receipt = { schema: milestoneSchema, runId, caseId, name, sha256 };
     receipts.set(name, receipt);
-    for (const waiter of [...waiters])
+    for (const waiter of Array.from(waiters))
       if (waiter.names.includes(name)) waiter.finish(undefined, receipt);
-    if (name === "release") for (const response of [...held]) reply(response, 200, receipt);
+    if (name === "release") for (const response of Array.from(held)) reply(response, 200, receipt);
     return receipt;
   };
   const server = NodeHttp.createServer(async (request, response) => {
@@ -216,8 +216,9 @@ export async function createMilestoneChannel({ runId, caseId, files, signal }) {
     if (closing) return closing;
     closed = true;
     signal?.removeEventListener("abort", cancel);
-    for (const waiter of [...waiters]) waiter.finish(new Error("Milestone channel closed"));
-    for (const response of [...held]) reply(response, 503, { error: "fixture_channel_closed" });
+    for (const waiter of Array.from(waiters)) waiter.finish(new Error("Milestone channel closed"));
+    for (const response of Array.from(held))
+      reply(response, 503, { error: "fixture_channel_closed" });
     held.clear();
     markReleaseWaiting(false);
     server.closeAllConnections();
