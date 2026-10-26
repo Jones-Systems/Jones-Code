@@ -519,7 +519,8 @@
         "packages/client-runtime/src/jones/device/mediaRoute.test.ts",
         "packages/contracts/src/device.test.ts",
         "packages/client-runtime/src/jones/deviceMediaCompatibility.test.ts",
-        "apps/web/src/jones/files/AttachmentFilePreview.browser.test.tsx"
+        "apps/web/src/jones/files/AttachmentFilePreview.browser.test.tsx",
+        "apps/web/src/jones/device/deviceStreamSession.test.ts"
       ],
       "scope": "Adapted rebuild #80 direct device admission, generation-bound grants, server gateway lifecycle, desktop media tunnel IPC, shared media routing and proxy fallback. Existing device schemas, SSH host lifecycle, stream view and connection checks retain exact shared seams."
     },
@@ -1058,7 +1059,9 @@
         "apps/server/src/provider/providerMaintenanceRunner.test.ts",
         "packages/provider-core/src/server/maintenanceResolver.test.ts",
         "apps/web/src/components/sidebar/updateEverything.logic.test.ts",
-        "apps/mobile/src/features/settings/environment-maintenance.test.ts"
+        "apps/mobile/src/features/settings/environment-maintenance.test.ts",
+        "apps/web/src/jones/updates/providerUpdateController.test.ts",
+        "apps/web/src/jones/updates/ProviderUpdateNotice.browser.test.tsx"
       ],
       "scope": "Per-instance update targeting is separate from driver summaries. Every supported connected instance is selected without command-string installation guesses. Shared web hooks retain the existing integration harness for dispatch and completion tests. Server success requires selected-instance version evidence; serial best-effort sibling health refresh uses each instance own capabilities without copying maintenance state. The runner plumbing remains a small shared edit to avoid duplicating registry and Effect lifecycle code."
     },

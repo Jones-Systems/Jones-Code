@@ -795,12 +795,14 @@
         "packages/client-runtime/src/jones/device/mediaRoute.test.ts",
         "packages/contracts/src/device.test.ts",
         "packages/client-runtime/src/jones/deviceMediaCompatibility.test.ts",
-        "apps/web/src/jones/files/AttachmentFilePreview.browser.test.tsx"
+        "apps/web/src/jones/files/AttachmentFilePreview.browser.test.tsx",
+        "apps/web/src/jones/device/deviceStreamSession.test.ts"
       ],
       "commands": [
         "vp test run apps/server/src/device/DeviceService.test.ts apps/desktop/src/jones/deviceMedia/DesktopDeviceMediaTunnel.test.ts apps/server/src/device/DeviceHubProxy.test.ts apps/server/src/device/SshDeviceHost.test.ts apps/server/src/device/sshDeviceScript.test.ts apps/server/src/jones/device/DeviceDirectAdmission.test.ts apps/server/src/jones/device/DeviceDirectGrants.test.ts apps/server/src/jones/device/DeviceServiceDirectLifecycle.test.ts apps/server/src/jones/device/directDeviceGateway.test.ts apps/web/src/jones/device/DeviceStreamView.reconnect.browser.test.tsx apps/web/src/components/settings/deviceHostConnectionChecks.test.ts apps/web/src/jones/device/device.test.tsx packages/client-runtime/src/device/stream.test.ts packages/client-runtime/src/jones/device/mediaRoute.test.ts packages/contracts/src/device.test.ts",
         "vp test run apps/web/src/jones/files/AttachmentFilePreview.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
-        "vp test run packages/client-runtime/src/jones/deviceMediaCompatibility.test.ts --maxWorkers=1 --no-file-parallelism"
+        "vp test run packages/client-runtime/src/jones/deviceMediaCompatibility.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/web/src/jones/device/deviceStreamSession.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -1806,10 +1808,14 @@
         "apps/server/src/provider/providerMaintenanceRunner.test.ts",
         "packages/provider-core/src/server/maintenanceResolver.test.ts",
         "apps/web/src/components/sidebar/updateEverything.logic.test.ts",
-        "apps/mobile/src/features/settings/environment-maintenance.test.ts"
+        "apps/mobile/src/features/settings/environment-maintenance.test.ts",
+        "apps/web/src/jones/updates/providerUpdateController.test.ts",
+        "apps/web/src/jones/updates/ProviderUpdateNotice.browser.test.tsx"
       ],
       "commands": [
         "vp test run packages/client-runtime/src/jones/providerUpdates/index.test.ts apps/server/src/jones/provider/providerUpdateVerification.test.ts apps/web/src/components/ProviderUpdateLaunchNotification.logic.test.ts apps/web/src/jones/updates/ProviderUpdateEnvironmentRows.test.tsx apps/server/src/provider/providerMaintenanceRunner.test.ts packages/provider-core/src/server/maintenanceResolver.test.ts apps/web/src/components/sidebar/updateEverything.logic.test.ts apps/mobile/src/features/settings/environment-maintenance.test.ts",
+        "vp test run apps/web/src/jones/updates/providerUpdateController.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/web --config vite.config.ts --project browser src/jones/updates/ProviderUpdateNotice.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/client-runtime typecheck",
         "vp run --filter @t3tools/web typecheck",
         "vp run --filter t3 typecheck"

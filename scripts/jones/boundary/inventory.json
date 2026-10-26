@@ -597,7 +597,7 @@
     "apps/server/src/process/processPlacementBootstrap.ts": "jones-owned",
     "apps/server/src/process/processPlacementSpawner.test.ts": "jones-owned",
     "apps/server/src/process/processPlacementSpawner.ts": "jones-owned",
-    "apps/server/src/project/ProjectSetupScriptRunner.test.ts": "upstream-deleted",
+    "apps/server/src/project/ProjectSetupScriptRunner.test.ts": "jones-tests-in-upstream",
     "apps/server/src/project/ProjectSetupScriptRunner.ts": "accepted-shared",
     "apps/server/src/provider/CodexDeveloperInstructions.test.ts": "jones-tests-in-upstream",
     "apps/server/src/provider/CodexProvider.test.ts": "jones-tests-in-upstream",
@@ -847,7 +847,7 @@
     "apps/web/src/routes/_chat.pull-requests.tsx": "hook",
     "apps/web/src/routes/design-requests.tsx": "hook",
     "apps/web/src/routes/voice-review.tsx": "hook",
-    "apps/web/src/routes/settings.jones-code.tsx": "hook",
+    "apps/web/src/routes/settings.jones-code.tsx": "upstream-deleted",
     "apps/web/src/routes/work-queue.tsx": "hook",
     "apps/web/src/state/conversations.ts": "jones-owned",
     "apps/web/src/state/tokenAccounting.test.ts": "jones-owned",
@@ -2033,7 +2033,23 @@
     "packages/provider-pi/src/server/mcpInjection.test.ts": "jones-tests-in-upstream",
     "apps/web/src/components/chat/composerCommandKey.ts": "accepted-shared",
     "apps/mobile/src/jones/highlighting/review.test.ts": "jones-owned",
-    "packages/contracts/src/jones/upstreamWireCompatibility.test.ts": "jones-owned"
+    "packages/contracts/src/jones/upstreamWireCompatibility.test.ts": "jones-owned",
+    "apps/server/src/mcp/WorktreeMcpService.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/components/ProviderUpdatesAction.tsx": "accepted-shared",
+    "apps/web/src/components/device/deviceStreamSession.ts": "accepted-shared",
+    "apps/web/src/components/files/PreviewImageContent.tsx": "accepted-shared",
+    "apps/web/src/jones/device/deviceStreamSession.test.ts": "jones-owned",
+    "apps/web/src/jones/updates/ProviderUpdateNotice.browser.test.tsx": "jones-owned",
+    "apps/web/src/jones/updates/ProviderUpdateNotice.tsx": "jones-owned",
+    "apps/web/src/jones/updates/providerUpdateController.test.ts": "jones-owned",
+    "apps/web/src/jones/updates/providerUpdateController.ts": "jones-owned",
+    "apps/web/src/jones/updates/useProviderUpdates.tsx": "jones-owned",
+    "apps/web/src/routes/_chat.settings.jones-code.tsx": "hook",
+    "apps/server/src/pullRequest/PullRequestProviderRegistry.ts": "accepted-shared",
+    "packages/source-control-core/src/server/driver.ts": "accepted-shared",
+    "packages/source-control-github/package.json": "accepted-shared",
+    "packages/source-control-github/src/server/GitHubPullRequestProvider.ts": "accepted-shared",
+    "packages/source-control-github/src/server/driver.ts": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -2461,7 +2477,7 @@
       "to": "apps/web/src/components/workQueue/WorkQueuePage.tsx"
     },
     {
-      "from": "apps/web/src/routes/settings.jones-code.tsx",
+      "from": "apps/web/src/routes/_chat.settings.jones-code.tsx",
       "to": "apps/web/src/jones/workQueue/PromptsSettings.tsx"
     },
     {
@@ -2741,7 +2757,7 @@
       "to": "apps/web/src/jones/threadConfiguration/composerSelection.ts"
     },
     {
-      "from": "apps/web/src/routes/settings.jones-code.tsx",
+      "from": "apps/web/src/routes/_chat.settings.jones-code.tsx",
       "to": "apps/web/src/jones/workstreams/WorkstreamsSetupStatus.tsx"
     },
     {

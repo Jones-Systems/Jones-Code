@@ -14,6 +14,7 @@ import {
 import * as GitHubRest from "@t3tools/source-control-github/server/GitHubRest";
 import * as GitHubRequestPolicy from "@t3tools/source-control-github/server/GitHubRequestPolicy";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
+import * as SourceControlProvider from "@t3tools/source-control-core/server/SourceControlProvider";
 import * as SourceControlProviderRegistry from "../../sourceControl/SourceControlProviderRegistry.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
@@ -124,6 +125,16 @@ function fixture(projects: ReadonlyArray<OrchestrationProjectShell>, supportsCi 
           Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({}),
           Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
             resolveLink: () => undefined,
+            get: (kind) =>
+              SourceControlProvider.SourceControlProvider.pipe(
+                Effect.provide(
+                  Layer.mock(SourceControlProvider.SourceControlProvider)({
+                    kind,
+                    resolveRemoteWebHost: ({ context }) =>
+                      Effect.succeed(new URL(context.remoteUrl).hostname),
+                  }),
+                ),
+              ),
           }),
           Layer.mock(PullRequestFilesViewed.PullRequestFilesViewedRepository)({}),
           Layer.mock(PullRequestReadCache.PullRequestReadCache)({}),
