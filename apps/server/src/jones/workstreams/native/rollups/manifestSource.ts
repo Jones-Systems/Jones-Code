@@ -63,22 +63,24 @@ const make = Effect.gen(function* () {
             ),
           "invalid_request",
         );
-        const configured = (yield* bindings.list()).filter((b) => b.state === "active");
-        const ids = [...new Set(configured.map((b) => b.workstream_id))].sort();
-        const cursorId = Evidence.digest(
-          Evidence.canonicalJson([
-            scope.registry_instance_id,
-            scope.owner_id,
-            provider.id,
-            configured
-              .map((b) => [b.workstream_id, b.native_reference_id, b.binding_version])
-              .sort(),
-          ]),
-        );
-        const selected = yield* db.transaction(
+        const { configured, context, selected } = yield* db.transaction(
           scope,
           Effect.gen(function* () {
-            if (!ids.length) return [];
+            // The binding selection and its authority version must describe the same native snapshot.
+            const configured = (yield* bindings.list()).filter((b) => b.state === "active");
+            const ids = [...new Set(configured.map((b) => b.workstream_id))].sort();
+            const cursorId = Evidence.digest(
+              Evidence.canonicalJson([
+                scope.registry_instance_id,
+                scope.owner_id,
+                provider.id,
+                configured
+                  .map((b) => [b.workstream_id, b.native_reference_id, b.binding_version])
+                  .sort(),
+              ]),
+            );
+            const context = yield* registry.context(scope);
+            if (!ids.length) return { configured, context, selected: [] };
             const cursor = (yield* sql<{
               last_group_key: string | null;
             }>`SELECT last_group_key FROM jones_workstreams_rollup_discovery_cursors WHERE cursor_id=${cursorId}`)[0];
@@ -92,13 +94,12 @@ const make = Effect.gen(function* () {
               yield* sql`UPDATE jones_workstreams_rollup_discovery_cursors SET last_group_key=${chosen.at(-1)!},updated_at=${now} WHERE cursor_id=${cursorId}`;
             else
               yield* sql`INSERT INTO jones_workstreams_rollup_discovery_cursors(cursor_id,last_group_key,updated_at) VALUES(${cursorId},${chosen.at(-1)!},${now})`;
-            return chosen;
+            return { configured, context, selected: chosen };
           }),
         );
         const manifests: Evidence.Manifest[] = [],
           inspected: Discovery["inspected"][number][] = [];
         for (const id of selected) {
-          const context = yield* registry.context(scope);
           if (
             !context ||
             context.state !== "active" ||
