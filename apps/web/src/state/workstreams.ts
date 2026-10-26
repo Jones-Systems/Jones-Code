@@ -105,6 +105,10 @@ function refreshWorkstreamSessions(ids: ReadonlySet<string>): void {
     .catch(() => undefined);
 }
 
+const requireNativeWorkstreamsAvailable = (reason: string | null): void => {
+  if (reason !== null) throw new Error(reason);
+};
+
 const metadataCache = new LiveWorkstreamMetadataCache();
 const isHttpConflict = Schema.is(EnvironmentHttpConflictError);
 const isInternalReadError = Schema.is(EnvironmentInternalError);
@@ -1411,7 +1415,7 @@ export function useWorkstreams(
     options: { readonly signal?: AbortSignal } = {},
   ) => {
     try {
-      if (nativeBlock) throw new Error(nativeBlock);
+      requireNativeWorkstreamsAvailable(nativeBlock);
       const load = <A, E>(run: (client: PrimaryClient) => Effect.Effect<A, E>) =>
         request(run, options.signal);
       return await loadCompleteWorkstreamDetail(
@@ -1472,7 +1476,7 @@ export function useWorkstreams(
     options: { readonly signal?: AbortSignal } = {},
   ) => {
     try {
-      if (nativeBlock) throw new Error(nativeBlock);
+      requireNativeWorkstreamsAvailable(nativeBlock);
       return await request(
         (client) => client.workstreams.reference({ headers: {}, params: { nativeReferenceId } }),
         options.signal,
