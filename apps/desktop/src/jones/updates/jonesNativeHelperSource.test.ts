@@ -3767,12 +3767,33 @@ print('kernel-cli-refusals')
       const result = runPython(
         `${jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0]}\n` +
           String.raw`
-child = subprocess.Popen([sys.executable, '-c', 'import sys; print("ready", flush=True); sys.stdin.buffer.read(1)'], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+# Framework Python's launcher can differ from its loaded Mach-O image.
+# The owned child reports dyld's image independently of the libproc helper.
+child_source = '''
+import ctypes, json, os, sys
+image_path = ctypes.CDLL(None)._NSGetExecutablePath
+image_path.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+image_path.restype = ctypes.c_int
+size = ctypes.c_uint32(4096)
+image = ctypes.create_string_buffer(size.value)
+result = image_path(image, ctypes.byref(size))
+if result == -1:
+    assert 4096 < size.value <= 1048576, size.value
+    image = ctypes.create_string_buffer(size.value)
+    result = image_path(image, ctypes.byref(size))
+assert result == 0 and image.value, result
+print(json.dumps({'pid': os.getpid(), 'executable': os.path.realpath(os.fsdecode(image.value))}), flush=True)
+sys.stdin.buffer.read(1)
+'''
+child = subprocess.Popen([sys.executable, '-c', child_source], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
 try:
-    assert child.stdout.readline() == b'ready\n'
+    ready = json.loads(child.stdout.readline())
+    assert set(ready) == {'pid', 'executable'} and ready['pid'] == child.pid, ready
+    expected_executable = ready['executable']
+    assert os.path.isabs(expected_executable) and os.path.isfile(expected_executable), ready
     proof = kernel_process_identity(child.pid)
     assert proof['pid'] == child.pid and proof['startSec'] > 0 and 0 <= proof['startUsec'] < 1000000
-    assert os.path.isabs(proof['executable']) and os.path.samefile(proof['executable'], sys.executable), {'expectedExecutable': sys.executable, 'expectedResolved': os.path.realpath(sys.executable), 'observedExecutable': proof['executable'], 'observedResolved': os.path.realpath(proof['executable'])}
+    assert os.path.isabs(proof['executable']) and os.path.samefile(proof['executable'], expected_executable), {'launcherExecutable': sys.executable, 'expectedImage': expected_executable, 'observedExecutable': proof['executable'], 'observedResolved': os.path.realpath(proof['executable'])}
     assert kernel_process_identity(child.pid) == proof
     child.stdin.close()
     deadline = time.monotonic() + 3
