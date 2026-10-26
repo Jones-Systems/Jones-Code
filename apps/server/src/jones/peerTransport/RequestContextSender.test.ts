@@ -287,8 +287,12 @@ it.effect("a caller without a thread sends only base fields and never looks up a
       sentAt: "1970-01-01T00:00:00.000Z",
     });
   }).pipe(
-    Effect.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
-    Effect.provide(Layer.mock(ProjectService.ProjectService)({})),
+    Effect.provide(
+      Layer.merge(
+        Layer.mock(ThreadManagement.ThreadManagementService)({}),
+        Layer.mock(ProjectService.ProjectService)({}),
+      ),
+    ),
   ),
 );
 
