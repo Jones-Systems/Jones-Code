@@ -203,8 +203,9 @@ it.effect("replaces stale ready status with the setup reason and recovers after 
     const service = yield* f
       .provideHost(DeviceService.makeWithHosts(new Map([[f.host.id, f.host]])))
       .pipe(
-        Effect.provide(NodeCrypto.layer),
-        Effect.provide(ServerSettings.layerTest({ enableDeviceSupport: true })),
+        Effect.provide(
+          Layer.mergeAll(NodeCrypto.layer, ServerSettings.layerTest({ enableDeviceSupport: true })),
+        ),
       );
     expect((yield* f.provideHost(service.list)).hostStatuses[f.host.id]?.status).toBe("ready");
     f.state.code = 69;
