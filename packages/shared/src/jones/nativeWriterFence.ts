@@ -446,16 +446,31 @@ function isStartupSettleable(
     !Array.isArray(intent.processes) ||
     intent.processes.length === 0 ||
     intent.processes.length > 256 ||
-    !intent.processes.every((value: unknown) => {
-      const proof = record(value);
-      return (
-        Object.keys(proof).length === 2 &&
-        Number.isInteger(proof.pid) &&
-        Number(proof.pid) > 0 &&
-        typeof proof.identity === "string" &&
-        proof.identity.trim().length > 0
-      );
-    }) ||
+    !(
+      intent.processes.every((value: unknown) => {
+        const proof = record(value);
+        return (
+          Object.keys(proof).length === 2 &&
+          Number.isInteger(proof.pid) &&
+          Number(proof.pid) > 0 &&
+          typeof proof.identity === "string" &&
+          proof.identity.trim().length > 0
+        );
+      }) ||
+      (intent.processes.every((value: unknown) => {
+        const role = record(value);
+        return (
+          Object.keys(role).length === 2 &&
+          Number.isInteger(role.pid) &&
+          Number(role.pid) > 0 &&
+          Number(role.pid) <= 2147483647 &&
+          (role.role === "main" || role.role === "backend")
+        );
+      }) &&
+        new Set(intent.processes.map((value: unknown) => record(value).pid)).size ===
+          intent.processes.length &&
+        intent.processes.filter((value: unknown) => record(value).role === "main").length === 1)
+    ) ||
     !NodeUtil.isDeepStrictEqual(active, intent.expected)
   )
     return false;

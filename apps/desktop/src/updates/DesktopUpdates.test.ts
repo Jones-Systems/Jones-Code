@@ -18,6 +18,7 @@ import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopState from "../app/DesktopState.ts";
 import * as DesktopUpdates from "./DesktopUpdates.ts";
+import { jonesNativeProcessRoles } from "../jones/updates/JonesDesktopUpdates.ts";
 import { flushCallbacks, makeHarness } from "./updatesTestHarness.ts";
 
 describe("DesktopUpdates", () => {
@@ -843,4 +844,20 @@ describe("describeUpdateErrorCause", () => {
     });
     assert.equal(DesktopUpdates.describeUpdateErrorCause(unreadable), "UnknownError");
   });
+});
+
+it("publishes one main role and unique backend roles without replacing the main", () => {
+  assert.deepEqual(jonesNativeProcessRoles(41, [42, 41, 42, 43]), [
+    { pid: 41, role: "main" },
+    { pid: 42, role: "backend" },
+    { pid: 43, role: "backend" },
+  ]);
+  assert.throws(() => jonesNativeProcessRoles(0, []));
+  assert.throws(() => jonesNativeProcessRoles(41, [1.5]));
+  assert.throws(() =>
+    jonesNativeProcessRoles(
+      41,
+      Array.from({ length: 256 }, (_, i) => i + 100),
+    ),
+  );
 });
