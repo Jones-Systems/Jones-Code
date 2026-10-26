@@ -4,6 +4,13 @@
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "features": [
     {
+      "id": "composer-quick-controls",
+      "tests": [
+        "apps/web/src/jones/composer/ComposerQuickControls.browser.test.tsx"
+      ],
+      "scope": "Inline current-model M/H/E shortcuts and Fast toggle share the traits persistence path. Measured fit retains reasoning until 4px clearance, while Fast stays in the fixed footer width. Browser tests cover boolean Fast, Codex service tier, draft persistence and resize restoration. Native mobile and other model efforts retain existing menus."
+    },
+    {
       "id": "project-group-title",
       "tests": ["packages/client-runtime/src/jones/projectGroupTitle.test.ts"],
       "scope": "Shared saved project names take precedence over repository labels when every checkout agrees, including names equal to the repository short name. Mixed titles retain the repository fallback; group identity, environment membership and persistence stay unchanged. One shared-client hook covers web, desktop and mobile."

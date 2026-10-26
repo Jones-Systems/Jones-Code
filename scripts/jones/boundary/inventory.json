@@ -7,6 +7,9 @@
   },
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "paths": {
+    "apps/web/src/jones/composer/ComposerQuickControls.tsx": "jones-owned",
+    "apps/web/src/jones/composer/ComposerQuickControls.browser.test.tsx": "jones-owned",
+    "scripts/jones/boundary/fragments/composer-quick-controls.json": "jones-owned",
     "apps/server/src/jones/device/xcodeReadiness.ts": "jones-owned",
     "apps/server/src/jones/device/xcodeReadiness.test.ts": "jones-owned",
     "apps/server/src/jones/device/sshXcodeReadiness.test.ts": "jones-owned",
