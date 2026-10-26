@@ -14831,6 +14831,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               event.type === "provider_thread.updated" &&
               event.providerThread.nativeMetadata?.claudeAttachmentBudget !== undefined,
           );
+          if (budgetUpdate?.type !== "provider_thread.updated")
+            throw new Error("Expected the scoped attachment budget update.");
           assert.equal(budgetUpdate?.runtimeEvidence?.runtimeGeneration, "query-generation-1");
           assert.equal(
             budgetUpdate?.type === "provider_thread.updated" &&
