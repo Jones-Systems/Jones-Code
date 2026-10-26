@@ -1,3 +1,4 @@
+import * as ProviderEventOrigin from "@t3tools/provider-core/server/jones/ProviderEventOrigin";
 // @effect-diagnostics nodeBuiltinImport:off
 
 import {
@@ -39,6 +40,7 @@ import { resolveT3McpToolId } from "@t3tools/shared/t3McpToolPresentation";
 import { compactDynamicToolOutput, htmlRenderFromToolItem } from "@t3tools/shared/toolOutput";
 import { FILE_HEADERS_ONLY, formatPatch, structuredPatch } from "diff";
 import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -1279,6 +1281,10 @@ function acpSubagentHasPendingBackgroundWork(subagent: ActiveAcpSubagent): boole
   );
 }
 
+class AcpEventProducerContext extends Context.Reference<
+  ProviderEventOrigin.ProviderEventProducerOrigin | undefined
+>("t3/AcpAdapterV2/EventProducerContext", { defaultValue: () => undefined }) {}
+
 type AcpCarryoverSubagents = {
   readonly sessionId: string;
   /** The root's subscriber keeps ingesting, so late child terminals can still project. */
@@ -1586,12 +1592,43 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         const runtimeTeardownState = yield* Ref.make<AcpRuntimeTeardownState>({ _tag: "Idle" });
         const runtimeCallbackGeneration = yield* Ref.make(0);
         const runtimeCallbackGenerationCounter = yield* Ref.make(0);
+        const sessionEventProducer = ProviderEventOrigin.makeProviderEventProducer({
+          driver,
+          instanceId: options.instanceId,
+          providerSessionId: input.providerSessionId,
+        });
+        const callbackProducers = new Map<number, ProviderEventOrigin.ProviderEventProducer>();
+        const producerAtGeneration = (generation: number) => {
+          let producer = callbackProducers.get(generation);
+          if (producer === undefined) {
+            producer = ProviderEventOrigin.makeProviderEventProducer({
+              driver,
+              instanceId: options.instanceId,
+              providerSessionId: input.providerSessionId,
+            });
+            callbackProducers.set(generation, producer);
+          }
+          return producer;
+        };
+        const commitCallbackProducer = (generation: number) => {
+          for (const [previous, producer] of callbackProducers) {
+            if (previous === generation) continue;
+            producer.retire();
+            callbackProducers.delete(previous);
+          }
+        };
         const allocateRuntimeCallbackGeneration = Ref.updateAndGet(
           runtimeCallbackGenerationCounter,
           (generation) => generation + 1,
         );
         const advanceRuntimeCallbackGeneration = allocateRuntimeCallbackGeneration.pipe(
-          Effect.tap((generation) => Ref.set(runtimeCallbackGeneration, generation)),
+          Effect.tap((generation) =>
+            Ref.getAndSet(runtimeCallbackGeneration, generation).pipe(
+              Effect.tap((previous) =>
+                Effect.sync(() => callbackProducers.get(previous)?.retire()),
+              ),
+            ),
+          ),
         );
         const runtimeCallbackPermit = yield* Semaphore.make(1);
         const runtimeTransitionPermit = yield* Semaphore.make(1);
@@ -1637,7 +1674,14 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               if ((yield* Ref.get(runtimeCallbackGeneration)) !== generation) {
                 return Option.none<A>();
               }
-              return Option.some(yield* effect);
+              return Option.some(
+                yield* effect.pipe(
+                  Effect.provideService(
+                    AcpEventProducerContext,
+                    producerAtGeneration(generation).origin,
+                  ),
+                ),
+              );
             }),
           );
         const registerNativeResponseAcknowledgement =
@@ -1796,7 +1840,12 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         });
         const closeNativeTransport = runtimeCallbackPermit.withPermit(
           Effect.gen(function* () {
-            yield* advanceRuntimeCallbackGeneration;
+            const previousGeneration = yield* Ref.get(runtimeCallbackGeneration);
+            producerAtGeneration(previousGeneration).drain();
+            sessionEventProducer.drain();
+            yield* allocateRuntimeCallbackGeneration.pipe(
+              Effect.flatMap((generation) => Ref.set(runtimeCallbackGeneration, generation)),
+            );
             const acknowledgements = yield* Ref.getAndSet(
               nativeResponseAcknowledgements,
               new Map(),
@@ -1925,8 +1974,13 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             }
           });
 
-        const emitProviderEvent = (event: ProviderAdapter.ProviderAdapterV2Event) =>
-          Queue.offer(events, event).pipe(Effect.asVoid);
+        // Streaming events already belong to the runtime callback; avoid a span per chunk.
+        const emitProviderEvent = Effect.fnUntraced(function* (
+          event: ProviderAdapter.ProviderAdapterV2Event,
+        ) {
+          const producer = (yield* AcpEventProducerContext) ?? sessionEventProducer.origin;
+          yield* Queue.offer(events, ProviderEventOrigin.stampProviderEvent(event, { producer }));
+        });
         let scheduleDeferredFinalize: (context: ActiveAcpTurn) => Effect.Effect<void> = () =>
           Effect.void;
 
@@ -4829,7 +4883,12 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               yield* Ref.update(wakeBuffer, (current) => [...current, notification]);
               return;
             }
-            yield* finalizeTurn(context, context.promptSettledStatus ?? "completed");
+            yield* finalizeTurn(
+              context,
+              context.promptSettledStatus ?? "completed",
+              undefined,
+              "provider_result",
+            );
             const wake = yield* bufferPostSettleWake(notification);
             if (wake.offerContinuation) {
               yield* offerContinuationRun(notification.sessionId);
@@ -6315,6 +6374,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           const mcpContext = yield* readMcpContext(threadId);
           runtimeMcpBridge = yield* makeRuntimeMcpBridge(mcpContext, runtimeScope);
           const runtimeGeneration = yield* Ref.get(runtimeCallbackGeneration);
+          producerAtGeneration(runtimeGeneration);
           runtime = yield* flavor
             .makeRuntime(makeRuntimeInput(runtimeGeneration, mcpContext, resumeSessionId))
             .pipe(
@@ -6324,6 +6384,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               Effect.provideService(AgentScope, agentScope),
               Effect.provideService(AgentScopeThreadId, threadId ?? undefined),
             );
+          commitCallbackProducer(runtimeGeneration);
         });
 
         const startAcpRuntime = Effect.fnUntraced(function* (
@@ -6418,6 +6479,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             ),
           );
           if (Exit.isFailure(replacementExit)) {
+            callbackProducers.get(replacementGeneration)?.retire();
+            callbackProducers.delete(replacementGeneration);
             yield* runtimeCallbackPermit.withPermit(
               quarantineNativeTransportAtGeneration(replacementGeneration),
             );
@@ -6449,6 +6512,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   runtime = replacementExit.value.replacementRuntime;
                   runtimeScope = replacementScope;
                   runtimeMcpBridge = replacementMcpBridge;
+                  commitCallbackProducer(replacementGeneration);
                   yield* Ref.set(runtimeCallbackGeneration, replacementGeneration);
                   prepareTerminalEnvironment(
                     yield* readMcpContext(threadId),
@@ -6882,10 +6946,15 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           context: ActiveAcpTurn,
           status: "completed" | "interrupted" | "failed" | "cancelled",
           failure?: OrchestrationV2ProviderFailure,
+          evidenceKind: "provider_result" | "attributed_abort" | "local_failure" = "local_failure",
           options?: { readonly childTurnsContinue?: boolean },
         ): Effect.fn.Return<void> {
           if (context.finalized) return;
           const settledStatus = context.interrupted ? "interrupted" : status;
+          const terminalEvidenceKind =
+            settledStatus === "interrupted" && evidenceKind === "provider_result"
+              ? "attributed_abort"
+              : evidenceKind;
           context.finalizedStatus = settledStatus;
           context.finalized = true;
           const directStopQuarantine = yield* Ref.get(stoppedRunQuarantine);
@@ -6992,6 +7061,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             settledStatus === "failed"
               ? {
                   type: "turn.terminal",
+                  providerTurn: turn,
+                  evidenceKind: terminalEvidenceKind,
                   driver,
                   providerThreadId: context.input.providerThread.id,
                   providerTurnId: context.providerTurnId,
@@ -7013,6 +7084,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 }
               : {
                   type: "turn.terminal",
+                  providerTurn: turn,
+                  evidenceKind: terminalEvidenceKind,
                   driver,
                   providerThreadId: context.input.providerThread.id,
                   providerTurnId: context.providerTurnId,
@@ -7076,7 +7149,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               }
               if (hasDeferredBackgroundWork(context)) return;
               const status = context.promptSettledStatus ?? "completed";
-              yield* finalizeTurn(context, status);
+              yield* finalizeTurn(context, status, undefined, "provider_result");
             }).pipe(Effect.forkIn(sessionScope), Effect.asVoid);
             yield* (
               options.testHooks?.onDeferredFinalizeScheduled?.(ACP_DEFERRED_FINALIZE_DEBOUNCE) ??
@@ -7187,6 +7260,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             prompt.push({
               type: "text",
               text: buildRuntimeInstructions({
+                ...(host.appIdentity === undefined ? {} : { appIdentity: host.appIdentity }),
                 harness: flavor.runtimeHarness ?? driver,
                 model: turnInput.modelSelection.model,
               }),
@@ -7484,7 +7558,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     yield* scheduleDeferredFinalize(context);
                   }
                 } else {
-                  yield* finalizeTurn(context, "completed");
+                  yield* finalizeTurn(context, "completed", undefined, "provider_result");
                 }
                 return;
               }
@@ -7553,9 +7627,15 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                       yield* terminalizeOpenForegroundTools(context, "failed");
                       // Unlike an RPC failure, the agent survives an idle error, so its
                       // background tools and subagents keep reporting to this run.
-                      yield* finalizeTurn(context, "failed", idleErrorFailure(result.error), {
-                        childTurnsContinue: hasSurvivingBackgroundWork(context),
-                      });
+                      yield* finalizeTurn(
+                        context,
+                        "failed",
+                        idleErrorFailure(result.error),
+                        "provider_result",
+                        {
+                          childTurnsContinue: hasSurvivingBackgroundWork(context),
+                        },
+                      );
                       return;
                     }
                     if (
@@ -7569,7 +7649,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                       );
                       return;
                     }
-                    yield* finalizeTurn(context, status);
+                    yield* finalizeTurn(context, status, undefined, "provider_result");
                   }),
                 ).pipe(Effect.asVoid),
               ),
@@ -7691,6 +7771,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           driver,
           providerSessionId: input.providerSessionId,
           providerSession,
+          eventOriginMode: "captured",
           events: Stream.fromEffectRepeat(Queue.take(events)),
           ...(flavor.getModelContextWindow === undefined
             ? {}
