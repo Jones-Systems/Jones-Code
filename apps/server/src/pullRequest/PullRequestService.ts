@@ -1,4 +1,3 @@
-import * as GitHubRest from "@t3tools/source-control-github/server/GitHubRest";
 import * as PullRequestCiStatus from "../jones/pullRequestCi/PullRequestCiStatus.ts";
 import { isSshRemoteUrl } from "@t3tools/shared/sourceControl";
 import { parseDiffFilePaths } from "@t3tools/source-control-core/server/diffFileRevisions";
@@ -710,7 +709,6 @@ export const make = Effect.gen(function* () {
   const filesViewedStore = yield* PullRequestFilesViewed.PullRequestFilesViewedRepository;
   const readCache = yield* PullRequestReadCache.PullRequestReadCache;
   const clock = yield* Clock.Clock;
-  const githubCi = yield* Effect.serviceOption(GitHubRest.GitHubRest);
 
   /**
    * Where each project's remote is served from, by the remote's recognised base URL: a remote no
@@ -1564,7 +1562,6 @@ export const make = Effect.gen(function* () {
   const ciStatus = yield* PullRequestCiStatus.createCiStatus({
     listWorkspaceProjects,
     registry,
-    githubCi,
     rateLimits,
   });
 

@@ -192,7 +192,7 @@ it.effect("production ports remain unavailable even with a current native operat
       Effect.provide(
         Authority.NativeCreationAuthorityUnavailable.pipe(
           Layer.provideMerge(repositoryLayer),
-          Layer.provide(sessions(() => Effect.succeed(Option.some(value.session)))),
+          Layer.provide(sessions(() => Effect.succeedSome(value.session))),
         ),
       ),
     );
@@ -373,7 +373,7 @@ it.effect("unknown native enrollment lookup denies through the authority port", 
       Effect.provide(
         Authority.NativeCreationAuthorityUnavailable.pipe(
           Layer.provide(RepositorySqlite.layer.pipe(Layer.provide(memory))),
-          Layer.provide(sessions(() => Effect.succeed(Option.some(value.session)))),
+          Layer.provide(sessions(() => Effect.succeedSome(value.session))),
         ),
       ),
     );
@@ -408,7 +408,7 @@ it.effect("rejects forged contexts and unavailable durable execution storage", (
       Effect.provide(
         Authority.NativeCreationAuthorityUnavailable.pipe(
           Layer.provide(repositoryLayer),
-          Layer.provide(sessions(() => Effect.succeed(Option.some(value.session)))),
+          Layer.provide(sessions(() => Effect.succeedSome(value.session))),
         ),
       ),
     );
@@ -551,7 +551,7 @@ it.effect("issues only after a matching durable start and rechecks revoked autho
       Effect.provide(
         Authority.NativeCreationAuthorityLive.pipe(
           Layer.provide(executionOwner),
-          Layer.provide(sessions(() => Effect.succeed(Option.some(value.session)))),
+          Layer.provide(sessions(() => Effect.succeedSome(value.session))),
           Layer.provide(
             Layer.succeed(Authority.NativeCreationGrantResolver, {
               resolveCurrent: () =>

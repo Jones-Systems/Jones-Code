@@ -1419,21 +1419,17 @@ it.effect.each(["read", "decode", "cancel"] as const)(
         snapshot: (input) =>
           Effect.gen(function* () {
             if (failRefresh && failure === "read") {
-              return yield* Effect.fail(
-                new ProjectionStore.ProjectionStoreReadError({
-                  threadId: fixture.thread.id,
-                }),
-              );
+              return yield* new ProjectionStore.ProjectionStoreReadError({
+                threadId: fixture.thread.id,
+              });
             }
             const snapshot = yield* projections.getShellSnapshot(input);
             if (failRefresh) {
               if (failure === "decode") {
-                return yield* Effect.fail(
-                  new ProjectionStore.ProjectionStoreReadError({
-                    threadId: fixture.thread.id,
-                    cause: "Synthetic decode failure after rows were read",
-                  }),
-                );
+                return yield* new ProjectionStore.ProjectionStoreReadError({
+                  threadId: fixture.thread.id,
+                  cause: "Synthetic decode failure after rows were read",
+                });
               }
               yield* Deferred.succeed(entered, undefined);
               return yield* Effect.never;

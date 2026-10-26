@@ -55,7 +55,7 @@ describe("workstreamChildId", () => {
         { ...input, operation_id: "operation-00000002" },
         { ...input, request_sha256: "b".repeat(64) },
       ];
-      expect(new Set(yield* Effect.all(variants.map(workstreamChildId))).size).toBe(4);
+      expect(new Set(yield* Effect.forEach(variants, workstreamChildId)).size).toBe(4);
     }).pipe(Effect.provide(NodeCrypto.layer)),
   );
 

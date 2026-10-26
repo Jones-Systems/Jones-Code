@@ -569,9 +569,11 @@ it.effect.each(
         ? makeWorkstreamsNativeProvider(
             {
               ...ports,
-              build: Effect.succeed(
-                Option.some({ ...binding.build, sha: "c".repeat(40), tree: "d".repeat(40) }),
-              ),
+              build: Effect.succeedSome({
+                ...binding.build,
+                sha: "c".repeat(40),
+                tree: "d".repeat(40),
+              }),
             },
             "v2",
           )

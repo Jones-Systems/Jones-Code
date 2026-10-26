@@ -215,8 +215,8 @@ const makeDeletionWorktreeRemoval = Effect.gen(function* () {
             entries,
           } as const);
     },
-    Effect.catch(() =>
-      Effect.succeed({ status: "unavailable", reason: "registration_read_failed" } as const),
+    Effect.orElseSucceed(
+      () => ({ status: "unavailable", reason: "registration_read_failed" }) as const,
     ),
     Effect.map((registration) => Object.freeze(registration)),
   );
@@ -343,8 +343,8 @@ const makeDeletionWorktreeRemoval = Effect.gen(function* () {
           exitCode: result.exitCode,
           completion: result.stdoutTruncated || result.stderrTruncated ? "unknown" : "exited",
         })),
-        Effect.catch(() =>
-          Effect.succeed({ kind: "executed", exitCode: null, completion: "unknown" } as const),
+        Effect.orElseSucceed(
+          () => ({ kind: "executed", exitCode: null, completion: "unknown" }) as const,
         ),
       );
     return yield* observation(start, startOrdinal, operation, before, yield* inspectTarget(target));

@@ -10,8 +10,8 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
-import * as GitHubRest from "@t3tools/source-control-github/server/GitHubRest";
-import * as GitHubRequestPolicy from "@t3tools/source-control-github/server/GitHubRequestPolicy";
+import type { SourceControlCiReader } from "@t3tools/source-control-core/server/driver";
+import { PullRequestProviderError } from "@t3tools/source-control-core/server/PullRequestProvider";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 
 const CI_RUN_STATUSES = ["in_progress", "queued", "waiting", "pending", "requested"] as const;
@@ -43,16 +43,17 @@ const CiRunner = Schema.Struct({
 
 function ciReadReason(error: unknown): string {
   const tag = typeof error === "object" && error !== null && "_tag" in error ? error._tag : "";
-  if (tag === "GitHubApiRateLimitError" || tag === "SourceControlRateLimitPausedError")
+  const reason = error instanceof PullRequestProviderError ? error.reason : null;
+  if (reason === "rate-limited" || tag === "SourceControlRateLimitPausedError")
     return "GitHub API rate limit reached; reads are paused.";
-  if (tag === "GitHubApiAuthenticationError") return "GitHub authentication is unavailable.";
-  if (tag === "GitHubCliMissingError") return "GitHub CLI is unavailable.";
+  if (reason === "unauthenticated") return "GitHub authentication is unavailable.";
+  if (reason === "missing-tool") return "GitHub CLI is unavailable.";
   return "GitHub data could not be read; access may be restricted.";
 }
 
 /** Read only under the caller's verified credential; error payloads never cross the wire. */
 export const readGitHubCiStatus = Effect.fn("GitHubCiStatus.readGitHubCiStatus")(function* (
-  github: Pick<GitHubRest.GitHubRest["Service"], "rest">,
+  github: SourceControlCiReader,
   input: {
     readonly cwd: string;
     readonly host: string;
@@ -66,19 +67,18 @@ export const readGitHubCiStatus = Effect.fn("GitHubCiStatus.readGitHubCiStatus")
   const rateLimits = yield* Effect.serviceOption(SourceControlRateLimit.SourceControlRateLimit);
   const rateLimitKey = { provider: SourceControlProviderKind.make("github"), host: input.host };
   let lastLease: number | undefined;
-  const request: GitHubRest.GitHubRest["Service"]["rest"] = (requestInput) => {
+  const request: SourceControlCiReader["rest"] = (requestInput) => {
     if (Option.isNone(rateLimits)) return github.rest(requestInput);
     return rateLimits.value.check(rateLimitKey).pipe(
       Effect.flatMap((lease) => {
         lastLease = lease;
         return github.rest(requestInput).pipe(
           Effect.tapError((error) =>
-            error._tag === "GitHubApiRateLimitError" ||
-            (error._tag === "GitHubApiResponseError" && error.status === 429)
+            error.reason === "rate-limited"
               ? rateLimits.value.recordRateLimit({
                   ...rateLimitKey,
                   lease,
-                  retryAt: error._tag === "GitHubApiRateLimitError" ? error.retryAt : undefined,
+                  retryAt: error.retryAt,
                 })
               : Effect.void,
           ),
@@ -87,10 +87,13 @@ export const readGitHubCiStatus = Effect.fn("GitHubCiStatus.readGitHubCiStatus")
       Effect.catchTags({
         SourceControlRateLimitPausedError: (cause) =>
           Effect.fail(
-            new GitHubRequestPolicy.GitHubApiRateLimitError({
-              host: input.host,
+            new PullRequestProviderError({
+              provider: SourceControlProviderKind.make("github"),
               operation: "PullRequestCiStatus.read",
+              reason: "rate-limited",
+              detail: "GitHub CI reads are paused.",
               retryAt: cause.retryAt,
+              cause,
             }),
           ),
       }),

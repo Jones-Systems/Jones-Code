@@ -23,6 +23,7 @@ const makeInstance = Effect.all({
   sourceControl: GitHubSourceControlProvider.make,
   discovery: GitHubSourceControlProvider.makeDiscovery,
   pullRequests: GitHubPullRequestProvider.make,
+  ci: GitHubPullRequestProvider.makeCiReader,
   fetchMedia: GitHubMediaFetch.make,
 });
 

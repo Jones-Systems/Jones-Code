@@ -301,24 +301,22 @@ const queuedToolFixture = Effect.fnUntraced(function* (prefix: string) {
   const now = yield* DateTime.now;
   const turnId = ProviderTurnId.make(`${prefix}-turn`);
   const sessionSpy = vi.spyOn(sessions, "get").mockReturnValue(
-    Effect.succeed(
-      Option.some({
-        providerSession,
-        providerSessionId: providerSession.id,
-        instanceId: modelSelection.instanceId,
-        driver,
-        events: Stream.empty,
-        ensureThread: () => Effect.die("Unexpected ensure"),
-        resumeThread: () => Effect.die("Unexpected resume"),
-        startTurn: () => Effect.die("Unexpected start"),
-        steerTurn: () => Effect.die("Effects are not executed by this test"),
-        interruptTurn: () => Effect.die("Unexpected interrupt"),
-        respondToRuntimeRequest: () => Effect.die("Unexpected response"),
-        readThreadSnapshot: () => Effect.die("Unexpected snapshot"),
-        rollbackThread: () => Effect.die("Unexpected rollback"),
-        forkThread: () => Effect.die("Unexpected fork"),
-      } satisfies ProviderAdapterV2SessionRuntime),
-    ),
+    Effect.succeedSome({
+      providerSession,
+      providerSessionId: providerSession.id,
+      instanceId: modelSelection.instanceId,
+      driver,
+      events: Stream.empty,
+      ensureThread: () => Effect.die("Unexpected ensure"),
+      resumeThread: () => Effect.die("Unexpected resume"),
+      startTurn: () => Effect.die("Unexpected start"),
+      steerTurn: () => Effect.die("Effects are not executed by this test"),
+      interruptTurn: () => Effect.die("Unexpected interrupt"),
+      respondToRuntimeRequest: () => Effect.die("Unexpected response"),
+      readThreadSnapshot: () => Effect.die("Unexpected snapshot"),
+      rollbackThread: () => Effect.die("Unexpected rollback"),
+      forkThread: () => Effect.die("Unexpected fork"),
+    } satisfies ProviderAdapterV2SessionRuntime),
   );
   yield* Effect.addFinalizer(() => Effect.sync(() => sessionSpy.mockRestore()));
   const root = (yield* orchestrator.getThreadProjection(threadId)).nodes.find(
@@ -735,24 +733,22 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
         const now = yield* DateTime.now;
         const turnId = ProviderTurnId.make(`${prefix}-turn`);
         const sessionSpy = vi.spyOn(sessions, "get").mockReturnValue(
-          Effect.succeed(
-            Option.some({
-              providerSession,
-              providerSessionId: providerSession.id,
-              instanceId: modelSelection.instanceId,
-              driver,
-              events: Stream.empty,
-              ensureThread: () => Effect.die("Unexpected ensure"),
-              resumeThread: () => Effect.die("Unexpected resume"),
-              startTurn: () => Effect.die("Unexpected start"),
-              steerTurn: () => Effect.die("Effects are not executed by this test"),
-              interruptTurn: () => Effect.die("Unexpected interrupt"),
-              respondToRuntimeRequest: () => Effect.die("Unexpected response"),
-              readThreadSnapshot: () => Effect.die("Unexpected snapshot"),
-              rollbackThread: () => Effect.die("Unexpected rollback"),
-              forkThread: () => Effect.die("Unexpected fork"),
-            } satisfies ProviderAdapterV2SessionRuntime),
-          ),
+          Effect.succeedSome({
+            providerSession,
+            providerSessionId: providerSession.id,
+            instanceId: modelSelection.instanceId,
+            driver,
+            events: Stream.empty,
+            ensureThread: () => Effect.die("Unexpected ensure"),
+            resumeThread: () => Effect.die("Unexpected resume"),
+            startTurn: () => Effect.die("Unexpected start"),
+            steerTurn: () => Effect.die("Effects are not executed by this test"),
+            interruptTurn: () => Effect.die("Unexpected interrupt"),
+            respondToRuntimeRequest: () => Effect.die("Unexpected response"),
+            readThreadSnapshot: () => Effect.die("Unexpected snapshot"),
+            rollbackThread: () => Effect.die("Unexpected rollback"),
+            forkThread: () => Effect.die("Unexpected fork"),
+          } satisfies ProviderAdapterV2SessionRuntime),
         );
         yield* Effect.addFinalizer(() => Effect.sync(() => sessionSpy.mockRestore()));
         yield* sink.write({
@@ -1165,12 +1161,10 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
             ],
           });
         f.sessionSpy.mockReturnValue(
-          Effect.succeed(
-            Option.some({
-              ...Option.getOrThrow(yield* f.sessions.get(f.providerSession.id)),
-              providerSession,
-            }),
-          ),
+          Effect.succeedSome({
+            ...Option.getOrThrow(yield* f.sessions.get(f.providerSession.id)),
+            providerSession,
+          }),
         );
       }
       const stored = yield* f.react(node);

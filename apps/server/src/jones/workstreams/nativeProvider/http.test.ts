@@ -92,7 +92,7 @@ it.effect("settlement timeout retains dispatch-start and lookup never resubmits"
       },
     });
     const http = createNativeProviderHandlers(provider, {
-      getBySessionId: () => Effect.succeed(Option.some(binding)),
+      getBySessionId: () => Effect.succeedSome(binding),
     });
     const pending = yield* Effect.forkChild(
       http.handle("settlements", binding.session_id, body(requestText)),
@@ -129,7 +129,7 @@ it.effect("ordinary or unauthenticated browser credentials do not become provide
       403,
     );
     const wrongSession = createNativeProviderHandlers(fixture.provider(), {
-      getBySessionId: () => Effect.succeed(Option.some(binding)),
+      getBySessionId: () => Effect.succeedSome(binding),
     });
     assert.strictEqual(
       (yield* wrongSession.handle("settlements", "other-session", body(requestText))).status,
@@ -202,9 +202,7 @@ it.effect(
         const response = yield* http.handle(operation, binding.session_id, body(requestText));
         assert.strictEqual(response.status, 500);
         assert.deepEqual(
-          yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(
-            responseText(response),
-          ),
+          yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(responseText(response)),
           {
             protocol: binding.protocol,
             state: "rejected",

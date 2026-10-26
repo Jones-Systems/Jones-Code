@@ -19,7 +19,6 @@ import {
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
@@ -164,7 +163,7 @@ const fixture = Effect.fnUntraced(function* () {
     isLive: () => Effect.die("Runtime stop must use the captured runtime binding"),
     shutdown: Effect.void,
     open: () => Effect.die("unexpected_open"),
-    get: () => Effect.succeed(Option.none()),
+    get: () => Effect.succeedNone,
     close: () => Effect.die("unexpected_close"),
     closeInstance: () => Effect.die("unexpected_close_instance"),
     release: () => Effect.die("unexpected_release"),
