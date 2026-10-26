@@ -303,10 +303,7 @@ export function ComposerControlsBar(props: {
             </div>
           );
         })}
-        <ComposerQuickControls
-          {...providerTraitsPickerInput}
-          hidden={composerControlsHidden}
-        />
+        <ComposerQuickControls {...providerTraitsPickerInput} hidden={composerControlsHidden} />
         <div
           data-resting-controls-overflow
           aria-hidden={hiddenRestingBlockIds.length === 0 || undefined}

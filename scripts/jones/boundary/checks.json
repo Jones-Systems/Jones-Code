@@ -3,9 +3,7 @@
   "groups": [
     {
       "id": "jones-composer-quick-controls",
-      "tests": [
-        "apps/web/src/jones/composer/ComposerQuickControls.browser.test.tsx"
-      ],
+      "tests": ["apps/web/src/jones/composer/ComposerQuickControls.browser.test.tsx"],
       "commands": [
         "vp test run --root apps/web --config vite.config.ts src/jones/composer/ComposerQuickControls.browser.test.tsx --project browser --maxWorkers=1 --no-file-parallelism",
         "vp lint apps/web/src/jones/composer/ComposerQuickControls.tsx apps/web/src/jones/composer/ComposerQuickControls.browser.test.tsx apps/web/src/components/chat/ComposerControlsBar.tsx apps/web/src/components/chat/restingComposerControlsMeasurement.ts",
