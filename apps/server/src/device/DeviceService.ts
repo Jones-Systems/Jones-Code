@@ -1,3 +1,4 @@
+import { unavailablePlatformReason } from "../jones/device/xcodeReadiness.ts";
 import {
   type DeviceActionInput,
   type DeviceCloseInput,
@@ -323,8 +324,17 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
     if (!(yield* readDeviceSettings).enabled) return null;
     const host = yield* resolveHost(hostId);
     const summary = yield* host.summary;
-    if (summary.kind === "local" && !summary.platforms.some((platform) => platform.available))
+    yield* publish((state) => ({
+      ...state,
+      hosts: state.hosts.map((value) => (value.id === host.id ? summary : value)),
+    }));
+    if (summary.kind === "local" && !summary.platforms.some((platform) => platform.available)) {
+      yield* setHostStatus(host.id, {
+        status: "failed",
+        detail: unavailablePlatformReason(summary.platforms),
+      });
       return null;
+    }
     return yield* readiness(host.id);
   });
 
@@ -334,8 +344,13 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       if (!deviceSettings.enabled || !deviceSettings.agentAccessEnabled) return null;
       const host = yield* resolveHost(hostId);
       const summary = yield* host.summary;
-      if (summary.kind === "local" && !summary.platforms.some((platform) => platform.available))
+      if (summary.kind === "local" && !summary.platforms.some((platform) => platform.available)) {
+        yield* setHostStatus(host.id, {
+          status: "failed",
+          detail: unavailablePlatformReason(summary.platforms),
+        });
         return null;
+      }
       const ready = yield* host
         .ensureAgentReady((phase, detail) =>
           setHostStatus(host.id, { status: phase, detail }).pipe(Effect.asVoid),

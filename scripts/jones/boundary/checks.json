@@ -3527,6 +3527,19 @@
         "vp run --filter @t3tools/web typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-xcode-device-readiness",
+      "tests": [
+        "apps/server/src/jones/device/xcodeReadiness.test.ts",
+        "apps/server/src/jones/device/sshXcodeReadiness.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/device/xcodeReadiness.test.ts apps/server/src/jones/device/sshXcodeReadiness.test.ts apps/server/src/device/LocalDeviceHost.test.ts apps/server/src/device/DeviceService.test.ts apps/server/src/device/DeviceMultiHost.test.ts apps/server/src/device/SshDeviceHost.test.ts apps/server/src/device/sshDeviceScript.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/server/src/jones/device/xcodeReadiness.ts apps/server/src/jones/device/xcodeReadiness.test.ts apps/server/src/jones/device/sshXcodeReadiness.test.ts apps/server/src/device/LocalDeviceHost.ts apps/server/src/device/LocalDeviceHost.test.ts apps/server/src/device/DeviceService.ts apps/server/src/device/sshDeviceScript.ts",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }
