@@ -65,6 +65,7 @@ it("fences callbacks immediately when a route report retires an atom-owned strea
     expect(stream.start).toHaveBeenCalledOnce();
     stream.events.onStatus("streaming");
     stream.events.onInputConnected(true);
+    stream.events.onMjpegFallback("http://current");
     stream.events.onScreen({ width: 400, height: 800, orientation: "portrait" });
     expect(registry.get(deviceStreamScreenAtom("view"))?.width).toBe(400);
     const connected = registry.get(atom);
@@ -72,7 +73,14 @@ it("fences callbacks immediately when a route report retires an atom-owned strea
     stream.events.onInputConnected(false, "lost");
     expect(stream.stop).toHaveBeenCalledOnce();
     expect(registry.get(deviceStreamScreenAtom("view"))).toBeNull();
-    expect(registry.get(atom)).toBe(connected);
+    const retired = registry.get(atom);
+    expect(retired.state).toMatchObject({
+      status: "connecting",
+      input: { connected: false },
+      mjpegUrl: null,
+      screen: null,
+      phoneUnavailable: false,
+    });
 
     report.mockClear();
     stream.events.onStatus("error", "stale");
@@ -84,7 +92,7 @@ it("fences callbacks immediately when a route report retires an atom-owned strea
     expect(report).not.toHaveBeenCalled();
     expect(unauthorized).not.toHaveBeenCalled();
     expect(stream.start).toHaveBeenCalledOnce();
-    expect(registry.get(atom)).toBe(connected);
+    expect(registry.get(atom)).toBe(retired);
     expect(registry.get(deviceStreamScreenAtom("view"))).toBeNull();
     registry.dispose();
     expect(unbind).toHaveBeenCalledOnce();
