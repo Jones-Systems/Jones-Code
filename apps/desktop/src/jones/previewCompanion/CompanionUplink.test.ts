@@ -186,6 +186,35 @@ it("preserves the fixed product role through transport changes and omits it for 
 });
 
 describe("outbound companion lifecycle", () => {
+  it("routes tabless turn activity only for assigned threads and fences stale generations", () => {
+    const f = fixture();
+    const socket = f.connect();
+    socket.receive({ type: "browser", command: { type: "turn", threadId: "other", active: true } });
+    expect(f.commands).toEqual([]);
+    socket.receive({
+      type: "browser",
+      command: { type: "turn", threadId: tab.threadId, active: true },
+    });
+    socket.receive({
+      type: "browser",
+      command: { type: "turn", threadId: tab.threadId, active: false },
+    });
+    expect(f.commands.map(({ command }) => command)).toEqual([
+      { type: "turn", threadId: tab.threadId, active: true },
+      { type: "turn", threadId: tab.threadId, active: false },
+    ]);
+    expect(f.commands.every(({ current }) => current())).toBe(true);
+    socket.receive({ type: "assignments", tabs: [] });
+    expect(f.commands.every(({ current }) => !current())).toBe(true);
+    socket.receive({
+      type: "browser",
+      command: { type: "turn", threadId: tab.threadId, active: true },
+    });
+    expect(f.commands).toHaveLength(2);
+    socket.disconnect();
+    f.controller.dispose();
+  });
+
   it("waits for renderer readiness, binds a fresh ticket, and sends its process identity", () => {
     const f = fixture();
     expect(f.requests).toHaveLength(0);

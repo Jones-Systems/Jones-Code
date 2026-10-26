@@ -83,6 +83,7 @@ import {
   useHardwareKeyboardCommand,
 } from "../keyboard/hardwareKeyboardCommands";
 import { resolveProjectThreadCreationBranch } from "./projectThreadCreationValidation";
+import { createProjectThreadStartLatch } from "./projectThreadStartLatch";
 import { resolveDraftProjectSelection } from "./new-task-project-selection";
 import {
   resolveNewTaskBranchLabel,
@@ -265,6 +266,7 @@ export function NewTaskDraftScreen(props: {
   const queuesInsteadOfStarting = !environmentConnected || attachmentsUploading;
   const promptInputRef = useRef<ComposerEditorHandle>(null);
   const loadedBranchesProjectKeyRef = useRef<string | null>(null);
+  const startLatchRef = useRef(createProjectThreadStartLatch());
   const [importingShareKey, setImportingShareKey] = useState<string | null>(null);
   const [isCancellingShareImport, setIsCancellingShareImport] = useState(false);
   const [cancelledIncomingShareId, setCancelledIncomingShareId] = useState<string | null>(null);
@@ -763,15 +765,15 @@ export function NewTaskDraftScreen(props: {
     flow.environments.find(
       (environment) => environment.environmentId === flow.selectedEnvironmentId,
     )?.environmentLabel ?? "Environment";
-  const availableCurrentBranchName =
-    flow.availableBranches.find((branch) => branch.current)?.name ??
+  const availableDefaultBranchName =
     flow.availableBranches.find((branch) => branch.isDefault)?.name ??
+    flow.availableBranches.find((branch) => branch.current && !branch.isRemote)?.name ??
     null;
   const selectedBranchName = resolveProjectThreadCreationBranch({
     workspaceMode: flow.workspaceMode,
     selectedBranch:
       flow.selectedBranchName ??
-      (flow.workspaceMode === "worktree" ? availableCurrentBranchName : null),
+      (flow.workspaceMode === "worktree" ? availableDefaultBranchName : null),
     currentCheckoutBranch: flow.currentCheckoutBranchName,
   });
   const selectedBranchLabel = resolveNewTaskBranchLabel({
@@ -799,6 +801,19 @@ export function NewTaskDraftScreen(props: {
   });
 
   async function handleStart(): Promise<import("@t3tools/contracts").MessageId | null> {
+    if (flow.submitting) return null;
+    let messageId: import("@t3tools/contracts").MessageId | null = null;
+    await startLatchRef.current.run(async () => {
+      try {
+        messageId = await submitTask();
+      } finally {
+        flow.setSubmitting(false);
+      }
+    });
+    return messageId;
+  }
+
+  async function submitTask(): Promise<import("@t3tools/contracts").MessageId | null> {
     const selectedProject = flow.selectedProject;
     const draftKey = flow.draftKey;
     if (

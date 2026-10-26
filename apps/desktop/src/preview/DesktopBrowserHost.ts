@@ -14,6 +14,14 @@ import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
+import * as DesktopAppIdentity from "../app/DesktopAppIdentity.ts";
+import { companionCdpPolicy } from "../jones/previewCompanion/CompanionCdpPolicy.ts";
+import {
+  createCompanionAssignments,
+  guardCompanionGuest,
+  isCompanionGuest,
+} from "../jones/previewCompanion/CompanionIsolation.ts";
+
 import { createCdpRelayConnection, type CdpRelayConnection } from "./CdpRelay.ts";
 import { sendPageCommand } from "./GuestInput.ts";
 
@@ -50,6 +58,7 @@ interface AttachedTab {
     readonly live: () => boolean;
     held: boolean;
   }>;
+  readonly downloadPolicy: "shared-disk" | "deny";
   downloadDirectory: string | null;
   pendingDownloadGuid: string | null;
   agentInputAt: number;
@@ -84,8 +93,31 @@ export class DesktopBrowserHost extends Context.Service<
   DesktopBrowserHost,
   {
     readonly events: Stream.Stream<Uint8Array>;
-    readonly handleCommandLine: (line: string) => Effect.Effect<void>;
-    readonly attach: (key: DesktopBrowserTabKey, debuggee: DesktopBrowserTabDebugger) => void;
+    readonly eventsMatching: (
+      predicate: (key: DesktopBrowserTabKey) => boolean,
+      source?: object,
+    ) => Stream.Stream<Uint8Array>;
+    /** One line from the backend's browser control fd. */
+    readonly handleCommandLine: (
+      line: string,
+      predicate?: (key: DesktopBrowserTabKey) => boolean,
+      source?: object,
+    ) => Effect.Effect<void>;
+    readonly replaceCompanionAssignments: (keys: ReadonlyArray<DesktopBrowserTabKey>) => void;
+    readonly isCompanionAssigned: (key: DesktopBrowserTabKey) => boolean;
+    readonly isCompanionOwned: (key: DesktopBrowserTabKey) => boolean;
+    readonly registerCompanionGuest: (
+      key: DesktopBrowserTabKey,
+      contents: Electron.WebContents,
+    ) => void;
+    readonly isCompanionGuest: (contents: Electron.WebContents | null) => boolean;
+    /** Offers a server tab's `<webview>` to the server. */
+    readonly attach: (
+      key: DesktopBrowserTabKey,
+      debuggee: DesktopBrowserTabDebugger,
+      downloadPolicy?: "shared-disk" | "deny",
+    ) => void;
+    /** Withdraws it: closed, swapped, crashed, or devtools needs the debugger. */
     readonly detach: (key: DesktopBrowserTabKey) => void;
     readonly humanStartedDownload: (source: Electron.WebContents) => boolean;
     readonly placeDownload: (source: Electron.WebContents, item: Electron.DownloadItem) => boolean;
@@ -104,6 +136,11 @@ export class DesktopBrowserHost extends Context.Service<
 >()("@t3tools/desktop/preview/DesktopBrowserHost") {}
 
 export const make = Effect.gen(function* () {
+  const appIdentity = yield* Effect.serviceOption(DesktopAppIdentity.DesktopAppIdentity);
+  const runtimeIdentity = Option.isSome(appIdentity)
+    ? yield* appIdentity.value.previewAutomationRuntimeIdentity
+    : null;
+  const identityFields = runtimeIdentity === null ? {} : { runtimeIdentity };
   const outbox = yield* PubSub.unbounded<DesktopBrowserEventType>();
   const pointers = yield* PubSub.sliding<{
     readonly key: DesktopBrowserTabKey;
@@ -117,8 +154,17 @@ export const make = Effect.gen(function* () {
   }>();
   const runFork = Effect.runForkWith(yield* Effect.context<never>());
   const tabs = new Map<string, AttachedTab>();
-  /** Threads whose agent turn runs, by the server's account. */
-  const agentTurns = new Set<string>();
+  const defaultSource = {};
+  // Local backends and the companion uplink own independent turn lifetimes.
+  const agentTurns = new Map<
+    object,
+    Map<string, ((key: DesktopBrowserTabKey) => boolean) | undefined>
+  >();
+  const hasAgentTurn = (key: DesktopBrowserTabKey) =>
+    [...agentTurns.values()].some(
+      (turns) => turns.has(key.threadId) && (turns.get(key.threadId)?.(key) ?? true),
+    );
+  const companions = createCompanionAssignments();
   const emit = (event: DesktopBrowserEventType) => runFork(PubSub.publish(outbox, event));
 
   const nextScreenshot = (tab: AttachedTab) => {
@@ -210,7 +256,7 @@ export const make = Effect.gen(function* () {
           return;
         }
         // The agent pauses to think between steps; its tab stays focused until the turn ends.
-        if (tab.agentUsed && agentTurns.has(tab.key.threadId)) return;
+        if (tab.agentUsed && hasAgentTurn(tab.key)) return;
         tab.agentUsed = false;
         if (tabs.get(keyOf(tab.key)) === tab) setFocusEmulation(tab, false);
       }),
@@ -287,15 +333,27 @@ export const make = Effect.gen(function* () {
    * may never settle; the turn's end ends every hold. The agent also sends on its own extra
    * session, so this cannot spare other sessions; a viewer's screencast still holds.
    */
-  const endAgentTurn = (threadId: string) => {
-    agentTurns.delete(threadId);
+  const endAgentTurn = (
+    threadId: string,
+    source: object,
+    commandPredicate?: (key: DesktopBrowserTabKey) => boolean,
+  ) => {
+    const turns = agentTurns.get(source);
+    const predicate = turns?.get(threadId) ?? commandPredicate;
+    turns?.delete(threadId);
     for (const tab of tabs.values()) {
-      if (tab.key.threadId !== threadId) continue;
+      if (tab.key.threadId !== threadId || (predicate && !predicate(tab.key))) continue;
+      if (hasAgentTurn(tab.key)) continue;
       tab.agentUsed = false;
       // Still sent in turn, so the queue keeps moving, but no longer kept painting.
       for (const waiting of tab.waitingScreenshots) waiting.held = false;
       dropFocusHolds(tab);
     }
+  };
+
+  const clearAgentTurns = (source: object) => {
+    for (const threadId of agentTurns.get(source)?.keys() ?? []) endAgentTurn(threadId, source);
+    agentTurns.delete(source);
   };
 
   const relayFor = (tab: AttachedTab) => {
@@ -328,10 +386,21 @@ export const make = Effect.gen(function* () {
           // Waits for focus emulation; insertText and other non-CDP input would not queue behind it.
           const forward = (current?: () => boolean) => {
             const change = tab.focusChange;
-            const run = () =>
-              current === undefined || current()
+            const run = () => {
+              if (
+                tab.relay !== relay ||
+                tabs.get(keyOf(tab.key)) !== tab ||
+                (owner !== undefined && detachedOwners.has(owner)) ||
+                (sessionId !== undefined && detachedOwners.has(sessionId))
+              ) {
+                return Promise.reject(
+                  new Error("The preview connection that sent this command closed."),
+                );
+              }
+              return current === undefined || current()
                 ? send(method, params, sessionId)
                 : Promise.reject(new Error("The page this screenshot was for has moved on."));
+            };
             return change === null ? run() : change.then(run);
           };
           return method === "Page.captureScreenshot"
@@ -372,6 +441,7 @@ export const make = Effect.gen(function* () {
           emit({ type: "cdp", ...tab.key, message });
         }
       },
+      tab.downloadPolicy === "deny" ? companionCdpPolicy : undefined,
     );
     tab.relay = relay;
     return relay;
@@ -379,6 +449,10 @@ export const make = Effect.gen(function* () {
 
   // CDP supplies the path before this runs; otherwise Electron opens a Save dialog.
   const placeDownload = (source: Electron.WebContents, item: Electron.DownloadItem) => {
+    if (isCompanionGuest(source)) {
+      item.cancel();
+      return true;
+    }
     const tab = [...tabs.values()].find(
       (candidate) => candidate.debuggee.webContents === source && candidate.downloadDirectory,
     );
@@ -400,9 +474,36 @@ export const make = Effect.gen(function* () {
     emit({ type: "detached", ...key });
   };
 
-  const attach = (key: DesktopBrowserTabKey, debuggee: DesktopBrowserTabDebugger) => {
+  const registerCompanionGuest = (key: DesktopBrowserTabKey, contents: Electron.WebContents) => {
+    if (companions.isOwned(key)) guardCompanionGuest(contents);
+  };
+
+  const replaceCompanionAssignments = (keys: ReadonlyArray<DesktopBrowserTabKey>) => {
+    for (const key of keys) {
+      if (tabs.get(keyOf(key))?.downloadPolicy === "shared-disk") {
+        throw new Error("Companion assignment collides with an attached local preview tab.");
+      }
+    }
+    for (const key of companions.replace(keys)) detach(key);
+  };
+
+  const attach = (
+    key: DesktopBrowserTabKey,
+    debuggee: DesktopBrowserTabDebugger,
+    downloadPolicy: "shared-disk" | "deny" = "shared-disk",
+  ) => {
+    if (companions.isOwned(key)) {
+      guardCompanionGuest(debuggee.webContents);
+      if (!companions.isAssigned(key)) return;
+      downloadPolicy = "deny";
+    }
+    if (downloadPolicy === "deny") guardCompanionGuest(debuggee.webContents);
     const id = keyOf(key);
-    if (tabs.get(id)?.debuggee.webContents === debuggee.webContents) return;
+    if (
+      tabs.get(id)?.debuggee.webContents === debuggee.webContents &&
+      tabs.get(id)?.downloadPolicy === downloadPolicy
+    )
+      return;
     detach(key);
     const tab: AttachedTab = {
       key,
@@ -410,6 +511,7 @@ export const make = Effect.gen(function* () {
       relay: null,
       screenshotTurn: null,
       waitingScreenshots: [],
+      downloadPolicy,
       downloadDirectory: null,
       pendingDownloadGuid: null,
       agentInputAt: Number.NEGATIVE_INFINITY,
@@ -439,18 +541,26 @@ export const make = Effect.gen(function* () {
     tabs.set(id, tab);
     debuggee.debugger.on("message", tab.onMessage);
     debuggee.webContents.on("did-navigate", tab.onNewDocument);
-    emit({ type: "attached", ...key });
+    emit({ type: "attached", ...key, ...identityFields });
   };
 
-  const handleCommandLine = (line: string) =>
+  const handleCommandLine = (
+    line: string,
+    predicate?: (key: DesktopBrowserTabKey) => boolean,
+    source: object = defaultSource,
+  ) =>
     Effect.sync(() => {
       const command = decodeCommand(line);
       if (Option.isNone(command)) return;
       if (command.value.type === "turn") {
-        if (command.value.active) agentTurns.add(command.value.threadId);
-        else endAgentTurn(command.value.threadId);
+        if (command.value.active) {
+          const turns = agentTurns.get(source) ?? new Map();
+          turns.set(command.value.threadId, predicate);
+          agentTurns.set(source, turns);
+        } else endAgentTurn(command.value.threadId, source, predicate);
         return;
       }
+      if (predicate && !predicate(command.value)) return;
       const tab = tabs.get(keyOf(command.value));
       if (!tab) return;
       if (command.value.type === "pointer") {
@@ -471,31 +581,47 @@ export const make = Effect.gen(function* () {
     return tab !== undefined && performance.now() - tab.agentInputAt > AGENT_DOWNLOAD_WINDOW_MS;
   };
 
-  const announceAll = Effect.suspend(() => {
-    // A new backend: the old one's turns ended without telling us.
-    agentTurns.clear();
-    return Effect.forEach(
-      [...tabs.values()],
-      (tab) => {
-        dropRelay(tab);
-        return PubSub.publish(outbox, { type: "attached", ...tab.key });
-      },
-      { discard: true },
+  const announceMatching = (predicate: (key: DesktopBrowserTabKey) => boolean, source: object) =>
+    Effect.suspend(() => {
+      clearAgentTurns(source);
+      return Effect.forEach(
+        [...tabs.values()].filter((tab) => predicate(tab.key)),
+        (tab) => {
+          dropRelay(tab);
+          return PubSub.publish(outbox, { type: "attached", ...tab.key, ...identityFields });
+        },
+        { discard: true },
+      );
+    });
+
+  const eventsMatching = (
+    predicate: (key: DesktopBrowserTabKey) => boolean,
+    source: object = defaultSource,
+  ) =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        const subscription = yield* PubSub.subscribe(outbox);
+        yield* announceMatching(predicate, source);
+        return Stream.fromSubscription(subscription);
+      }),
+    ).pipe(
+      Stream.ensuring(Effect.sync(() => clearAgentTurns(source))),
+      Stream.filter(predicate),
+      Stream.map((event) => lineEncoder.encode(`${encodeEvent(event)}\n`)),
     );
-  });
 
   return DesktopBrowserHost.of({
     pointers: Stream.fromPubSub(pointers),
-    painting: Stream.fromPubSub(painting),
     // Subscribes before announcing, so no attach falls between the two.
-    events: Stream.unwrap(
-      Effect.gen(function* () {
-        const subscription = yield* PubSub.subscribe(outbox);
-        yield* announceAll;
-        return Stream.fromSubscription(subscription);
-      }),
-    ).pipe(Stream.map((event) => lineEncoder.encode(`${encodeEvent(event)}\n`))),
+    events: eventsMatching(() => true),
+    eventsMatching,
+    painting: Stream.fromPubSub(painting),
     handleCommandLine,
+    replaceCompanionAssignments,
+    isCompanionAssigned: companions.isAssigned,
+    isCompanionOwned: companions.isOwned,
+    registerCompanionGuest,
+    isCompanionGuest,
     attach,
     detach,
     placeDownload,
