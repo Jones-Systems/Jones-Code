@@ -90,10 +90,10 @@ it("keeps one bubble per host while live samples update both metric colors and a
   await using _fixture = await setupTest();
   const bubbles = () => Array.from(container.querySelectorAll('[role="img"]'));
   expect(bubbles().map((bubble) => bubble.textContent)).toEqual([
-    "VPS · N/A · N/A",
-    "Test · N/A · N/A",
-    "Mini · N/A · N/A",
-    "Laptop · N/A · N/A",
+    "VPS · — · —",
+    "Test · — · —",
+    "Mini · — · —",
+    "Laptop · — · —",
   ]);
   expect(bubbles().every((bubble) => bubble.className.includes("bg-muted"))).toBe(true);
   await act(async () =>
@@ -119,13 +119,13 @@ it("keeps one bubble per host while live samples update both metric colors and a
   expect(bubbles()[0]?.getAttribute("aria-label")).toContain("Available RAM 4 GiB");
   expect(bubbles()[0]?.querySelector("[data-host-cpu]")?.className).toContain("text-emerald-700");
   expect(bubbles()[0]?.querySelector("[data-host-ram]")?.className).toContain("text-yellow-800");
-  expect(bubbles()[1]?.textContent).toBe("Test · N/A · N/A");
+  expect(bubbles()[1]?.textContent).toBe("Test · — · —");
   await act(async () => receive(null));
-  expect(bubbles()[0]?.textContent).toBe("VPS · N/A · N/A");
+  expect(bubbles()[0]?.textContent).toBe("VPS · — · —");
   await act(async () =>
     receive({ hosts: [{ id: "vps", status: "unavailable", reason: "stale" }] }),
   );
-  expect(bubbles()[0]?.textContent).toBe("VPS · N/A · N/A");
+  expect(bubbles()[0]?.textContent).toBe("VPS · — · —");
   expect(bubbles()[0]?.className).toContain("bg-muted");
   expect(bubbles()[0]?.getAttribute("aria-label")).toContain("stale");
 });
@@ -216,9 +216,9 @@ it("clears the previous environment immediately and ignores its late sample afte
         </TooltipProvider>,
       ),
   );
-  expect(container.querySelector('[role="img"]')?.textContent).toBe("VPS · N/A · N/A");
+  expect(container.querySelector('[role="img"]')?.textContent).toBe("VPS · — · —");
   await act(async () => oldReceive(sample));
-  expect(container.querySelector('[role="img"]')?.textContent).toBe("VPS · N/A · N/A");
+  expect(container.querySelector('[role="img"]')?.textContent).toBe("VPS · — · —");
   await act(async () =>
     receive({
       hosts: [{ ...sample.hosts[0]!, id: "vps", status: "unavailable", reason: "not_configured" }],

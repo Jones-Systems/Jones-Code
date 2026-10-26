@@ -18,9 +18,9 @@ describe("responsive host readings", () => {
       cpu: "26",
       ram: "0.0",
     });
-    expect(hostDisplayValues("N/A", "N/A mb/s", HOST_DISPLAY_STAGES.at(-1)!, 3)).toEqual({
-      cpu: "N/A",
-      ram: "N/A",
+    expect(hostDisplayValues("—", "—", HOST_DISPLAY_STAGES.at(-1)!, 3)).toEqual({
+      cpu: "—",
+      ram: "—",
     });
     expect(hostDisplayValues("26%", "42", HOST_DISPLAY_STAGES[0]!, 0).ram).toBe("42");
   });
