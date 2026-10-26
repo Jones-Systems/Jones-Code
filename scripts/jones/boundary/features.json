@@ -2184,6 +2184,8 @@
     {
       "id": "workstreams-native-authority",
       "tests": [
+        "apps/server/src/jones/workstreams/native/transition/apply.test.ts",
+        "apps/server/src/jones/workstreams/native/transition/snapshotReader.test.ts",
         "apps/server/src/jones/persistence/Migrations/125_JonesWorkstreamsNative.test.ts",
         "apps/server/src/jones/workstreams/native/crypto/envelope.test.ts",
         "apps/server/src/jones/workstreams/native/crypto/identityIndex.test.ts",

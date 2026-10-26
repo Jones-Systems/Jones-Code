@@ -9,7 +9,6 @@
   "paths": {
     "packages/client-runtime/src/state/workstreams/native.ts": "jones-owned",
     "packages/client-runtime/src/state/workstreams/native.test.ts": "jones-owned",
-
     "packages/contracts/src/jones/fixtures/workstreamsNative/v1/conformance.json": "jones-owned",
     "packages/contracts/src/jones/workstreamsNative.ts": "jones-owned",
     "packages/contracts/src/jones/workstreamsNativeRead.ts": "jones-owned",
@@ -2090,7 +2089,26 @@
     "apps/server/src/jones/workstreams/native/integration.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/operations/durableEntries.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/operations/homeExecutor.ts": "jones-owned",
-    "apps/server/src/jones/workstreams/native/operations/durableEntries.test.ts": "jones-owned"
+    "apps/server/src/jones/workstreams/native/operations/durableEntries.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/transition/activate.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/transition/apply.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/transition/apply.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/transition/archive.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/transition/canonical.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/transition/cli.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/transition/plan.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/transition/principalMap.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/transition/readback.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/transition/reverseExport.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/transition/snapshotReader.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/transition/snapshotReader.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/transition/transfer.ts": "jones-owned",
+    "docs/operations/workstreams-native-transition.md": "jones-owned",
+    "apps/server/src/jones/workstreams/native/transition/fixtures/v1/manifest.json": "jones-owned",
+    "apps/server/src/jones/workstreams/native/transition/fixtures/v1/snapshot.schema.json": "jones-owned",
+    "apps/server/src/jones/workstreams/native/transition/fixtures/v1/spec.md": "jones-owned",
+    "apps/server/src/jones/workstreams/native/transition/fixtures/v1/vectors.json": "jones-owned",
+    "apps/server/src/jones/workstreams/native/transition/fixtures/v1/vectors.sha256": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

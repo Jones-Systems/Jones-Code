@@ -3459,6 +3459,8 @@
     {
       "id": "jones-workstreams-native-authority",
       "tests": [
+        "apps/server/src/jones/workstreams/native/transition/apply.test.ts",
+        "apps/server/src/jones/workstreams/native/transition/snapshotReader.test.ts",
         "apps/server/src/jones/persistence/Migrations/125_JonesWorkstreamsNative.test.ts",
         "apps/server/src/jones/workstreams/native/crypto/envelope.test.ts",
         "apps/server/src/jones/workstreams/native/crypto/identityIndex.test.ts",
@@ -3496,6 +3498,7 @@
         "apps/mobile/src/features/workstreams/Controls.operations.test.tsx"
       ],
       "commands": [
+        "vp test run apps/server/src/jones/workstreams/native/transition --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/server/src/jones/workstreams/operations apps/server/src/jones/workstreams/native/operations --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/server/src/jones/workstreams/native/crypto/ apps/server/src/jones/workstreams/native/store/ apps/server/src/jones/persistence/Migrations/125_JonesWorkstreamsNative.test.ts apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/persistence/JonesTablePresence.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter t3 typecheck",

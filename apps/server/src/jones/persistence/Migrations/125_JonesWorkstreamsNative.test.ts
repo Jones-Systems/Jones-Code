@@ -519,3 +519,42 @@ it.effect("the real Jones loader applies 125 without changing upstream schema or
       expect(yield* sql.unsafe(`PRAGMA foreign_key_list(${table})`)).toEqual([]);
   }).pipe(Effect.provide(memory)),
 );
+
+it.effect("registry lifecycle transitions preserve generation, CAS and home identity", () =>
+  Effect.gen(function* () {
+    yield* migration;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO jones_workstreams_registries ${sql.insert({ ...rows.registries, lineage: "imported", state: "importing" })}`;
+    for (const bad of [
+      sql`UPDATE jones_workstreams_registries SET state = 'fenced'`,
+      sql`UPDATE jones_workstreams_registries SET state = 'active', home_environment_id = 'other'`,
+      sql`UPDATE jones_workstreams_registries SET state = 'active', active_key_id = 'other'`,
+    ])
+      expect(Exit.isFailure(yield* Effect.exit(bad))).toBe(true);
+    yield* sql`UPDATE jones_workstreams_registries SET state = 'active'`;
+    for (const bad of [
+      sql`UPDATE jones_workstreams_registries SET state = 'importing'`,
+      sql`UPDATE jones_workstreams_registries SET state = 'transferred_out'`,
+      sql`UPDATE jones_workstreams_registries SET state = 'fenced', home_environment_id = 'other'`,
+    ])
+      expect(Exit.isFailure(yield* Effect.exit(bad))).toBe(true);
+    yield* sql`UPDATE jones_workstreams_registries SET state = 'fenced'`;
+    expect(
+      Exit.isFailure(
+        yield* Effect.exit(sql`UPDATE jones_workstreams_registries SET state = 'active'`),
+      ),
+    ).toBe(true);
+    yield* sql`UPDATE jones_workstreams_registries SET state = 'transferred_out'`;
+    expect(
+      yield* sql`SELECT state,server_generation,registry_version,home_environment_id,active_key_id FROM jones_workstreams_registries`,
+    ).toEqual([
+      {
+        state: "transferred_out",
+        server_generation: 1,
+        registry_version: 0,
+        home_environment_id: "home",
+        active_key_id: "key",
+      },
+    ]);
+  }).pipe(Effect.provide(memory)),
+);

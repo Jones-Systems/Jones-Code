@@ -27,7 +27,7 @@ const tables = {
       "state",
     ],
     guard:
-      "NOT ((NEW.server_generation = OLD.server_generation AND NEW.registry_version = OLD.registry_version + 1 AND NEW.home_environment_id = OLD.home_environment_id) OR (NEW.server_generation = OLD.server_generation + 1 AND NEW.registry_version = OLD.registry_version))",
+      "NOT ((NEW.server_generation = OLD.server_generation AND NEW.registry_version = OLD.registry_version + 1 AND NEW.home_environment_id = OLD.home_environment_id) OR (NEW.server_generation = OLD.server_generation + 1 AND NEW.registry_version = OLD.registry_version) OR (NEW.server_generation = OLD.server_generation AND NEW.registry_version = OLD.registry_version AND NEW.home_environment_id = OLD.home_environment_id AND NEW.active_key_id = OLD.active_key_id AND ((OLD.state = 'importing' AND NEW.state = 'active') OR (OLD.state = 'active' AND NEW.state = 'fenced') OR (OLD.state = 'fenced' AND NEW.state = 'transferred_out'))))",
   },
   keys: {
     columns:

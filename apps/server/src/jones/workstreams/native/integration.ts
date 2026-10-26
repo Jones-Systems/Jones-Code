@@ -1,3 +1,4 @@
+import * as Transition from "./transition/cli.ts";
 import * as DurableEntries from "./operations/durableEntries.ts";
 import * as HomeExecutor from "./operations/homeExecutor.ts";
 import { ExecutionContext } from "../operations/ports.ts";
@@ -58,3 +59,7 @@ export const nativeOperationsExecutionLayer = Layer.effect(
     };
   }),
 ).pipe(Layer.provideMerge(nativeOperationsLayer));
+
+export const nativeTransitionLayer = Transition.layer.pipe(
+  Layer.provideMerge(nativePersistenceLayer),
+);
