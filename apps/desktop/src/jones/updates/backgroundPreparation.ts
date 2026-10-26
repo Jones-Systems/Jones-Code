@@ -252,15 +252,19 @@ export class JonesBackgroundPreparation {
     });
   }
 
-  /** A referenced handle is live again or activation evidence; either way it is not ours. */
+  /** Only a proved terminal cleanup releases the durable ledger entry. */
   async #reclaim(handle: string): Promise<void> {
     try {
-      await this.#options.reclaim(handle);
+      const result = await this.#options.reclaim(handle);
+      if (result.status !== "reclaimed" && result.status !== "absent") {
+        this.#reclaimRetryAt.set(handle, this.#now() + RECLAIM_RETRY_MS);
+        return;
+      }
+      await this.#forget(handle);
     } catch (cause) {
       this.#reclaimRetryAt.set(handle, this.#now() + RECLAIM_RETRY_MS);
       throw cause;
     }
-    await this.#forget(handle);
   }
 
   /** Only while nothing holds the controller: retained or claimed work may still need a payload. */

@@ -273,8 +273,12 @@ handle is recorded before the discard. After a proven discard, the worker remove
 that handle's payload unless any selection, attempt, transaction or retired
 preparation names it, and it removes the completion index before the tree. Two
 unremoved handles pause replacement with a visible reason while the prepared build
-stays installable. A hard kill can leave an unindexed attempt that nothing reuses or
-sweeps.
+stays installable. Cleanup authority is durably pinned outside the payload tree before
+the completion index is removed, so interrupted deletion can resume even after the
+inner receipt is gone. This evidence authorizes cleanup only; it cannot make an
+unindexed attempt installable. Background cleanup retains its handle until both app
+and artifact roots are proved reclaimed or absent. Unknown or conflicting evidence
+still holds replacement.
 
 ## Desktop activation and startup refusal
 
