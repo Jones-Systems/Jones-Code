@@ -240,6 +240,19 @@ export async function runInner() {
         },
         window: async () => {
           phase = "first-window";
+          await app.evaluate(({ app }) => {
+            const failures = [];
+            globalThis.__jonesEvidencePreloadFailures = failures;
+            app.on("web-contents-created", (_event, contents) => {
+              contents.on("preload-error", (_errorEvent, preloadPath, error) => {
+                if (failures.length < 16)
+                  failures.push({
+                    preload: preloadPath.split("/").at(-1),
+                    message: String(error.message).slice(0, 2000),
+                  });
+              });
+            });
+          });
           page = await managedWait(waitForMainPage(app));
         },
         bridge: async () => {
@@ -475,35 +488,56 @@ export async function runInner() {
       let metadataTimer;
       try {
         const windows = await Promise.race([
-          app.evaluate(({ BrowserWindow }) =>
-            BrowserWindow.getAllWindows()
-              .slice(0, 20)
-              .map((window) => {
-                const contents = window.webContents;
-                const preferences = contents.getLastWebPreferences();
-                let location;
-                try {
-                  const url = new URL(contents.getURL());
-                  location = {
-                    protocol: url.protocol,
-                    hostname: url.hostname,
-                    pathname: url.pathname,
+          app.evaluate(async ({ BrowserWindow }) =>
+            Promise.all(
+              BrowserWindow.getAllWindows()
+                .slice(0, 20)
+                .map(async (window) => {
+                  const contents = window.webContents;
+                  const preferences = contents.getLastWebPreferences();
+                  let location;
+                  try {
+                    const url = new URL(contents.getURL());
+                    location = {
+                      protocol: url.protocol,
+                      hostname: url.hostname,
+                      pathname: url.pathname,
+                    };
+                  } catch {
+                    location = { protocol: "unavailable" };
+                  }
+                  let probeTimer;
+                  let bridge;
+                  try {
+                    bridge = await Promise.race([
+                      contents.executeJavaScript(
+                        "({desktopBridge:typeof window.desktopBridge,threadMonitor:typeof window.threadMonitor,readyState:document.readyState})",
+                      ),
+                      new Promise((resolve) => {
+                        probeTimer = setTimeout(() => resolve("timed-out"), 500);
+                      }),
+                    ]);
+                  } catch (probeError) {
+                    bridge = String(probeError.message).slice(0, 500);
+                  } finally {
+                    clearTimeout(probeTimer);
+                  }
+                  return {
+                    bridge,
+                    preferenceKeys: Object.keys(preferences).slice(0, 80),
+                    preloadFailures: globalThis.__jonesEvidencePreloadFailures ?? [],
+                    id: window.id,
+                    location,
+                    loading: contents.isLoading(),
+                    destroyed: contents.isDestroyed(),
+                    publisher:
+                      preferences.additionalArguments?.includes(
+                        "--jones-thread-monitor-publisher",
+                      ) === true,
+                    preload: preferences.preload?.split("/").at(-1) ?? null,
                   };
-                } catch {
-                  location = { protocol: "unavailable" };
-                }
-                return {
-                  id: window.id,
-                  location,
-                  loading: contents.isLoading(),
-                  destroyed: contents.isDestroyed(),
-                  publisher:
-                    preferences.additionalArguments?.includes(
-                      "--jones-thread-monitor-publisher",
-                    ) === true,
-                  preload: preferences.preload?.split("/").at(-1) ?? null,
-                };
-              }),
+                }),
+            ),
           ),
           new Promise((resolve) => {
             metadataTimer = setTimeout(() => resolve("timed-out"), 1000);
