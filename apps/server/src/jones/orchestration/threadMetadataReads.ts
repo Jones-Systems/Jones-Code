@@ -1,4 +1,5 @@
 import type { OrchestrationV2ThreadShell, ProjectId, ThreadId } from "@t3tools/contracts";
+import { threadPullRequestsOf } from "@t3tools/shared/threadPullRequests";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -24,7 +25,26 @@ export interface ThreadMetadataQuery {
   readonly worktree?: { readonly path: string; readonly branch: string };
 }
 
-export type ThreadMetadata = Pick<OrchestrationV2ThreadShell, "id" | "lineage">;
+export type ThreadMetadata = Pick<
+  OrchestrationV2ThreadShell,
+  | "id"
+  | "lineage"
+  | "projectId"
+  | "branch"
+  | "worktreePath"
+  | "pullRequests"
+  | "linkedPullRequest"
+  | "branchPullRequest"
+  | "archivedAt"
+  | "settledOverride"
+  | "settledAt"
+  | "createdAt"
+  | "pinnedAt"
+  | "pinOrderKey"
+  | "deletedAt"
+  | "runtimeMode"
+  | "interactionMode"
+>;
 
 export class ThreadMetadataReads extends Context.Service<
   ThreadMetadataReads,
@@ -121,7 +141,29 @@ const make = Effect.gen(function* () {
       // writer transaction still retains its connection and read-your-writes.
       const threads = yield* Effect.forEach(snapshot.rows, (row) =>
         decodeThread(row.payload_json).pipe(
-          Effect.map((thread): ThreadMetadata => ({ id: thread.id, lineage: thread.lineage })),
+          Effect.map((thread): ThreadMetadata => ({
+            id: thread.id,
+            lineage: thread.lineage,
+            projectId: thread.projectId,
+            branch: thread.branch,
+            worktreePath: thread.worktreePath,
+            pullRequests: threadPullRequestsOf(thread),
+            ...(thread.linkedPullRequest === undefined
+              ? {}
+              : { linkedPullRequest: thread.linkedPullRequest }),
+            ...(thread.branchPullRequest === undefined
+              ? {}
+              : { branchPullRequest: thread.branchPullRequest }),
+            archivedAt: thread.archivedAt,
+            settledOverride: thread.settledOverride,
+            settledAt: thread.settledAt,
+            createdAt: thread.createdAt,
+            pinnedAt: thread.pinnedAt ?? null,
+            pinOrderKey: thread.pinOrderKey ?? null,
+            deletedAt: thread.deletedAt,
+            runtimeMode: thread.runtimeMode,
+            interactionMode: thread.interactionMode,
+          })),
         ),
       );
       yield* annotate(query, threads.length);

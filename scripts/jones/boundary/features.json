@@ -438,7 +438,7 @@
         "packages/shared/src/jones/workMode.test.ts",
         "packages/shared/src/serverSettings.test.ts"
       ],
-      "scope": "Work-mode settings and capability, provider prompt guards, server admission and idle retention, keep-warm exclusion from inactivity settlement, sidebar status, and shared hidden keep-warm activity filtering across web and mobile. Focused tests cover policy/service behavior, provider/session integration, contracts and shared presentation helpers. Timing uses persisted inference counters from the current root provider conversation, skips first refreshes older than 90 minutes, and preserves established 55-minute cadence. Sweep timing is cached per shell generation; residency uses the real clock. Restart continuation reuses the Jones keep-warm identity guard so interrupted refreshes never resume ordinary work. The existing upstream restart harness retains this regression to exercise real continuation dispatch and the ordinary-user control."
+      "scope": "Work-mode settings and capability, provider prompt guards, server admission and idle retention, keep-warm exclusion from inactivity settlement, sidebar status, and shared hidden keep-warm activity filtering across web and mobile. Focused tests cover policy/service behavior, provider/session integration, contracts and shared presentation helpers. Timing uses persisted inference counters from the current root provider conversation, skips first refreshes older than 90 minutes, and preserves established 55-minute cadence. Sweep timing is cached per shell generation; residency uses the real clock. Restart continuation reuses the Jones keep-warm identity guard so interrupted refreshes never resume ordinary work. The existing upstream restart harness retains this regression to exercise real continuation dispatch and the ordinary-user control. Enabled sweeps cache full shells by the global V2 thread-event watermark, refresh changed state on the next admitted tick, evaluate clock conditions every tick, retry failed reads, and suppress dispatched or acknowledged admission generations."
     },
     {
       "id": "persistent-host-connections",
@@ -899,9 +899,13 @@
         "apps/mobile/src/connection/background-activity-reporter.test.ts",
         "apps/mobile/src/connection/background-activity.test.ts",
         "apps/server/src/environment/DirectEndpoints.test.ts",
-        "apps/server/src/environment/RemoteOpenTargets.test.ts"
+        "apps/server/src/environment/RemoteOpenTargets.test.ts",
+        "packages/client-runtime/src/jones/connection/betterRouteRecovery.test.ts",
+        "packages/client-runtime/src/connection/resolver.test.ts",
+        "packages/client-runtime/src/connection/routes.test.ts",
+        "packages/client-runtime/src/connection/registry.test.ts"
       ],
-      "scope": "Bounded serial delivery per ACK-capable RPC stream keeps unrelated unary replies and health traffic responsive while preserving ordered chunks, acknowledgments, cancellation and terminal flow-control windows. Non-ACK transports preserve synchronous backpressure. Shared dependency patch and existing virtual WebSocket integration harness are the lifecycle owners; no wire or installed-runtime change. Preferred-route preparation and connection share a 15-second allowance, followed by 75 seconds for readiness, when a fallback remains. The final actual route retains the existing aggregate supervisor bound; timeout cleanup completes before fallback. Activity reporting has independent environment lanes with one in-flight and one latest pending report, a ten-second deadline, and removal/shutdown cancellation. Original observation timestamps, reporter triggers, debounce, cadence and lease duration are preserved; report failure does not retry or reconnect. Server configuration resolves its three fixed independent editor, remote-open and direct-endpoint discoveries concurrently. Each existing five-second timeout/fallback and response field is preserved; scoped integration cases exercise parallel entry and cancellation."
+      "scope": "Bounded serial delivery per ACK-capable RPC stream keeps unrelated unary replies and health traffic responsive while preserving ordered chunks, acknowledgments, cancellation and terminal flow-control windows. Non-ACK transports preserve synchronous backpressure. Shared dependency patch and existing virtual WebSocket integration harness are the lifecycle owners; no wire or installed-runtime change. Preferred-route preparation and connection share a 15-second allowance, followed by 75 seconds for readiness, when a fallback remains. The final actual route retains the existing aggregate supervisor bound; timeout cleanup completes before fallback. Activity reporting has independent environment lanes with one in-flight and one latest pending report, a ten-second deadline, and removal/shutdown cancellation. Original observation timestamps, reporter triggers, debounce, cadence and lease duration are preserved; report failure does not retry or reconnect. Server configuration resolves its three fixed independent editor, remote-open and direct-endpoint discoveries concurrently. Each existing five-second timeout/fallback and response field is preserved; scoped integration cases exercise parallel entry and cancellation. Preferred Connect recovery permits one bounded preparation for unchecked relay routes, validates environment identity, and fences queued switch observations by exact lease, authoritative catalog entry and account identity. Both enqueue and consumption preserve a healthy fallback on stale state; actual switching prepares fresh material and retains cooldown, cancellation and supervisor retry ownership."
     },
     {
       "id": "queue-hold-isolation",
@@ -2096,9 +2100,17 @@
         "apps/server/src/serverRuntimeStartup.test.ts",
         "apps/server/src/serverRuntimeStartup.autoPull.test.ts",
         "apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts",
-        "apps/server/src/jones/mcp/delegatedTaskWorkspace/DelegatedTaskWorkspace.test.ts"
+        "apps/server/src/jones/mcp/delegatedTaskWorkspace/DelegatedTaskWorkspace.test.ts",
+        "apps/server/src/jones/mcp/pinPlacement/pinPlacement.test.ts",
+        "apps/server/src/mcp/toolkits/core.test.ts",
+        "apps/server/src/mcp/toolkits/thread/handlers.test.ts",
+        "apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts",
+        "apps/server/src/relay/AgentAwarenessRelay.test.ts",
+        "apps/server/src/voiceReview/composition.test.ts",
+        "apps/server/src/jones/orchestration/threadMetadataCallers.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts"
       ],
-      "scope": "Narrow threads-only ID, metadata, count and watermark reads replace full-shell work for rename discovery, startup selection/counting and project deletion. Standalone rename/count reads select the reader; bootstrap/deletion retain writer read-your-writes. Rows and event watermark share a transaction, decode follows commit, deleted rows are excluded, and active-before-archived order is preserved. Existing integration harness exceptions retain production locking, cascade ordering and startup behavior; no database schema or installed-runtime change."
+      "scope": "Narrow threads-only ID, metadata, count and watermark reads replace full-shell work for rename discovery, startup selection/counting and project deletion. Standalone rename/count reads select the reader; bootstrap/deletion retain writer read-your-writes. Rows and event watermark share a transaction, decode follows commit, deleted rows are excluded, and active-before-archived order is preserved. Existing integration harness exceptions retain production locking, cascade ordering and startup behavior; no database schema or installed-runtime change. PR discovery and single-thread refresh, relay catch-up, pin metadata, voice root IDs and thread listing use the existing narrow/read-only paths while retaining sequence guards, command shape, deletion filtering and ordering. Existing MCP, relay, voice and PR integration harness exceptions cover actual caller wiring; reader load still requires composed qualification."
     },
     {
       "id": "queue-removal",

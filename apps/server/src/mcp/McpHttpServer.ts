@@ -1,3 +1,4 @@
+import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
 import { WorkstreamToolkit } from "../jones/mcp/workstreams/tools.ts";
 import {
   handlers as workstreamHandlers,
@@ -1108,7 +1109,9 @@ export const layerThreadSelfConfigurationToolkit = toolkitRegistration(
   ThreadSelfConfigurationTools.ThreadSelfConfigurationToolkit,
   ThreadSelfConfigurationTools.layer,
 );
-export const layerThreadToolkit = toolkitRegistration(ThreadToolkit, ThreadHandlers.layer);
+export const layerThreadToolkit = toolkitRegistration(ThreadToolkit, ThreadHandlers.layer).pipe(
+  Layer.provide(ThreadMetadataReads.layer),
+);
 
 const layerWorktreeToolkitRegistration = toolkitRegistration(
   WorktreeToolkit,

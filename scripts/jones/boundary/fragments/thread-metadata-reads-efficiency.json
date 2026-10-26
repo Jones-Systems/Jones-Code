@@ -44,6 +44,22 @@
     {
       "from": "apps/server/src/serverRuntimeStartup.autoPull.test.ts",
       "to": "apps/server/src/jones/orchestration/threadMetadataReads.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadPullRequestService.ts",
+      "to": "apps/server/src/jones/orchestration/threadMetadataReads.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts",
+      "to": "apps/server/src/jones/orchestration/threadMetadataReads.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/orchestration/threadMetadataReads.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/thread/tools.ts",
+      "to": "apps/server/src/jones/orchestration/threadMetadataReads.ts"
     }
   ]
 }

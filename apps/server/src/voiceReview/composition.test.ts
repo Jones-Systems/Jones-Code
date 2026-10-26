@@ -14,6 +14,8 @@ import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
 import * as Data from "effect/Data";
 import { ServerEnvironmentIdentity } from "../environment/ServerEnvironment.ts";
+import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
+import * as Layer from "effect/Layer";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { WorkstreamGateway } from "../workstreams/WorkstreamGateway.ts";
 import { voiceReviewConfigFromEnv, type VoiceReviewConfig } from "./config.ts";
@@ -78,6 +80,7 @@ const seam = (location: "active" | "archive" = "active") => {
         location === "archive" ? threadIds.map((id) => ({ id, deletedAt: null })) : [],
     } as unknown as OrchestrationV2ThreadShellSnapshot),
   );
+  const metadataRead = vi.fn(() => Effect.succeed(threadIds.map((id) => ThreadId.make(id))));
   const run = (
     input: {
       binding: typeof binding | null;
@@ -89,8 +92,10 @@ const seam = (location: "active" | "archive" = "active") => {
       Effect.provideService(ServerEnvironmentIdentity, {
         getEnvironmentId: Effect.suspend(() => Effect.succeed(EnvironmentId.make(environmentId))),
       }),
+      Effect.provide(
+        Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({ listIds: metadataRead }),
+      ),
       Effect.provideService(ProjectionStore.ProjectionStoreV2, {
-        getShellSnapshot: projectionRead,
         getThreadShell: (id: ThreadId) =>
           projectionRead().pipe(
             Effect.map(
@@ -109,6 +114,7 @@ const seam = (location: "active" | "archive" = "active") => {
     run,
     read,
     projectionRead,
+    metadataRead,
     removeThread: () => {
       threadIds = [];
     },
@@ -118,6 +124,28 @@ const seam = (location: "active" | "archive" = "active") => {
   };
 };
 describe("voice native service composition", () => {
+  it.effect("keeps an initial metadata failure unavailable without a shell fallback", () =>
+    Effect.gen(function* () {
+      const port = yield* makeVoiceReviewComposition({ binding, reviewConfig, principal }).pipe(
+        Effect.provideService(ServerEnvironmentIdentity, {
+          getEnvironmentId: Effect.succeed(EnvironmentId.make("native-environment")),
+        }),
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({
+              listIds: () =>
+                Effect.fail(
+                  new ThreadMetadataReads.ThreadMetadataReadError({ cause: "synthetic failure" }),
+                ),
+            }),
+            Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
+            Layer.mock(WorkstreamGateway)({ purgeAuthorization: vi.fn() }),
+          ),
+        ),
+      );
+      expect(port).toBeUndefined();
+    }),
+  );
   it.effect(
     "captures production services in a factory without leaking their Effect requirements",
     () =>
@@ -128,15 +156,13 @@ describe("voice native service composition", () => {
             getEnvironmentId: Effect.succeed(EnvironmentId.make("native-environment")),
           }),
           Effect.provideService(ProjectionStore.ProjectionStoreV2, {
-            getShellSnapshot: () =>
-              Effect.succeed({
-                snapshotSequence: 1,
-                schemaVersion: 1,
-                threads: [],
-                archivedThreads: [],
-              }),
             getThreadShell: () => Effect.succeed(null),
           } as unknown as ProjectionStore.ProjectionStoreV2["Service"]),
+          Effect.provide(
+            Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({
+              listIds: () => Effect.succeed([]),
+            }),
+          ),
           Effect.provideService(WorkstreamGateway, {
             readThreadPlacements: read,
           } as unknown as WorkstreamGateway["Service"]),
@@ -153,6 +179,7 @@ describe("voice native service composition", () => {
       const fixture = seam();
       expect(yield* fixture.run({ binding: null, reviewConfig, principal })).toBeUndefined();
       expect(fixture.projectionRead).not.toHaveBeenCalled();
+      expect(fixture.metadataRead).not.toHaveBeenCalled();
       expect(fixture.read).not.toHaveBeenCalled();
     }),
   );
@@ -174,7 +201,8 @@ describe("voice native service composition", () => {
         }).pipe(Effect.flip);
         expect(error._tag).toBe("NativeReadFailure");
         expect(error.cause).toBeInstanceOf(Error);
-        expect(fixture.projectionRead).toHaveBeenCalledTimes(2);
+        expect(fixture.metadataRead).toHaveBeenCalledTimes(1);
+        expect(fixture.projectionRead).toHaveBeenCalledTimes(1);
         expect(fixture.read).not.toHaveBeenCalled();
       }),
   );
@@ -184,6 +212,7 @@ describe("voice native service composition", () => {
       fixture.changeEnvironment();
       expect(yield* fixture.run()).toBeUndefined();
       expect(fixture.projectionRead).not.toHaveBeenCalled();
+      expect(fixture.metadataRead).not.toHaveBeenCalled();
       expect(fixture.read).not.toHaveBeenCalled();
     }),
   );
@@ -213,7 +242,8 @@ describe("voice native service composition", () => {
           }
         }
       }
-      expect(fixture.projectionRead).toHaveBeenCalledTimes(12);
+      expect(fixture.metadataRead).toHaveBeenCalledTimes(12);
+      expect(fixture.projectionRead).not.toHaveBeenCalled();
       expect(fixture.read).not.toHaveBeenCalled();
     }),
   );
@@ -227,6 +257,7 @@ describe("voice native service composition", () => {
         expect(error).toBeInstanceOf(VoiceReviewForbiddenError);
       }
       expect(fixture.projectionRead).not.toHaveBeenCalled();
+      expect(fixture.metadataRead).not.toHaveBeenCalled();
       expect(fixture.read).not.toHaveBeenCalled();
     }),
   );
@@ -252,7 +283,8 @@ it.effect("includes archived V2 threads and rechecks their exact native identity
     ]);
     expect(yield* Effect.promise(() => port!.read(principal, identities))).toEqual(result);
     expect(fixture.read).toHaveBeenCalledExactlyOnceWith({ identities });
-    expect(fixture.projectionRead).toHaveBeenCalledTimes(2);
+    expect(fixture.metadataRead).toHaveBeenCalledTimes(1);
+    expect(fixture.projectionRead).toHaveBeenCalledTimes(1);
   }),
 );
 
