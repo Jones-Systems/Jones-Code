@@ -80,11 +80,36 @@ it("reattaches a destination run without the launch fields that can create a mis
   await screen.rerender(<TerminalViewport {...props} attachExistingOnly focusRequestId={1} />);
   expect(state.attach.mock.lastCall?.[0].terminal).not.toHaveProperty("cwd");
   expect(state.command).not.toHaveBeenCalled();
-  // The existing drawer and onboarding callers still opt into opening a shell.
+  // Reserved command sessions also fail closed without the explicit view flag.
   await screen.rerender(<TerminalViewport {...props} />);
+  expect(state.attach.mock.lastCall?.[0].terminal).not.toHaveProperty("cwd");
+  // The ordinary drawer and onboarding callers retain their existing launch behavior.
+  const ordinaryRef = { ...threadRef, threadId: ThreadId.make("ordinary-thread") };
+  await screen.rerender(
+    <TerminalViewport
+      {...props}
+      threadRef={ordinaryRef}
+      threadId={ordinaryRef.threadId}
+      terminalId="term-1"
+    />,
+  );
   expect(state.attach.mock.lastCall?.[0].terminal).toEqual({
-    threadId: "jones-shell-run",
-    terminalId: props.terminalId,
+    threadId: "ordinary-thread",
+    terminalId: "term-1",
     cwd: "/destination",
+  });
+  // Same-machine Play uses the drawer, with the same attach-only expiry protection.
+  await screen.rerender(
+    <TerminalViewport
+      {...props}
+      threadRef={ordinaryRef}
+      threadId={ordinaryRef.threadId}
+      terminalId="jones-shell-run-source"
+    />,
+  );
+  expect(state.attach.mock.lastCall?.[0].terminal).toEqual({
+    threadId: "ordinary-thread",
+    terminalId: "jones-shell-run-source",
+    restartIfNotRunning: false,
   });
 });

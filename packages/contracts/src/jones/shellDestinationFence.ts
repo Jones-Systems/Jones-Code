@@ -1,5 +1,13 @@
 export const JONES_SHELL_LANGUAGE = "jones-shell";
 
+// Reserved identities let the owning server apply command-terminal lifecycle
+// policy without adding required wire fields to independently upgraded clients.
+export const SHELL_RUN_THREAD_ID = "jones-shell-run";
+export const SHELL_RUN_TERMINAL_PREFIX = "jones-shell-run-";
+export function isShellRunTerminal(threadId: string, terminalId: string): boolean {
+  return threadId === SHELL_RUN_THREAD_ID || terminalId.startsWith(SHELL_RUN_TERMINAL_PREFIX);
+}
+
 export type ShellDestinationFence =
   | { _tag: "Valid"; environmentId: string; label?: string; title?: string }
   | { _tag: "Invalid"; reason: string };
