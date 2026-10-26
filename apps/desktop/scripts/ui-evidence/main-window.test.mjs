@@ -52,3 +52,14 @@ NodeTest.test("missing bridge fails instead of selecting an arbitrary window", a
     /Main desktop renderer bridge/,
   );
 });
+
+NodeTest.test("an unresponsive renderer cannot stall the startup deadline", async () => {
+  const unresponsive = {
+    ...page("t3://app/index.html", false),
+    evaluate: () => new Promise(() => {}),
+  };
+  await NodeAssert.rejects(
+    waitForMainPage({ windows: () => [unresponsive] }, { timeoutMs: 30, probeTimeoutMs: 5 }),
+    { name: "TimeoutError", message: "Main desktop renderer bridge did not become ready" },
+  );
+});
