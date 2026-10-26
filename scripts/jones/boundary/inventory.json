@@ -914,7 +914,7 @@
     "packages/client-runtime/src/operations/commands.test.ts": "jones-tests-in-upstream",
     "packages/client-runtime/src/operations/commands.ts": "accepted-shared",
     "packages/client-runtime/src/rpc/client.test.ts": "jones-tests-in-upstream",
-    "packages/client-runtime/src/rpc/client.ts": "accepted-shared",
+    "packages/client-runtime/src/rpc/client.ts": "hook",
     "packages/client-runtime/src/state/models.ts": "accepted-shared",
     "packages/client-runtime/src/state/orchestrationV2Projection.test.ts": "jones-tests-in-upstream",
     "packages/client-runtime/src/state/pullRequests.ts": "accepted-shared",
@@ -2000,7 +2000,12 @@
     "apps/server/src/jones/orchestration/threadMetadataCallers.test.ts": "jones-owned",
     "packages/client-runtime/src/jones/connection/betterRouteRecovery.ts": "jones-owned",
     "packages/client-runtime/src/jones/connection/betterRouteRecovery.test.ts": "jones-owned",
-    "packages/client-runtime/src/connection/supervisor.ts": "hook"
+    "packages/client-runtime/src/connection/supervisor.ts": "hook",
+    "packages/client-runtime/src/jones/sync/commandIsolation.test.ts": "jones-owned",
+    "packages/client-runtime/src/jones/sync/producerGuard.ts": "jones-owned",
+    "packages/client-runtime/src/state/threads-sync.test.ts": "jones-tests-in-upstream",
+    "packages/client-runtime/src/state/shell-sync.test.ts": "jones-tests-in-upstream",
+    "packages/client-runtime/src/state/shell.ts": "hook"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
