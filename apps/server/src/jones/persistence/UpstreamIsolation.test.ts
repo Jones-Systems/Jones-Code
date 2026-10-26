@@ -327,6 +327,7 @@ it.effect(
         [121, "RemoteTaskObservations"],
         [122, "ThreadLinks"],
         [123, "WorkspaceLifecycle"],
+        [124, "WorkstreamsNative"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= 107 ORDER BY migration_id`,

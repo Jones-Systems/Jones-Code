@@ -2107,13 +2107,35 @@
     {
       "id": "workstreams-native-authority",
       "tests": [
+        "apps/server/src/jones/persistence/Migrations/124_JonesWorkstreamsNative.test.ts",
+        "apps/server/src/jones/workstreams/native/crypto/envelope.test.ts",
+        "apps/server/src/jones/workstreams/native/crypto/identityIndex.test.ts",
+        "apps/server/src/jones/workstreams/native/crypto/keyProvider.test.ts",
+        "apps/server/src/jones/workstreams/native/store/archiveStore.test.ts",
+        "apps/server/src/jones/workstreams/native/store/bindingStore.test.ts",
+        "apps/server/src/jones/workstreams/native/store/effectStore.test.ts",
+        "apps/server/src/jones/workstreams/native/store/historyStore.test.ts",
+        "apps/server/src/jones/workstreams/native/store/operationStore.test.ts",
+        "apps/server/src/jones/workstreams/native/store/receiptStore.test.ts",
+        "apps/server/src/jones/workstreams/native/store/registryStore.test.ts",
+        "apps/server/src/jones/workstreams/native/store/sql.test.ts",
         "packages/contracts/src/jones/workstreamsNative.test.ts",
         "packages/contracts/src/jones/workstreamsNativeRead.test.ts",
         "packages/contracts/src/jones/workstreamsNativePlacement.test.ts",
         "packages/contracts/src/jones/workstreamsSnapshot.test.ts",
-        "packages/contracts/src/jones/workstreamsRollups.test.ts"
+        "packages/contracts/src/jones/workstreamsRollups.test.ts",
+        "apps/server/src/jones/workstreams/native/domain/collections.test.ts",
+        "apps/server/src/jones/workstreams/native/domain/cursor.test.ts",
+        "apps/server/src/jones/workstreams/native/domain/decider.test.ts",
+        "apps/server/src/jones/workstreams/native/domain/negativeCases.test.ts",
+        "apps/server/src/jones/workstreams/native/domain/semanticCases.test.ts",
+        "apps/server/src/jones/workstreams/native/providers/githubPrObserver.test.ts",
+        "apps/server/src/jones/workstreams/native/providers/localAttestation.test.ts",
+        "apps/server/src/jones/workstreams/native/providers/localSettlement.test.ts",
+        "apps/server/src/jones/workstreams/native/providers/referenceResolver.test.ts",
+        "apps/server/src/jones/workstreams/native/providers/synthetic.test.ts"
       ],
-      "scope": "Versioned native registry-home, closed forwarding and receipt lookup contracts; coherent read provenance; native placement proofs alongside historical v1; encrypted snapshot framing; rollup source authorization and result preservation. Optional environment capability and explicit package exports are the shared hooks. Contracts only; no runtime authority, migration, client activation, provider configuration or fleet adoption is claimed."
+      "scope": "Native registry-home contracts, encrypted persistence and all31 native tables, pure v1 CAS/receipt/history domain and source-admitted provider ports. Source identity remains source-owned; authority stays home-owned. Native command/forwarding registration, end-to-end qualification and fleet adoption remain subsequent integration."
     }
   ]
 }

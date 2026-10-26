@@ -11,7 +11,7 @@ import {
 } from "./workstreamsNative.ts";
 
 const WORKSTREAMS_SNAPSHOT_CONTRACT = "workstreams-snapshot/1.0.0";
-const WORKSTREAMS_SNAPSHOT_CLASSES = [
+export const WORKSTREAMS_SNAPSHOT_CLASSES = [
   "workstream_registry_context",
   "workstream_owner_grants",
   "workstream_source_bindings",

@@ -3343,17 +3343,42 @@
     {
       "id": "jones-workstreams-native-authority",
       "tests": [
+        "apps/server/src/jones/persistence/Migrations/124_JonesWorkstreamsNative.test.ts",
+        "apps/server/src/jones/workstreams/native/crypto/envelope.test.ts",
+        "apps/server/src/jones/workstreams/native/crypto/identityIndex.test.ts",
+        "apps/server/src/jones/workstreams/native/crypto/keyProvider.test.ts",
+        "apps/server/src/jones/workstreams/native/store/archiveStore.test.ts",
+        "apps/server/src/jones/workstreams/native/store/bindingStore.test.ts",
+        "apps/server/src/jones/workstreams/native/store/effectStore.test.ts",
+        "apps/server/src/jones/workstreams/native/store/historyStore.test.ts",
+        "apps/server/src/jones/workstreams/native/store/operationStore.test.ts",
+        "apps/server/src/jones/workstreams/native/store/receiptStore.test.ts",
+        "apps/server/src/jones/workstreams/native/store/registryStore.test.ts",
+        "apps/server/src/jones/workstreams/native/store/sql.test.ts",
         "packages/contracts/src/jones/workstreamsNative.test.ts",
         "packages/contracts/src/jones/workstreamsNativeRead.test.ts",
         "packages/contracts/src/jones/workstreamsNativePlacement.test.ts",
         "packages/contracts/src/jones/workstreamsSnapshot.test.ts",
-        "packages/contracts/src/jones/workstreamsRollups.test.ts"
+        "packages/contracts/src/jones/workstreamsRollups.test.ts",
+        "apps/server/src/jones/workstreams/native/domain/collections.test.ts",
+        "apps/server/src/jones/workstreams/native/domain/cursor.test.ts",
+        "apps/server/src/jones/workstreams/native/domain/decider.test.ts",
+        "apps/server/src/jones/workstreams/native/domain/negativeCases.test.ts",
+        "apps/server/src/jones/workstreams/native/domain/semanticCases.test.ts",
+        "apps/server/src/jones/workstreams/native/providers/githubPrObserver.test.ts",
+        "apps/server/src/jones/workstreams/native/providers/localAttestation.test.ts",
+        "apps/server/src/jones/workstreams/native/providers/localSettlement.test.ts",
+        "apps/server/src/jones/workstreams/native/providers/referenceResolver.test.ts",
+        "apps/server/src/jones/workstreams/native/providers/synthetic.test.ts"
       ],
       "commands": [
+        "vp test run apps/server/src/jones/workstreams/native/crypto/ apps/server/src/jones/workstreams/native/store/ apps/server/src/jones/persistence/Migrations/124_JonesWorkstreamsNative.test.ts apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/persistence/JonesTablePresence.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter t3 typecheck",
         "vp test run packages/contracts/src/jones/workstreamsNative.test.ts packages/contracts/src/jones/workstreamsNativeRead.test.ts packages/contracts/src/jones/workstreamsNativePlacement.test.ts packages/contracts/src/jones/workstreamsSnapshot.test.ts packages/contracts/src/jones/workstreamsRollups.test.ts packages/contracts/src/workstreams.test.ts packages/contracts/src/workstreams.conformance.test.ts packages/contracts/src/jones/workstreamOperations.test.ts packages/contracts/src/jones/workstreamsNativeProvider.test.ts packages/contracts/src/jones/orchestrationCompatibility.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/contracts typecheck",
         "vp lint packages/contracts/src/jones/workstreamsNative.ts packages/contracts/src/jones/workstreamsNativeRead.ts packages/contracts/src/jones/workstreamsNativePlacement.ts packages/contracts/src/jones/workstreamsSnapshot.ts packages/contracts/src/jones/workstreamsRollups.ts packages/contracts/src/jones/workstreamsNative.test.ts packages/contracts/src/jones/workstreamsNativeRead.test.ts packages/contracts/src/jones/workstreamsNativePlacement.test.ts packages/contracts/src/jones/workstreamsSnapshot.test.ts packages/contracts/src/jones/workstreamsRollups.test.ts packages/contracts/src/environment.ts",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp test run apps/server/src/jones/workstreams/native/domain apps/server/src/jones/workstreams/native/providers apps/server/src/jones/workstreams/nativeProvider --maxWorkers=1 --no-file-parallelism"
       ]
     }
   ]
