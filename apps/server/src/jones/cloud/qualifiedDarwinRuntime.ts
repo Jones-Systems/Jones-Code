@@ -5,6 +5,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeTimers from "node:timers";
+import * as NodePerfHooks from "node:perf_hooks";
 import type { JonesStagedArtifact } from "@t3tools/shared/jones/jonesActions";
 import {
   bundleFileSystem,
@@ -16,12 +17,75 @@ export interface DarwinStageCommand {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
   readonly signal?: AbortSignal;
+  readonly stdin?: string;
 }
 /** An explicit signal stops only this command; the runner settles after its child has closed. */
-export type DarwinStageRunner = (
-  input: DarwinStageCommand,
-) => Promise<{ readonly code: number; readonly stdout: string }>;
+export type DarwinStageRunner = (input: DarwinStageCommand) => Promise<DarwinStageResult>;
 const DETACH_TIMEOUT_MS = 5_000;
+
+export interface DarwinStageResult {
+  readonly code: number;
+  readonly stdout: string;
+  readonly stderr?: string;
+  readonly timedOut?: boolean;
+  readonly truncated?: boolean;
+  readonly invalidUtf8?: boolean;
+  readonly inputFailed?: boolean;
+}
+const CLEANUP_TIMEOUT_MS = 30_000;
+const INVENTORY_LIMIT = 2 * 1024 * 1024;
+interface AttachmentImage {
+  readonly path: string;
+  readonly entities: ReadonlyArray<{ readonly device: string; readonly mount?: string }>;
+}
+function attachmentInventory(stdout: string): ReadonlyArray<AttachmentImage> {
+  const unavailable = (): never =>
+    invalid("The DMG attachment inventory is incomplete or invalid.");
+  if (Buffer.byteLength(stdout) > INVENTORY_LIMIT) return unavailable();
+  let value: unknown;
+  try {
+    value = JSON.parse(stdout);
+  } catch {
+    return unavailable();
+  }
+  const record = (item: unknown): Record<string, unknown> => {
+    if (item === null || typeof item !== "object" || Array.isArray(item)) return unavailable();
+    return item as Record<string, unknown>;
+  };
+  const images = record(value).images;
+  if (!Array.isArray(images) || images.length > 1024) return unavailable();
+  let entityCount = 0;
+  return images.map((item) => {
+    const image = record(item);
+    const path = image["image-path"];
+    const entities = image["system-entities"];
+    if (
+      typeof path !== "string" ||
+      !NodePath.isAbsolute(path) ||
+      path.length > 4096 ||
+      !Array.isArray(entities) ||
+      (entityCount += entities.length) > 8192
+    )
+      return unavailable();
+    return {
+      path,
+      entities: entities.map((item) => {
+        const entity = record(item);
+        const device = entity["dev-entry"];
+        const mount = entity["mount-point"];
+        if (
+          typeof device !== "string" ||
+          !/^\/dev\/disk[0-9]+(?:s[0-9]+)*$/.test(device) ||
+          (mount !== undefined &&
+            (typeof mount !== "string" || !NodePath.isAbsolute(mount) || mount.length > 4096))
+        )
+          return unavailable();
+        return { device, ...(typeof mount === "string" ? { mount } : {}) };
+      }),
+    };
+  });
+}
+
 const invalid = (message: string): never => {
   throw new QualifiedRuntimeBlockedError("invalid-artifact", message);
 };
@@ -148,26 +212,104 @@ export async function extractQualifiedDarwinRuntime(input: {
   );
   const mount = NodePath.join(mountOwner, "volume");
   await NodeFSP.mkdir(mount, { mode: 0o700 });
-  let mounted = false;
   let mountingAttempted = false;
   let stagingFailed = false;
   let stagingFailure: unknown;
-  const run = async (command: string, args: ReadonlyArray<string>, signal = input.signal) => {
+  let before: ReadonlyArray<AttachmentImage> = [];
+  let imagePath = NodePath.resolve(input.artifact.payloadPath);
+  const run = async (
+    command: string,
+    args: ReadonlyArray<string>,
+    signal = input.signal,
+    stdin?: string,
+  ) => {
     signal?.throwIfAborted();
     const result = await input.run({
       command,
       args,
       ...(signal === undefined ? {} : { signal }),
+      ...(stdin === undefined ? {} : { stdin }),
     });
-    signal?.throwIfAborted();
-    if (result.code !== 0)
+    if (
+      result.code !== 0 ||
+      result.timedOut ||
+      result.truncated ||
+      result.invalidUtf8 ||
+      result.inputFailed
+    ) {
+      const diagnostic = (result.stderr ?? "").replace(/\p{Cc}/gu, " ").slice(0, 2048);
       return invalid(
-        "The native DMG staging command could not complete; the active service was preserved.",
+        "Native " +
+          NodePath.basename(command) +
+          " " +
+          (args[0] ?? "") +
+          " failed (exit " +
+          result.code +
+          (result.timedOut ? ", deadline" : "") +
+          (result.truncated ? ", output limit" : "") +
+          (result.invalidUtf8 ? ", invalid UTF-8" : "") +
+          (result.inputFailed ? ", input pipe" : "") +
+          ")." +
+          (diagnostic ? " " + diagnostic : "") +
+          " The active service was preserved.",
       );
+    }
+    signal?.throwIfAborted();
     return result.stdout.trim();
   };
+  const inventory = async (signal?: AbortSignal) => {
+    const plist = await run("/usr/bin/hdiutil", ["info", "-plist"], signal);
+    if (Buffer.byteLength(plist) > INVENTORY_LIMIT)
+      return invalid("The DMG attachment inventory exceeds its bound.");
+    return attachmentInventory(
+      await run("/usr/bin/plutil", ["-convert", "json", "-o", "-", "-"], signal, plist),
+    );
+  };
+  const bounded = async <A>(
+    action: (signal: AbortSignal) => Promise<A>,
+    deadline: number,
+    parent?: AbortSignal,
+  ): Promise<A> => {
+    parent?.throwIfAborted();
+    const remaining = Math.min(DETACH_TIMEOUT_MS, deadline - NodePerfHooks.performance.now());
+    if (remaining <= 0) throw new Error("The owned DMG cleanup deadline expired.");
+    const controller = new AbortController();
+    const abort = () => controller.abort(parent?.reason);
+    parent?.addEventListener("abort", abort, { once: true });
+    const timer = NodeTimers.setTimeout(
+      () => controller.abort(new Error("The owned DMG command deadline expired.")),
+      remaining,
+    );
+    try {
+      return await action(controller.signal);
+    } finally {
+      NodeTimers.clearTimeout(timer);
+      parent?.removeEventListener("abort", abort);
+    }
+  };
   try {
+    imagePath = await NodeFSP.realpath(input.artifact.payloadPath);
+    before = await bounded(
+      inventory,
+      NodePerfHooks.performance.now() + DETACH_TIMEOUT_MS,
+      input.signal,
+    );
+    if (
+      before.some(
+        (image) =>
+          image.path === imagePath ||
+          image.entities.some(
+            (entity) =>
+              entity.mount === mount || entity.mount?.startsWith(mountOwner + NodePath.sep),
+          ),
+      )
+    )
+      throw new QualifiedRuntimeBlockedError(
+        "busy",
+        "The candidate DMG already has an attachment; it was preserved.",
+      );
     mountingAttempted = true;
+
     await run("/usr/bin/hdiutil", [
       "attach",
       "-readonly",
@@ -175,9 +317,8 @@ export async function extractQualifiedDarwinRuntime(input: {
       "-noautoopen",
       "-mountpoint",
       mount,
-      input.artifact.payloadPath,
+      imagePath,
     ]);
-    mounted = true;
     const apps = (await NodeFSP.readdir(mount)).filter((name) => name.endsWith(".app"));
     if (apps.length !== 1) return invalid("The qualified DMG must contain exactly one app.");
     const source = NodePath.join(mount, apps[0]!);
@@ -234,47 +375,103 @@ export async function extractQualifiedDarwinRuntime(input: {
     stagingFailed = true;
     stagingFailure = cause;
   }
-  if (mounted || mountingAttempted) {
-    // A failed attach can still have mounted the volume. Detach the exact
-    // owned mount before considering recursive cleanup safe.
-    const detach = async (force: boolean) => {
-      const args = ["detach", mount, ...(force ? ["-force"] : [])];
-      // Legacy callers without a job signal retain their runner's command lifetime.
-      if (input.signal === undefined) return run("/usr/bin/hdiutil", args);
-      // Each preparation attempt has its own deadline: job cancellation must not skip
-      // cleanup, and an expired ordinary detach must leave time for the force attempt.
-      const controller = new AbortController();
-      const timer = NodeTimers.setTimeout(
-        () => controller.abort(new Error("The owned DMG detach deadline expired.")),
-        DETACH_TIMEOUT_MS,
+  if (mountingAttempted) {
+    const deadline = NodePerfHooks.performance.now() + CLEANUP_TIMEOUT_MS;
+    const preexisting = new Set(
+      before.flatMap((image) => image.entities.map((entity) => entity.device)),
+    );
+    let ownedDevices: ReadonlyArray<string> | undefined;
+    const target = (images: ReadonlyArray<AttachmentImage>): string | undefined => {
+      const matches = images.filter((image) => image.path === imagePath);
+      const mounts = images.filter((image) =>
+        image.entities.some(
+          (entity) => entity.mount === mount || entity.mount?.startsWith(mountOwner + NodePath.sep),
+        ),
       );
-      try {
-        await run("/usr/bin/hdiutil", args, controller.signal);
-      } finally {
-        NodeTimers.clearTimeout(timer);
+      if (matches.length === 0 && mounts.length === 0) {
+        if (
+          ownedDevices === undefined &&
+          images.some(
+            (image) =>
+              !before.some((previous) => previous.path === image.path) ||
+              image.entities.some((entity) => !preexisting.has(entity.device)),
+          )
+        )
+          throw new Error("An unattributed new DMG attachment prevents proving absence.");
+
+        if (
+          ownedDevices?.some((device) =>
+            images.some((image) => image.entities.some((entity) => entity.device === device)),
+          )
+        )
+          throw new Error("The owned DMG device identity changed before absence could be proved.");
+        return undefined;
       }
+      if (matches.length !== 1 || mounts.some((image) => image !== matches[0]))
+        throw new Error("DMG attachment ownership is ambiguous.");
+      const image = matches[0]!;
+      const devices = image.entities.map((entity) => entity.device).sort();
+      const whole = devices.filter((device) => /^\/dev\/disk[0-9]+$/.test(device));
+      if (
+        whole.length !== 1 ||
+        new Set(devices).size !== devices.length ||
+        devices.some(
+          (device) =>
+            preexisting.has(device) || (device !== whole[0] && !device.startsWith(whole[0] + "s")),
+        ) ||
+        image.entities.some((entity) => entity.mount !== undefined && entity.mount !== mount) ||
+        images.some(
+          (other) =>
+            other !== image && other.entities.some((entity) => devices.includes(entity.device)),
+        ) ||
+        (ownedDevices !== undefined &&
+          (ownedDevices.length !== devices.length ||
+            ownedDevices.some((device, index) => device !== devices[index])))
+      )
+        throw new Error("The candidate DMG does not have one uniquely owned device.");
+      ownedDevices = devices;
+      return image.entities.some((entity) => entity.mount === mount) ? mount : whole[0]!;
     };
+    const observe = () => bounded(inventory, deadline);
+    const errors: unknown[] = [];
     try {
-      try {
-        await detach(false);
-      } catch (ordinary) {
+      let device = target(await observe());
+      for (const force of [false, true]) {
+        if (device === undefined) break;
         try {
-          await detach(true);
-        } catch (forced) {
-          throw new AggregateError([ordinary, forced], "Ordinary and forced DMG detach failed.", {
-            cause: forced,
-          });
+          await bounded(
+            (signal) =>
+              run("/usr/bin/hdiutil", ["detach", device!, ...(force ? ["-force"] : [])], signal),
+            deadline,
+          );
+        } catch (cause) {
+          errors.push(cause);
         }
+        // An exit code never proves that the device or its mount disappeared.
+        device = target(await observe());
+      }
+      if (device !== undefined) {
+        if (errors.length > 0)
+          throw new AggregateError(errors, "Ordinary and forced DMG detach failed.", {
+            cause: errors.at(-1),
+          });
+        throw new Error("The owned DMG attachment remains after detach.");
       }
     } catch (cause) {
+      const cleanup =
+        errors.length > 0 && !(cause instanceof AggregateError)
+          ? new AggregateError(
+              [...errors, cause],
+              "DMG detach and inventory reconciliation failed.",
+            )
+          : cause;
       const blocked = new QualifiedRuntimeBlockedError(
         "busy",
-        `DMG mount ownership needs reconciliation at ${mount}; its directory was retained.`,
+        "DMG mount ownership needs reconciliation at " + mount + "; its directory was retained.",
       );
-      // Retain the staging failure as well as the unknown detach effect.
       blocked.cause = stagingFailed
-        ? new AggregateError([stagingFailure, cause], "DMG staging and detach failed.")
-        : cause;
+        ? new AggregateError([stagingFailure, cleanup], "DMG staging and detach failed.")
+        : cleanup;
       throw blocked;
     }
   }

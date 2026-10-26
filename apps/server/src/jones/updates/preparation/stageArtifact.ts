@@ -33,14 +33,16 @@ const OUTPUT_LIMIT = 8 * 1024 * 1024;
 export interface BoundedProcessResult {
   readonly code: number | null;
   readonly stdout: string;
+  readonly stderr: string;
+  readonly inputFailed: boolean;
   readonly timedOut: boolean;
   readonly truncated: boolean;
   readonly invalidUtf8: boolean;
 }
 
 /**
- * Runs one command with the worker's environment, discarding stderr. A timeout, output limit or
- * abort kills the child; an abort rejects with the signal's reason once the child has closed.
+ * Runs one bounded command and settles only after its child closes. Darwin commands can
+ * supply bounded stdin and stderr; Linux preflight retains its stdout-only contract.
  */
 function runBoundedProcess(input: {
   readonly command: string;
@@ -48,16 +50,27 @@ function runBoundedProcess(input: {
   readonly timeoutMs: number;
   readonly outputLimit: number;
   readonly signal?: AbortSignal;
+  readonly stdin?: string;
+  readonly captureStderr?: boolean;
 }): Promise<BoundedProcessResult> {
   return new Promise((resolve, reject) => {
     input.signal?.throwIfAborted();
+    if (input.stdin !== undefined && Buffer.byteLength(input.stdin) > OUTPUT_LIMIT)
+      return reject(new Error("The native command input exceeds its bound."));
     const child = NodeChildProcess.spawn(input.command, [...input.args], {
-      stdio: ["ignore", "pipe", "ignore"],
+      stdio: [
+        input.stdin === undefined ? "ignore" : "pipe",
+        "pipe",
+        input.captureStderr ? "pipe" : "ignore",
+      ],
     });
     const chunks: Buffer[] = [];
+    const errors: Buffer[] = [];
     let bytes = 0;
+    let errorBytes = 0;
     let truncated = false;
     let timedOut = false;
+    let inputFailed = false;
     let settled = false;
     const kill = () => child.kill("SIGKILL");
     const timer = setTimeout(() => {
@@ -72,7 +85,7 @@ function runBoundedProcess(input: {
       input.signal?.removeEventListener("abort", kill);
       settle();
     };
-    child.stdout.on("data", (chunk: Buffer) => {
+    child.stdout!.on("data", (chunk: Buffer) => {
       if (truncated) return;
       if (bytes + chunk.length > input.outputLimit) {
         truncated = true;
@@ -82,6 +95,22 @@ function runBoundedProcess(input: {
       bytes += chunk.length;
       chunks.push(chunk);
     });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      const remaining = Math.max(0, Math.min(input.outputLimit, 64 * 1024) - errorBytes);
+      if (remaining > 0) {
+        errors.push(chunk.subarray(0, remaining));
+        errorBytes += Math.min(remaining, chunk.length);
+      }
+      if (chunk.length > remaining && !truncated) {
+        truncated = true;
+        kill();
+      }
+    });
+    child.stdin?.once("error", () => {
+      inputFailed = true;
+      kill();
+    });
+    if (input.stdin !== undefined) child.stdin!.end(input.stdin);
     child.once("error", (error) => {
       if (child.pid === undefined) finish(() => reject(error));
     });
@@ -89,13 +118,16 @@ function runBoundedProcess(input: {
       finish(() => {
         if (input.signal?.aborted) return reject(input.signal.reason);
         let stdout = "";
+        let stderr = "";
         let invalidUtf8 = false;
         try {
-          stdout = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
+          const decoder = new TextDecoder("utf-8", { fatal: true });
+          stdout = decoder.decode(Buffer.concat(chunks));
+          stderr = decoder.decode(Buffer.concat(errors));
         } catch {
           invalidUtf8 = true;
         }
-        resolve({ code, stdout, timedOut, truncated, invalidUtf8 });
+        resolve({ code, stdout, stderr, timedOut, truncated, invalidUtf8, inputFailed });
       }),
     );
   });
@@ -244,10 +276,11 @@ export async function stageQualifiedArtifact(input: {
         run: async (command) => {
           const result = await runBoundedProcess({
             ...command,
+            captureStderr: true,
             timeoutMs: DARWIN_TOOL_TIMEOUT_MS,
             outputLimit: OUTPUT_LIMIT,
           });
-          return { code: result.code ?? 1, stdout: result.stdout };
+          return { ...result, code: result.code ?? 1 };
         },
       });
     } else await extractQualifiedLinuxArchive(staged.payloadPath, scratch);

@@ -55,6 +55,7 @@ function asar(
 async function fixture<A>(body: (root: string) => Promise<A>) {
   const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-darwin-fixture-"));
   try {
+    await NodeFSP.writeFile(NodePath.join(root, "candidate.dmg"), "synthetic DMG");
     return await body(root);
   } finally {
     await NodeFSP.rm(root, { recursive: true, force: true });
@@ -106,9 +107,42 @@ const stagedArtifact = (root: string): JonesStagedArtifact => ({
   },
 });
 
+function withInventory(root: string, run: DarwinStageRunner): DarwinStageRunner {
+  let mount: string | undefined;
+  return async (command) => {
+    command.signal?.throwIfAborted();
+    if (command.command === "/usr/bin/hdiutil" && command.args[0] === "info")
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          images:
+            mount === undefined
+              ? []
+              : [
+                  {
+                    "image-path": NodePath.join(root, "candidate.dmg"),
+                    "system-entities": [
+                      { "dev-entry": "/dev/disk123" },
+                      { "dev-entry": "/dev/disk123s1", "mount-point": mount },
+                    ],
+                  },
+                ],
+        }),
+      };
+    if (command.command === "/usr/bin/plutil" && command.args[0] === "-convert")
+      return { code: 0, stdout: command.stdin ?? "" };
+    const result = await run(command);
+    if (command.args[0] === "attach" && result.code === 0)
+      mount = command.args[command.args.indexOf("-mountpoint") + 1]!;
+    if (command.args[0] === "detach" && result.code === 0) mount = undefined;
+    return result;
+  };
+}
+
 async function cancellationFixture(
   root: string,
   detach: DarwinStageRunner,
+  omitSignal = false,
 ): Promise<{
   readonly failure: unknown;
   readonly primary: Error;
@@ -127,8 +161,8 @@ async function cancellationFixture(
     artifact: stagedArtifact(root),
     baseDir,
     destination,
-    signal: controller.signal,
-    run: async (command) => {
+    ...(omitSignal ? {} : { signal: controller.signal }),
+    run: withInventory(root, async (command) => {
       calls.push(command);
       // Model the preparation runner's pre-spawn abort gate without native tools.
       (command.signal ?? controller.signal).throwIfAborted();
@@ -146,7 +180,7 @@ async function cancellationFixture(
         return detach(command);
       }
       return { code: 0, stdout: "" };
-    },
+    }),
   }).then(
     () => undefined,
     (cause: unknown) => cause,
@@ -187,7 +221,7 @@ it.each(["extraction", "staging"] as const)(
         payloadVerification,
         destination,
         baseDir: home,
-        run: async ({ command, args }) => {
+        run: withInventory(root, async ({ command, args }) => {
           calls.push(command);
           if (command === "/usr/bin/hdiutil" && args[0] === "attach") {
             assert.include(args, "-readonly");
@@ -215,7 +249,7 @@ it.each(["extraction", "staging"] as const)(
             };
           else if (command === "/usr/bin/lipo") return { code: 0, stdout: "arm64" };
           return { code: 0, stdout: "" };
-        },
+        }),
       });
       const measured = recentQualifiedDigestTimings().filter((timing) => !before.includes(timing));
       assert.equal(measured.length, payloadVerification === "extraction" ? 1 : 0);
@@ -293,27 +327,36 @@ it("retains the exact mount and both staging and cleanup failures when forced de
   });
 });
 
-it.each([false, true])(
-  "bounds each detach attempt and retains uncertainty after a forced deadline (%s)",
-  async (forceTimesOut) => {
+it.each([
+  [false, false],
+  [true, false],
+  [false, true],
+  [true, true],
+])(
+  "bounds each detach attempt after a forced deadline (timeout=%s, no job signal=%s)",
+  async (forceTimesOut, omitSignal) => {
     await fixture(async (root) => {
       vi.useFakeTimers();
       try {
         const ordinaryStarted = Promise.withResolvers<void>();
         const forcedStarted = Promise.withResolvers<void>();
         const detached: DarwinStageCommand[] = [];
-        const pending = cancellationFixture(root, async (command) => {
-          detached.push(command);
-          const forced = command.args.includes("-force");
-          (forced ? forcedStarted : ordinaryStarted).resolve();
-          if (forced && !forceTimesOut) return { code: 0, stdout: "" };
-          assert.isDefined(command.signal);
-          return new Promise((_, reject) => {
-            command.signal!.addEventListener("abort", () => reject(command.signal!.reason), {
-              once: true,
+        const pending = cancellationFixture(
+          root,
+          async (command) => {
+            detached.push(command);
+            const forced = command.args.includes("-force");
+            (forced ? forcedStarted : ordinaryStarted).resolve();
+            if (forced && !forceTimesOut) return { code: 0, stdout: "" };
+            assert.isDefined(command.signal);
+            return new Promise((_, reject) => {
+              command.signal!.addEventListener("abort", () => reject(command.signal!.reason), {
+                once: true,
+              });
             });
-          });
-        });
+          },
+          omitSignal,
+        );
         await ordinaryStarted.promise;
         await vi.advanceTimersByTimeAsync(5_000);
         await forcedStarted.promise;
@@ -334,6 +377,216 @@ it.each([false, true])(
       } finally {
         vi.useRealTimers();
       }
+    });
+  },
+);
+
+it("reconciles a failed attach that created a unique device without a mount point", async () => {
+  await fixture(async (root) => {
+    const baseDir = NodePath.join(root, "home");
+    const destination = NodePath.join(root, "payload");
+    await NodeFSP.mkdir(NodePath.join(baseDir, "runtime"), { recursive: true });
+    await NodeFSP.mkdir(destination);
+    await NodeFSP.writeFile(NodePath.join(root, "candidate.dmg"), "synthetic DMG");
+    const artifact = stagedArtifact(root);
+    const detaches: ReadonlyArray<string>[] = [];
+    let attached = false;
+    let mount = "";
+    const inventory = () =>
+      JSON.stringify({
+        images: attached
+          ? [
+              {
+                "image-path": artifact.payloadPath,
+                "system-entities": [
+                  { "dev-entry": "/dev/disk123" },
+                  { "dev-entry": "/dev/disk123s1" },
+                ],
+              },
+            ]
+          : [],
+      });
+    const failure = await extractQualifiedDarwinRuntime({
+      artifact,
+      baseDir,
+      destination,
+      run: async (command) => {
+        if (command.command === "/usr/bin/hdiutil" && command.args[0] === "info")
+          return { code: 0, stdout: inventory() };
+        if (command.command === "/usr/bin/plutil" && command.args[0] === "-convert")
+          return { code: 0, stdout: command.stdin ?? "" };
+        if (command.args[0] === "attach") {
+          mount = command.args[command.args.indexOf("-mountpoint") + 1]!;
+          attached = true;
+          return { code: 1, stdout: "", stderr: "hdiutil: synthetic partial attach diagnostic" };
+        }
+        assert.equal(command.command, "/usr/bin/hdiutil");
+        assert.equal(command.args[0], "detach");
+        detaches.push(command.args);
+        if (command.args[1] !== "/dev/disk123") return { code: 1, stdout: "" };
+        attached = false;
+        return { code: 0, stdout: "" };
+      },
+    }).then(
+      () => undefined,
+      (cause: unknown) => cause,
+    );
+    assert.deepEqual(detaches, [["detach", "/dev/disk123"]]);
+    assert.instanceOf(failure, QualifiedRuntimeBlockedError);
+    assert.include((failure as Error).message, "synthetic partial attach diagnostic");
+    await NodeAssert.rejects(NodeFSP.lstat(NodePath.dirname(mount)), { code: "ENOENT" });
+  });
+});
+
+it.each([
+  ["no attachment", 0, false],
+  ["ambiguous images", 0, true],
+  ["preexisting device", 0, true],
+  ["foreign mount", 0, true],
+  ["missing device", 0, true],
+  ["unattributed new image", 0, true],
+  ["malformed inventory", 0, true],
+  ["inventory lost after detach", 1, true],
+  ["attachment survives detach", 2, true],
+  ["device reused after detach", 1, true],
+  ["force recovery", 2, false],
+  ["both detach attempts fail", 2, true],
+  ["incomplete attach response", 1, false],
+] as const)(
+  "preserves ownership and diagnostics with %s",
+  async (scenario, expectedDetaches, retained) => {
+    await fixture(async (root) => {
+      const baseDir = NodePath.join(root, "home");
+      const destination = NodePath.join(root, "payload");
+      await NodeFSP.mkdir(NodePath.join(baseDir, "runtime"), { recursive: true });
+      await NodeFSP.mkdir(destination);
+      const artifact = stagedArtifact(root);
+      let attempted = false;
+      let attached = false;
+      let mount = "";
+      const detaches: ReadonlyArray<string>[] = [];
+      const entities = () => [
+        { "dev-entry": "/dev/disk123" },
+        {
+          "dev-entry": "/dev/disk123s1",
+          ...(scenario === "foreign mount" ? { "mount-point": "/unrelated" } : {}),
+        },
+      ];
+      const failure = await extractQualifiedDarwinRuntime({
+        artifact,
+        baseDir,
+        destination,
+        run: async (command) => {
+          if (command.command === "/usr/bin/hdiutil" && command.args[0] === "info") {
+            if (scenario === "inventory lost after detach" && detaches.length > 0)
+              return { code: 1, stdout: "", stderr: "inventory unavailable" };
+            if (scenario === "malformed inventory" && attempted)
+              return { code: 0, stdout: JSON.stringify({ images: "unknown" }) };
+            const images = [];
+            if (
+              (!attempted && scenario === "preexisting device") ||
+              (detaches.length > 0 && scenario === "device reused after detach")
+            )
+              images.push({ "image-path": "/unrelated.dmg", "system-entities": entities() });
+            else if (attached) {
+              images.push({
+                "image-path":
+                  scenario === "unattributed new image"
+                    ? "/unattributed.dmg"
+                    : artifact.payloadPath,
+                "system-entities": scenario === "missing device" ? [] : entities(),
+              });
+              if (scenario === "ambiguous images")
+                images.push({
+                  "image-path": artifact.payloadPath,
+                  "system-entities": [{ "dev-entry": "/dev/disk124" }],
+                });
+            }
+            return { code: 0, stdout: JSON.stringify({ images }) };
+          }
+          if (command.command === "/usr/bin/plutil" && command.args[0] === "-convert")
+            return { code: 0, stdout: command.stdin ?? "" };
+          if (command.args[0] === "attach") {
+            attempted = true;
+            attached = scenario !== "no attachment";
+            mount = command.args[command.args.indexOf("-mountpoint") + 1]!;
+            return {
+              code: scenario === "incomplete attach response" ? 0 : 1,
+              stdout: "",
+              stderr: "primary attach diagnostic",
+              timedOut: scenario === "incomplete attach response",
+            };
+          }
+          assert.equal(command.command, "/usr/bin/hdiutil");
+          assert.equal(command.args[0], "detach");
+          assert.equal(command.args[1], "/dev/disk123");
+          assert.isDefined(command.signal);
+          detaches.push(command.args);
+          if (
+            scenario === "both detach attempts fail" ||
+            (scenario === "force recovery" && !command.args.includes("-force"))
+          )
+            return { code: 1, stdout: "", stderr: "cleanup diagnostic" };
+          if (scenario !== "attachment survives detach") attached = false;
+          return { code: 0, stdout: "" };
+        },
+      }).then(
+        () => undefined,
+        (cause: unknown) => cause,
+      );
+      assert.equal(detaches.length, expectedDetaches);
+      if (expectedDetaches === 2) assert.include(detaches[1]!, "-force");
+      assert.instanceOf(failure, QualifiedRuntimeBlockedError);
+      const primary = retained ? ((failure as Error).cause as AggregateError).errors[0] : failure;
+      assert.include((primary as Error).message, "primary attach diagnostic");
+      if (retained) {
+        assert.equal((failure as QualifiedRuntimeBlockedError).reason, "busy");
+        assert.isTrue((await NodeFSP.lstat(mount)).isDirectory());
+      } else await NodeAssert.rejects(NodeFSP.lstat(NodePath.dirname(mount)), { code: "ENOENT" });
+    });
+  },
+);
+
+it.each(["preexisting image", "invalid baseline"] as const)(
+  "refuses %s before attempting an attachment",
+  async (scenario) => {
+    await fixture(async (root) => {
+      const baseDir = NodePath.join(root, "home");
+      const destination = NodePath.join(root, "payload");
+      await NodeFSP.mkdir(NodePath.join(baseDir, "runtime"), { recursive: true });
+      await NodeFSP.mkdir(destination);
+      const artifact = stagedArtifact(root);
+      const calls: DarwinStageCommand[] = [];
+      await NodeAssert.rejects(
+        extractQualifiedDarwinRuntime({
+          artifact,
+          baseDir,
+          destination,
+          run: async (command) => {
+            calls.push(command);
+            if (command.command === "/usr/bin/hdiutil")
+              return {
+                code: 0,
+                stdout: JSON.stringify({
+                  images:
+                    scenario === "invalid baseline"
+                      ? null
+                      : [
+                          {
+                            "image-path": artifact.payloadPath,
+                            "system-entities": [{ "dev-entry": "/dev/disk123" }],
+                          },
+                        ],
+                }),
+              };
+            assert.equal(command.command, "/usr/bin/plutil");
+            return { code: 0, stdout: command.stdin ?? "" };
+          },
+        }),
+        scenario === "preexisting image" ? /already has an attachment/ : /inventory is incomplete/,
+      );
+      assert.isFalse(calls.some((command) => ["attach", "detach"].includes(command.args[0]!)));
+      assert.deepEqual(await NodeFSP.readdir(NodePath.join(baseDir, "runtime")), []);
     });
   },
 );
