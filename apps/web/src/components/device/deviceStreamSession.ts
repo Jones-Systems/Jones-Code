@@ -99,7 +99,9 @@ export const deviceStreamSessionAtom = Atom.family((key: DeviceStreamKey) =>
     };
     const client = createDeviceStreamClient(
       { platform: key.platform, deviceId: key.deviceId, access: key.access },
-      createCanvasFrameSink(canvas, () => frameListener?.()),
+      createCanvasFrameSink(canvas, () => {
+        if (active) frameListener?.();
+      }),
       {
         onDuoControl: (duoControl) => {
           if (!active) return;
@@ -160,6 +162,9 @@ export const deviceStreamSessionAtom = Atom.family((key: DeviceStreamKey) =>
       active = false;
       frameListener = null;
       controlRejectedListener = null;
+      state = IDLE_DEVICE_STREAM_STATE;
+      session = { ...session, state };
+      get.setSelf(session);
       client.stop();
       get.registry.set(screenAtom, null);
     };

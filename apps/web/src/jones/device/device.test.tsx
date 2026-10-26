@@ -167,6 +167,7 @@ it.each([
   const original = input;
   const previous = currentManager();
   await act(() => previous.publish(mediaRoute(previous.input.proxy)));
+  const oldLifecycle = latest().lifecycle;
 
   await update(patch);
   expect(committed.every((view) => view.route === null)).toBe(true);
@@ -177,6 +178,9 @@ it.each([
   expect(committed.every((view) => view.route === null)).toBe(true);
   expect(intervening.stop).toHaveBeenCalledOnce();
   expect(currentManager()).not.toBe(previous);
+  const resumed = currentManager();
+  await act(() => resumed.publish(mediaRoute(previous.input.proxy)));
+  expect(latest().lifecycle).not.toBe(oldLifecycle);
 });
 
 it("shares the automatic refresh cap across access renewal and resets on connection or retry", async () => {
