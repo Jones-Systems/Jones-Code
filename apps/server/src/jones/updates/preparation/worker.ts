@@ -6,6 +6,8 @@ import * as NodePath from "node:path";
 import { JonesActionsClient } from "@t3tools/shared/jones/jonesActions";
 import {
   verifyStagedQualifiedRuntime,
+  readQualifiedRuntimeReceipt,
+  recentQualifiedDigestTimings,
   withQualifiedRuntimeLock,
 } from "../../cloud/qualifiedRuntime.ts";
 import {
@@ -80,6 +82,18 @@ async function runJob(
       })),
     };
   }
+  if (job.kind === "verify-runtime") {
+    phase("verifying");
+    return {
+      kind: "verify-runtime",
+      receipt: await readQualifiedRuntimeReceipt(request.baseDir, job.version, job.host, {
+        signal,
+        mode: "full",
+        retainVerification: true,
+        eventLoop: "worker",
+      }),
+    };
+  }
   if (job.kind === "verify") {
     phase("verifying");
     const staged = await verifyStagedQualifiedRuntime(
@@ -87,7 +101,7 @@ async function runJob(
       job.activeVersion,
       job.stagedHandle,
       job.host,
-      { signal },
+      { signal, mode: "receipt", eventLoop: "worker" },
     );
     return { kind: "verify", staged };
   }
@@ -205,6 +219,12 @@ async function runPreparationWorker(jobDir: string): Promise<number> {
   } catch {
     return 70;
   } finally {
+    try {
+      for (const timing of recentQualifiedDigestTimings())
+        process.stderr.write(`${JSON.stringify(timing)}\n`);
+    } catch {
+      // Diagnostic output cannot replace the durable preparation result.
+    }
     for (const timer of timers) clearTimeout(timer);
   }
 }

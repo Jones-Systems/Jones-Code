@@ -5,6 +5,7 @@ import {
   EnvironmentHttpApi,
   EnvironmentId,
   type ExecutionEnvironmentCapabilities,
+  type ExecutionEnvironmentDescriptor,
   MCP_PEER_LINK_SOFTWARE_ID,
   type PeerLink,
   type PeerLinkCreateInput,
@@ -30,6 +31,7 @@ import { isLocalLoopbackHost, isTailnetHost } from "@t3tools/shared/hostClassifi
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import { peerEnvironmentLinksTable } from "../jones/peerPersistence/table.ts";
+import * as InFlight from "../jones/peerTransport/InFlight.ts";
 
 /** The redirect registered for a link. Nothing ever listens there: the code comes back in the response. */
 const LINK_REDIRECT_URI = "http://127.0.0.1/t3code-peer-link";
@@ -46,6 +48,8 @@ export interface ResolvedPeerLink {
   /** The first address that answered as this peer. */
   readonly url: string;
   readonly token: string;
+  /** The token's owning row generation, replaced on every link. */
+  readonly generation: string;
 }
 
 /**
@@ -69,9 +73,14 @@ export class PeerLinks extends Context.Service<
     readonly resolve: (
       environmentId: EnvironmentId,
     ) => Effect.Effect<ResolvedPeerLink, PeerLinkError>;
+    /** Reads only the local generation; no descriptor request or credential read. */
+    readonly currentGeneration: (
+      environmentId: EnvironmentId,
+    ) => Effect.Effect<Option.Option<string>, PeerLinkError>;
     /** Records the outcome of a call, so listing shows whether the peer answered last time. */
     readonly recordOutcome: (
       environmentId: EnvironmentId,
+      generation: string,
       outcome: { readonly error: string | null },
     ) => Effect.Effect<void>;
   }
@@ -149,6 +158,7 @@ const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const httpClient = yield* HttpClient.HttpClient;
   const environment = yield* ServerEnvironment.ServerEnvironment;
+  const descriptors = yield* InFlight.make<Option.Option<ExecutionEnvironmentDescriptor>, never>();
 
   /** A fresh name for one link's token; the row records it. */
   const newSecretName = crypto.randomBytes(16).pipe(
@@ -163,11 +173,17 @@ const make = Effect.gen(function* () {
 
   /** The environment answering at `origin`, or nothing when it does not answer as T3 Code. */
   const describe = (origin: string) =>
-    clientFor(origin).pipe(
-      Effect.flatMap((client) => client.metadata.descriptor()),
-      Effect.timeout(probeTimeout(origin)),
-      Effect.option,
-    );
+    Effect.suspend(() => {
+      const normalized = new URL(origin).origin;
+      return descriptors.run(
+        normalized,
+        clientFor(normalized).pipe(
+          Effect.flatMap((client) => client.metadata.descriptor()),
+          Effect.timeout(probeTimeout(normalized)),
+          Effect.option,
+        ),
+      );
+    });
 
   const toLink = Effect.fn("PeerLinks.toLink")(function* (row: PeerLinkRow) {
     return {
@@ -192,6 +208,15 @@ const make = Effect.gen(function* () {
     `.pipe(
       Effect.catch(failStorage),
       Effect.map((rows) => Option.fromNullishOr(rows[0])),
+    );
+
+  const currentGeneration: PeerLinks["Service"]["currentGeneration"] = (environmentId) =>
+    sql<{ readonly secret_name: string }>`
+      SELECT secret_name FROM ${sql(peerEnvironmentLinksTable)}
+      WHERE environment_id = ${environmentId}
+    `.pipe(
+      Effect.catch(failStorage),
+      Effect.map((rows) => Option.fromNullishOr(rows[0]?.secret_name)),
     );
 
   /** Signs in to the peer's `/mcp` with a pairing code: register, decide, exchange. */
@@ -488,29 +513,38 @@ const make = Effect.gen(function* () {
           message: `${link.label} runs a T3 Code version that cannot keep a linked agent's limits. Update it, then link again.`,
         });
       }
-      return { link, url: url.value, token: new TextDecoder().decode(stored.value) };
+      return {
+        link,
+        url: url.value,
+        token: new TextDecoder().decode(stored.value),
+        generation: row.value.secret_name,
+      };
     },
   );
 
-  const recordOutcome: PeerLinks["Service"]["recordOutcome"] = (environmentId, outcome) =>
+  const recordOutcome: PeerLinks["Service"]["recordOutcome"] = (
+    environmentId,
+    generation,
+    outcome,
+  ) =>
     DateTime.now.pipe(
       Effect.flatMap((now) =>
         outcome.error === null
           ? sql`
               UPDATE ${sql(peerEnvironmentLinksTable)}
               SET last_reached_at = ${DateTime.formatIso(now)}, last_error = NULL
-              WHERE environment_id = ${environmentId}
+              WHERE environment_id = ${environmentId} AND secret_name = ${generation}
             `
           : sql`
               UPDATE ${sql(peerEnvironmentLinksTable)} SET last_error = ${outcome.error}
-              WHERE environment_id = ${environmentId}
+              WHERE environment_id = ${environmentId} AND secret_name = ${generation}
             `,
       ),
       Effect.asVoid,
       Effect.ignoreCause({ log: true }),
     );
 
-  return PeerLinks.of({ link, list, get, unlink, resolve, recordOutcome });
+  return PeerLinks.of({ link, list, get, unlink, resolve, currentGeneration, recordOutcome });
 });
 
 export const layer = Layer.effect(PeerLinks, make);

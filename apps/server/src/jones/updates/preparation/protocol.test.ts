@@ -211,3 +211,21 @@ describe("preparation files", () => {
     expect(JSON.parse(await NodeFSP.readFile(target, "utf8"))).toEqual({ ok: true });
   });
 });
+
+it("binds runtime-only verification to its worker home without changing existing job variants", () => {
+  const job = { kind: "verify-runtime", baseDir, version: "0.0.0-preview.20261002.100", host };
+  expect(decodePreparationRequest({ ...request, job }, jobDir)?.job).toEqual(job);
+  for (const changed of [
+    { ...job, baseDir: "/other" },
+    { ...job, version: "../escape" },
+    { ...job, version: "1.0.0" },
+  ])
+    expect(decodePreparationRequest({ ...request, job: changed }, jobDir)).toBeUndefined();
+  expect(
+    decodePreparationResult(
+      { protocol: 1, jobId, ok: true, outcome: { kind: "verify-runtime", receipt: {} } },
+      jobId,
+      "verify-runtime",
+    ),
+  ).toBeUndefined();
+});

@@ -849,6 +849,25 @@ it("commits a qualified trial and retains the resume guard after snapshot cleanu
     assert.equal(state.update?.status, "committed");
     assert.equal(state.update?.startupReceipt?.startupGateProtocol, 1);
     await assertRecoveryPayloadRemoved(base, state.update!.id);
+    const digestTimingPath = NodePath.join(
+      base,
+      "runtime",
+      "jones-update-timing",
+      `${state.update!.id}.json`,
+    );
+    const digestTimingBytes = await NodeFSP.readFile(digestTimingPath, "utf8");
+    const digestTiming = JSON.parse(digestTimingBytes);
+    assert.equal(digestTiming.operationId, state.update!.id);
+    for (const role of ["staging", "launcher-activation"])
+      assert.equal(
+        digestTiming.records.filter(
+          (record: { role: string; runtime: string; result: string }) =>
+            record.role === role && record.runtime === target && record.result === "match",
+        ).length,
+        1,
+        JSON.stringify({ role, records: digestTiming.records }),
+      );
+
     const timing = await readQualifiedBackupReceipt(base, state.update!.id);
     assert.isNumber(timing?.copyMs);
     assert.isNumber(timing?.syncMs);
@@ -883,6 +902,7 @@ it("commits a qualified trial and retains the resume guard after snapshot cleanu
     assert.equal(restarted.childVersion, target);
     assert.equal(restarted.update.status, "committed");
     assert.equal(restarted.startupGateProtocol, 1);
+    assert.equal(await NodeFSP.readFile(digestTimingPath, "utf8"), digestTimingBytes);
   });
 });
 

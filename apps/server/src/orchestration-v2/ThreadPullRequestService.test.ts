@@ -29,6 +29,7 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 
+import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
 import * as GitManager from "../git/GitManager.ts";
 import { admitGitProcess, asBackgroundGitWork } from "../jones/git/backgroundGitAdmission.ts";
 import * as ProjectStore from "./ProjectStore.ts";
@@ -126,17 +127,17 @@ describe("ThreadPullRequestServiceV2 reads", () => {
           const sweepStarted = yield* Deferred.make<void>();
           const commands: Array<OrchestrationV2ServerCommand> = [];
           const dependencies = Layer.mergeAll(
-            Layer.mock(Orchestrator.OrchestratorV2)({
-              streamDomainEvents: Stream.never,
-              getShellSnapshot: () =>
+            Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({
+              list: () =>
                 Deferred.succeed(sweepStarted, undefined).pipe(
                   Effect.as({
-                    schemaVersion: 2,
                     snapshotSequence: 1,
                     threads: [thread],
-                    archivedThreads: [],
                   }),
                 ),
+            }),
+            Layer.mock(Orchestrator.OrchestratorV2)({
+              streamDomainEvents: Stream.never,
               dispatch: (command) =>
                 Effect.sync(() => {
                   commands.push(command);
@@ -244,17 +245,17 @@ describe("ThreadPullRequestServiceV2 reads", () => {
             name: "t3code",
           };
           const dependencies = Layer.mergeAll(
-            Layer.mock(Orchestrator.OrchestratorV2)({
-              streamDomainEvents: Stream.never,
-              getShellSnapshot: () =>
+            Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({
+              list: () =>
                 Deferred.succeed(snapshotRead, undefined).pipe(
                   Effect.as({
-                    schemaVersion: 2,
                     snapshotSequence: 1,
                     threads: [thread],
-                    archivedThreads: [],
                   }),
                 ),
+            }),
+            Layer.mock(Orchestrator.OrchestratorV2)({
+              streamDomainEvents: Stream.never,
               dispatch: () =>
                 Effect.sync(() => {
                   stages.push("dispatch");
@@ -392,15 +393,15 @@ describe("ThreadPullRequestServiceV2 reads", () => {
             yield* Effect.forEach(Array.from({ length: 4 }), () => Queue.take(holderStarts));
           });
         const dependencies = Layer.mergeAll(
-          Layer.mock(Orchestrator.OrchestratorV2)({
-            streamDomainEvents: Stream.never,
-            getShellSnapshot: () =>
+          Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({
+            list: () =>
               Effect.succeed({
-                schemaVersion: 2,
                 snapshotSequence: 1,
                 threads: [thread],
-                archivedThreads: [],
               }),
+          }),
+          Layer.mock(Orchestrator.OrchestratorV2)({
+            streamDomainEvents: Stream.never,
             dispatch: (command) =>
               Effect.sync(() => {
                 commands.push(command);
@@ -612,23 +613,20 @@ describe("ThreadPullRequestServiceV2 reads", () => {
         const layerDependencies = Layer.mergeAll(
           Layer.mock(Orchestrator.OrchestratorV2)({
             streamDomainEvents: domainEvents,
-            // The startup sweep holds the worker until the turn's events are queued.
-            getShellSnapshot: () =>
-              Deferred.succeed(sweepStarted, undefined).pipe(
-                Effect.andThen(Deferred.await(releaseSweep)),
-                Effect.as({
-                  schemaVersion: 2,
-                  snapshotSequence: 1,
-                  threads: [],
-                  archivedThreads: [],
-                }),
-              ),
             getThreadEventSequence: () => Effect.succeed(1),
-            getThreadShell: (threadId) =>
-              Effect.sync(() => {
-                threadReads.push(threadId);
-                return threadId === thread.id ? thread : null;
-              }),
+          }),
+          Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({
+            list: (query) =>
+              query?.threadIds === undefined
+                ? Deferred.succeed(sweepStarted, undefined).pipe(
+                    Effect.andThen(Deferred.await(releaseSweep)),
+                    Effect.as({ snapshotSequence: 1, threads: [] }),
+                  )
+                : Effect.sync(() => {
+                    const threadId = query.threadIds![0]!;
+                    threadReads.push(threadId);
+                    return { snapshotSequence: 1, threads: threadId === thread.id ? [thread] : [] };
+                  }),
           }),
           Layer.mock(ProjectStore.ProjectStoreV2)({
             listShells: () => Effect.succeed([project]),

@@ -101,6 +101,7 @@ export async function recoverStagedSelection(
   input: RecoverStagedSelectionInput,
   deps: RecoveryDependencies = {},
 ): Promise<RecoverStagedSelectionResult> {
+  const verification = { mode: "receipt", role: "recovery", retainVerification: false } as const;
   let effectStarted = false;
   let reason = "invalid-input";
   let path: string | undefined;
@@ -162,6 +163,7 @@ export async function recoverStagedSelection(
           input.activeVersion,
           input.stagedHandle,
           deps.host,
+          verification,
         );
         reason = "expected-binding-mismatch";
         if (
@@ -184,7 +186,12 @@ export async function recoverStagedSelection(
         reason = "stage-revoked-or-unknown";
         await assertStageNotRevoked(input.baseDir, input.stagedHandle);
         reason = "occupied-selection";
-        const existing = await restoreStagedSelection(input.baseDir, input.activeVersion);
+        const existing = await restoreStagedSelection(
+          input.baseDir,
+          input.activeVersion,
+          deps.host,
+          verification,
+        );
         if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(staged))
           throw new Error("Another selection exists.");
         if (existing === undefined && !input.apply)
@@ -204,8 +211,14 @@ export async function recoverStagedSelection(
         await (deps.sync ?? syncSelection)(path);
         reason = "selection-readback-mismatch";
         if (
-          JSON.stringify(await restoreStagedSelection(input.baseDir, input.activeVersion)) !==
-          JSON.stringify(staged)
+          JSON.stringify(
+            await restoreStagedSelection(
+              input.baseDir,
+              input.activeVersion,
+              deps.host,
+              verification,
+            ),
+          ) !== JSON.stringify(staged)
         )
           throw new Error("Selection changed.");
         reason = "stage-revoked-or-unknown";
