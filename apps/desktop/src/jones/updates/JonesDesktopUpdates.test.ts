@@ -16,6 +16,7 @@ import type {
 import {
   JonesDesktopUpdateController,
   captureJonesNativeProcesses,
+  jonesNativeProcessRoles,
   type JonesDesktopUpdateOptions,
 } from "./JonesDesktopUpdates.ts";
 import { createInitialDesktopUpdateState } from "../../updates/updateMachine.ts";
@@ -2133,4 +2134,20 @@ it("persists original kernel requesters before preparation and retains the singl
     preflight.mockReset();
     await f.cleanup();
   }
+});
+
+it("publishes one main role and unique backend roles without replacing the main", () => {
+  expect(jonesNativeProcessRoles(41, [42, 41, 42, 43])).toEqual([
+    { pid: 41, role: "main" },
+    { pid: 42, role: "backend" },
+    { pid: 43, role: "backend" },
+  ]);
+  expect(() => jonesNativeProcessRoles(0, [])).toThrow();
+  expect(() => jonesNativeProcessRoles(41, [1.5])).toThrow();
+  expect(() =>
+    jonesNativeProcessRoles(
+      41,
+      Array.from({ length: 256 }, (_, i) => i + 100),
+    ),
+  ).toThrow();
 });
