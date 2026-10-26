@@ -515,9 +515,9 @@ it.effect(
           })).eventCount,
           1,
         );
-        const memory = yield* Effect.gen(function* () {
-          return yield* ProjectionStore.ProjectionStoreV2;
-        }).pipe(Effect.provide(Layer.fresh(ProjectionStore.layerMemory)));
+        const memory = yield* ProjectionStore.ProjectionStoreV2.pipe(
+          Effect.provide(Layer.fresh(ProjectionStore.layerMemory)),
+        );
         yield* memory.apply(created[0]!.event);
         yield* memory.apply(intent);
         yield* memory.apply(outcome);

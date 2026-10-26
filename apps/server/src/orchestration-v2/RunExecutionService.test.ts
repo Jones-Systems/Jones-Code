@@ -2045,6 +2045,7 @@ it.effect(
           Layer.mergeAll(
             layerTurnItemPositionsTest,
             McpAppModelContext.layerEmpty,
+            PreviewAgentActivity.layer,
             Layer.mock(CheckpointService.CheckpointServiceV2)({
               captureBaseline: () => Effect.void,
             }),
@@ -2260,6 +2261,7 @@ it.effect("drops late root provider-thread writes from a superseded attempt", ()
         Layer.mergeAll(
           layerTurnItemPositionsTest,
           McpAppModelContext.layerEmpty,
+          PreviewAgentActivity.layer,
           Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
           executionEventSinkLayer({
             write: () => Effect.succeed([]),
@@ -2459,6 +2461,7 @@ it.effect(
           Layer.mergeAll(
             layerTurnItemPositionsTest,
             McpAppModelContext.layerEmpty,
+            PreviewAgentActivity.layer,
             Layer.mock(CheckpointService.CheckpointServiceV2)({
               captureBaseline: () => Effect.void,
             }),
@@ -2628,6 +2631,7 @@ it.effect(
           Layer.mergeAll(
             layerTurnItemPositionsTest,
             McpAppModelContext.layerEmpty,
+            PreviewAgentActivity.layer,
             Layer.mock(CheckpointService.CheckpointServiceV2)({
               captureBaseline: () => Effect.void,
             }),
@@ -3231,6 +3235,7 @@ it.effect(
           Layer.mergeAll(
             layerTurnItemPositionsTest,
             McpAppModelContext.layerEmpty,
+            PreviewAgentActivity.layer,
             Layer.mock(CheckpointService.CheckpointServiceV2)({
               captureBaseline: () => Effect.void,
             }),
@@ -5276,6 +5281,7 @@ it.effect.each([
         Layer.provide(
           Layer.mergeAll(
             Layer.succeed(EventSink.EventSinkV2, observedSink),
+            PreviewAgentActivity.layer,
             Layer.mock(CheckpointService.CheckpointServiceV2)({
               captureBaseline: () => Effect.void,
             }),
@@ -5870,6 +5876,7 @@ it.effect("persists an old attempt's raw terminal turn without settling its succ
     ingestorDependencies,
     ProviderEventIngestor.layer.pipe(Layer.provide(ingestorDependencies)),
     McpAppModelContext.layerEmpty,
+    PreviewAgentActivity.layer,
   );
   return Effect.gen(function* () {
     const sink = yield* EventSink.EventSinkV2;

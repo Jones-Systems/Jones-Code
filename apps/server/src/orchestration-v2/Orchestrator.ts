@@ -10562,7 +10562,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const decision =
       candidate === undefined || command.commandId !== `${candidate.policy.createCommandId}:fail`
         ? undefined
-        : yield* Schema.decodeUnknownEffect(LegacyPreparationFailureDecision)({
+        : yield* Schema.decodeEffect(LegacyPreparationFailureDecision)({
             ...candidate,
             failureCommandId: command.commandId,
             evidenceEventId: failureEvent.id,
@@ -13543,7 +13543,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               "Failure D requires actual owner-authenticated no-control proof; legacy Boolean is insufficient.",
           });
         const privateCommand: LegacyFailureDeleteCommand = command;
-        const control = yield* Schema.decodeUnknownEffect(LegacyNoTerminalControl)(
+        const control = yield* Schema.decodeEffect(LegacyNoTerminalControl)(
           command.legacyNoControl,
         ).pipe(mapDispatchError(command));
         const projection = yield* projectionStore
@@ -15531,7 +15531,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     (candidate: ImportedHistoryStart) =>
       Effect.gen(function* () {
         const principal = yield* EnvironmentAuthenticatedPrincipal;
-        const command = yield* Schema.decodeUnknownEffect(ImportedHistoryStart)(candidate, {
+        const command = yield* Schema.decodeEffect(ImportedHistoryStart)(candidate, {
           onExcessProperty: "error",
         });
         return yield* threadDispatch.withLock(
@@ -15877,6 +15877,12 @@ const layerUnavailable: Layer.Layer<OrchestratorV2> = Layer.succeed(
           cause: "Orchestration V2 live runtime is not configured.",
         }),
       ),
+    listActiveSubagentThreadIds: () =>
+      Effect.fail(new OrchestratorProjectionError({ threadId: ThreadId.make("thread:shell") })),
+    listOlderSettledThreads: () =>
+      Effect.fail(new OrchestratorProjectionError({ threadId: ThreadId.make("thread:shell") })),
+    findGuestShareThreadId: () =>
+      Effect.fail(new OrchestratorProjectionError({ threadId: ThreadId.make("thread:shell") })),
     getShellSnapshot: () =>
       Effect.fail(
         new OrchestratorProjectionError({

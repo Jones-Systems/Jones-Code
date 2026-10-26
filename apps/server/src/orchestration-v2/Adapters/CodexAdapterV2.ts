@@ -7448,6 +7448,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           const now = yield* DateTime.now;
           request.capacityRetry = {
             nativeMessage: context.latestProviderFailure?.nativeMessage ?? "Codex is at capacity.",
+            nativeCode: context.latestProviderFailure?.nativeCode ?? null,
             failure: makeProviderFailure({
               code: "serverOverloaded",
               class: "provider_error",
@@ -9053,8 +9054,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   }
                   rootInterruptAcknowledged = true;
                 }
-                if (childInterruptFailure !== undefined)
-                  return yield* Effect.fail(childInterruptFailure);
+                if (childInterruptFailure !== undefined) return yield* childInterruptFailure;
                 const containedTerminalKeys = new Set<string>();
                 const attemptedTerminalKeys = new Set<string>();
                 const collectTrackedTerminals = Effect.fn("CodexAdapterV2.collectTrackedTerminals")(

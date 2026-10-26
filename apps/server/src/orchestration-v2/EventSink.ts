@@ -1170,12 +1170,10 @@ const layerBase: Layer.Layer<
                   effect.nativeCreationExecutionReference.effectId !== effect.id),
             )
           ) {
-            return yield* Effect.fail(
-              new NativeCreationRepository.NativeCreationRepositoryError({
-                code: "unresolved_claim",
-                message: "Native queued effect differs from its acceptance binding",
-              }),
-            );
+            return yield* new NativeCreationRepository.NativeCreationRepositoryError({
+              code: "unresolved_claim",
+              message: "Native queued effect differs from its acceptance binding",
+            });
           }
           if (
             input.nativeCreation !== undefined &&
@@ -1185,12 +1183,10 @@ const layerBase: Layer.Layer<
                 effect.nativeCreationExecutionReference === undefined,
             )
           ) {
-            return yield* Effect.fail(
-              new NativeCreationRepository.NativeCreationRepositoryError({
-                code: "unresolved_claim",
-                message: "Native provider start is missing its execution envelope",
-              }),
-            );
+            return yield* new NativeCreationRepository.NativeCreationRepositoryError({
+              code: "unresolved_claim",
+              message: "Native provider start is missing its execution envelope",
+            });
           }
           const reserved = yield* commandReceipts.insertIfAbsent({
             commandId: input.commandId,
@@ -1230,12 +1226,10 @@ const layerBase: Layer.Layer<
                 nativeCreation.value.recordExecutionAcceptance === undefined ||
                 boundary === undefined
               )
-                return yield* Effect.fail(
-                  new NativeCreationRepository.NativeCreationRepositoryError({
-                    code: "unresolved_claim",
-                    message: "Native receipt retry has no native acceptance owner",
-                  }),
-                );
+                return yield* new NativeCreationRepository.NativeCreationRepositoryError({
+                  code: "unresolved_claim",
+                  message: "Native receipt retry has no native acceptance owner",
+                });
               yield* nativeCreation.value.recordExecutionAcceptance({
                 ...input.nativeCreation,
                 eventId: boundary.event.id,
@@ -1430,12 +1424,10 @@ const layerBase: Layer.Layer<
               input.nativeCreation.command.threadId !== input.threadId ||
               input.nativeCreation.command.type !== input.commandType
             ) {
-              return yield* Effect.fail(
-                new NativeCreationRepository.NativeCreationRepositoryError({
-                  code: "unresolved_claim",
-                  message: "Native acceptance owner is unavailable or differs from the receipt",
-                }),
-              );
+              return yield* new NativeCreationRepository.NativeCreationRepositoryError({
+                code: "unresolved_claim",
+                message: "Native acceptance owner is unavailable or differs from the receipt",
+              });
             }
             const event = storedEvents.at(-1)!;
             yield* nativeCreation.value.recordExecutionAcceptance({
@@ -1493,9 +1485,9 @@ const layerBase: Layer.Layer<
         const intentId = CommandId.make(`${policy.createCommandId}:preflight-intent`);
         const outcomeId = CommandId.make(`${policy.createCommandId}:preflight-outcome`);
         const reject = (detail: string) => new Error(detail);
-        const payload = yield* Schema.decodeUnknownEffect(
-          Schema.fromJsonString(QueueDispatchCommand),
-        )(binding.canonicalPayload);
+        const payload = yield* Schema.decodeEffect(Schema.fromJsonString(QueueDispatchCommand))(
+          binding.canonicalPayload,
+        );
         if (
           payload.type !== "thread.turn.start" ||
           payload.bootstrap === undefined ||

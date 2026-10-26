@@ -1,15 +1,10 @@
-import {
-  type OrchestrationV2Command,
-  ProviderThreadId,
-  type OrchestrationV2ThreadShell,
-} from "@t3tools/contracts";
+import { type OrchestrationV2Command, type OrchestrationV2ThreadShell } from "@t3tools/contracts";
 
 import * as Duration from "effect/Duration";
 
 import * as TestClock from "effect/testing/TestClock";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 
-import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import { expect, it } from "@effect/vitest";
 import {
   CommandId,
