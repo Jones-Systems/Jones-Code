@@ -68,6 +68,81 @@ ${jonesPairedStateSource.syncTree}
 def same_binding(left, right):
     return left == right and left.get('protocol') == PROTOCOL and left.get('owner') == 'desktop'
 
+class KernelProcessError(RuntimeError):
+    def __init__(self, error, call, number=None):
+        self.diagnostic = {'error': error, 'call': call, 'errno': number}
+        super().__init__(error)
+
+def kernel_process_pid(value):
+    if not value or len(value) > 10 or any(c < '0' or c > '9' for c in value) or not 0 < int(value) <= 2147483647:
+        raise argparse.ArgumentTypeError('pid must be a positive decimal integer <= 2147483647')
+    return int(value)
+
+def kernel_process_identity(pid):
+    import ctypes, errno
+    if type(pid) is not int or not 0 < pid <= 2147483647:
+        raise KernelProcessError('process-inspection-failed', 'validate-pid')
+    if sys.platform != 'darwin':
+        raise KernelProcessError('unsupported-platform', 'libSystem')
+    class ProcBsdinfo(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_uint32) for name in (
+            'pbi_flags', 'pbi_status', 'pbi_xstatus', 'pbi_pid', 'pbi_ppid',
+            'pbi_uid', 'pbi_gid', 'pbi_ruid', 'pbi_rgid', 'pbi_svuid', 'pbi_svgid', 'rfu_1')]
+        _fields_ += [('pbi_comm', ctypes.c_char * 16), ('pbi_name', ctypes.c_char * 32)]
+        _fields_ += [(name, ctypes.c_uint32) for name in ('pbi_nfiles', 'pbi_pgid', 'pbi_pjobc', 'e_tdev', 'e_tpgid')]
+        _fields_ += [('pbi_nice', ctypes.c_int32), ('pbi_start_tvsec', ctypes.c_uint64), ('pbi_start_tvusec', ctypes.c_uint64)]
+    # Public proc_info.h layout across the supported Ventura+ dependency floor.
+    offsets = {'pbi_status': 4, 'pbi_pid': 12, 'pbi_ppid': 16, 'pbi_uid': 20,
+               'pbi_comm': 48, 'pbi_name': 64, 'pbi_nfiles': 96, 'pbi_nice': 116,
+               'pbi_start_tvsec': 120, 'pbi_start_tvusec': 128}
+    if ctypes.sizeof(ProcBsdinfo) != 136 or any(getattr(ProcBsdinfo, name).offset != offset for name, offset in offsets.items()):
+        raise KernelProcessError('process-inspection-failed', 'proc_bsdinfo-layout')
+    try:
+        lib = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)
+        lib.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+        lib.proc_pidinfo.restype = ctypes.c_int
+        lib.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+        lib.proc_pidpath.restype = ctypes.c_int
+    except (OSError, AttributeError) as error:
+        raise KernelProcessError('process-inspection-failed', 'libSystem', getattr(error, 'errno', None)) from None
+    def checked_call(name, *arguments):
+        ctypes.set_errno(0)
+        try: result = getattr(lib, name)(*arguments)
+        except OSError as error:
+            number = error.errno
+            raise KernelProcessError('process-exited' if number == errno.ESRCH else 'process-inspection-failed', name, number) from None
+        number = ctypes.get_errno()
+        if result <= 0:
+            raise KernelProcessError('process-exited' if number == errno.ESRCH else 'process-inspection-failed', name, number or None)
+        return result
+    def bsd():
+        sample = ProcBsdinfo()
+        size = checked_call('proc_pidinfo', pid, 3, 0, ctypes.byref(sample), ctypes.sizeof(sample))
+        if size != 136 or sample.pbi_pid != pid or not 0 <= sample.pbi_start_tvusec < 1000000:
+            raise KernelProcessError('process-inspection-failed', 'proc_pidinfo')
+        if sample.pbi_status == 5:
+            raise KernelProcessError('process-exited', 'proc_pidinfo')
+        return (sample.pbi_pid, sample.pbi_start_tvsec, sample.pbi_start_tvusec, sample.pbi_ppid)
+    def executable():
+        buffer = ctypes.create_string_buffer(b'\xff' * 4096, 4096)
+        size = checked_call('proc_pidpath', pid, buffer, 4096)
+        if size >= 4096 or buffer.raw[size] != 0 or b'\0' in buffer.raw[:size]:
+            raise KernelProcessError('process-inspection-failed', 'proc_pidpath')
+        try: value = buffer.raw[:size].decode('utf8', errors='strict')
+        except UnicodeDecodeError: raise KernelProcessError('process-inspection-failed', 'proc_pidpath') from None
+        if not value.startswith('/'):
+            raise KernelProcessError('process-inspection-failed', 'proc_pidpath')
+        return value
+    first = bsd()
+    path = executable()
+    if bsd() != first:
+        raise KernelProcessError('process-inspection-failed', 'proc_pidinfo')
+    if executable() != path:
+        raise KernelProcessError('process-inspection-failed', 'proc_pidpath')
+    # A bounded stable observation, not a live process handle or signal authority.
+    return {'pid': first[0], 'startSec': first[1], 'startUsec': first[2], 'executable': path}
+
+
 def process_identity(pid, deadline=None):
     result = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'lstart=', '-o', 'command='], capture_output=True, text=True, timeout=None if deadline is None else max(0.001, deadline - time.monotonic()))
     if result.returncode == 1 and not result.stdout.strip() and not result.stderr.strip(): return None
@@ -1627,8 +1702,9 @@ def manual_install(plan_path, plan_sha256, apply=False, clone_required=False):
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--manifest', required=True)
+parser.add_argument('--manifest')
 action = parser.add_mutually_exclusive_group(required=True)
+action.add_argument('--process-identity', type=kernel_process_pid)
 action.add_argument('--activate')
 action.add_argument('--settle-interrupted-activation')
 action.add_argument('--reconcile-running')
@@ -1655,6 +1731,17 @@ parser.add_argument('--plan-sha256')
 parser.add_argument('--require-clone', action='store_true')
 parser.add_argument('arguments', nargs=argparse.REMAINDER)
 args = parser.parse_args()
+if args.process_identity is not None:
+    if any(value not in (None, False, []) for name, value in vars(args).items() if name != 'process_identity'):
+        parser.error('--process-identity cannot be combined with manifest, other flags or arguments')
+    try:
+        identity = kernel_process_identity(args.process_identity)
+    except KernelProcessError as error:
+        print(json.dumps(error.diagnostic, separators=(',', ':')), file=sys.stderr)
+        raise SystemExit(1)
+    print(json.dumps(identity, separators=(',', ':')))
+    raise SystemExit(0)
+if args.manifest is None: parser.error('--manifest is required for this action')
 if args.require_clone and not (args.inspect_manual_install or args.manual_install): parser.error('--require-clone requires a manual installation action')
 if args.arguments and args.arguments[0] == '--': args.arguments = args.arguments[1:]
 manifest_path = pathlib.Path(args.manifest).resolve(strict=True)

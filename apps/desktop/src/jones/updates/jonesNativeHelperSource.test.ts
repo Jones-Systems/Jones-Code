@@ -3,6 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import { jonesNativeHelperSource } from "./jonesNativeHelperSource.ts";
 import { hashMacApp } from "./jonesMacStaging.ts";
@@ -3597,4 +3598,199 @@ assert (profile / 'opaque').read_text() == 'same-host-profile'
   } finally {
     await f.cleanup();
   }
+});
+
+const kernelLibprocFixture = String.raw`
+import ctypes, errno, contextlib, io
+from unittest.mock import patch
+class NativeCall:
+    def __init__(self, invoke): self.invoke = invoke
+    def __call__(self, *args):
+        assert self.restype is ctypes.c_int
+        assert self.argtypes is not None
+        assert ctypes.get_errno() == 0
+        return self.invoke(*args)
+class LibprocFixture:
+    def __init__(self, fault='live'):
+        self.fault, self.calls, self.samples = fault, [], 0
+        self.proc_pidinfo = NativeCall(self.bsd)
+        self.proc_pidpath = NativeCall(self.path)
+    def bsd(self, pid, flavor, arg, target, size):
+        self.calls.append('proc_pidinfo'); self.samples += 1
+        assert (pid, flavor, arg, size) == (4321, 3, 0, 136)
+        assert self.proc_pidinfo.argtypes == [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+        if self.fault in ('bsd-esrch', 'bsd-eperm', 'bsd-io', 'bsd-zero'):
+            ctypes.set_errno({'bsd-esrch':errno.ESRCH, 'bsd-eperm':errno.EPERM, 'bsd-io':errno.EIO, 'bsd-zero':0}[self.fault]); return 0
+        raw = bytearray(136)
+        # Independent header offsets, deliberately not derived from the ctypes type.
+        struct.pack_into('=I', raw, 4, 5 if self.fault == 'zombie' else 2)
+        struct.pack_into('=I', raw, 12, 99 if self.fault == 'wrong-pid' else pid)
+        struct.pack_into('=I', raw, 16, 3210)
+        struct.pack_into('=I', raw, 20, 501)
+        struct.pack_into('=Q', raw, 120, 1234567890 + (1 if self.fault == 'birth-race' and self.samples == 2 else 0))
+        struct.pack_into('=Q', raw, 128, 1000000 if self.fault == 'bad-usec' else 654321)
+        ctypes.memmove(target, bytes(raw), len(raw))
+        return 135 if self.fault == 'short-bsd' else 136
+    def path(self, pid, target, size):
+        self.calls.append('proc_pidpath')
+        assert pid == 4321 and size == 4096
+        assert self.proc_pidpath.argtypes == [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+        if self.fault in ('path-esrch', 'path-eperm'):
+            ctypes.set_errno(errno.ESRCH if self.fault == 'path-esrch' else errno.EPERM); return 0
+        raw = b'/Applications/Jones Code.app/Contents/MacOS/Jones'
+        if self.fault == 'relative': raw = b'relative/Jones'
+        if self.fault == 'utf8': raw = b'/bad-\xff'
+        if self.fault == 'empty': return 0
+        if self.fault == 'truncated': raw = b'/' + b'x' * 4095
+        if self.fault == 'exec-race' and self.calls.count('proc_pidpath') == 2: raw = b'/replacement'
+        ctypes.memmove(target, raw + (b'\0' if len(raw) < size else b''), min(size, len(raw) + 1))
+        return len(raw) + (1 if self.fault == 'wrong-path-size' else 0)
+def library(fault='live'):
+    value = LibprocFixture(fault)
+    def load(name, **kwargs):
+        assert name == '/usr/lib/libSystem.B.dylib' and kwargs == {'use_errno': True}
+        return value
+    return value, load
+`;
+
+function kernelScenario(body: string): string {
+  return `${jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0]}\n${kernelLibprocFixture}\n${body}`;
+}
+
+function kernelCliHarness(): string {
+  return kernelScenario(String.raw`
+parser_source = ${JSON.stringify(jonesNativeHelperSource.slice(jonesNativeHelperSource.indexOf("\nparser = argparse.ArgumentParser()")))}
+def invoke(argv, fault='live', platform='darwin'):
+    lib, load = library(fault)
+    out, err = io.StringIO(), io.StringIO()
+    def forbidden(*a, **kw): raise AssertionError('identity CLI crossed its read-only boundary')
+    with patch.object(sys, 'argv', ['helper.py'] + argv), patch.object(sys, 'platform', platform), patch.object(ctypes, 'CDLL', load), patch.object(pathlib.Path, 'resolve', forbidden), patch.object(os, 'open', forbidden), patch.object(subprocess, 'run', forbidden), patch.object(os, 'kill', forbidden), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try: exec(parser_source, globals().copy()); code = 0
+        except SystemExit as e: code = e.code
+    return code, out.getvalue(), err.getvalue(), lib.calls
+`);
+}
+
+describe("kernel process identity prerequisite", () => {
+  it("emits the closed read-only identity CLI without a manifest", () => {
+    const result = runPython(
+      `${kernelCliHarness()}\ncode, out, err, calls = invoke(['--process-identity', '4321'])\nassert code == 0, (code, err)\nassert not err\nassert out.endswith('\\n') and out.count('\\n') == 1\nassert json.loads(out) == {'pid':4321,'startSec':1234567890,'startUsec':654321,'executable':'/Applications/Jones Code.app/Contents/MacOS/Jones'}\nassert calls == ['proc_pidinfo','proc_pidpath','proc_pidinfo','proc_pidpath']\nprint('closed-kernel-identity')`,
+      [],
+      { encoding: "utf8", timeout: 10000 },
+    );
+    expect(result.trim()).toBe("closed-kernel-identity");
+  });
+
+  it("decodes the complete ABI and refuses errors, malformed buffers and races", () => {
+    const result = runPython(
+      kernelScenario(String.raw`
+for fault, error, call, number in [
+    ('bsd-esrch','process-exited','proc_pidinfo',errno.ESRCH),
+    ('zombie','process-exited','proc_pidinfo',None),
+    ('bsd-eperm','process-inspection-failed','proc_pidinfo',errno.EPERM),
+    ('bsd-io','process-inspection-failed','proc_pidinfo',errno.EIO),
+    ('bsd-zero','process-inspection-failed','proc_pidinfo',None),
+    ('short-bsd','process-inspection-failed','proc_pidinfo',None),
+    ('wrong-pid','process-inspection-failed','proc_pidinfo',None),
+    ('bad-usec','process-inspection-failed','proc_pidinfo',None),
+    ('path-esrch','process-exited','proc_pidpath',errno.ESRCH),
+    ('path-eperm','process-inspection-failed','proc_pidpath',errno.EPERM),
+    ('relative','process-inspection-failed','proc_pidpath',None),
+    ('utf8','process-inspection-failed','proc_pidpath',None),
+    ('empty','process-inspection-failed','proc_pidpath',None),
+    ('truncated','process-inspection-failed','proc_pidpath',None),
+    ('wrong-path-size','process-inspection-failed','proc_pidpath',None),
+    ('birth-race','process-inspection-failed','proc_pidinfo',None),
+    ('exec-race','process-inspection-failed','proc_pidpath',None),
+]:
+    lib, load = library(fault)
+    with patch.object(sys, 'platform', 'darwin'), patch.object(ctypes, 'CDLL', load):
+        try: kernel_process_identity(4321)
+        except KernelProcessError as e: assert e.diagnostic == {'error':error,'call':call,'errno':number}, (fault, e.diagnostic)
+        else: raise AssertionError(fault)
+    assert len(lib.calls) <= 4
+for pid in [True, False, 0, -1, 2147483648, '4321', 1.0, None]:
+    with patch.object(ctypes, 'CDLL', side_effect=AssertionError('invalid pid loaded a library')):
+        try: kernel_process_identity(pid)
+        except KernelProcessError: pass
+        else: raise AssertionError(pid)
+with patch.object(sys, 'platform', 'darwin'), patch.object(ctypes, 'sizeof', return_value=128), patch.object(ctypes, 'CDLL', side_effect=AssertionError('invalid ABI loaded a library')):
+    try: kernel_process_identity(4321)
+    except KernelProcessError as e: assert e.diagnostic['call'] == 'proc_bsdinfo-layout'
+    else: raise AssertionError('invalid ABI accepted')
+print('kernel-errors-and-races')
+`),
+      [],
+      { encoding: "utf8", timeout: 10000 },
+    );
+    expect(result.trim()).toBe("kernel-errors-and-races");
+  });
+
+  it("rejects mixed and invalid CLI input before library or state access", () => {
+    const result = runPython(
+      `${kernelCliHarness()}\n` +
+        String.raw`
+for argv in [
+    ['--process-identity','0'], ['--process-identity','-1'], ['--process-identity','2147483648'],
+    ['--process-identity','1.0'], ['--process-identity','+1'], ['--process-identity','１２'],
+    ['--process-identity','4321','--manifest','/unread'], ['--process-identity','4321','--launch'],
+    ['--process-identity','4321','--withdrawable'], ['--process-identity','4321','--quiescent'],
+    ['--process-identity','4321','--transaction','x'], ['--process-identity','4321','--claim-sha256',''],
+    ['--process-identity','4321','--staged-handle','x'], ['--process-identity','4321','--selection','x'],
+    ['--process-identity','4321','--selection-sha256','x'], ['--process-identity','4321','--plan-sha256','x'],
+    ['--process-identity','4321','--require-clone'], ['--process-identity','4321','--','extra'],
+    ['--launch'], ['--activate','/unread'], ['--settle-interrupted-activation','x'],
+]:
+    code, out, err, calls = invoke(argv)
+    assert code == 2 and not out and err and not calls, (argv, code, out, err, calls)
+for fault, platform, error in [('bsd-eperm','darwin','process-inspection-failed'), ('bsd-esrch','darwin','process-exited'), ('live','linux','unsupported-platform')]:
+    code, out, err, calls = invoke(['--process-identity','4321'], fault, platform)
+    assert code == 1 and not out and len(err.encode()) <= 1024
+    diagnostic = json.loads(err)
+    assert set(diagnostic) == {'error','call','errno'} and diagnostic['error'] == error
+    if platform != 'darwin': assert not calls
+print('kernel-cli-refusals')
+`,
+      [],
+      { encoding: "utf8", timeout: 10000 },
+    );
+    expect(result.trim()).toBe("kernel-cli-refusals");
+  });
+
+  it.skipIf(HostProcess.Platform.defaultValue() !== "darwin")(
+    "reads an owned Darwin child through live, zombie and reaped states (libproc requires macOS)",
+    () => {
+      const result = runPython(
+        `${jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0]}\n` +
+          String.raw`
+child = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.buffer.read(1)'], stdin=subprocess.PIPE)
+try:
+    proof = kernel_process_identity(child.pid)
+    assert proof['pid'] == child.pid and proof['startSec'] > 0 and 0 <= proof['startUsec'] < 1000000
+    assert os.path.isabs(proof['executable']) and os.path.samefile(proof['executable'], sys.executable)
+    assert kernel_process_identity(child.pid) == proof
+    child.stdin.close()
+    deadline = time.monotonic() + 3
+    while True:
+        try: kernel_process_identity(child.pid)
+        except KernelProcessError as e:
+            assert e.diagnostic['error'] == 'process-exited'; break
+        if time.monotonic() >= deadline: raise AssertionError('owned child did not become exited')
+        time.sleep(0.01)
+    assert child.wait(timeout=1) == 0
+    try: kernel_process_identity(child.pid)
+    except KernelProcessError as e: assert e.diagnostic['error'] == 'process-exited'
+    else: raise AssertionError('reaped child remained live')
+finally:
+    if child.stdin and not child.stdin.closed: child.stdin.close()
+    if child.poll() is None: child.kill()
+    child.wait(timeout=1)
+print('darwin-owned-child')
+`,
+        [],
+        { encoding: "utf8", timeout: 10000 },
+      );
+      expect(result.trim()).toBe("darwin-owned-child");
+    },
+  );
 });
