@@ -523,6 +523,7 @@ describe("OrchestratorMcpService", () => {
             }),
           dispatch: () => Effect.succeed({} as never),
         }),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
         ServerSettings.layerTest(),
         Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
         Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({

@@ -648,12 +648,10 @@ it.layer(
             assert.equal(plan.binding, binding);
             order.push("intent");
             if (scenario === "intent_lost")
-              return yield* Effect.fail(
-                new TerminalManager.LegacyTerminalControlError({
-                  operation: "open",
-                  detail: "Synthetic lost intent",
-                }),
-              );
+              return yield* new TerminalManager.LegacyTerminalControlError({
+                operation: "open",
+                detail: "Synthetic lost intent",
+              });
           }),
         ...(scenario === "missing_hook"
           ? {}
@@ -668,12 +666,10 @@ it.layer(
                   assert.deepEqual(order, ["intent"]);
                   order.push("outcome");
                   if (scenario === "outcome_lost")
-                    return yield* Effect.fail(
-                      new TerminalManager.LegacyTerminalControlError({
-                        operation: "open",
-                        detail: "Synthetic lost outcome",
-                      }),
-                    );
+                    return yield* new TerminalManager.LegacyTerminalControlError({
+                      operation: "open",
+                      detail: "Synthetic lost outcome",
+                    });
                 }),
             }),
         afterSpawn: () =>

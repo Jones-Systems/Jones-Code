@@ -797,12 +797,11 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerHttp.layerStaticAndDevRoute,
     Ws.layer,
   ),
-  JonesHttp.remoteAdmissionResumeLayer
-    .pipe(Layer.provideMerge(McpHttpServer.layer))
-    .pipe(
-      Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
-      Layer.provide(McpOAuth.layerMcpClientAuthenticator),
-    ),
+  JonesHttp.remoteAdmissionResumeLayer.pipe(
+    Layer.provideMerge(McpHttpServer.layer),
+    Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
+    Layer.provide(McpOAuth.layerMcpClientAuthenticator),
+  ),
   // Follows delegated tasks running in linked environments, including after a restart.
   Layer.effectDiscard(
     RemoteDelegation.RemoteDelegation.pipe(Effect.flatMap((remote) => remote.start())),

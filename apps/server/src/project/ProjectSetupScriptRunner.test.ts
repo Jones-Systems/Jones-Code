@@ -24,6 +24,10 @@ const threadId = "thread-1";
 const terminalId = "setup-setup";
 const event = { threadId, terminalId, sequence: 1, createdAt: "2026-01-01T00:00:00.000Z" };
 
+class SyntheticSetupError extends Schema.TaggedError<SyntheticSetupError>()("SyntheticSetupError", {
+  message: Schema.String,
+}) {}
+
 const openSnapshot = (history: string): TerminalSessionSnapshot => ({
   threadId,
   terminalId,
@@ -205,7 +209,9 @@ const makeOwnedHarness = Effect.fn(function* (
   };
   const guard = Effect.suspend(() =>
     revoked
-      ? Effect.fail(new Error("synthetic authority or generation changed"))
+      ? Effect.fail(
+          new SyntheticSetupError({ message: "synthetic authority or generation changed" }),
+        )
       : Effect.sync(() => {
           milestones.push("write-intent");
         }),
@@ -220,7 +226,9 @@ const makeOwnedHarness = Effect.fn(function* (
     Effect.andThen(
       Effect.suspend(() =>
         options.failAck
-          ? Effect.fail(new Error("synthetic durable write readback failed"))
+          ? Effect.fail(
+              new SyntheticSetupError({ message: "synthetic durable write readback failed" }),
+            )
           : Effect.sync(() => {
               milestones.push("write-acknowledged");
             }),
@@ -368,7 +376,7 @@ const makeOwnedHarness = Effect.fn(function* (
     Effect.sync(() => {
       milestones.push("completion");
     });
-  const binding = Schema.decodeSync(LegacyOwnedTerminalControl)({
+  const binding = yield* Schema.decodeEffect(LegacyOwnedTerminalControl)({
     version: 1,
     threadId,
     runId: "run",
