@@ -1,4 +1,5 @@
 import { useSidebarWorkspaceTabs } from "../workspace/useSystemWorkspaceTabBar";
+import { ContinuationChoiceNotice } from "../../jones/importedHistory/ContinuationChoiceNotice";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import type { ComposerTextPaste } from "../../native/T3ComposerEditor.types";
@@ -64,6 +65,7 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import type { ComposerDocumentAttachment } from "../../lib/composerContext";
 import { useProject, useThreadShells } from "../../state/entities";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { ComposerAttachmentButton } from "./ComposerAttachmentButton";
@@ -326,8 +328,8 @@ const FOLLOW_UP_ACTION_LABEL = {
 } as const;
 
 const FOLLOW_UP_ACTION_SUBTITLE = {
-  queue: "Run after the current turn",
-  steer: "Interrupt what the agent is doing",
+  queue: "Send after tools finish, or next turn",
+  steer: "Send into the current turn now",
   restart: "Start the turn over with this message",
 } as const;
 
@@ -715,11 +717,17 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
   const lockedProviderInstanceId = props.canSwitchProvider
     ? undefined
     : currentModelSelection.instanceId;
+  const configuredDefaultModelSelection = props.serverConfig?.settings
+    ? resolveProjectSettings(props.serverConfig.settings, props.selectedThread.projectId, project)
+        .settings.defaultModelSelection
+    : null;
   const modelOptions = buildModelOptions(
     props.serverConfig,
     currentModelSelection,
     lockedProviderInstanceId,
     props.selectedThread.projectId,
+    false,
+    configuredDefaultModelSelection,
   );
   const threadProviderGroups = groupByProvider(modelOptions);
   const currentModelOption =
@@ -886,6 +894,10 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
         style={{ maxWidth: props.contentMaxWidth }}
       >
         {props.draftControls}
+        <ContinuationChoiceNotice
+          environmentId={props.environmentId}
+          threadId={props.selectedThread.id}
+        />
         {!isSubmissionLocked &&
         composerMenu.trigger &&
         (composerMenu.items.length > 0 || composerMenu.trigger.kind === "pull-request") ? (

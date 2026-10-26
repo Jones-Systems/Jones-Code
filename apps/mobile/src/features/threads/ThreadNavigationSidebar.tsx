@@ -1,4 +1,10 @@
 import { useActiveNewTask } from "../../state/active-new-task";
+import { useMobileWorkstreams } from "../workstreams/useWorkstreams";
+import {
+  projectMobileWorkstreamList,
+  mobileWorkstreamMoveDestination,
+} from "../workstreams/listProjection";
+import type { ThreadMoveDestination } from "./threadOrder";
 import { ThreadUndoNotice } from "../home/ThreadUndoNotice";
 import { useAndroidControlSizing } from "../../components/ui/useAndroidControlSizing";
 import { resolveScratchProjectScopeKey } from "@t3tools/client-runtime/state/project-grouping";
@@ -59,6 +65,7 @@ import { SidebarFilterButton } from "./sidebar-filter-button";
 import { createSidebarHeaderItems } from "./sidebar-native-header-items";
 import { SidebarNavigationShell } from "./sidebar-navigation-shell";
 import {
+  ThreadListV2WorkstreamHeader,
   ThreadListV2PendingRow,
   ThreadListV2Row,
   ThreadListV2SettledShelfHeader,
@@ -139,6 +146,7 @@ function ThreadNavigationSidebarPane(
   const { fabClearance } = useAndroidControlSizing();
   const projects = useProjects();
   const threads = useNavigationThreadShells();
+  const workstreams = useMobileWorkstreams(threads);
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();
   const { savedConnectionsById } = useSavedRemoteConnections();
   const searchInputRef = useRef<TextInputInstance>(null);
@@ -294,7 +302,7 @@ function ThreadNavigationSidebarPane(
   const pendingOrder = usePendingThreadOrder(nowMinute, snoozeWakeTick);
   const {
     layout: threadListV2Layout,
-    items: threadListV2Items,
+    items: nativeThreadListV2Items,
     contentOnlyThreadKeys,
     olderSettledShelf,
   } = useThreadListV2({
@@ -318,6 +326,15 @@ function ThreadNavigationSidebarPane(
     snoozedShelfExpanded,
     settledShelfExpanded,
     selectedThreadKey: props.selectedThreadKey ?? null,
+  });
+  const threadListV2Items = projectMobileWorkstreamList(nativeThreadListV2Items, {
+    enabled: workstreams.enabled,
+    groups: workstreams.groups,
+    collapsedKeys: workstreams.collapsedKeys,
+    secondaryLabelsByKey: workstreams.secondaryLabelsByKey,
+    confirmedUnassignedKeys: workstreams.confirmedUnassignedKeys,
+    selectedThreadKey: props.selectedThreadKey,
+    searching: props.searchQuery.trim().length > 0,
   });
   const nextSnoozeWakeAt = threadListV2Layout.nextSnoozeWakeAt;
   useEffect(() => {
@@ -477,6 +494,7 @@ function ThreadNavigationSidebarPane(
   // Recycle equality needs project/search data for titles and favicons; keep the minute clock on items to limit updates.
   const listExtraData = {
     activeNewTask,
+    workstreamBindingRevision: workstreams.bindingRevision,
     selectedThreadKey: props.selectedThreadKey ?? "",
     projectByKey,
     projectTitleByProjectKey,
@@ -513,7 +531,29 @@ function ThreadNavigationSidebarPane(
     return true;
   };
   useHardwareKeyboardCommand("focusSearch", focusSearch);
+  const moveWithinWorkstream = (
+    thread: EnvironmentThreadShell,
+    direction: ThreadMoveDestination,
+  ) => {
+    const target = workstreams.enabled
+      ? mobileWorkstreamMoveDestination(
+          listItems.filter((item) => item.type !== "v2-show-more"),
+          thread,
+          direction,
+        )
+      : direction;
+    if (target !== null) void moveThread(thread, target);
+  };
   const renderListItem = ({ item }: { readonly item: SidebarListItem }) => {
+    if (item.type === "v2-workstream") {
+      return (
+        <ThreadListV2WorkstreamHeader
+          {...item}
+          onToggle={() => workstreams.toggleGroup(item.groupKey)}
+          onOpen={() => workstreams.openGroup(item.groupKey)}
+        />
+      );
+    }
     switch (item.type) {
       case "v2-pending": {
         const pendingScopeKey = scopedProjectKey(
@@ -557,6 +597,8 @@ function ThreadNavigationSidebarPane(
           <ThreadListV2Row
             onNewThreadOnBranch={props.onNewThreadOnBranch}
             thread={thread}
+            onOpenWorkstreams={workstreams.openThread}
+            secondaryWorkstreamLabel={item.secondaryWorkstreamLabel}
             variant={item.item.variant}
             hasQueuedMessages={item.hasQueuedMessages}
             snoozed={item.item.snoozed}
@@ -620,7 +662,7 @@ function ThreadNavigationSidebarPane(
             onPinThread={pinThread}
             onUnpinThread={unpinThread}
             onSetThreadAutoSettle={setThreadAutoSettle}
-            onMoveThread={moveThread}
+            onMoveThread={moveWithinWorkstream}
             onSwipeableClose={handleSwipeableClose}
             onSwipeableWillOpen={handleSwipeableWillOpen}
             simultaneousSwipeGesture={sidebarScrollGesture}
@@ -713,6 +755,7 @@ function ThreadNavigationSidebarPane(
   if (props.nativeChrome) {
     return (
       <>
+        {workstreams.sheet}
         <NativeStackScreenOptions
           optionsVersion={[nativeHeaderItems, props.width]}
           options={{
@@ -747,6 +790,7 @@ function ThreadNavigationSidebarPane(
                 renderScrollComponent={Platform.OS === "ios" ? NativeScrollView : undefined}
                 itemLayoutAnimation={THREAD_SIDEBAR_ROW_LAYOUT}
                 data={listItems}
+                ListHeaderComponent={workstreams.controls}
                 drawDistance={500}
                 estimatedItemSize={64}
                 extraData={listExtraData}
@@ -792,6 +836,7 @@ function ThreadNavigationSidebarPane(
       // Android fills its pane, which animates its width while a hinge resizes the split.
       style={Platform.OS === "android" ? undefined : { width: props.width }}
     >
+      {workstreams.sheet}
       <View
         className="flex-1"
         style={
@@ -817,6 +862,7 @@ function ThreadNavigationSidebarPane(
               <AnimatedLegendList
                 itemLayoutAnimation={THREAD_SIDEBAR_ROW_LAYOUT}
                 data={listItems}
+                ListHeaderComponent={workstreams.controls}
                 drawDistance={500}
                 estimatedItemSize={64}
                 extraData={listExtraData}

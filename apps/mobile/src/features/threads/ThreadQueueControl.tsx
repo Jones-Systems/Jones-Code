@@ -1,10 +1,22 @@
+import { useServerConfigs } from "../../state/entities";
+import { importedHistoryContinuationEligible } from "@t3tools/client-runtime/jones/imported-history/continuation";
+import {
+  MobileQueuedSteerBatchAction,
+  useMobileQueuedSteerBatch,
+} from "../../jones/queue/QueuedSteerBatchAction";
+import {
+  ContinuationChoiceNotice,
+  useMobileImportedHistoryChoice,
+} from "../../jones/importedHistory/ContinuationChoiceNotice";
+import { importedHistoryCanonicalJson } from "@t3tools/shared/jones/importedHistoryCanonical";
+import * as Option from "effect/Option";
 import { type StaticScreenProps, useNavigation } from "@react-navigation/native";
 import { useAtomValue } from "@effect/atom-react";
 import type { ChatAttachment, EnvironmentId, RunId, ThreadId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 import { Image } from "expo-image";
 import * as Haptics from "expo-haptics";
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { Animated, Platform, Pressable, ScrollView, View } from "react-native";
 import { Gesture, GestureDetector, GestureHandlerRootView } from "react-native-gesture-handler";
 import ReanimatedSwipeable, {
@@ -26,7 +38,11 @@ import { NativeStackScreenOptions, nativeHeaderScrollEdgeEffects } from "../../n
 import { useAssetUrl } from "../../state/assets";
 import { assetImageSource } from "../../lib/assetImageSource";
 import { beginQueuedRunEdit, useQueuedRunEdit } from "../../state/queued-run-edit";
-import { environmentThreadDetails, threadEnvironment } from "../../state/threads";
+import {
+  environmentThreadDetails,
+  threadEnvironment,
+  useEnvironmentThread,
+} from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import {
@@ -62,10 +78,22 @@ export function useThreadQueuedCount(target: QueueTarget | null) {
 export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
   const { layout } = useAdaptiveWorkspaceLayout();
   const target = route.params;
+  const { choice: importedChoice, state: importedState } = useMobileImportedHistoryChoice(
+    target.environmentId,
+    target.threadId,
+  );
+  const projection = Option.getOrNull(
+    useEnvironmentThread(target.environmentId, target.threadId).data,
+  );
+  const importedThread = importedHistoryContinuationEligible(projection);
+
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const theme = useUniwindTheme();
   const workflow = useThreadQueueWorkflow(target);
+  const serverConfig = useServerConfigs().get(target.environmentId);
+  const canSendNow =
+    workflow?.canSendNow === true && serverConfig?.environment.capabilities.queuedRunStart === true;
   const threadKey = scopedThreadKey(target.environmentId, target.threadId);
   const editing = useQueuedRunEdit(threadKey);
   const reorder = useAtomCommand(threadEnvironment.reorderQueuedRun, "reorder queued message");
@@ -86,7 +114,54 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
     rows: ReadonlyArray<QueueRowLayout>;
   } | null>(null);
   const [translation] = useState(() => new Animated.Value(0));
+  const batch = useMobileQueuedSteerBatch({
+    ...target,
+    projection,
+    editing: editing !== null,
+    busy: busyRunId !== null || draggedRunId !== null || resuming || importedState.busy,
+    mutationLock: {
+      acquire: () => {
+        if (busyRef.current) return false;
+        busyRef.current = true;
+        return true;
+      },
+      release: () => {
+        busyRef.current = false;
+      },
+    },
+  });
+  const queueBusy = busyRunId !== null || batch.pending;
   const queuedRuns = workflow?.queuedRuns ?? [];
+  const importedQueueRef = useRef({ target, queuedRuns, importedThread });
+  useLayoutEffect(() => {
+    importedQueueRef.current = { target, queuedRuns, importedThread };
+  }, [target, queuedRuns, importedThread]);
+  const reviewImportedQueued = async (runId: RunId) => {
+    if (!importedThread || busyRef.current) return;
+    const entry = queuedRuns.find((candidate) => candidate.run.id === runId);
+    if (entry === undefined || entry !== queuedRuns[0]) return;
+    const snapshot = importedHistoryCanonicalJson(entry);
+    const queueIdentity = importedHistoryCanonicalJson(queuedRuns);
+    const unchanged = () => {
+      const current = importedQueueRef.current;
+      const row = current.queuedRuns.find(
+        (candidate) => candidate.run.id === runId && candidate.messageId === entry.messageId,
+      );
+      return (
+        current.importedThread &&
+        current.target.environmentId === target.environmentId &&
+        current.target.threadId === target.threadId &&
+        row !== undefined &&
+        importedHistoryCanonicalJson(row) === snapshot &&
+        importedHistoryCanonicalJson(current.queuedRuns) === queueIdentity
+      );
+    };
+    await importedChoice.review(
+      { type: "queued_run", runId, messageId: entry.messageId },
+      snapshot,
+      unchanged,
+    );
+  };
   const order = queuedRuns.map(({ run }) => run.id).join(",");
 
   useEffect(() => {
@@ -144,12 +219,19 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
       return;
     }
     if (action !== "steer" && action !== "remove") return;
+    if (action === "steer" && workflow?.canSendNow) {
+      if (!canSendNow) return;
+      if (importedThread) {
+        await reviewImportedQueued(runId);
+        return;
+      }
+    }
     busyRef.current = true;
     setBusyRunId(runId);
     void Haptics.selectionAsync();
     if (action === "remove") {
       await cancel(buildCancelQueuedRunCommand({ ...target, runId }));
-    } else if (workflow?.canSendNow) {
+    } else if (canSendNow) {
       await resume({ ...target, input: { threadId: target.threadId, runId } });
     } else if (workflow?.activeRun && workflow.canPromoteToSteer) {
       await promote({
@@ -188,12 +270,14 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
       contentContainerClassName="px-5 pb-6"
       contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 16) + 8 }}
     >
+      <ContinuationChoiceNotice environmentId={target.environmentId} threadId={target.threadId} />
+      <MobileQueuedSteerBatchAction batch={batch} />
       {workflow?.isHeld && queuedRuns.length > 0 ? (
         <View className="gap-2 py-3">
           <Text className="text-sm text-foreground-muted">Queue paused</Text>
           <Button
             label="Resume queue"
-            disabled={resuming || busyRunId !== null}
+            disabled={resuming || queueBusy}
             onPress={async () => {
               if (busyRef.current) return;
               busyRef.current = true;
@@ -220,9 +304,9 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
             ? threadDragGapOffset(layout.y, sourceLayout.y, sourceLayout.height, insertionOffset)
             : 0;
         const controls = resolveThreadQueueRowControls({
-          busy: busyRunId !== null || draggedRunId !== null,
+          busy: queueBusy || draggedRunId !== null,
           canPromoteToSteer: workflow?.canPromoteToSteer ?? false,
-          canSendNow: workflow?.canSendNow ?? false,
+          canSendNow,
           canReorder: workflow?.canReorder ?? false,
           index,
           isEditing: editing?.runId === run.id,
@@ -251,7 +335,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
               {canReorder ? (
                 // Keep the vertical handle outside the sideways swipeable so their pans do not race.
                 <QueueDragHandle
-                  disabled={busyRunId !== null}
+                  disabled={queueBusy}
                   title={title}
                   canMoveUp={controls.canMoveUp}
                   canMoveDown={controls.canMoveDown}
@@ -320,21 +404,28 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
                 />
               ) : null}
               <QueueRowSwipeable
-                enabled={draggedRunId === null && busyRunId === null && controls.canDismiss}
+                enabled={draggedRunId === null && !queueBusy && controls.canDismiss}
                 background={theme["--color-sheet"]}
                 onRemove={() => void act(run.id, "remove")}
               >
+                {importedThread && index === 0 ? (
+                  <Button
+                    label="Review imported history"
+                    disabled={importedState.busy || queueBusy}
+                    onPress={() => void reviewImportedQueued(run.id)}
+                  />
+                ) : null}
                 <View className="flex-row items-center">
                   <Menu
                     accessibilityLabel={`Actions for queued message ${index + 1}`}
                     shouldOpenOnLongPress
                     style={{ flex: 1 }}
                     actions={[
-                      ...(workflow?.canPromoteToSteer || workflow?.canSendNow
+                      ...(workflow?.canPromoteToSteer || canSendNow
                         ? [
                             {
                               id: "steer",
-                              title: workflow?.canSendNow ? "Send now" : "Steer now",
+                              title: canSendNow ? "Send now" : "Steer now",
                               attributes: { disabled: !controls.canSend },
                               image: Platform.OS === "ios" ? "arrow.turn.left.up" : "arrow_upward",
                             },
@@ -400,12 +491,12 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
                       ) : null}
                     </Pressable>
                   </Menu>
-                  {workflow?.canPromoteToSteer || workflow?.canSendNow ? (
+                  {workflow?.canPromoteToSteer || canSendNow ? (
                     // Outside the edit row and full row height, so a near miss never opens the editor.
                     <Pressable
                       accessibilityRole="button"
                       accessibilityLabel={
-                        workflow?.canSendNow
+                        canSendNow
                           ? `Send message ${index + 1} now`
                           : `Steer with message ${index + 1} now`
                       }
@@ -415,12 +506,12 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
                     >
                       <View className="min-h-9 flex-row items-center gap-1.5 rounded-full bg-primary px-4">
                         <SymbolView
-                          name={workflow?.canSendNow ? "arrow.up" : "arrow.turn.left.up"}
+                          name={canSendNow ? "arrow.up" : "arrow.turn.left.up"}
                           size={13}
                           tintColorClassName="accent-primary-foreground"
                         />
                         <Text className="font-t3-medium text-sm text-primary-foreground">
-                          {workflow?.canSendNow ? "Send now" : "Steer"}
+                          {canSendNow ? "Send now" : "Steer"}
                         </Text>
                       </View>
                     </Pressable>

@@ -10,11 +10,11 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import * as Dialog from "../../components/ui/Dialog";
 import { useAtomMount, useAtomValue } from "@effect/atom-react";
 import { parseThreadKey, threadKey } from "@t3tools/client-runtime/state/entities";
-import { createThreadVisitTracker } from "@t3tools/client-runtime/state/thread-visits";
+import { createMobileThreadVisitTracker } from "../../jones/threadVisits/tracker";
 import { useChildThreadInputs, useThreadReportedModelSelection } from "../../state/entities";
 import { UsageLimitRecoveryCard } from "./UsageLimitRecoveryCard";
 import { ChatGptUsageLimitNotice } from "./ChatGptUsageLimitNotice";
-import { useFocusEffect, useNavigation } from "@react-navigation/native";
+import { useFocusEffect, useIsFocused, useNavigation } from "@react-navigation/native";
 import {
   effectiveSnoozed,
   threadWokeAt,
@@ -334,7 +334,7 @@ const wakeAwareVisitShell = Atom.family((key: string) => {
   }).pipe(Atom.withLabel(`mobile-thread-visit-shell:${key}`));
 });
 
-const threadVisitTracker = createThreadVisitTracker({
+const threadVisitTracker = createMobileThreadVisitTracker({
   threadShellAtom: (ref) => wakeAwareVisitShell(threadKey(ref)),
   visit: threadEnvironment.visit,
 });
@@ -645,7 +645,7 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
         accessibilityLabel: `Open ${childInput.hasPendingApprovals ? "approval" : "question"} from ${childInput.title}`,
         onPress: () => {
           Keyboard.dismiss();
-          openLinkedThread({ environmentId: props.environmentId, threadId: childInput.id });
+          openLinkedThread({ environmentId: childInput.environmentId, threadId: childInput.id });
         },
       };
     }
@@ -777,8 +777,7 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
     readonly collapsed: boolean;
   } | null>(null);
   const activeUserInputRequestId = props.activePendingUserInput?.requestId ?? null;
-  const composerSlotHidden =
-    activeUserInputRequestId !== null || props.creationState?.kind === "failed";
+  const composerSlotHidden = props.creationState?.kind === "failed";
   const [usageLimitsPanel, setUsageLimitsPanel] = useState<{
     readonly key: string;
     readonly threadKey: string;
@@ -864,7 +863,7 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
       windowHeight: screenAreaHeight,
       keyboardHeight: keyboardStickyEnabled ? -keyboardTranslation.value : 0,
       navigationHeaderHeight,
-      composerOverlapHeight: composerBottomInset,
+      composerOverlapHeight,
     }),
   );
   // The usage panel stacks with the composer and any approval card, so it gets
@@ -1024,10 +1023,18 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
     }
   };
   const showContent = props.showContent ?? true;
+  const focused = useIsFocused();
+  const [appActive, setAppActive] = useState(AppState.currentState === "active");
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) =>
+      setAppActive(state === "active"),
+    );
+    return () => subscription.remove();
+  }, []);
   // Showing the thread counts as viewing it, before its live shell arrives too.
   useAtomMount(
     threadVisitTracker(
-      showContent && !props.draftMode
+      showContent && focused && appActive && !props.draftMode
         ? { environmentId: props.environmentId, threadId: props.selectedThread.id }
         : null,
     ),
@@ -1489,11 +1496,6 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
                   {props.activePendingApproval || props.activePendingUserInput ? (
                     <Animated.View
                       className="shrink-0 gap-3 px-4 pb-3"
-                      style={
-                        activeUserInputRequestId !== null
-                          ? { paddingBottom: composerBottomInset }
-                          : undefined
-                      }
                       entering={FadeInDown.duration(220)}
                       exiting={FadeOut.duration(140)}
                     >
@@ -1529,6 +1531,10 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
                   ) : null}
                 </View>
 
+                {/*
+                 * Hide failed thread creation without unmounting the editor, so its draft and
+                 * editor state survive. Pending questions keep this ordinary composer visible.
+                 */}
                 <View style={composerSlotHidden ? { display: "none" } : undefined}>
                   {isProviderSubagent ? (
                     <View
