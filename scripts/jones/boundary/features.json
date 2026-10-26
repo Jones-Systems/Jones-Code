@@ -2122,9 +2122,10 @@
         "apps/server/src/ws.test.ts",
         "packages/client-runtime/src/state/server.test.ts",
         "packages/client-runtime/src/rpc/session.test.ts",
-        "packages/client-runtime/src/providerSkills.test.ts"
+        "packages/client-runtime/src/providerSkills.test.ts",
+        "packages/client-runtime/src/jones/providerWorkspaceRefresh.test.ts"
       ],
-      "scope": "Targeted upstream backport abd9d9f9709b8873f542f53dd12d26b33690d5e1 (#24899): optional provider workspace snapshot negotiation and folder-scoped replies, shared scan completion, deleted-cwd settlement, bounded client refresh retries and lazy timeline images. Preserve legacy payloads, per-environment capability gating and Jones connection/discovery owners; no full upstream import or migration."
+      "scope": "Targeted upstream backport abd9d9f9709b8873f542f53dd12d26b33690d5e1 (#24899): optional provider workspace snapshot negotiation and folder-scoped replies, shared scan completion, deleted-cwd settlement, bounded client refresh retries and lazy timeline images. Preserve legacy payloads, per-environment capability gating and Jones connection/discovery owners; no full upstream import or migration. Jones retry repair retains independent environment/instance/cwd failure windows across selection and TTL renewal in a shared client-runtime helper, with a narrow package export and two platform hooks; at most 64 live policy records defer overflow rather than evicting active budgets."
     }
   ]
 }
