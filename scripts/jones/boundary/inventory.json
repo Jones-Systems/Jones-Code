@@ -2056,7 +2056,9 @@
     "apps/server/src/jones/terminal/ShellIdleExpiry.test.ts": "jones-owned",
     "apps/web/src/components/chat/useChatTerminalActions.ts": "hook",
     "apps/server/src/jones/terminal/ShellIdlePrompt.ts": "jones-owned",
-    "apps/server/src/jones/terminal/ShellIdlePrompt.test.ts": "jones-owned"
+    "apps/server/src/jones/terminal/ShellIdlePrompt.test.ts": "jones-owned",
+    "apps/web/src/components/files/office/document.worker.ts": "accepted-shared",
+    "apps/web/src/components/files/office/word-protocol.ts": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

@@ -65,7 +65,11 @@ export type WordLayoutStep =
 export type WordMethods = {
   /** Opens the file's bytes and lays out its first pages; the reply lists them and whether more follow. */
   readonly open: Method<
-    { readonly bytes: ArrayBuffer },
+    {
+      readonly bytes: ArrayBuffer;
+      /** Opt-in open-phase metadata for the integration fixture; document content is never included. */
+      readonly traceOpen?: boolean;
+    },
     { readonly pages: readonly WordPageSize[]; readonly loading: boolean }
   >;
   /** Lays out a short step more of the document. */

@@ -1901,6 +1901,8 @@ it.each([60, 100])("renders all %i pages of a table-heavy Word report", async (p
             worker: name,
             event: "reply",
             type: data?.type,
+            phase: data?.phase,
+            elapsedMs: data?.elapsedMs,
             id: data?.id,
             ok: data?.ok,
             pages: data?.value?.pages?.length,
@@ -1915,7 +1917,14 @@ it.each([60, 100])("renders all %i pages of a table-heavy Word report", async (p
         message: unknown,
         options: Transferable[] | StructuredSerializeOptions = [],
       ) {
-        const data = message as { method?: string; type?: string; id?: number };
+        const data = message as {
+          method?: string;
+          type?: string;
+          id?: number;
+          input?: { bytes: ArrayBuffer };
+        };
+        if (data.method === "open" && data.input)
+          message = { ...data, input: { ...data.input, traceOpen: true } };
         record({ event: "request", method: data.method, type: data.type, id: data.id });
         if (Array.isArray(options)) super.postMessage(message, options);
         else super.postMessage(message, options);

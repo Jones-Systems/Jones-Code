@@ -73,9 +73,19 @@ const opened: Lazy<Opened> = { value: undefined };
 
 serveWorker<WordMethods>({
   open: async (input) => {
+    const trace =
+      input.traceOpen === true
+        ? (phase: string) =>
+            postMessage({
+              type: "jones-word-open-phase",
+              phase,
+              elapsedMs: Math.round(performance.now()),
+            })
+        : undefined;
+    trace?.("open-received");
     if (opened.value) throw new Error("The worker already holds a document");
 
-    const loaded = await open(new Uint8Array(input.bytes));
+    const loaded = await open(new Uint8Array(input.bytes), trace);
 
     opened.value = loaded;
 
@@ -103,9 +113,13 @@ function required() {
 }
 
 /** Opens the document and lays out its first pages; the rest lay out a `step` at a time. */
-async function open(bytes: Uint8Array) {
+async function open(bytes: Uint8Array, trace?: (phase: string) => void) {
+  trace?.("session-start");
   const session = await createYrsSession();
+  trace?.("session-ready");
+  trace?.("parse-start");
   const document = session.openDocx(bytes, true, { mediaTokens: true }).document;
+  trace?.("parse-ready");
   const settings = document.package.settings;
 
   const measure = createRustMeasureSource({
@@ -130,6 +144,7 @@ async function open(bytes: Uint8Array) {
     mediaTokens: true,
   });
 
+  trace?.("request-ready");
   const requirements = decodeFontRequirements(
     session.layoutFontRequirementsJson(JSON.stringify(request)),
   ).map(({ scripts, ...requirement }) => ({
@@ -137,7 +152,9 @@ async function open(bytes: Uint8Array) {
     ...(scripts ? { scripts: [...scripts] } : {}),
   }));
 
+  trace?.("fonts-start");
   await measure.prepareFontRequirements(requirements);
+  trace?.("fonts-ready");
 
   const measurement = measure.measurementConfigForRequirements(requirements);
 
@@ -178,8 +195,12 @@ async function open(bytes: Uint8Array) {
   };
 
   // Only as much of the body as fills the first pages; a long document goes on past it.
+  trace?.("prefix-start");
   const prefix = session.layoutDocumentWithRegionsPrefixRetainedJson(input, firstPages);
+  trace?.("prefix-ready");
+  trace?.("display-start");
   const retained = { frame: display(null, prefix) };
+  trace?.("display-ready");
 
   if (retained.frame.displayList.pages.length === 0)
     throw new Error("The document produced no pages");
