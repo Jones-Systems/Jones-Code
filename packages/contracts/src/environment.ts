@@ -169,6 +169,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
       showing a set nothing will ever update. */
   environmentThemes: Schema.optionalKey(Schema.Boolean),
   usageLimitSources: Schema.optionalKey(Schema.Boolean),
+  /** Honors `workspaceSnapshotsOnDemand`; older servers send every snapshot and drop them in the stream. */
+  providerWorkspaceSnapshotsOnDemand: Schema.optionalKey(Schema.Boolean),
   usagePriceOverrides: Schema.optionalKey(Schema.Boolean),
   /** An enrolled adapter can explicitly read one configured, canonically validated saved report. */
   savedTokenAccounting: Schema.optionalKey(Schema.Boolean),
