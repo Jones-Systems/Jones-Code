@@ -31,6 +31,7 @@ import {
   nativeCreationCanonicalJson as canonical,
   nativeCreationSha256 as digest,
 } from "../nativeCreation/NativeCreationPreparation.ts";
+import { selectionAdmissionReason } from "./selectionAdmission.ts";
 
 export class ThreadSelfConfigurationError extends Schema.TaggedError<ThreadSelfConfigurationError>()(
   "ThreadSelfConfigurationError",
@@ -233,45 +234,15 @@ const make = Effect.gen(function* () {
           if (Option.isNone(registry))
             return yield* new ThreadSelfConfigurationError({ reason: "provider_unavailable" });
           const providers = yield* registry.value.getProviders;
-          const provider = providers.find(
-            (provider) => provider.instanceId === input.modelSelection.instanceId,
-          );
           const config = yield* settings.getSettings;
-          const projectEnabled =
-            config.projectSettingsOverrides[initial.projection.thread.projectId]
-              ?.providerInstances?.[input.modelSelection.instanceId]?.enabled;
-          if (
-            provider === undefined ||
-            !provider.enabled ||
-            !provider.installed ||
-            projectEnabled === false
-          )
-            return yield* new ThreadSelfConfigurationError({ reason: "provider_unavailable" });
-          const model = provider.models.find(
-            (model) =>
-              model.slug === input.modelSelection.model &&
-              (model.isCustom ||
-                !config.providerModelPreferences?.[provider.instanceId]?.hiddenModels.includes(
-                  model.slug,
-                )),
-          );
-          if (model === undefined)
-            return yield* new ThreadSelfConfigurationError({ reason: "invalid_selection" });
-          const seen = new Set<string>();
-          for (const option of input.modelSelection.options ?? []) {
-            const descriptor = model.capabilities?.optionDescriptors?.find(
-              (descriptor) => descriptor.id === option.id,
-            );
-            if (
-              seen.has(option.id) ||
-              descriptor === undefined ||
-              (descriptor.type === "boolean"
-                ? typeof option.value !== "boolean"
-                : !descriptor.options.some((choice) => choice.id === option.value))
-            )
-              return yield* new ThreadSelfConfigurationError({ reason: "invalid_selection" });
-            seen.add(option.id);
-          }
+          const admissionReason = selectionAdmissionReason({
+            providers,
+            selection: input.modelSelection,
+            settings: config,
+            projectId: initial.projection.thread.projectId,
+          });
+          if (admissionReason !== null)
+            return yield* new ThreadSelfConfigurationError({ reason: admissionReason });
           yield* transitions
             .plan({ projection: initial.projection, targetModelSelection: input.modelSelection })
             .pipe(

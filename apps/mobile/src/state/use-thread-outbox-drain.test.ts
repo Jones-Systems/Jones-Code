@@ -1,3 +1,4 @@
+import { buildQueuedFollowUpStartTurnInput } from "../jones/threadConfiguration/queuedFollowUp";
 import { acknowledgedThreadMessagesAtom } from "./acknowledged-thread-messages";
 import {
   CommandId,
@@ -145,6 +146,7 @@ import { pendingThreadCreationOutcomesAtom } from "./pending-thread-creation";
 import {
   decodeQueuedThreadMessage,
   encodeQueuedThreadMessage,
+  resolveQueuedThreadSettings,
   type QueuedThreadMessage,
 } from "./thread-outbox-model";
 import { clearThreadComposerError, threadComposerErrorsAtom } from "./thread-composer-error";
@@ -226,6 +228,124 @@ afterEach(() => {
   harness.removePersistedFile.mockClear();
   harness.removeOutboxMessage.mockClear();
   harness.prepareTurnAttachments.mockReset();
+});
+
+describe("queued follow-up model selection", () => {
+  it.each([false, true, undefined])(
+    "forwards persisted selection intent (%s) with stable replay identity and message content",
+    (modelSelectionExplicit) => {
+      const captured = { instanceId: ProviderInstanceId.make("before"), model: "old-model" };
+      const current = {
+        instanceId: ProviderInstanceId.make("after"),
+        model: "new-model",
+        options: [{ id: "reasoningEffort", value: "high" }],
+      };
+      const message = decodeQueuedThreadMessage(
+        encodeQueuedThreadMessage({
+          ...queuedMessage({
+            messageId: "follow-up",
+            text: "send this",
+            fileUri: "file:///notes.pdf",
+          }),
+          modelSelection: captured,
+          ...(modelSelectionExplicit === undefined ? {} : { modelSelectionExplicit }),
+          runtimeMode: "approval-required",
+          interactionMode: "plan",
+          dispatchMode: "queue",
+          context: {
+            version: 1,
+            records: [
+              {
+                version: 1,
+                kind: "terminal",
+                contextId: ComposerContextId.make("build-output"),
+                label: "Build",
+                terminalId: "main",
+                terminalLabel: "Terminal",
+                lineStart: 1,
+                lineEnd: 1,
+                text: "failed build",
+              },
+            ],
+          },
+        }),
+      );
+      const attachments: PreparedTurnAttachments["attachments"] = [
+        {
+          type: "file",
+          id: "uploaded-file",
+          name: "notes.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 42,
+        },
+      ];
+      const settings = resolveQueuedThreadSettings(message, {
+        modelSelection: current,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+      });
+      const input = buildQueuedFollowUpStartTurnInput({
+        message,
+        settings,
+        attachments,
+        inlineMessageContext: true,
+      });
+      expect(input).toMatchObject({
+        commandId: message.commandId,
+        threadId: message.threadId,
+        createdAt: message.createdAt,
+        dispatchMode: "queue",
+        modelSelection: modelSelectionExplicit === false ? current : captured,
+        runtimeMode: "approval-required",
+        interactionMode: "plan",
+        message: {
+          messageId: message.messageId,
+          text: message.text,
+          attachments,
+          context: message.context,
+        },
+      });
+      if (modelSelectionExplicit === undefined) {
+        expect(input).not.toHaveProperty("modelSelectionExplicit");
+      } else {
+        expect(input.modelSelectionExplicit).toBe(modelSelectionExplicit);
+      }
+    },
+  );
+
+  it.each([false, true, undefined])(
+    "restores rejected selection intent (%s) without pinning inherited snapshots",
+    async (modelSelectionExplicit) => {
+      const message: QueuedThreadMessage = {
+        ...queuedMessage({ messageId: "rejected-selection", text: "retry me" }),
+        modelSelection: { instanceId: ProviderInstanceId.make("before"), model: "old-model" },
+        ...(modelSelectionExplicit === undefined ? {} : { modelSelectionExplicit }),
+      };
+      await harness.manager.enqueue(message);
+      await expect(restoreRejectedQueuedMessage(message, "rejected")).resolves.toBe("restored");
+      const draft = composerDrafts.getComposerDraftSnapshot(
+        `${message.environmentId}:${message.threadId}`,
+      );
+      expect(draft.text).toBe(message.text);
+      expect(draft.modelSelection).toEqual(
+        modelSelectionExplicit === false ? undefined : message.modelSelection,
+      );
+    },
+  );
+
+  it("preserves a later draft pick while restoring an inherited rejected message", async () => {
+    const message: QueuedThreadMessage = {
+      ...queuedMessage({ messageId: "later-pick", text: "retry me" }),
+      modelSelection: { instanceId: ProviderInstanceId.make("before"), model: "old-model" },
+      modelSelectionExplicit: false,
+    };
+    const later = { instanceId: ProviderInstanceId.make("later"), model: "later-model" };
+    const key = `${message.environmentId}:${message.threadId}`;
+    composerDrafts.updateComposerDraftSettings(key, { modelSelection: later });
+    await harness.manager.enqueue(message);
+    await expect(restoreRejectedQueuedMessage(message, "rejected")).resolves.toBe("restored");
+    expect(composerDrafts.getComposerDraftSnapshot(key).modelSelection).toEqual(later);
+  });
 });
 
 describe("queued worktree creation command", () => {
@@ -560,6 +680,23 @@ describe("thread outbox drain delivery cleanup", () => {
     await harness.manager.enqueue(message);
     const deliveryRevision = harness.manager.revisionOf(message.messageId);
     const edited = { ...message, text: "Keep this edit" };
+    await harness.manager.update(edited);
+    await composerDrafts.archiveCloudComposerDrafts("account-a", new Set([message.environmentId]));
+    await harness.manager.clearEnvironment(message.environmentId);
+    await expect(completeQueuedMessageDelivery(message, deliveryRevision)).resolves.toBe("edited");
+    await composerDrafts.restoreCloudComposerDrafts("account-a");
+    expect(remainingMessages()).toEqual([edited]);
+  });
+
+  it("preserves an archived selection-intent edit when an older payload finishes delivery", async () => {
+    const message: QueuedThreadMessage = {
+      ...queuedMessage({ messageId: "intent-edited-during-sign-out", text: "Original" }),
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.5" },
+      modelSelectionExplicit: false,
+    };
+    await harness.manager.enqueue(message);
+    const deliveryRevision = harness.manager.revisionOf(message.messageId);
+    const edited = { ...message, modelSelectionExplicit: true };
     await harness.manager.update(edited);
     await composerDrafts.archiveCloudComposerDrafts("account-a", new Set([message.environmentId]));
     await harness.manager.clearEnvironment(message.environmentId);

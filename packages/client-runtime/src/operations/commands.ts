@@ -1258,6 +1258,9 @@ export const prepareImportedHistoryMessage = Effect.fn(
     attachments,
     ...(context === undefined ? {} : { context }),
     ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
+    ...(input.modelSelectionExplicit === undefined
+      ? {}
+      : { modelSelectionExplicit: input.modelSelectionExplicit }),
     runtimeMode: input.runtimeMode,
     interactionMode: input.interactionMode,
     ...(input.sourceProposedPlan === undefined ? {} : { sourcePlanRef: input.sourceProposedPlan }),

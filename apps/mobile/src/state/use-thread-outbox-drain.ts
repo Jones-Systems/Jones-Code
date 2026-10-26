@@ -1,3 +1,5 @@
+import { buildQueuedFollowUpStartTurnInput } from "../jones/threadConfiguration/queuedFollowUp";
+import { queuedModelSelectionForDraft } from "../jones/threadConfiguration/modelSelection";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import * as Dialog from "../components/ui/Dialog";
 import { useAtomValue } from "@effect/atom-react";
@@ -8,7 +10,6 @@ import {
 } from "@t3tools/client-runtime/state/shell";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import { threadFamilyRead, type ThreadFamilyRead } from "@t3tools/client-runtime/state/threads";
-import { deriveThreadTitleSeed } from "@t3tools/client-runtime/operations";
 import {
   AuthOrchestrationOperateScope,
   CommandId,
@@ -481,8 +482,12 @@ export async function restoreRejectedQueuedMessage(
       await undoComposerDraftMerge(draftKey, originalDraft, mergedDraft);
       return "deferred";
     }
+    const restoredModelSelection = queuedModelSelectionForDraft(queuedMessage);
     updateComposerDraftSettings(draftKey, {
-      ...(queuedMessage.modelSelection ? { modelSelection: queuedMessage.modelSelection } : {}),
+      ...(restoredModelSelection !== undefined &&
+      getComposerDraftSnapshot(draftKey).modelSelection === originalDraft.modelSelection
+        ? { modelSelection: restoredModelSelection }
+        : {}),
       ...(queuedMessage.runtimeMode ? { runtimeMode: queuedMessage.runtimeMode } : {}),
       ...(queuedMessage.interactionMode ? { interactionMode: queuedMessage.interactionMode } : {}),
       ...(queuedMessage.creation
@@ -860,50 +865,40 @@ export function useThreadOutboxDrain(): void {
         serverEnvironment.configValueAtom(queuedMessage.environmentId),
       );
       if (!currentConfig) return false;
-      if (isModelSelectionUnavailable(currentConfig, settings.modelSelection, thread.projectId)) {
+      const currentThread = findThread(
+        appAtomRegistry.get(environmentThreadShells.threadShellsAtom),
+        queuedMessage,
+      );
+      if (!currentThread) return false;
+      const sendSettings = resolveQueuedThreadSettings(
+        persistedMessage,
+        currentThread,
+        currentConfig.providers,
+      );
+      if (
+        isModelSelectionUnavailable(
+          currentConfig,
+          sendSettings.modelSelection,
+          currentThread.projectId,
+        )
+      ) {
         const { title, detail } = describeUnavailableModelSelection(
           currentConfig,
-          settings.modelSelection,
-          thread.projectId,
+          sendSettings.modelSelection,
+          currentThread.projectId,
         );
         return restoreQueuedMessage(persistedMessage, `${title}. ${detail}`);
       }
-      const sendSettings = resolveQueuedThreadSettings(
-        queuedMessage,
-        settings,
-        currentConfig.providers,
-      );
       if (!hasAccess()) return true;
       const deliveryResult = await startTurn({
         environmentId: queuedMessage.environmentId,
-        input: {
-          commandId: queuedMessage.commandId,
-          creationSource: "mobile",
-          threadId: queuedMessage.threadId,
-          message: {
-            messageId: queuedMessage.messageId,
-            role: "user",
-            ...serializeComposerMessageForServer(
-              queuedMessage.text,
-              uploadedComposerContext(
-                queuedMessage.context,
-                queuedMessage.attachments,
-                prepared.attachments,
-              ),
-              currentConfig.environment.capabilities.inlineMessageContext === true,
-            ),
-            attachments: prepared.attachments,
-          },
-          modelSelection: sendSettings.modelSelection,
-          titleSeed: deriveThreadTitleSeed({
-            text: queuedMessage.text,
-            attachments: queuedMessage.attachments,
-          }),
-          runtimeMode: sendSettings.runtimeMode,
-          interactionMode: sendSettings.interactionMode,
-          createdAt: queuedMessage.createdAt,
-          dispatchMode: queuedMessage.dispatchMode ?? "start",
-        },
+        input: buildQueuedFollowUpStartTurnInput({
+          message: persistedMessage,
+          settings: sendSettings,
+          attachments: prepared.attachments,
+          inlineMessageContext:
+            currentConfig.environment.capabilities.inlineMessageContext === true,
+        }),
       });
       if (AsyncResult.isFailure(deliveryResult) && !hasAccess()) return true;
       const failure = reportFailure(deliveryResult, "start-turn");
