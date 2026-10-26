@@ -2045,7 +2045,8 @@
     "apps/server/src/jones/terminal/ShellIdlePrompt.test.ts": "jones-owned",
     "apps/web/src/components/files/office/document.worker.ts": "accepted-shared",
     "apps/web/src/components/files/office/word-protocol.ts": "accepted-shared",
-    "scripts/jones/boundary/fragments/tsrs-typecheck.json": "jones-owned"
+    "scripts/jones/boundary/fragments/tsrs-typecheck.json": "jones-owned",
+    "docs/internals/typecheck-compiler.md": "policy"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

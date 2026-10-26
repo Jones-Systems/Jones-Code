@@ -303,6 +303,9 @@ and runs in headless Chromium with the React Compiler on, like the app. There is
 TypeScript workspaces typecheck with `tsc`. The `typescript` catalog entry is
 `@tsc-rs/typescript`, the Rust TypeScript drop-in with Effect diagnostics, quick
 fixes, and refactors built in. Marketing keeps `astro check` for Astro files.
+The [compiler selection and candidate guide](../internals/typecheck-compiler.md)
+explains the official Effect-patched TSRS qualification, provenance and repair
+commands. The default remains the incumbent until that qualification passes.
 
 For repeated local checks, use `pnpm typecheck:incremental packages/shared apps/server`
 (or `--all` for workspaces whose checker is exactly `tsc --noEmit`). This opt-in
@@ -331,12 +334,14 @@ pnpm typecheck:tsrs:experimental @t3tools/shared --checkers 2
 This uses the pinned local tsrs package and each selected project's existing
 `tsconfig.json`. Projects run serially with two checkers by default;
 `--checkers N` accepts a positive integer. Select package names or
-repository-relative workspace paths. Only the existing `tsc-rs --noEmit`
+repository-relative workspace paths. Only the existing `tsc --noEmit`
 script shape is supported; marketing's Astro check is outside coverage.
 Other compiler flags and implicit all-project selection are rejected.
 
-**This command omits configured Effect diagnostics.** Run the normal
-authoritative typecheck before accepting changes. The experimental compiler
+**This runner does not verify an Effect-patched binary and cannot qualify
+configured Effect diagnostics.** Stock tsrs omits those checks. Run the normal
+authoritative typecheck before accepting changes; use the verified candidate
+launcher in the guide above when qualifying a patched installation. The experimental compiler
 uses an older TypeScript snapshot and can fail projects that the normal checker
 accepts, including known web TS2883/TS4023 errors; diagnostics and nonzero exits
 are preserved. A passing result does not establish workspace parity.
