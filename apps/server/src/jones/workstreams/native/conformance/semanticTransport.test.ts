@@ -29,6 +29,9 @@ import {
 } from "@t3tools/contracts/jones/workstreamsLegacyReceipts";
 import * as Effect from "effect/Effect";
 import * as Clock from "effect/Clock";
+import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 import * as EffectNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as Durable from "../operations/durableEntries.ts";
@@ -40,6 +43,7 @@ import * as Gateway from "../../../../workstreams/WorkstreamGateway.ts";
 import * as McpHandlers from "../../../mcp/workstreams/handlers.ts";
 import * as McpTools from "../../../mcp/workstreams/tools.ts";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Fixture from "../store/sql.testkit.ts";
@@ -60,6 +64,7 @@ import * as Store from "../store/registryStore.ts";
 import * as Receipts from "../store/receiptStore.ts";
 import * as History from "../store/historyStore.ts";
 import * as Effects from "../store/effectStore.ts";
+import * as NativeSql from "../store/sql.ts";
 import * as Bindings from "../store/bindingStore.ts";
 import * as Attestation from "../providers/localAttestation.ts";
 import * as Settlement from "../providers/localSettlement.ts";
@@ -102,8 +107,86 @@ const headers = {
   contractManifest: Wire.WORKSTREAM_CONTRACT_MANIFEST_SHA256,
 };
 
+const syntheticCallerAuthority: Recorded.CallerAuthority["Service"] = {
+  capture: () =>
+    Effect.map(Clock.currentTimeMillis, (at): Recorded.RecordedCallerV1 => ({
+      version: 1,
+      captured_at: at,
+      origin: caller.origin,
+      auth: {
+        kind: "bearer",
+        session_id: "synthetic-owner-session",
+        subject: "synthetic-owner",
+        method: "bearer-access-token",
+      },
+      source_environment_id: binding.source_instance_id,
+      registry_principal_id: binding.principal_id,
+      singleton_binding_version: 1,
+      grant_version: 1,
+      source: {
+        environment_id: binding.source_instance_id,
+        authority_namespace: binding.authority_namespace,
+        store_generation: binding.store_generation,
+        binding_version: 1,
+        enrollment_id: binding.enrollment_id,
+        enrollment_session_id: binding.session_id,
+      },
+      destination: {
+        registry_instance_id: home.registry_instance_id,
+        owner_id: home.owner_id,
+        home_environment_id: home.home_environment_id,
+        home_generation: 1,
+        principal_id: binding.principal_id,
+        binding_version: 1,
+      },
+      ceiling: {
+        permissions: ["workstreams:read", "workstreams:write"],
+        scopes: [Wire.AuthOrchestrationReadScope, Wire.AuthOrchestrationOperateScope],
+        capabilities: [],
+        limits: null,
+      },
+    })),
+  refresh: (record) =>
+    Effect.succeed({
+      admission: record,
+      registry_active: true,
+      singleton_active: true,
+      source_binding_active: true,
+      grant: {
+        active: true,
+        version: record.grant_version,
+        permissions: record.ceiling.permissions,
+      },
+      enrollment: {
+        enrollment_id: binding.enrollment_id,
+        session_id: binding.session_id,
+        active: true,
+        issued_at: 0,
+        expires_at: 9_000_000_000_000,
+      },
+      session: {
+        session_id: "synthetic-owner-session",
+        subject: "synthetic-owner",
+        method: "bearer-access-token",
+        scopes: [Wire.AuthOrchestrationReadScope, Wire.AuthOrchestrationOperateScope],
+        issued_at: 0,
+        expires_at: 9_000_000_000_000,
+        revoked: false,
+      },
+      credential: null,
+      run: null,
+      trusted_cli_authority_id: null,
+    }),
+  checkTarget: () => Effect.void,
+};
+
 const runtime = (
-  options: { filename?: string; keys?: Map<string, Uint8Array>; github?: boolean } = {},
+  options: {
+    filename?: string;
+    keys?: Map<string, Uint8Array>;
+    github?: boolean;
+    callerAuthority?: Recorded.CallerAuthority["Service"];
+  } = {},
 ) => {
   const fixture = makeProviderFixture();
   const providerPorts: Provider.NativeProviderPorts = {
@@ -139,78 +222,7 @@ const runtime = (
   // authentication and source enrollment are exercised by mounted runtime tests.
   const recorded = Recorded.layer.pipe(
     Layer.provide(
-      Layer.succeed(Recorded.CallerAuthority, {
-        capture: () =>
-          Effect.map(Clock.currentTimeMillis, (at): Recorded.RecordedCallerV1 => ({
-            version: 1,
-            captured_at: at,
-            origin: caller.origin,
-            auth: {
-              kind: "bearer",
-              session_id: "synthetic-owner-session",
-              subject: "synthetic-owner",
-              method: "bearer-access-token",
-            },
-            source_environment_id: binding.source_instance_id,
-            registry_principal_id: binding.principal_id,
-            singleton_binding_version: 1,
-            grant_version: 1,
-            source: {
-              environment_id: binding.source_instance_id,
-              authority_namespace: binding.authority_namespace,
-              store_generation: binding.store_generation,
-              binding_version: 1,
-              enrollment_id: binding.enrollment_id,
-              enrollment_session_id: binding.session_id,
-            },
-            destination: {
-              registry_instance_id: home.registry_instance_id,
-              owner_id: home.owner_id,
-              home_environment_id: home.home_environment_id,
-              home_generation: 1,
-              principal_id: binding.principal_id,
-              binding_version: 1,
-            },
-            ceiling: {
-              permissions: ["workstreams:read", "workstreams:write"],
-              scopes: [Wire.AuthOrchestrationReadScope, Wire.AuthOrchestrationOperateScope],
-              capabilities: [],
-              limits: null,
-            },
-          })),
-        refresh: (record) =>
-          Effect.succeed({
-            admission: record,
-            registry_active: true,
-            singleton_active: true,
-            source_binding_active: true,
-            grant: {
-              active: true,
-              version: record.grant_version,
-              permissions: record.ceiling.permissions,
-            },
-            enrollment: {
-              enrollment_id: binding.enrollment_id,
-              session_id: binding.session_id,
-              active: true,
-              issued_at: 0,
-              expires_at: 9_000_000_000_000,
-            },
-            session: {
-              session_id: "synthetic-owner-session",
-              subject: "synthetic-owner",
-              method: "bearer-access-token",
-              scopes: [Wire.AuthOrchestrationReadScope, Wire.AuthOrchestrationOperateScope],
-              issued_at: 0,
-              expires_at: 9_000_000_000_000,
-              revoked: false,
-            },
-            credential: null,
-            run: null,
-            trusted_cli_authority_id: null,
-          }),
-        checkTarget: () => Effect.void,
-      }),
+      Layer.succeed(Recorded.CallerAuthority, options.callerAuthority ?? syntheticCallerAuthority),
     ),
   );
 
@@ -1772,3 +1784,422 @@ it.effect.each(["verify_reference", "native_t3_settlement", "refresh_linked_pr"]
       expect(yield* h.registry.snapshot(caller)).toEqual(snapshot);
     }).pipe(Effect.provide(runtime({ github: true }).layer), Effect.scoped),
 );
+
+const rawEffectKinds = ["verify_reference", "native_t3_settlement", "refresh_linked_pr"] as const;
+const acceptRawEffect = (
+  h: Effect.Success<typeof harness>,
+  kind: (typeof rawEffectKinds)[number],
+  historical = false,
+) =>
+  Effect.gen(function* () {
+    let action: WorkstreamAction;
+    if (kind === "refresh_linked_pr") {
+      const workstream = yield* h.create("raw caller admission");
+      yield* (yield* Store.RegistryStore).appendPlain(scope, "source_bindings", {
+        provider: "github",
+        source_instance_id: "github-synthetic",
+        binding_version: 1,
+        authority_namespace: "github-authority",
+        store_generation: 1,
+        state: "active",
+      });
+      const ref = (yield* h.committed({
+        operation: "register_reference",
+        identity: {
+          provider: "github",
+          source_instance_id: "github-synthetic",
+          resource_kind: "pull_request",
+          id_kind: "external",
+          native_id: "jones/example#7",
+          account_provenance: { kind: "not_account_scoped" },
+        },
+        pr_locator: {
+          host: "github.com",
+          repository_owner: "jones",
+          repository_name: "example",
+          number: 7,
+        },
+      })).effects.native_reference_id!;
+      yield* h.verify(ref);
+      const membership = (yield* h.committed({
+        operation: "link_secondary",
+        workstream_id: workstream,
+        expected_version: 1,
+        native_reference_id: ref,
+      })).effects.membership_ids[0]!;
+      action = {
+        operation: "refresh_linked_pr",
+        workstream_id: workstream,
+        expected_version: 2,
+        membership_id: membership,
+        expected_observation_version: 0,
+      };
+    } else {
+      const ref = yield* h.register();
+      if (kind === "native_t3_settlement") {
+        yield* h.verify(ref);
+        action = {
+          operation: "request_native_t3_settlement",
+          native_reference_id: ref,
+          expected_attestation_version: 1,
+          native_action: "settle",
+        };
+      } else {
+        action = {
+          operation: "verify_reference",
+          native_reference_id: ref,
+          expected_attestation_version: 0,
+        };
+      }
+    }
+    const command = yield* h.command(action);
+    const body = " \n" + JSON.stringify(command, null, 2) + "\n";
+    const submission = h.registry.submit(caller, body);
+    const accepted = yield* historical
+      ? submission.pipe(Effect.updateContext<never, never>(Context.omit(Recorded.RecordedCallers)))
+      : submission;
+    expect(accepted.receipt.state).toBe("pending");
+    if (!accepted.intent) throw new Error("Expected accepted raw intent");
+    const active = yield* (yield* Effects.EffectStore).active(scope);
+    expect(active).toHaveLength(1);
+    expect(active[0]!.recovery?.request_body).toBe(historical ? undefined : body);
+    return { intent: accepted.intent, body, command, reservation: active[0]! };
+  });
+
+const agentAuthority = () => {
+  const state = { runId: "accepted-run", revoked: false, captures: 0 };
+  const auth = () => ({
+    kind: "agent" as const,
+    calling_thread_id: "calling-agent-thread",
+    provider_instance_id: "synthetic-provider",
+    mcp_credential_id: "retained-credential-id",
+    run_id: state.runId,
+    provider_thread_id: "provider-thread",
+    provider_session_id: "provider-session",
+  });
+  const authority: Recorded.CallerAuthority["Service"] = {
+    capture: () =>
+      Effect.gen(function* () {
+        state.captures++;
+        const record = yield* syntheticCallerAuthority
+          .capture()
+          .pipe(Effect.flatMap(Recorded.decodeRecordedCaller));
+        return {
+          ...record,
+          origin: { kind: "agent" as const },
+          auth: auth(),
+          ceiling: {
+            ...record.ceiling,
+            capabilities: ["orchestration"],
+            limits: {
+              runtimeMode: "approval-required" as const,
+              interactionMode: "default" as const,
+            },
+          },
+        };
+      }),
+    refresh: (record) =>
+      Effect.map(syntheticCallerAuthority.refresh(record), (current) => ({
+        ...current,
+        credential: {
+          credential_id: "retained-credential-id",
+          calling_thread_id: "calling-agent-thread",
+          provider_instance_id: "synthetic-provider",
+          active: !state.revoked,
+        },
+        run: {
+          run_id: state.runId,
+          calling_thread_id: "calling-agent-thread",
+          provider_instance_id: "synthetic-provider",
+          provider_thread_id: "provider-thread",
+          provider_session_id: "provider-session",
+          active: true,
+        },
+      })),
+    checkTarget: (record, ceiling, permission, threadId) =>
+      Effect.sync(() => {
+        expect(record.auth).toMatchObject({ run_id: "accepted-run" });
+        expect(ceiling.limits).toEqual({
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+        });
+        expect(permission).toBe("workstreams:write");
+        expect(["thread-synthetic", null]).toContain(threadId);
+      }),
+  };
+  return { state, authority };
+};
+
+const rawAttempt = (effect: ReturnType<Runner.EffectRunner["Service"]["run"]>) =>
+  effect.pipe(
+    Effect.map((receipt) => receipt?.state ?? null),
+    Effect.catch((error) => Effect.succeed(error.code)),
+  );
+
+const interceptRawProvider = (
+  kind: (typeof rawEffectKinds)[number],
+  around: <A>(
+    effect: Effect.Effect<A, Attestation.ProviderError>,
+  ) => Effect.Effect<A, Attestation.ProviderError>,
+  nativePhase: "lookup" | "settle" = "lookup",
+) =>
+  Effect.gen(function* () {
+    const resolver = yield* Resolver.ReferenceResolver;
+    const settlement = yield* Settlement.SourceSettlement;
+    const github = yield* GitHub.LinkedPrObserver;
+    // Each adapter is checked at the runner's actual provider boundary.
+    if (kind === "verify_reference") {
+      const original = resolver.resolve;
+      return yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          vi.spyOn(resolver, "resolve").mockImplementation((input) => around(original(input))),
+        ),
+        (spy) => Effect.sync(() => spy.mockRestore()),
+      );
+    }
+    if (kind === "refresh_linked_pr") {
+      const original = github.observe;
+      return yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          vi.spyOn(github, "observe").mockImplementation((input) => around(original(input))),
+        ),
+        (spy) => Effect.sync(() => spy.mockRestore()),
+      );
+    }
+    const original = settlement[nativePhase];
+    return yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        vi.spyOn(settlement, nativePhase).mockImplementation((input) => around(original(input))),
+      ),
+      (spy) => Effect.sync(() => spy.mockRestore()),
+    );
+  });
+
+it.effect.each(rawEffectKinds)(
+  "initial %s uses the accepted persisted caller inside provider work",
+  (kind) => {
+    const agent = agentAuthority();
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse(Fixture.now));
+      yield* seed;
+      const h = yield* harness;
+      const accepted = yield* acceptRawEffect(h, kind);
+      const captures = agent.state.captures;
+      const provider = yield* interceptRawProvider(kind, (effect) =>
+        Effect.gen(function* () {
+          expect(yield* Recorded.RecordedAdmission).toEqual(
+            accepted.reservation.recovery!.recorded_caller,
+          );
+          const evidence = yield* Effect.serviceOption(Recorded.RecoveryCaller);
+          expect(Option.isSome(evidence)).toBe(true);
+          if (Option.isNone(evidence)) throw new Error("Missing accepted provider caller");
+          yield* evidence.value.check(
+            "workstreams:write",
+            kind === "refresh_linked_pr" ? null : "thread-synthetic",
+          );
+          return yield* effect;
+        }),
+      );
+      const result = yield* (yield* Runner.EffectRunner).run(accepted.intent);
+      expect(result?.state).toBe("committed");
+      expect(provider).toHaveBeenCalledTimes(1);
+      expect(agent.state.captures).toBe(captures);
+      expect(yield* (yield* Effects.EffectStore).active(scope)).toHaveLength(0);
+      expect(
+        (yield* (yield* Receipts.ReceiptStore).read(scope, accepted.command.command_id))
+          ?.request_body,
+      ).toBe(accepted.body);
+    }).pipe(
+      Effect.provide(runtime({ github: true, callerAuthority: agent.authority }).layer),
+      Effect.scoped,
+    );
+  },
+);
+
+it.effect.each(rawEffectKinds)(
+  "queued %s refuses a replacement run sharing the original credential",
+  (kind) => {
+    const agent = agentAuthority();
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse(Fixture.now));
+      yield* seed;
+      const h = yield* harness;
+      const accepted = yield* acceptRawEffect(h, kind);
+      const effects = yield* Effects.EffectStore;
+      const runner = yield* Runner.EffectRunner;
+      const locked = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const queued = yield* Deferred.make<void>();
+      const provider = yield* interceptRawProvider(kind, (effect) => effect);
+      const resultRead = yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          vi
+            .spyOn(effects, "result")
+            .mockImplementationOnce(() =>
+              Deferred.succeed(locked, undefined).pipe(
+                Effect.andThen(Deferred.await(release)),
+                Effect.andThen(Effect.fail(new NativeSql.StoreError({ reason: "conflict" }))),
+              ),
+            ),
+        ),
+        (spy) => Effect.sync(() => spy.mockRestore()),
+      );
+      const captures = agent.state.captures;
+      const holder = yield* rawAttempt(runner.run(accepted.intent)).pipe(Effect.forkChild);
+      yield* Deferred.await(locked);
+      const contender = yield* Deferred.succeed(queued, undefined).pipe(
+        Effect.andThen(rawAttempt(runner.run(accepted.intent))),
+        Effect.forkChild,
+      );
+      yield* Deferred.await(queued);
+      yield* Effect.yieldNow;
+      agent.state.runId = "replacement-run";
+      yield* Deferred.succeed(release, undefined);
+      expect(yield* Fiber.join(holder)).toBe("unavailable");
+      expect(yield* Fiber.join(contender)).toBe("not_granted");
+      expect(provider).not.toHaveBeenCalled();
+      expect(resultRead).toHaveBeenCalledTimes(1);
+      expect(agent.state.captures).toBe(captures);
+      expect(yield* effects.active(scope)).toEqual([accepted.reservation]);
+      expect(
+        (yield* (yield* Receipts.ReceiptStore).read(scope, accepted.command.command_id))?.receipt
+          .state,
+      ).toBe("pending");
+    }).pipe(
+      Effect.provide(runtime({ github: true, callerAuthority: agent.authority }).layer),
+      Effect.scoped,
+    );
+  },
+);
+
+it.effect.each(rawEffectKinds)(
+  "in-flight %s revocation retains the result and reservation without completion",
+  (kind) => {
+    const agent = agentAuthority();
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse(Fixture.now));
+      yield* seed;
+      const h = yield* harness;
+      const accepted = yield* acceptRawEffect(h, kind);
+      const effects = yield* Effects.EffectStore;
+      const runner = yield* Runner.EffectRunner;
+      const history = yield* History.HistoryStore;
+      const before = yield* history.page(scope, { limit: 100 });
+      const snapshot = yield* h.registry.snapshot(caller);
+      const observed = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const provider = yield* interceptRawProvider(
+        kind,
+        (effect) =>
+          Effect.gen(function* () {
+            const value = yield* effect;
+            yield* Deferred.succeed(observed, undefined);
+            yield* Deferred.await(release);
+            return value;
+          }),
+        "settle",
+      );
+      const completion = yield* Effect.acquireRelease(
+        Effect.sync(() => vi.spyOn(h.registry, "complete")),
+        (spy) => Effect.sync(() => spy.mockRestore()),
+      );
+      const captures = agent.state.captures;
+      const execution = yield* rawAttempt(runner.run(accepted.intent)).pipe(Effect.forkChild);
+      yield* Deferred.await(observed);
+      agent.state.revoked = true;
+      yield* Deferred.succeed(release, undefined);
+      expect(yield* Fiber.join(execution)).toBe("not_granted");
+      expect(completion).not.toHaveBeenCalled();
+      const retained = yield* effects.result(scope, accepted.command.command_id);
+      expect(retained).not.toBeNull();
+      expect(yield* effects.active(scope)).toEqual([accepted.reservation]);
+      expect(yield* history.page(scope, { limit: 100 })).toEqual(before);
+      expect(yield* h.registry.snapshot(caller)).toEqual({
+        ...snapshot,
+        state: {
+          ...snapshot.state,
+          external_results: new Map([
+            ...snapshot.state.external_results,
+            [accepted.command.command_id, retained as RegistryExternalResult],
+          ]),
+        },
+      });
+      expect(
+        (yield* (yield* Receipts.ReceiptStore).read(scope, accepted.command.command_id))
+          ?.request_body,
+      ).toBe(accepted.body);
+      expect(yield* rawAttempt(runner.recoverOne(accepted.command.command_id))).toBe("not_granted");
+      expect(provider).toHaveBeenCalledTimes(1);
+      agent.state.revoked = false;
+      expect((yield* runner.recoverOne(accepted.command.command_id))?.state).toBe("committed");
+      expect(provider).toHaveBeenCalledTimes(1);
+      expect(agent.state.captures).toBe(captures);
+      expect(yield* effects.active(scope)).toHaveLength(0);
+    }).pipe(
+      Effect.provide(runtime({ github: true, callerAuthority: agent.authority }).layer),
+      Effect.scoped,
+    );
+  },
+);
+
+it.effect.each(rawEffectKinds)(
+  "historical %s without recorded admission stays fenced on run and recovery",
+  (kind) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse(Fixture.now));
+      yield* seed;
+      const h = yield* harness;
+      const accepted = yield* acceptRawEffect(h, kind, true);
+      const effects = yield* Effects.EffectStore;
+      const active = yield* effects.active(scope);
+      expect(active[0]!.recovery).toBeUndefined();
+      const provider = yield* interceptRawProvider(kind, (effect) => effect);
+      const resultRead = yield* Effect.acquireRelease(
+        Effect.sync(() => vi.spyOn(effects, "result")),
+        (spy) => Effect.sync(() => spy.mockRestore()),
+      );
+      const runner = yield* Runner.EffectRunner;
+      expect(yield* rawAttempt(runner.run(accepted.intent))).toBe("unknown_effect");
+      expect(yield* rawAttempt(runner.recoverOne(accepted.command.command_id))).toBe(
+        "unknown_effect",
+      );
+      expect(provider).not.toHaveBeenCalled();
+      expect(resultRead).not.toHaveBeenCalled();
+      expect(yield* effects.active(scope)).toEqual(active);
+    }).pipe(Effect.provide(runtime({ github: true }).layer), Effect.scoped),
+);
+
+it.effect("native absence lookup is re-admitted before a new settlement dispatch", () => {
+  const agent = agentAuthority();
+  return Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse(Fixture.now));
+    yield* seed;
+    const accepted = yield* acceptRawEffect(yield* harness, "native_t3_settlement");
+    const source = yield* Settlement.SourceSettlement;
+    const lookupDone = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    yield* interceptRawProvider("native_t3_settlement", (effect) =>
+      Effect.gen(function* () {
+        const value = yield* effect;
+        expect(value).toMatchObject({ state: "unknown", reason: "attempt_not_found" });
+        yield* Deferred.succeed(lookupDone, undefined);
+        yield* Deferred.await(release);
+        return value;
+      }),
+    );
+    const dispatch = yield* Effect.acquireRelease(
+      Effect.sync(() => vi.spyOn(source, "settle")),
+      (spy) => Effect.sync(() => spy.mockRestore()),
+    );
+    const runner = yield* Runner.EffectRunner;
+    const execution = yield* rawAttempt(runner.run(accepted.intent)).pipe(Effect.forkChild);
+    yield* Deferred.await(lookupDone);
+    agent.state.revoked = true;
+    yield* Deferred.succeed(release, undefined);
+    expect(yield* Fiber.join(execution)).toBe("not_granted");
+    expect(dispatch).not.toHaveBeenCalled();
+    const effects = yield* Effects.EffectStore;
+    expect(yield* effects.result(scope, accepted.command.command_id)).toBeNull();
+    expect(yield* effects.active(scope)).toEqual([accepted.reservation]);
+  }).pipe(Effect.provide(runtime({ callerAuthority: agent.authority }).layer), Effect.scoped);
+});

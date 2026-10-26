@@ -6,7 +6,6 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
-import * as Option from "effect/Option";
 import { NativeHome } from "../mode/authorityMode.ts";
 import * as Registry from "./service.ts";
 import * as Session from "./session.ts";
@@ -54,7 +53,9 @@ const make = Effect.gen(function* () {
   const lock = yield* Semaphore.make(1);
   const observe = Effect.fn("NativeEffects.observe")(function* (
     intent: ExternalIntent,
+    check: () => Effect.Effect<void, Session.RegistryError>,
   ): Effect.fn.Return<RegistryExternalResult | null, Session.RegistryError> {
+    yield* check();
     if (intent.kind === "verify_reference") {
       const value = yield* resolver
         .resolve({
@@ -140,14 +141,13 @@ const make = Effect.gen(function* () {
     const previous = yield* settlement
       .lookup(input)
       .pipe(Effect.mapError((cause) => new Session.RegistryError({ code: cause.code, cause })));
-    const value =
-      previous.state === "unknown" && previous.reason === "attempt_not_found"
-        ? yield* settlement
-            .settle(input)
-            .pipe(
-              Effect.mapError((cause) => new Session.RegistryError({ code: cause.code, cause })),
-            )
-        : previous;
+    let value = previous;
+    if (previous.state === "unknown" && previous.reason === "attempt_not_found") {
+      yield* check();
+      value = yield* settlement
+        .settle(input)
+        .pipe(Effect.mapError((cause) => new Session.RegistryError({ code: cause.code, cause })));
+    }
     if (value.state !== "terminal") return null;
     if (canonicalJson(value.request) !== canonicalJson(request))
       return yield* new Session.RegistryError({ code: "unknown_effect" });
@@ -156,91 +156,105 @@ const make = Effect.gen(function* () {
       return yield* new Session.RegistryError({ code: "unknown_effect" });
     return expected;
   });
-  const runIntent = Effect.fn("NativeEffects.run")((intent: ExternalIntent, recovery: boolean) =>
-    lock.withPermit(
-      Effect.gen(function* () {
-        const check = Effect.fn("NativeEffects.recheck")(function* () {
-          if (!recovery) return;
-          const evidence = yield* Effect.serviceOption(Recorded.RecoveryCaller);
-          if (Option.isNone(evidence))
-            return yield* new Session.RegistryError({ code: "not_granted" });
-          yield* evidence.value
-            .check(
-              "workstreams:write",
-              intent.reference.identity.provider === "t3"
-                ? intent.reference.identity.native_id
-                : null,
-            )
+  const runIntent = Effect.fn("NativeEffects.run")(
+    (id: string, recovery: boolean, expectedIntent?: ExternalIntent) =>
+      lock.withPermit(
+        Effect.gen(function* () {
+          // Imported evidence belongs to the lookup-only legacy reconciler.
+          const imported = yield* archive
+            .contains(scope, id)
+            .pipe(
+              Effect.mapError((cause) => new Session.RegistryError({ code: "unavailable", cause })),
+            );
+          if (imported) return yield* new Session.RegistryError({ code: "unknown_effect" });
+          const item = (yield* store
+            .active(scope)
+            .pipe(
+              Effect.mapError((cause) => new Session.RegistryError({ code: "unavailable", cause })),
+            )).find((value) => value.command_id === id);
+          if (!item) return null;
+          // Initial execution and retries use the accepted encrypted wrapper,
+          // never a caller captured from the live invocation after queueing.
+          if (!item.recovery) return yield* new Session.RegistryError({ code: "unknown_effect" });
+          const intent = item.intent as ExternalIntent;
+          if (expectedIntent && canonicalJson(expectedIntent) !== canonicalJson(intent))
+            return yield* new Session.RegistryError({ code: "unknown_effect" });
+          const record = item.recovery.recorded_caller;
+          const evidence = yield* recording
+            .readmitRecorded(record)
             .pipe(
               Effect.mapError((cause) => new Session.RegistryError({ code: "not_granted", cause })),
             );
-        });
-        yield* check();
-        // Imported evidence must use the fenced lookup-only legacy reconciler, before any provider lookup or dispatch.
-        const imported = yield* archive
-          .contains(scope, intent.command.command_id)
-          .pipe(
-            Effect.mapError((cause) => new Session.RegistryError({ code: "unavailable", cause })),
+          const check = Effect.fn("NativeEffects.recheck")(() =>
+            evidence
+              .check(
+                "workstreams:write",
+                intent.reference.identity.provider === "t3"
+                  ? intent.reference.identity.native_id
+                  : null,
+              )
+              .pipe(
+                Effect.mapError(
+                  (cause) => new Session.RegistryError({ code: "not_granted", cause }),
+                ),
+              ),
           );
-        if (imported) return yield* new Session.RegistryError({ code: "unknown_effect" });
-        const existing = yield* store
-          .result(scope, intent.command.command_id)
-          .pipe(
-            Effect.mapError((cause) => new Session.RegistryError({ code: "unavailable", cause })),
+          return yield* Recorded.withRecordedCaller(
+            record,
+            evidence,
+            Effect.gen(function* () {
+              yield* check();
+              // Re-admission precedes retained receipt/result lookup and provider work.
+              const receipt = yield* receipts
+                .read(scope, id)
+                .pipe(
+                  Effect.mapError(
+                    (cause) => new Session.RegistryError({ code: "unavailable", cause }),
+                  ),
+                );
+              if (receipt?.origin !== "native")
+                return yield* new Session.RegistryError({ code: "unknown_effect" });
+              const existing = yield* store
+                .result(scope, id)
+                .pipe(
+                  Effect.mapError(
+                    (cause) => new Session.RegistryError({ code: "unavailable", cause }),
+                  ),
+                );
+              const result =
+                (existing as RegistryExternalResult | null) ?? (yield* observe(intent, check));
+              if (!result) return null;
+              // Retain the provider outcome even if current authority fences completion.
+              yield* store
+                .saveResult(scope, id, result)
+                .pipe(
+                  Effect.mapError(
+                    (cause) => new Session.RegistryError({ code: "unavailable", cause }),
+                  ),
+                );
+              yield* check();
+              return yield* registry.complete(
+                intent,
+                result,
+                recovery && intent.kind === "native_t3_settlement",
+              );
+            }),
           );
-        const result = (existing as RegistryExternalResult | null) ?? (yield* observe(intent));
-        if (!result) return null;
-        // The provider result survives a failed/stale completion transaction.
-        yield* store
-          .saveResult(scope, intent.command.command_id, result)
-          .pipe(
-            Effect.mapError((cause) => new Session.RegistryError({ code: "unavailable", cause })),
-          );
-        yield* check();
-        return yield* registry.complete(
-          intent,
-          result,
-          recovery && intent.kind === "native_t3_settlement",
-        );
-      }),
-    ),
+        }),
+      ),
   );
-  const recoverOne = Effect.fn("NativeEffects.recoverOne")(function* (id: string) {
-    const item = (yield* store
-      .active(scope)
-      .pipe(
-        Effect.mapError((cause) => new Session.RegistryError({ code: "unavailable", cause })),
-      )).find((value) => value.command_id === id);
-    if (!item) return null;
-    // Historical and imported effects lack native recorded recovery metadata.
-    // They belong to the legacy reconciler; never attempt_not_found -> settle.
-    if (!item.recovery) return yield* new Session.RegistryError({ code: "unknown_effect" });
-    const intent = item.intent as ExternalIntent;
-    const record = item.recovery.recorded_caller;
-    const evidence = yield* recording
-      .readmitRecorded(record)
-      .pipe(Effect.mapError((cause) => new Session.RegistryError({ code: "not_granted", cause })));
-    yield* evidence
-      .check(
-        "workstreams:write",
-        intent.reference.identity.provider === "t3" ? intent.reference.identity.native_id : null,
-      )
-      .pipe(Effect.mapError((cause) => new Session.RegistryError({ code: "not_granted", cause })));
-    // Re-admission precedes retained receipt lookup, provider lookup and dispatch.
-    const receipt = yield* receipts
-      .read(scope, id)
-      .pipe(Effect.mapError((cause) => new Session.RegistryError({ code: "unavailable", cause })));
-    if (receipt?.origin !== "native")
-      return yield* new Session.RegistryError({ code: "unknown_effect" });
-    return yield* Recorded.withRecordedCaller(record, evidence, runIntent(intent, true));
-  });
+  const recoverOne = Effect.fn("NativeEffects.recoverOne")((id: string) => runIntent(id, true));
   const recover = Effect.fn("NativeEffects.recover")(function* () {
     const active = yield* store
       .active(scope)
       .pipe(Effect.mapError((cause) => new Session.RegistryError({ code: "unavailable", cause })));
     for (const item of active) yield* recoverOne(item.command_id);
   });
-  return EffectRunner.of({ run: (intent) => runIntent(intent, false), recoverOne, recover });
+  return EffectRunner.of({
+    run: (intent) => runIntent(intent.command.command_id, false, intent),
+    recoverOne,
+    recover,
+  });
 });
 export const layer = Layer.effect(EffectRunner, make);
 
