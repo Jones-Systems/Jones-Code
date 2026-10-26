@@ -1,0 +1,72 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "task-continuation",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/taskContinuation/",
+    "packages/provider-core/src/server/jones/TaskContinuationInstructions.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "packages/provider-core/src/server/orchestrationInstructions.ts",
+      "to": "packages/provider-core/src/server/jones/TaskContinuationInstructions.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/taskContinuation/TaskContinuation.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/taskContinuation/TaskContinuationStore.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/orchestrator/handlers.ts",
+      "to": "apps/server/src/jones/taskContinuation/tool.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
+      "to": "apps/server/src/jones/taskContinuation/tool.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/taskContinuation/commitContext.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/taskContinuation/commitContext.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/taskContinuation/TaskContinuationStore.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/taskContinuation/guard.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/taskContinuation/requiredNativeSession.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/taskContinuation/TaskContinuationStore.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts",
+      "to": "apps/server/src/jones/taskContinuation/requiredNativeSession.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts",
+      "to": "apps/server/src/jones/taskContinuation/claudeNativeSessionProof.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/taskContinuation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts",
+      "to": "apps/server/src/jones/taskContinuation/requiredNativeSession.ts"
+    }
+  ]
+}

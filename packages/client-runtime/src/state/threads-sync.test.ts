@@ -112,12 +112,16 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   readonly saveThread?: Persistence.EnvironmentCacheStore["Service"]["saveThread"];
   readonly historyPaging?: "enabled" | "no-http" | "no-controller";
   readonly historyHttpClient?: HttpClient.HttpClient;
+  readonly loadSnapshot?: ThreadSnapshotLoader.ThreadSnapshotLoader["Service"]["load"];
+  readonly initialConfig?: RpcSession.RpcSession["initialConfig"];
+  readonly onItem?: (item: OrchestrationV2ThreadStreamItem) => Effect.Effect<void>;
 }) {
   const inputs = yield* Queue.unbounded<TestThreadInput>();
   const observed = yield* Queue.unbounded<EnvironmentThreadState>();
   const latest = yield* Ref.make<EnvironmentThreadState>(EMPTY_ENVIRONMENT_THREAD_STATE);
   const retryCount = yield* Ref.make(0);
   const subscriptionCount = yield* Ref.make(0);
+  const subscriptions = yield* Queue.unbounded<number>();
   const loaderCalls = yield* Ref.make(0);
   const lastSubscribeAfterSequence = yield* Ref.make<number | undefined>(undefined);
   const lastRequestCompletionMarker = yield* Ref.make(false);
@@ -134,6 +138,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
       Stream.mapEffect((input) =>
         input instanceof Error ? Effect.fail(input) : Effect.succeed(input),
       ),
+      Stream.tap((item) => options?.onItem?.(item) ?? Effect.void),
     );
   const client = {
     [ORCHESTRATION_V2_WS_METHODS.subscribeThread]: (input: {
@@ -150,18 +155,27 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
           ),
           Effect.andThen(Ref.set(lastAcceptBoundedSnapshot, input.acceptBoundedSnapshot)),
           Effect.andThen(Ref.set(lastAcceptCompactTurnItems, input.acceptCompactTurnItems)),
+          Effect.andThen(
+            Ref.get(subscriptionCount).pipe(
+              Effect.flatMap((count) => Queue.offer(subscriptions, count)),
+            ),
+          ),
           Effect.as(streamFrom(inputs)),
         ),
       ),
   } as unknown as WsRpcProtocolClient;
   const supervisorSession = yield* SubscriptionRef.make<Option.Option<RpcSession.RpcSession>>(
-    Option.some(testSession(client, options)),
+    Option.some({
+      ...testSession(client, options),
+      ...(options?.initialConfig === undefined ? {} : { initialConfig: options.initialConfig }),
+    }),
   );
   const prepared = yield* SubscriptionRef.make<Option.Option<PreparedConnection>>(
     Option.some(PREPARED),
   );
   const snapshotLoader = ThreadSnapshotLoader.ThreadSnapshotLoader.of({
     load: (_prepared, threadId) =>
+      options?.loadSnapshot?.(_prepared, threadId) ??
       Ref.update(loaderCalls, (count) => count + 1).pipe(
         Effect.as(
           threadId === THREAD_ID
@@ -261,6 +275,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     latest,
     retryCount,
     subscriptionCount,
+    subscriptions,
     loaderCalls,
     lastSubscribeAfterSequence,
     lastRequestCompletionMarker,
@@ -320,6 +335,187 @@ const deleted = (sequence = 3): OrchestrationV2ThreadStreamItem => {
 };
 
 describe("EnvironmentThreads", () => {
+  it.effect("cancels a superseded HTTP load before its install can reach the next session", () =>
+    Effect.gen(function* () {
+      const loading = yield* Deferred.make<void>();
+      const interrupted = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      let loads = 0;
+      const current = {
+        ...BASE_PROJECTION,
+        thread: { ...BASE_PROJECTION.thread, title: "Current HTTP" },
+      };
+      const h = yield* makeHarness({
+        completionMarker: true,
+        loadSnapshot: () =>
+          ++loads === 1
+            ? Deferred.succeed(loading, undefined).pipe(
+                Effect.andThen(Deferred.await(release)),
+                Effect.as({
+                  _tag: "present" as const,
+                  snapshot: { projection: BASE_PROJECTION, snapshotSequence: 99 },
+                }),
+                Effect.onInterrupt(() => Deferred.succeed(interrupted, undefined)),
+              )
+            : Effect.succeed({
+                _tag: "present",
+                snapshot: { projection: current, snapshotSequence: 2 },
+              }),
+      });
+      yield* Deferred.await(loading);
+      yield* h.replaceSession;
+      yield* Deferred.await(interrupted);
+      expect(yield* Queue.take(h.subscriptions)).toBe(1);
+      yield* Deferred.succeed(release, undefined);
+      yield* Queue.offer(h.inputs, synchronized());
+      const live = yield* awaitThreadState(h.observed, (value) => value.status === "live");
+      expect(Option.getOrThrow(live.data).thread.title).toBe("Current HTTP");
+      expect(yield* Ref.get(h.lastSubscribeAfterSequence)).toBe(2);
+    }),
+  );
+
+  it.effect("interrupts a superseded error callback before it changes successor freshness", () =>
+    Effect.gen(function* () {
+      const reporting = yield* Deferred.make<void>();
+      const interrupted = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const h = yield* makeHarness({ cached: BASE_PROJECTION, completionMarker: true });
+      expect(yield* Queue.take(h.subscriptions)).toBe(1);
+      const semaphore = h.threadState.semaphore;
+      const withPermit = semaphore.withPermit;
+      semaphore.withPermit = (effect) => {
+        semaphore.withPermit = withPermit;
+        return withPermit(
+          Deferred.succeed(reporting, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+            Effect.onInterrupt(() => Deferred.succeed(interrupted, undefined)),
+            Effect.andThen(effect),
+          ),
+        );
+      };
+      yield* Queue.offer(h.inputs, new Error("Old failure"));
+      yield* Deferred.await(reporting);
+      yield* h.replaceSession;
+      yield* Deferred.await(interrupted);
+      expect(yield* Queue.take(h.subscriptions)).toBe(2);
+      yield* Deferred.succeed(release, undefined);
+      const current = yield* SubscriptionRef.get(h.threadState);
+      expect(current.status).toBe("synchronizing");
+      expect(Option.isNone(current.error)).toBe(true);
+      yield* Queue.offer(h.inputs, synchronized());
+      const live = yield* awaitThreadState(h.observed, (value) => value.status === "live");
+      expect(Option.isNone(live.error)).toBe(true);
+    }),
+  );
+
+  it.effect.each(["replacement", "same-session resubscription"] as const)(
+    "fences an applying snapshot and its buffered marker across %s",
+    (change) =>
+      Effect.gen(function* () {
+        const applying = yield* Deferred.make<void>();
+        const markerProduced = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const successorStarted = yield* Deferred.make<void>();
+        const successorSubscribed = yield* Deferred.make<void>();
+        const resumeCache: NonNullable<Parameters<typeof makeEnvironmentThreadState>[1]> = {
+          snapshot: undefined,
+          owner: undefined,
+        };
+        let attempts = 0;
+        let loads = 0;
+        const currentProjection = {
+          ...BASE_PROJECTION,
+          thread: { ...BASE_PROJECTION.thread, title: "Current HTTP" },
+        };
+        const initialConfig = Effect.gen(function* () {
+          attempts += 1;
+          if (attempts === 2) yield* Deferred.succeed(successorStarted, undefined);
+          return { threadResumeCompletionMarker: true } as never;
+        });
+        const h = yield* makeHarness({
+          completionMarker: true,
+          initialConfig,
+          resumeCache,
+          onItem: (item) =>
+            item.kind === "synchronized"
+              ? Deferred.succeed(markerProduced, undefined).pipe(Effect.asVoid)
+              : Effect.void,
+          loadSnapshot: () =>
+            Effect.sync(() =>
+              ++loads === 1
+                ? { _tag: "unavailable" as const }
+                : {
+                    _tag: "present" as const,
+                    snapshot: { projection: currentProjection, snapshotSequence: 2 },
+                  },
+            ),
+        });
+        expect(yield* Queue.take(h.subscriptions)).toBe(1);
+        const semaphore = h.threadState.semaphore;
+        const withPermit = semaphore.withPermit;
+        semaphore.withPermit = (effect) => {
+          semaphore.withPermit = withPermit;
+          return withPermit(
+            Deferred.succeed(applying, undefined).pipe(
+              Effect.andThen(Deferred.await(release)),
+              Effect.andThen(effect),
+            ),
+          );
+        };
+        yield* Queue.offerAll(h.inputs, [snapshot(BASE_PROJECTION, 99), synchronized()]);
+        yield* Deferred.await(applying);
+        yield* Deferred.await(markerProduced);
+        const previous = Option.getOrThrow(yield* SubscriptionRef.get(h.supervisorSession));
+        const nextEvents = yield* Queue.unbounded<OrchestrationV2ThreadStreamItem>();
+        if (change === "replacement") {
+          yield* SubscriptionRef.set(
+            h.supervisorSession,
+            Option.some({
+              ...previous,
+              initialConfig,
+              client: {
+                [ORCHESTRATION_V2_WS_METHODS.subscribeThread]: () =>
+                  Stream.fromEffect(Deferred.succeed(successorSubscribed, undefined)).pipe(
+                    Stream.drain,
+                    Stream.concat(Stream.fromQueue(nextEvents)),
+                  ),
+              } as unknown as WsRpcProtocolClient,
+            }),
+          );
+        } else {
+          yield* Queue.offer(h.wakeups, "application-active");
+        }
+        yield* Deferred.await(successorStarted);
+        yield* Deferred.succeed(release, undefined);
+        if (change === "replacement") yield* Deferred.await(successorSubscribed);
+        else expect(yield* Queue.take(h.subscriptions)).toBe(2);
+        const state = yield* SubscriptionRef.get(h.threadState);
+        expect(Option.getOrThrow(state.data).thread.title).toBe("Current HTTP");
+        expect(state.status).toBe("synchronizing");
+        expect(resumeCache.snapshot?.sequence).toBe(2);
+        expect(Option.getOrThrow(resumeCache.snapshot!.state.data).thread.title).toBe(
+          "Current HTTP",
+        );
+        yield* Queue.offerAll(change === "replacement" ? nextEvents : h.inputs, [
+          snapshot(
+            {
+              ...currentProjection,
+              thread: { ...currentProjection.thread, title: "Current reset" },
+            },
+            1,
+          ),
+          synchronized(),
+        ]);
+        yield* awaitThreadState(
+          h.observed,
+          (value) =>
+            value.status === "live" &&
+            Option.getOrNull(value.data)?.thread.title === "Current reset",
+        );
+        expect(resumeCache.snapshot?.sequence).toBe(1);
+      }),
+  );
+
   it.effect("loads the server thread when its local cache read fails", () =>
     Effect.gen(function* () {
       const h = yield* makeHarness({
@@ -411,13 +607,12 @@ describe("EnvironmentThreads", () => {
       const applying = yield* Deferred.make<void>();
       const update = titleUpdated("Not applied", 8);
       if (update.kind !== "event") return yield* Effect.die("Expected an event");
-      let sequenceReads = 0;
-      Object.defineProperty(update, "sequence", {
-        get: () => {
-          if (++sequenceReads === 2) Deferred.doneUnsafe(applying, Exit.void);
-          return 8;
-        },
-      });
+      const semaphore = first.threadState.semaphore;
+      const withPermit = semaphore.withPermit;
+      semaphore.withPermit = (effect) => {
+        semaphore.withPermit = withPermit;
+        return Deferred.succeed(applying, undefined).pipe(Effect.andThen(withPermit(effect)));
+      };
       yield* first.threadState.semaphore.take(1);
       yield* Queue.offer(first.inputs, update);
       yield* Deferred.await(applying);

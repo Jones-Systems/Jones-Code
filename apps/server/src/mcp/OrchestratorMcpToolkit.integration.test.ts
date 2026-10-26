@@ -1245,6 +1245,7 @@ describe("orchestrator MCP toolkit", () => {
               ),
             ),
             Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
+            Layer.provide(SqlitePersistence.layerMemory),
             Layer.provide(NodeServices.layer),
           );
 
