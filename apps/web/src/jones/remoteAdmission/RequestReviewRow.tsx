@@ -33,6 +33,9 @@ export function RequestReviewRow({
           setExpanded((value) => !value);
         }}
       >
+        <span className="block text-xs text-muted-foreground wrap-anywhere">
+          From {view.source}
+        </span>
         <span className="text-sm font-medium wrap-anywhere">{view.title}</span>
         <span className="ml-2 text-xs text-muted-foreground">{admissionStatus(record)}</span>
         <span className="block truncate text-xs text-muted-foreground">{view.target}</span>
