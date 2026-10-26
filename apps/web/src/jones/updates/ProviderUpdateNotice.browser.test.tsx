@@ -80,7 +80,7 @@ function updates() {
 }
 
 // Match the real external store: snapshots change identity on publication.
-function publishGroups(group: ReturnType<typeof updates>["groups"][number]) {
+function publishGroups(group: ReturnType<typeof useJonesProviderUpdates>["groups"][number]) {
   state.updates = {
     ...state.updates!,
     groups: state.updates!.groups.map((entry) =>

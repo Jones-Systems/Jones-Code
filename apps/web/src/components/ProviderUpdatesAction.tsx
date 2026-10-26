@@ -12,7 +12,7 @@ import { useJonesProviderUpdates as useProviderUpdates } from "../jones/updates/
 export function ProviderUpdatesAction() {
   const { machines, updateAll, completed, canManage } = useProviderUpdates();
   const pending = useRef(false);
-  const capturedMachines = useRef(machines);
+  const [capturedMachines, setCapturedMachines] = useState(machines);
   const [isPending, setIsPending] = useState(false);
   if (machines.length === 0 && !isPending) {
     return null;
@@ -21,7 +21,7 @@ export function ProviderUpdatesAction() {
   const handleUpdate = async () => {
     if (pending.current) return;
     pending.current = true;
-    capturedMachines.current = machines;
+    setCapturedMachines(machines);
     setIsPending(true);
     await settlePromise(() => updateAll());
     pending.current = false;
@@ -44,7 +44,7 @@ export function ProviderUpdatesAction() {
       />
       <TooltipPopup side="top">
         {!canManage ? <p>This connection cannot manage provider accounts.</p> : null}
-        {(isPending ? capturedMachines.current : machines).map((machine) => (
+        {(isPending ? capturedMachines : machines).map((machine) => (
           <div key={machine.environmentId}>
             {machine.label}
             {isPending

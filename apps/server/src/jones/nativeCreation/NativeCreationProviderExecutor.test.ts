@@ -36,7 +36,6 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
 import * as Crypto from "effect/Crypto";
-import * as Option from "effect/Option";
 import * as TestClock from "effect/testing/TestClock";
 import * as AuthSessions from "../../persistence/AuthSessions.ts";
 import { runMigrations } from "../../persistence/Migrations.ts";
@@ -473,6 +472,7 @@ function codexReplayPreamble(input: {
           input: [{ type: "text", text: input.sentPrompt ?? input.prompt }],
           cwd: "/synthetic/worktree",
           model: "synthetic-model",
+          collaborationMode: { mode: "default", settings: { model: "synthetic-model" } },
           approvalPolicy: "never",
           approvalsReviewer: "user",
           sandboxPolicy: { type: "dangerFullAccess" },

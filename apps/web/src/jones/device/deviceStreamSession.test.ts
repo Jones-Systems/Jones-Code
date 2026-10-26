@@ -101,3 +101,32 @@ it("fences callbacks immediately when a route report retires an atom-owned strea
     registry.dispose();
   }
 });
+
+it("disposes a live stream registry without recreating cleared screen atoms", () => {
+  vi.stubGlobal("document", { createElement: () => ({ style: {} }) });
+  const registry = AtomRegistry.make();
+  try {
+    const atom = deviceStreamSessionAtom({
+      environmentId: EnvironmentId.make("test"),
+      hostId: "host",
+      platform: "ios",
+      deviceId: "device",
+      viewId: "live-disposal",
+      access: { httpBase: "http://test", wsBase: "ws://test", query: {}, credentials: false },
+    });
+    registry.mount(atom);
+    registry.get(atom);
+    const stream = streams[0]!;
+    stream.events.onScreen({ width: 400, height: 800, orientation: "portrait" });
+    expect(registry.get(deviceStreamScreenAtom("live-disposal"))?.width).toBe(400);
+    expect(() => registry.dispose()).not.toThrow();
+    expect(stream.stop).toHaveBeenCalledOnce();
+    expect(registry.getNodes().size).toBe(0);
+    expect(() =>
+      stream.events.onScreen({ width: 800, height: 400, orientation: "landscape_right" }),
+    ).not.toThrow();
+    expect(registry.getNodes().size).toBe(0);
+  } finally {
+    registry.dispose();
+  }
+});

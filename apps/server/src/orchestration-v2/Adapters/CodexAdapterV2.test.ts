@@ -194,7 +194,19 @@ describe("CodexAdapterV2 runtime policy", () => {
               },
             });
             assert.equal(params.effort, reasoningEffort);
-            assert.equal(params.additionalContext !== undefined, hasT3Mcp === true);
+            assert.include(
+              params.additionalContext?.jones_code_identity?.value ??
+                params.additionalContext?.t3_code_runtime?.value ??
+                "",
+              "product ID: jones-code",
+            );
+            const contextKeys = Object.keys(params.additionalContext ?? {});
+            assert.equal(
+              contextKeys.some((key) => key.startsWith("t3_code_orchestration_")),
+              hasT3Mcp === true,
+            );
+            assert.equal(contextKeys.includes("t3_code_tools"), hasT3Mcp === true);
+            assert.equal(contextKeys.includes("t3_code_runtime"), hasT3Mcp === true);
           }
         }
       }),
@@ -310,7 +322,7 @@ describe("CodexAdapterV2 runtime policy", () => {
     }),
   );
 
-  it.effect("omits default-mode collaboration settings without the T3 MCP server", () =>
+  it.effect("selects native default mode without advertising unavailable T3 MCP tools", () =>
     Effect.gen(function* () {
       const params = yield* CodexAdapterV2.buildCodexTurnStartParams({
         nativeThreadId: "native-default-without-t3-mcp",
@@ -327,11 +339,27 @@ describe("CodexAdapterV2 runtime policy", () => {
         hasT3Mcp: false,
       });
 
-      assert.isUndefined(params.collaborationMode);
+      assert.deepEqual(params.collaborationMode, {
+        mode: "default",
+        settings: { model: "gpt-5.4" },
+      });
+      assert.include(
+        params.additionalContext?.jones_code_identity?.value ??
+          params.additionalContext?.t3_code_runtime?.value ??
+          "",
+        "product ID: jones-code",
+      );
+      assert.isFalse(
+        Object.keys(params.additionalContext ?? {}).some((key) =>
+          key.startsWith("t3_code_orchestration_"),
+        ),
+      );
+      assert.notProperty(params.additionalContext, "t3_code_tools");
+      assert.notProperty(params.additionalContext, "t3_code_runtime");
     }),
   );
 
-  it.effect("adds T3 plan-mode developer instructions when the T3 MCP server is attached", () =>
+  it.effect("selects native plan mode with attached T3 tool context and no prompt override", () =>
     Effect.gen(function* () {
       const params = yield* CodexAdapterV2.buildCodexTurnStartParams({
         nativeThreadId: "native-plan-with-t3-mcp",
@@ -349,9 +377,11 @@ describe("CodexAdapterV2 runtime policy", () => {
       });
 
       assert.equal(params.collaborationMode?.mode, "plan");
-      assert.include(
-        params.collaborationMode?.settings.developer_instructions ?? "",
-        "request_user_input",
+      assert.notProperty(params.collaborationMode?.settings, "developer_instructions");
+      assert.isTrue(
+        Object.keys(params.additionalContext ?? {}).some((key) =>
+          key.startsWith("t3_code_orchestration_"),
+        ),
       );
       assert.include(params.additionalContext?.t3_code_tools?.value ?? "", "preview_status");
     }),
@@ -455,7 +485,7 @@ describe("CodexAdapterV2 process spawning", () => {
         model: "gpt-5.4",
         config: {
           "tools.update_plan.enabled": true,
-          // Codex waits up to 10 s, not 1 s, for MCP servers before the first request (#13437).
+          // Codex waits up to 10 s, not 1 s, for MCP servers before the first request.
           mcp_optional_startup_grace_ms: 10_000,
           "mcp_servers.t3-code": {
             url: "http://127.0.0.1:43123/mcp",
@@ -2104,7 +2134,13 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       assert.isDefined(turn);
       if (turn?.type === "expect_outbound") {
         const frame = turn.frame as { params: Record<string, unknown> };
-        if (row.expected !== undefined) frame.params.effort = row.expected;
+        if (row.expected !== undefined) {
+          frame.params.effort = row.expected;
+          frame.params.collaborationMode = {
+            mode: "default",
+            settings: { model: "gpt-5.4", reasoning_effort: row.expected },
+          };
+        }
       }
       const harness = yield* makeCodexReplayHarness(
         makeCodexReplayTranscript({ scenario: nativeThreadId, entries }),
@@ -2182,8 +2218,14 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       const first = entries.find(
         (entry) => entry.type === "expect_outbound" && entry.label === "turn/start",
       );
-      if (first?.type === "expect_outbound")
-        (first.frame as { params: Record<string, unknown> }).params.effort = "high";
+      if (first?.type === "expect_outbound") {
+        const params = (first.frame as { params: Record<string, unknown> }).params;
+        params.effort = "high";
+        params.collaborationMode = {
+          mode: "default",
+          settings: { model: "gpt-5.4", reasoning_effort: "high" },
+        };
+      }
       entries.push(
         {
           type: "emit_inbound",
@@ -2206,6 +2248,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               cwd: "/workspace",
               model: "gpt-6",
               effort: "xhigh",
+              collaborationMode: {
+                mode: "default",
+                settings: { model: "gpt-6", reasoning_effort: "xhigh" },
+              },
               approvalPolicy: "never",
               approvalsReviewer: "user",
               sandboxPolicy: { type: "dangerFullAccess" },
@@ -4380,6 +4426,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                     params: {
                       ...(entry.frame.params as Record<string, unknown>),
                       effort: "low",
+                      collaborationMode: {
+                        mode: "default",
+                        settings: { model: "gpt-5.4", reasoning_effort: "low" },
+                      },
                       serviceTier: "priority",
                     },
                   },
@@ -4408,6 +4458,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                                   ...(entry.frame.params as Record<string, unknown>),
                                   input: [],
                                   effort: "low",
+                                  collaborationMode: {
+                                    mode: "default",
+                                    settings: { model: "gpt-5.4", reasoning_effort: "low" },
+                                  },
                                   serviceTier: "priority",
                                 },
                               }
@@ -4532,6 +4586,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   input: [],
                   cwd: "/workspace",
                   model: "gpt-5.4",
+                  collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
                   approvalPolicy: "never",
                   approvalsReviewer: "user",
                   sandboxPolicy: { type: "dangerFullAccess" },
@@ -4735,7 +4790,21 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 ...entry.frame,
                 id,
                 ...(entry.frame.method === "turn/start"
-                  ? { params: { ...(entry.frame.params as Record<string, unknown>), ...params } }
+                  ? {
+                      params: {
+                        ...(entry.frame.params as Record<string, unknown>),
+                        ...params,
+                        collaborationMode: {
+                          mode: "default",
+                          settings: {
+                            model: "gpt-5.4",
+                            ...(typeof params.effort === "string"
+                              ? { reasoning_effort: params.effort }
+                              : {}),
+                          },
+                        },
+                      },
+                    }
                   : {}),
               },
             }
@@ -13279,6 +13348,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   params: {
                     ...(entry.frame.params as Record<string, unknown>),
                     model: "current-request",
+                    collaborationMode: { mode: "default", settings: { model: "current-request" } },
                   },
                 },
               };

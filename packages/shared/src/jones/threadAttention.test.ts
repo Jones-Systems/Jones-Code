@@ -177,6 +177,12 @@ describe("shared native thread attention", () => {
       expect(resolveThreadAttentionStatus(state)).toBe("waiting");
       expect(resolveThreadAttentionPill({ thread: state })).toBe("Waiting");
     }
+    const unawaited = shellAttentionInput({
+      ...base,
+      pendingBackgroundTasks: [{ taskId: "watchdog", kind: "monitor", awaited: false }],
+    });
+    expect(resolveThreadAttentionStatus(unawaited)).toBe("ready");
+    expect(resolveThreadAttentionPill({ thread: unawaited })).toBeNull();
     const plan = shellAttentionInput({
       ...base,
       pendingBackgroundTasks: [{ taskId: "task", kind: "command" }],

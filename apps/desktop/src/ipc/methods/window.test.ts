@@ -8,8 +8,6 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import { vi } from "vite-plus/test";
 
-import type * as Electron from "electron";
-
 const { focusedWebContents, ownerWindow, exposeInMainWorld, invoke } = vi.hoisted(() => ({
   focusedWebContents: vi.fn(),
   ownerWindow: vi.fn(),
@@ -40,11 +38,8 @@ import * as ElectronWindow from "../../electron/ElectronWindow.ts";
 import {
   getLocalEnvironmentBootstraps,
   getPreviewAutomationRuntimeIdentity,
-  getWindowFullscreenState,
-  pasteAsText,
   pickProjectFavicon,
   getRelayTelemetryEnabled,
-  pickProjectFavicon,
   probeRemoteEditors,
 } from "./window.ts";
 

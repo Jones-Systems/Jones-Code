@@ -282,7 +282,7 @@ it.effect(
       assert.equal(preflights, 1);
       yield* Ref.set(observation.physical, []);
       yield* Ref.set(observation.unavailable, true);
-      assert.deepEqual(yield* orchestrator.dispatch(command), result);
+      assert.deepEqual(yield* orchestrator.dispatch(command), { ...result, replayed: true });
       assert.equal(yield* Ref.get(observation.calls), calls);
       assert.equal(yield* Ref.get(observation.preflights), preflights);
       assert.deepEqual(yield* Ref.get(observation.physical), []);

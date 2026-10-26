@@ -39,14 +39,12 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import {
-  EnvironmentRequestInvalidError,
   AuthOrchestrationOperateScope,
   ProviderDriverKind,
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import type { EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
 
-import * as Schema from "effect/Schema";
 import { isPasteAsTextShortcut } from "@t3tools/client-runtime/text-paste";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import { folderDropTarget, resolveDroppedFolderPath } from "./folderDrop";
@@ -243,8 +241,6 @@ import {
   suppressActiveComposerScrollGesture,
 } from "./composerScrollGesture";
 import { observeResize } from "~/lib/observeResize";
-
-const isEnvironmentRequestInvalidError = Schema.is(EnvironmentRequestInvalidError);
 
 const COMPOSER_SCROLL_COLLAPSE_THRESHOLD_PX = 24;
 const COMPOSER_SCROLL_GESTURE_RESET_MS = 120;
@@ -1435,9 +1431,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   };
   const buildContextClipboardFragmentStable = useStableCallback(buildContextClipboardFragment);
   const {
-    loadThreadTranscript,
     countReservedAttachments,
-    countReservedAttachmentsStable,
     importContextRecords,
     importContextFragment,
     importContextFragmentStable,
@@ -2257,67 +2251,70 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   };
   const expandMobileComposerStable = useStableCallback(expandMobileComposer);
 
-  const onComposerCommandKey = composerCommandKeyHandler({
-    steeringBlockedByQuestion,
-    hasDraftContext: () =>
-      composerImagesRef.current.length > 0 ||
-      composerFilesRef.current.length > 0 ||
-      composerTerminalContextsRef.current.length > 0 ||
-      composerPreviewAnnotations.length > 0 ||
-      composerReviewComments.length > 0 ||
-      composerThreadContexts.length > 0 ||
-      countPreparingComposerImages(attachmentTargetKey) > 0 ||
-      pendingDraftWork.has(attachmentTargetKey),
-    queueActionDisabled:
-      noProviderAvailable ||
-      isSendDisabled ||
-      isSendBusy ||
-      isConnecting ||
-      isRevertingCheckpoint === true ||
-      projectSelectionRequired ||
-      environmentUnavailable !== null ||
-      isEditingQueuedMessage ||
-      activePendingApproval !== null ||
-      pendingUserInputs.length > 0 ||
-      steeringBlockedByQuestion ||
-      showPlanFollowUpPrompt,
-    onSteerNextQueuedMessage,
-    keybindings,
-    sendShortcut: settings.sendShortcut,
-    routeKind,
-    phase,
-    isCompacting,
-    followUpBehavior,
-    isSoftwareKeyboardOpen,
-    planModeUiEnabled,
-    isLiteralPendingAnswer,
-    pendingUserInputs,
-    promptHistoryMessages,
-    promptHistoryPositionRef,
-    composerDraftTarget,
-    promptRef,
-    composerImagesRef,
-    composerFilesRef,
-    composerTerminalContextsRef,
-    composerPreviewAnnotations,
-    composerReviewComments,
-    composerEditorRef,
-    composerMenuOpenRef,
-    composerMenuItemsRef,
-    activeComposerMenuItemRef,
-    setComposerDraftPrompt,
-    setComposerCursor,
-    setComposerTrigger,
-    setComposerHighlightedItemId,
-    dismissComposerTrigger,
-    toggleInteractionMode,
-    nudgeComposerMenuHighlight,
-    onSelectComposerItem,
-    resolveActiveComposerTrigger,
-    readComposerSnapshot,
-    applyPromptReplacement,
-    submitComposer,
-  });
+  const onComposerCommandKey = (
+    ...args: Parameters<ReturnType<typeof composerCommandKeyHandler>>
+  ) =>
+    composerCommandKeyHandler({
+      steeringBlockedByQuestion,
+      hasDraftContext: () =>
+        composerImagesRef.current.length > 0 ||
+        composerFilesRef.current.length > 0 ||
+        composerTerminalContextsRef.current.length > 0 ||
+        composerPreviewAnnotations.length > 0 ||
+        composerReviewComments.length > 0 ||
+        composerThreadContexts.length > 0 ||
+        countPreparingComposerImages(attachmentTargetKey) > 0 ||
+        pendingDraftWork.has(attachmentTargetKey),
+      queueActionDisabled:
+        noProviderAvailable ||
+        isSendDisabled ||
+        isSendBusy ||
+        isConnecting ||
+        isRevertingCheckpoint === true ||
+        projectSelectionRequired ||
+        environmentUnavailable !== null ||
+        isEditingQueuedMessage ||
+        activePendingApproval !== null ||
+        pendingUserInputs.length > 0 ||
+        steeringBlockedByQuestion ||
+        showPlanFollowUpPrompt,
+      onSteerNextQueuedMessage,
+      keybindings,
+      sendShortcut: settings.sendShortcut,
+      routeKind,
+      phase,
+      isCompacting,
+      followUpBehavior,
+      isSoftwareKeyboardOpen,
+      planModeUiEnabled,
+      isLiteralPendingAnswer,
+      pendingUserInputs,
+      promptHistoryMessages,
+      promptHistoryPositionRef,
+      composerDraftTarget,
+      promptRef,
+      composerImagesRef,
+      composerFilesRef,
+      composerTerminalContextsRef,
+      composerPreviewAnnotations,
+      composerReviewComments,
+      composerEditorRef,
+      composerMenuOpenRef,
+      composerMenuItemsRef,
+      activeComposerMenuItemRef,
+      setComposerDraftPrompt,
+      setComposerCursor,
+      setComposerTrigger,
+      setComposerHighlightedItemId,
+      dismissComposerTrigger,
+      toggleInteractionMode,
+      nudgeComposerMenuHighlight,
+      onSelectComposerItem,
+      resolveActiveComposerTrigger,
+      readComposerSnapshot,
+      applyPromptReplacement,
+      submitComposer,
+    })(...args);
 
   const {
     stashQueue,

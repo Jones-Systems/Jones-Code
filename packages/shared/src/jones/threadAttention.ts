@@ -17,12 +17,13 @@ import type {
 import * as DateTime from "effect/DateTime";
 import { backgroundWorkHoldsCompletion as upstreamBackgroundWorkHoldsCompletion } from "../orchestrationV2PendingBackgroundWork.ts";
 
-// Jones monitors have always kept their thread visibly waiting. Preserve that
-// attention policy alongside upstream's explicit awaited-task handling.
-const backgroundWorkHoldsCompletion = (
+// Legacy Jones monitors keep their thread visibly waiting. An explicit new
+// awaited=false marker distinguishes a persistent watchdog from an unknown wait.
+export const backgroundWorkHoldsCompletion = (
   tasks: Parameters<typeof upstreamBackgroundWorkHoldsCompletion>[0],
 ): boolean =>
-  tasks.some((task) => task.kind === "monitor") || upstreamBackgroundWorkHoldsCompletion(tasks);
+  tasks.some((task) => task.kind === "monitor" && task.awaited !== false) ||
+  upstreamBackgroundWorkHoldsCompletion(tasks);
 
 export type PendingSubagentRequest = "approval" | "user_input";
 const EMPTY_SUBAGENT_REQUESTS: ReadonlyMap<ThreadId, PendingSubagentRequest> = new Map();

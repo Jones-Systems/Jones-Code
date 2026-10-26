@@ -2128,7 +2128,7 @@ it.effect(
         const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
         yield* runExecution.startRootRun({
           commandId: CommandId.make(`command:${key}`),
-          appThread: { id: ids.threadId } as OrchestrationV2AppThread,
+          appThread: rootAppThread(ids.threadId),
           providerSessionId: ProviderSessionId.make(`session:${key}`),
           session: {
             events: Stream.empty,
@@ -2342,7 +2342,7 @@ it.effect("drops late root provider-thread writes from a superseded attempt", ()
       const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
       yield* runExecution.startRootRun({
         commandId: CommandId.make(`command:${key}`),
-        appThread: { id: ids.threadId } as OrchestrationV2AppThread,
+        appThread: rootAppThread(ids.threadId),
         providerSessionId: ProviderSessionId.make(`session:${key}`),
         session: {
           events: Stream.empty,
@@ -2532,7 +2532,7 @@ it.effect(
         const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
         yield* runExecution.startRootRun({
           commandId: CommandId.make(`command:${key}`),
-          appThread: { id: ids.threadId } as OrchestrationV2AppThread,
+          appThread: rootAppThread(ids.threadId),
           providerSessionId: ProviderSessionId.make(`session:${key}`),
           session: {
             events: Stream.empty,
@@ -2691,7 +2691,7 @@ it.effect(
         const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
         yield* runExecution.startRootRun({
           commandId: CommandId.make(`command:${key}`),
-          appThread: { id: ids.threadId } as OrchestrationV2AppThread,
+          appThread: rootAppThread(ids.threadId),
           providerSessionId: ProviderSessionId.make(`session:${key}`),
           session: {
             events: Stream.empty,
@@ -3291,7 +3291,7 @@ it.effect(
         const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
         yield* runExecution.startRootRun({
           commandId: CommandId.make("command:subagent-link-survives-terminal"),
-          appThread: { id: ids.threadId } as OrchestrationV2AppThread,
+          appThread: rootAppThread(ids.threadId),
           providerSessionId: ProviderSessionId.make("session:subagent-link-survives-terminal"),
           session: {
             events: Stream.empty,

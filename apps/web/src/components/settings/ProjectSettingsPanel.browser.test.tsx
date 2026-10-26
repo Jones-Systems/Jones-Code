@@ -442,15 +442,19 @@ describe("project settings permissions", () => {
       () => AsyncResult.failure<AuthSessionState, Error>(Cause.fail(new Error("Disconnected"))),
       false,
     ],
-    ["refreshing", () => AsyncResult.waiting(writable()), true],
+    ["refreshing", () => AsyncResult.waiting(writable()), false],
   ] as const)(
-    "uses the current grant while a member's session is %s",
+    "requires a fresh grant while a member's session is %s",
     async (_state, result, allowed) => {
       setup();
       await grant(remoteId, result());
       await using screen = await mountPanel();
       expect(nameInput(screen).disabled).toBe(!allowed);
-      if (!allowed) return;
+      if (!allowed) {
+        expect(state.update).not.toHaveBeenCalled();
+        await grant(remoteId, writable());
+        expect(nameInput(screen).disabled).toBe(false);
+      }
       await rename(screen, "Renamed");
       expect(state.update).toHaveBeenCalledTimes(2);
     },

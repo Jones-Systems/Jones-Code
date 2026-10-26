@@ -90,7 +90,7 @@
     "apps/web/src/components/ui/toast.tsx": "hook",
     "apps/web/src/routes/__root.tsx": "hook",
     "apps/mobile/src/Stack.tsx": "hook",
-    "apps/web/src/components/settings/ProjectSettingsPanel.browser.test.tsx": "upstream-deleted",
+    "apps/web/src/components/settings/ProjectSettingsPanel.browser.test.tsx": "jones-tests-in-upstream",
     "packages/client-runtime/src/state/threadShell.ts": "hook",
     "packages/shared/src/jones/threadAttention.ts": "jones-owned",
     "packages/shared/src/jones/threadAttention.test.ts": "jones-owned",

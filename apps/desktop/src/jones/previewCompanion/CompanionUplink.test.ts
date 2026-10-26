@@ -16,7 +16,7 @@ import {
   type CompanionSocket,
 } from "./UplinkController.ts";
 
-const config = Schema.decodeUnknownSync(DesktopCompanionConfig)({
+const config = Schema.decodeSync(DesktopCompanionConfig)({
   enabled: true,
   environmentId: "env-1",
   hostId: "mini-1",
@@ -64,13 +64,13 @@ class FakeSocket implements CompanionSocket {
     return () => this.errors.delete(listener);
   }
   open() {
-    for (const listener of [...this.opens]) listener();
+    for (const listener of this.opens) listener();
   }
   receive(message: unknown) {
-    for (const listener of [...this.messages]) listener(JSON.stringify(message));
+    for (const listener of this.messages) listener(JSON.stringify(message));
   }
   disconnect(code = 1006) {
-    for (const listener of [...this.closes]) listener(code);
+    for (const listener of this.closes) listener(code);
   }
 }
 
@@ -248,7 +248,7 @@ describe("outbound companion lifecycle", () => {
       environmentId:
         config.environmentId === null
           ? old.environmentId
-          : Schema.decodeUnknownSync(DesktopCompanionConfig)({ ...config, environmentId: "other" })
+          : Schema.decodeSync(DesktopCompanionConfig)({ ...config, environmentId: "other" })
               .environmentId!,
       result: { _tag: "ready", url },
     });

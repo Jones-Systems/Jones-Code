@@ -9417,7 +9417,7 @@ it.layer(QueueGuardTestLayer)("V2 queue dispatch guard and historical observatio
       assert.equal(pending.correlation, "pending");
       assert.equal(pending.turn?.state, "pending");
       assert.isFalse(pending.target?.idle);
-      assert.deepEqual(yield* f.engine.dispatch(f.command), accepted);
+      assert.deepEqual(yield* f.engine.dispatch(f.command), { ...accepted, replayed: true });
       yield* Schema.decodeEffect(OrchestrationCommandObservation)(pending);
     }),
   );

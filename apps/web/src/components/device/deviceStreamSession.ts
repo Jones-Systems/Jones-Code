@@ -166,7 +166,8 @@ export const deviceStreamSessionAtom = Atom.family((key: DeviceStreamKey) =>
       session = { ...session, state };
       get.setSelf(session);
       client.stop();
-      get.registry.set(screenAtom, null);
+      // Registry disposal removes all nodes before finalizers; no screen remains to clear.
+      if (get.registry.getNodes().has(screenAtom)) get.registry.set(screenAtom, null);
     };
     const unbind = key.lifecycle?.bind(retire);
     get.addFinalizer(() => {

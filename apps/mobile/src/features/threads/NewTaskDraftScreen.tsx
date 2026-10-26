@@ -806,9 +806,11 @@ export function NewTaskDraftScreen(props: {
     await startLatchRef.current.run(async () => {
       try {
         messageId = await submitTask();
-      } finally {
+      } catch (error) {
         flow.setSubmitting(false);
+        throw error;
       }
+      flow.setSubmitting(false);
     });
     return messageId;
   }

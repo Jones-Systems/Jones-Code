@@ -346,10 +346,16 @@ const runFoldRowsCache = new WeakMap<
 >();
 let cachedThinkingRow: Extract<ThreadFeedEntry, { readonly type: "thinking" }> | null = null;
 
+// Feed groups are immutable; repeated thread-wide compaction scans must not
+// re-read settled historical activities during streaming presentation.
+const compactionGroups = new WeakMap<ThreadFeedActivityGroup, boolean>();
 export function isContextCompactionActivityGroup(entry: ThreadFeedActivityGroup): boolean {
-  return (
-    entry.activities.length === 1 && entry.activities[0]?.projectedItem.item.type === "compaction"
-  );
+  const cached = compactionGroups.get(entry);
+  if (cached !== undefined) return cached;
+  const result =
+    entry.activities.length === 1 && entry.activities[0]?.projectedItem.item.type === "compaction";
+  compactionGroups.set(entry, result);
+  return result;
 }
 
 export function threadFeedCompactionLabels(feed: ReadonlyArray<ThreadFeedEntry>) {

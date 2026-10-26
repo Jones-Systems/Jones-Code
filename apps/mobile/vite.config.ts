@@ -2,6 +2,9 @@ import { defineConfig } from "vite-plus";
 import "vite-plus/test/config";
 
 const reactTests = [
+  "src/state/use-selected-thread-git-state.test.tsx",
+  "src/features/workstreams/Controls.operations.test.tsx",
+  "src/features/workstreams/useWorkstreams.authorization.test.tsx",
   "src/features/pull-requests/usePullRequestEnvironmentFallback.test.tsx",
   "src/lib/filePreview.test.ts",
   "src/features/threads/thread-inspector-navigation.test.tsx",

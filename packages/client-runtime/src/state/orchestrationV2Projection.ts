@@ -215,9 +215,6 @@ function upsertVisibleTurnItem(
     previous.sourceThreadId === next.sourceThreadId
   ) {
     if (previous.item === item) return rows;
-    if (previous.item.ordinal === item.ordinal) {
-      return replaceProjectionArrayItem(rows, index, { ...next, position: previous.position });
-    }
   }
   if (
     index === -1 &&
@@ -247,9 +244,7 @@ function upsertVisibleTurnItem(
       (following === undefined ||
         (following.visibility === "local" && following.item.ordinal > item.ordinal))
     ) {
-      const updated = [...rows];
-      updated[index] = { ...next, position: index };
-      return updated;
+      return replaceProjectionArrayItem(rows, index, { ...next, position: index });
     }
   }
   // The item goes before the first later local row, as if its old row were

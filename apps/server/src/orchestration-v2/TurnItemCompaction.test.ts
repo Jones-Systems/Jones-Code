@@ -29,7 +29,11 @@ import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
 import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
-import { isPublicOrchestrationEvent, projectDomainEventForWire } from "./WireProjection.ts";
+import {
+  isPublicOrchestrationEvent,
+  projectDomainEventForWire,
+  projectThreadProjectionForWire,
+} from "./WireProjection.ts";
 
 const database = SqlitePersistence.layerMemory;
 const eventStoreProvided = EventStore.layer.pipe(Layer.provideMerge(database));
@@ -260,6 +264,7 @@ it.effect(
         }
       }
       const beforeProjection = yield* projections.getThreadProjection(threadId);
+      const wireProjection = projectThreadProjectionForWire(beforeProjection);
       const highWater = yield* eventStore.latestSequence();
       const bytes = yield* sql<{ readonly rows: number; readonly payload_bytes: number }>`
       SELECT COUNT(*) AS rows, COALESCE(SUM(octet_length(payload_json)), 0) AS payload_bytes
@@ -358,8 +363,8 @@ it.effect(
             );
           }
         }
-        assert.deepEqual(clientProjection?.turnItems, beforeProjection.turnItems);
-        assert.deepEqual(clientProjection?.visibleTurnItems, beforeProjection.visibleTurnItems);
+        assert.deepEqual(clientProjection?.turnItems, wireProjection.turnItems);
+        assert.deepEqual(clientProjection?.visibleTurnItems, wireProjection.visibleTurnItems);
       }
       assert.isTrue((yield* maintenance.verify).valid);
       assert.isTrue((yield* maintenance.rebuild).valid);

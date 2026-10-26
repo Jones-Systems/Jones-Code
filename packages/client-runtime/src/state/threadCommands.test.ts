@@ -114,7 +114,6 @@ const makeHarness = Effect.fn("TestThreadCommands.makeHarness")(function* (optio
   ).pipe(Effect.provide(ThreadHistoryController.layer));
   const runtime = Atom.runtime(
     Layer.mergeAll(
-      Layer.succeed(ThreadHistoryController.ThreadHistoryController, historyController),
       Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, {
         run: (_environmentId, effect) =>
           Effect.provideService(effect, EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
@@ -129,9 +128,7 @@ const makeHarness = Effect.fn("TestThreadCommands.makeHarness")(function* (optio
       Layer.succeed(
         ThreadHistoryController.ThreadHistoryController,
         ThreadHistoryController.ThreadHistoryController.of({
-          register: () => Effect.die("unused"),
-          unregister: () => Effect.void,
-          loadEarlier: () => Effect.die("unused"),
+          ...historyController,
           reconcilePendingWork: (_environmentId, threadId) =>
             options?.reconcilePendingWork?.(threadId) ?? Queue.offer(reconciled, threadId),
         }),

@@ -112,6 +112,28 @@ export function ZoomableImage({
   const width = naturalSize.width * fit * zoom;
   const height = naturalSize.height * fit * zoom;
 
+  const changeZoom = (next: number, point?: { x: number; y: number }) => {
+    const viewport = viewportRef.current;
+    const previous = zoom;
+    const clamped = Math.min(Math.max(MAX_ZOOM, 1 / (fit || 1)), Math.max(MIN_ZOOM, next));
+    if (!viewport || previous === clamped) return;
+    const bounds = viewport.getBoundingClientRect();
+    const x = point ? point.x - bounds.left : viewport.clientWidth / 2;
+    const y = point ? point.y - bounds.top : viewport.clientHeight / 2;
+    const anchorX = (viewport.scrollLeft + x) / previous;
+    const anchorY = (viewport.scrollTop + y) / previous;
+    const clientX = bounds.left + x;
+    const clientY = bounds.top + y;
+    // Lay out the new image size before restoring the pointer's scroll anchor.
+    flushSync(() => {
+      setZoom(clamped);
+      setPercentInput(String(Math.round(clamped * 100)));
+    });
+    const resized = viewport.getBoundingClientRect();
+    viewport.scrollLeft = anchorX * clamped - (clientX - resized.left);
+    viewport.scrollTop = anchorY * clamped - (clientY - resized.top);
+  };
+
   useImperativeHandle(ref, () => ({
     zoomTo: (value) => changeZoom(value),
     actualSize: () => changeZoom(1 / (fit || 1)),
@@ -143,28 +165,6 @@ export function ZoomableImage({
       return true;
     },
   }));
-
-  const changeZoom = (next: number, point?: { x: number; y: number }) => {
-    const viewport = viewportRef.current;
-    const previous = zoom;
-    const clamped = Math.min(Math.max(MAX_ZOOM, 1 / (fit || 1)), Math.max(MIN_ZOOM, next));
-    if (!viewport || previous === clamped) return;
-    const bounds = viewport.getBoundingClientRect();
-    const x = point ? point.x - bounds.left : viewport.clientWidth / 2;
-    const y = point ? point.y - bounds.top : viewport.clientHeight / 2;
-    const anchorX = (viewport.scrollLeft + x) / previous;
-    const anchorY = (viewport.scrollTop + y) / previous;
-    const clientX = bounds.left + x;
-    const clientY = bounds.top + y;
-    // Lay out the new image size before restoring the pointer's scroll anchor.
-    flushSync(() => {
-      setZoom(clamped);
-      setPercentInput(String(Math.round(clamped * 100)));
-    });
-    const resized = viewport.getBoundingClientRect();
-    viewport.scrollLeft = anchorX * clamped - (clientX - resized.left);
-    viewport.scrollTop = anchorY * clamped - (clientY - resized.top);
-  };
 
   const attachSizing = (sizing: HTMLDivElement | null) => {
     if (!sizing || layout !== "panel") return;

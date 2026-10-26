@@ -466,7 +466,7 @@ const makeReader = Effect.fnUntraced(function* (options: SqliteClientConfig) {
   const turnOff = (reader: typeof current, reason: string, permanent = true) =>
     Effect.suspend(() => {
       if (reader !== undefined) {
-        if (current !== reader) return Effect.succeed(undefined);
+        if (current !== reader) return Effect.sync(() => undefined);
         current = undefined;
         // Retire before terminating: a queued ready/reply cannot revive this connection.
         reader.stop(reason);

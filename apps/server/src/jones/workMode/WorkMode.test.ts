@@ -1517,14 +1517,21 @@ it.effect.each(["after-probe", "during-snapshot"] as const)(
         const events = yield* EventStore.EventStoreV2;
         const projections = yield* ProjectionStore.ProjectionStoreV2;
         const firstSequence = yield* events.latestSequence();
+        const sql = yield* SqlClient.SqlClient;
         const ready = yield* Deferred.make<void>();
         const committed = yield* Deferred.make<void, Error>();
         // This fiber is created outside the sweep's reader context.
         const writer = yield* Effect.forkChild(
           Effect.gen(function* () {
             yield* Deferred.await(ready);
-            yield* updateDiscoveryThread({ threadMessagesBlocked: false });
-            const sequence = yield* events.latestSequence();
+            // The new projection reader route must not make the independent writer
+            // wait for the deliberately paused reader transaction.
+            const sequence = yield* sql.withTransaction(
+              Effect.gen(function* () {
+                yield* updateDiscoveryThread({ threadMessagesBlocked: false });
+                return yield* events.latestSequence();
+              }),
+            );
             yield* Deferred.succeed(committed, undefined);
             return sequence;
           }).pipe(

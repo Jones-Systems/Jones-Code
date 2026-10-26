@@ -76,7 +76,7 @@ const installedSourceAncestryAtom = Atom.family((key: string): AncestryAtom => {
     .atom((get) => {
       const prepared = get(environmentSession.preparedConnectionValueAtom(environmentId));
       return prepared._tag === "None" || prepared.value.environmentId !== environmentId
-        ? Effect.succeed(undefined)
+        ? Effect.sync(() => undefined)
         : readInstalledSourceAncestry(prepared.value, pair).pipe(
             Effect.provide(layerRemoteHttpClient(globalThis.fetch)),
           );
