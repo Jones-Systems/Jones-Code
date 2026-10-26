@@ -110,6 +110,18 @@
     "./jones/workstreamsLegacyReceipts": {
       "types": "./src/jones/workstreamsLegacyReceipts.ts",
       "import": "./src/jones/workstreamsLegacyReceipts.ts"
+    },
+    "./jones/workstreamsPeerAuthority": {
+      "types": "./src/jones/workstreamsPeerAuthority.ts",
+      "import": "./src/jones/workstreamsPeerAuthority.ts"
+    },
+    "./jones/workstreamsForwardReadmission": {
+      "types": "./src/jones/workstreamsForwardReadmission.ts",
+      "import": "./src/jones/workstreamsForwardReadmission.ts"
+    },
+    "./jones/workstreamsHomeReadResult": {
+      "types": "./src/jones/workstreamsHomeReadResult.ts",
+      "import": "./src/jones/workstreamsHomeReadResult.ts"
     }
   },
   "scripts": {

@@ -2145,7 +2145,13 @@
     "apps/server/src/jones/workstreams/native/runtime/recovery.test.ts": "jones-owned",
     "apps/server/src/mcp/McpSessionRegistry.ts": "accepted-shared",
     "apps/server/src/mcp/McpSessionRegistry.test.ts": "accepted-shared",
-    "apps/server/src/mcp/McpSessionRegistry.testkit.ts": "accepted-shared"
+    "apps/server/src/mcp/McpSessionRegistry.testkit.ts": "accepted-shared",
+    "packages/contracts/src/jones/workstreamsForwardReadmission.test.ts": "jones-owned",
+    "packages/contracts/src/jones/workstreamsHomeReadResult.test.ts": "jones-owned",
+    "packages/contracts/src/jones/workstreamsPeerAuthority.test.ts": "jones-owned",
+    "packages/contracts/src/jones/workstreamsHomeReadResult.ts": "jones-owned",
+    "packages/contracts/src/jones/workstreamsPeerAuthority.ts": "jones-owned",
+    "packages/contracts/src/jones/workstreamsForwardReadmission.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
