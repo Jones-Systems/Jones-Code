@@ -135,6 +135,8 @@ const browserTestProject = {
   },
   test: {
     name: "browser",
+    // Unit and browser pools each receive a full worker budget; run them in separate groups.
+    sequence: { groupOrder: 1 },
     include: ["src/**/*.browser.test.{ts,tsx}"],
     hookTimeout: 15_000,
     testTimeout: 15_000,
