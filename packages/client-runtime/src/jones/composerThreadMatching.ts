@@ -36,7 +36,7 @@ function matchRelevance(title: string, query: string, terms: ReadonlyArray<strin
   return 1;
 }
 
-export function rankComposerThreadCandidates<
+function rankComposerThreadCandidates<
   T extends { readonly title: string; readonly updatedAt: string },
 >(candidates: ReadonlyArray<T>, query: string): T[] {
   const normalizedQuery = normalizeTitle(query);

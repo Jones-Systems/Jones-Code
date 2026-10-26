@@ -32,12 +32,6 @@ export {
   type ProviderUpdateCandidate,
 } from "@t3tools/client-runtime/jones/provider-updates";
 
-export function collectProviderUpdatePresentationCandidates(
-  providers: ReadonlyArray<ProviderUpdateCandidate>,
-): ProviderUpdateCandidate[] {
-  return dedupeProvidersByDriver(providers);
-}
-
 export type ProviderSettingsUpdateCandidate = ServerProvider & {
   readonly versionAdvisory: NonNullable<ServerProvider["versionAdvisory"]> & {
     readonly canUpdate: true;
@@ -143,69 +137,12 @@ function formatProviderList(providers: ReadonlyArray<Pick<ServerProvider, "drive
   return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
 }
 
-/**
- * Install and provider settings reach only installs the server can update.
- * The rest are updated by the app or tool that installed them, so they get
- * their own sentence whatever else the notice offers.
- */
-function describeInitialUpdates(input: {
-  readonly updateProviders: ReadonlyArray<ProviderUpdateCandidate>;
-  readonly oneClickProviders: ReadonlyArray<ProviderUpdateCandidate>;
-}): string {
-  const fromSettings = dedupeProvidersByDriver(
-    input.updateProviders.filter((provider) => provider.versionAdvisory.canUpdate),
-  );
-  const manual = dedupeProvidersByDriver(
-    input.updateProviders.filter((provider) => !provider.versionAdvisory.canUpdate),
-  );
-  return [
-    input.oneClickProviders.length > 0
-      ? "Install the update now or review provider settings."
-      : fromSettings.length > 0
-        ? `${formatProviderList(fromSettings)} can be updated from provider settings.`
-        : null,
-    manual.length > 0
-      ? `Update ${formatProviderList(manual)} with the app or tool that installed ${manual.length === 1 ? "it" : "them"}.`
-      : null,
-  ]
-    .filter((sentence) => sentence !== null)
-    .join(" ");
-}
-
-export function getProviderUpdateInitialToastView(input: {
-  readonly updateProviders: ReadonlyArray<ProviderUpdateCandidate>;
-  readonly oneClickProviders: ReadonlyArray<ProviderUpdateCandidate>;
-}): ProviderUpdateToastView {
-  return {
-    phase: "initial",
-    type: "warning",
-    title: getProviderUpdateInitialToastTitle(dedupeProvidersByDriver(input.updateProviders)),
-    description: describeInitialUpdates(input),
-  };
-}
-
-export function shouldShowPrimaryProviderUpdateToast(view: ProviderUpdateToastView): boolean {
-  return view.phase !== "running";
-}
-
 function getProviderUpdateRunningToastView(providerCount: number): ProviderUpdateToastView {
   return {
     phase: "running",
     type: "loading",
     title: providerCount === 1 ? "Updating provider" : "Updating providers",
     description: "Running provider update command.",
-  };
-}
-
-export function getProviderUpdateRejectedToastView(
-  providerCount: number,
-  message: string,
-): ProviderUpdateToastView {
-  return {
-    phase: "failed",
-    type: "error",
-    title: providerCount === 1 ? "Provider update failed" : "Provider updates failed",
-    description: message,
   };
 }
 
@@ -513,17 +450,6 @@ export function getProviderUpdateSidebarPillView(
       })
       .find((candidate) => !options?.dismissedKeys?.has(candidate.key)) ?? null
   );
-}
-
-function getProviderUpdateInitialToastTitle(
-  providers: ReadonlyArray<ProviderUpdateCandidate>,
-): string {
-  if (providers.length === 1) {
-    const provider = providers[0]!;
-    const providerName = PROVIDER_DISPLAY_NAMES[provider.driver] ?? provider.driver;
-    return `Update Available: ${providerName} ${formatVersion(provider.versionAdvisory.latestVersion)}`;
-  }
-  return `Updates Available: ${providers.length} providers`;
 }
 
 function getUnverifiedProviderUpdateDescription(providers: ReadonlyArray<ServerProvider>): string {

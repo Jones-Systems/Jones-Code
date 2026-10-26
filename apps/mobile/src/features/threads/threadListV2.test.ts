@@ -1,6 +1,7 @@
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import { createInboxReturnTracker } from "@t3tools/client-runtime/state/thread-inbox";
 import { presentThreadShell } from "@t3tools/client-runtime/state/models";
+import { backgroundWorkHoldsCompletion as upstreamBackgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as DateTime from "effect/DateTime";
 import {
   projectMobileWorkstreamList,
@@ -119,7 +120,7 @@ describe("resolveThreadListV2Status", () => {
 
   it.each([
     { roster: "dev server", task: { kind: "command" }, status: "ready" },
-    { roster: "dev server watchdog", task: { kind: "monitor" }, status: "ready" },
+    { roster: "legacy Jones monitor", task: { kind: "monitor" }, status: "waiting" },
     { roster: "awaited command", task: { kind: "command", awaited: true }, status: "waiting" },
   ] as const)(
     "presents an unseen completion with a $roster roster as $status",
@@ -137,6 +138,9 @@ describe("resolveThreadListV2Status", () => {
 
       expect(resolveThreadListV2Status(thread)).toBe(status);
       expect(threadHasUnseenCompletion(thread)).toBe(true);
+      expect(upstreamBackgroundWorkHoldsCompletion([task])).toBe(
+        "awaited" in task && task.awaited === true,
+      );
     },
   );
 });
