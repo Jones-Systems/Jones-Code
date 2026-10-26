@@ -843,7 +843,7 @@ export const layer: Layer.Layer<
         Option.isSome(plannedContinuity) &&
         (yield* plannedContinuity.value
           .allowWorkStart(projection.thread.id, message.id)
-          .pipe(Effect.catch(() => Effect.succeed(false))));
+          .pipe(Effect.orElseSucceed(() => false)));
       const sessionResult = yield* Effect.result(
         keepWarm && !plannedWorkResume
           ? providerSessions.get(providerSessionId).pipe(

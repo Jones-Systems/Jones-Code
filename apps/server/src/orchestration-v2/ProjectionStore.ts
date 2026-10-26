@@ -884,7 +884,7 @@ function validateDeletionProvenance(
     event.type !== "run.updated"
   )
     return fail();
-  const proof = Schema.decodeUnknownSync(LegacyDeletionProvenance)(incoming);
+  const proof = Schema.decodeSync(LegacyDeletionProvenance)(incoming);
   const { deletion: _deletion, ...original } = next.legacyReleaseDecision!;
   const control = proof.control;
   if (
@@ -967,7 +967,7 @@ function validateFailureDecision(
     throw new Error("Malformed or replaced legacy workspace-failure provenance.");
   };
   if (incoming === undefined) return false;
-  const decision = Schema.decodeUnknownSync(LegacyPreparationFailureDecision)(incoming);
+  const decision = Schema.decodeSync(LegacyPreparationFailureDecision)(incoming);
   const { deletion: _incomingDeletion, ...original } = decision;
   const { deletion: _acceptedDeletion, ...previous } = accepted ?? decision;
   if (
@@ -1049,7 +1049,7 @@ function validateFailureDecision(
       return fail();
     return true;
   }
-  const deletion = Schema.decodeUnknownSync(LegacyFailureDeletionProvenance)(decision.deletion);
+  const deletion = Schema.decodeSync(LegacyFailureDeletionProvenance)(decision.deletion);
   const proof = deletion.provenance;
   if (
     current.status !== "failed" ||
@@ -7652,7 +7652,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getTimelinePage: readOnReader(getTimelinePage),
       getThreadHistoryPage: readOnReader(getThreadHistoryPage),
       searchThread: readOnReader(searchThread),
-      getOpenRemoteDelegatedTasks: readOnReader(getOpenRemoteDelegatedTasks),
+      getOpenRemoteDelegatedTasks: getOpenRemoteDelegatedTasks.pipe(NodeSqliteClient.readOnly),
       hasQueuedToolBoundaryWork: readOnReader(hasQueuedToolBoundaryWork),
       getQueuedToolBoundaryContext: readOnReader(getQueuedToolBoundaryContext),
       getTimelinePages: readOnReader(getTimelinePages),

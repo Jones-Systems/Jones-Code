@@ -6,7 +6,6 @@ import {
   MessageId,
   NodeId,
   RunId,
-  type OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
 
 import {
@@ -114,6 +113,9 @@ describe("ThreadPullRequestServiceV2 reads", () => {
         const turnLookup = yield* Deferred.make<void>();
         const lookups: Array<{ readonly refresh: boolean }> = [];
         const dependencies = Layer.mergeAll(
+          Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({
+            list: () => Effect.succeed({ snapshotSequence: 1, threads: [thread] }),
+          }),
           Layer.mock(Orchestrator.OrchestratorV2)({
             streamDomainEvents: Stream.fromQueue(domainEvents),
             getShellSnapshot: () =>
@@ -341,7 +343,7 @@ describe("ThreadPullRequestServiceV2 reads", () => {
               remoteName: "origin",
               remoteUrl: "git@github.com:pingdotgg/t3code.git",
             },
-            provider: "github" as const,
+            provider: SourceControlProviderKind.make("github"),
             displayName: "pingdotgg/t3code",
             owner: "pingdotgg",
             name: "t3code",
@@ -366,7 +368,7 @@ describe("ThreadPullRequestServiceV2 reads", () => {
             }),
             Layer.mock(ProjectStore.ProjectStoreV2)({
               listShells: () => Effect.succeed([project]),
-              getShell: () => Effect.succeed(Option.some(project)),
+              getShell: () => Effect.succeedSome(project),
             }),
             Layer.mock(GitManager.GitManager)({
               branchPullRequest: (_input, options) =>
@@ -394,6 +396,9 @@ describe("ThreadPullRequestServiceV2 reads", () => {
             Layer.mock(PullRequestService.PullRequestService)({}),
             Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
               resolve: () => Effect.succeed(identity),
+            }),
+            Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+              shouldRunOpportunisticWork: Effect.succeed(true),
             }),
             Layer.succeed(ServerActivation.ServerActivation, Deferred.await(activation)),
             Layer.succeed(
@@ -446,7 +451,7 @@ describe("ThreadPullRequestServiceV2 reads", () => {
             remoteName: "origin",
             remoteUrl: "git@github.com:acme/project.git",
           },
-          provider: "github" as const,
+          provider: SourceControlProviderKind.make("github"),
           owner: "acme",
           name: "project",
         };
@@ -512,7 +517,7 @@ describe("ThreadPullRequestServiceV2 reads", () => {
           }),
           Layer.mock(ProjectStore.ProjectStoreV2)({
             listShells: () => Effect.succeed([project]),
-            getShell: () => Effect.succeed(Option.some(project)),
+            getShell: () => Effect.succeedSome(project),
           }),
           Layer.mock(GitManager.GitManager)({
             branchPullRequest: (_input, options) =>
@@ -531,6 +536,9 @@ describe("ThreadPullRequestServiceV2 reads", () => {
           Layer.mock(PullRequestService.PullRequestService)({}),
           Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
             resolve: () => Effect.succeed(identity),
+          }),
+          Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+            shouldRunOpportunisticWork: Effect.succeed(true),
           }),
           Layer.succeed(ServerActivation.ServerActivation, Deferred.await(activation)),
           Layer.succeed(
@@ -757,12 +765,15 @@ describe("ThreadPullRequestServiceV2 reads", () => {
                     remoteName: "origin",
                     remoteUrl: "git@github.com:pingdotgg/t3code.git",
                   },
-                  provider: "github" as const,
+                  provider: SourceControlProviderKind.make("github"),
                   displayName: "pingdotgg/t3code",
                   owner: "pingdotgg",
                   name: "t3code",
                 };
               }),
+          }),
+          Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+            shouldRunOpportunisticWork: Effect.succeed(true),
           }),
           Layer.succeed(ServerActivation.ServerActivation, Deferred.await(activation)),
           Layer.succeed(

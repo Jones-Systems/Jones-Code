@@ -29,6 +29,7 @@ import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
 import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import { isPublicOrchestrationEvent, projectDomainEventForWire } from "./WireProjection.ts";
 
 const database = SqlitePersistence.layerMemory;
 const eventStoreProvided = EventStore.layer.pipe(Layer.provideMerge(database));
@@ -343,10 +344,13 @@ it.effect(
           ...writes.filter((entry) => entry.sequence <= cursor),
           ...cursorReplay,
         ]) {
-          clientProjection = applyOrchestrationV2ProjectionEvent(clientProjection, stored.event, {
-            partialTimeline: true,
-            latestLocalTurnOrdinal,
-          });
+          if (isPublicOrchestrationEvent(stored.event)) {
+            clientProjection = applyOrchestrationV2ProjectionEvent(
+              clientProjection,
+              projectDomainEventForWire(stored.event),
+              { partialTimeline: true, latestLocalTurnOrdinal },
+            );
+          }
           if (stored.event.type === "turn-item.updated") {
             latestLocalTurnOrdinal = Math.max(
               latestLocalTurnOrdinal ?? 0,

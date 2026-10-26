@@ -181,7 +181,7 @@ const decodeNativePayload = Schema.decodeUnknownEffect(NativeOrchestrationEffect
 export const decodeOrchestrationEffectPayloadV2 = Effect.fn(
   "EffectOutbox.decodeOrchestrationEffectPayloadV2",
 )(function* (payload: string) {
-  const raw = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(payload);
+  const raw = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(payload);
   if (
     typeof raw === "object" &&
     raw !== null &&

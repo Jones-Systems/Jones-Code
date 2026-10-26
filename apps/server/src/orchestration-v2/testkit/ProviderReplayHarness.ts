@@ -474,7 +474,7 @@ export function layerWithRegistryAndServices<Error>(
         }),
         layerServerSettings,
         Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
-          getInstance: () => Effect.void,
+          getInstance: () => Effect.succeed(undefined),
         }),
         layerRunExecutionServiceProvided,
         layerRuntime,

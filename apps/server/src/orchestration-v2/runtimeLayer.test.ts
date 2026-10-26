@@ -71,6 +71,7 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
@@ -3137,18 +3138,16 @@ it.layer(layerTest)("RuntimeLayer.layer lifecycle", (it) => {
                       }
                       if (number === 7) yield* Deferred.await(releaseFingerprint);
                       if (number === 6) {
-                        return yield* Effect.fail(
-                          new PullRequestOperationError({
-                            operation: "watchFingerprint",
+                        return yield* new PullRequestOperationError({
+                          operation: "watchFingerprint",
+                          detail: "paused",
+                          cause: new PullRequestProviderError({
+                            provider: SourceControlProviderKind.make("github"),
+                            operation: "getChangeRequestWatchFingerprint",
+                            reason: "rate-limited",
                             detail: "paused",
-                            cause: new PullRequestProviderError({
-                              provider: SourceControlProviderKind.make("github"),
-                              operation: "getChangeRequestWatchFingerprint",
-                              reason: "rate-limited",
-                              detail: "paused",
-                            }),
                           }),
-                        );
+                        });
                       }
                       return number === 5 ? null : { status: "OPEN settled", remarks: "0" };
                     }).pipe(
@@ -7438,7 +7437,7 @@ const legacyGuardOwnerFixture = Effect.fn("legacyGuardOwnerFixture")(function* (
         type: "setup-policy",
         setup: { status: "no_script" },
       });
-    const noControl = yield* Schema.decodeUnknownEffect(LegacyNoTerminalControl)({
+    const noControl = yield* Schema.decodeEffect(LegacyNoTerminalControl)({
       version: 1,
       type: "no_control",
       policy: receivingPolicy,
@@ -7493,7 +7492,7 @@ const legacyGuardOwnerFixture = Effect.fn("legacyGuardOwnerFixture")(function* (
   const controlGeneration = legacyPayloadHash(
     canonicalLegacyPayload({ preparationGeneration: generation, terminalId }),
   );
-  const binding = yield* Schema.decodeUnknownEffect(LegacyOwnedTerminalControl)({
+  const binding = yield* Schema.decodeEffect(LegacyOwnedTerminalControl)({
     version: 1,
     policy: receivingPolicy,
     runId: born.id,
@@ -7730,9 +7729,9 @@ it.layer(LegacyGuardOwnerTestLayer, { excludeTestServices: true })(
           const history = Array.from(
             yield* store.read({ threadId: f.threadId }).pipe(Stream.runCollect),
           );
-          const memory = yield* Effect.gen(function* () {
-            return yield* ProjectionStore.ProjectionStoreV2;
-          }).pipe(Effect.provide(Layer.fresh(ProjectionStore.layerMemory)));
+          const memory = yield* ProjectionStore.ProjectionStoreV2.pipe(
+            Effect.provide(Layer.fresh(ProjectionStore.layerMemory)),
+          );
           for (const stored of history) yield* memory.apply(stored.event);
           assert.deepEqual(
             (yield* memory.getThreadProjection(f.threadId)).runs[0]!.legacyReleaseDecision,
@@ -8413,9 +8412,9 @@ it.layer(QueueGuardTestLayer)("V2 queue dispatch guard and historical observatio
         const history = Array.from(
           yield* store.read({ threadId: f.threadId }).pipe(Stream.runCollect),
         );
-        const memory = yield* Effect.gen(function* () {
-          return yield* ProjectionStore.ProjectionStoreV2;
-        }).pipe(Effect.provide(Layer.fresh(ProjectionStore.layerMemory)));
+        const memory = yield* ProjectionStore.ProjectionStoreV2.pipe(
+          Effect.provide(Layer.fresh(ProjectionStore.layerMemory)),
+        );
         for (const stored of history) yield* memory.apply(stored.event);
         assert.equal(
           (yield* memory.getThreadProjection(f.threadId)).runs[0]!.legacyPreparation?.steps[0]
@@ -9419,7 +9418,7 @@ it.layer(QueueGuardTestLayer)("V2 queue dispatch guard and historical observatio
       assert.equal(pending.turn?.state, "pending");
       assert.isFalse(pending.target?.idle);
       assert.deepEqual(yield* f.engine.dispatch(f.command), accepted);
-      yield* Schema.decodeUnknownEffect(OrchestrationCommandObservation)(pending);
+      yield* Schema.decodeEffect(OrchestrationCommandObservation)(pending);
     }),
   );
   it.effect("rejects a stale target without events and preserves rejected replay", () =>
