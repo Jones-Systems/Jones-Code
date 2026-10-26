@@ -1,3 +1,4 @@
+import { makeReportLanes } from "@t3tools/client-runtime/jones/activity/report-lanes";
 import { EnvironmentRegistry } from "@t3tools/client-runtime/connection";
 import { EnvironmentRpcSubscriptionObserver, request } from "@t3tools/client-runtime/rpc";
 import {
@@ -55,6 +56,10 @@ export const layerReporter = Layer.effectDiscard(
     const requestReport = () => Queue.offerUnsafe(reportRequests, undefined);
     let appState = AppState.currentState;
 
+    const lanes = yield* makeReportLanes(
+      (environmentId: EnvironmentId, report: ClientActivityReportInput) =>
+        registry.run(environmentId, request(WS_METHODS.serverReportClientActivity, report)),
+    );
     const report = Effect.gen(function* () {
       const observedAtMs = yield* Clock.currentTimeMillis;
       const active = appState === "active";
@@ -62,29 +67,22 @@ export const layerReporter = Layer.effectDiscard(
       yield* Effect.forEach(
         entries.keys(),
         (environmentId) =>
-          registry
-            .run(
-              environmentId,
-              request(WS_METHODS.serverReportClientActivity, {
-                environmentId: environmentId as EnvironmentId,
-                clientId,
-                clientKind: "mobile",
-                visible: active,
-                focused: active,
-                recentlyInteracted: active,
-                appState: normalizeAppState(appState),
-                scopes: [
-                  ...BASELINE_SCOPES,
-                  ...retainedMobileBackgroundScopes(environmentId as EnvironmentId),
-                ],
-                ttlMs: LEASE_TTL_MS,
-                observedAt: DateTime.makeUnsafe(observedAtMs),
-              }),
-            )
-            // Not `ignore`: tearing down an environment mid-request interrupts its report,
-            // and an interrupt leaking out here would end the reporting loop for good.
-            .pipe(Effect.ignoreCause),
-        { concurrency: "unbounded", discard: true },
+          lanes.submit(environmentId, {
+            environmentId: environmentId as EnvironmentId,
+            clientId,
+            clientKind: "mobile",
+            visible: active,
+            focused: active,
+            recentlyInteracted: active,
+            appState: normalizeAppState(appState),
+            scopes: [
+              ...BASELINE_SCOPES,
+              ...retainedMobileBackgroundScopes(environmentId as EnvironmentId),
+            ],
+            ttlMs: LEASE_TTL_MS,
+            observedAt: DateTime.makeUnsafe(observedAtMs),
+          }),
+        { discard: true },
       );
     }).pipe(Effect.withSpan("mobile.backgroundActivity.report"));
 
@@ -104,7 +102,9 @@ export const layerReporter = Layer.effectDiscard(
         }),
     );
     yield* SubscriptionRef.changes(registry.entries).pipe(
-      Stream.runForEach(() => Effect.sync(requestReport)),
+      Stream.runForEach((entries) =>
+        lanes.retain(entries.keys()).pipe(Effect.andThen(Effect.sync(requestReport))),
+      ),
       Effect.forkScoped,
     );
     yield* Stream.fromQueue(reportRequests).pipe(

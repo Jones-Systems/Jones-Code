@@ -1,7 +1,9 @@
+import * as ThreadMetadataReads from "./jones/orchestration/threadMetadataReads.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
   DEFAULT_SERVER_SETTINGS,
+  ThreadId,
   ProjectId,
   ProviderInstanceId,
   ProviderDriverKind,
@@ -14,6 +16,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { HttpServer } from "effect/http";
 import * as NetAddress from "effect/net/NetAddress";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -57,6 +60,9 @@ it.effect.each([
   "disabled-default",
   "launch-failure",
   "project-failure",
+  "existing-root",
+  "subagent-only",
+  "count-failure",
 ] as const)("keeps bootstrap launch failures separate from project failures: %s", (scenario) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -65,6 +71,26 @@ it.effect.each([
         scenario === "disabled-default" ? "custom" : "codex",
       );
       const events: ServerLifecycleStreamEvent[] = [];
+      const heartbeat = yield* Deferred.make<{ threadCount: number; projectCount: number }>();
+      const existingId = ThreadId.make("bootstrap-existing-root");
+      const subagentId = ThreadId.make("bootstrap-subagent");
+      const queries: ThreadMetadataReads.ThreadMetadataQuery[] = [];
+      const metadataDefaults: Omit<ThreadMetadataReads.ThreadMetadata, "id" | "lineage"> = {
+        projectId,
+        branch: null,
+        worktreePath: null,
+        pullRequests: [],
+        archivedAt: null,
+        settledOverride: null,
+        settledAt: null,
+        createdAt: DateTime.makeUnsafe("2026-10-01T00:00:00Z"),
+        pinnedAt: null,
+        pinOrderKey: null,
+        deletedAt: null,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+      };
+      let launchCalls = 0;
       const recovery = {
         terminalizedRuns: 0,
         stoppedSessions: 0,
@@ -75,6 +101,50 @@ it.effect.each([
       const imports = { importedThreadCount: 0, importedMessageCount: 0 };
       const sql = yield* SqlClient.SqlClient;
       const dependencies = Layer.mergeAll(
+        Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({
+          count:
+            scenario === "count-failure"
+              ? Effect.fail(
+                  new ThreadMetadataReads.ThreadMetadataReadError({
+                    cause: "synthetic count failure",
+                  }),
+                )
+              : Effect.succeed(7),
+          list: (query = {}) =>
+            Effect.sync(() => {
+              queries.push(query);
+              return {
+                snapshotSequence: 0,
+                threads:
+                  scenario === "existing-root" || scenario === "subagent-only"
+                    ? [
+                        {
+                          ...metadataDefaults,
+                          id: subagentId,
+                          lineage: {
+                            parentThreadId: existingId,
+                            rootThreadId: existingId,
+                            relationshipToParent: "subagent" as const,
+                          },
+                        },
+                        ...(scenario === "existing-root"
+                          ? [
+                              {
+                                ...metadataDefaults,
+                                id: existingId,
+                                lineage: {
+                                  parentThreadId: null,
+                                  rootThreadId: existingId,
+                                  relationshipToParent: null,
+                                },
+                              },
+                            ]
+                          : []),
+                      ]
+                    : [],
+              };
+            }),
+        }),
         NodeCrypto.layer,
         Path.layer,
         Layer.succeed(SqlClient.SqlClient, sql),
@@ -166,6 +236,7 @@ it.effect.each([
         }),
         Layer.mock(ProjectStore.ProjectStoreV2)({}),
         Layer.mock(ProjectService.ProjectService)({
+          snapshot: Effect.succeed({ projects: [], updatedAt: "2026-01-01T00:00:00Z" }),
           bootstrap: () =>
             scenario === "project-failure"
               ? Effect.die("project bootstrap failed")
@@ -199,6 +270,7 @@ it.effect.each([
         }),
         Layer.mock(ThreadLaunch.ThreadLaunchService)({
           launch: (input) => {
+            launchCalls++;
             assert.equal(input.modelSelection.instanceId, instanceId);
             return scenario === "launch-failure"
               ? Effect.fail(
@@ -223,7 +295,16 @@ it.effect.each([
           prepareTrial: Effect.succeed(undefined),
         }),
         Layer.mock(GitVcsDriver.GitVcsDriver)({}),
-        Layer.mock(AnalyticsService.AnalyticsService)({}),
+        Layer.mock(AnalyticsService.AnalyticsService)({
+          record: (event, properties) =>
+            event === "server.boot.heartbeat"
+              ? Deferred.succeed(heartbeat, {
+                  threadCount: Number(properties?.threadCount),
+                  projectCount: Number(properties?.projectCount),
+                }).pipe(Effect.asVoid)
+              : Effect.void,
+          recordOwners: () => Effect.void,
+        }),
         // No provider logins or Connect link, so startup records no owners.
         FileSystem.layerNoop({}),
         Layer.mock(ServerSecretStore.ServerSecretStore)({ get: () => Effect.succeedNone }),
@@ -247,12 +328,23 @@ it.effect.each([
           assert.isDefined(welcome);
           if (welcome?.type === "welcome") {
             assert.equal(welcome.payload.bootstrapProjectId, projectId);
-            assert.isUndefined(welcome.payload.bootstrapThreadId);
+            if (scenario === "existing-root")
+              assert.equal(welcome.payload.bootstrapThreadId, existingId);
+            else assert.isUndefined(welcome.payload.bootstrapThreadId);
           }
+        }
+        if (scenario !== "project-failure") {
+          assert.deepEqual(queries, [{ projectId, location: "active" }]);
+          assert.equal(launchCalls, scenario === "existing-root" ? 0 : 1);
+          const counts = yield* Deferred.await(heartbeat);
+          assert.deepEqual(counts, {
+            threadCount: scenario === "count-failure" ? 0 : 7,
+            projectCount: 0,
+          });
         }
       }).pipe(
         Effect.provide(ServerRuntimeStartup.layerWithOptions().pipe(Layer.provide(dependencies))),
-        Effect.provideService(ServerActivation, Effect.never),
+        Effect.provideService(ServerActivation, Effect.void),
       );
     }),
   ).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),

@@ -1,3 +1,4 @@
+import * as ThreadMetadataReads from "../../../jones/orchestration/threadMetadataReads.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
 import {
@@ -116,6 +117,7 @@ it.effect("blocks foreign text edits and answers while preserving self controls 
     };
     const commands: OrchestrationV2ServerCommand[] = [];
     const dependencies = Layer.mergeAll(
+      Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({}),
       NodeCrypto.layer,
       Layer.mock(ThreadSearch.ThreadSearch)({}),
       Layer.mock(ScheduledTasks.ScheduledTaskService)({}),

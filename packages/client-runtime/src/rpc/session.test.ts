@@ -266,7 +266,7 @@ const completeInitialConfig = Effect.fn("TestRpcSessionFactory.completeInitialCo
   expect(request).toMatchObject({
     _tag: "Request",
     tag: WS_METHODS.subscribeServerConfig,
-    payload,
+    payload: { ...(payload as object), workspaceSnapshotsOnDemand: true },
   });
   socket.serverMessage(
     encodeJson({

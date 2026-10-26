@@ -62,6 +62,32 @@ const BuildMetadata = Schema.Struct({
   ),
 });
 const ActivationJournal = Schema.Struct({
+  preEffect: Schema.optionalKey(
+    Schema.Struct({
+      phase: Schema.Literals(["intent", "preparing", "quiescent"]),
+      step: Schema.Literals([
+        "storage",
+        "reserve",
+        "bundle",
+        "stop-processes",
+        "quiescence",
+        "pair",
+      ]),
+      reason: Schema.String,
+      diagnostics: Schema.optionalKey(
+        Schema.Record(Schema.String, Schema.Union([Schema.String, Schema.Number])),
+      ),
+      relaunch: Schema.Literals(["started", "skipped"]),
+    }),
+  ),
+  phaseBeforeBlock: Schema.optionalKey(Schema.String),
+  legacySettlement: Schema.optionalKey(
+    Schema.Struct({
+      basis: Schema.Literals(["interrupted-preparation", "unstarted-activation"]),
+      settledBy: Schema.Literal("startup"),
+      evidence: Schema.Record(Schema.String, Schema.Union([Schema.String, Schema.Boolean])),
+    }),
+  ),
   intent: JonesInstallIntent,
   phase: Schema.String,
   message: Schema.optionalKey(Schema.String),
@@ -954,7 +980,9 @@ export class JonesDesktopUpdateController {
             this.#lastJournal = journal;
             this.#terminalPhase = committed ? "committed" : "rolled-back";
             this.#activationMessage =
-              journal.message ??
+              (rolledBack && journal.preEffect !== undefined
+                ? `Update did not start; nothing changed. Transaction ${entry}.`
+                : journal.message) ??
               (committed
                 ? `Update ${entry} committed; Jones Code ${active.version} is active.`
                 : `Update ${entry} rolled back; Jones Code ${active.version} remains active.`);

@@ -1,7 +1,10 @@
 {
   "schema": "jones.boundary-fragment/v1",
   "feature": "sqlite-checkpoint-lifecycle",
-  "jonesOwnedPaths": [],
+  "jonesOwnedPaths": [
+    "packages/shared/src/jones/sqliteWriterAdmission.fixture.ts",
+    "packages/shared/src/jones/sqliteWriterAdmission.test.ts"
+  ],
   "hookPaths": [],
   "tombstones": [],
   "allowedImports": []

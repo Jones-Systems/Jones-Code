@@ -1,3 +1,4 @@
+import { URGENT_ACTION_EFFECT_TYPES } from "../jones/orchestration/actionWorkerAdmission.ts";
 import type { NativeCreationExecutionReferenceV2 } from "../jones/nativeCreation/NativeCreationExecutionTypes.ts";
 import { confirmedNativeCompletion } from "../jones/nativeCreation/NativeEffectCompletion.ts";
 import { CommandId, ThreadId } from "@t3tools/contracts";
@@ -128,9 +129,11 @@ export interface EffectOutboxV2Shape {
     readonly leaseDurationMs: number;
     readonly excludeRestartContinuations?: boolean;
     readonly excludeTitleGeneration?: boolean;
+    readonly urgentOnly?: boolean;
   }) => Effect.Effect<Option.Option<OrchestrationEffectV2>, EffectOutboxError>;
   readonly nextClaimableAt: (input?: {
     readonly excludeTitleGeneration?: boolean;
+    readonly urgentOnly?: boolean;
   }) => Effect.Effect<Option.Option<DateTime.Utc>, EffectOutboxError>;
   readonly succeed: (input: {
     readonly effectId: string;
@@ -246,6 +249,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
       availableBefore?: string,
       excludeRestartContinuations = false,
       excludeTitleGeneration = false,
+      urgentOnly = false,
     ) => {
       const predicate = sql`
         ${
@@ -328,9 +332,12 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             )
         )
       `;
-      return excludeTitleGeneration
+      const titlePredicate = excludeTitleGeneration
         ? sql`${predicate} AND candidate.effect_type != 'thread-title.generate'`
         : predicate;
+      return urgentOnly
+        ? sql`${titlePredicate} AND candidate.effect_type IN ${sql.in(URGENT_ACTION_EFFECT_TYPES)}`
+        : titlePredicate;
     };
 
     const cancellationSignal = (effectId: string) => {
@@ -528,6 +535,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           leaseDurationMs,
           excludeRestartContinuations = false,
           excludeTitleGeneration = false,
+          urgentOnly = false,
         }) {
           const now = yield* DateTime.now;
           const nowIso = DateTime.formatIso(now);
@@ -549,7 +557,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             WHERE effect_id = (
               SELECT candidate.effect_id
               FROM orchestration_v2_effect_outbox AS candidate
-              WHERE ${claimableCandidatePredicate(nowIso, excludeRestartContinuations, excludeTitleGeneration)}
+              WHERE ${claimableCandidatePredicate(nowIso, excludeRestartContinuations, excludeTitleGeneration, urgentOnly)}
                 AND ${excludeRestartContinuations ? sql`candidate.effect_type != 'provider-runtime.continue'` : sql`1 = 1`}
               ORDER BY candidate.available_at ASC, candidate.created_at ASC, candidate.effect_id ASC
               LIMIT 1
@@ -565,11 +573,14 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         Effect.mapError((cause) => new EffectOutboxError({ operation: "claim", cause })),
       ),
       nextClaimableAt: Effect.fnUntraced(
-        function* (input?: { readonly excludeTitleGeneration?: boolean }) {
+        function* (input?: {
+          readonly excludeTitleGeneration?: boolean;
+          readonly urgentOnly?: boolean;
+        }) {
           const rows = yield* sql<{ readonly available_at: string | null }>`
             SELECT MIN(candidate.available_at) AS available_at
             FROM orchestration_v2_effect_outbox AS candidate
-            WHERE ${claimableCandidatePredicate(undefined, false, input?.excludeTitleGeneration)}
+            WHERE ${claimableCandidatePredicate(undefined, false, input?.excludeTitleGeneration, input?.urgentOnly)}
           `.pipe(Effect.withTracerEnabled(false));
           const availableAt = rows[0]?.available_at;
           if (availableAt === undefined || availableAt === null) return Option.none();

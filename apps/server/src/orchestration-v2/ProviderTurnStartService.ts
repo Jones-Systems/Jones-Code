@@ -1,4 +1,7 @@
 import { goalResumeNeedsNativeThread } from "../jones/goals/preserveGoalConversation.ts";
+import * as TaskContinuationStore from "../jones/taskContinuation/TaskContinuationStore.ts";
+import { requirementFor, loadedSessionMatches } from "../jones/taskContinuation/guard.ts";
+import { RequiredNativeSession } from "../jones/taskContinuation/requiredNativeSession.ts";
 import { WorkspaceLifecycle as WorkspaceLifecycleService } from "../jones/workspaceLifecycle/WorkspaceLifecycle.ts";
 import { withOperation } from "../jones/workspaceLifecycle/NativeOperation.ts";
 import * as ProviderSwitchService from "./ProviderSwitchService.ts";
@@ -173,6 +176,9 @@ export const layer: Layer.Layer<
     const projects = yield* ProjectService.ProjectService;
     const providerAuth = yield* ProviderAuthService.ProviderAuthService;
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+    const continuationStore = yield* Effect.serviceOption(
+      TaskContinuationStore.TaskContinuationStore,
+    );
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const plannedContinuity = yield* Effect.serviceOption(
       PlannedUpdateContinuity.PlannedUpdateContinuity,
@@ -479,6 +485,34 @@ export const layer: Layer.Layer<
           });
         },
       );
+      const continuation = yield* Effect.result(
+        requirementFor(Option.getOrUndefined(continuationStore), projection, run, attempt),
+      );
+      if (
+        continuation._tag === "Failure" ||
+        (continuation.success !== undefined && nativeForkTransfer !== undefined)
+      ) {
+        yield* settleRunBeforeStart({
+          signal: "task-continuation-native-identity",
+          status: "failed",
+          now: yield* DateTime.now,
+          providerInstanceId: run.providerInstanceId,
+          itemProviderThreadId: providerThread.id,
+          item: {
+            type: "error",
+            title:
+              "Delegated task continuation could not resume its original provider conversation",
+            failure: makeProviderFailure({
+              class: "provider_error",
+              message: "The required task continuation binding is unavailable or changed.",
+              ...(continuation._tag === "Failure" ? { cause: continuation.failure } : {}),
+            }),
+          },
+        });
+        return;
+      }
+      const requiredNativeSession = continuation.success;
+      const guarded = requiredNativeSession !== undefined;
       const admission = yield* Effect.result(
         restartPreparation
           .assertThreadOpen(input.threadId)
@@ -902,7 +936,7 @@ export const layer: Layer.Layer<
             }),
           );
         }
-        if (preserveNativeGoal && providerThread.nativeThreadRef === null) {
+        if ((preserveNativeGoal || guarded) && providerThread.nativeThreadRef === null) {
           return yield* loadFromProvider(
             Effect.fail(
               new ProviderAdapter.ProviderAdapterTurnStartError({
@@ -965,6 +999,7 @@ export const layer: Layer.Layer<
         if (
           keepWarm ||
           preserveNativeGoal ||
+          guarded ||
           findSteerFailure(resumed.failure) !== undefined ||
           hasUnknownRuntimeBinding(resumed.failure)
         ) {
@@ -1061,18 +1096,24 @@ export const layer: Layer.Layer<
       });
       if (loadedProviderThread === undefined) return;
       if (
-        (plannedWorkResume || preserveNativeGoal) &&
-        (loadedProviderThread.nativeThreadRef?.nativeId !==
-          providerThread.nativeThreadRef?.nativeId ||
+        (plannedWorkResume || preserveNativeGoal || guarded) &&
+        ((requiredNativeSession !== undefined &&
+          !loadedSessionMatches(requiredNativeSession, providerThread, loadedProviderThread)) ||
+          loadedProviderThread.nativeThreadRef?.nativeId !==
+            providerThread.nativeThreadRef?.nativeId ||
           loadedProviderThread.nativeThreadRef?.driver !== providerThread.nativeThreadRef?.driver)
       ) {
         yield* settleStartFailure({
-          signal: preserveNativeGoal
-            ? "goal-native-identity-changed"
-            : "planned-work-native-identity-changed",
-          title: preserveNativeGoal
-            ? "Goal could not resume its existing provider conversation"
-            : "Work Mode could not resume its existing provider conversation",
+          signal: guarded
+            ? "task-continuation-native-identity"
+            : preserveNativeGoal
+              ? "goal-native-identity-changed"
+              : "planned-work-native-identity-changed",
+          title: guarded
+            ? "Delegated task continuation could not resume its original provider conversation"
+            : preserveNativeGoal
+              ? "Goal could not resume its existing provider conversation"
+              : "Work Mode could not resume its existing provider conversation",
           error: new ProviderTurnStartError({
             runId,
             cause: preserveNativeGoal
@@ -1517,7 +1558,9 @@ export const layer: Layer.Layer<
                   ? {}
                   : { runtimeGeneration: stopRuntimeGeneration }),
               });
-            yield* start(dispatchInput);
+            yield* start(dispatchInput).pipe(
+              Effect.provideService(RequiredNativeSession, requiredNativeSession),
+            );
           },
           Effect.mapError((cause) =>
             cause._tag === "ProviderAdapterTurnStartError"
@@ -1746,6 +1789,7 @@ export const layer: Layer.Layer<
               .map((turn) => turn.ordinal),
           ) + 1,
         nativeThreadHasTurns:
+          guarded ||
           nativeInputRunIds.size > 0 ||
           (legacyInputRunIds.size > 0 &&
             sameNativeThread &&

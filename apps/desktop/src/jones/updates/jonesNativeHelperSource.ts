@@ -71,15 +71,15 @@ ${jonesPairedStateSource.syncTree}
 def same_binding(left, right):
     return left == right and left.get('protocol') == PROTOCOL and left.get('owner') == 'desktop'
 
-def process_identity(pid):
-    result = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'lstart=', '-o', 'command='], capture_output=True, text=True)
+def process_identity(pid, deadline=None):
+    result = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'lstart=', '-o', 'command='], capture_output=True, text=True, timeout=None if deadline is None else max(0.001, deadline - time.monotonic()))
     if result.returncode == 1 and not result.stdout.strip() and not result.stderr.strip(): return None
     if result.returncode != 0 or result.stderr.strip() or len(result.stdout.strip().splitlines()) != 1:
         raise RuntimeError('Process inspection failed; signal withheld.')
     return result.stdout.strip()
 
-def process_start(pid):
-    result = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'lstart=', '-o', 'stat='], capture_output=True, text=True)
+def process_start(pid, deadline=None):
+    result = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'lstart=', '-o', 'stat='], capture_output=True, text=True, timeout=None if deadline is None else max(0.001, deadline - time.monotonic()))
     if result.returncode == 1 and not result.stdout.strip() and not result.stderr.strip(): return None
     fields = result.stdout.strip().rsplit(None, 1)
     if result.returncode != 0 or result.stderr.strip() or len(result.stdout.strip().splitlines()) != 1 or len(fields) != 2:
@@ -89,11 +89,11 @@ def process_start(pid):
         raise RuntimeError('Process inspection failed; signal withheld.')
     return status, ' '.join(birth.split())
 
-def alive(proof):
-    identity = process_identity(proof['pid'])
+def alive(proof, deadline=None):
+    identity = process_identity(proof['pid']) if deadline is None else process_identity(proof['pid'], deadline)
     if identity is None: return False
     if identity == proof['identity']: return True
-    start = process_start(proof['pid'])
+    start = process_start(proof['pid']) if deadline is None else process_start(proof['pid'], deadline)
     if start is None: return False
     # lstart is locale-owned text. An unreaped exit retains that complete birth
     # field while losing its command; both observations must retain the binding.
@@ -1212,6 +1212,95 @@ def selection_command(operation, active, handle, selection_path, expected_digest
         # A failed final fsync may follow unlink/link. Preserve the caller's hold.
         return dict(result, status='uncertain')
 
+
+PRE_EFFECT_PHASES = ('intent', 'preparing', 'quiescent')
+
+def pre_effect_unchanged(expected, tx, journal):
+    if journal.get('phase') not in PRE_EFFECT_PHASES or not same_binding(read(manifest_path), expected): return False
+    pair = tx / 'previous-pair'
+    if pair.is_symlink() or (pair / 'pair.json').exists() or (pair / 'pair.json').is_symlink(): return False
+    if any((tx / name).exists() or (tx / name).is_symlink() for name in
+           ('trial-descriptor.json', 'trial-receipt.json', 'commit-grant.json', 'resume-dispatched.json', 'advanced-state', 'advanced-state-authority-guard.json')):
+        return False
+    stable = pathlib.Path(expected['appPath'])
+    previous = stable.with_name(stable.name + '.jones-previous-' + expected['generation'])
+    incoming = stable.with_name(stable.name + '.jones-incoming-' + tx.name)
+    if previous.exists() or previous.is_symlink(): return False
+    if journal.get('previousBundle', str(previous)) != str(previous) or journal.get('incomingBundle', str(incoming)) != str(incoming): return False
+    return not any(key in journal for key in ('candidateWriter', 'trialReceipt', 'recovery', 'preSwapPreparationRecovery'))
+
+def recorded_processes_exited(proofs):
+    if not valid_process_proofs(proofs): return False
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        try:
+            if all(not alive(proof, deadline) for proof in proofs): return time.monotonic() <= deadline
+        except Exception: return False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0: return False
+        time.sleep(min(0.1, remaining))
+    return False
+
+def settle_interrupted_activation(transaction_id):
+    result = {'protocol': PROTOCOL, 'status': 'refused'}
+    try:
+        if not isinstance(transaction_id, str) or len(transaction_id) != 64 or any(char not in '0123456789abcdef' for char in transaction_id):
+            raise SelectionRefused('invalid-transaction')
+        if os.environ.get('T3CODE_JONES_TRIAL_DESCRIPTOR') or (manifest_path.parent / 'jones-maintenance').exists():
+            raise SelectionRefused('ownership-unknown')
+        root = manifest_path.parent / 'jones-updates' / 'transactions'
+        tx = root / transaction_id
+        if root.is_symlink() or tx.is_symlink() or not tx.is_dir() or tx.resolve(strict=True) != tx:
+            raise SelectionRefused('ownership-unknown')
+        tx_info = tx.lstat()
+        if tx_info.st_uid != os.getuid(): raise SelectionRefused('ownership-unknown')
+        names = {child.name for child in tx.iterdir()}
+        allowed = {'intent.json', 'journal.json', 'prepare-intent.json', 'prepare-dispatched.json', 'continuation.json',
+                   'activation-request.json', 'prepare-request.json', 'prepare-failure.json',
+                   'recovery-reserve.bin', 'recovery-journal-reserve.bin', 'previous-pair'}
+        if not names <= allowed: raise SelectionRefused('unknown-state')
+        intent, intent_raw, intent_info = bounded_native_json(tx / 'intent.json')
+        if set(intent) != {'protocol', 'transactionId', 'expected', 'staged', 'continuationReceipt', 'processes', 'listener'} or type(intent['protocol']) is not int or intent['protocol'] != PROTOCOL or intent['transactionId'] != transaction_id or intent['continuationReceipt'] != str(tx / 'continuation.json') or not valid_process_proofs(intent['processes']) or not isinstance(intent['staged'], dict) or not isinstance(intent['listener'], str) or not intent['listener'].strip():
+            raise SelectionRefused('unknown-state')
+        active, manifest_raw, manifest_info = bounded_native_json(manifest_path)
+        if not same_binding(active, intent['expected']): raise SelectionRefused('manifest-changed')
+        journal_path = tx / 'journal.json'
+        if 'journal.json' in names:
+            journal, journal_raw, journal_info = bounded_native_json(journal_path)
+            if journal.get('intent') != intent or not set(journal) <= {'intent', 'phase', 'message', 'storage', 'recoveryReserves', 'incomingBundle', 'previousBundle'}:
+                raise SelectionRefused('unknown-state')
+        else:
+            journal, journal_raw, journal_info = {'intent': intent, 'phase': 'intent'}, None, None
+        if not pre_effect_unchanged(active, tx, journal): raise SelectionRefused('transaction-unsettled')
+        # The activation lock excludes helper writers; revalidate the manifest and
+        # exact input records immediately before publishing the terminal journal.
+        current, raw, info = bounded_native_json(manifest_path)
+        if current != active or raw != manifest_raw or (info.st_dev, info.st_ino) != (manifest_info.st_dev, manifest_info.st_ino):
+            raise SelectionRefused('manifest-changed')
+        _, raw, info = bounded_native_json(tx / 'intent.json')
+        if raw != intent_raw or (info.st_dev, info.st_ino) != (intent_info.st_dev, intent_info.st_ino):
+            raise SelectionRefused('unknown-state')
+        current_tx = tx.lstat()
+        if tx.is_symlink() or (current_tx.st_dev, current_tx.st_ino) != (tx_info.st_dev, tx_info.st_ino) or {child.name for child in tx.iterdir()} != names:
+            raise SelectionRefused('unknown-state')
+        if journal_raw is not None:
+            _, raw, info = bounded_native_json(journal_path)
+            if raw != journal_raw or (info.st_dev, info.st_ino) != (journal_info.st_dev, journal_info.st_ino):
+                raise SelectionRefused('unknown-state')
+        if not pre_effect_unchanged(active, tx, journal): raise SelectionRefused('transaction-unsettled')
+    except SelectionRefused as refused:
+        return dict(result, reason=refused.reason)
+    except Exception:
+        return dict(result, reason='unknown-state')
+    settlement = {'basis': 'unstarted-activation' if journal_raw is None else 'interrupted-preparation',
+                  'settledBy': 'startup', 'evidence': {'phase': journal['phase'], 'manifestUnchanged': True, 'pairAbsent': True, 'bundleUnswapped': True}}
+    try:
+        durable(journal_path, dict(journal, phase='rolled-back', legacySettlement=settlement,
+                                  message='Interrupted update did not start; nothing changed.'), exclusive=journal_raw is None)
+        return {'protocol': PROTOCOL, 'status': 'settled'}
+    except Exception:
+        return {'protocol': PROTOCOL, 'status': 'uncertain'}
+
 def activate(intent_file):
     intent = read(intent_file)
     expected, staged = intent['expected'], intent['staged']
@@ -1225,7 +1314,7 @@ def activate(intent_file):
         journal = read(journal_path)
         if journal.get('intent') != intent: raise RuntimeError('Occupied journal belongs to a different install intent.')
         if journal['phase'] in ('resumed', 'rolled-back', 'blocked'): return
-        journal.update(phase='blocked', message='Interrupted native activation requires reconciliation; automatic replay held.')
+        journal.update(phaseBeforeBlock=journal['phase'], phase='blocked', message='Interrupted native activation requires reconciliation; automatic replay held.')
         durable(journal_path, journal)
         return
     if intent['protocol'] != PROTOCOL or not same_binding(read(manifest_path), expected):
@@ -1245,13 +1334,17 @@ def activate(intent_file):
     if selection['app'] != staged: raise RuntimeError('Native preparation selection changed.')
     journal = {'intent': intent, 'phase': 'intent'}
     def record(phase, **fields):
+        if phase == 'blocked': fields.setdefault('phaseBeforeBlock', journal['phase'])
         journal.update(fields, phase=phase)
         durable(journal_path, journal)
     def relaunch_previous():
         try: launch(expected)
         except Exception as relaunch_failure:
-            try: record('rolled-back', relaunch='failed', message=journal.get('message', '') + ' Jones Code was not reopened automatically: ' + str(relaunch_failure))
+            detail = 'Native reopen could not be proved.' if 'preEffect' in journal else str(relaunch_failure)
+            try: record('rolled-back', relaunch='failed', message=journal.get('message', '') + ' Jones Code was not reopened automatically: ' + detail)
             except Exception: pass
+        else:
+            if 'preEffect' in journal: record('rolled-back', preEffect=dict(journal['preEffect'], relaunch='started'))
     record('intent')
     candidate = None
     backend_process = None
@@ -1259,20 +1352,26 @@ def activate(intent_file):
     startup_unknown = False
     exclusive_writers = []
     recovery_reserves = []
+    preparation_step = 'storage'
     try:
         storage = storage_preflight(expected, staged, tx)
         record('preparing', storage=storage)
+        preparation_step = 'reserve'
         recovery_reserves = reserve_recovery_capacity(expected, tx, storage)
         record('preparing', recoveryReserves=list(recovery_reserves))
+        preparation_step = 'bundle'
         incoming, previous = prepare_bundle(expected, staged, intent['transactionId'])
         record('preparing', incomingBundle=str(incoming), previousBundle=str(previous))
         preserve_restart_tunnel(expected, intent['transactionId'])
+        preparation_step = 'stop-processes'
         stop_exact(intent['processes'])
+        preparation_step = 'quiescence'
         prove_quiescence(expected)
         exclusive_writers = acquire_writer_exclusion(expected)
         record('quiescent')
         if recovery_state_bytes(expected) > storage['stateBytes'] + RECOVERY_HEADROOM // 2:
             raise RuntimeError('Native state grew beyond reserved recovery capacity before shutdown.')
+        preparation_step = 'pair'
         pair_state(expected, tx / 'previous-pair')
         record('paired', pairedState=str(tx / 'previous-pair'), recovery=read(tx / 'previous-pair' / 'pair.json')['recovery'])
         record('swap-intent')
@@ -1329,25 +1428,36 @@ def activate(intent_file):
         except Exception:
             record('blocked', message='Recovery reserve ownership or release is uncertain; state retained.')
             return
-        active = read(manifest_path)
+        try: active = read(manifest_path)
+        except Exception:
+            record('blocked', message='Active binding could not be read; state retained.')
+            return
         if startup_unknown or (tx / 'resume-dispatched.json').exists() or journal['phase'] in ('committed', 'resume-intent', 'resumed') or active != expected or (journal['phase'] == 'trial' and candidate is None):
             record('blocked', message='Unknown activation, startup, or resume effect; binaries and advanced state retained.')
             return
-        if not (tx / 'previous-pair' / 'pair.json').exists():
-            if journal['phase'] == 'quiescent':
-                # Snapshotting only reads native state. With no trial launched,
-                # its unchanged prior app/state pair remains compatible.
+        if journal['phase'] in PRE_EFFECT_PHASES:
+            try:
+                unchanged = pre_effect_unchanged(expected, tx, journal)
+            except Exception:
+                unchanged = False
+            if unchanged:
                 try:
-                    prove_quiescence(expected)
                     release_recovery_reserve(recovery_reserves)
-                    record('rolled-back', message='Snapshot preparation failed before any candidate launch; prior state was unchanged.')
+                    evidence = {'phase': journal['phase'], 'step': preparation_step, 'reason': 'preparation-failed',
+                                'diagnostics': {'error': type(failure).__name__[:64]}, 'relaunch': 'skipped'}
+                    if type(getattr(failure, 'errno', None)) is int: evidence['diagnostics']['errno'] = failure.errno
+                    record('rolled-back', preEffect=evidence, message='Update did not start; nothing changed. Transaction ' + transaction_id + '.')
                 except Exception:
-                    pass
-                else:
-                    release_writer_exclusion(exclusive_writers)
-                    relaunch_previous()
+                    record('blocked', message='Pre-effect recovery could not be durably proved; state retained.')
                     return
-            record('blocked', message='Update preparation refused: ' + str(failure) + '; previous binary and state retained.')
+                release_writer_exclusion(exclusive_writers)
+                if recorded_processes_exited(intent['processes']):
+                    relaunch_previous()
+                return
+            record('blocked', message='Pre-effect state is uncertain; previous binary and state retained.')
+            return
+        if not (tx / 'previous-pair' / 'pair.json').exists():
+            record('blocked', message='Update preparation refused; previous binary and state retained.')
             return
         try:
             record('rollback-intent')
@@ -1525,6 +1635,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--manifest', required=True)
 action = parser.add_mutually_exclusive_group(required=True)
 action.add_argument('--activate')
+action.add_argument('--settle-interrupted-activation')
 action.add_argument('--reconcile-running')
 action.add_argument('--inspect-manual-install')
 action.add_argument('--manual-install')
@@ -1572,6 +1683,9 @@ with os.fdopen(descriptor, 'r+', encoding='utf8') as lock:
     transaction_id = args.transaction if args.claim_preparation else pathlib.Path(args.claim_activation).parent.name if args.claim_activation else None
     try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
+        if args.settle_interrupted_activation:
+            print(json.dumps({'protocol': PROTOCOL, 'status': 'refused', 'reason': 'activation-running'}))
+            raise SystemExit(0)
         if args.withdraw_preparation:
             print(json.dumps({'protocol': PROTOCOL, 'operation': 'withdraw-preparation', 'transactionId': args.withdraw_preparation, 'status': 'refused', 'reason': 'busy'}))
             raise SystemExit(0)
@@ -1590,6 +1704,9 @@ with os.fdopen(descriptor, 'r+', encoding='utf8') as lock:
             print(json.dumps(result))
             raise SystemExit(0)
         raise
+    if args.settle_interrupted_activation:
+        print(json.dumps(settle_interrupted_activation(args.settle_interrupted_activation)))
+        raise SystemExit(0)
     if args.reconcile_running:
         print(json.dumps(reconcile_running(args.reconcile_running, args.plan_sha256)))
         raise SystemExit(0)

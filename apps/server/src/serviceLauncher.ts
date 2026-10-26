@@ -27,6 +27,10 @@ import {
   readQualifiedRuntimeReceipt,
   withQualifiedRuntimeLock,
   QUALIFIED_UPDATES_PROTOCOL,
+  qualifiedStagingTiming,
+  retainQualifiedAttemptTimings,
+  type QualifiedDigestOptions,
+  type QualifiedDigestTiming,
   type StagedQualifiedRuntime,
 } from "./jones/cloud/qualifiedRuntime.ts";
 
@@ -803,6 +807,7 @@ export class Launcher {
   #state: ServiceState;
   #child: ManagedChild | null = null;
   #timer: NodeJS.Timeout | undefined;
+  readonly #digestTimings = new Map<string, QualifiedDigestTiming[]>();
   #transitions: Promise<void> = Promise.resolve();
   #stopRequested = false;
   #stopping = false;
@@ -900,6 +905,52 @@ export class Launcher {
     } finally {
       process.off("SIGTERM", onSigterm);
       process.off("SIGINT", onSigint);
+    }
+  }
+
+  #digestOptions(
+    operationId: string | undefined,
+    mode: "full" | "receipt",
+    role: QualifiedDigestTiming["role"],
+  ): QualifiedDigestOptions {
+    return {
+      mode,
+      retainVerification: true,
+      eventLoop: "worker",
+      role,
+      onDigestTiming: (timing) => this.#recordDigestTiming(operationId, timing),
+    };
+  }
+
+  #recordDigestTiming(operationId: string | undefined, timing: QualifiedDigestTiming): void {
+    process.stderr.write(`${JSON.stringify(timing)}\n`);
+    if (operationId === undefined) return;
+    const records = this.#digestTimings.get(operationId) ?? [];
+    if (
+      records.length < 128 &&
+      !records.some((prior) => JSON.stringify(prior) === JSON.stringify(timing))
+    )
+      records.push(timing);
+    this.#digestTimings.set(operationId, records);
+    if (this.#digestTimings.size > 64) {
+      const oldest = this.#digestTimings.keys().next().value;
+      if (oldest !== undefined) this.#digestTimings.delete(oldest);
+    }
+  }
+
+  async #retainDigestTimings(update: ServiceUpdateRecord | undefined): Promise<void> {
+    if (update === undefined || update.status === "pending" || update.qualified === undefined)
+      return;
+    try {
+      await retainQualifiedAttemptTimings(
+        this.#baseDir,
+        update.id,
+        this.#digestTimings.get(update.id) ?? [],
+      );
+      this.#digestTimings.delete(update.id);
+    } catch {
+      // Diagnostics cannot change the committed pointer or replace the original update failure.
+      process.stderr.write("[service-launcher] Update timing evidence could not be retained.\n");
     }
   }
 
@@ -1047,6 +1098,8 @@ export class Launcher {
           this.#baseDir,
           pending.fromVersion,
           pending.qualified.stagedHandle,
+          undefined,
+          this.#digestOptions(pending.id, "receipt", "launcher-admission"),
         );
         if (JSON.stringify(staged) !== JSON.stringify(pending.qualified))
           throw new Error("The qualified trial binding changed after handoff.");
@@ -1084,6 +1137,7 @@ export class Launcher {
       const next: ServiceState = { ...this.#state, update: trialReady };
       await writeServiceState(this.#statePath, next);
       this.#state = next;
+      await this.#retainDigestTimings(next.update);
     }
     try {
       await this.#startChild(trialReady.targetVersion, "trial", trialReady);
@@ -1118,11 +1172,13 @@ export class Launcher {
       await this.#settleFailedUpdate(pending, "launcher-recorded");
       await this.#recoveryIO.writeState(this.#statePath, next);
       this.#state = next;
+      await this.#retainDigestTimings(next.update);
       if (startChild) await this.#startChild(next.activeVersion, "active", outcome);
       return;
     }
     await writeServiceState(this.#statePath, next);
     this.#state = next;
+    await this.#retainDigestTimings(next.update);
     await cleanupTerminalDatabaseBackup(
       this.#baseDir,
       pending,
@@ -1162,7 +1218,12 @@ export class Launcher {
   }
 
   async #evaluateFailedSettlement(update: ServiceUpdateRecord) {
-    const active = await readQualifiedRuntimeReceipt(this.#baseDir, this.#state.activeVersion);
+    const active = await readQualifiedRuntimeReceipt(
+      this.#baseDir,
+      this.#state.activeVersion,
+      undefined,
+      this.#digestOptions(this.#state.update?.id, "receipt", "child-start"),
+    );
     return evaluateLegacyUpdateSettlement({
       baseDir: this.#baseDir,
       operationId: update.id,
@@ -1219,7 +1280,16 @@ export class Launcher {
     }
     if (this.#stopping) return;
     if (update?.qualified !== undefined) {
-      const receipt = await readQualifiedRuntimeReceipt(this.#baseDir, version);
+      const receipt = await readQualifiedRuntimeReceipt(
+        this.#baseDir,
+        version,
+        undefined,
+        this.#digestOptions(
+          update?.id,
+          role === "trial" ? "full" : "receipt",
+          role === "trial" ? "launcher-activation" : "child-start",
+        ),
+      );
       const expectedSource =
         version === update.qualified.receipt.version
           ? update.qualified.receipt.sourceSha
@@ -1464,7 +1534,12 @@ export class Launcher {
         });
         return { result: settled.result };
       }
-      const active = await readQualifiedRuntimeReceipt(this.#baseDir, this.#state.activeVersion);
+      const active = await readQualifiedRuntimeReceipt(
+        this.#baseDir,
+        this.#state.activeVersion,
+        undefined,
+        this.#digestOptions(this.#state.update?.id, "receipt", "child-start"),
+      );
       const evaluated = await evaluateLegacyUpdateSettlement({
         baseDir: this.#baseDir,
         operationId: message.operationId,
@@ -1615,6 +1690,7 @@ export class Launcher {
       }
     }
     let qualified: StagedQualifiedRuntime | undefined;
+    let stagingTiming: QualifiedDigestTiming | undefined;
     let migrationPlan: MigrationPlan | undefined;
     if (message.stagedHandle !== undefined) {
       try {
@@ -1622,7 +1698,10 @@ export class Launcher {
           this.#baseDir,
           child.version,
           message.stagedHandle,
+          undefined,
+          this.#digestOptions(message.operationId, "receipt", "launcher-admission"),
         );
+        stagingTiming = await qualifiedStagingTiming(this.#baseDir, qualified.receipt.version);
         if (
           qualified.receipt.version !== message.targetVersion ||
           qualified.binding.dbPath !== message.dbPath
@@ -1717,9 +1796,11 @@ export class Launcher {
       ...(qualified === undefined ? {} : { qualified }),
       ...(migrationPlan === undefined ? {} : { migrationPlan }),
     };
+    if (stagingTiming !== undefined) this.#recordDigestTiming(pending.id, stagingTiming);
     const next: ServiceState = { ...this.#state, update: pending };
     await writeServiceState(this.#statePath, next);
     this.#state = next;
+    await this.#retainDigestTimings(next.update);
     await sendMessage(child.process, {
       type: "update-accepted",
       updateId: pending.id,
@@ -1778,7 +1859,12 @@ export class Launcher {
       const home = await NodeFSP.realpath(this.#baseDir);
       const serviceUserdata = await NodeFSP.realpath(NodePath.join(home, "userdata"));
       const database = await NodeFSP.realpath(pending.dbPath);
-      const receipt = await readQualifiedRuntimeReceipt(this.#baseDir, pending.targetVersion);
+      const receipt = await readQualifiedRuntimeReceipt(
+        this.#baseDir,
+        pending.targetVersion,
+        undefined,
+        this.#digestOptions(pending.id, "receipt", "child-start"),
+      );
       const environment = (
         await NodeFSP.readFile(NodePath.join(this.#baseDir, "userdata", "environment-id"), "utf8")
       ).trim();
@@ -1828,6 +1914,7 @@ export class Launcher {
     try {
       await writeServiceState(this.#statePath, next);
       this.#state = next;
+      await this.#retainDigestTimings(next.update);
       if (pending.qualified !== undefined) {
         this.#qualifiedCommitAttempt = { updateId: pending.id, step: "post-write-liveness" };
         this.#assertQualifiedChildLive(child);
@@ -1931,6 +2018,7 @@ export class Launcher {
       };
       await writeServiceState(this.#statePath, next);
       this.#state = next;
+      await this.#retainDigestTimings(next.update);
       if (pending.qualified === undefined)
         await discardDatabaseBackup(this.#baseDir, pending.id).catch(() => undefined);
     }
@@ -1967,6 +2055,7 @@ export class Launcher {
       };
       await writeServiceState(this.#statePath, next);
       this.#state = next;
+      await this.#retainDigestTimings(next.update);
       await cleanupTerminalDatabaseBackup(
         this.#baseDir,
         pending,

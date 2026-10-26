@@ -243,7 +243,7 @@ def synthetic_launch(active, descriptor=None):
     durable(tx / 'trial-receipt.json', receipt, True)
     return {'pid': 456, 'identity': 'tracked-native-app'}
 launch = synthetic_launch
-def synthetic_identity(pid):
+def synthetic_identity(pid, deadline=None):
     events.append('identity:' + str(pid))
     if pid == 654:
         if fault == 'dead-backend': return None
@@ -252,7 +252,7 @@ def synthetic_identity(pid):
     if pid == 456: return 'tracked-native-app'
     return None
 process_identity = synthetic_identity
-process_start = lambda pid: ('S', '')
+process_start = lambda pid, deadline=None: ('S', '')
 native_durable = durable
 syncing_marker = None
 def synthetic_durable(destination, value, exclusive=False):
@@ -296,7 +296,7 @@ else:
     journal = read(tx / 'journal.json')
     with sqlite3.connect(database) as db: state = db.execute('SELECT value FROM identity').fetchone()[0]
     if fault in ('storage-refused', 'reserve-denied'):
-        assert events == ['storage-preflight']
+        assert events == ['storage-preflight', 'identity:123', 'restart-previous']
         assert state == 'previous-state'
         assert read(manifest_path) == expected
         assert not (tx / 'previous-pair').exists()
@@ -332,7 +332,7 @@ else:
         assert (home / 'settings.json').read_text() == 'previous-settings'
         assert (profile / 'opaque').read_text() == ('advanced-profile' if 'candidate-launch' in events else 'same-host-profile')
         assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
-        if fault not in ('snapshot-failed', 'snapshot-restart-refused', 'state-grew'):
+        if 'preEffect' not in journal and fault not in ('snapshot-failed', 'snapshot-restart-refused', 'state-grew'):
             with sqlite3.connect(tx / 'advanced-state' / 'state.sqlite') as db:
                 assert db.execute('SELECT value FROM identity').fetchone()[0] == ('previous-state' if fault.startswith('bundle-') else 'advanced-state')
         else:
@@ -341,7 +341,7 @@ else:
         assert journal['phase'] == 'rolled-back', journal
         assert events.count('restart-previous') == 1
         assert journal['relaunch'] == 'failed'
-        assert 'Jones Code was not reopened automatically: Synthetic relaunch refusal' in journal['message']
+        assert ('Jones Code was not reopened automatically: Native reopen could not be proved.' if 'preEffect' in journal else 'Jones Code was not reopened automatically: Synthetic relaunch refusal') in journal['message']
     if journal['phase'] == 'blocked' and 'candidate-launch' in events:
         assert state == ('previous-state' if fault in ('authority-retention-sync', 'authority-advance-failed', 'authority-advance-lost') else 'advanced-state')
         assert (tx / 'previous-pair' / 'state.sqlite').exists() == (fault not in ('authority-retention-sync', 'authority-advance-failed', 'authority-advance-lost'))
@@ -2723,9 +2723,9 @@ assert sorted(path.name for path in root.iterdir()) == ['jones-activation.lock',
     ["missing-backendProcess", "rolled-back"],
     ["candidate-stop", "blocked"],
     ["snapshot-failed", "rolled-back"],
-    ["old-quiescence", "blocked"],
-    ["storage-refused", "blocked"],
-    ["reserve-denied", "blocked"],
+    ["old-quiescence", "rolled-back"],
+    ["storage-refused", "rolled-back"],
+    ["reserve-denied", "rolled-back"],
     ["reserve-release-failed", "blocked"],
     ["recovery-space-missing", "blocked"],
     ["recovery-lease-busy", "blocked"],
@@ -3369,4 +3369,239 @@ else:
       await f.cleanup();
     }
   });
+});
+
+it("settles pre-effect exit-wait failures without replacing native app or state", async () => {
+  const f = await fixture();
+  try {
+    const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+    const runtime = activationScenario.split("\nif fault in ('interrupted-trial'")[0];
+    const scenario = String.raw`
+stop_exact = actual_stop_exact
+observations = 0
+def inspection(pid, deadline=None):
+    global observations
+    assert pid == 123
+    observations += 1
+    if observations == 1: return 'owned-native-process'
+    if observations == 2: raise RuntimeError('Synthetic exit-wait inspection failure /private/fixture')
+    return None
+process_identity = inspection
+os.kill = lambda pid, sig: events.append('synthetic-stop')
+activate(tx / 'intent.json')
+journal = read(tx / 'journal.json')
+assert journal['phase'] == 'rolled-back', journal
+assert journal['preEffect']['phase'] == 'preparing'
+assert journal['preEffect']['step'] == 'stop-processes'
+assert journal['preEffect']['relaunch'] == 'started'
+assert observations >= 3 and events.count('restart-previous') == 1
+assert 'pair' not in events and 'candidate-launch' not in events
+assert not (tx / 'previous-pair' / 'pair.json').exists()
+assert all(not pathlib.Path(reserve['path']).exists() for reserve in journal['recoveryReserves'])
+assert read(manifest_path) == expected
+assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
+assert (home / 'settings.json').read_text() == 'previous-settings'
+assert (profile / 'opaque').read_text() == 'same-host-profile'
+assert '/private/' not in json.dumps(journal['preEffect'])
+assert len(json.dumps(journal['preEffect'].get('diagnostics', {})).encode()) <= 1024
+print(json.dumps({'phase': journal['phase'], 'preEffect': journal['preEffect']}))
+`;
+    runPython(
+      definitions + "\nactual_stop_exact = stop_exact\n" + runtime + "\n" + scenario,
+      [f.directory, "success"],
+      { encoding: "utf8", timeout: 10000 },
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+it.each([
+  "storage-refused",
+  "reserve-denied",
+  "bundle-error",
+  "snapshot-failed",
+  "alive",
+  "identity-unknown",
+  "pair-present",
+  "manifest-changed",
+])("keeps pre-effect recovery bounded and conservative for %s", async (mode) => {
+  const f = await fixture();
+  try {
+    const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+    const runtime = activationScenario.split("\nif fault in ('interrupted-trial'")[0];
+    const scenario = String.raw`
+mode = sys.argv[3]
+clock = [0.0]
+if mode == 'alive':
+    time.monotonic = lambda: clock[0]
+    time.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    def still_alive(pid, deadline=None):
+        assert deadline <= 30
+        return 'owned-native-process'
+    process_identity = still_alive
+if mode == 'identity-unknown':
+    def unknown_identity(pid, deadline=None): raise OSError('Synthetic unavailable identity /private/fixture')
+    process_identity = unknown_identity
+if mode in ('bundle-error', 'alive', 'identity-unknown'):
+    def failed_bundle(*args): raise PermissionError('Synthetic copy failure /private/fixture')
+    prepare_bundle = failed_bundle
+if mode in ('pair-present', 'manifest-changed'):
+    def failed_pair(*args):
+        if mode == 'pair-present': seed_record(tx / 'previous-pair' / 'pair.json', {'unknown': True}, True)
+        else: seed_record(manifest_path, dict(expected, generation='foreign'))
+        raise RuntimeError('Synthetic incomplete state evidence')
+    pair_state = failed_pair
+activate(tx / 'intent.json')
+journal = read(tx / 'journal.json')
+if mode in ('pair-present', 'manifest-changed'):
+    assert journal['phase'] == 'blocked' and journal['phaseBeforeBlock'] == 'quiescent', journal
+    assert 'preEffect' not in journal and 'restart-previous' not in events
+else:
+    assert journal['phase'] == 'rolled-back' and journal['preEffect']['reason'] == 'preparation-failed', journal
+    skipped = mode in ('alive', 'identity-unknown')
+    assert journal['preEffect']['relaunch'] == ('skipped' if skipped else 'started')
+    assert events.count('restart-previous') == (0 if skipped else 1)
+    assert not (tx / 'previous-pair' / 'pair.json').exists()
+    assert all(not pathlib.Path(reserve['path']).exists() for reserve in journal.get('recoveryReserves', []))
+    assert read(manifest_path) == expected
+    assert len(json.dumps(journal['preEffect']['diagnostics']).encode()) <= 1024
+    assert '/private/' not in json.dumps(journal['preEffect'])
+assert clock[0] <= 30
+assert 'candidate-launch' not in events
+assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
+assert (home / 'settings.json').read_text() == 'previous-settings'
+assert (profile / 'opaque').read_text() == 'same-host-profile'
+`;
+    runPython(definitions + "\n" + runtime + "\n" + scenario, [f.directory, mode, mode], {
+      encoding: "utf8",
+      timeout: 10000,
+    });
+  } finally {
+    await f.cleanup();
+  }
+});
+
+it.each([
+  "intent",
+  "preparing",
+  "quiescent",
+  "intent-only",
+  "blocked",
+  "trial",
+  "pair",
+  "previous",
+  "manifest",
+  "cold",
+  "trial-descriptor",
+  "unknown-record",
+  "intent-mismatch",
+  "journal-mismatch",
+  "manifest-race",
+  "journal-race",
+  "publication-unknown",
+  "busy",
+])("settles only proved interrupted activations through the real command for %s", async (mode) => {
+  const f = await fixture();
+  try {
+    const [definitions, parser] = jonesNativeHelperSource.split(
+      "\nparser = argparse.ArgumentParser()",
+    );
+    const setup = activationScenario.split("\nevents = []")[0];
+    const scenario = String.raw`
+import contextlib, io
+mode = sys.argv[3]
+phase = mode if mode in ('intent', 'preparing', 'quiescent', 'blocked', 'trial') else 'preparing'
+journal = {'intent': intent, 'phase': phase}
+if mode == 'cold': intent['kind'] = 'cold-first-transition'
+if mode == 'intent-mismatch': intent['transactionId'] = '0' * 64
+seed_record(tx / 'intent.json', intent)
+if mode != 'intent-only':
+    if mode == 'journal-mismatch': journal['intent'] = dict(intent, listener='changed')
+    seed_record(tx / 'journal.json', journal, True)
+(tx / 'recovery-reserve.bin').write_text('retained-reserve')
+if mode == 'pair': seed_record(tx / 'previous-pair' / 'pair.json', {'unknown': True}, True)
+if mode == 'previous': previous_app.with_name(previous_app.name + '.jones-previous-' + expected['generation']).mkdir()
+if mode == 'manifest': seed_record(manifest_path, dict(expected, generation='changed'))
+if mode == 'trial-descriptor': seed_record(tx / 'trial-descriptor.json', {'unknown': True}, True)
+if mode == 'unknown-record': (tx / 'unknown').write_text('retained')
+before = (tx / 'journal.json').read_bytes() if (tx / 'journal.json').exists() else None
+before_intent = (tx / 'intent.json').read_bytes()
+native_bounded = bounded_native_json
+manifest_reads = journal_reads = 0
+def racing_read(path, limit=1024*1024):
+    global manifest_reads, journal_reads
+    if pathlib.Path(path) == manifest_path:
+        manifest_reads += 1
+        if mode == 'manifest-race' and manifest_reads == 2:
+            native_durable(manifest_path, dict(expected, generation='raced'))
+    if pathlib.Path(path) == tx / 'journal.json':
+        journal_reads += 1
+        if mode == 'journal-race' and journal_reads == 2:
+            native_durable(tx / 'journal.json', dict(journal, phase='trial'))
+    return native_bounded(path, limit)
+bounded_native_json = racing_read
+publication_count = [0]
+native_durable = durable
+def publish(path, value, exclusive=False):
+    if pathlib.Path(path) == tx / 'journal.json':
+        publication_count[0] += 1
+        native_durable(path, value, exclusive)
+        if mode == 'publication-unknown': raise OSError('Synthetic lost publication acknowledgement')
+    else: raise AssertionError('Settlement wrote outside its journal')
+durable = publish
+held_activation_lock = None
+if mode == 'busy':
+    lock_path = manifest_path.with_name('jones-activation.lock')
+    lock_path.write_text('jones-activation-lock-v1\n')
+    held_activation_lock = open(lock_path, 'r+')
+    fcntl.flock(held_activation_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+sys.platform = 'darwin'
+sys.argv = ['helper', '--manifest', str(manifest_path), '--settle-interrupted-activation', transaction_id]
+output = io.StringIO()
+try:
+    with contextlib.redirect_stdout(output):
+        try: exec(PARSER_SOURCE)
+        except SystemExit as exited: assert exited.code == 0
+finally:
+    if held_activation_lock is not None: held_activation_lock.close()
+result = json.loads(output.getvalue())
+assert type(result['protocol']) is int and result['protocol'] == 1
+assert set(result) <= {'protocol', 'status', 'reason'}
+if mode in ('intent', 'preparing', 'quiescent', 'intent-only'):
+    assert result == {'protocol': 1, 'status': 'settled'}, result
+    terminal = read(tx / 'journal.json')
+    assert terminal['phase'] == 'rolled-back' and terminal['intent'] == intent
+    assert terminal['legacySettlement']['basis'] == ('unstarted-activation' if mode == 'intent-only' else 'interrupted-preparation')
+    assert terminal['legacySettlement']['settledBy'] == 'startup'
+    assert publication_count[0] == 1
+elif mode == 'publication-unknown':
+    assert result == {'protocol': 1, 'status': 'uncertain'}, result
+    assert read(tx / 'journal.json')['phase'] == 'rolled-back' and publication_count[0] == 1
+else:
+    assert result['status'] == 'refused' and publication_count[0] == 0, result
+    if mode == 'busy': assert result['reason'] == 'activation-running'
+    if mode == 'manifest-race': assert result['reason'] == 'manifest-changed'
+    if mode == 'journal-race': assert result['reason'] == 'unknown-state'
+    if mode != 'journal-race': assert (tx / 'journal.json').read_bytes() == before
+assert (tx / 'intent.json').read_bytes() == before_intent
+assert (tx / 'recovery-reserve.bin').read_text() == 'retained-reserve'
+assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
+assert (home / 'settings.json').read_text() == 'previous-settings'
+assert (profile / 'opaque').read_text() == 'same-host-profile'
+`;
+    runPython(
+      definitions +
+        "\n" +
+        setup +
+        "\nPARSER_SOURCE = " +
+        JSON.stringify("parser = argparse.ArgumentParser()" + parser) +
+        "\n" +
+        scenario,
+      [f.directory, "success", mode],
+      { encoding: "utf8", timeout: 10000 },
+    );
+  } finally {
+    await f.cleanup();
+  }
 });

@@ -1,3 +1,4 @@
+import * as ThreadMetadataReads from "../../orchestration/threadMetadataReads.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, describe, it, vi } from "@effect/vitest";
 import {
@@ -499,6 +500,7 @@ function makeHarness(
     }),
   );
   const launch = ThreadLaunch.layer.pipe(
+    Layer.provide(ThreadMetadataReads.layer.pipe(Layer.provide(database))),
     Layer.provide(
       Layer.mergeAll(
         externalServices,
