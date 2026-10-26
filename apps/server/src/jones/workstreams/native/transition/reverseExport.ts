@@ -168,6 +168,9 @@ function sqlTimestamps(row: Record<string, unknown>): Record<string, unknown> {
     }
   return row;
 }
+function cpReservationEffect(effect: unknown) {
+  return effect === "request_native_t3_settlement" ? "native_t3_settlement" : effect;
+}
 function cpRow(
   name: string,
   data: Readonly<Record<string, string | number | null>>,
@@ -199,6 +202,8 @@ function cpRow(
     else if (k === "ciphertext_sha256") row[k] = digest(String(data.envelope));
     else if (k === "value") row[k] = value;
     else if (k === "permissions" || k === "workstream_ids") row[k] = JSON.parse(String(data[k]));
+    else if (k === "effect" && name === "workstream_external_reservations")
+      row[k] = cpReservationEffect(data[k]);
     else if (Object.hasOwn(data, k)) row[k] = data[k];
     else if (k === "created_by")
       row[k] = (value.created_by as { principal_id: string }).principal_id;
@@ -479,6 +484,8 @@ export const prepareReverse = Effect.fn("WorkstreamsTransition.prepareReverse")(
               if (Object.hasOwn(current.row, k)) row[k] = current.row[k];
           }
         }
+        if (source.class === "workstream_external_reservations")
+          row.effect = cpReservationEffect(row.effect);
         if (source.class === "workstream_registry_context") {
           const o = owners.find((o) => o.owner_id === row.owner_id)!;
           row = {

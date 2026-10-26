@@ -440,9 +440,9 @@ export const reconcileLegacyOpen = Effect.fn("WorkstreamsTransition.reconcileLeg
       Date.parse(completedAt) < Date.parse(first.reservation.accepted_at)
     )
       return yield* new TransitionError({ reason: "legacy_evidence_conflict" });
-    return yield* db.transaction(
-      first.scope,
+    return yield* sql.withTransaction(
       Effect.gen(function* () {
+        // Whole-import readback spans owners; keep it inside SQL but outside ActiveOwner.
         const current = yield* prepare(p, ownerId, principalId, request);
         if (current.existing)
           return {
@@ -460,374 +460,379 @@ export const reconcileLegacyOpen = Effect.fn("WorkstreamsTransition.reconcileLeg
           canonical(current.retained) !== canonical(first.retained)
         )
           return yield* new TransitionError({ reason: "legacy_evidence_conflict" });
-        const r = current.reservation,
-          a = r.command.action,
-          registry = yield* Registry.RegistryStore;
-        const changes: LegacyReconciliationDelta["changes"][number][] = [];
-        let registration: LegacyResult["registration"] | null = null,
-          observation: LegacyResult["observation"] | null = null;
-        const versions: { workstream_id: string; version: number }[] = [],
-          memberships: string[] = [];
-        const add = (before: LegacyProjectionTarget | null, after: LegacyProjectionTarget) =>
-          changes.push({ before, after });
-        if (r.kind !== "native_t3_settlement") {
-          if (current.context.registry_version !== r.admitted_registry_version)
-            return yield* new TransitionError({ reason: "legacy_stale_fence" });
-          const refs = yield* registry.list(current.scope, "references");
-          const saved = refs.find(
-            (x) => x.metadata.native_reference_id === r.reference.native_reference_id,
-          );
-          if (!saved) return yield* new TransitionError({ reason: "legacy_evidence_conflict" });
-          const reference = yield* checked(decodeReference(saved.value));
-          const bindings = yield* registry.listPlain(current.scope, "source_bindings");
-          const binding = bindings
-            .filter(
-              (x) =>
-                x.source_instance_id === r.source_binding.source_instance_id &&
-                x.provider === r.source_binding.provider,
-            )
-            .sort((x, y) => Number(y.binding_version) - Number(x.binding_version))[0];
-          if (
-            canonical(reference) !== canonical(r.reference) ||
-            !binding ||
-            binding.state !== "active" ||
-            binding.authority_namespace !== r.source_binding.authority_namespace ||
-            binding.store_generation !== r.source_binding.store_generation
-          )
-            return yield* new TransitionError({ reason: "legacy_evidence_conflict" });
-          if (
-            r.kind === "verify_reference" &&
-            a.operation === "verify_reference" &&
-            result.registration
-          ) {
-            registration = result.registration;
+        const completed = yield* Effect.gen(function* () {
+          const r = current.reservation,
+            a = r.command.action,
+            registry = yield* Registry.RegistryStore;
+          const changes: LegacyReconciliationDelta["changes"][number][] = [];
+          let registration: LegacyResult["registration"] | null = null,
+            observation: LegacyResult["observation"] | null = null;
+          const versions: { workstream_id: string; version: number }[] = [],
+            memberships: string[] = [];
+          const add = (before: LegacyProjectionTarget | null, after: LegacyProjectionTarget) =>
+            changes.push({ before, after });
+          if (r.kind !== "native_t3_settlement") {
+            if (current.context.registry_version !== r.admitted_registry_version)
+              return yield* new TransitionError({ reason: "legacy_stale_fence" });
+            const refs = yield* registry.list(current.scope, "references");
+            const saved = refs.find(
+              (x) => x.metadata.native_reference_id === r.reference.native_reference_id,
+            );
+            if (!saved) return yield* new TransitionError({ reason: "legacy_evidence_conflict" });
+            const reference = yield* checked(decodeReference(saved.value));
+            const bindings = yield* registry.listPlain(current.scope, "source_bindings");
+            const binding = bindings
+              .filter(
+                (x) =>
+                  x.source_instance_id === r.source_binding.source_instance_id &&
+                  x.provider === r.source_binding.provider,
+              )
+              .sort((x, y) => Number(y.binding_version) - Number(x.binding_version))[0];
             if (
-              reference.registration.attestation_version !== a.expected_attestation_version ||
-              registration.attestation_version !== a.expected_attestation_version + 1
+              canonical(reference) !== canonical(r.reference) ||
+              !binding ||
+              binding.state !== "active" ||
+              binding.authority_namespace !== r.source_binding.authority_namespace ||
+              binding.store_generation !== r.source_binding.store_generation
             )
               return yield* new TransitionError({ reason: "legacy_evidence_conflict" });
-            if (registration.state === "attested")
-              yield* Effect.try({
-                try: () =>
-                  requireAttested(
-                    { ...reference, registration: result.registration! },
-                    completedAt,
-                    r.source_binding,
-                  ),
-                catch: () => new TransitionError({ reason: "legacy_evidence_conflict" }),
-              });
-            const key = { ...current.scope, native_reference_id: reference.native_reference_id };
-            const before: LegacyProjectionTarget = {
-              table: "references",
-              key,
-              data: { ...current.scope, ...saved.metadata },
-              context: {
-                purpose: "reference",
-                record_id: canonical([reference.native_reference_id]),
-                revision: reference.registration.attestation_version,
-              },
-              value: reference,
-            };
-            const evidence =
-              reference.identity.provider === "t3" &&
-              reference.identity.resource_kind === "thread" &&
-              reference.identity.id_kind === "internal"
-                ? registration.evidence
-                : null;
-            add(before, {
-              ...before,
-              data: {
-                ...before.data,
-                attestation_version: registration.attestation_version,
-                registration_state: registration.state,
-                routing_source_instance_id: evidence?.source_instance_id ?? null,
-                routing_native_id: evidence?.native_id ?? null,
-                routing_authority_namespace: evidence?.authority_namespace ?? null,
-                routing_store_generation: evidence?.store_generation ?? null,
-                routing_attested_at: evidence ? registration.attested_at : null,
-                routing_expires_at: evidence ? registration.expires_at : null,
-                routing_evidence_sha256: evidence?.evidence_sha256 ?? null,
-              },
-              context: { ...before.context!, revision: registration.attestation_version },
-              value: { ...reference, registration },
-            });
-          } else if (
-            r.kind === "refresh_linked_pr" &&
-            a.operation === "refresh_linked_pr" &&
-            result.observation
-          ) {
-            yield* Effect.try({
-              try: () => requireAttested(reference, completedAt, r.source_binding),
-              catch: () => new TransitionError({ reason: "legacy_evidence_conflict" }),
-            });
-            const member = (yield* registry.list(current.scope, "memberships")).find(
-              (x) => x.metadata.membership_id === a.membership_id,
-            );
-            const work = (yield* registry.list(current.scope, "records")).find(
-              (x) => x.metadata.workstream_id === a.workstream_id,
-            );
-            const m = member ? yield* checked(decodeMembership(member.value)) : null,
-              w = work ? yield* checked(decodeWorkstream(work.value)) : null;
-            const previous = (yield* registry.list(current.scope, "pr_observations"))
-              .filter((x) => x.metadata.native_reference_id === reference.native_reference_id)
-              .sort(
-                (x, y) =>
-                  Number(y.metadata.observation_version) - Number(x.metadata.observation_version),
-              )[0];
-            observation = result.observation;
             if (
-              !m ||
-              m.closed !== null ||
-              m.native_reference_id !== reference.native_reference_id ||
-              m.workstream_id !== a.workstream_id ||
-              canonical(m) !== canonical(r.membership) ||
-              !w ||
-              w.version !== a.expected_version ||
-              Number(previous?.metadata.observation_version ?? 0) !==
-                a.expected_observation_version ||
-              canonical(previous?.value ?? null) !== canonical(r.previous_observation) ||
-              observation.command_id !== r.command.command_id ||
-              observation.native_reference_id !== reference.native_reference_id ||
-              observation.observation_version !== a.expected_observation_version + 1
-            )
-              return yield* new TransitionError({ reason: "legacy_evidence_conflict" });
-            const previousCache = matchingLegacyCache(
-              r.previous_observation,
-              r,
-              current.context.server_generation,
-            );
-            let cache = matchingLegacyCache(
-              { ...observation, observation_cache: result.observation_cache ?? null },
-              r,
-              current.context.server_generation,
-            );
-            if (observation.outcome === "not_modified") {
+              r.kind === "verify_reference" &&
+              a.operation === "verify_reference" &&
+              result.registration
+            ) {
+              registration = result.registration;
               if (
-                !previousCache ||
-                !observation.last_success ||
-                canonical({
-                  ...observation.last_success,
-                  observed_at: previousCache.representation.observed_at,
-                }) !== canonical(previousCache.representation)
+                reference.registration.attestation_version !== a.expected_attestation_version ||
+                registration.attestation_version !== a.expected_attestation_version + 1
               )
                 return yield* new TransitionError({ reason: "legacy_evidence_conflict" });
-              cache ??= legacyObservationCache(r, observation, previousCache.etag);
-            } else if (observation.outcome !== "observed") {
-              cache =
-                previousCache &&
-                canonical(observation.last_success) === canonical(previousCache.representation)
-                  ? legacyObservationCache(r, observation, previousCache.etag)
+              if (registration.state === "attested")
+                yield* Effect.try({
+                  try: () =>
+                    requireAttested(
+                      { ...reference, registration: result.registration! },
+                      completedAt,
+                      r.source_binding,
+                    ),
+                  catch: () => new TransitionError({ reason: "legacy_evidence_conflict" }),
+                });
+              const key = { ...current.scope, native_reference_id: reference.native_reference_id };
+              const before: LegacyProjectionTarget = {
+                table: "references",
+                key,
+                data: { ...current.scope, ...saved.metadata },
+                context: {
+                  purpose: "reference",
+                  record_id: canonical([reference.native_reference_id]),
+                  revision: reference.registration.attestation_version,
+                },
+                value: reference,
+              };
+              const evidence =
+                reference.identity.provider === "t3" &&
+                reference.identity.resource_kind === "thread" &&
+                reference.identity.id_kind === "internal"
+                  ? registration.evidence
                   : null;
-            }
-            observation = publicPrObservation(observation);
-            versions.push({ workstream_id: w.workstream_id, version: w.version });
-            memberships.push(m.membership_id);
+              add(before, {
+                ...before,
+                data: {
+                  ...before.data,
+                  attestation_version: registration.attestation_version,
+                  registration_state: registration.state,
+                  routing_source_instance_id: evidence?.source_instance_id ?? null,
+                  routing_native_id: evidence?.native_id ?? null,
+                  routing_authority_namespace: evidence?.authority_namespace ?? null,
+                  routing_store_generation: evidence?.store_generation ?? null,
+                  routing_attested_at: evidence ? registration.attested_at : null,
+                  routing_expires_at: evidence ? registration.expires_at : null,
+                  routing_evidence_sha256: evidence?.evidence_sha256 ?? null,
+                },
+                context: { ...before.context!, revision: registration.attestation_version },
+                value: { ...reference, registration },
+              });
+            } else if (
+              r.kind === "refresh_linked_pr" &&
+              a.operation === "refresh_linked_pr" &&
+              result.observation
+            ) {
+              yield* Effect.try({
+                try: () => requireAttested(reference, completedAt, r.source_binding),
+                catch: () => new TransitionError({ reason: "legacy_evidence_conflict" }),
+              });
+              const member = (yield* registry.list(current.scope, "memberships")).find(
+                (x) => x.metadata.membership_id === a.membership_id,
+              );
+              const work = (yield* registry.list(current.scope, "records")).find(
+                (x) => x.metadata.workstream_id === a.workstream_id,
+              );
+              const m = member ? yield* checked(decodeMembership(member.value)) : null,
+                w = work ? yield* checked(decodeWorkstream(work.value)) : null;
+              const previous = (yield* registry.list(current.scope, "pr_observations"))
+                .filter((x) => x.metadata.native_reference_id === reference.native_reference_id)
+                .sort(
+                  (x, y) =>
+                    Number(y.metadata.observation_version) - Number(x.metadata.observation_version),
+                )[0];
+              observation = result.observation;
+              if (
+                !m ||
+                m.closed !== null ||
+                m.native_reference_id !== reference.native_reference_id ||
+                m.workstream_id !== a.workstream_id ||
+                canonical(m) !== canonical(r.membership) ||
+                !w ||
+                w.version !== a.expected_version ||
+                Number(previous?.metadata.observation_version ?? 0) !==
+                  a.expected_observation_version ||
+                canonical(previous?.value ?? null) !== canonical(r.previous_observation) ||
+                observation.command_id !== r.command.command_id ||
+                observation.native_reference_id !== reference.native_reference_id ||
+                observation.observation_version !== a.expected_observation_version + 1
+              )
+                return yield* new TransitionError({ reason: "legacy_evidence_conflict" });
+              const previousCache = matchingLegacyCache(
+                r.previous_observation,
+                r,
+                current.context.server_generation,
+              );
+              let cache = matchingLegacyCache(
+                { ...observation, observation_cache: result.observation_cache ?? null },
+                r,
+                current.context.server_generation,
+              );
+              if (observation.outcome === "not_modified") {
+                if (
+                  !previousCache ||
+                  !observation.last_success ||
+                  canonical({
+                    ...observation.last_success,
+                    observed_at: previousCache.representation.observed_at,
+                  }) !== canonical(previousCache.representation)
+                )
+                  return yield* new TransitionError({ reason: "legacy_evidence_conflict" });
+                cache ??= legacyObservationCache(r, observation, previousCache.etag);
+              } else if (observation.outcome !== "observed") {
+                cache =
+                  previousCache &&
+                  canonical(observation.last_success) === canonical(previousCache.representation)
+                    ? legacyObservationCache(r, observation, previousCache.etag)
+                    : null;
+              }
+              observation = publicPrObservation(observation);
+              versions.push({ workstream_id: w.workstream_id, version: w.version });
+              memberships.push(m.membership_id);
+              add(null, {
+                table: "pr_observations",
+                key: {
+                  ...current.scope,
+                  native_reference_id: reference.native_reference_id,
+                  observation_version: observation.observation_version,
+                },
+                data: {
+                  ...current.scope,
+                  native_reference_id: reference.native_reference_id,
+                  observation_version: observation.observation_version,
+                  attempted_at: observation.attempted_at,
+                  outcome: observation.outcome,
+                },
+                context: {
+                  purpose: "pr_observation",
+                  record_id: canonical([
+                    reference.native_reference_id,
+                    observation.observation_version,
+                  ]),
+                  revision: observation.observation_version,
+                },
+                value: { ...observation, observation_cache: cache },
+              });
+            } else return yield* new TransitionError({ reason: "legacy_evidence_conflict" });
+          }
+          const changed =
+            r.kind !== "native_t3_settlement" || result.native_outcome === "committed";
+          const version = current.context.registry_version + (changed ? 1 : 0);
+          const receipt = yield* checked(
+            decodeReceipt({
+              command_id: r.command.command_id,
+              owner_id: ownerId,
+              actor: r.actor,
+              operation: a.operation,
+              request_sha256: r.request_sha256,
+              server_generation: current.context.server_generation,
+              accepted_at: r.accepted_at,
+              completed_at: completedAt,
+              state: "committed",
+              registry_version: version,
+              changed,
+              effects: {
+                workstream_versions: versions,
+                native_reference_id: r.reference.native_reference_id,
+                membership_ids: memberships,
+                declaration_id: null,
+                declaration_revision: null,
+                edge_id: null,
+                observation,
+                registration,
+                lifecycle_declaration: null,
+                coordination_disposition: null,
+                native_settlement:
+                  r.kind === "native_t3_settlement" &&
+                  a.operation === "request_native_t3_settlement"
+                    ? {
+                        native_reference_id: r.reference.native_reference_id,
+                        native_action: a.native_action,
+                        outcome: result.native_outcome,
+                      }
+                    : null,
+              },
+            }),
+          );
+          add(current.receiptTarget, {
+            ...current.receiptTarget,
+            table: "receipts",
+            data: {
+              ...current.receiptTarget.data,
+              state: "committed",
+              registry_version: version,
+              completed_at: completedAt,
+            },
+            context: { purpose: "receipt", record_id: r.command.command_id, revision: version },
+            value: {
+              receipt,
+              request_body: "",
+              legacy_request_bytes: "unknown",
+              legacy_command: r.command,
+              reconciliation_contract: contract,
+            },
+          });
+          if (!current.retained)
             add(null, {
-              table: "pr_observations",
+              table: "external_results",
+              key: { ...current.scope, command_id: r.command.command_id },
+              data: { ...current.scope, command_id: r.command.command_id },
+              context: {
+                purpose: "external_result",
+                record_id: r.command.command_id,
+                revision: r.admitted_registry_version,
+              },
+              value: result,
+            });
+          const high = yield* sql<{
+            high: number;
+          }>`SELECT coalesce(max(event_sequence),0) AS high FROM jones_workstreams_history WHERE registry_instance_id=${current.scope.registry_instance_id} AND owner_id=${ownerId}`;
+          const eventId = "event:legacy:" + hash([p.import_run_id, ownerId, r.command.command_id]),
+            sequence = high[0]!.high + 1;
+          const event = {
+            event_id: eventId,
+            command_id: r.command.command_id,
+            actor: r.actor,
+            operation: a.operation,
+            occurred_at: completedAt,
+            registry_version: version,
+            changed,
+            workstream_versions: versions,
+            native_reference_id: r.reference.native_reference_id,
+            membership_ids: memberships,
+            declaration_id: null,
+            declaration_revision: null,
+            edge_id: null,
+            lifecycle_declaration: null,
+          };
+          const workstreamIds = versions.map((x) => x.workstream_id);
+          add(null, {
+            table: "history",
+            key: { ...current.scope, event_id: eventId },
+            data: {
+              ...current.scope,
+              event_id: eventId,
+              event_sequence: sequence,
+              legacy_event_sequence: null,
+              command_id: r.command.command_id,
+              registry_version: version,
+              occurred_at: completedAt,
+              workstream_ids: canonical(workstreamIds),
+            },
+            context: { purpose: "history_event", record_id: eventId, revision: version },
+            value: {
+              event_id: eventId,
+              command_id: r.command.command_id,
+              registry_version: version,
+              occurred_at: completedAt,
+              workstream_ids: workstreamIds,
+              value: event,
+            },
+          });
+          for (const scopeKey of ["global", ...workstreamIds.map((x) => "workstream:" + x)])
+            add(null, {
+              table: "history_scopes",
               key: {
                 ...current.scope,
-                native_reference_id: reference.native_reference_id,
-                observation_version: observation.observation_version,
+                scope_key: scopeKey,
+                registry_version: version,
+                event_id: eventId,
               },
               data: {
                 ...current.scope,
-                native_reference_id: reference.native_reference_id,
-                observation_version: observation.observation_version,
-                attempted_at: observation.attempted_at,
-                outcome: observation.outcome,
+                scope_key: scopeKey,
+                registry_version: version,
+                event_id: eventId,
+                event_sequence: sequence,
               },
-              context: {
-                purpose: "pr_observation",
-                record_id: canonical([
-                  reference.native_reference_id,
-                  observation.observation_version,
-                ]),
-                revision: observation.observation_version,
-              },
-              value: { ...observation, observation_cache: cache },
+              context: null,
+              value: null,
             });
-          } else return yield* new TransitionError({ reason: "legacy_evidence_conflict" });
-        }
-        const changed = r.kind !== "native_t3_settlement" || result.native_outcome === "committed";
-        const version = current.context.registry_version + (changed ? 1 : 0);
-        const receipt = yield* checked(
-          decodeReceipt({
-            command_id: r.command.command_id,
-            owner_id: ownerId,
-            actor: r.actor,
-            operation: a.operation,
-            request_sha256: r.request_sha256,
-            server_generation: current.context.server_generation,
-            accepted_at: r.accepted_at,
-            completed_at: completedAt,
-            state: "committed",
-            registry_version: version,
-            changed,
-            effects: {
-              workstream_versions: versions,
-              native_reference_id: r.reference.native_reference_id,
-              membership_ids: memberships,
-              declaration_id: null,
-              declaration_revision: null,
-              edge_id: null,
-              observation,
-              registration,
-              lifecycle_declaration: null,
-              coordination_disposition: null,
-              native_settlement:
-                r.kind === "native_t3_settlement" && a.operation === "request_native_t3_settlement"
-                  ? {
-                      native_reference_id: r.reference.native_reference_id,
-                      native_action: a.native_action,
-                      outcome: result.native_outcome,
-                    }
-                  : null,
-            },
-          }),
-        );
-        add(current.receiptTarget, {
-          ...current.receiptTarget,
-          table: "receipts",
-          data: {
-            ...current.receiptTarget.data,
-            state: "committed",
-            registry_version: version,
-            completed_at: completedAt,
-          },
-          context: { purpose: "receipt", record_id: r.command.command_id, revision: version },
-          value: {
-            receipt,
-            request_body: "",
-            legacy_request_bytes: "unknown",
-            legacy_command: r.command,
-            reconciliation_contract: contract,
-          },
-        });
-        if (!current.retained)
-          add(null, {
-            table: "external_results",
-            key: { ...current.scope, command_id: r.command.command_id },
-            data: { ...current.scope, command_id: r.command.command_id },
-            context: {
-              purpose: "external_result",
-              record_id: r.command.command_id,
-              revision: r.admitted_registry_version,
-            },
-            value: result,
+          add(current.reservationTarget, {
+            ...current.reservationTarget,
+            table: "external_reservations",
+            data: { ...current.reservationTarget.data, state: "released" },
           });
-        const high = yield* sql<{
-          high: number;
-        }>`SELECT coalesce(max(event_sequence),0) AS high FROM jones_workstreams_history WHERE registry_instance_id=${current.scope.registry_instance_id} AND owner_id=${ownerId}`;
-        const eventId = "event:legacy:" + hash([p.import_run_id, ownerId, r.command.command_id]),
-          sequence = high[0]!.high + 1;
-        const event = {
-          event_id: eventId,
-          command_id: r.command.command_id,
-          actor: r.actor,
-          operation: a.operation,
-          occurred_at: completedAt,
-          registry_version: version,
-          changed,
-          workstream_versions: versions,
-          native_reference_id: r.reference.native_reference_id,
-          membership_ids: memberships,
-          declaration_id: null,
-          declaration_revision: null,
-          edge_id: null,
-          lifecycle_declaration: null,
-        };
-        const workstreamIds = versions.map((x) => x.workstream_id);
-        add(null, {
-          table: "history",
-          key: { ...current.scope, event_id: eventId },
-          data: {
-            ...current.scope,
-            event_id: eventId,
-            event_sequence: sequence,
-            legacy_event_sequence: null,
-            command_id: r.command.command_id,
-            registry_version: version,
-            occurred_at: completedAt,
-            workstream_ids: canonical(workstreamIds),
-          },
-          context: { purpose: "history_event", record_id: eventId, revision: version },
-          value: {
-            event_id: eventId,
-            command_id: r.command.command_id,
-            registry_version: version,
-            occurred_at: completedAt,
-            workstream_ids: workstreamIds,
-            value: event,
-          },
-        });
-        for (const scopeKey of ["global", ...workstreamIds.map((x) => "workstream:" + x)])
-          add(null, {
-            table: "history_scopes",
-            key: {
-              ...current.scope,
-              scope_key: scopeKey,
-              registry_version: version,
-              event_id: eventId,
-            },
-            data: {
-              ...current.scope,
-              scope_key: scopeKey,
-              registry_version: version,
-              event_id: eventId,
-              event_sequence: sequence,
-            },
-            context: null,
-            value: null,
-          });
-        add(current.reservationTarget, {
-          ...current.reservationTarget,
-          table: "external_reservations",
-          data: { ...current.reservationTarget.data, state: "released" },
-        });
-        for (const change of changes) {
-          const t = change.after,
-            before = change.before;
-          const encrypted =
-            t.context &&
-            (!before ||
-              canonical(before.value) !== canonical(t.value) ||
-              canonical(before.context) !== canonical(t.context))
-              ? yield* db.sealJson({ ...current.scope, ...t.context }, t.value)
-              : null;
-          if (!before)
-            yield* sql`INSERT INTO ${sql("jones_workstreams_" + t.table)} ${sql.insert(encrypted ? { ...t.data, envelope: encrypted } : t.data)}`;
-          else {
-            const fields = Object.fromEntries(
-              Object.entries(t.data).filter(([k, v]) => before.data[k] !== v),
-            );
-            if (encrypted) fields.envelope = encrypted;
-            if (Object.keys(fields).length)
-              yield* sql`UPDATE ${sql("jones_workstreams_" + t.table)} SET ${sql.update(fields)} WHERE ${sql.and(Object.entries(t.key).map(([k, v]) => sql`${sql(k)}=${v}`))}`;
+          for (const change of changes) {
+            const t = change.after,
+              before = change.before;
+            const encrypted =
+              t.context &&
+              (!before ||
+                canonical(before.value) !== canonical(t.value) ||
+                canonical(before.context) !== canonical(t.context))
+                ? yield* db.sealJson({ ...current.scope, ...t.context }, t.value)
+                : null;
+            if (!before)
+              yield* sql`INSERT INTO ${sql("jones_workstreams_" + t.table)} ${sql.insert(encrypted ? { ...t.data, envelope: encrypted } : t.data)}`;
+            else {
+              const fields = Object.fromEntries(
+                Object.entries(t.data).filter(([k, v]) => before.data[k] !== v),
+              );
+              if (encrypted) fields.envelope = encrypted;
+              if (Object.keys(fields).length)
+                yield* sql`UPDATE ${sql("jones_workstreams_" + t.table)} SET ${sql.update(fields)} WHERE ${sql.and(Object.entries(t.key).map(([k, v]) => sql`${sql(k)}=${v}`))}`;
+            }
           }
-        }
-        const updated = changed
-          ? yield* sql`UPDATE jones_workstreams_registries SET registry_version=${version} WHERE registry_instance_id=${current.scope.registry_instance_id} AND owner_id=${ownerId} AND state='importing' AND home_environment_id=${current.context.home_environment_id} AND active_key_id=${p.active_key_id} AND server_generation=${current.context.server_generation} AND registry_version=${current.context.registry_version} RETURNING owner_id`
-          : yield* sql`SELECT owner_id FROM jones_workstreams_registries WHERE registry_instance_id=${current.scope.registry_instance_id} AND owner_id=${ownerId} AND state='importing' AND home_environment_id=${current.context.home_environment_id} AND active_key_id=${p.active_key_id} AND server_generation=${current.context.server_generation} AND registry_version=${current.context.registry_version}`;
-        if (updated.length !== 1)
-          return yield* new TransitionError({ reason: "legacy_evidence_conflict" });
-        const proof: LegacyReconciliationDelta = {
-          contract,
-          binding: current.binding,
-          request_sha256: hash(request),
-          sequence: current.ledger.deltas.length + 1,
-          previous_root: current.ledger.root,
-          before_registry_version: current.context.registry_version,
-          after_registry_version: version,
-          provenance,
-          receipt,
-          changes,
-        };
-        const root = yield* appendLegacyDelta(current.scope, proof);
+          const updated = changed
+            ? yield* sql`UPDATE jones_workstreams_registries SET registry_version=${version} WHERE registry_instance_id=${current.scope.registry_instance_id} AND owner_id=${ownerId} AND state='importing' AND home_environment_id=${current.context.home_environment_id} AND active_key_id=${p.active_key_id} AND server_generation=${current.context.server_generation} AND registry_version=${current.context.registry_version} RETURNING owner_id`
+            : yield* sql`SELECT owner_id FROM jones_workstreams_registries WHERE registry_instance_id=${current.scope.registry_instance_id} AND owner_id=${ownerId} AND state='importing' AND home_environment_id=${current.context.home_environment_id} AND active_key_id=${p.active_key_id} AND server_generation=${current.context.server_generation} AND registry_version=${current.context.registry_version}`;
+          if (updated.length !== 1)
+            return yield* new TransitionError({ reason: "legacy_evidence_conflict" });
+          const proof: LegacyReconciliationDelta = {
+            contract,
+            binding: current.binding,
+            request_sha256: hash(request),
+            sequence: current.ledger.deltas.length + 1,
+            previous_root: current.ledger.root,
+            before_registry_version: current.context.registry_version,
+            after_registry_version: version,
+            provenance,
+            receipt,
+            changes,
+          };
+          const root = yield* appendLegacyDelta(current.scope, proof);
+          return {
+            contract: contract as typeof contract,
+            result: { kind: "reconciled" as const, proof, delta_root: root },
+          };
+        }).pipe((effect) => db.transaction(current.scope, effect));
         yield* readback(p);
-        return {
-          contract: contract as typeof contract,
-          result: { kind: "reconciled" as const, proof, delta_root: root },
-        };
+        return completed;
       }),
     );
   },

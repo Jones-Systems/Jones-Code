@@ -1,5 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Synthetic signatures and fixture bytes never use real keys.
 import * as NodeCrypto from "node:crypto";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -24,6 +26,7 @@ import {
   LEGACY_RECONCILIATION_CLASS,
 } from "../store/legacyReconciliationStore.ts";
 import * as Registry from "../store/registryStore.ts";
+import * as NativeSql from "../store/sql.ts";
 import { LegacyStoredObservation } from "../../../../../../../packages/contracts/src/jones/workstreamsLegacyReconciliation.ts";
 import { nativeSettlementResult } from "../domain/externalIntents.ts";
 import { canonical, digest } from "./canonical.ts";
@@ -326,6 +329,72 @@ function scenario(
   );
   return { text, reservations, results };
 }
+const otherOwner = "synthetic.second-owner",
+  otherPrincipal = "20000000-0000-4000-8000-000000000002";
+function multiownerScenario(kind: Kind, retained: boolean, populated: boolean) {
+  const f = scenario([kind], retained),
+    other = scenario(populated ? [kind] : [], retained),
+    first = parseSnapshot(f.text),
+    second = parseSnapshot(other.text);
+  const secondRows: SnapshotRow[] = JSON.parse(
+    JSON.stringify(second.rows).replaceAll(owner, otherOwner).replaceAll(principal, otherPrincipal),
+  );
+  const reservations = other.reservations.map((r) =>
+    parseReservation(
+      JSON.parse(
+        JSON.stringify(r).replaceAll(owner, otherOwner).replaceAll(principal, otherPrincipal),
+      ),
+    ),
+  );
+  const results = reservations.map((r, i) =>
+    r.kind === "native_t3_settlement"
+      ? parseResult(nativeSettlementResult(r, "committed"))
+      : other.results[i]!,
+  );
+  f.reservations.push(...reservations);
+  f.results.push(...results);
+  f.text = encodeSnapshot(
+    {
+      ...first.header,
+      owners: [
+        ...first.header.owners,
+        ...second.header.owners.map((o) => ({ ...o, owner_id: otherOwner })),
+      ],
+      open_effects: first.header.open_effects + second.header.open_effects,
+    },
+    [
+      ...first.rows,
+      ...secondRows
+        .filter(
+          (r) =>
+            r.class !== "workstream_registry_identity" &&
+            (populated || r.class === "workstream_registry_context"),
+        )
+        .map((r) =>
+          r.class === "workstream_external_results"
+            ? { ...r, row: { ...r.row, payload: JSON.stringify(results[0]) } }
+            : r,
+        ),
+    ],
+  );
+  return f;
+}
+const ownerRows = (ownerId: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const result: Record<string, unknown> = {};
+    const tables = yield* sql<{
+      name: string;
+    }>`SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'jones_workstreams_%' ORDER BY name`;
+    for (const { name } of tables) {
+      const columns = yield* sql.unsafe<{ name: string }>("PRAGMA table_info(" + name + ")");
+      if (columns.some((c) => c.name === "owner_id"))
+        result[name] = yield* sql`SELECT * FROM ${sql(name)} WHERE owner_id=${ownerId}`;
+    }
+    result.archive =
+      yield* sql`SELECT * FROM jones_workstreams_legacy_archive WHERE json_extract(record_key,'$[0]')=${ownerId} ORDER BY class,record_key`;
+    return result;
+  });
 const setup = (fixture: ReturnType<typeof scenario>) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -383,7 +452,9 @@ const sourcePort = (
     reservation: LegacyReservation;
   }) => {
     const i = f.reservations.findIndex(
-      (r) => r.command.command_id === reservation.command.command_id,
+      (r) =>
+        r.owner_id === reservation.owner_id &&
+        r.command.command_id === reservation.command.command_id,
     );
     const action = reservation.command.action;
     const evidence = {
@@ -393,8 +464,8 @@ const sourcePort = (
       settlement_request:
         action.operation === "request_native_t3_settlement"
           ? {
-              owner_id: owner,
-              principal_id: principal,
+              owner_id: reservation.owner_id,
+              principal_id: reservation.actor.principal_id,
               command_id: reservation.command.command_id,
               native_reference_id: reservation.reference.native_reference_id,
               native_action: action.native_action,
@@ -511,6 +582,17 @@ it.effect.each(["verify_reference", "native_t3_settlement", "refresh_linked_pr"]
         reverse.snapshot.rows.find((x) => x.class === "workstream_external_reservations")!.row
           .state,
       ).toBe("released");
+      const reservationRow = reverse.snapshot.rows.find(
+        (x) => x.class === "workstream_external_reservations",
+      )!.row;
+      expect(reservationRow.effect).toBe(kind);
+      expect(reservationRow.payload).toBe(
+        parseSnapshot(f.text).rows.find((x) => x.class === "workstream_external_reservations")!.row
+          .payload,
+      );
+      expect(
+        (yield* sql`SELECT effect FROM jones_workstreams_external_reservations`)[0]!.effect,
+      ).toBe(kind === "native_t3_settlement" ? "request_native_t3_settlement" : kind);
       const referenceRow = reverse.snapshot.rows.find(
         (x) => x.class === "workstream_native_references",
       )!.row;
@@ -530,6 +612,11 @@ it.effect.each(["verify_reference", "native_t3_settlement", "refresh_linked_pr"]
           routing_expires_at: "2026-10-25T12:05:00+00:00",
           routing_evidence_sha256: "a".repeat(64),
         });
+      const routing = Object.entries(referenceRow).filter(([k]) => k.startsWith("routing_"));
+      expect(routing).toHaveLength(11);
+      expect(
+        routing.every(([, v]) => (kind === "refresh_linked_pr" ? v === null : v !== null)),
+      ).toBe(true);
       expect(reverse.next_generations).toEqual([{ owner_id: owner, server_generation: 8 }]);
     }).pipe(Effect.provide(testLayer({ keys: keys() }))),
 );
@@ -1046,4 +1133,225 @@ it.effect(
       expect(JSON.stringify(result)).toContain("original_witness_unconfigured");
       expect((yield* readback(p)).reconciliation.count).toBe(0);
     }).pipe(Effect.provide(testLayer({ keys: keys() }))),
+);
+
+it.effect.each(
+  (["verify_reference", "native_t3_settlement", "refresh_linked_pr"] as const).flatMap((kind) =>
+    [false, true].flatMap((populated) =>
+      [false, true].map((retained) => [kind, populated, retained] as const),
+    ),
+  ),
+)("reconciles %s with populated=%s and retained=%s", ([kind, populated, retained]) =>
+  Effect.gen(function* () {
+    const f = multiownerScenario(kind, retained, populated),
+      p = yield* setup(f),
+      r = f.reservations[0]!,
+      beforeOther = yield* ownerRows(otherOwner);
+    if (!populated)
+      expect(
+        parseSnapshot(f.text)
+          .rows.filter((row) => row.row.owner_id === otherOwner)
+          .map((row) => row.class),
+      ).toEqual(["workstream_registry_context"]);
+    const db = yield* NativeSql.NativeSql;
+    const mismatch = yield* Effect.exit(
+      db.transaction(
+        scope,
+        (yield* Registry.RegistryStore).context({ ...scope, owner_id: otherOwner }),
+      ),
+    );
+    expect(Exit.isFailure(mismatch)).toBe(true);
+    expect(JSON.stringify(mismatch)).toContain("owner_mismatch");
+    for (const [attemptOwner, attemptPrincipal] of [
+      [owner, otherPrincipal],
+      [otherOwner, principal],
+    ] as const) {
+      expect(
+        Exit.isFailure(
+          yield* Effect.exit(reconcileLegacyOpen(p, attemptOwner, attemptPrincipal, request(r))),
+        ),
+      ).toBe(true);
+    }
+    const run = reconcileLegacyOpen(p, owner, principal, request(r));
+    const result = yield* run.pipe(Effect.provideService(LegacySourceLookup, sourcePort(f)));
+    expect(result.result.kind).toBe("reconciled");
+    if (result.result.kind === "reconciled") {
+      expect(result.result.proof.binding.owner_id).toBe(owner);
+      expect(result.result.proof.binding.principal_id).toBe(principal);
+      expect(result.result.proof.provenance.kind).toBe(
+        retained ? "retained_terminal_result" : "authenticated_source_lookup",
+      );
+    }
+    expect(yield* ownerRows(otherOwner)).toEqual(beforeOther);
+    const afterFirst = yield* ownerRows(owner);
+    expect(yield* run).toEqual(result);
+    expect(yield* ownerRows(owner)).toEqual(afterFirst);
+    expect(yield* ownerRows(otherOwner)).toEqual(beforeOther);
+    expect((yield* readback(p)).reconciliation.count).toBe(1);
+    if (populated) {
+      const otherReservation = f.reservations[1]!;
+      const second = yield* reconcileLegacyOpen(
+        p,
+        otherOwner,
+        otherPrincipal,
+        request(otherReservation),
+      ).pipe(Effect.provideService(LegacySourceLookup, sourcePort(f)));
+      expect(second.result.kind).toBe("reconciled");
+      expect(yield* ownerRows(owner)).toEqual(afterFirst);
+      expect(
+        (yield* readLegacyLedger({ ...scope, owner_id: otherOwner }, p.import_run_id)).deltas,
+      ).toHaveLength(1);
+      expect((yield* readback(p)).reconciliation.count).toBe(2);
+    }
+  }).pipe(Effect.provide(testLayer({ keys: keys() }))),
+);
+
+it.effect.each(["verify_reference", "native_t3_settlement", "refresh_linked_pr"] as const)(
+  "revalidates the whole import after the lookup-only source returns %s",
+  (kind) =>
+    Effect.gen(function* () {
+      const f = multiownerScenario(kind, false, true),
+        p = yield* setup(f),
+        sql = yield* SqlClient.SqlClient,
+        before = yield* ownerRows(owner),
+        port = sourcePort(f);
+      let lookups = 0;
+      const result = yield* Effect.exit(
+        reconcileLegacyOpen(p, owner, principal, request(f.reservations[0]!)).pipe(
+          Effect.provideService(LegacySourceLookup, {
+            lookup: (input) =>
+              Effect.gen(function* () {
+                lookups++;
+                const evidence = yield* port.lookup(input);
+                yield* sql`UPDATE jones_workstreams_registries SET registry_version=registry_version+1 WHERE owner_id=${otherOwner}`.pipe(
+                  Effect.orDie,
+                );
+                return evidence;
+              }),
+          }),
+        ),
+      );
+      expect(Exit.isFailure(result)).toBe(true);
+      expect(JSON.stringify(result)).toContain("registry_readback_mismatch");
+      expect(lookups).toBe(1);
+      expect(yield* ownerRows(owner)).toEqual(before);
+      // This source-time change survives refusal: lookup ran outside the write transaction.
+      expect(
+        (yield* sql`SELECT registry_version FROM jones_workstreams_registries WHERE owner_id=${otherOwner}`)[0]!
+          .registry_version,
+      ).toBe(8);
+    }).pipe(Effect.provide(testLayer({ keys: keys() }))),
+);
+
+it.effect.each(["baseline", "delta", "replay"] as const)(
+  "refuses unexplained other-owner %s changes before lookup or replay",
+  (phase) =>
+    Effect.gen(function* () {
+      const f = multiownerScenario("native_t3_settlement", false, true),
+        p = yield* setup(f),
+        sql = yield* SqlClient.SqlClient,
+        q = request(f.reservations[0]!);
+      if (phase !== "baseline")
+        yield* reconcileLegacyOpen(
+          p,
+          phase === "delta" ? otherOwner : owner,
+          phase === "delta" ? otherPrincipal : principal,
+          request(f.reservations[phase === "delta" ? 1 : 0]!),
+        ).pipe(Effect.provideService(LegacySourceLookup, sourcePort(f)));
+      yield* sql`UPDATE jones_workstreams_references SET attestation_version=attestation_version+1,routing_native_id='unexplained.other-thread' WHERE owner_id=${otherOwner}`;
+      const before = yield* ownerRows(owner);
+      let lookups = 0;
+      const result = yield* Effect.exit(
+        reconcileLegacyOpen(p, owner, principal, q).pipe(
+          Effect.provideService(LegacySourceLookup, {
+            lookup: () => {
+              lookups++;
+              return Effect.die("Unexplained baseline or delta must refuse before source lookup");
+            },
+          }),
+        ),
+      );
+      expect(Exit.isFailure(result)).toBe(true);
+      expect(JSON.stringify(result)).toContain("target_digest_mismatch");
+      expect(lookups).toBe(0);
+      expect(yield* ownerRows(owner)).toEqual(before);
+    }).pipe(Effect.provide(testLayer({ keys: keys() }))),
+);
+
+it.effect.each(
+  (["late_sql", "post_readback"] as const).flatMap((failure) =>
+    (["verify_reference", "native_t3_settlement", "refresh_linked_pr"] as const).map(
+      (kind) => [kind, failure] as const,
+    ),
+  ),
+)("rolls back all owners and %s completion on %s refusal", ([kind, failure]) =>
+  Effect.gen(function* () {
+    const f = multiownerScenario(kind, false, true),
+      p = yield* setup(f),
+      sql = yield* SqlClient.SqlClient,
+      before = yield* ownerRows(owner),
+      beforeOther = yield* ownerRows(otherOwner);
+    const action =
+      failure === "late_sql"
+        ? "SELECT RAISE(ABORT,'synthetic late refusal');"
+        : "UPDATE jones_workstreams_registries SET registry_version=registry_version+1 WHERE owner_id='" +
+          otherOwner +
+          "';";
+    yield* sql.unsafe(
+      "CREATE TRIGGER synthetic_late BEFORE INSERT ON jones_workstreams_legacy_archive WHEN NEW.class='" +
+        LEGACY_RECONCILIATION_CLASS +
+        "' BEGIN " +
+        action +
+        " END",
+    );
+    const result = yield* Effect.exit(
+      reconcileLegacyOpen(p, owner, principal, request(f.reservations[0]!)).pipe(
+        Effect.provideService(LegacySourceLookup, sourcePort(f)),
+      ),
+    );
+    expect(Exit.isFailure(result)).toBe(true);
+    expect(JSON.stringify(result)).toContain(
+      failure === "late_sql" ? "SqlError" : "registry_readback_mismatch",
+    );
+    expect(yield* ownerRows(owner)).toEqual(before);
+    expect(yield* ownerRows(otherOwner)).toEqual(beforeOther);
+    expect((yield* readback(p)).reconciliation.count).toBe(0);
+  }).pipe(Effect.provide(testLayer({ keys: keys() }))),
+);
+
+it.effect.each(["verify_reference", "native_t3_settlement", "refresh_linked_pr"] as const)(
+  "reopens the database and replays lost-reply %s completion once with two owners",
+  (kind) =>
+    Effect.gen(function* () {
+      const f = multiownerScenario(kind, false, true);
+      const directory = NodePath.resolve(
+        "node_modules/.cache/legacy-review-restart-" + NodeCrypto.randomUUID(),
+      );
+      yield* Effect.promise(() => NodeFSP.mkdir(directory, { recursive: true }));
+      const filename = NodePath.join(directory, "synthetic.sqlite");
+      const saved = yield* Effect.gen(function* () {
+        const p = yield* setup(f),
+          beforeOther = yield* ownerRows(otherOwner);
+        const reply = yield* reconcileLegacyOpen(
+          p,
+          owner,
+          principal,
+          request(f.reservations[0]!),
+        ).pipe(Effect.provideService(LegacySourceLookup, sourcePort(f)));
+        expect(reply.result.kind).toBe("reconciled");
+        return { p, reply, beforeOther, after: yield* ownerRows(owner) };
+      }).pipe(Effect.provide(testLayer({ keys: keys(), filename })));
+      yield* Effect.gen(function* () {
+        expect(
+          yield* reconcileLegacyOpen(saved.p, owner, principal, request(f.reservations[0]!)).pipe(
+            Effect.provideService(LegacySourceLookup, {
+              lookup: () => Effect.die("Replay after restart must not contact the source"),
+            }),
+          ),
+        ).toEqual(saved.reply);
+        expect(yield* ownerRows(owner)).toEqual(saved.after);
+        expect(yield* ownerRows(otherOwner)).toEqual(saved.beforeOther);
+        expect((yield* readback(saved.p)).reconciliation.count).toBe(1);
+      }).pipe(Effect.provide(testLayer({ keys: keys(), filename })));
+    }),
 );
