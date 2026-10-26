@@ -311,10 +311,6 @@ it.effect(
         };
         yield* sink.write({
           events: [
-            f.event("thread.updated", child.thread.id, {
-              ...child.thread,
-              activeProviderThreadId: provider.id,
-            }),
             f.event("provider-thread.updated", child.thread.id, {
               ...provider,
               nativeThreadRef: f.provider.nativeThreadRef,

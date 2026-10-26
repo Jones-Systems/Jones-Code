@@ -3,8 +3,7 @@
   "feature": "task-continuation",
   "jonesOwnedPaths": [
     "apps/server/src/jones/taskContinuation/",
-    "packages/provider-core/src/server/jones/TaskContinuationInstructions.ts",
-    "packages/contracts/src/jones/delegatedTaskNativeSession.ts"
+    "packages/provider-core/src/server/jones/TaskContinuationInstructions.ts"
   ],
   "hookPaths": [],
   "tombstones": [],

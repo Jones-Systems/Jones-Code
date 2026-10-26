@@ -1581,6 +1581,7 @@ const make = Effect.gen(function* () {
         model: task.model,
       };
     const nativeSession = yield* readTaskNativeSession(task, childControls).pipe(
+      Effect.provideService(ThreadManagementService.ThreadManagementService, threadManagement),
       Effect.mapError(threadManagementFailure),
     );
     const result = {
