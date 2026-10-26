@@ -415,7 +415,7 @@ it.effect(
             WORKSTREAMS_REGISTRATION_CONTEXT_MAX_RESPONSE_BYTES,
           );
           assert.deepEqual(
-            yield* Schema.decodeUnknownEffect(Schema.fromJsonString(preChangeClientResponse))(text),
+            yield* Schema.decodeEffect(Schema.fromJsonString(preChangeClientResponse))(text),
             result.context,
           );
           assert.isFalse(text.includes("enrolled_build"));

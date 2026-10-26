@@ -37,8 +37,7 @@ const SHADOW_LOCAL_ENTRY_NAMES = new Set([
   "tmp",
   ".DS_Store",
 ]);
-// Codex creates these runtime locks itself when it starts in a shadow home before the shared
-// home has one. They guard shared state, so a local copy is replaced with the shared link.
+// Shadow homes may create local OAuth locks first; replace them with the shared link.
 const REPLACEABLE_SHARED_RUNTIME_ENTRIES = new Set(["mcp-oauth-locks"]);
 
 function resolveHomePath(path: Path.Path, home: string, value: string | undefined): string {

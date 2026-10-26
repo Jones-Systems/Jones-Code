@@ -15,6 +15,7 @@ export function useMobileImportedHistoryChoice(environmentId: EnvironmentId, thr
     [environmentId, threadId],
   );
   const state = useSyncExternalStore(choice.subscribe, choice.snapshot);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Hydrate the mounted thread's persisted continuation choice from secure storage.
   useEffect(() => {
     void choice.hydrate();
   }, [choice]);

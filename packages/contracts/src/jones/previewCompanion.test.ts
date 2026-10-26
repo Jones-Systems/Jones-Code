@@ -6,6 +6,7 @@ import { DesktopBrowserCommand, DesktopBrowserEvent } from "../desktopBrowser.ts
 import {
   CompanionDown,
   CompanionUp,
+  DesktopCompanionTicketResponse,
   PREVIEW_COMPANION_HTTP_BASE,
   PREVIEW_COMPANION_PROTOCOL,
   PREVIEW_COMPANION_WS_PATH,
@@ -63,6 +64,8 @@ const events = [
   { type: "cdp", ...tab, message: '{"id":1,"result":{}}' },
 ];
 const commands = [
+  { type: "turn", threadId: tab.threadId, active: true },
+  { type: "turn", threadId: tab.threadId, active: false },
   { type: "cdp", ...tab, message: '{"id":1,"method":"Page.enable"}' },
   { type: "release", ...tab },
   { type: "pointer", ...tab, phase: "move", x: 1.5, y: -2 },
@@ -212,15 +215,49 @@ describe("Preview companion wire contracts", () => {
       Schema.decodeUnknownSync(CompanionDown)({ ...welcome, connectionGeneration: -1 }),
     ).toThrow();
     expect(() =>
-      Schema.decodeUnknownSync(CompanionDown)({ type: "mount", ...tab, tabId: "a".repeat(129) }),
+      Schema.decodeSync(CompanionDown)({ type: "mount", ...tab, tabId: "a".repeat(129) }),
     ).toThrow();
     expect(() =>
-      Schema.decodeUnknownSync(CompanionUp)({ type: "mounted", ...tab, threadId: "a".repeat(129) }),
+      Schema.decodeSync(CompanionUp)({ type: "mounted", ...tab, threadId: "a".repeat(129) }),
     ).toThrow();
   });
 });
 
 describe("Preview companion HTTP payloads", () => {
+  it("preserves explicit-tag constructors and requires selection tags on the wire", () => {
+    const server = { _tag: "server" } as const;
+    const companion = { _tag: "companion", hostId: "mini-1" } as const;
+    for (const wire of [server, companion]) {
+      expect(PreviewRenderHostSelection.make(wire)).toEqual(wire);
+      expect(
+        Schema.encodeSync(PreviewRenderHostSelection)(
+          Schema.decodeSync(PreviewRenderHostSelection)(wire),
+        ),
+      ).toEqual(wire);
+    }
+    expect(() => Schema.decodeUnknownSync(PreviewRenderHostSelection)({})).toThrow();
+    expect(() =>
+      Schema.decodeUnknownSync(PreviewRenderHostSelection)({ hostId: "mini-1" }),
+    ).toThrow();
+  });
+
+  it("preserves ready ticket tags through construction and wire round trips", () => {
+    const wire = {
+      requestId: "request-1",
+      environmentId: "environment-1",
+      result: { _tag: "ready", url: "ws://companion.invalid/ticket" },
+    } as const;
+    const decoded = Schema.decodeSync(DesktopCompanionTicketResponse)(wire);
+    expect(DesktopCompanionTicketResponse.make(decoded)).toEqual(decoded);
+    expect(Schema.encodeSync(DesktopCompanionTicketResponse)(decoded)).toEqual(wire);
+    expect(() =>
+      Schema.decodeUnknownSync(DesktopCompanionTicketResponse)({
+        ...wire,
+        result: { url: wire.result.url },
+      }),
+    ).toThrow();
+  });
+
   it("round trips online and offline host status", () => {
     const host = {
       hostId: "mini-1",
@@ -266,9 +303,9 @@ describe("Preview companion HTTP payloads", () => {
         ),
       ).toEqual(wire);
     }
-    expect(
-      Schema.decodeUnknownSync(PreviewCompanionThreadSelectionInput)({ selection: null }),
-    ).toEqual({ selection: null });
+    expect(Schema.decodeSync(PreviewCompanionThreadSelectionInput)({ selection: null })).toEqual({
+      selection: null,
+    });
     expect(() =>
       Schema.decodeUnknownSync(PreviewCompanionDefaultSelectionInput)({ selection: null }),
     ).toThrow();

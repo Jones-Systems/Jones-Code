@@ -1,4 +1,4 @@
-import { resolveGitCommitHash, bundlesWslRuntime } from "./build-desktop-artifact.ts";
+import { resolveGitCommitHash } from "./build-desktop-artifact.ts";
 import { statFile } from "@electron/asar";
 // @effect-diagnostics nodeBuiltinImport:off - Tests use Node path and crypto APIs for isolated packaged-artifact fixtures.
 import * as NodeCrypto from "node:crypto";

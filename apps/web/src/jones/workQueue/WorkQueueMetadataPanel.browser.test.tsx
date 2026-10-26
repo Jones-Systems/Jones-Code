@@ -154,7 +154,7 @@ describe("submitted work metadata", () => {
     "keeps %s display free of invented assignment claims",
     async (version) => {
       await using _fixture = await setupFixture1();
-      const snapshot = Schema.decodeUnknownSync(MetadataSchema)({
+      const snapshot = Schema.decodeSync(MetadataSchema)({
         ...sample(),
         schema: `codex.t3-work-queue-metadata/${version}`,
         items: sample().items.map((item) => ({

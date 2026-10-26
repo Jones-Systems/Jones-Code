@@ -18,12 +18,10 @@ export const verifyCodexProcessExit = Effect.fn("LateSteer.verifyCodexProcessExi
     // its native exit-event Deferred, independently of the protocol's scope.
     yield* handle.exitCode.pipe(Effect.catch(() => Effect.void));
     if (yield* handle.isRunning)
-      return yield* Effect.fail(
-        new CodexErrors.CodexAppServerTransportError({
-          operation: "read-process-exit-status",
-          cause: "The captured child has no confirmed exit.",
-        }),
-      );
+      return yield* new CodexErrors.CodexAppServerTransportError({
+        operation: "read-process-exit-status",
+        cause: "The captured child has no confirmed exit.",
+      });
   },
   Effect.timeout("3 seconds"),
   Effect.mapError(

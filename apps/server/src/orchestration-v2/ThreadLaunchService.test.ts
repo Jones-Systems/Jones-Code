@@ -1,3 +1,4 @@
+import * as DocumentText from "../provider/DocumentText.ts";
 import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
 import { ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE } from "@t3tools/contracts";
 import * as Fiber from "effect/Fiber";
@@ -266,7 +267,7 @@ function makeHarness(options: HarnessOptions = {}) {
               ? Option.some(otherProject)
               : Option.none(),
         ),
-      getByWorkspaceRoot: () => Effect.succeed(Option.some(boundProject)),
+      getByWorkspaceRoot: () => Effect.succeedSome(boundProject),
       snapshot: Effect.die("unused"),
       getShell: () => Effect.die("unused"),
       listShells: () => Effect.die("unused"),
@@ -302,7 +303,7 @@ function makeHarness(options: HarnessOptions = {}) {
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
         namedProjectsRoot: "/projects",
         isScratchProject: () => Effect.succeed(false),
-        folderForThread: () => Effect.succeed(Option.none()),
+        folderForThread: () => Effect.succeedNone,
       }),
   );
   const layerLaunch = ThreadLaunch.layer.pipe(
@@ -607,7 +608,8 @@ class LegacyLauncherPty implements PtyAdapter.PtyProcess {
     this.kills.push(signal);
     for (const exit of this.exits) exit({ exitCode: 0, signal: 15 });
   }
-  onData(_callback: (data: string) => void) {
+  onData(callback: (data: string) => void) {
+    callback("\x1b[?2004h");
     return () => {};
   }
   onExit(callback: (event: PtyAdapter.PtyExitEvent) => void) {
@@ -680,10 +682,30 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
             ),
           ),
         );
+        const writePending = yield* Deferred.make<void>();
+        const allowWriteReadback = yield* Deferred.make<void>();
         const harness = makeHarness({
           workspaceRoot,
           projectScripts: scripts,
-          ...(scenario === "started_setup" ? { runSetup: runner.runForThread } : {}),
+          ...(scenario === "started_setup"
+            ? {
+                runSetup: (request: ProjectSetupScriptRunner.ProjectSetupScriptRunnerInput) => {
+                  const hooks = request.legacyPreparation;
+                  if (hooks === undefined) return Effect.die("Missing owned legacy preparation.");
+                  return runner.runForThread({
+                    ...request,
+                    legacyPreparation: {
+                      ...hooks,
+                      afterWrite: (result, count) =>
+                        Deferred.succeed(writePending, undefined).pipe(
+                          Effect.andThen(Deferred.await(allowWriteReadback)),
+                          Effect.andThen(hooks.afterWrite(result, count)),
+                        ),
+                    },
+                  });
+                },
+              }
+            : {}),
           privateDUnavailable: scenario === "missing_method",
           terminalOwner: Layer.succeed(TerminalManager.TerminalManager, manager),
         });
@@ -780,9 +802,28 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                     ),
                   )
               : undefined;
-          const result = yield* layerLaunch
-            .launch(input)
-            .pipe(Effect.result, Effect.ensuring(Effect.sync(() => lostReply?.mockRestore())));
+          const launch = yield* layerLaunch.launch(input).pipe(Effect.result, Effect.forkChild);
+          if (scenario === "started_setup") {
+            yield* Effect.gen(function* () {
+              yield* Deferred.await(writePending);
+              assert.isUndefined(launch.pollUnsafe());
+              assert.isTrue(Option.isNone(yield* layerReceipts.getByCommandId(base.commandId)));
+              const pending = yield* threads.getThreadProjection(base.threadId);
+              assert.deepEqual(
+                pending.runs[0]!.legacyPreparation?.steps.map((step) => [
+                  step.effect.kind,
+                  step.state,
+                ]),
+                [
+                  ["setup.open", "known_succeeded"],
+                  ["setup.write", "intent"],
+                ],
+              );
+            }).pipe(Effect.ensuring(Deferred.succeed(allowWriteReadback, undefined)));
+          }
+          const result = yield* Fiber.join(launch).pipe(
+            Effect.ensuring(Effect.sync(() => lostReply?.mockRestore())),
+          );
           assert.equal(result._tag, "Failure");
           if (result._tag === "Failure") {
             assert.isTrue(Schema.is(ThreadLaunch.ThreadLaunchError)(result.failure));
@@ -1116,7 +1157,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                 .mockImplementation((id) =>
                   (!renameCase || renameStage) &&
                   id.endsWith(scenario.includes("intent_readback_lost") ? ":intent" : ":outcome")
-                    ? Effect.succeed(Option.none())
+                    ? Effect.succeedNone
                     : actualReceipt(id),
                 )
             : undefined;
@@ -1626,7 +1667,6 @@ it.effect("keeps native maintenance commands out of steering and restart message
           attachments: [],
           dispatchMode: { type: scenario.mode, targetRunId: targetRun.id },
         });
-        // A steer sent while a maintenance turn runs waits as a queued follow-up.
         if (scenario.name.startsWith("steer-")) {
           yield* dispatch;
           const queued = (yield* threads.getThreadProjection(launched.threadId)).runs[1];
@@ -2789,6 +2829,73 @@ it.effect("does not let a failing same-command caller strand a concurrent durabl
   }),
 );
 
+it.effect("reports one concurrent same-command launch as new and the rest as resumed", () =>
+  Effect.gen(function* () {
+    // Both launches read no receipt before either one claims the thread.
+    const arrived = yield* Ref.make(0);
+    const bothRead = yield* Deferred.make<void>();
+    const harness = makeHarness({
+      managedFolders: Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+        namedProjectsRoot: "/projects",
+        isScratchProject: () => Effect.succeed(false),
+        folderForThread: () =>
+          Ref.updateAndGet(arrived, (count) => count + 1).pipe(
+            Effect.tap((count) =>
+              count === 2 ? Deferred.succeed(bothRead, undefined) : Effect.void,
+            ),
+            Effect.andThen(Deferred.await(bothRead)),
+            Effect.as(Option.none()),
+          ),
+      }),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const input = launchInput({
+        command: "command:launch:concurrent-resumed",
+        thread: "thread:launch:concurrent-resumed",
+      });
+      const results = yield* Effect.all([launches.launch(input), launches.launch(input)], {
+        concurrency: "unbounded",
+      });
+      assert.deepEqual(results.map((result) => result.resumed).sort(), [false, true]);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect(
+  "does not report a retry as resumed when the earlier attempt only claimed the thread",
+  () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const input = launchInput({
+          command: "command:launch:claimed-only",
+          thread: "thread:launch:claimed-only",
+          message: "Counted once",
+        });
+        yield* threads.dispatch({
+          type: "thread.create",
+          commandId: input.commandId,
+          threadId: input.threadId,
+          projectId: input.projectId,
+          title: input.title,
+          modelSelection: input.modelSelection,
+          runtimeMode: input.runtimeMode,
+          interactionMode: input.interactionMode,
+          branch: null,
+          worktreePath: null,
+          createdBy: input.createdBy,
+          creationSource: input.creationSource,
+        });
+        const retried = yield* launches.launch(input);
+        assert.isFalse(retried.resumed);
+        assert.isTrue((yield* launches.launch(input)).resumed);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+);
+
 it.effect("schedules an accepted preparing message exactly once across concurrent retries", () =>
   Effect.gen(function* () {
     const setupEntered = yield* Deferred.make<void>();
@@ -2899,7 +3006,7 @@ it.effect("creates a strong provider-thread mapping for an imported native sessi
 it.effect("shared intake preserves durable attachment bytes after a lost launch result", () => {
   const harness = makeHarness();
   const layerFiles = ServerConfig.layerTest(process.cwd(), { prefix: "t3-message-intake-" }).pipe(
-    Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
   );
   return Effect.gen(function* () {
     const config = yield* ServerConfig.ServerConfig;
@@ -2973,10 +3080,9 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
     );
     assert.isDefined(stored);
     assert.notEqual(stored.attachments[0]?.id, attachment.id);
-    assert.equal(
-      (stored.context?.records[0] as { attachmentId: string }).attachmentId,
-      stored.attachments[0]?.id,
-    );
+    const record = stored.context?.records[0];
+    assert.isDefined(record);
+    assert.equal((record as { attachmentId: string }).attachmentId, stored.attachments[0]?.id);
     const userItem = accepted.turnItems.find(
       (item) => item.type === "user_message" && item.messageId === stored.id,
     );
@@ -3176,6 +3282,7 @@ it.effect("leaves a top-level existing-worktree setup running in the background 
         Effect.sync(() => observed.push(input.observeCompletion !== undefined)).pipe(
           Effect.as({
             status: "started" as const,
+            writeCompletion: Effect.void,
             async: false,
             scriptId: "setup",
             scriptName: "Setup",
@@ -3261,7 +3368,6 @@ it.effect("stops an in-flight branch rename when tracked setup is cancelled", ()
       yield* Deferred.await(setupEntered);
       yield* Deferred.await(branchNameStarted);
       assert.isTrue(yield* tracker.cancel(launched.threadId));
-      // Let a rename that survived the cancel finish, then check it never ran.
       yield* Deferred.succeed(allowBranchName, undefined);
       yield* Effect.raceFirst(
         Deferred.await(branchNameInterrupted),
@@ -3284,6 +3390,7 @@ it.effect.each([0, 1])("releases an async setup before its completion with exit 
       runSetup: () =>
         Effect.succeed({
           status: "started" as const,
+          writeCompletion: Effect.void,
           async: true,
           scriptId: "setup",
           scriptName: "Setup",
@@ -3485,7 +3592,7 @@ it.effect.each([
 it.effect("replays an accepted send after the project disables the instance", () => {
   const harness = makeHarness();
   const layerFiles = ServerConfig.layerTest(process.cwd(), { prefix: "t3-send-retry-" }).pipe(
-    Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
   );
   return Effect.gen(function* () {
     const launches = yield* ThreadLaunch.ThreadLaunchService;
@@ -3533,7 +3640,7 @@ it.effect("replays an accepted send after the project disables the instance", ()
 it.effect("replays an accepted message.dispatch after the project disables the instance", () => {
   const harness = makeHarness();
   const layerFiles = ServerConfig.layerTest(process.cwd(), { prefix: "t3-dispatch-retry-" }).pipe(
-    Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
   );
   return Effect.gen(function* () {
     const launches = yield* ThreadLaunch.ThreadLaunchService;
@@ -3565,7 +3672,7 @@ it.effect("replays an accepted message.dispatch after the project disables the i
     });
 
     const retry = yield* ThreadMessageIntake.dispatchCommand(dispatchInput);
-    assert.deepEqual(retry, first);
+    assert.deepEqual(retry, { ...first, replayed: true });
 
     const fresh = yield* ThreadMessageIntake.dispatchCommand({
       ...dispatchInput,
@@ -3640,6 +3747,7 @@ it.effect.each(
           cancelSetup
             ? Effect.succeed({
                 status: "started" as const,
+                writeCompletion: Effect.void,
                 async: cancelAsync,
                 scriptId: "setup",
                 scriptName: "Setup",
@@ -4376,6 +4484,7 @@ it.effect("enqueues provider work only after setup has been initiated", () =>
           Effect.andThen(Deferred.await(allowSetup)),
           Effect.as({
             status: "started" as const,
+            writeCompletion: Effect.void,
             async: false,
             scriptId: "setup",
             scriptName: "Setup",

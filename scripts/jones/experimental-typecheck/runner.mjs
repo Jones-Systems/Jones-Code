@@ -55,10 +55,10 @@ export function selectProjects(root, inventory, selectors) {
     );
     if (
       typeof manifest.scripts?.typecheck !== "string" ||
-      !/^\s*tsc-rs\s+--noEmit\s*$/.test(manifest.scripts.typecheck)
+      !/^\s*tsc\s+--noEmit\s*$/.test(manifest.scripts.typecheck)
     ) {
       throw new Error(
-        `Unsupported typecheck script for ${selector}: ${JSON.stringify(manifest.scripts?.typecheck)}. Only tsc-rs --noEmit is supported; Astro is outside coverage.`,
+        `Unsupported typecheck script for ${selector}: ${JSON.stringify(manifest.scripts?.typecheck)}. Only tsc --noEmit is supported; Astro is outside coverage.`,
       );
     }
     NodeFS.accessSync(NodePath.join(project.path, "tsconfig.json"), NodeFS.constants.R_OK);
@@ -157,7 +157,7 @@ export async function runExperimental(root, args) {
   try {
     if (args.length === 1 && args[0] === "--help") {
       console.log(
-        "Usage: pnpm typecheck:tsrs:experimental <workspace-name|relative-path>... [--checkers N]\nOnly existing tsc-rs --noEmit projects are supported. No implicit all-project selection.",
+        "Usage: pnpm typecheck:tsrs:experimental <workspace-name|relative-path>... [--checkers N]\nOnly existing tsc --noEmit projects are supported. No implicit all-project selection.",
       );
       return result;
     }

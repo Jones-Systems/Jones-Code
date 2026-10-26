@@ -142,7 +142,7 @@ describe("Jones local desktop update UI", () => {
 
   it("persists an enrolled campaign before installing its exact selected build", async () => {
     const campaignId = "11111111-1111-4111-8111-111111111111";
-    const fleet = Schema.decodeUnknownSync(FleetDesktopState)({
+    const fleet = Schema.decodeSync(FleetDesktopState)({
       schema: 1,
       campaigns: [],
       enrollments: [
@@ -216,7 +216,7 @@ describe("Jones local desktop update UI", () => {
   it("creates fresh campaign IDs when reselecting a superseded build, then reuses the latest campaign", async () => {
     const oldCampaignId = "11111111-1111-4111-8111-111111111111";
     const otherCampaignId = "22222222-2222-4222-8222-222222222222";
-    let fleet = Schema.decodeUnknownSync(FleetDesktopState)({
+    let fleet = Schema.decodeSync(FleetDesktopState)({
       schema: 1,
       enrollments: [
         {
@@ -346,7 +346,7 @@ describe("Jones local desktop update UI", () => {
           >[0],
         ) => {
           if (request.action === "prepare") throw new Error("secret /private/campaign");
-          return Schema.decodeUnknownSync(FleetDesktopState)({
+          return Schema.decodeSync(FleetDesktopState)({
             schema: 1,
             campaigns: [],
             enrollments: [

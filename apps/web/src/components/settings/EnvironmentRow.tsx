@@ -49,11 +49,8 @@ export function environmentTransportLabel(
 }
 
 /**
- * One machine in a grouped settings list: icon, name, a single subtitle line,
- * and controls on the right. Every environment list on the Connections page
- * uses this so the lists share one rhythm. A row with content `below` keeps
- * its icon and controls on the name's line, as the header of a taller row,
- * and gives the subtitle and that content the row's full width.
+ * Shared Connections row layout keeps icon, name and controls aligned with one subtitle line.
+ * With below content, retain controls beside the name and give subtitle/content the full row width.
  */
 export function EnvironmentRow({
   kind,

@@ -443,7 +443,7 @@ function ownedControl(generation = "terminal-generation:one") {
   const threadId = ThreadId.make("thread-1");
   const releaseCommandId = CommandId.make("legacy-terminal:C");
   const createCommandId = legacyBootstrapCreateCommandId(threadId, releaseCommandId);
-  return Schema.decodeUnknownSync(LegacyOwnedTerminalControl)({
+  return Schema.decodeSync(LegacyOwnedTerminalControl)({
     version: 1,
     threadId,
     runId: "legacy-terminal:run",
@@ -650,12 +650,10 @@ it.layer(
             assert.equal(plan.binding, binding);
             order.push("intent");
             if (scenario === "intent_lost")
-              return yield* Effect.fail(
-                new TerminalManager.LegacyTerminalControlError({
-                  operation: "open",
-                  detail: "Synthetic lost intent",
-                }),
-              );
+              return yield* new TerminalManager.LegacyTerminalControlError({
+                operation: "open",
+                detail: "Synthetic lost intent",
+              });
           }),
         ...(scenario === "missing_hook"
           ? {}
@@ -670,12 +668,10 @@ it.layer(
                   assert.deepEqual(order, ["intent"]);
                   order.push("outcome");
                   if (scenario === "outcome_lost")
-                    return yield* Effect.fail(
-                      new TerminalManager.LegacyTerminalControlError({
-                        operation: "open",
-                        detail: "Synthetic lost outcome",
-                      }),
-                    );
+                    return yield* new TerminalManager.LegacyTerminalControlError({
+                      operation: "open",
+                      detail: "Synthetic lost outcome",
+                    });
                 }),
             }),
         afterSpawn: () =>
@@ -863,6 +859,51 @@ it.layer(
           .pipe(Effect.result);
         assert.equal(replacement._tag, "Failure");
         assert.deepEqual(ptyAdapter.processes[1]!.writes, []);
+      }),
+  );
+  it.effect(
+    "cancellation after a legacy write enters still awaits its durable outcome readback",
+    () =>
+      Effect.gen(function* () {
+        const { manager, ptyAdapter } = yield* createManager();
+        const binding = ownedControl();
+        yield* manager.open(openInput({ terminalId: binding.terminalId }), ownedOpenHooks(binding));
+        const enteredReadback = yield* Deferred.make<void>();
+        const releaseReadback = yield* Deferred.make<void>();
+        const outcomes: Array<{ outcome: string; count: number }> = [];
+        const writer = yield* manager
+          .write(
+            {
+              threadId: binding.threadId,
+              terminalId: binding.terminalId,
+              data: "captured script\r",
+            },
+            {
+              legacyOwnedControl: binding,
+              beforeWrite: () => Effect.void,
+              afterWrite: (outcome, count) =>
+                Deferred.succeed(enteredReadback, undefined).pipe(
+                  Effect.andThen(Deferred.await(releaseReadback)),
+                  Effect.andThen(
+                    Effect.sync(() => {
+                      outcomes.push({ outcome, count });
+                    }),
+                  ),
+                ),
+            },
+          )
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(enteredReadback);
+        const cancellation = yield* Fiber.interrupt(writer).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Effect.yieldNow;
+        assert.deepEqual(ptyAdapter.processes[0]!.writes, ["captured script\r"]);
+        assert.deepEqual(outcomes, []);
+        yield* Deferred.succeed(releaseReadback, undefined);
+        yield* Fiber.join(cancellation);
+        assert.deepEqual(outcomes, [{ outcome: "accepted", count: 1 }]);
+        assert.deepEqual(ptyAdapter.processes[0]!.writes, ["captured script\r"]);
       }),
   );
   it.effect("legacy owned control guard runs a pure body with the exact current generation", () =>
@@ -1425,7 +1466,7 @@ it.layer(
       for (const [index, p] of ptyAdapter.processes.entries()) {
         p.onKill = () => p.emitExit({ exitCode: 0, signal: 0 });
         const prompt = ptyAdapter.spawnInputs[index]!.env.PROMPT_COMMAND?.match(
-          // oxlint-disable-next-line no-control-regex -- The fixture extracts the actual private OSC marker.
+          // The fixture extracts the actual private OSC marker.
           /\x1b]1337;JonesIdle=[a-f0-9-]+:ready\x07/,
         )?.[0];
         if (prompt) p.emitData(prompt);
@@ -1476,7 +1517,7 @@ it.layer(
       for (const [index, p] of ptyAdapter.processes.entries()) {
         p.onKill = () => p.emitExit({ exitCode: 0, signal: 0 });
         const prompt = ptyAdapter.spawnInputs[index]!.env.PROMPT_COMMAND?.match(
-          // oxlint-disable-next-line no-control-regex -- The fixture extracts the actual private OSC marker.
+          // The fixture extracts the actual private OSC marker.
           /\x1b]1337;JonesIdle=[a-f0-9-]+:ready\x07/,
         )?.[0];
         if (prompt) p.emitData(prompt);
@@ -1506,7 +1547,7 @@ it.layer(
       for (const [index, p] of ptyAdapter.processes.entries()) {
         p.onKill = () => p.emitExit({ exitCode: 0, signal: 0 });
         const prompt = ptyAdapter.spawnInputs[index]!.env.PROMPT_COMMAND?.match(
-          // oxlint-disable-next-line no-control-regex -- The fixture extracts the actual private OSC marker.
+          // The fixture extracts the actual private OSC marker.
           /\x1b]1337;JonesIdle=[a-f0-9-]+:ready\x07/,
         )?.[0];
         if (prompt) p.emitData(prompt);
@@ -1516,7 +1557,7 @@ it.layer(
       ptyAdapter.processes[0]!.emitData(
         "/tmp\n" +
           ptyAdapter.spawnInputs[0]!.env.PROMPT_COMMAND!.match(
-            // oxlint-disable-next-line no-control-regex -- The fixture extracts the actual private OSC marker.
+            // The fixture extracts the actual private OSC marker.
             /\x1b]1337;JonesIdle=[a-f0-9-]+:ready\x07/,
           )![0],
       );
@@ -1560,7 +1601,7 @@ it.layer(
         for (const [index, p] of ptyAdapter.processes.entries()) {
           p.onKill = () => p.emitExit({ exitCode: 0, signal: 0 });
           const prompt = ptyAdapter.spawnInputs[index]!.env.PROMPT_COMMAND?.match(
-            // oxlint-disable-next-line no-control-regex -- The fixture extracts the actual private OSC marker.
+            // The fixture extracts the actual private OSC marker.
             /\x1b]1337;JonesIdle=[a-f0-9-]+:ready\x07/,
           )?.[0];
           if (prompt) p.emitData(prompt);
@@ -1588,7 +1629,7 @@ it.layer(
       const [builtin, unknown] = ptyAdapter.processes;
       for (const p of ptyAdapter.processes) p.onKill = () => p.emitExit({ exitCode: 0, signal: 0 });
       const ready = ptyAdapter.spawnInputs[0]!.env.PROMPT_COMMAND!.match(
-        // oxlint-disable-next-line no-control-regex -- The fixture extracts the actual private OSC marker.
+        // The fixture extracts the actual private OSC marker.
         /\x1b]1337;JonesIdle=[a-f0-9-]+:ready\x07/,
       )![0];
       const busy = ptyAdapter.spawnInputs[0]!.env.PS0!;
@@ -1719,6 +1760,62 @@ it.layer(
 
       const reopened = yield* manager.open(openInput());
       assert.equal(reopened.history, "before after after after after\n");
+    }),
+  );
+
+  it.effect("preserves large chunked OSC 52 and DCS strings across reopen", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter, logsDir } = yield* createManager();
+      yield* manager.open(openInput());
+      const process = ptyAdapter.processes[0]!;
+      const outputSeen = yield* Deferred.make<void>();
+      const unsubscribe = yield* manager.subscribe((event) =>
+        event.type === "output" && event.data === "done\n"
+          ? Deferred.succeed(outputSeen, undefined).pipe(Effect.asVoid)
+          : Effect.void,
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+      const sequences = [
+        { prefix: `\u001b]52;c;${"YWJj".repeat(16_384)}\u001b`, terminator: "\\" },
+        { prefix: `\u0090q${"?".repeat(65_536)}`, terminator: "\u009c" },
+      ];
+      const stripped = "\u001b]11;?\u0007\u0090$q m\u009c";
+      const preserved = "\u001b[31m\u009d52;c;YWJj\u009c";
+      const expected =
+        sequences.map(({ prefix, terminator }) => prefix + terminator + preserved).join("") +
+        "done\n";
+
+      // Counts reads of strings larger than one emitted chunk, so rescanning the
+      // pending prefix on every chunk shows up as quadratic work.
+      const charCodeAt = String.prototype.charCodeAt;
+      let largeStringReads = 0;
+      yield* Effect.gen(function* () {
+        // eslint-disable-next-line no-extend-native -- Count reads without retaining millions of spy call records.
+        String.prototype.charCodeAt = function (this: string, index: number) {
+          if (this.length > 4_096) largeStringReads += 1;
+          return charCodeAt.call(this, index);
+        };
+        for (const { prefix, terminator } of sequences) {
+          for (let offset = 0; offset < prefix.length; offset += 4_096) {
+            process.emitData(prefix.slice(offset, offset + 4_096));
+          }
+          process.emitData(terminator + stripped + preserved);
+        }
+        process.emitData("done\n");
+        yield* Deferred.await(outputSeen);
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            // eslint-disable-next-line no-extend-native -- Restore the counting hook even when the test fails.
+            String.prototype.charCodeAt = charCodeAt;
+          }),
+        ),
+      );
+      yield* manager.close({ threadId: "thread-1" });
+
+      expect(largeStringReads).toBeLessThan(2 * expected.length);
+      expect(yield* readFileString(yield* historyLogPath(logsDir))).toBe(expected);
+      expect((yield* manager.open(openInput())).history.startsWith(expected)).toBe(true);
     }),
   );
 

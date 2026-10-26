@@ -304,7 +304,7 @@ const make = Effect.gen(function* () {
       SELECT command_id,thread_id,payload_json FROM orchestration_v2_effect_outbox WHERE effect_id=${effectId}`;
     const row = rows[0];
     if (!row) return null;
-    const request = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(
+    const request = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(
       row.payload_json,
     );
     return { ...row, request };

@@ -269,11 +269,9 @@ const MacSigningConfig = Config.all({
 });
 
 /**
- * Apple Silicon refuses to run unsigned Mach-O binaries at all, so the
- * executable is always signed: ad hoc when no identity is configured, or with
- * the Developer ID plus notarization when it is. The hardened runtime that
- * notarization requires only loads signed libraries, so every native addon in
- * the archive is signed with the same identity.
+ * Apple Silicon requires signed Mach-O executables: use ad hoc signing without an identity,
+ * or Developer ID plus notarization when configured. Notarization's hardened runtime
+ * requires every native addon in the archive to share that signing identity.
  */
 const signMacArchiveContents = Effect.fn("signMacArchiveContents")(function* (input: {
   readonly repoRoot: string;
@@ -357,11 +355,9 @@ const WindowsSigningConfig = Config.all({
 });
 
 /**
- * Node's --build-sea injects the blob into a copy of node.exe by rebuilding its
- * resource section but, unlike its Mach-O path, leaves node's original
- * Authenticode data-directory entry in the PE header. The file grows, so the
- * entry now points into the middle of the new section at bytes that are not a
- * certificate table.
+ * Node --build-sea rebuilds node.exe's PE resource section but retains its original
+ * Authenticode data-directory entry, unlike Mach-O injection. Growth makes that entry
+ * point inside the new section rather than at a certificate table.
  */
 const stripStaleAuthenticodeEntry = Effect.fn("stripStaleAuthenticodeEntry")(function* (
   executablePath: string,
@@ -526,11 +522,9 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
       "tar (zip)",
     );
   } else {
-    // On Linux, pnpm hard-links identical files out of its store and node-gyp
-    // hard-links build outputs, and GNU tar records those as link entries.
-    // The npm registry rejects a tarball containing any, and the npm platform
-    // packages are re-packed from this archive's contents, so store every
-    // file as a file. macOS's bsdtar has no such flag; pnpm clones there.
+    // GNU tar records pnpm store and node-gyp hard links as link entries, which npm rejects.
+    // Store every Linux archive entry as a file because npm platform packages reuse this archive.
+    // macOS bsdtar lacks this flag; pnpm clones there.
     yield* runCommand(
       ChildProcess.make("tar", [
         ...(input.platform === "linux" ? ["--hard-dereference"] : []),

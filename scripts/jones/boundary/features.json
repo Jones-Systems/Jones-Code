@@ -1,7 +1,7 @@
 {
   "schema": "jones.boundary-features/v1",
   "scopeReference": "docs/operations/upstream-sync.md",
-  "baseline": "05b697f6a2012497ae790425e197fbd1fcef7de7",
+  "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "features": [
     {
       "id": "project-group-title",
@@ -101,7 +101,8 @@
         "apps/web/src/components/Sidebar.statusFilter.test.tsx",
         "packages/client-runtime/src/state/environmentHttpAuth.test.ts",
         "apps/web/src/reactCompilerCoverage.test.ts",
-        "apps/web/src/jones/workstreams/ProjectSettingsPanel.permissions.browser.test.tsx"
+        "apps/web/src/jones/workstreams/ProjectSettingsPanel.permissions.browser.test.tsx",
+        "apps/web/src/components/settings/ProjectSettingsPanel.browser.test.tsx"
       ],
       "scope": "Bounded shared session recovery, strict environment access diagnostics, independent native reorder, pinned-to-Workstream drag integration, and pre-dispatch no-effect classification. Shared session atom edits preserve its existing ownership and retry only typed transient failures; shared web session tests exercise the singleton registry. Existing Sidebar and HTTP integration harnesses retain Jones cases because they own the consumed hooks. Registration diagnostics add only a sanitized response header, leaving the frozen response body unchanged. Source qualification and permission fences remain strict; transport and replay ambiguity never resubmit commands. React Compiler coverage checks the repaired hooks and sidebar. The Jones-owned project-settings browser harness restores the permission cases from the upstream-deleted shared harness because it exercises editable fields and project mutations through the actual shared session access helpers, covering fresh grants, checking, failure and recovery. The web sidebar shows actionable enrolled-build diagnostics and a closable detail panel with current members and collapsed management history, retaining existing write and source gates."
     },
@@ -519,7 +520,8 @@
         "packages/client-runtime/src/jones/device/mediaRoute.test.ts",
         "packages/contracts/src/device.test.ts",
         "packages/client-runtime/src/jones/deviceMediaCompatibility.test.ts",
-        "apps/web/src/jones/files/AttachmentFilePreview.browser.test.tsx"
+        "apps/web/src/jones/files/AttachmentFilePreview.browser.test.tsx",
+        "apps/web/src/jones/device/deviceStreamSession.test.ts"
       ],
       "scope": "Adapted rebuild #80 direct device admission, generation-bound grants, server gateway lifecycle, desktop media tunnel IPC, shared media routing and proxy fallback. Existing device schemas, SSH host lifecycle, stream view and connection checks retain exact shared seams."
     },
@@ -1058,7 +1060,9 @@
         "apps/server/src/provider/providerMaintenanceRunner.test.ts",
         "packages/provider-core/src/server/maintenanceResolver.test.ts",
         "apps/web/src/components/sidebar/updateEverything.logic.test.ts",
-        "apps/mobile/src/features/settings/environment-maintenance.test.ts"
+        "apps/mobile/src/features/settings/environment-maintenance.test.ts",
+        "apps/web/src/jones/updates/providerUpdateController.test.ts",
+        "apps/web/src/jones/updates/ProviderUpdateNotice.browser.test.tsx"
       ],
       "scope": "Per-instance update targeting is separate from driver summaries. Every supported connected instance is selected without command-string installation guesses. Shared web hooks retain the existing integration harness for dispatch and completion tests. Server success requires selected-instance version evidence; serial best-effort sibling health refresh uses each instance own capabilities without copying maintenance state. The runner plumbing remains a small shared edit to avoid duplicating registry and Effect lifecycle code."
     },
@@ -1196,7 +1200,8 @@
         "apps/web/src/jones/threadReadDwell/ThreadVisitWatermark.browser.test.tsx",
         "apps/web/src/jones/threadReadDwell/markUnread.browser.test.tsx",
         "packages/client-runtime/src/jones/threadReadDwell.test.ts",
-        "apps/web/src/jones/threadStatusFilter/useThreadStatusFilter.browser.test.tsx"
+        "apps/web/src/jones/threadStatusFilter/useThreadStatusFilter.browser.test.tsx",
+        "apps/mobile/src/jones/threadVisits/tracker.test.ts"
       ],
       "scope": "A shared three-second foreground-view dwell owns automatic visit acknowledgement in web and native mobile; rapid navigation cancels, streaming cannot starve initial acknowledgement, explicit unread suppresses the current view, and current/legacy status-filter retention preserves the selected matching row until navigation."
     },
@@ -1224,7 +1229,8 @@
         "apps/server/src/jones/platformCompatibility/mcp/toolkits/orchestrator/tools.test.ts",
         "packages/client-runtime/src/jones/providerSettlementCompatibility.test.ts",
         "packages/client-runtime/src/jones/toolSummaryCompatibility.test.ts",
-        "packages/contracts/src/jones/orchestrationCompatibility.test.ts"
+        "packages/contracts/src/jones/orchestrationCompatibility.test.ts",
+        "packages/client-runtime/src/jones/settlementNotifications/threadEvidence.test.ts"
       ],
       "scope": "Persistent device-local settlement inbox from confirmed active and archived shell snapshots. First-use silent baseline, supported offline catch-up, exact-ID clicked dismissals, unbounded pending and acknowledgement retention, commutative merge and serialized inbox-before-baseline writes. Capability-gated server origin evidence suppresses manual app settlements across clients; only validated client origins are silent, with bounded conservative fallback and classification-gated baseline persistence. Web/desktop and native mobile hooks share the core; explicit-dismiss toast behavior prevents Escape/swipe removal. Subagent lineage suppresses new arrivals and tombstones saved child entries after a confirmed shell observation, including additive web storage, cross-tab and delayed classification merges; top-level threads, forks and unknown offline entries remain. No provider/focus exclusions, baseline GC or server history claims. Deferred self-settlement project items are stored atomically in sparse Jones rows keyed by the original acceptance; exact settlement identity resolves plain-text bullets without changing upstream payloads. Web settlement rows retain independently collapsed compact remaining-work bullets through toast updates; only expanded aggregate settlement panels opt into intrinsic width capped at twice the viewport toast width and available screen width."
     },
@@ -1770,7 +1776,7 @@
     {
       "id": "incremental-typecheck",
       "tests": ["scripts/jones/incremental-typecheck/incrementalTypecheck.node-test.mjs"],
-      "scope": "Opt-in serial native incremental checking for explicitly selected workspaces whose normal script is tsc-rs --noEmit. Every invocation runs the installed checker and preserves TypeScript and Effect diagnostics. Invocation-private buildinfo and atomic identity/payload publication isolate concurrent writers; fresh mode bypasses retained state. Root commands, editor preparation, emit and APIs keep existing behavior. Root package.json adds the command and scripts/package.json registers focused Node tests; maintainer guidance explains scope and cache lifetime."
+      "scope": "Opt-in serial native incremental checking for explicitly selected workspaces whose normal script is tsc --noEmit. Every invocation runs the installed checker and preserves TypeScript and Effect diagnostics. Invocation-private buildinfo and atomic identity/payload publication isolate concurrent writers; fresh mode bypasses retained state. Root commands, editor preparation, emit and APIs keep existing behavior. Root package.json adds the command and scripts/package.json registers focused Node tests; maintainer guidance explains scope and cache lifetime."
     },
     {
       "id": "vcs-cache-efficiency",
@@ -1892,17 +1898,6 @@
         "scripts/jones/ci/check-results.node-test.cjs"
       ],
       "scope": "Consumes the unchanged upstream dependency classifier with conservative full runs for non-PR, stack, unreadable or unknown changes. Required Check accepts a skipped job only after successful explicit selection. Linux package suites are disjoint; standalone checks remain unconditional and native enrollment keeps its independent gate."
-    },
-    {
-      "id": "ios-native-pin-workflow",
-      "tests": [
-        "scripts/jones/mobile/ios-pin-workflow.test.ts",
-        "scripts/jones/mobile/xcuitest.test.ts",
-        "scripts/jones/mobile/ios-admission.test.ts",
-        "scripts/jones/mobile/ios-native-build.test.ts",
-        "scripts/jones/mobile/ios-cleanup-sentinel.test.ts"
-      ],
-      "scope": "One provider-free iOS pin/unpin persistence journey using an opt-in Expo XCUITest target. Ordinary pairing and command-created synthetic threads feed authenticated target/control-thread readbacks through pin, unpin and app relaunch. Captured-child lifecycle, admission, negative-control, startup-timeout and cancellation checks protect the harness without adding app journeys. The advisory macOS workflow runs only by manual dispatch or native-e2e PR label. Pure checks establish boundary evidence only; native execution and cleanup remain unqualified until real current-source receipts establish them."
     },
     {
       "id": "native-electron-workflows",

@@ -137,7 +137,7 @@ const make = Effect.gen(function* () {
       policy_json: string;
     }>`SELECT policy_json FROM jones_remote_admission_policy WHERE singleton = 1`;
     const saved = rows[0]
-      ? yield* Schema.decodeUnknownEffect(Schema.fromJsonString(RemoteAdmissionReceiverPolicy))(
+      ? yield* Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionReceiverPolicy))(
           rows[0].policy_json,
         )
       : defaultPolicy;
@@ -173,17 +173,15 @@ const make = Effect.gen(function* () {
     const prior = yield* result(record.id);
     if (prior) return yield* deliver(prior);
     const handler = handlers.get(record.envelope.operation);
-    if (!handler) return yield* Effect.fail(pending(record));
+    if (!handler) return yield* pending(record);
     const { params, invocation } = unpack(record);
     yield* validateTarget(record);
     const active = yield* sessions.listSessions();
     if (!active.some((session) => session.sessionId === invocation.client?.sessionId)) {
-      return yield* Effect.fail(
-        new OrchestratorMcpFailure({
-          code: "capability_denied",
-          message: "The originating connection is no longer active.",
-        }),
-      );
+      return yield* new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message: "The originating connection is no longer active.",
+      });
     }
     const commandId = `admission:${record.id}`;
     const claim = yield* admissions.claimDispatch({
@@ -192,7 +190,7 @@ const make = Effect.gen(function* () {
       commandId,
       currentPolicy: yield* policy(),
     });
-    if (!claim.claimed) return yield* Effect.fail(pending(claim.record));
+    if (!claim.claimed) return yield* pending(claim.record);
     // A claim is never blindly replayed after interruption. A recorded result is
     // reusable; an unknown handler effect remains visible for reconciliation.
     const outcome = yield* handler(params, invocation).pipe(
@@ -227,12 +225,10 @@ const make = Effect.gen(function* () {
       function* (operation, params, invocation) {
         const handler = handlers.get(operation);
         if (!handler)
-          return yield* Effect.fail(
-            new OrchestratorMcpFailure({
-              code: "orchestration_error",
-              message: "The receiving operation is unavailable.",
-            }),
-          );
+          return yield* new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message: "The receiving operation is unavailable.",
+          });
         const current = yield* policy();
         if (!invocation.client) return yield* handler(params, invocation);
         const keyed = typeof params.clientRequestId === "string";
@@ -249,7 +245,7 @@ const make = Effect.gen(function* () {
         const previous = previousRows[0] ? yield* admissions.get(previousRows[0].id) : null;
         if (!current.enabled && previous === null) return yield* handler(params, invocation);
         const resolveTarget = targets.get(operation);
-        if (!resolveTarget) return yield* Effect.fail(intakeError("target_unavailable"));
+        if (!resolveTarget) return yield* intakeError("target_unavailable");
         // Stable receiver-owned scope is bound with the exact decoded request.
         // Arrival timestamps vary on retries and are not authorization identity.
         // Retry bytes use the reviewed snapshot; dispatch revalidates current state.
@@ -283,7 +279,7 @@ const make = Effect.gen(function* () {
         });
         if (["passed", "approved", "dispatching", "dispatched"].includes(record.status))
           return yield* dispatch(record);
-        return yield* Effect.fail(pending(record));
+        return yield* pending(record);
       },
       Effect.catch((error) =>
         Effect.fail(
@@ -313,9 +309,9 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const current = yield* policy();
           if (input.expectedRevision !== current.revision)
-            return yield* Effect.fail(intakeError("policy_changed"));
+            return yield* intakeError("policy_changed");
           if (input.enabled && input.modelSelection === null)
-            return yield* Effect.fail(intakeError("model_required"));
+            return yield* intakeError("model_required");
           if (input.enabled && input.modelSelection !== null)
             yield* resolveRemoteEvaluationModel(input.modelSelection).pipe(
               Effect.provideService(ProviderInstanceRegistry.ProviderInstanceRegistry, providers),

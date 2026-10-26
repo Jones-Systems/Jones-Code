@@ -59,6 +59,35 @@ connection nor overwrite newer live data during a reconnect. Loading and
 resuming snapshots belongs to the shared state services, so every view agrees
 on which data is current.
 
+Shell snapshots can leave rows out when the client asks. Servers that advertise
+`shellThreadFamilies` leave out idle subagent children: a child stays while it
+has a live or queued run, a pending request or background work, or a subagent
+child of its own, so badge and working walks never meet a gap. Servers that also
+advertise `shellOlderSettled` keep only the 25 newest settled top-level threads
+(and any tied with the 25th, pinned, snoozed, live, or above a kept child); the
+snapshot's `olderSettled` names that cut and counts the rest per project. Left-out
+rows load on demand and merge behind shell rows
+([thread families](../../packages/client-runtime/src/state/threadFamilies.ts)):
+the family a thread view or a queued message mounts holds every active thread
+sharing the thread's root, so it also brings back an old settled thread opened by
+link; the Settled shelf reads pages below the cut; searches return the rows of
+older matches. A missing shell row therefore does not prove a thread is gone:
+code that deletes data or a worktree on absence must check the family or the
+server first.
+
+The Settled count is local Settled rows, minus local rows below the cut, plus the
+server's counts
+([older settled threads](../../packages/client-runtime/src/state/olderSettledThreads.ts)).
+The counts are re-read when a removal or an old row's arrival or change could
+move them, so archiving any thread costs one small read. A shelf lists an older
+row only above the highest page frontier of the environments that can still
+load, so the merged list stays a correct prefix while a page loads. An
+environment with no snapshot this session, or a failed page, holds no one back.
+On-demand reads wait for the session's first authoritative snapshot
+(`generation > 0`), and each is keyed by generation. A resume that skips that
+snapshot must still bump `generation` once verified, and may reuse a cached
+snapshot only when its omissions match what the session asks for.
+
 [Thread detail](../../packages/client-runtime/src/state/threads.ts) separates
 subscription lifetime from cache lifetime. Mounted consumers share one live
 stream, which stops when the last consumer unmounts; hidden mounted routes still
@@ -85,6 +114,37 @@ follow replacement sessions. After a transport failure they wait for the
 supervisor; an expected domain failure may resubscribe on the same healthy
 session. Reconnection does not automatically replay mutations, whose retry and
 idempotency rules belong to the operation.
+
+## Legacy thread corpus reads
+
+The [thread corpus capability](../../packages/contracts/src/threadCorpusProtocol.ts)
+requires these legacy compatibility semantics:
+
+Required legacy read semantics for compatible shell and thread detail endpoints.
+Advertise only after the receiving server proves these behaviors; the DTO
+schemas alone do not establish runtime compatibility.
+The shell carries global snapshotSequence and updatedAt; projects carry id,
+workspaceRoot and optional nullable repositoryIdentity. Threads join by projectId
+and carry nullable worktreePath/branch, archivedAt/settledAt, latestUserMessageAt,
+updatedAt and nullable latestTurn/session. Optional lifecycle fields retain their
+existing schema defaults; missing activity timestamps do not prove inactivity.
+
+Placement is observed worktreePath, or project workspaceRoot when it is null.
+Neither the path nor repositoryIdentity verifies cwd, enrollment or access grants.
+This advertisement grants no dispatch, creation or provider quota capability.
+
+Detail pagination is opt-in: turnLimit is a positive integer counting user-anchored
+turns. Associated fan-out rides along, subject to the native 150 raw-turn page cap.
+Without turnLimit the full snapshot has no page metadata. With it, page carries
+hasMore, nullable opaque exclusive beforeCursor, snapshotSequence and optional
+threadSequence. A null cursor marks the oldest page; an absent threadSequence is
+unknown. Native malformed or foreign-thread cursors reload the first page, so a
+consumer must check progression instead of assuming each response advances.
+
+Detail messages carry string text without a native character limit or truncation
+flag. turnLimit bounds turns, not bytes; consumer text/response limits must report
+their own incomplete coverage. Page snapshotSequence mirrors the enclosing
+snapshot; threadSequence is the per-thread watermark needed before merging pages.
 
 ## Foreground requests and shared capacity
 
