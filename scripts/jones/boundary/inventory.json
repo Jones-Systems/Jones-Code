@@ -1825,6 +1825,7 @@
     "apps/server/integration/jones-e2e/physicalHost.md": "jones-owned",
     "scripts/jones/boundary/fragments/ci-change-selection.json": "jones-owned",
     "scripts/jones/ci/server-e2e.node-test.cjs": "jones-owned",
+    "apps/mobile/app.config.ts": "hook",
     "docs/operations/synthetic-environments.md": "jones-owned",
     ".github/workflows/jones-native-workflows.yml": "policy",
     "apps/desktop/scripts/ui-evidence/endpoint-trace.test.mjs": "jones-owned",
