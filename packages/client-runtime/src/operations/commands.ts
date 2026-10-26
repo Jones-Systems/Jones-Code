@@ -185,6 +185,8 @@ export interface StartThreadTurnInput extends ThreadCommandInput {
   readonly bootstrap?: StartThreadBootstrap;
   readonly sourceProposedPlan?: { readonly threadId: ThreadId; readonly planId: PlanId };
   readonly dispatchMode?: "auto" | "queue" | "steer" | "restart" | "start";
+  /** False prevents automatic tool-boundary steering of queued replies. */
+  readonly allowQueuedToolBoundaryDelivery?: boolean;
 }
 
 export interface InterruptThreadTurnInput extends ThreadCommandInput {
@@ -753,6 +755,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
   const serverResolvesCommandContext = capabilities.serverResolvedCommandContext === true;
   const creationSource = input.creationSource ?? "web";
   const queuedToolBoundaryEligible =
+    input.allowQueuedToolBoundaryDelivery !== false &&
     (creationSource === "web" || creationSource === "mobile") &&
     (requestedMode === "queue" || requestedMode === "auto") &&
     capabilities.queuedToolBoundaryDelivery === true;

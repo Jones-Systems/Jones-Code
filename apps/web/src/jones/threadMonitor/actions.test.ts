@@ -135,6 +135,7 @@ describe("monitor uses the existing runtime command path", () => {
           threadId: "thread",
           message: { messageId: "stable-message", text: "actual draft", attachments: [] },
           dispatchMode: "queue",
+          allowQueuedToolBoundaryDelivery: false,
           modelSelection: v2ThreadShell.modelSelection,
           runtimeMode: v2ThreadShell.runtimeMode,
           interactionMode: v2ThreadShell.interactionMode,

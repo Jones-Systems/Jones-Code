@@ -53,6 +53,7 @@ const makeSupervisor = Effect.fnUntraced(function* (
           capabilities: {
             repositoryIdentity: true,
             serverResolvedCommandContext: serverResolved,
+            queuedToolBoundaryDelivery: true,
             threadMonitorGuardedSettle: capability(),
           },
         },
@@ -125,6 +126,7 @@ describe("monitor settle uses the existing environment transport", () => {
             runtimeMode: v2Projection.thread.runtimeMode,
             interactionMode: v2Projection.thread.interactionMode,
             dispatchMode: monitorReplyDispatchMode(workOrRequestActive),
+            allowQueuedToolBoundaryDelivery: false,
           }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
         }
         expect(commands).toHaveLength(2);
@@ -135,6 +137,8 @@ describe("monitor settle uses the existing environment transport", () => {
             serverResolved ? "queue_after_active" : "start_immediately",
           );
           expect(command.deliveryIntent).toBeUndefined();
+          expect(command.queuedToolBoundaryEligible).toBeUndefined();
+          expect(command.creationSource).toBe("web");
           expect(command.sourcePlanRef).toBeUndefined();
         }
       }).pipe(Effect.provide(crypto)),

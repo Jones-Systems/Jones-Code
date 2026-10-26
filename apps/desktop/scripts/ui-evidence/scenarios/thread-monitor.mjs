@@ -315,41 +315,115 @@ export default async function threadMonitor(ctx) {
         "Peer controls are keyboard focusable",
       );
     });
-    await ctx.step("Draft survives hide/show with domain state unchanged", async () => {
-      await peer
-        .locator("[data-monitor-thread-id]")
-        .filter({
-          hasText: title,
-        })
-        .click();
-      const editor = peer.getByRole("textbox", {
-        name: "Reply to " + title,
-        exact: true,
-      });
-      await editor.fill("Retained private monitor draft");
-      const before = await ctx.readSnapshot();
-      await peer
-        .getByRole("button", {
-          name: "Hide thread monitor",
-          exact: true,
-        })
-        .click();
-      await waitForFixture(async () => !(await state()).visible, "native monitor hidden");
-      const toggle = ctx.page.getByRole("button", {
-        name: "Show thread monitor",
-        exact: true,
-      });
-      await toggle.click();
-      await waitForFixture(async () => (await state()).visible, "toolbar shows native monitor");
-      ctx.assert(
-        (await editor.inputValue()) === "Retained private monitor draft",
-        "Draft survives native hide/show",
-      );
-      ctx.assert(
-        JSON.stringify(await ctx.readSnapshot()) === JSON.stringify(before),
-        "Visibility has no domain effect",
-      );
-    });
+    await ctx.step(
+      "Focused draft and expanded native bounds survive both hide controls",
+      async () => {
+        await peer.locator("[data-monitor-thread-id]").filter({ hasText: title }).click();
+        const editor = peer.getByRole("textbox", { name: "Reply to " + title, exact: true });
+        await editor.fill("Retained private monitor draft");
+        await editor.evaluate((element) => {
+          element.focus();
+          element.setSelectionRange(4, 13);
+        });
+        const before = await ctx.readSnapshot();
+        const beforeBounds = (await native(monitorWindow)).bounds;
+        const readEditor = () =>
+          editor.evaluate((element) => ({
+            value: element.value,
+            start: element.selectionStart,
+            end: element.selectionEnd,
+            scroll: element.scrollTop,
+          }));
+        const retained = await readEditor();
+        evidence.observations.hideShow = [];
+        for (const control of ["peer", "toolbar"]) {
+          if (control === "peer")
+            await peer.getByRole("button", { name: "Hide thread monitor", exact: true }).click();
+          else
+            await ctx.page
+              .getByRole("button", { name: "Hide thread monitor", exact: true })
+              .click();
+          await waitForFixture(async () => !(await state()).visible, "native monitor hidden");
+          await ctx.page.getByRole("button", { name: "Show thread monitor", exact: true }).click();
+          await waitForFixture(async () => (await state()).visible, "toolbar shows native monitor");
+          const shown = await native(monitorWindow);
+          const expanded = await peer
+            .locator("[data-thread-monitor]")
+            .getAttribute("data-expanded");
+          ctx.assert(expanded === "true", control + " hide/show retains expanded renderer");
+          ctx.assert(
+            shown.bounds.width === beforeBounds.width &&
+              shown.bounds.height === beforeBounds.height,
+            control + " hide/show retains usable expanded native bounds",
+          );
+          ctx.assert(
+            JSON.stringify(await readEditor()) === JSON.stringify(retained),
+            control + " hide/show retains draft, caret and editor scroll",
+          );
+          ctx.assert(
+            JSON.stringify(await ctx.readSnapshot()) === JSON.stringify(before),
+            "Visibility has no domain effect",
+          );
+          evidence.observations.hideShow.push({
+            control,
+            native: shown,
+            expanded,
+            editor: await readEditor(),
+          });
+        }
+      },
+    );
+    await ctx.step(
+      "Real toolbar recovers crashed peer with main-owned reply and view state",
+      async () => {
+        const before = await ctx.readSnapshot();
+        const oldPeerId = await monitorWindow.evaluate((win) => win.id);
+        const mainId = await mainWindow.evaluate((win) => win.id);
+        await peer.evaluate(() => new Promise((resolve) => setTimeout(resolve, 250)));
+        // Crash only the captured task-owned peer renderer; the main publisher survives.
+        await monitorWindow.evaluate((win) => win.webContents.forcefullyCrashRenderer());
+        await waitForFixture(async () => {
+          const value = await state();
+          return value.reason && !value.visible ? value : null;
+        }, "recoverable peer failure reaches toolbar");
+        const toggle = ctx.page.locator("[data-thread-monitor-toggle]");
+        ctx.assert(await toggle.isEnabled(), "Recoverable failure leaves toolbar enabled");
+        await toggle.click();
+        // A toggle implementation may disable first; the same visible control then re-enables it.
+        if (!(await state()).enabled) await toggle.click();
+        peer = await peerPage(ctx.electronApp);
+        peer.setDefaultTimeout(15000);
+        monitorWindow = await ctx.electronApp.browserWindow(peer);
+        await waitForFixture(async () => (await state()).visible, "recreated peer visible");
+        await peer.getByRole("textbox", { name: "Reply to " + title, exact: true }).waitFor();
+        const recovered = await peer
+          .getByRole("textbox", { name: "Reply to " + title, exact: true })
+          .inputValue();
+        ctx.assert(
+          recovered === "Retained private monitor draft",
+          "Reply draft replays after real renderer crash",
+        );
+        ctx.assert(
+          (await monitorWindow.evaluate((win) => win.id)) !== oldPeerId,
+          "Only failed peer was recreated",
+        );
+        ctx.assert(
+          (await mainWindow.evaluate((win) => win.id)) === mainId,
+          "Main publisher identity survives recovery",
+        );
+        ctx.assert(
+          JSON.stringify(await ctx.readSnapshot()) === JSON.stringify(before),
+          "Recovery creates no domain command",
+        );
+        evidence.observations.recovery = {
+          oldPeerId,
+          newPeerId: await monitorWindow.evaluate((win) => win.id),
+          mainId,
+          native: await native(monitorWindow),
+        };
+        await capture("monitor-recovered-peer");
+      },
+    );
     await ctx.step("Actual main minimization and live server rename", async () => {
       await mainWindow.evaluate((win) => win.minimize());
       await waitForFixture(

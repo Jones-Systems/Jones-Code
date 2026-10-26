@@ -3,11 +3,14 @@ import { monitorThreadKey } from "@t3tools/client-runtime/jones/thread-monitor";
 import type {
   ThreadMonitorPeerIntent,
   ThreadMonitorAction,
+  ThreadMonitorNativeState,
 } from "@t3tools/contracts/jones/desktopThreadMonitor";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
-import { act, render } from "../../../test/render";
+import { act, render, stubGlobal } from "../../../test/render";
 import { MonitorUI } from "./MonitorUI";
+import { MonitorToggle } from "./MonitorToggle";
+import { readMonitorNativeState, setMonitorNativeState } from "./nativeState";
 import { MonitorPeerStore } from "./peerStore";
 import { monitorSnapshot } from "./snapshots";
 import { refOf } from "./store";
@@ -60,6 +63,31 @@ async function expand(container: HTMLElement) {
   await userEvent.click(notch);
 }
 describe("real monitor renderer interactions", () => {
+  it("retains the peer expansion and editor contract when Hide is requested with a focused draft", async () => {
+    using _now = vi.spyOn(Date, "now").mockReturnValue(NOW);
+    const { store, intents, rows, container } = setup();
+    await using screen = await render(<MonitorUI store={store} />, { container, router: false });
+    await expand(container);
+    await act(() =>
+      container.querySelector<HTMLButtonElement>('[data-monitor-thread-id="thread"]')!.focus(),
+    );
+    const editor = container.querySelector<HTMLTextAreaElement>("[data-monitor-reply] textarea")!;
+    await userEvent.fill(editor, "draft through native hide");
+    editor.setSelectionRange(2, 5);
+    expect(document.activeElement).toBe(editor);
+    await screen.getByRole("button", { name: "Hide thread monitor", exact: true }).click();
+    expect(intents.filter((intent) => intent.type === "hide")).toHaveLength(1);
+    expect(store.expanded).toBe(true);
+    expect(container.querySelector("[data-thread-monitor]")?.getAttribute("data-expanded")).toBe(
+      "true",
+    );
+    expect(container.querySelector("[data-monitor-reply] textarea")).toBe(editor);
+    expect(editor.value).toBe("draft through native hide");
+    expect(editor.selectionStart).toBe(2);
+    expect(editor.selectionEnd).toBe(5);
+    expect(store.draft(rows[2]!).text).toBe(editor.value);
+  });
+
   it("replays focus and caret once, then preserves local editing when the completion expires", async () => {
     let now = NOW;
     using _now = vi.spyOn(Date, "now").mockImplementation(() => now);
@@ -302,5 +330,78 @@ describe("real monitor renderer interactions", () => {
     ).toBe("");
     expect(store.selection).toBeNull();
     expect(store.rows.has(monitorThreadKey(rows[0]!))).toBe(false);
+  });
+});
+
+describe("persistent monitor toolbar recovery", () => {
+  const healthy: ThreadMonitorNativeState = {
+    supported: true,
+    enabled: true,
+    visible: true,
+    mainVisible: false,
+    mainFocused: false,
+    expanded: false,
+    reason: null,
+  };
+  function preserveNativeState(): Disposable {
+    const previous = readMonitorNativeState();
+    return { [Symbol.dispose]: () => setMonitorNativeState(previous) };
+  }
+
+  it.each([
+    "Thread monitor renderer stopped. Toggle the monitor to recover.",
+    "Thread monitor assets could not load. Toggle the monitor to retry.",
+  ])("retries an enabled but failed peer through the real toolbar: %s", async (reason) => {
+    using _state = preserveNativeState();
+    let finishRetry!: (state: ThreadMonitorNativeState) => void;
+    const retry = new Promise<ThreadMonitorNativeState>((resolve) => {
+      finishRetry = resolve;
+    });
+    const setEnabled = vi
+      .fn<(enabled: boolean) => Promise<ThreadMonitorNativeState>>()
+      .mockImplementationOnce(() => retry)
+      .mockImplementation(async (enabled) => ({ ...healthy, enabled, visible: enabled }));
+    using _bridge = stubGlobal("desktopBridge", { threadMonitor: { setEnabled } });
+    await act(() => setMonitorNativeState({ ...healthy, visible: false, reason }));
+    await using screen = await render(<MonitorToggle />, { router: false });
+    const button = screen.container.querySelector<HTMLButtonElement>(
+      "[data-thread-monitor-toggle]",
+    )!;
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute("aria-label")).toBe("Retry thread monitor");
+    expect(button.getAttribute("aria-description")).toBe(reason);
+    expect(button.getAttribute("aria-pressed")).toBe("false");
+    await userEvent.click(button);
+    expect(setEnabled.mock.calls).toEqual([[true]]);
+    expect(button.disabled).toBe(true);
+    await act(() => button.click());
+    expect(setEnabled).toHaveBeenCalledTimes(1);
+    await act(() => finishRetry(healthy));
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute("aria-label")).toBe("Hide thread monitor");
+    expect(button.getAttribute("aria-pressed")).toBe("true");
+    expect(readMonitorNativeState()).toEqual(healthy);
+    await userEvent.click(button);
+    expect(setEnabled.mock.calls).toEqual([[true], [false]]);
+    await expect.poll(() => readMonitorNativeState()?.enabled).toBe(false);
+    expect(button.getAttribute("aria-label")).toBe("Show thread monitor");
+  });
+
+  it("keeps an unsupported Wayland backend disabled rather than offering peer recovery", async () => {
+    using _state = preserveNativeState();
+    const setEnabled = vi.fn();
+    using _bridge = stubGlobal("desktopBridge", { threadMonitor: { setEnabled } });
+    const reason = "Thread monitor needs an X11 desktop. Native Wayland is unavailable.";
+    await act(() =>
+      setMonitorNativeState({ ...healthy, supported: false, visible: false, reason }),
+    );
+    await using screen = await render(<MonitorToggle />, { router: false });
+    const button = screen.container.querySelector<HTMLButtonElement>(
+      "[data-thread-monitor-toggle]",
+    )!;
+    expect(button.disabled).toBe(true);
+    expect(button.getAttribute("aria-description")).toBe(reason);
+    await act(() => button.click());
+    expect(setEnabled).not.toHaveBeenCalled();
   });
 });

@@ -34,7 +34,7 @@ export function monitorActionUnavailableReason(
   return null;
 }
 export function monitorReplyDispatchMode(_workOrRequestActive: boolean): "queue" | "auto" {
-  // Queue also starts normally when idle and never negotiates steering or restart.
+  // Queue starts normally when idle; callers must also disable tool-boundary promotion.
   return "queue";
 }
 export function clearAcceptedMonitorDraft(

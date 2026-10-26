@@ -36,6 +36,11 @@ export function generationProgress(artifacts, appendFile = NodeFSP.appendFile) {
         "bridge",
         "setup",
         "identity",
+        "scenario",
+        "window-readback",
+        "viewport-readback",
+        "final-diagnostics",
+        "final-close",
       ].includes(phase)
     )
       throw new Error("restart-progress-invalid");
@@ -175,6 +180,7 @@ export async function runInner() {
     },
   };
   let code = 2;
+  const progress = generationProgress("/artifacts");
   try {
     result.isolation = await isolationProbe(configuration.realHome);
     if (configuration.managedSecretService) {
@@ -195,7 +201,6 @@ export async function runInner() {
       );
     }
     const { _electron } = await import("playwright-core");
-    const progress = generationProgress("/artifacts");
     const launchApplication = () =>
       launchWithProgress({
         index: generations.length,
@@ -441,9 +446,11 @@ export async function runInner() {
     code = 1;
     const captureStart = performance.now();
     phase = "scenario";
-    await managedWait(scenario.run(ctx));
+    await progress(generations.at(-1).index, "scenario", () => managedWait(scenario.run(ctx)));
     result.resources.scenarioSeconds = (performance.now() - captureStart) / 1000;
-    const mainWindow = await app.browserWindow(page);
+    const mainWindow = await progress(generations.at(-1).index, "window-readback", () =>
+      app.browserWindow(page),
+    );
     result.window = await app.evaluate(
       ({ nativeTheme }, win) => ({
         bounds: win.getBounds(),
@@ -452,11 +459,13 @@ export async function runInner() {
       }),
       mainWindow,
     );
-    result.window.viewport = await page.evaluate(() => ({
-      width: innerWidth,
-      height: innerHeight,
-      scale: devicePixelRatio,
-    }));
+    result.window.viewport = await progress(generations.at(-1).index, "viewport-readback", () =>
+      page.evaluate(() => ({
+        width: innerWidth,
+        height: innerHeight,
+        scale: devicePixelRatio,
+      })),
+    );
     if (Math.abs(result.window.viewport.scale - configuration.scale) > 0.01)
       throw new Error("Requested device scale readback mismatch");
     result.status = "passed";
@@ -580,10 +589,51 @@ export async function runInner() {
       if (ctx) Object.assign(result, ctx.results());
       const teardown = performance.now();
       const logs = await captureSyntheticLogs();
+      // Preserve diagnostics before close on successful scenarios too.
+      if (!result.startupDiagnostics)
+        result.startupDiagnostics = await progress(
+          generations.at(-1)?.index ?? 0,
+          "final-diagnostics",
+          () =>
+            writeStartupDiagnostics({
+              artifacts: "/artifacts",
+              processCapture,
+              logs,
+              readiness,
+              phase,
+            }),
+        );
       for (const generation of generations) {
         if (generation.closed) continue;
         try {
-          await closeApplicationGeneration(generation);
+          // Control-only diagnostics from the task-owned isolated app.
+          await generation.app.evaluate(({ app, BrowserWindow }, index) => {
+            const fs = process.getBuiltinModule("fs");
+            let entries = 0;
+            const record = (event, error) => {
+              if (++entries > 32) return;
+              fs.appendFileSync(
+                "/artifacts/shutdown-events.ndjson",
+                JSON.stringify({
+                  generation: index,
+                  event,
+                  windows: BrowserWindow.getAllWindows().map((win) => ({
+                    id: win.id,
+                    destroyed: win.isDestroyed(),
+                  })),
+                  ...(error ? { error: String(error.message).slice(0, 2000) } : {}),
+                }) + "\n",
+                { mode: 0o600 },
+              );
+            };
+            record("close-request");
+            for (const event of ["before-quit", "will-quit", "window-all-closed"])
+              app.on(event, () => record(event));
+            process.on("uncaughtExceptionMonitor", (error) => record("uncaughtException", error));
+          }, generation.index);
+          await progress(generation.index, "final-close", () =>
+            closeApplicationGeneration(generation),
+          );
         } catch (error) {
           generation.closeError = error.message;
           result.closeError = error.message;

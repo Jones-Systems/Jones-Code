@@ -35,11 +35,11 @@ export function MonitorToggle({ priority = 20 }: { readonly priority?: number })
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   if (owner !== id || !window.desktopBridge?.threadMonitor || state === null) return null;
+  const retry = state.supported && state.reason !== null;
   const reason =
     error ??
-    (!state.supported
-      ? (state.reason ?? "Thread monitor is unavailable on this desktop backend")
-      : null);
+    state.reason ??
+    (!state.supported ? "Thread monitor is unavailable on this desktop backend" : null);
   return (
     <Tooltip>
       <TooltipTrigger render={<span className="flex shrink-0" />}>
@@ -47,9 +47,15 @@ export function MonitorToggle({ priority = 20 }: { readonly priority?: number })
           className="shrink-0 [-webkit-app-region:no-drag]"
           variant="ghost"
           size="sm"
-          pressed={state.enabled && state.supported}
+          pressed={state.enabled && state.supported && !retry}
           disabled={pending || !state.supported}
-          aria-label={state.enabled ? "Hide thread monitor" : "Show thread monitor"}
+          aria-label={
+            retry
+              ? "Retry thread monitor"
+              : state.enabled
+                ? "Hide thread monitor"
+                : "Show thread monitor"
+          }
           data-thread-monitor-toggle
           aria-description={
             reason ?? "Show or hide the floating thread monitor. Runs keep working."
@@ -59,7 +65,7 @@ export function MonitorToggle({ priority = 20 }: { readonly priority?: number })
             setPending(true);
             setError(null);
             void window
-              .desktopBridge!.threadMonitor!.setEnabled(!state.enabled)
+              .desktopBridge!.threadMonitor!.setEnabled(retry || !state.enabled)
               .then(setMonitorNativeState, () =>
                 setError("Could not change thread monitor visibility"),
               )

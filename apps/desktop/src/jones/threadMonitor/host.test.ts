@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { ThreadMonitorHost } from "./host.ts";
 import { MONITOR_CHANNELS as channels } from "./channels.ts";
 import { envelope } from "./transport.ts";
+import { monitorBackend } from "./policy.ts";
 
 interface FakeContents {
   session: object;
@@ -22,6 +23,8 @@ interface FakeWindow {
   focused: boolean;
   destroyed: boolean;
   showInactive: ReturnType<typeof vi.fn>;
+  loadURL: ReturnType<typeof vi.fn>;
+  getBounds: () => { x: number; y: number; width: number; height: number };
   emit: (event: string, ...args: unknown[]) => boolean;
   listenerCount: (event: string) => number;
 }
@@ -29,6 +32,7 @@ const native = vi.hoisted(() => ({
   windows: [] as FakeWindow[],
   handlers: new Map<string, (event: IpcMainInvokeEvent, raw: unknown) => unknown>(),
   preferences: null as unknown,
+  loadFailures: 0,
   writes: [] as unknown[],
   protocols: [] as { handle: ReturnType<typeof vi.fn>; unhandle: ReturnType<typeof vi.fn> }[],
   app: null as unknown as {
@@ -109,10 +113,14 @@ vi.mock("electron", async () => {
     }
     setMenu = vi.fn();
     setVisibleOnAllWorkspaces = vi.fn();
-    loadURL = async (url: string) => {
+    loadURL = vi.fn(async (url: string) => {
       this.webContents.url = url;
       this.webContents.mainFrame.url = url;
-    };
+      if (native.loadFailures > 0) {
+        native.loadFailures--;
+        throw new Error("Transient monitor asset failure");
+      }
+    });
     showInactive = vi.fn(() => {
       this.visible = true;
       this.emit("show");
@@ -170,8 +178,12 @@ vi.mock("electron", async () => {
 });
 
 const hosts: ThreadMonitorHost[] = [];
-async function setup(preferences: unknown = null) {
+async function setup(
+  preferences: unknown = null,
+  options: { loadFailures?: number; backend?: ReturnType<typeof monitorBackend> } = {},
+) {
   native.preferences = preferences;
+  native.loadFailures = options.loadFailures ?? 0;
   native.windows.length = 0;
   native.writes.length = 0;
   native.protocols.length = 0;
@@ -186,7 +198,7 @@ async function setup(preferences: unknown = null) {
     scheme: "t3code",
     assetDirectory: "/isolated/assets",
     developmentOrigin: null,
-    backend: { supported: true, reason: null },
+    backend: options.backend ?? { supported: true, reason: null },
     revealMain,
   });
   hosts.push(host);
@@ -212,7 +224,245 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+const lifetime = {
+  publisherGeneration: "generation-1",
+  environmentId: "environment-1",
+  environmentEpoch: 0,
+};
+const ref = { ...lifetime, threadId: "thread-1" };
+const available = { available: true, reason: null };
+const snapshot = {
+  type: "view",
+  publisherGeneration: ref.publisherGeneration,
+  snapshotId: "snapshot-1",
+  revision: 1,
+  chunkIndex: 0,
+  chunkCount: 1,
+  complete: true,
+  replace: true,
+  environments: [
+    { ...lifetime, label: "Synthetic", transport: "connected", freshness: "live", reason: null },
+  ],
+  upserts: [
+    {
+      ...ref,
+      title: "Draft target",
+      projectLabel: "Synthetic",
+      group: "waiting",
+      status: "idle",
+      statusLabel: "Idle",
+      updatedAt: "2026-10-26T07:00:00Z",
+      completedAt: null,
+      completionTimeUnavailable: false,
+      pendingChildAttention: null,
+      actions: {
+        reply: available,
+        settle: available,
+        respondToApproval: available,
+        respondToUserInput: available,
+        usePlan: available,
+        restore: available,
+      },
+    },
+  ],
+  removed: [],
+  counts: { needsYou: 0, working: 0, waiting: 1, done: 0 },
+};
+const draftFrame = {
+  type: "draft",
+  draft: { ...ref, kind: "reply", requestId: null, revision: 2, text: "kept draft", answers: {} },
+};
+const viewFrame = {
+  type: "viewState",
+  state: {
+    publisherGeneration: ref.publisherGeneration,
+    revision: 1,
+    collapsed: { needsYou: true, working: false, waiting: false, done: true },
+    list: { scrollTop: 120, anchors: [{ key: "section:waiting", offset: -12 }] },
+    detail: { scrollTop: 0, anchors: [] },
+    editor: { ref, quick: true, focused: true, selectionStart: 2, selectionEnd: 5 },
+  },
+};
+const send = {
+  ...ref,
+  type: "send",
+  actionId: "original-action",
+  commandId: "original-command",
+  messageId: "original-message",
+  draftRevision: 1,
+  text: "submitted before peer failure",
+};
+const pendingResult = {
+  ...ref,
+  type: "actionResult",
+  actionId: send.actionId,
+  commandId: send.commandId,
+  status: "pending",
+  reason: "Awaiting command acceptance",
+  submittedDraftRevision: send.draftRevision,
+};
+
 describe("monitor host lifecycle", () => {
+  it.each(["peer", "toolbar"] as const)(
+    "retains the peer's expanded bounds and focused-draft view contract through %s hide and toolbar show",
+    async (control) => {
+      const h = await setup();
+      await h.invoke(channels.dispatch, { type: "ready" }, h.peer);
+      for (const frame of [snapshot, draftFrame, viewFrame])
+        await h.invoke(channels.publish, frame);
+      const peerExpansion = { type: "setExpanded", expanded: true };
+      await h.invoke(channels.dispatch, peerExpansion, h.peer);
+      const bounds = h.peer.getBounds();
+      expect(bounds).toMatchObject({ width: 384, height: 704 });
+      const peerFrames = h.peer.webContents.send.mock.calls.slice();
+      h.mainWindow.webContents.send.mockClear();
+      h.mainWindow.minimized = true;
+      if (control === "peer") await h.invoke(channels.dispatch, { type: "hide" }, h.peer);
+      else await h.invoke(channels.setEnabled, false);
+      expect(h.host.state()).toMatchObject({ enabled: false, visible: false, expanded: true });
+      expect(h.peer.getBounds()).toEqual(bounds);
+      await h.invoke(channels.setEnabled, true);
+      expect(h.host.state()).toMatchObject({
+        enabled: true,
+        visible: true,
+        expanded: peerExpansion.expanded,
+        mainVisible: false,
+        mainFocused: false,
+      });
+      expect(h.peer.getBounds()).toEqual(bounds);
+      expect(native.windows).toHaveLength(2);
+      expect(h.peer.webContents.send.mock.calls).toEqual(peerFrames);
+      expect(peerFrames).toContainEqual([channels.frame, envelope(draftFrame)]);
+      expect(peerFrames).toContainEqual([channels.frame, envelope(viewFrame)]);
+      expect(h.revealMain).not.toHaveBeenCalled();
+      expect(h.mainWindow.webContents.send.mock.calls.some(([c]) => c === channels.intent)).toBe(
+        false,
+      );
+      await h.invoke(channels.dispatch, { type: "setExpanded", expanded: false }, h.peer);
+      expect(h.peer.getBounds()).toMatchObject({ width: 46, height: 128 });
+      await h.invoke(channels.dispatch, peerExpansion, h.peer);
+      expect(h.peer.getBounds()).toEqual(bounds);
+    },
+  );
+
+  it("keeps crash recovery supported, recreates only the peer and replays the same draft/view/action lifetime", async () => {
+    vi.useFakeTimers();
+    const h = await setup();
+    await h.invoke(channels.dispatch, { type: "ready" }, h.peer);
+    await h.invoke(channels.publish, snapshot);
+    await h.invoke(channels.dispatch, send, h.peer);
+    for (const frame of [draftFrame, viewFrame, pendingResult])
+      await h.invoke(channels.publish, frame);
+    h.mainWindow.minimized = true;
+    h.peer.webContents.emit("render-process-gone", {}, { reason: "crashed", exitCode: 1 });
+    expect(h.peer.destroyed).toBe(true);
+    expect(h.host.state()).toMatchObject({ supported: true, enabled: true, visible: false });
+    expect(h.host.state().reason).toContain("recover");
+    expect(h.mainWindow.destroyed).toBe(false);
+    await h.invoke(channels.publish, {
+      type: "reset",
+      publisherGeneration: ref.publisherGeneration,
+    });
+    expect(native.windows).toHaveLength(2);
+    const recovered = await h.invoke(channels.setEnabled, true);
+    expect(recovered).toEqual(envelope(h.host.state()));
+    expect(h.host.state()).toMatchObject({ supported: true, reason: null, visible: false });
+    expect(native.windows).toHaveLength(3);
+    const replacement = native.windows[2]!;
+    expect(replacement.webContents.session).not.toBe(h.peer.webContents.session);
+    for (const intent of [{ type: "ready" }, { type: "hide" }, send])
+      expect(() => h.invoke(channels.dispatch, intent, h.peer)).toThrow();
+    await h.invoke(channels.dispatch, { type: "ready" }, replacement);
+    expect(h.mainWindow.webContents.send).toHaveBeenLastCalledWith(
+      channels.state,
+      expect.objectContaining({ payload: expect.objectContaining({ visible: true }) }),
+    );
+    expect(h.mainWindow.webContents.send.mock.calls).toContainEqual([
+      channels.intent,
+      envelope({ type: "ready" }),
+    ]);
+    for (const frame of [snapshot, draftFrame, viewFrame, pendingResult])
+      await h.invoke(channels.publish, frame);
+    for (const frame of [draftFrame, viewFrame, pendingResult])
+      expect(replacement.webContents.send.mock.calls).toContainEqual([
+        channels.frame,
+        envelope(frame),
+      ]);
+    await h.invoke(
+      channels.dispatch,
+      { type: "setExpanded", expanded: viewFrame.state.editor.focused },
+      replacement,
+    );
+    expect(replacement.getBounds()).toMatchObject({ width: 384, height: 704 });
+    const sends = () =>
+      h.mainWindow.webContents.send.mock.calls.filter(
+        ([channel, frame]) => channel === channels.intent && frame.payload.type === "send",
+      );
+    await h.invoke(channels.dispatch, send, replacement);
+    expect(sends()).toHaveLength(1);
+    const accepted = { ...pendingResult, status: "accepted", reason: null };
+    await h.invoke(channels.publish, accepted);
+    expect(replacement.webContents.send).toHaveBeenLastCalledWith(
+      channels.frame,
+      envelope(accepted),
+    );
+    await expect(
+      h.invoke(channels.dispatch, { ...send, environmentEpoch: 1, actionId: "late" }, replacement),
+    ).rejects.toThrow("Monitor request was rejected");
+    expect(h.host.state()).toMatchObject({ mainVisible: false, mainFocused: false });
+    expect(h.revealMain).not.toHaveBeenCalled();
+  });
+
+  it("allows a bounded explicit retry after a transient initial load failure and fences the failed sender", async () => {
+    const h = await setup(null, { loadFailures: 1 });
+    await expect(h.peer.loadURL.mock.results[0]!.value).rejects.toThrow(
+      "Transient monitor asset failure",
+    );
+    expect(h.peer.destroyed).toBe(true);
+    expect(h.host.state()).toMatchObject({ supported: true, enabled: true, visible: false });
+    expect(h.host.state().reason).toContain("could not load");
+    expect(native.windows).toHaveLength(2);
+    for (const frame of [snapshot, draftFrame, viewFrame]) await h.invoke(channels.publish, frame);
+    expect(native.windows).toHaveLength(2);
+    await h.invoke(channels.setEnabled, true);
+    const replacement = native.windows[2]!;
+    expect(h.host.state()).toMatchObject({ supported: true, reason: null, visible: false });
+    for (const intent of [{ type: "ready" }, { type: "hide" }, send])
+      expect(() => h.invoke(channels.dispatch, intent, h.peer)).toThrow();
+    await h.invoke(channels.dispatch, { type: "ready" }, replacement);
+    for (const frame of [snapshot, draftFrame, viewFrame]) await h.invoke(channels.publish, frame);
+    expect(replacement.webContents.send.mock.calls).toContainEqual([
+      channels.frame,
+      envelope(draftFrame),
+    ]);
+    expect(replacement.webContents.send.mock.calls).toContainEqual([
+      channels.frame,
+      envelope(viewFrame),
+    ]);
+    expect(h.host.state().visible).toBe(true);
+    expect(native.windows).toHaveLength(3);
+    expect(h.mainWindow.destroyed).toBe(false);
+    expect(h.revealMain).not.toHaveBeenCalled();
+  });
+
+  it("keeps native Wayland unavailable even when enable is requested", async () => {
+    const backend = monitorBackend({
+      platform: "linux",
+      ozonePlatform: "wayland",
+      display: ":1",
+      waylandDisplay: "wayland-0",
+      sessionType: "wayland",
+    });
+    const h = await setup(null, { backend });
+    await h.invoke(channels.setEnabled, true);
+    expect(h.host.state()).toMatchObject({
+      supported: false,
+      visible: false,
+      reason: backend.reason,
+    });
+    expect(native.windows).toHaveLength(1);
+  });
+
   it("shows the independent sandbox peer without revealing main and keeps real activity during main minimize", async () => {
     const h = await setup();
     expect(h.peer.options.parent).toBeUndefined();
@@ -289,6 +539,24 @@ describe("monitor host lifecycle", () => {
         handler(event as unknown as IpcMainInvokeEvent, envelope({ type: "hide" })),
       ).toThrow();
     expect(h.host.state().enabled).toBe(true);
+  });
+
+  it("disposes safely when Electron invalidates the main webContents getter before closed", async () => {
+    const h = await setup();
+    await h.invoke(channels.dispatch, { type: "ready" }, h.peer);
+    h.mainWindow.destroyed = true;
+    Object.defineProperty(h.mainWindow, "webContents", {
+      configurable: true,
+      get() {
+        throw new Error("Object has been destroyed");
+      },
+    });
+    expect(() => h.mainWindow.emit("closed")).not.toThrow();
+    expect(h.peer.destroyed).toBe(true);
+    expect(native.handlers.size).toBe(0);
+    expect(native.app.listenerCount("before-quit")).toBe(0);
+    expect(() => h.host.setMainBackgroundThrottling(true)).not.toThrow();
+    expect(() => h.host.dispose()).not.toThrow();
   });
 
   it("removes peer, IPC and owned listeners when main closes; main reload binds a fresh peer generation", async () => {

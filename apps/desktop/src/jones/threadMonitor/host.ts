@@ -75,7 +75,12 @@ export class ThreadMonitorHost {
           this.peer.webContents.send(channels.frame, envelope(frame));
       },
       publisher: (intent) => {
-        if (this.documentReady && !this.disposed && !options.main.webContents.isDestroyed())
+        if (
+          this.documentReady &&
+          !this.disposed &&
+          !options.main.isDestroyed() &&
+          !options.main.webContents.isDestroyed()
+        )
           options.main.webContents.send(channels.intent, envelope(intent));
       },
       recreatePeer: () => {
@@ -172,8 +177,8 @@ export class ThreadMonitorHost {
     const main = this.options.main;
     const mainVisible = !main.isDestroyed() && main.isVisible() && !main.isMinimized();
     return {
-      supported:
-        this.options.backend.supported && this.fitReason === null && this.loadReason === null,
+      // Peer failures remain retryable through the toolbar on a supported backend/work area.
+      supported: this.options.backend.supported && this.fitReason === null,
       enabled: this.preferences.enabled,
       visible: !!this.peer && !this.peer.isDestroyed() && this.peer.isVisible(),
       mainVisible,
@@ -184,17 +189,23 @@ export class ThreadMonitorHost {
   }
 
   private emitState(): void {
-    if (this.disposed || this.options.main.webContents.isDestroyed()) return;
+    if (
+      this.disposed ||
+      this.options.main.isDestroyed() ||
+      this.options.main.webContents.isDestroyed()
+    )
+      return;
     this.options.main.webContents.send(channels.state, envelope(this.state()));
   }
 
   /** First reveal changes the normal policy, without overriding a visible monitor's lease. */
   setMainBackgroundThrottling(enabled: boolean): void {
-    if (!this.options.main.webContents.isDestroyed()) this.throttle.normal(enabled);
+    if (!this.options.main.isDestroyed() && !this.options.main.webContents.isDestroyed())
+      this.throttle.normal(enabled);
   }
 
   private applyThrottle(): void {
-    if (this.options.main.webContents.isDestroyed()) return;
+    if (this.options.main.isDestroyed() || this.options.main.webContents.isDestroyed()) return;
     const visible = !!this.peer && !this.peer.isDestroyed() && this.peer.isVisible();
     this.throttle.visible(visible);
   }
@@ -319,7 +330,13 @@ export class ThreadMonitorHost {
   }
 
   private createPeerWindow(): void {
-    if (this.disposed || !this.preferencesLoaded || !this.options.backend.supported || this.peer)
+    if (
+      this.disposed ||
+      !this.preferencesLoaded ||
+      !this.options.backend.supported ||
+      this.loadReason !== null ||
+      this.peer
+    )
       return;
     const display = this.display();
     const bounds = monitorBounds(display.workArea, false, this.preferences.vertical);
@@ -508,9 +525,8 @@ export class ThreadMonitorHost {
   }
 
   private hide(): void {
+    // The surviving renderer keeps its expansion and editor state while hidden.
     if (this.peer && !this.peer.isDestroyed()) this.peer.hide();
-    this.expanded = false;
-    this.place();
     this.applyThrottle();
   }
 
@@ -546,7 +562,8 @@ export class ThreadMonitorHost {
     this.destroyPeer();
     this.broker.dispose();
     for (const cleanup of this.cleanups.splice(0).toReversed()) cleanup();
-    if (!this.options.main.webContents.isDestroyed()) this.throttle.dispose();
+    if (!this.options.main.isDestroyed() && !this.options.main.webContents.isDestroyed())
+      this.throttle.dispose();
   }
 }
 

@@ -2191,6 +2191,7 @@
       "tests": [
         "apps/desktop/scripts/jones-thread-monitor-mac-smoke.test.mjs",
         "apps/desktop/scripts/ui-evidence/main-window.test.mjs",
+        "apps/desktop/scripts/ui-evidence/runner-restart-progress.test.mjs",
         "apps/desktop/scripts/ui-evidence/thread-monitor-provider.test.mjs",
         "apps/desktop/scripts/ui-evidence/window-manager.test.mjs",
         "apps/desktop/src/jones/threadMonitor/broker.test.ts",
@@ -2199,6 +2200,7 @@
         "apps/desktop/src/jones/threadMonitor/protocol.test.ts",
         "apps/desktop/src/jones/threadMonitor/throttle.test.ts",
         "apps/desktop/src/jones/threadMonitor/transport.test.ts",
+        "apps/server/src/jones/orchestration/QueuedSteerBatch.integration.test.ts",
         "apps/server/src/jones/threadMonitor/GuardedSettle.integration.test.ts",
         "apps/server/src/jones/threadMonitor/guardedSettle.test.ts",
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
@@ -2212,10 +2214,11 @@
         "packages/client-runtime/src/jones/threadMonitor/guardedSettle.test.ts",
         "packages/client-runtime/src/jones/threadMonitor/lifecycle.test.ts",
         "packages/client-runtime/src/jones/threadMonitor/model.test.ts",
+        "packages/client-runtime/src/operations/commands.test.ts",
         "packages/contracts/src/jones/desktopThreadMonitor.test.ts",
         "packages/contracts/src/jones/guardedThreadSettlement.test.ts"
       ],
-      "scope": "Independent always-visible native desktop monitor with top-level four-group counts, native Jones theme, collapsed sections, hover/focus replies and real request/plan actions. Main renderer retains the sole authenticated environment runtime; bounded typed IPC and generation/epoch fences isolate the peer. Safe server-locked guarded settlement and genuine placement restoration preserve pending work. Main-native visibility drives activity and a monitor-aware throttle lease keeps minimized updates live; private Linux/macOS harnesses qualify actual windows separately from source tests. No database, provider, deployment or installed-app changes."
+      "scope": "Independent always-visible native desktop monitor with top-level four-group counts, native Jones theme, collapsed sections, hover/focus replies and real request/plan actions. Main renderer retains the sole authenticated environment runtime; bounded typed IPC and generation/epoch fences isolate the peer. Safe server-locked guarded settlement and genuine placement restoration preserve pending work. Main-native visibility drives activity and a monitor-aware throttle lease keeps minimized updates live; private Linux/macOS harnesses qualify actual windows separately from source tests. No database, deployment or installed-app changes."
     }
   ]
 }
