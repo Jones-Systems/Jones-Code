@@ -1,3 +1,7 @@
+import * as PeerReadBoundary from "./forwarding/peerReadAdmission.ts";
+import * as PeerGuard from "./forwarding/guard.ts";
+import * as PeerPins from "./runtime/peerSessionPins.ts";
+import * as Option from "effect/Option";
 import * as NativeReadProjection from "./read/projection.ts";
 import * as NativeReadRoutes from "./read/routes.ts";
 import * as RollupBindings from "./rollups/bindings.ts";
@@ -82,8 +86,30 @@ export const nativeSourceProvidersLayer = Layer.merge(
   LocalSettlement.layer,
 ).pipe(Layer.provide(sourceProviderLayer), Layer.provide(Attempts.NativeProviderAttemptsLive));
 
+/** Share the opaque peer boundary before constructing consumers of the local Session. */
+export const nativeSessionLayer = Layer.unwrap(
+  Effect.map(Effect.serviceOption(PeerReadBoundary.PeerReadBoundary), (boundary) =>
+    Option.isNone(boundary)
+      ? NativeSession.layer
+      : PeerReadBoundary.sessionLayer.pipe(
+          Layer.provide(NativeSession.layer),
+          Layer.provide(Layer.succeed(PeerReadBoundary.PeerReadBoundary, boundary.value)),
+        ),
+  ),
+);
+
+/** Requires genuine native authentication; no tuple-only authority or default session. */
+export const nativePeerReadBoundaryLayer = Layer.unwrap(
+  Effect.sync(() =>
+    PeerReadBoundary.layer.pipe(
+      Layer.provideMerge(PeerGuard.layer.pipe(Layer.provideMerge(PeerPins.layer))),
+      Layer.provideMerge(nativePersistenceLayer),
+    ),
+  ),
+);
+
 const nativeRegistryLayer = NativeRegistry.layer.pipe(
-  Layer.provideMerge(NativeSession.layer),
+  Layer.provideMerge(nativeSessionLayer),
   Layer.provideMerge(nativePersistenceLayer),
 );
 
@@ -112,7 +138,7 @@ const nativeRollupManifestsLayer = RollupManifests.layer.pipe(
 );
 const nativeRollupSummaryLayer = RollupSummary.layer.pipe(
   Layer.provideMerge(nativeRollupStoreLayer),
-  Layer.provideMerge(NativeSession.layer.pipe(Layer.provideMerge(nativePersistenceLayer))),
+  Layer.provideMerge(nativeSessionLayer.pipe(Layer.provideMerge(nativePersistenceLayer))),
 );
 const nativeRollupDashboardLayer = RollupDashboard.layer.pipe(
   Layer.provideMerge(RollupDashboard.nativeClientLayer),

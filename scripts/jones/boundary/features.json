@@ -2286,7 +2286,9 @@
         "apps/server/src/jones/workstreams/native/store/peerSessionPinStore.test.ts",
         "apps/server/src/jones/workstreams/native/runtime/peerSessionPins.test.ts",
         "apps/server/src/jones/workstreams/native/runtime/peerSessionPinSetup.test.ts",
-        "apps/server/src/jones/workstreams/native/forwarding/guard.twoServer.test.ts"
+        "apps/server/src/jones/workstreams/native/forwarding/guard.twoServer.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/peerReadAdmission.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/peerMcpAuthentication.test.ts"
       ],
       "scope": "Native registry-home contracts, encrypted persistence and all31 native tables, pure v1 CAS/receipt/history domain and source-admitted provider ports. Source identity remains source-owned; authority stays home-owned. Native command/forwarding registration, end-to-end qualification and fleet adoption remain subsequent integration. Includes encrypted durable operation intent/recovery, fixed home destination and restart replay; runtime admission and home transport remain composition dependencies. Client integration adds native mode/home awareness, generation-isolated grouping, memory-only protected projections and honest unavailable provenance. Native envelope transport, forwarding, summary mounts and physical captures remain incomplete."
     },

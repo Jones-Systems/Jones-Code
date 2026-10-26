@@ -2164,7 +2164,11 @@
     "apps/server/src/jones/workstreams/native/forwarding/homeReadProtocol.test.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/registry/localTransport.test.ts": "jones-owned",
     "apps/server/src/jones/mcp/workstreams/nativeReads.ts": "jones-owned",
-    "apps/server/src/jones/mcp/workstreams/nativeReads.test.ts": "jones-owned"
+    "apps/server/src/jones/mcp/workstreams/nativeReads.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/forwarding/peerReadAdmission.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/runtime/peerMcpAuthentication.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/forwarding/peerReadAdmission.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/runtime/peerMcpAuthentication.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -2888,6 +2892,18 @@
     {
       "from": "apps/server/src/mcp/McpHttpServer.ts",
       "to": "apps/server/src/jones/workstreams/native/forwarding/homeReadProtocol.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/workstreams/native/runtime/peerMcpAuthentication.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/workstreams/native/runtime/peerSessionPins.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/workstreams/native/runtime/peerMcpAuthentication.ts"
     }
   ]
 }

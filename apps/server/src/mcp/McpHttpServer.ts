@@ -1,3 +1,4 @@
+import * as NativePeerMcpAuthentication from "../jones/workstreams/native/runtime/peerMcpAuthentication.ts";
 import * as NativeReadMcp from "../jones/mcp/workstreams/nativeReads.ts";
 import * as NativeReadProtocol from "../jones/workstreams/native/forwarding/homeReadProtocol.ts";
 import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
@@ -222,6 +223,7 @@ const withModeLimit = (
 const makeMcpAuthMiddleware = Effect.gen(function* () {
   const registry = yield* McpSessionRegistry.McpSessionRegistry;
   const clients = yield* Effect.serviceOption(McpClientAuthenticator);
+  const nativePeer = yield* Effect.serviceOption(NativePeerMcpAuthentication.PeerMcpAuthentication);
   return Effect.fn("McpHttpServer.authenticateRequest")(function* (httpEffect) {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const authorization = request.headers.authorization;
@@ -258,6 +260,7 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
         },
         { status: 400, headers: { "cache-control": "no-store" } },
       );
+    if (Option.isSome(nativePeer)) yield* nativePeer.value.register(request, attributed);
     return yield* httpEffect.pipe(
       Effect.provideService(McpInvocationContext.McpInvocationContext, attributed),
       Effect.map(normalizeMcpHttpResponse),

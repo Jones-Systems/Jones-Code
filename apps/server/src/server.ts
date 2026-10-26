@@ -1,3 +1,5 @@
+import * as WorkstreamPeerPins from "./jones/workstreams/native/runtime/peerSessionPins.ts";
+import * as WorkstreamPeerMcpAuthentication from "./jones/workstreams/native/runtime/peerMcpAuthentication.ts";
 import * as ThreadMetadataReads from "./jones/orchestration/threadMetadataReads.ts";
 import * as HandoffLaunch from "./jones/linkedThreads/launchTransport.ts";
 import * as ThreadHandoff from "./jones/linkedThreads/handoff.ts";
@@ -768,6 +770,11 @@ const layerCommandReadiness = HttpRouter.middleware(
   { global: true },
 );
 
+// Share the native authentication object registry with selected Workstreams reads.
+const layerWorkstreamPeerAuthentication = WorkstreamPeerMcpAuthentication.layer.pipe(
+  Layer.provideMerge(WorkstreamPeerPins.nativeLayer),
+);
+
 const layerMakeRoutes = Layer.mergeAll(
   Layer.mergeAll(
     HttpApiBuilder.layer(EnvironmentHttpApi).pipe(
@@ -829,6 +836,7 @@ const layerMakeRoutes = Layer.mergeAll(
     Layer.provide(DesktopBrowserChannel.layer),
     Layer.provide(PreviewBrowser.layer),
     Layer.provide(workstreamSelectedServicesLayer),
+    Layer.provide(layerWorkstreamPeerAuthentication),
   )
   .pipe(
     // Same layer identity as the gateway's, so the config descriptor reads the same authority.

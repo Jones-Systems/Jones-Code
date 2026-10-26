@@ -1,3 +1,6 @@
+import * as PeerPins from "./peerSessionPins.ts";
+import * as PeerReadBoundary from "../forwarding/peerReadAdmission.ts";
+import * as HomeReadProtocol from "../forwarding/homeReadProtocol.ts";
 import * as RollupEvidence from "../rollups/evidence.ts";
 import * as RollupGeneration from "../rollups/generation.ts";
 import * as RollupSummary from "../rollups/summaryRead.ts";
@@ -232,7 +235,6 @@ export const chooseLayer = <L, LE, LR, H, HE, HR, U, UE, UR>(factories: {
   );
 
 import * as NativeIntegration from "../integration.ts";
-import * as NativeSession from "../registry/session.ts";
 import * as NativeEntry from "./entry.ts";
 import * as NativeReadRoutes from "../read/routes.ts";
 import * as NativeReadExport from "../read/export.ts";
@@ -272,7 +274,9 @@ export const homeServicesLayer = (
     RollupApplication.admissionLayer,
   ),
 ) => {
-  const admission = NativeAdmission.layer.pipe(Layer.provideMerge(NativeSession.layer));
+  const admission = NativeAdmission.layer.pipe(
+    Layer.provideMerge(NativeIntegration.nativeSessionLayer),
+  );
   const enrolledSource = Layer.effect(
     NativeAdmission.RecordedSourceEnrollment,
     Effect.map(Effect.serviceOption(NativeSourceEnrollments.NativeSourceEnrollments), (source) => ({
@@ -371,7 +375,27 @@ export const homeServicesLayer = (
   const reads = Layer.mergeAll(NativeReadRoutes.authorizedLayer, NativeReadExport.layer).pipe(
     Layer.provide(NativeAdmission.callerBoundaryLayer),
   );
+  const peerBoundary = Layer.unwrap(
+    Effect.map(Effect.serviceOption(PeerPins.NativePeerSessions), (native) =>
+      Option.isNone(native)
+        ? Layer.empty
+        : NativeIntegration.nativePeerReadBoundaryLayer.pipe(
+            Layer.provide(Layer.succeed(PeerPins.NativePeerSessions, native.value)),
+          ),
+    ),
+  );
+  const peerReads = Layer.unwrap(
+    Effect.map(Effect.serviceOption(PeerReadBoundary.PeerReadBoundary), (boundary) =>
+      Option.isNone(boundary)
+        ? Layer.empty
+        : HomeReadProtocol.layer.pipe(
+            Layer.provide(PeerReadBoundary.homeAdmissionLayer),
+            Layer.provide(Layer.succeed(PeerReadBoundary.PeerReadBoundary, boundary.value)),
+          ),
+    ),
+  );
   return Layer.mergeAll(
+    peerReads,
     NativeEntry.gatewayLayer,
     NativeEntry.registrationLayer,
     operations,
@@ -380,6 +404,7 @@ export const homeServicesLayer = (
     reads,
   ).pipe(
     Layer.provideMerge(entry),
+    Layer.provideMerge(peerBoundary),
     Layer.provide(Layer.succeed(Home, selection.home)),
     Layer.provide(Layer.succeed(Startup, selection)),
     Layer.provide(rollupPorts),

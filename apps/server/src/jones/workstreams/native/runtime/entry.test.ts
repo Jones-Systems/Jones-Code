@@ -51,12 +51,33 @@ import { makeProviderFixture } from "../../nativeProvider/testFixtures.ts";
 import { makeWorkstreamsNativeProvider } from "../../nativeProvider/service.ts";
 import * as Mcp from "../../../../mcp/McpInvocationContext.ts";
 import * as Gateway from "../../../../workstreams/WorkstreamGateway.ts";
+import * as Auth from "../../../../auth/EnvironmentAuth.ts";
+import * as Secrets from "../../../../auth/ServerSecretStore.ts";
+import * as McpOAuth from "../../../../auth/McpOAuth.ts";
+import * as Config from "../../../../config.ts";
+import * as McpHttpServer from "../../../../mcp/McpHttpServer.ts";
+import * as McpSessions from "../../../../mcp/McpSessionRegistry.ts";
+import * as PeerPins from "./peerSessionPins.ts";
+import * as PeerAuthentication from "./peerMcpAuthentication.ts";
+import * as PeerSetup from "./peerSessionPinSetup.ts";
+import * as PeerRecords from "../store/peerSessionPinStore.ts";
+import * as Registries from "../store/registryStore.ts";
+import * as NativeSession from "../registry/session.ts";
+import * as PeerBoundary from "../forwarding/peerReadAdmission.ts";
+import peerMigration from "../../../persistence/Migrations/128_JonesWorkstreamsPeerSessionPins.ts";
+import {
+  WORKSTREAMS_HOME_READ_RESULT_CONTRACT,
+  WorkstreamsHomeReadResult,
+} from "@t3tools/contracts/jones/workstreamsHomeReadResult";
+import { Tool, Toolkit } from "effect/ai";
+import * as McpAccess from "../../../../mcp/McpToolAccess.ts";
 import * as ControlPlane from "../../../../workstreams/ControlPlaneWorkstreamTransport.ts";
 import {
   workstreamHttpApiLayer,
   workstreamResponseHeadersLayer,
 } from "../../../../workstreams/http.ts";
 
+const decodeHomeReadResult = Schema.decodeUnknownEffect(WorkstreamsHomeReadResult);
 const decodeNativePlacement = Schema.decodeUnknownEffect(
   NativePlacement.WorkstreamsNativePlacementResult,
 );
@@ -250,7 +271,7 @@ const seed = (
         }),
       ),
     );
-    return { services, sessions };
+    return { services, sessions, authority };
   });
 
 const operation = (origin: { readonly kind: "app" | "agent" | "cli" }, suffix: string) => ({
@@ -572,6 +593,386 @@ it.effect(
       yield* TestClock.adjust(90_000);
       expect(yield* worker.sweep()).toBeNull();
       expect(calls).toBe(2);
+    }).pipe(Effect.provide(f.layer));
+  },
+);
+
+// Native OAuth authentication, middleware, selected startup, encrypted pins and reads are real.
+// Only receiver identity, unused provider-token resolution, owner/setup and bind qualification
+// are synthetic. This in-process proof opens no listener and is not physical peer acceptance.
+it.effect(
+  "mounted native MCP reads require the exact authenticated peer and retain write/revocation fences",
+  () => {
+    const f = fresh();
+    return Effect.gen(function* () {
+      const prepared = yield* seed(f);
+      yield* peerMigration;
+      const authLayer = Auth.layer.pipe(
+        Layer.provide(
+          Layer.mock(Secrets.ServerSecretStore)({
+            get: () => Effect.succeed(Option.some(Fixture.keyBytes)),
+            getOrCreateRandom: () => Effect.succeed(Fixture.keyBytes),
+          }),
+        ),
+        Layer.provideMerge(Layer.succeed(AuthSessions.AuthSessionRepository, prepared.sessions)),
+        Layer.provide(Config.layerTest(f.home, { prefix: "nw-peer-entry-" })),
+        Layer.provide(
+          Layer.succeed(Environment.ServerEnvironmentIdentity, {
+            getEnvironmentId: Effect.succeed(Wire.EnvironmentId.make(registry.home_environment_id)),
+          }),
+        ),
+      );
+      const peerAuthentication = PeerAuthentication.layer.pipe(
+        Layer.provideMerge(PeerPins.nativeLayer),
+        Layer.provideMerge(authLayer),
+      );
+      yield* Effect.gen(function* () {
+        const auth = yield* Auth.EnvironmentAuth;
+        const peers = yield* PeerPins.NativePeerSessions;
+        const issued = yield* auth.issueMcpClientSession({
+          label: "synthetic bound peer",
+          access: "full-access",
+          peerLink: true,
+          client: { deviceType: "bot" },
+        });
+        const scope: Mcp.McpInvocationScope = {
+          environmentId: Wire.EnvironmentId.make(registry.home_environment_id),
+          issuedAt: DateTime.toEpochMillis(yield* DateTime.now),
+          requestNamespace: "peer-setup-synthetic",
+          capabilities: new Set(["orchestration"]),
+          thread: undefined,
+          client: {
+            sessionId: issued.sessionId,
+            label: "setup",
+            access: "full-access",
+            linked: true,
+          },
+        };
+        const nativeRequest = {
+          cookies: {},
+          headers: { authorization: "Bearer " + issued.token },
+        } as unknown as Parameters<typeof auth.authenticateMcpClient>[0];
+        yield* (yield* PeerAuthentication.PeerMcpAuthentication).register(nativeRequest, scope);
+        const facts = yield* peers.current(scope);
+        const receiver = yield* prepared.authority.readCurrent;
+        const store = yield* Registries.RegistryStore;
+        const storeScope = {
+          registry_instance_id: registry.registry_instance_id,
+          owner_id: registry.owner_id,
+        };
+        const remote = "source:entry-peer";
+        const peerPrincipal = "principal:entry-peer";
+        yield* store.appendPlain(storeScope, "principals", {
+          principal_id: peerPrincipal,
+          kind: "environment",
+          environment_id: remote,
+          provenance: "{}",
+        });
+        yield* store.appendPlain(storeScope, "grants", {
+          grant_id: "grant:entry-peer",
+          principal_id: peerPrincipal,
+          grant_version: 1,
+          permissions: JSON.stringify(["workstreams:read", "workstreams:write"]),
+          state: "active",
+        });
+        yield* store.appendPlain(storeScope, "source_bindings", {
+          provider: "t3",
+          source_instance_id: remote,
+          binding_version: 1,
+          authority_namespace: "source:entry-store",
+          store_generation: 1,
+          state: "active",
+        });
+        const context = (yield* store.context(registry))!;
+        const receipt = {
+          principal_id: peerPrincipal,
+          binding_version: 1,
+          registry_version: context.registry_version,
+          request_sha256: "c".repeat(64),
+        };
+        const body = JSON.stringify({
+          schema: "jones-workstreams-peer-pin-setup/1",
+          assertion: {
+            schema: "jones-workstreams-peer-session-pin/1",
+            pin_id: "pin:entry-peer",
+            revision: 1,
+            receiver_authority: {
+              environment_id: receiver.environmentId,
+              authority_namespace: receiver.authorityNamespace,
+              store_generation: receiver.storeGeneration,
+            },
+            session: facts.session,
+            peer_environment_id: remote,
+            roles: ["member_home"],
+            expected_home: {
+              registry_instance_id: registry.registry_instance_id,
+              owner_id: registry.owner_id,
+              home_environment_id: registry.home_environment_id,
+              server_generation: registry.server_generation,
+            },
+            source_authority: {
+              environment_id: remote,
+              authority_namespace: "source:entry-store",
+              store_generation: 1,
+            },
+            source_enrollment_id: "enrollment:entry-peer",
+            source_binding_version: null,
+            singleton_binding_version: null,
+            state: "prepared",
+            expires_at: DateTime.formatIso(DateTime.add(yield* DateTime.now, { minutes: 10 })),
+            setup_request_id: "setup:entry-peer",
+            owner_qualification_digest: "b".repeat(64),
+            bind_receipt: null,
+          },
+          expected: {
+            registry_version: context.registry_version,
+            grant_id: "grant:entry-peer",
+            grant_version: 1,
+          },
+        });
+        const decoded = PeerRecords.decodeSetupRequest(body);
+        const setupLayer = PeerSetup.layer.pipe(
+          Layer.provide(
+            Layer.succeed(PeerSetup.PeerPinSetupQualification, {
+              qualify: (exact, digest) =>
+                exact === body && digest === decoded.pin.setup_request_sha256
+                  ? Effect.succeed({
+                      invocation: scope,
+                      owner_qualification_digest: "b".repeat(64),
+                      checkCurrent: () => Effect.void,
+                    })
+                  : Effect.fail(new PeerPins.PeerSessionError({ code: "owner_unqualified" })),
+              verifyBinding: (_pin, actual, version) =>
+                JSON.stringify(actual) === JSON.stringify(receipt) && version === 1
+                  ? Effect.void
+                  : Effect.fail(new PeerPins.PeerSessionError({ code: "conflict" })),
+            }),
+          ),
+          Layer.provide(
+            Layer.succeed(SourceEnrollment.SourceSetupOwner, { verifyUnchanged: Effect.void }),
+          ),
+          Layer.provide(Layer.succeed(Authority.NativeStoreAuthority, prepared.authority)),
+        );
+        expect(yield* store.context(decoded.pin.expected_home)).toMatchObject({
+          home_environment_id: registry.home_environment_id,
+          server_generation: 1,
+          registry_version: context.registry_version,
+          state: "active",
+        });
+        yield* Effect.gen(function* () {
+          const setup = yield* PeerSetup.PeerSessionPinSetup;
+          yield* setup.apply(body, 0);
+          yield* setup.bind(decoded.pin.pin_id, 1, receipt, 1);
+        }).pipe(Effect.provide(setupLayer));
+
+        const now = DateTime.formatIso(yield* DateTime.now);
+        const name = "Encrypted mounted peer content";
+        yield* store.put(
+          storeScope,
+          "records",
+          {
+            metadata: { workstream_id: "workstream:entry-peer", version: 1, sort_order: 0 },
+            value: {
+              workstream_id: "workstream:entry-peer",
+              owner_id: registry.owner_id,
+              name,
+              lifecycle: "active",
+              progress: { state: "unknown" },
+              delivery: "unknown",
+              freshness: "current",
+              sort_order: 0,
+              version: 1,
+              created_at: now,
+              updated_at: now,
+              created_by: { principal_id: peerPrincipal },
+              updated_by: { principal_id: peerPrincipal },
+            },
+          },
+          null,
+        );
+
+        const probe = Toolkit.make(
+          Tool.make("synthetic_peer_write_probe", {
+            description: "Test only: verify the composed Session write fence.",
+            parameters: Tool.EmptyParams,
+            success: Schema.Struct({
+              write_refused: Schema.Boolean,
+              runtime_mode: Wire.RuntimeMode,
+              interaction_mode: Wire.ProviderInteractionMode,
+            }),
+            dependencies: [Mcp.McpInvocationContext],
+          }),
+        );
+        const probes = McpAccess.toLayer(
+          probe,
+          Effect.gen(function* () {
+            const boundary = yield* Effect.serviceOption(PeerBoundary.PeerReadBoundary);
+            const session = yield* NativeSession.Session;
+            const incoming = yield* PeerPins.NativePeerSessions;
+            return {
+              synthetic_peer_write_probe: McpAccess.reads(() =>
+                Effect.gen(function* () {
+                  if (Option.isNone(boundary))
+                    return yield* Effect.die("Missing composed peer boundary");
+                  const caller = yield* boundary.value.current();
+                  const result = yield* session
+                    .authorize(caller.caller, "workstreams:write")
+                    .pipe(Effect.result);
+                  const invocation = yield* Mcp.McpInvocationContext;
+                  const actual = yield* incoming.current(invocation);
+                  return {
+                    write_refused: result._tag === "Failure",
+                    runtime_mode: actual.session.ceiling.runtime_mode,
+                    interaction_mode: actual.session.ceiling.interaction_mode,
+                  };
+                }).pipe(Effect.orDie),
+              ),
+            };
+          }),
+        );
+        const clock = yield* Clock.Clock;
+        const routes = Layer.mergeAll(
+          McpHttpServer.layerNativeHomeReadToolkit,
+          McpHttpServer.toolkitRegistration(probe, probes),
+        ).pipe(
+          Layer.provideMerge(McpHttpServer.layerMcpTransport),
+          Layer.provide(McpOAuth.layerMcpClientAuthenticator),
+          Layer.provide(
+            Layer.mock(McpSessions.McpSessionRegistry)({
+              resolve: () => Effect.succeed(undefined),
+            }),
+          ),
+          Layer.provide(prepared.services),
+          Layer.provide(
+            Layer.mock(Environment.ServerEnvironment)({
+              getEnvironmentId: Effect.succeed(
+                Wire.EnvironmentId.make(registry.home_environment_id),
+              ),
+            }),
+          ),
+          Layer.provide(
+            Layer.mock(ThreadManagement.ThreadManagementService)({
+              getThreadShell: () => Effect.succeed(null),
+            }),
+          ),
+          Layer.provide(peerAuthentication),
+          Layer.provide(f.layer),
+          Layer.provide(Layer.succeed(Clock.Clock, clock)),
+          Layer.provide(
+            HttpRouter.middleware(
+              (httpEffect) => httpEffect.pipe(Effect.provideService(Clock.Clock, clock)),
+              { global: true },
+            ),
+          ),
+          Layer.provideMerge(
+            HttpPlatform.layer.pipe(
+              Layer.provideMerge(NodeServices.layer),
+              Layer.provideMerge(Etag.layerWeak),
+            ),
+          ),
+        );
+        const app = yield* Effect.acquireRelease(
+          Effect.sync(() => HttpRouter.toWebHandler(routes, { disableLogger: true })),
+          (value) => Effect.promise(() => value.dispose()),
+        );
+        let sessionId: string | null = null;
+        let id = 0;
+        const rpc = (method: string, params: unknown) =>
+          Effect.gen(function* () {
+            const response = yield* Effect.promise(() =>
+              app.handler(
+                new Request("http://synthetic/mcp", {
+                  method: "POST",
+                  headers: {
+                    authorization: "Bearer " + issued.token,
+                    "content-type": "application/json",
+                    accept: "application/json, text/event-stream",
+                    "mcp-protocol-version": "2025-06-18",
+                    [Mcp.MODE_LIMIT_HEADER]: "approval-required/plan",
+                    ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+                  },
+                  body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method, params }),
+                }),
+              ),
+            );
+            if (response.headers.has("mcp-session-id"))
+              sessionId = response.headers.get("mcp-session-id");
+            const text = yield* Effect.promise(() => response.text());
+            const payload = text.startsWith("data:")
+              ? text
+                  .split("\n")
+                  .filter((l) => l.startsWith("data:"))
+                  .map((l) => JSON.parse(l.slice(5)))[0]
+              : JSON.parse(text);
+            return { response, payload };
+          });
+        const initialized = yield* rpc("initialize", {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "native-peer-entry", version: "1" },
+        });
+        expect(initialized.response.status).toBe(200);
+        expect(sessionId).not.toBeNull();
+        const tools = yield* rpc("tools/list", {});
+        expect(JSON.stringify(tools.payload)).toContain("jones_workstreams_home_read_result");
+        const arguments_ = {
+          contract: WORKSTREAMS_HOME_READ_RESULT_CONTRACT,
+          request: { route: "read-projection", params: {} },
+        };
+        const read = yield* rpc("tools/call", {
+          name: "jones_workstreams_home_read_result",
+          arguments: arguments_,
+        });
+        expect(read.payload.result?.isError, JSON.stringify(read.payload)).not.toBe(true);
+        const decodedRead = yield* decodeHomeReadResult(
+          read.payload.result.structuredContent ?? JSON.parse(read.payload.result.content[0].text),
+        );
+        expect(decodedRead.envelope.registry.owner_id).toBe(registry.owner_id);
+        expect(decodedRead.envelope.provenance.home_environment_id).toBe(
+          registry.home_environment_id,
+        );
+        expect(decodedRead.envelope.provenance.authority).toBe("native-home");
+        expect(JSON.stringify(decodedRead.value)).toContain(name);
+        const write = yield* rpc("tools/call", {
+          name: "synthetic_peer_write_probe",
+          arguments: {},
+        });
+        expect(write.payload.result?.isError).not.toBe(true);
+        expect(
+          write.payload.result.structuredContent ??
+            JSON.parse(write.payload.result.content[0].text),
+        ).toEqual({
+          write_refused: true,
+          runtime_mode: "approval-required",
+          interaction_mode: "plan",
+        });
+        yield* prepared.sessions.revoke({
+          sessionId: issued.sessionId,
+          revokedAt: yield* DateTime.now,
+        });
+        // Genuine auth fails before a formerly valid MCP session can read again.
+        const refused = yield* Effect.promise(() =>
+          app.handler(
+            new Request("http://synthetic/mcp", {
+              method: "POST",
+              headers: {
+                authorization: "Bearer " + issued.token,
+                "content-type": "application/json",
+                accept: "application/json, text/event-stream",
+                "mcp-session-id": sessionId!,
+              },
+              body: JSON.stringify({
+                jsonrpc: "2.0",
+                id: ++id,
+                method: "tools/call",
+                params: { name: "jones_workstreams_home_read_result", arguments: arguments_ },
+              }),
+            }),
+          ),
+        );
+        expect(refused.status).toBe(401);
+        expect(yield* Effect.promise(() => refused.text())).not.toContain(name);
+      }).pipe(Effect.provide(prepared.services.pipe(Layer.provideMerge(peerAuthentication))));
     }).pipe(Effect.provide(f.layer));
   },
 );
