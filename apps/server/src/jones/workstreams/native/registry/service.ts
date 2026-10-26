@@ -471,7 +471,10 @@ const make = Effect.gen(function* () {
             if (saved.receipt.state === "committed" || saved.receipt.state === "rejected")
               return saved.receipt;
             const before = yield* load(context);
-            yield* effects.saveResult(scope, intent.command.command_id, result);
+            if (recovery && intent.kind === "native_t3_settlement") {
+              if (!before.external_results.has(intent.command.command_id))
+                return yield* new Session.RegistryError({ code: "unknown_effect" });
+            } else yield* effects.saveResult(scope, intent.command.command_id, result);
             const completedAt = yield* now;
             const { state, receipt } = yield* attempt(() =>
               Decider.completeNativeExternalIntent(
@@ -484,12 +487,23 @@ const make = Effect.gen(function* () {
               ),
             );
             yield* persist(before, state, intent.kind === "verify_reference");
-            yield* effects.complete(
-              scope,
-              { ...saved, receipt },
-              state.registry_version,
-              auditEvents(state),
-            );
+            if (recovery && intent.kind === "native_t3_settlement")
+              yield* effects.completeRetainedNativeSettlement(
+                scope,
+                { ...saved, receipt },
+                {
+                  server_generation: before.server_generation,
+                  registry_version: before.registry_version,
+                },
+                auditEvents(state),
+              );
+            else
+              yield* effects.complete(
+                scope,
+                { ...saved, receipt },
+                state.registry_version,
+                auditEvents(state),
+              );
             return receipt;
           }),
         )

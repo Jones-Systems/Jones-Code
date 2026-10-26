@@ -51,6 +51,7 @@ import * as Runner from "../registry/effectRunner.ts";
 import * as Registration from "../registry/registration.ts";
 import * as Store from "../store/registryStore.ts";
 import * as Receipts from "../store/receiptStore.ts";
+import * as History from "../store/historyStore.ts";
 import * as Effects from "../store/effectStore.ts";
 import * as Bindings from "../store/bindingStore.ts";
 import * as Attestation from "../providers/localAttestation.ts";
@@ -63,9 +64,11 @@ import { NativeProviderAttempts } from "../../nativeProvider/attemptRepository.t
 import { binding, makeProviderFixture } from "../../nativeProvider/testFixtures.ts";
 import { NativeStoreAuthority } from "../../../../environment/NativeStoreAuthority.ts";
 import { canonicalJson } from "../domain/validation.ts";
-import type { WorkstreamAction } from "../domain/state.ts";
+import { nativeSettlementResult } from "../domain/externalIntents.ts";
+import type { WorkstreamAction, ExternalIntent, RegistryExternalResult } from "../domain/state.ts";
 import { resolveNativeMode } from "../mode/config.ts";
 
+const decodeSettlementRequest = Schema.decodeUnknownEffect(Wire.WorkstreamsNativeSettlementRequest);
 const decodeNativePlacementResult = Schema.decodeUnknownEffect(WorkstreamsNativePlacementResult);
 const decodeReceipt = Schema.decodeUnknownEffect(Wire.WorkstreamReceipt);
 const decodeListResult = Schema.decodeUnknownEffect(Wire.T3WorkstreamListResult);
@@ -1317,36 +1320,188 @@ it.effect(
     }).pipe(Effect.provide(runtime({ github: true }).layer)),
 );
 
-// Read-only store-port limitation: retain the exact result and pending receipt until
-// the store owner admits reconciliation after an unrelated registry advance.
-it.effect(
-  "native outcome recovery preserves evidence when the store completion port rejects a newer registry",
-  () =>
-    Effect.gen(function* () {
+it.effect.each([
+  {
+    retainedResult: false,
+    name: "native outcome recovery completes after an unrelated registry advance using committed source lookup",
+  },
+  {
+    retainedResult: true,
+    name: "restart reconciles the retained native result after an unrelated registry advance and lost reply",
+  },
+])("$name", ({ retainedResult }) =>
+  Effect.gen(function* () {
+    const cp = yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        vi.spyOn(ControlPlane, "makeControlPlaneWorkstreamTransport").mockImplementation(() => {
+          throw new Error("CP construction denied");
+        }),
+      ),
+      (spy) => Effect.sync(() => spy.mockRestore()),
+    );
+    const egress = yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Network denied")),
+      ),
+      (spy) => Effect.sync(() => spy.mockRestore()),
+    );
+    const filename = yield* Effect.sync(scratchFile);
+    const sourceRuntime = runtime({ filename });
+    let command!: Wire.WorkstreamCommand;
+    let intent!: ExternalIntent;
+    let result!: RegistryExternalResult;
+    let terminal!: Wire.WorkstreamReceipt;
+    let body = "";
+    let ref = "";
+    let currentVersion = 0;
+    yield* Effect.gen(function* () {
       yield* seed;
-      const h = yield* harness,
-        ref = yield* h.register();
+      const h = yield* harness;
+      ref = yield* h.register();
       yield* h.verify(ref);
-      const command = yield* h.command({
+      command = yield* h.command({
         operation: "request_native_t3_settlement",
         native_reference_id: ref,
         expected_attestation_version: 1,
         native_action: "settle",
       });
-      const accepted = yield* h.registry.submit(caller, canonicalJson(command));
+      body = " \n" + JSON.stringify(command, null, 2) + "\n";
+      const accepted = yield* h.registry.submit(caller, body);
+      expect(accepted.receipt.state).toBe("pending");
       expect(accepted.intent?.kind).toBe("native_t3_settlement");
-      yield* h.create("unrelated metadata advance");
-      const error = yield* (yield* Runner.EffectRunner).recover().pipe(Effect.flip);
-      expect(error.code).toBe("unavailable");
-      expect(error.cause).toMatchObject({ _tag: "WorkstreamsStoreError", reason: "conflict" });
-      const effects = yield* Effects.EffectStore;
-      expect(yield* effects.result(scope, command.command_id)).toMatchObject({
-        native_outcome: "committed",
+      intent = accepted.intent!;
+      const unretained = yield* h.registry
+        .complete(intent, nativeSettlementResult(intent, "committed"), true)
+        .pipe(Effect.flip);
+      expect(unretained.code).toBe("unknown_effect");
+      expect(yield* (yield* Effects.EffectStore).result(scope, command.command_id)).toBeNull();
+      expect(sourceRuntime.fixture.calls).toHaveLength(0);
+      yield* h.create("SENTINEL-retained-native-unrelated-advance");
+      currentVersion = (yield* h.registry.snapshot(caller)).context.registry_version;
+      const request = yield* decodeSettlementRequest({
+        owner_id: intent.owner_id,
+        principal_id: intent.actor.principal_id,
+        command_id: command.command_id,
+        native_reference_id: ref,
+        native_action: "settle",
+        request_sha256: intent.request_sha256,
+        reservation_sha256: NodeCrypto.createHash("sha256")
+          .update(canonicalJson(intent))
+          .digest("hex"),
+        identity: intent.reference.identity,
+        expected_authority_namespace: intent.source_binding.authority_namespace,
+        expected_store_generation: intent.source_binding.store_generation,
       });
+      const outcome = yield* (yield* Settlement.SourceSettlement).settle({
+        expected_home: {
+          registry_instance_id: home.registry_instance_id,
+          owner_id: home.owner_id,
+          home_environment_id: home.home_environment_id,
+          server_generation: home.server_generation,
+        },
+        request,
+      });
+      expect(outcome.state).toBe("terminal");
+      if (outcome.state !== "terminal") throw new Error("Expected committed source outcome");
+      result = outcome.result;
+      const effects = yield* Effects.EffectStore;
+      expect(yield* effects.result(scope, command.command_id)).toBeNull();
+      if (retainedResult) yield* effects.saveResult(scope, command.command_id, result);
       expect(yield* effects.active(scope)).toHaveLength(1);
-      expect((yield* h.registry.lookup(caller, command.command_id, 1)).kind).toBe("present");
+      expect(yield* h.registry.lookup(caller, command.command_id, 1)).toMatchObject({
+        kind: "present",
+        receipt: { state: "pending" },
+      });
+      expect(sourceRuntime.fixture.calls).toHaveLength(1);
+    }).pipe(Effect.provide(sourceRuntime.layer));
+    yield* Effect.gen(function* () {
+      const source = yield* Settlement.SourceSettlement;
+      const lookup = yield* Effect.acquireRelease(
+        Effect.sync(() => vi.spyOn(source, "lookup")),
+        (spy) => Effect.sync(() => spy.mockRestore()),
+      );
+      const dispatch = yield* Effect.acquireRelease(
+        Effect.sync(() => vi.spyOn(source, "settle")),
+        (spy) => Effect.sync(() => spy.mockRestore()),
+      );
+      yield* (yield* Runner.EffectRunner).recover();
+      const h = yield* harness;
+      const lookupResult = yield* h.registry.lookup(caller, command.command_id, 1);
+      expect(lookupResult.kind).toBe("present");
+      if (lookupResult.kind !== "present") throw new Error("Expected durable terminal receipt");
+      terminal = lookupResult.receipt;
+      expect(terminal).toMatchObject({
+        state: "committed",
+        registry_version: currentVersion + 1,
+        server_generation: 1,
+        changed: true,
+        request_sha256: intent.request_sha256,
+        actor: intent.actor,
+        effects: { native_settlement: { outcome: "committed", native_reference_id: ref } },
+      });
+      const effects = yield* Effects.EffectStore;
+      expect(yield* effects.result(scope, command.command_id)).toEqual(result);
+      expect(yield* effects.active(scope)).toHaveLength(0);
+      expect(
+        (yield* (yield* Receipts.ReceiptStore).read(scope, command.command_id))?.request_body,
+      ).toBe(body);
       expect(
         (yield* h.registry.snapshot(caller)).state.references.get(ref)?.registration.state,
       ).toBe("attested");
-    }).pipe(Effect.provide(runtime().layer)),
+      const history = yield* History.HistoryStore;
+      const before = yield* history.page(scope, { limit: 100 });
+      expect(before.events.filter((e) => e.command_id === command.command_id)).toMatchObject([
+        {
+          registry_version: currentVersion + 1,
+          value: {
+            actor: intent.actor,
+            operation: "request_native_t3_settlement",
+            changed: true,
+          },
+        },
+      ]);
+      yield* (yield* Runner.EffectRunner).recover();
+      expect(yield* h.registry.complete(intent, result, true)).toEqual(terminal);
+      expect(yield* h.registry.submit(caller, body)).toEqual({
+        receipt: terminal,
+        intent: null,
+      });
+      expect(yield* history.page(scope, { limit: 100 })).toEqual(before);
+      expect(lookup).toHaveBeenCalledTimes(retainedResult ? 0 : 1);
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(sourceRuntime.fixture.calls).toHaveLength(1);
+      for (const suffix of ["", "-wal"])
+        if (NodeFS.existsSync(filename + suffix)) {
+          const bytes = NodeFS.readFileSync(filename + suffix);
+          for (const plaintext of [
+            body,
+            canonicalJson(intent),
+            canonicalJson(result),
+            "SENTINEL-retained-native-unrelated-advance",
+          ])
+            expect(bytes.includes(Buffer.from(plaintext))).toBe(false);
+        }
+    }).pipe(Effect.provide(sourceRuntime.layer));
+    const restarted = runtime({ filename });
+    yield* Effect.gen(function* () {
+      yield* (yield* Runner.EffectRunner).recover();
+      const h = yield* harness;
+      expect(yield* h.registry.submit(caller, body)).toEqual({
+        receipt: terminal,
+        intent: null,
+      });
+      expect((yield* h.registry.snapshot(caller)).context.registry_version).toBe(
+        currentVersion + 1,
+      );
+      expect(
+        (yield* (yield* History.HistoryStore).page(scope, { limit: 100 })).events.filter(
+          (e) => e.command_id === command.command_id,
+        ),
+      ).toHaveLength(1);
+      expect(yield* (yield* Effects.EffectStore).active(scope)).toHaveLength(0);
+      expect(restarted.fixture.calls).toHaveLength(0);
+    }).pipe(Effect.provide(restarted.layer));
+    expect(cp).not.toHaveBeenCalled();
+    expect(egress).not.toHaveBeenCalled();
+  }).pipe(Effect.scoped),
 );
