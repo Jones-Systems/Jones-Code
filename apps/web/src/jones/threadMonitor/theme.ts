@@ -6,7 +6,7 @@ const safeValue = (value: string) =>
   value.length <= 512 &&
   !/[;{}<>\\\u0000-\u001f]/.test(value) &&
   !/(?:url|expression|@import)\s*\(/i.test(value);
-export function readMonitorTheme(): ThreadMonitorTheme {
+function readMonitorTheme(): ThreadMonitorTheme {
   const root = document.documentElement;
   const style = getComputedStyle(root);
   const mode = root.classList.contains("dark") || style.colorScheme === "dark" ? "dark" : "light";

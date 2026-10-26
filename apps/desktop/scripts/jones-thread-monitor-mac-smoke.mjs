@@ -42,6 +42,18 @@ export function childEnvironment(root) {
     TZ: "UTC",
   };
 }
+// macOS resolves Electron's home from the logged-in user rather than HOME.
+// Apply the task's private home before importing any application startup code.
+export function privateBootLauncher(bootPath) {
+  check(NodePath.isAbsolute(bootPath), "Compiled boot path must be absolute");
+  return [
+    'const { app } = require("electron");',
+    'app.setPath("home", process.env.HOME);',
+    "app.setAppPath(" + JSON.stringify(NodePath.dirname(bootPath)) + ");",
+    "require(" + JSON.stringify(bootPath) + ");",
+    "",
+  ].join("\n");
+}
 async function until(read, accepts, reason, limit = timeout) {
   const deadline = performance.now() + limit;
   while (performance.now() < deadline) {
@@ -350,12 +362,17 @@ export async function runSmoke() {
         "Prerequisite: Electron executable is unavailable; run ensure:electron",
       );
     }
+    const bootPath = NodePath.join(repo, "apps/desktop/dist-electron/boot.cjs");
+    const launcher = NodePath.join(root, "smoke-boot.cjs");
+    const launcherSource = privateBootLauncher(bootPath);
+    await NodeFSP.writeFile(launcher, launcherSource, { flag: "wx", mode: 0o600 });
+    result.isolation.launcherSha256 = sha256(launcherSource);
     app = await _electron.launch({
       executablePath,
       cwd: repo,
       // Electron's own macOS process tests use this to avoid the system cookie-encryption Keychain.
       // https://releases.electronjs.org/pr/53790
-      args: [NodePath.join(repo, "apps/desktop/dist-electron/boot.cjs"), "--use-mock-keychain"],
+      args: [launcher, "--use-mock-keychain"],
       env,
       timeout,
       chromiumSandbox: true,

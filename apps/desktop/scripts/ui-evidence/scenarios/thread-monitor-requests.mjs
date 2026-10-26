@@ -132,8 +132,10 @@ export default async function threadMonitorRequests(ctx) {
       "native action enabled",
     );
   const send = async (text) => {
-    const editor = peer.getByRole("textbox", {
-      name: "Reply to " + title,
+    const currentTitle = (await ctx.readSnapshot()).threads.find((t) => t.id === threadId)?.title;
+    NodeAssert.ok(currentTitle, "Synthetic thread still exists before reply");
+    const editor = peer.locator("form[data-monitor-reply]").getByRole("textbox", {
+      name: "Reply to " + currentTitle,
       exact: true,
     });
     await editor.fill(text);
@@ -502,6 +504,30 @@ export default async function threadMonitorRequests(ctx) {
   } catch (error) {
     primaryError = error;
     evidence.status = "failed";
+    // Only task-owned synthetic text and domain state are retained for discrimination.
+    try {
+      const projection = await snapshot();
+      evidence.failureReadback = {
+        title: projection.thread.title,
+        runs: projection.runs,
+        runtimeRequests: projection.runtimeRequests,
+        providerSessions: projection.providerSessions,
+        peer: peer
+          ? await peer.evaluate(() => ({
+              title: document.querySelector("[data-monitor-detail] h2")?.textContent,
+              editors: [...document.querySelectorAll("form[data-monitor-reply] textarea")].map(
+                (node) => ({
+                  label: node.getAttribute("aria-label"),
+                  visible: node.checkVisibility(),
+                }),
+              ),
+            }))
+          : null,
+      };
+      if (peer) await capture("monitor-request-failure");
+    } catch {
+      // Diagnostic failure must not replace the original scenario failure.
+    }
     throw error;
   } finally {
     ctx.page.off("websocket", observeSocket);

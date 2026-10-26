@@ -27,7 +27,7 @@ const actionTypes = new Set([
   "respondToUserInput",
   "usePlan",
 ]);
-export const isMonitorAction = (value: ThreadMonitorPeerIntent): value is ThreadMonitorAction =>
+const isMonitorAction = (value: ThreadMonitorPeerIntent): value is ThreadMonitorAction =>
   actionTypes.has(value.type);
 
 export interface MonitorBrokerPorts {

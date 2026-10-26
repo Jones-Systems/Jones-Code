@@ -1048,7 +1048,7 @@ fieldset,
   padding: 8px 10px;
   font-size: 0.65625rem;
   box-shadow: 0 4px 16px rgb(0 0 0 / 0.12);
-  pointer-events: auto;
+  pointer-events: none;
 }
 .receipt span {
   flex: 1;
@@ -1056,6 +1056,7 @@ fieldset,
   overflow-wrap: anywhere;
 }
 .receipt button {
+  pointer-events: auto;
   border: 0;
   background: none;
   text-decoration: underline;

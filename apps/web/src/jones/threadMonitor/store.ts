@@ -27,7 +27,7 @@ import type {
 import { clearedMonitorViewState, emptyMonitorViewState } from "./viewState";
 
 export const GROUPS = ["needsYou", "working", "waiting", "done"] as const;
-export const INITIAL_CAPS = { needsYou: 3, working: 2, waiting: 1, done: 1 } as const;
+const INITIAL_CAPS = { needsYou: 3, working: 2, waiting: 1, done: 1 } as const;
 export const emptyCounts = (): ThreadMonitorCounts => ({
   needsYou: 0,
   working: 0,
@@ -40,7 +40,7 @@ export const refOf = (ref: ThreadMonitorRef): ThreadMonitorRef => ({
   environmentEpoch: ref.environmentEpoch,
   threadId: ref.threadId,
 });
-export const draftKey = (draft: Pick<ThreadMonitorDraft, keyof ThreadMonitorRef | "requestId">) =>
+const draftKey = (draft: Pick<ThreadMonitorDraft, keyof ThreadMonitorRef | "requestId">) =>
   monitorDraftKey(draft, draft.requestId);
 export type MonitorSelection = ThreadMonitorRef & { readonly selectionId: string };
 export type MonitorActionIdentity = Pick<

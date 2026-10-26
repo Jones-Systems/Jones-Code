@@ -47,11 +47,11 @@ import { monitorStore, refOf, type MonitorStore } from "./store";
 const quiet = { reportFailure: false, reportDefect: false };
 const activeStatus = (status: string) =>
   ["preparing", "queued", "starting", "running", "waiting"].includes(status);
-export const monitorWorkActive = (thread: OrchestrationV2ThreadShell) =>
+const monitorWorkActive = (thread: OrchestrationV2ThreadShell) =>
   activeStatus(thread.status) ||
   thread.activeRunId !== null ||
   thread.pendingRuntimeRequest !== null;
-export function readMonitorSelectedProjection(ref: {
+function readMonitorSelectedProjection(ref: {
   environmentId: EnvironmentId;
   threadId: ThreadId;
 }): OrchestrationV2ThreadProjection | null {
@@ -65,7 +65,7 @@ export function readMonitorSelectedProjection(ref: {
     ? Option.getOrNull(state.data)
     : null;
 }
-export function monitorSavedContextUnavailableReason(
+function monitorSavedContextUnavailableReason(
   thread: OrchestrationV2ThreadShell,
   environmentId: EnvironmentId,
 ): string | null {

@@ -1,7 +1,8 @@
 import * as NodeAssert from "node:assert/strict";
 import * as NodePath from "node:path";
 import * as NodeTest from "node:test";
-import { childEnvironment } from "./jones-thread-monitor-mac-smoke.mjs";
+import * as NodeVM from "node:vm";
+import { childEnvironment, privateBootLauncher } from "./jones-thread-monitor-mac-smoke.mjs";
 NodeTest.test(
   "native smoke child receives only private storage and an explicit environment allowlist",
   () => {
@@ -59,5 +60,32 @@ NodeTest.test(
     for (const key of ["HOME", "TMPDIR", "T3CODE_HOME", "T3CODE_DESKTOP_USER_DATA_DIR"]) {
       NodeAssert.notEqual(first[key], second[key]);
     }
+  },
+);
+
+NodeTest.test(
+  "private Electron home and application path are set before compiled boot executes",
+  () => {
+    const boot = "/isolated/repo/apps/desktop/dist-electron/boot.cjs";
+    const calls = [];
+    NodeVM.runInNewContext(privateBootLauncher(boot), {
+      process: { env: { HOME: "/isolated/smoke/home" } },
+      require: (id) => {
+        if (id === "electron")
+          return {
+            app: {
+              setPath: (...args) => calls.push(["setPath", ...args]),
+              setAppPath: (...args) => calls.push(["setAppPath", ...args]),
+            },
+          };
+        calls.push(["boot", id]);
+      },
+    });
+    NodeAssert.deepEqual(calls, [
+      ["setPath", "home", "/isolated/smoke/home"],
+      ["setAppPath", "/isolated/repo/apps/desktop/dist-electron"],
+      ["boot", boot],
+    ]);
+    NodeAssert.throws(() => privateBootLauncher("relative/boot.cjs"), /must be absolute/);
   },
 );
