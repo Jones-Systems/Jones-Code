@@ -19,7 +19,6 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as EnvironmentAuth from "../../auth/EnvironmentAuth.ts";
@@ -937,16 +936,14 @@ it.effect(
             Layer.merge(
               Layer.mock(ProjectService.ProjectService)({
                 getById: () =>
-                  Effect.succeed(
-                    Option.some({
-                      title: projectTitle,
-                      workspaceRoot: "/synthetic/project",
-                      defaultModelSelection: null,
-                      defaultThreadEnvMode: "local",
-                      scripts: [],
-                      deletedAt: null,
-                    } as unknown as Project),
-                  ),
+                  Effect.succeedSome({
+                    title: projectTitle,
+                    workspaceRoot: "/synthetic/project",
+                    defaultModelSelection: null,
+                    defaultThreadEnvMode: "local",
+                    scripts: [],
+                    deletedAt: null,
+                  } as unknown as Project),
               }),
               Layer.mock(ProjectionStore.ProjectionStoreV2)({
                 getThreadShell: () =>

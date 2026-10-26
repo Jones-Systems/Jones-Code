@@ -33,7 +33,7 @@ const advisoryLookup = Effect.fnUntraced(function* <A, E, R>(lookup: () => Effec
     Effect.catchCause((cause) =>
       Cause.hasInterrupts(cause)
         ? Effect.failCause(Cause.fromReasons<never>(cause.reasons.filter(Cause.isInterruptReason)))
-        : Effect.succeed(undefined),
+        : Effect.void,
     ),
   );
 });

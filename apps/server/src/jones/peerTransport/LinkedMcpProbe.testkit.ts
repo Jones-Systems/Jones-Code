@@ -46,7 +46,7 @@ export const serveLinkedMcpProbe = <E, R>(
       Layer.provide(intakeLayer),
       Layer.provide(
         Layer.mock(McpSessionRegistry.McpSessionRegistry)({
-          resolve: () => Effect.succeed(undefined),
+          resolve: () => Effect.void,
         }),
       ),
       Layer.provide(

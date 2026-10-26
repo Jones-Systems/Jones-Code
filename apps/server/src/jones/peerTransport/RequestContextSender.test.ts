@@ -10,7 +10,6 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as TestClock from "effect/testing/TestClock";
 
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
@@ -43,7 +42,7 @@ const project: Project = {
   deletedAt: null,
 };
 const projects = Layer.mock(ProjectService.ProjectService)({
-  getById: () => Effect.succeed(Option.some(project)),
+  getById: () => Effect.succeedSome(project),
 });
 const send = (
   caller: OrchestrationV2ThreadShell | undefined = source,
@@ -140,7 +139,7 @@ it.effect.each(["missing", "failed", "defect", "throw"] as const)(
                 )
               : kind === "defect"
                 ? Effect.die("lookup crashed")
-                : Effect.succeed(Option.none());
+                : Effect.succeedNone;
           },
         }),
       ),
@@ -205,8 +204,7 @@ it.effect("drops invalid IDs per part and invalid icons without dropping the pro
     const invalidProject = yield* send().pipe(
       Effect.provide(
         Layer.mock(ProjectService.ProjectService)({
-          getById: () =>
-            Effect.succeed(Option.some({ ...project, id: ProjectId.make("p".repeat(300)) })),
+          getById: () => Effect.succeedSome({ ...project, id: ProjectId.make("p".repeat(300)) }),
         }),
       ),
     );
@@ -216,7 +214,7 @@ it.effect("drops invalid IDs per part and invalid icons without dropping the pro
     Effect.provide(
       Layer.mock(ProjectService.ProjectService)({
         getById: () =>
-          Effect.succeed(Option.some({ ...project, projectIcon: { kind: "emoji", emoji: "" } })),
+          Effect.succeedSome({ ...project, projectIcon: { kind: "emoji", emoji: "" } }),
       }),
     ),
   ),
@@ -239,8 +237,7 @@ it.effect.each([null, undefined])("keeps untitled parts and omits a %s icon", (i
   }).pipe(
     Effect.provide(
       Layer.mock(ProjectService.ProjectService)({
-        getById: () =>
-          Effect.succeed(Option.some({ ...project, title: "\u202e\n", projectIcon: icon })),
+        getById: () => Effect.succeedSome({ ...project, title: "\u202e\n", projectIcon: icon }),
       }),
     ),
   ),

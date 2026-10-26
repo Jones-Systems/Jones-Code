@@ -495,8 +495,7 @@ it.effect(
           Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
           Layer.provide(
             Layer.mock(ProjectService.ProjectService)({
-              getById: (id) =>
-                Effect.succeed(Option.some({ id, title: "Source project" } as never)),
+              getById: (id) => Effect.succeedSome({ id, title: "Source project" } as never),
             }),
           ),
           Layer.provide(
