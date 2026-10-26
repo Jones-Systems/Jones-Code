@@ -1889,7 +1889,8 @@
         "apps/server/src/jones/mcp/workstreams/handlers.test.ts",
         "apps/server/src/jones/workstreams/operations/cli.test.ts",
         "apps/server/src/jones/mcp/workstreams/registration.test.ts",
-        "apps/server/src/mcp/toolkits/worktree/registration.test.ts"
+        "apps/server/src/mcp/toolkits/worktree/registration.test.ts",
+        "apps/server/src/jones/mcp/workstreams/nativeReads.test.ts"
       ],
       "scope": "Local-environment MCP and executable CLI workstream list, create, assign, unassign and status use the application-owned operation service or its authenticated typed HTTP boundary. Production MCP registration consumes that service as a required dependency, sharing its retained results with HTTP. Requests obtain the signed registry UUID from setup status, not the legacy gateway origin. Tests cover production MCP registration, parsed CLI commands against real loopback HTTP handlers, operation replay, conflicts, owning-environment checks, and all CONFIG/open retry advice. Synthetic CP and authentication seams do not qualify installed sessions or live Control Plane state."
     },

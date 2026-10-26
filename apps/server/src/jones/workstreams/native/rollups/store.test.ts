@@ -346,9 +346,9 @@ it.effect("bounds noncooperative authorization without waiting for its eventual 
 it.effect(
   "persists retry accounting across reopen and rolls back failed claims and publication",
   () => {
-    const root = NodeFS.mkdtempSync(
-        NodePath.resolve(process.env.TMPDIR ?? "node_modules/.cache", "nw-rollup-p1-restart-"),
-      ),
+    const parent = NodePath.resolve(process.env.TMPDIR ?? "node_modules/.cache");
+    NodeFS.mkdirSync(parent, { recursive: true });
+    const root = NodeFS.mkdtempSync(NodePath.join(parent, "nw-rollup-p1-restart-")),
       filename = NodePath.join(root, "state.sqlite");
     return Effect.gen(function* () {
       const claim = yield* Effect.gen(function* () {

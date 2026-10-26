@@ -1,3 +1,5 @@
+import * as NativeReadMcp from "../jones/mcp/workstreams/nativeReads.ts";
+import * as NativeReadProtocol from "../jones/workstreams/native/forwarding/homeReadProtocol.ts";
 import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
 import { WorkstreamToolkit } from "../jones/mcp/workstreams/tools.ts";
 import {
@@ -1186,7 +1188,19 @@ export const layerWorkstreamToolkit = toolkitRegistration(
   workstreamHandlers,
 ).pipe(Layer.provide(workstreamBackendLayer));
 
+export const layerNativeHomeReadToolkit = // Register only when selected native composition supplies qualified peer admission and reads.
+  Layer.unwrap(
+    Effect.map(Effect.serviceOption(NativeReadProtocol.HomeReadProtocol), (protocol) =>
+      Option.isNone(protocol)
+        ? Layer.empty
+        : toolkitRegistration(NativeReadMcp.toolkit, NativeReadMcp.handlers).pipe(
+            Layer.provide(Layer.succeed(NativeReadProtocol.HomeReadProtocol, protocol.value)),
+          ),
+    ),
+  );
+
 export const layer = Layer.mergeAll(
+  layerNativeHomeReadToolkit,
   layerWorkstreamToolkit,
   toolkitRegistration(UserResponseRequestToolkit, userResponseRequestHandlers).pipe(
     Layer.provide(UserResponseRequest.layer),
