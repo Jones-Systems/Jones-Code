@@ -87,7 +87,7 @@ function currentManager() {
   return state.managers.at(-1)!;
 }
 
-async function mount(retire = vi.fn()) {
+async function mount(retire: HookInput["retire"] = vi.fn()) {
   input = {
     environmentId: EnvironmentId.make("environment-a"),
     hostId: "host-a",

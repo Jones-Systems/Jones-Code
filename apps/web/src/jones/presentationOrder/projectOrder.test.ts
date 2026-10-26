@@ -1,4 +1,9 @@
-import { EnvironmentId, ProjectId, type SidebarProjectGroupingMode } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ProjectId,
+  SourceControlProviderKind,
+  type SidebarProjectGroupingMode,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import {
   buildSidebarProjectSnapshots,
@@ -21,7 +26,7 @@ function project(id: string, environment = "local", overrides: Partial<Project> 
         remoteName: "origin",
         remoteUrl: `https://github.com/example/${id}.git`,
       },
-      provider: "github",
+      provider: SourceControlProviderKind.make("github"),
       owner: "example",
       name: id,
       displayName: id,
