@@ -3447,10 +3447,11 @@
         "apps/server/src/orchestration-v2/ThreadStream.test.ts",
         "apps/server/src/orchestration-v2/ThreadFind.test.ts",
         "apps/server/integration/transferBudgetV2.integration.test.ts",
-        "packages/client-runtime/src/platform/orchestrationCache.test.ts"
+        "packages/client-runtime/src/platform/orchestrationCache.test.ts",
+        "packages/client-runtime/src/state/threads-sync.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/orchestration/historyPaging.test.ts apps/server/src/orchestration-v2/threadHistoryPaging.test.ts apps/server/src/orchestration-v2/ProjectionStore.test.ts apps/server/src/orchestration-v2/ThreadStream.test.ts apps/server/src/orchestration-v2/ThreadFind.test.ts apps/server/integration/transferBudgetV2.integration.test.ts packages/client-runtime/src/platform/orchestrationCache.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/jones/orchestration/historyPaging.test.ts apps/server/src/orchestration-v2/threadHistoryPaging.test.ts apps/server/src/orchestration-v2/ProjectionStore.test.ts apps/server/src/orchestration-v2/ThreadStream.test.ts apps/server/src/orchestration-v2/ThreadFind.test.ts apps/server/integration/transferBudgetV2.integration.test.ts packages/client-runtime/src/platform/orchestrationCache.test.ts packages/client-runtime/src/state/threads-sync.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter t3 typecheck",
         "vp run --filter @t3tools/client-runtime typecheck",
         "node scripts/jones/check-boundary.ts --strict"
