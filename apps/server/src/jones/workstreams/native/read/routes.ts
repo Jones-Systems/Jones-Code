@@ -5,6 +5,12 @@ import {
   WorkstreamsNativeHomeRead,
   type WorkstreamsNativeReadEnvelope,
 } from "@t3tools/contracts/jones/workstreamsNativeRead";
+import {
+  WORKSTREAMS_HOME_READ_RESULT_CONTRACT,
+  WorkstreamsHomeReadResult,
+  WorkstreamsHomeReadResultRequest,
+} from "@t3tools/contracts/jones/workstreamsHomeReadResult";
+import { canonicalJson } from "../domain/validation.ts";
 import { WorkstreamsRollupSummary } from "@t3tools/contracts/jones/workstreamsRollups";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -22,7 +28,10 @@ import { RegistryError } from "../registry/session.ts";
 import * as Session from "../registry/session.ts";
 import { RegistryCursorCodec } from "../domain/cursor.ts";
 
+export type PlacementContract = NonNullable<WorkstreamsHomeReadResultRequest["placement_contract"]>;
+
 export interface ReadResult {
+  readonly placement_contract?: PlacementContract;
   readonly route: WorkstreamsNativeHomeRead["route"];
   readonly envelope: WorkstreamsNativeReadEnvelope;
   readonly value: unknown;
@@ -45,12 +54,12 @@ export class HomeReads extends Context.Service<
     readonly read: (
       caller: AdmittedCaller,
       request: WorkstreamsNativeHomeRead,
+      placementContract?: PlacementContract,
     ) => Effect.Effect<ReadResult, RegistryError>;
   }
 >()("t3/jones/workstreams/native/read/routes/HomeReads") {}
 
 const isTransportError = Schema.is(WorkstreamTransportError);
-const decodeContext = Schema.decodeUnknownEffect(Wire.WorkstreamReadContext);
 const decodeRequest = Schema.decodeUnknownEffect(WorkstreamsNativeHomeRead);
 const contract = {
   contractVersion: Wire.WORKSTREAM_CONTRACT_HEADER_VERSION,
@@ -67,17 +76,27 @@ export const layer = Layer.effect(
     const summary = yield* Effect.serviceOption(RollupSummaryRead);
     const codec = new RegistryCursorCodec(NodeCrypto.randomBytes(32));
     return HomeReads.of({
-      read: Effect.fn("NativeRead.route")((caller, request) =>
+      read: Effect.fn("NativeRead.route")((caller, request, placementContract) =>
         db
           .transaction(
             home,
             Effect.gen(function* () {
-              yield* decodeRequest(request).pipe(
+              yield* decodeRequest(request, { onExcessProperty: "error" }).pipe(
                 Effect.mapError(() => new RegistryError({ code: "invalid_request" })),
               );
+              if (
+                placementContract !== undefined &&
+                (request.route !== "placements" ||
+                  (placementContract !== "workstreams-t3-placement/1.0.0" &&
+                    placementContract !== "workstreams-t3-placement/2.0.0"))
+              )
+                return yield* new RegistryError({ code: "invalid_request" });
               if (request.route === "read-projection") {
                 const snapshot = yield* projection.capture(caller);
                 const { envelope, ...value } = yield* projection.page(caller, request.params);
+                if (canonicalJson(envelope.registry) !== canonicalJson(snapshot.envelope.registry))
+                  return yield* new RegistryError({ code: "invalid_response" });
+                yield* projection.assertCurrent(caller, snapshot);
                 return {
                   route: request.route,
                   envelope,
@@ -208,13 +227,28 @@ export const layer = Layer.effect(
                   });
                   break;
                 case "placements":
-                  value = yield* transport.listThreadPlacements!({
-                    ...request.params,
-                    limit: request.params.limit ?? 50,
-                  });
+                  value = yield* adapter.placementPage(
+                    {
+                      ...request.params,
+                      limit: request.params.limit ?? 50,
+                    },
+                    placementContract,
+                  );
                   break;
               }
-              return { route: request.route, envelope, value, authorization_revision };
+              yield* projection.assertCurrent(caller, snapshot);
+              return {
+                route: request.route,
+                envelope,
+                value,
+                authorization_revision,
+                ...(request.route === "placements"
+                  ? {
+                      placement_contract:
+                        placementContract ?? ("workstreams-t3-placement/1.0.0" as const),
+                    }
+                  : {}),
+              };
             }),
           )
           .pipe(
@@ -268,69 +302,114 @@ export const responseHeaders = {
   "x-content-type-options": "nosniff",
 } as const;
 
-const projectionValue = Schema.Struct({
-  items: Schema.Array(
-    Schema.Struct({
-      workstream: Wire.Workstream,
-      active_memberships: Schema.Struct({
-        primary: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-        secondary: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-      }),
-      appearance: Wire.WorkstreamAppearance,
-      lifecycle: Schema.NullOr(Wire.WorkstreamLifecycleDeclaration),
-    }),
-  ).check(Schema.isMaxLength(100)),
-  next_cursor: Schema.NullOr(Schema.String),
-});
-const lifecycleValue = Schema.Struct({
-  context: Wire.WorkstreamReadContext,
-  items: Schema.Array(Wire.WorkstreamLifecycleDeclaration).check(Schema.isMaxLength(100)),
-  next_cursor: Schema.NullOr(Schema.String),
-});
+const decodeResult = Schema.decodeUnknownEffect(WorkstreamsHomeReadResult);
 
-const readDecoders = {
-  counts: Schema.decodeUnknownEffect(Wire.WorkstreamRegistryCounts),
-  workstreams: Schema.decodeUnknownEffect(Wire.WorkstreamPage),
-  references: Schema.decodeUnknownEffect(Wire.WorkstreamReferencePage),
-  workstream: Schema.decodeUnknownEffect(Wire.WorkstreamDetail),
-  reference: Schema.decodeUnknownEffect(Wire.WorkstreamReferenceDetail),
-  memberships: Schema.decodeUnknownEffect(Wire.WorkstreamMembershipPage),
-  declarations: Schema.decodeUnknownEffect(Wire.WorkstreamDeclarationPage),
-  edges: Schema.decodeUnknownEffect(Wire.WorkstreamEdgePage),
-  history: Schema.decodeUnknownEffect(Wire.WorkstreamHistoryPage),
-  placements: Schema.decodeUnknownEffect(Wire.T3PlacementPage),
-  appearance: Schema.decodeUnknownEffect(Wire.WorkstreamAppearanceResult),
-  "lifecycle-declarations": Schema.decodeUnknownEffect(lifecycleValue),
-  "read-projection": Schema.decodeUnknownEffect(projectionValue),
-  "rollup-summary": Schema.decodeUnknownEffect(WorkstreamsRollupSummary),
-};
-
-/** Validate forwarded payloads as well as their envelope; provenance cannot bless a different v1 context. */
+/** Decode the route-specific value with its selected contract before checking coherence. */
 export const validateReadResult = Effect.fn("NativeRead.validateForwarded")(
-  function* (request: WorkstreamsNativeHomeRead, result: ReadResult) {
-    if (!Number.isSafeInteger(result.authorization_revision) || result.authorization_revision < 1)
+  function* (
+    request: WorkstreamsNativeHomeRead,
+    result: ReadResult,
+    placementContract?: PlacementContract,
+  ) {
+    const selected = placementContract ?? "workstreams-t3-placement/1.0.0";
+    if (placementContract !== undefined && request.route !== "placements")
       return yield* new RegistryError({ code: "invalid_response" });
-    const value: unknown = yield* readDecoders[request.route](result.value, {
-      onExcessProperty: "error",
-    });
+    const decoded = yield* decodeResult(
+      {
+        contract: WORKSTREAMS_HOME_READ_RESULT_CONTRACT,
+        ...result,
+        ...(result.route === "placements"
+          ? { placement_contract: result.placement_contract ?? selected }
+          : {}),
+      },
+      { onExcessProperty: "error" },
+    );
+    if (
+      decoded.route !== request.route ||
+      (decoded.route === "placements" && decoded.placement_contract !== selected)
+    )
+      return yield* new RegistryError({ code: "invalid_response" });
+    const value = decoded.value;
     if (typeof value === "object" && value !== null && "context" in value) {
-      const context = yield* decodeContext(value.context);
+      const context = value.context;
       if (
-        context.owner_id !== result.envelope.registry.owner_id ||
-        context.server_generation !== result.envelope.registry.server_generation ||
-        context.registry_version !== result.envelope.registry.registry_version
+        context.owner_id !== decoded.envelope.registry.owner_id ||
+        context.server_generation !== decoded.envelope.registry.server_generation ||
+        context.registry_version !== decoded.envelope.registry.registry_version
       )
         return yield* new RegistryError({ code: "invalid_response" });
     }
     if (
-      request.route === "counts" &&
-      typeof value === "object" &&
-      value !== null &&
-      "observed_at" in value &&
-      value.observed_at !== result.envelope.provenance.observed_at
+      decoded.route === "counts" &&
+      decoded.value.observed_at !== decoded.envelope.provenance.observed_at
     )
       return yield* new RegistryError({ code: "invalid_response" });
-    return { ...result, value };
+    if (
+      decoded.route === "workstream" &&
+      request.route === "workstream" &&
+      decoded.value.workstream.workstream_id !== request.params.workstream_id
+    )
+      return yield* new RegistryError({ code: "invalid_response" });
+    if (
+      decoded.route === "reference" &&
+      request.route === "reference" &&
+      decoded.value.reference.native_reference_id !== request.params.native_reference_id
+    )
+      return yield* new RegistryError({ code: "invalid_response" });
+    if (
+      decoded.route === "rollup-summary" &&
+      request.route === "rollup-summary" &&
+      decoded.value.workstream_id !== request.params.workstream_id
+    )
+      return yield* new RegistryError({ code: "invalid_response" });
+    if (
+      (decoded.route === "memberships" ||
+        decoded.route === "declarations" ||
+        decoded.route === "lifecycle-declarations") &&
+      (request.route === "memberships" ||
+        request.route === "declarations" ||
+        request.route === "lifecycle-declarations") &&
+      decoded.value.items.some((item) => item.workstream_id !== request.params.workstream_id)
+    )
+      return yield* new RegistryError({ code: "invalid_response" });
+    if (
+      decoded.route === "edges" &&
+      request.route === "edges" &&
+      decoded.value.items.some(
+        (item) =>
+          item.from_workstream_id !== request.params.workstream_id &&
+          item.to_workstream_id !== request.params.workstream_id,
+      )
+    )
+      return yield* new RegistryError({ code: "invalid_response" });
+    if (decoded.route === "placements" && request.route === "placements") {
+      const page = decoded.value;
+      if (
+        page.context.authorization_revision !== decoded.authorization_revision ||
+        page.inventory_sha256 !==
+          NodeCrypto.createHash("sha256")
+            .update(Wire.t3PlacementInventoryJson(request.params.identities))
+            .digest("hex")
+      )
+        return yield* new RegistryError({ code: "invalid_response" });
+      const identities = new Set(request.params.identities.map(Wire.t3PlacementIdentityKey));
+      if (page.items.some((item) => !identities.has(Wire.t3PlacementIdentityKey(item))))
+        return yield* new RegistryError({ code: "invalid_response" });
+      if (decoded.placement_contract === "workstreams-t3-placement/2.0.0") {
+        const provenance = decoded.value.provenance;
+        if (
+          provenance.registry_instance_id !== decoded.envelope.registry.registry_instance_id ||
+          provenance.home_environment_id !== decoded.envelope.provenance.home_environment_id ||
+          provenance.home_generation !== decoded.envelope.registry.server_generation ||
+          provenance.served_by_environment_id !==
+            decoded.envelope.provenance.served_by_environment_id
+        )
+          return yield* new RegistryError({ code: "invalid_response" });
+      }
+    }
+    const { contract: _contract, ...validated } = decoded;
+    return validated;
   },
-  (effect) => effect.pipe(Effect.mapError(() => new RegistryError({ code: "invalid_response" }))),
+  (effect) =>
+    effect.pipe(Effect.mapError((cause) => new RegistryError({ code: "invalid_response", cause }))),
 );

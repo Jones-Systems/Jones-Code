@@ -11,7 +11,7 @@ import * as Schema from "effect/Schema";
 import { RegistryError } from "../registry/session.ts";
 import { readFailure } from "./projection.ts";
 import { canonicalJson } from "../domain/validation.ts";
-import { validateReadResult, type ReadResult } from "./routes.ts";
+import { validateReadResult, type PlacementContract, type ReadResult } from "./routes.ts";
 
 /** J3 owns real admission, pinned destination lookup and the single-hop transport. */
 export class MemberReadAdmission extends Context.Service<
@@ -34,13 +34,17 @@ export class HomeReadPort extends Context.Service<
     readonly read: (
       home: WorkstreamsNativeHomeTarget,
       request: WorkstreamsNativeHomeRead,
+      placementContract?: PlacementContract,
     ) => Effect.Effect<ReadResult, RegistryError>;
   }
 >()("t3/jones/workstreams/native/read/memberRead/HomeReadPort") {}
 export class MemberReads extends Context.Service<
   MemberReads,
   {
-    readonly read: (request: WorkstreamsNativeHomeRead) => Effect.Effect<ReadResult, RegistryError>;
+    readonly read: (
+      request: WorkstreamsNativeHomeRead,
+      placementContract?: PlacementContract,
+    ) => Effect.Effect<ReadResult, RegistryError>;
   }
 >()("t3/jones/workstreams/native/read/memberRead/MemberReads") {}
 
@@ -53,15 +57,28 @@ export const layer = Layer.effect(
     const admission = yield* Effect.serviceOption(MemberReadAdmission);
     const port = yield* Effect.serviceOption(HomeReadPort);
     return MemberReads.of({
-      read: Effect.fn("NativeRead.member")(function* (input) {
-        const request = yield* decodeRequest(input).pipe(Effect.mapError(readFailure));
+      read: Effect.fn("NativeRead.member")(function* (input, placementContract) {
+        const request = yield* decodeRequest(input, { onExcessProperty: "error" }).pipe(
+          Effect.mapError((cause) => new RegistryError({ code: "invalid_request", cause })),
+        );
+        if (
+          placementContract !== undefined &&
+          (request.route !== "placements" ||
+            (placementContract !== "workstreams-t3-placement/1.0.0" &&
+              placementContract !== "workstreams-t3-placement/2.0.0"))
+        )
+          return yield* new RegistryError({ code: "invalid_request" });
         if (Option.isNone(admission) || Option.isNone(port))
           return yield* new RegistryError({ code: "unavailable" });
         const captured = yield* admission.value.current();
-        const target = yield* decodeHome(captured.expected_home).pipe(Effect.mapError(readFailure));
+        const target = yield* decodeHome(captured.expected_home, {
+          onExcessProperty: "error",
+        }).pipe(Effect.mapError(readFailure));
         yield* captured.check();
-        const result = yield* port.value.read(target, request);
-        const envelope = yield* decodeEnvelope(result.envelope).pipe(Effect.mapError(readFailure));
+        const result = yield* port.value.read(target, request, placementContract);
+        const envelope = yield* decodeEnvelope(result.envelope, { onExcessProperty: "error" }).pipe(
+          Effect.mapError((cause) => new RegistryError({ code: "invalid_response", cause })),
+        );
         const current = yield* admission.value.current();
         yield* current.check();
         yield* captured.check();
@@ -75,7 +92,9 @@ export const layer = Layer.effect(
           canonicalJson(current.expected_home) !== canonicalJson(target) ||
           envelope.registry.registry_instance_id !== target.registry_instance_id ||
           envelope.registry.owner_id !== target.owner_id ||
-          envelope.provenance.home_environment_id !== target.home_environment_id
+          envelope.provenance.home_environment_id !== target.home_environment_id ||
+          (envelope.provenance.source === "live" &&
+            envelope.provenance.served_by_environment_id !== target.home_environment_id)
         )
           return yield* new RegistryError({ code: "registry_mismatch" });
         if (envelope.registry.server_generation !== target.server_generation)
@@ -91,7 +110,16 @@ export const layer = Layer.effect(
             envelope.coverage.registry !== "complete")
         )
           return yield* new RegistryError({ code: "unavailable" });
-        const validated = yield* validateReadResult(request, { ...result, envelope });
+        const validated = yield* validateReadResult(
+          request,
+          { ...result, envelope },
+          placementContract,
+        );
+        if (
+          validated.route === "placements" &&
+          validated.value.context.principal_id !== current.principal_id
+        )
+          return yield* new RegistryError({ code: "forbidden" });
         if (
           typeof validated.value === "object" &&
           validated.value !== null &&

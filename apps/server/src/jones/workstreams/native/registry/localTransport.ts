@@ -1,7 +1,10 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Process-local cursor key; no persisted content cache.
 import * as NodeCrypto from "node:crypto";
 import * as Wire from "@t3tools/contracts";
-import type { WorkstreamsNativePlacementResult } from "@t3tools/contracts/jones/workstreamsNativePlacement";
+import {
+  WorkstreamsNativePlacementPage,
+  type WorkstreamsNativePlacementResult,
+} from "@t3tools/contracts/jones/workstreamsNativePlacement";
 import type {
   WorkstreamsLegacyReceiptLookupRequest,
   WorkstreamsLegacyReceiptLookupResult,
@@ -31,6 +34,10 @@ import { WorkstreamDomainError } from "../domain/errors.ts";
 import { canonicalJson } from "../domain/validation.ts";
 
 export interface NativeAdapter {
+  readonly placementPage: (
+    input: Wire.T3PlacementRequest,
+    contract?: "workstreams-t3-placement/1.0.0" | "workstreams-t3-placement/2.0.0",
+  ) => Effect.Effect<WorkstreamsNativePlacementPage | Wire.T3PlacementPage, RegistryError>;
   readonly transport: Gateway.WorkstreamTransport;
   readonly gateway: Gateway.WorkstreamGateway["Service"];
   readonly homeTransport: HomeExecutor.HomeTransport["Service"];
@@ -57,6 +64,8 @@ const decodeCommandJsonSync = Schema.decodeUnknownSync(
   Schema.fromJsonString(Wire.WorkstreamCommand),
 );
 const decodeAuditEvent = Schema.decodeUnknownEffect(Wire.WorkstreamAuditEvent);
+const decodeNativePlacementPage = Schema.decodeUnknownEffect(WorkstreamsNativePlacementPage);
+const decodePlacementPage = Schema.decodeUnknownEffect(Wire.T3PlacementPage);
 const decodeCommandJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Wire.WorkstreamCommand));
 export const layer = Layer.effect(
   LocalTransport,
@@ -507,6 +516,31 @@ export const layer = Layer.effect(
           },
         };
       });
+      const placementPage = Effect.fn("NativeTransport.placementPage")(function* (
+        input: Wire.T3PlacementRequest,
+        contract:
+          | "workstreams-t3-placement/1.0.0"
+          | "workstreams-t3-placement/2.0.0" = "workstreams-t3-placement/1.0.0",
+      ) {
+        if (
+          contract !== "workstreams-t3-placement/1.0.0" &&
+          contract !== "workstreams-t3-placement/2.0.0"
+        )
+          return yield* new RegistryError({ code: "contract_mismatch" });
+        const page = yield* placements.page(caller, input);
+        if (contract === "workstreams-t3-placement/2.0.0")
+          return yield* decodeNativePlacementPage(page, {
+            onExcessProperty: "error",
+          }).pipe(
+            Effect.mapError((cause) => new RegistryError({ code: "invalid_response", cause })),
+          );
+        // A nonempty native proof has no honest frozen-v1 representation.
+        if (page.items.length !== 0) return yield* new RegistryError({ code: "contract_mismatch" });
+        const { provenance: _provenance, ...empty } = page;
+        return yield* decodePlacementPage(empty, {
+          onExcessProperty: "error",
+        }).pipe(Effect.mapError((cause) => new RegistryError({ code: "invalid_response", cause })));
+      });
       const lookupLegacyReceipt = Effect.fn("NativeTransport.lookupLegacyReceipt")(
         (request: WorkstreamsLegacyReceiptLookupRequest) => registry.lookupLegacy(caller, request),
       );
@@ -516,6 +550,7 @@ export const layer = Layer.effect(
         homeTransport,
         guardExecutor,
         placementResponse,
+        placementPage,
         lookupLegacyReceipt,
       };
     });

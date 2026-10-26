@@ -12,6 +12,10 @@ import * as Registry from "../registry/service.ts";
 import * as Session from "../registry/session.ts";
 import * as Store from "../store/registryStore.ts";
 import * as Projection from "./projection.ts";
+import * as Protocol from "../forwarding/homeReadProtocol.ts";
+import { WORKSTREAMS_HOME_READ_RESULT_CONTRACT as resultContract } from "@t3tools/contracts/jones/workstreamsHomeReadResult";
+import { WorkstreamsNativePlacementPage } from "@t3tools/contracts/jones/workstreamsNativePlacement";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Appearance from "../registry/appearance.ts";
 import * as Admission from "../runtime/admission.ts";
 import { NativeHome, type AdmittedCaller } from "../mode/authorityMode.ts";
@@ -156,6 +160,7 @@ import * as Counts from "../registry/counts.ts";
 import * as Placements from "../registry/placements.ts";
 import * as Runner from "../registry/effectRunner.ts";
 import * as Schema from "effect/Schema";
+const decodeNativePlacementPage = Schema.decodeUnknownEffect(WorkstreamsNativePlacementPage);
 const decodeWorkstreamPage = Schema.decodeUnknownEffect(Wire.WorkstreamPage);
 const decodeReferencePage = Schema.decodeUnknownEffect(Wire.WorkstreamReferencePage);
 const decodeHistoryPage = Schema.decodeUnknownEffect(Wire.WorkstreamHistoryPage);
@@ -236,19 +241,33 @@ it.effect(
         expect(
           (yield* read({ route: "edges", params: { workstream_id: id } })).value,
         ).toMatchObject({ items: [], next_cursor: null });
-        expect(
-          (yield* read({
-            route: "placements",
-            params: {
-              identities: [
-                { source_instance_id: home.home_environment_id, native_thread_id: "thread:test" },
-              ],
-            },
-          })).value,
-        ).toMatchObject({
-          items: [{ workstream_id: id, native_thread_id: "thread:test" }],
+        const placementRequest = {
+          route: "placements" as const,
+          params: {
+            identities: [
+              { source_instance_id: home.home_environment_id, native_thread_id: "thread:test" },
+            ],
+          },
+        };
+        expect(yield* read(placementRequest).pipe(Effect.flip)).toMatchObject({
+          code: "contract_mismatch",
+        });
+        const placements = yield* (yield* Routes.HomeReads).read(
+          caller,
+          placementRequest,
+          "workstreams-t3-placement/2.0.0",
+        );
+        expect(placements.value).toMatchObject({
+          items: [
+            { workstream_id: id, native_thread_id: "thread:test", attestation_source: "native" },
+          ],
           next_cursor: null,
         });
+        // The pre-existing bare-page adapter remains an independently consumed legacy API.
+        const legacy = yield* (yield* Local.LocalTransport).forCaller(caller);
+        expect(
+          yield* legacy.transport.listThreadPlacements!({ ...placementRequest.params, limit: 50 }),
+        ).toMatchObject({ items: [{ workstream_id: id, native_thread_id: "thread:test" }] });
         const counts = yield* read({ route: "counts", params: {} });
         expect(counts.value).toMatchObject({
           active: 1,
@@ -438,5 +457,201 @@ it.effect(
           .pipe(Effect.flip),
       ).toMatchObject({ code: "cursor_stale" });
       expect(calls).toBe(2);
+    }).pipe(Effect.provide(services)),
+);
+
+it.effect(
+  "produces negotiated results from real encrypted native HomeReads, with a synthetic peer admission boundary",
+  () =>
+    Effect.gen(function* () {
+      yield* initialize;
+      const h = yield* commands;
+      const id = yield* h.create("Synthetic encrypted protocol name");
+      yield* nativeReference(h, id);
+      expect(
+        yield* (yield* Routes.HomeReads)
+          .read(
+            { ...caller, source_environment_id: "member:test" },
+            { route: "counts", params: {} },
+          )
+          .pipe(Effect.flip),
+      ).toMatchObject({ code: "forbidden" });
+      const session = yield* Session.Session;
+      const admission = Protocol.HomePeerReadAdmission.of({
+        current: Effect.fn("ReadProtocolTest.syntheticAdmission")(function* () {
+          const captured = yield* session.authorize(caller, "workstreams:read");
+          return {
+            caller,
+            authorization_revision: captured.authorization.grant.grant_version,
+            checkCurrent: Effect.fn("ReadProtocolTest.syntheticCurrent")(function* () {
+              const current = yield* session.authorize(caller, "workstreams:read");
+              if (
+                current.authorization.grant.grant_version !==
+                captured.authorization.grant.grant_version
+              )
+                return yield* new Session.RegistryError({ code: "forbidden" });
+            }),
+          };
+        }),
+      });
+      const protocol = yield* Protocol.HomeReadProtocol.pipe(
+        Effect.provide(
+          Protocol.layer.pipe(
+            Layer.provide(Layer.succeed(Protocol.HomePeerReadAdmission, admission)),
+          ),
+        ),
+      );
+      const counts = yield* protocol.read({
+        contract: resultContract,
+        request: { route: "counts", params: {} },
+      });
+      expect(counts).toMatchObject({
+        route: "counts",
+        value: { total: 1 },
+        authorization_revision: 1,
+        envelope: {
+          coverage: { registry: "complete" },
+          registry: { registry_version: counts.envelope.registry.registry_version },
+        },
+      });
+      const lifecycle = yield* protocol.read({
+        contract: resultContract,
+        request: { route: "lifecycle-declarations", params: { workstream_id: id } },
+      });
+      expect(lifecycle).toMatchObject({
+        value: {
+          context: { registry_version: lifecycle.envelope.registry.registry_version },
+          items: [{ workstream_id: id, new_lifecycle: "active" }],
+          next_cursor: null,
+        },
+      });
+      const projection = yield* protocol.read({
+        contract: resultContract,
+        request: { route: "read-projection", params: {} },
+      });
+      expect(projection).toMatchObject({
+        value: {
+          items: [
+            { workstream: { workstream_id: id }, active_memberships: { primary: 1, secondary: 0 } },
+          ],
+          next_cursor: null,
+        },
+      });
+      expect(projection.value).not.toHaveProperty("context");
+      const request = {
+        route: "placements" as const,
+        params: {
+          identities: [
+            { source_instance_id: home.home_environment_id, native_thread_id: "thread:test" },
+          ],
+        },
+      };
+      expect(
+        yield* protocol.read({ contract: resultContract, request }).pipe(Effect.flip),
+      ).toMatchObject({ code: "contract_mismatch" });
+      const native = yield* protocol.read({
+        contract: resultContract,
+        request,
+        placement_contract: "workstreams-t3-placement/2.0.0",
+      });
+      expect(native).toMatchObject({
+        placement_contract: "workstreams-t3-placement/2.0.0",
+        value: {
+          provenance: { registry_instance_id: home.registry_instance_id },
+          items: [
+            {
+              attestation_source: "native",
+              evidence_contract: "workstreams-t3-provider/2.0.0",
+              workstream_id: id,
+            },
+          ],
+        },
+      });
+      expect(
+        yield* decodeNativePlacementPage(native.value, {
+          onExcessProperty: "error",
+        }),
+      ).toEqual(native.value);
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql.unsafe("SELECT * FROM jones_workstreams_records");
+      expect(JSON.stringify(rows)).not.toContain("Synthetic encrypted protocol name");
+      expect(JSON.stringify(rows)).toContain("A256GCM");
+    }).pipe(Effect.provide(services)),
+);
+
+it.effect.each(["changed", "revoked"] as const)(
+  "refuses a grant %s during actual encrypted HomeReads before returning a protocol result",
+  (drift) =>
+    Effect.gen(function* () {
+      yield* initialize;
+      const h = yield* commands;
+      const id = yield* h.create();
+      const store = yield* Store.RegistryStore;
+      const reads = yield* Routes.HomeReads.pipe(
+        Effect.provide(
+          Layer.fresh(Routes.layer).pipe(
+            Layer.provide(
+              Layer.succeed(Routes.RollupSummaryRead, {
+                read: () =>
+                  store
+                    .appendPlain(Fixture.scope, "grants", {
+                      principal_id: caller.principal_id,
+                      grant_id: "grant:principal:test",
+                      grant_version: 2,
+                      permissions: '["workstreams:read"]',
+                      state: drift === "revoked" ? "revoked" : "active",
+                    })
+                    .pipe(
+                      Effect.mapError(Projection.readFailure),
+                      Effect.as({
+                        workstream_id: id,
+                        rollup_version: 1,
+                        manifest_sha256: Fixture.hash,
+                        generated_at: Fixture.now,
+                        output_sha256: Fixture.hash,
+                        result: {
+                          outcome: {
+                            text: "Synthetic",
+                            sources: [{ source_set_id: "set:test", member_ordinal: 0 }],
+                          },
+                          semantic_status: "active" as const,
+                          blockers: [],
+                          decisions: [],
+                          next_steps: [],
+                          follow_up_candidates: [],
+                          confidence: 1,
+                        },
+                      }),
+                    ),
+              }),
+            ),
+          ),
+        ),
+      );
+      const protocol = yield* Protocol.HomeReadProtocol.pipe(
+        Effect.provide(
+          Protocol.layer.pipe(
+            Layer.provide(Layer.succeed(Routes.HomeReads, reads)),
+            Layer.provide(
+              Layer.succeed(Protocol.HomePeerReadAdmission, {
+                current: () =>
+                  Effect.succeed({
+                    caller,
+                    authorization_revision: 1,
+                    checkCurrent: () => Effect.void,
+                  }),
+              }),
+            ),
+          ),
+        ),
+      );
+      expect(
+        yield* protocol
+          .read({
+            contract: resultContract,
+            request: { route: "rollup-summary", params: { workstream_id: id } },
+          })
+          .pipe(Effect.flip),
+      ).toMatchObject({ code: drift === "revoked" ? "forbidden" : "cursor_stale" });
     }).pipe(Effect.provide(services)),
 );

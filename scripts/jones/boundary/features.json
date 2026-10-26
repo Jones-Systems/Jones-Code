@@ -2320,7 +2320,9 @@
         "apps/server/src/jones/workstreams/native/read/export.test.ts",
         "apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts",
         "apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts",
-        "apps/server/src/voiceReview/nativePlacements.test.ts"
+        "apps/server/src/voiceReview/nativePlacements.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/homeReadProtocol.test.ts",
+        "apps/server/src/jones/workstreams/native/registry/localTransport.test.ts"
       ],
       "scope": "Complete single-home encrypted read projection, v1 adapters, typed member/rollup ports, coherent decision counts and native voice placement composition. Registration, J3/J8 integration and platform acceptance remain separate."
     }

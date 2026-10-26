@@ -97,6 +97,7 @@ it.effect.each([
   "retarget",
   "grant",
   "principal",
+  "served-by",
 ] as const)("refuses %s drift after a forwarded read without retry or fallback", (drift) => {
   let calls = 0,
     admissionReads = 0;
@@ -126,6 +127,10 @@ it.effect.each([
           route: drift === "route" ? "workstreams" : "counts",
           envelope: {
             ...envelope,
+            provenance: {
+              ...envelope.provenance,
+              ...(drift === "served-by" ? { served_by_environment_id: "other:server" } : {}),
+            },
             registry: {
               ...envelope.registry,
               ...(drift === "generation" ? { server_generation: 2 } : {}),
@@ -220,3 +225,49 @@ it.effect("rejects payload context drift even when the forwarded envelope itself
     ).toMatchObject({ code: "invalid_response" });
   }).pipe(Effect.provide(Member.layer.pipe(Layer.provide(ports))));
 });
+
+it.effect("rejects a placement selector on another route before contacting a peer", () =>
+  Effect.gen(function* () {
+    expect(
+      yield* (yield* Member.MemberReads)
+        .read({ route: "counts", params: {} }, "workstreams-t3-placement/2.0.0")
+        .pipe(Effect.flip),
+    ).toMatchObject({ code: "invalid_request" });
+  }).pipe(Effect.provide(Member.layer)),
+);
+
+it.effect.each(["revision", "principal"] as const)(
+  "fences changed current member %s after one synthetic peer call",
+  (drift) => {
+    let calls = 0;
+    const ports = Layer.mergeAll(
+      Layer.succeed(Member.MemberReadAdmission, {
+        current: () =>
+          Effect.succeed({
+            expected_home: target,
+            principal_id: calls && drift === "principal" ? "other:principal" : "principal:test",
+            authorization_revision: calls && drift === "revision" ? 2 : 1,
+            check: () => Effect.void,
+          }),
+      }),
+      Layer.succeed(Member.HomeReadPort, {
+        read: () =>
+          Effect.sync(() => {
+            calls++;
+            return {
+              route: "counts" as const,
+              envelope,
+              authorization_revision: 1,
+              value: countValue,
+            };
+          }),
+      }),
+    );
+    return Effect.gen(function* () {
+      expect(
+        yield* (yield* Member.MemberReads).read({ route: "counts", params: {} }).pipe(Effect.flip),
+      ).toMatchObject({ code: "forbidden" });
+      expect(calls).toBe(1);
+    }).pipe(Effect.provide(Member.layer.pipe(Layer.provide(ports))));
+  },
+);
