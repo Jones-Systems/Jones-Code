@@ -12,6 +12,7 @@ import {
 import { planQueuedSteerBatch } from "@t3tools/shared/jones/queuedSteerBatch";
 import * as CheckoutIntent from "../jones/ordinaryCheckout/CheckoutIntent.ts";
 import { commitCommand as commitWorkspaceLifecycleCommand } from "../jones/workspaceLifecycle/NativeBoundary.ts";
+import { TaskContinuationCommit } from "../jones/taskContinuation/commitContext.ts";
 import { makeJonesTablePresence } from "../jones/persistence/JonesTablePresence.ts";
 import {
   checkSettlementRestoreReplay,
@@ -14192,6 +14193,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           commandType: command.type,
           acceptedAt,
           ordinaryCheckoutCommand: command,
+          taskContinuation: yield* TaskContinuationCommit,
           ...(command.type === "thread.settlement.restore"
             ? { settlementRestore: { settleCommandId: command.settleCommandId } }
             : {}),
