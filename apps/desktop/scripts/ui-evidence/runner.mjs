@@ -471,6 +471,56 @@ export async function runInner() {
       }
     }
     if (app && error.name === "TimeoutError") readiness = await probeReadiness(app);
+    if (app && error.name === "TimeoutError") {
+      let metadataTimer;
+      try {
+        const windows = await Promise.race([
+          app.evaluate(({ BrowserWindow }) =>
+            BrowserWindow.getAllWindows()
+              .slice(0, 20)
+              .map((window) => {
+                const contents = window.webContents;
+                const preferences = contents.getLastWebPreferences();
+                let location;
+                try {
+                  const url = new URL(contents.getURL());
+                  location = {
+                    protocol: url.protocol,
+                    hostname: url.hostname,
+                    pathname: url.pathname,
+                  };
+                } catch {
+                  location = { protocol: "unavailable" };
+                }
+                return {
+                  id: window.id,
+                  location,
+                  loading: contents.isLoading(),
+                  destroyed: contents.isDestroyed(),
+                  publisher:
+                    preferences.additionalArguments?.includes(
+                      "--jones-thread-monitor-publisher",
+                    ) === true,
+                  preload: preferences.preload?.split("/").at(-1) ?? null,
+                };
+              }),
+          ),
+          new Promise((resolve) => {
+            metadataTimer = setTimeout(() => resolve("timed-out"), 1000);
+          }),
+        ]);
+        await NodeFSP.writeFile(
+          "/artifacts/window-readiness.json",
+          JSON.stringify(windows, null, 2),
+          { mode: 0o600, flag: "wx" },
+        );
+      } catch {
+        result.windowReadiness = "unavailable";
+      } finally {
+        clearTimeout(metadataTimer);
+      }
+    }
+
     // Preserve startup evidence even when an unresponsive app cannot finish close().
     try {
       result.startupDiagnostics = await writeStartupDiagnostics({
