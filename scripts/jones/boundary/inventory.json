@@ -1947,6 +1947,7 @@
     "apps/web/src/jones/remoteAdmission/availability.ts": "jones-owned",
     "apps/web/src/jones/remoteAdmission/runtime.test.ts": "jones-owned",
     "apps/web/src/jones/remoteAdmission/useEvaluatorProviders.ts": "jones-owned",
+    "apps/web/src/jones/remoteAdmission/useEvaluatorProviders.browser.test.tsx": "jones-owned",
     "packages/client-runtime/src/jones/remoteAdmission/index.test.ts": "jones-owned",
     "apps/server/src/provider/Drivers/ClaudeDriver.test.ts": "jones-tests-in-upstream",
     "apps/web/src/jones/environmentFilters/SidebarEnvironmentFilters.sizing.browser.test.tsx": "jones-owned",

@@ -1402,6 +1402,7 @@
         "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts",
         "apps/server/src/jones/remoteAdmissionIntegration/owner.test.ts",
         "apps/web/src/jones/remoteAdmission/RemoteAdmissionSettings.browser.test.tsx",
+        "apps/web/src/jones/remoteAdmission/useEvaluatorProviders.browser.test.tsx",
         "apps/server/src/textGeneration/jones/CodexRemoteRequestEvaluation.test.ts",
         "apps/server/src/textGeneration/jones/remoteEvaluationModel.test.ts",
         "apps/web/src/jones/remoteAdmission/store.test.ts",
