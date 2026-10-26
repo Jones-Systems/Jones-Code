@@ -246,7 +246,7 @@ describe("queue header batch action", () => {
     await using screen = await render();
     const view = screen.container;
     expect(button(view, "Steer all (22)")).toBeUndefined();
-    expect(view.textContent).toContain("19 still queued — batch size limit");
+    expect(view.textContent).toContain("19 still queued. Batch size limit");
     await act(async () => {
       button(view, "Steer next 3")!.click();
     });

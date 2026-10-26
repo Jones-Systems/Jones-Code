@@ -88,12 +88,9 @@ const OrchestrationSessionStatus = Schema.Literals([
 ]);
 
 /**
- * One provider-reported runtime identity dimension.
- *
- * `unknown` means no authoritative provider evidence has arrived for the
- * current request. `unavailable` means the provider boundary does not safely
- * attest the dimension. Neither state may be filled from routing settings,
- * authentication metadata, or a model catalog.
+ * Provider-reported identity: unknown awaits authoritative evidence for the current request;
+ * unavailable means the provider boundary cannot safely attest it.
+ * Neither may be inferred from routing settings, authentication metadata or a model catalog.
  */
 const RuntimeIdentityObservation = Schema.Union([
   Schema.Struct({ status: Schema.Literal("unknown") }),
@@ -361,13 +358,10 @@ export const OrchestrationShellSnapshot = Schema.Struct({
 export type OrchestrationShellSnapshot = typeof OrchestrationShellSnapshot.Type;
 
 /**
- * Bounds a thread detail read to a window of recent turns. `turnLimit` counts
- * turns with a user pending message (subagent/fan-out turns between them ride
- * along), so the window always contains the last N user prompts. `beforeCursor`
- * requests the disjoint page of older turns strictly before a previously
- * returned cursor. Requests without a window get the full thread; pagination is
- * strictly opt-in so older clients keep today's behavior on both HTTP and the
- * WebSocket fallback snapshot.
+ * turnLimit counts user-anchored turns, including intervening subagent/fan-out turns.
+ * beforeCursor selects a disjoint older page strictly before the returned cursor.
+ * Pagination is opt-in: without a window, HTTP and WebSocket fallback return the full thread
+ * so older clients retain their existing behavior.
  */
 export const OrchestrationThreadDetailWindow = Schema.Struct({
   turnLimit: Schema.optionalKey(PositiveInt),
@@ -376,24 +370,19 @@ export const OrchestrationThreadDetailWindow = Schema.Struct({
 export type OrchestrationThreadDetailWindow = typeof OrchestrationThreadDetailWindow.Type;
 
 /**
- * Page metadata for a windowed thread detail read. `beforeCursor` is opaque and
- * exclusive: passing it back returns the adjacent disjoint slice of older
- * turns. `null` means the thread is fully loaded below this page. The
- * `snapshotSequence` mirrors the top-level snapshot sequence so history pages
- * can be sequence-checked against live state before merging.
+ * beforeCursor is opaque and exclusive: reuse selects the adjacent disjoint older slice.
+ * A null cursor means no older turns remain. snapshotSequence mirrors the enclosing snapshot
+ * so pages can be checked against live state before merging.
  */
 const OrchestrationThreadDetailPage = Schema.Struct({
   beforeCursor: Schema.NullOr(TrimmedNonEmptyString),
   hasMore: Schema.Boolean,
   snapshotSequence: NonNegativeInt,
   /**
-   * Highest event sequence applied to THIS thread at page read time. The
-   * global `snapshotSequence` advances with every thread's events, so a
-   * client cannot wait for it via its per-thread subscription; this
-   * thread-scoped watermark is reachable. A client merging an older page
-   * must first have applied live events up to it — otherwise a streaming
-   * turn outside the loaded window could have deltas replayed on top of
-   * page content that already includes them, duplicating text.
+   * Highest event sequence applied to this thread at page read time; unlike the global
+   * snapshotSequence, its subscription can reach this watermark. Before merging an older page,
+   * apply live events through it: otherwise deltas for streaming turns outside the loaded window
+   * can be replayed onto page content that already contains them, duplicating text.
    */
   threadSequence: Schema.optionalKey(NonNegativeInt),
 });

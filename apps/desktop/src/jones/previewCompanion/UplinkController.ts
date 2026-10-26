@@ -104,6 +104,10 @@ export function createCompanionUplink(
     ports.state(state);
   };
   const isAssigned = (key: TabKey) => assigned.has(keyOf(key));
+  const acceptsCommand = (command: DesktopBrowserCommand) =>
+    command.type === "turn"
+      ? state.assignments.some((key) => key.threadId === command.threadId)
+      : isAssigned(command);
   const replace = (keys: ReadonlyArray<TabKey>) => {
     const tabs = [
       ...new Map(
@@ -331,8 +335,8 @@ export function createCompanionUplink(
           } else if (value.type === "unmount" && reconciled) {
             replace(state.assignments.filter((key) => keyOf(key) !== keyOf(value)));
             send({ type: "unmountedAck", threadId: value.threadId, tabId: value.tabId });
-          } else if (value.type === "browser" && reconciled && isAssigned(value.command)) {
-            ports.command(value.command, () => active() && isAssigned(value.command));
+          } else if (value.type === "browser" && reconciled && acceptsCommand(value.command)) {
+            ports.command(value.command, () => active() && acceptsCommand(value.command));
           }
         } catch (error) {
           clear(error instanceof CompanionFrameError ? error.code : 4426);

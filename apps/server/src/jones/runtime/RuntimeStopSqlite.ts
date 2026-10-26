@@ -48,7 +48,7 @@ export const makeRuntimeStopMethods = (
     if (rows.length === 0) return null;
     if (rows.length !== 1)
       return yield* new RuntimeStopError({ reason: "ambiguous_stop_identity" });
-    return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(RuntimeStopIdentity))(
+    return yield* Schema.decodeEffect(Schema.fromJsonString(RuntimeStopIdentity))(
       rows[0]!.identity_json,
     ).pipe(Effect.mapError(() => new RuntimeStopError({ reason: "invalid_stop_identity" })));
   });

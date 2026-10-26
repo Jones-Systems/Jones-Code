@@ -75,6 +75,7 @@ export function MobileWorkstreamControls({
 }) {
   const binding = useRef(api.bindingRevision);
   const bindingRevision = api.bindingRevision;
+  // oxlint-disable-next-line t3code/react-effect-budget -- Publish the committed binding revision before asynchronous control actions can accept their results.
   useLayoutEffect(() => {
     binding.current = bindingRevision;
   }, [bindingRevision]);
@@ -83,7 +84,8 @@ export function MobileWorkstreamControls({
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [lastDestination, setLastDestination] = useState<string | null | undefined>(undefined);
-  const [history, setHistory] = useState<readonly string[]>([]);
+  const [history, setHistory] = useState<readonly { key: string; text: string }[]>([]);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Clear control state when the selected workstream or its authority binding changes.
   useEffect(() => {
     setMessage(null);
     setLastDestination(undefined);
@@ -259,12 +261,15 @@ export function MobileWorkstreamControls({
     });
     if (binding.current !== startedBinding) return;
     setHistory([
-      `Completion: ${completion.state}`,
-      ...members.items.map(
-        (episode) =>
-          `${episode.kind}: ${episode.closed === null ? "current" : "ended"} · ${episode.native_reference_id}`,
-      ),
-      ...historyPage.items.map((event) => `${event.occurred_at}: ${event.operation}`),
+      { key: "completion", text: `Completion: ${completion.state}` },
+      ...members.items.map((episode) => ({
+        key: `membership:${episode.membership_id}`,
+        text: `${episode.kind}: ${episode.closed === null ? "current" : "ended"} · ${episode.native_reference_id}`,
+      })),
+      ...historyPage.items.map((event) => ({
+        key: `event:${event.event_id}`,
+        text: `${event.occurred_at}: ${event.operation}`,
+      })),
     ]);
   };
   return (
@@ -493,8 +498,8 @@ export function MobileWorkstreamControls({
                 </Pressable>
               ))
             : null}
-          {history.map((line, index) => (
-            <Text key={index}>{line}</Text>
+          {history.map((line) => (
+            <Text key={line.key}>{line.text}</Text>
           ))}
         </ScrollView>
       </Modal>

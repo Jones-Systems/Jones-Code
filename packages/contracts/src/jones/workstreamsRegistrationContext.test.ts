@@ -72,7 +72,7 @@ describe("workstreams-registration-context/1.0.0 native contract", () => {
     expect(manifest.contract_version).toBe(Context.WORKSTREAMS_REGISTRATION_CONTEXT_VERSION);
     expect(manifest.manifest_sha256).toBe(Context.WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256);
     expect(manifest.files.map((file) => file.path)).toEqual(
-      [...manifest.files.map((file) => file.path)].sort(),
+      manifest.files.map((file) => file.path).sort(),
     );
     expect(conformanceCorpus.contract_family).toBe(Context.WORKSTREAMS_REGISTRATION_CONTEXT_FAMILY);
     expect(conformanceCorpus.contract_version).toBe(

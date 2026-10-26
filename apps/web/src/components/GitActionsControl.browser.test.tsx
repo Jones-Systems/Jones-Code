@@ -171,7 +171,6 @@ import { useComposerDraftStore } from "~/composerDraftStore";
 import { sourceControlEnvironment } from "~/state/sourceControl";
 import GitActionsControl from "./GitActionsControl";
 
-// ThreadDetailsPanel keeps this component mounted behind React.memo when threads change.
 const MemoGitActionsControl = memo(GitActionsControl);
 
 function control(thread = "thread", cwd = "/repo") {
@@ -276,7 +275,7 @@ describe("Source-control discovery for publishing", () => {
 
   it("does not probe providers for a repository that already has a remote", async () => {
     using _state = setup();
-    await using screen = await renderControl();
+    await using _screen = await renderControl();
     await expect.element(button("Git action options")).toBeVisible();
 
     expect(state.queries.length).toBeGreaterThan(0);
@@ -311,7 +310,7 @@ describe("Source-control discovery for publishing", () => {
 describe("Git actions while thread details load", () => {
   it("does not offer a feature branch for a server thread without task permission", async () => {
     using _state = setup();
-    await using screen = await renderControl();
+    await using _screen = await renderControl();
     await openCommitDialog();
 
     // The primary environment's task grant must not leak into this thread's environment.
@@ -322,7 +321,7 @@ describe("Git actions while thread details load", () => {
   it("checks the task grant again when the feature-branch commit runs", async () => {
     using _state = setup();
     state.scopes.add(AuthOrchestrationOperateScope);
-    await using screen = await renderControl();
+    await using _screen = await renderControl();
     await openCommitDialog();
     revokeTaskGrantOnClick(button("Commit on new branch"));
 
@@ -342,7 +341,7 @@ describe("Git actions while thread details load", () => {
     using _state = setup();
     state.primaryScopes.clear();
     state.scopes.add(AuthOrchestrationOperateScope);
-    await using screen = await renderControl();
+    await using _screen = await renderControl();
     await openCommitDialog();
     await userEvent.click(button("Commit on new branch"));
 
@@ -371,7 +370,7 @@ describe("Git actions while thread details load", () => {
     using _state = setup();
     state.shell = null;
     state.detail = { branch: "main" };
-    await using screen = await renderControl();
+    await using _screen = await renderControl();
     await openCommitDialog();
 
     await expect.element(button("Commit on new branch")).toBeDisabled();
@@ -382,7 +381,7 @@ describe("Git actions while thread details load", () => {
     using _state = setup();
     state.scopes.add(AuthOrchestrationOperateScope);
     state.detail = { branch: "feature" };
-    await using screen = await renderControl();
+    await using _screen = await renderControl();
     await openCommitDialog();
     await userEvent.click(button("Commit on new branch"));
 
@@ -399,7 +398,7 @@ describe("Git actions while thread details load", () => {
       using _state = setup();
       state.scopes.add(AuthOrchestrationOperateScope);
       state.afterGitAction = () => state.scopes.delete(revokedScope);
-      await using screen = await renderControl();
+      await using _screen = await renderControl();
       await openCommitDialog();
       await userEvent.click(button("Commit on new branch"));
 
@@ -412,7 +411,7 @@ describe("Git actions while thread details load", () => {
 
   it("keeps ordinary commits available while details load", async () => {
     using _state = setup();
-    await using screen = await renderControl();
+    await using _screen = await renderControl();
     await openCommitDialog();
     await userEvent.click(button("Commit"));
 
@@ -425,7 +424,7 @@ describe("Git actions while thread details load", () => {
     using _state = setup();
     state.shell = null;
     state.draft = { branch: "main", worktreePath: null, envMode: "local" };
-    await using screen = await renderControl();
+    await using _screen = await renderControl();
     await openCommitDialog();
     await userEvent.click(button("Commit on new branch"));
 
@@ -440,7 +439,7 @@ describe("Default branch prompt", () => {
     using _state = setup();
     state.isDefaultRef = true;
     state.scopes.add(AuthOrchestrationOperateScope);
-    await using screen = await renderControl();
+    await using _screen = await renderControl();
     await userEvent.click(button(/^Commit & push/));
     await expect
       .element(page.getByRole("dialog", { name: "Commit & push to default ref?" }))
@@ -457,7 +456,7 @@ describe("Default branch prompt", () => {
     using _state = setup();
     state.isDefaultRef = true;
     state.scopes.add(AuthOrchestrationOperateScope);
-    await using screen = await renderControl();
+    await using _screen = await renderControl();
     await userEvent.click(button(/^Commit & push/));
     await expect
       .element(page.getByRole("dialog", { name: "Commit & push to default ref?" }))

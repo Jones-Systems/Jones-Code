@@ -9,6 +9,7 @@ export function WorkQueuePreview() {
   const [dirty, setDirty] = useState(false);
   const [leaving, setLeaving] = useState(false);
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own the browser beforeunload guard only while the preview has an unsaved draft.
   useEffect(() => {
     if (!dirty) return;
     const beforeUnload = (event: BeforeUnloadEvent) => {
@@ -19,6 +20,7 @@ export function WorkQueuePreview() {
     return () => window.removeEventListener("beforeunload", beforeUnload);
   }, [dirty]);
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Navigate only after the child panel commits that its unsaved draft has been cleared.
   useEffect(() => {
     if (leaving && !dirty) window.location.assign("/welcome");
   }, [leaving, dirty]);

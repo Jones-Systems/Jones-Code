@@ -2,7 +2,6 @@ import { it as effectIt } from "@effect/vitest";
 import type { DesktopBridge } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import {
@@ -99,7 +98,7 @@ describe("desktop install IPC decoding", () => {
       isInstallActive: Effect.succeed(false),
       subscribe: Effect.succeed({ latest: state, changes: Stream.empty }),
       emitState: Effect.void,
-      disabledReason: Effect.succeed(Option.none()),
+      disabledReason: Effect.succeedNone,
       configure: Effect.void,
       setChannel: () => Effect.succeed(state),
       check: () => Effect.succeed({ checked: true, state }),

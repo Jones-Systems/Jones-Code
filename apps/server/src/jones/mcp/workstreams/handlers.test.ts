@@ -196,7 +196,7 @@ it.effect("delegates list, create, thread read and setup to the backend", () =>
   Effect.gen(function* () {
     const calls: unknown[] = [];
     const toolkit = yield* build(calls);
-    const create = yield* Schema.decodeUnknownEffect(Operations.WorkstreamCreateRequest)({
+    const create = yield* Schema.decodeEffect(Operations.WorkstreamCreateRequest)({
       contract: Operations.WORKSTREAM_OPERATIONS_CONTRACT,
       operation_id: "create-operation-0001",
       origin: { kind: "agent" },

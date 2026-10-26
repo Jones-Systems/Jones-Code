@@ -93,19 +93,10 @@ const startsProviderWork = (effects: EffectRequests, events: RecordedEvents) =>
   );
 
 /**
- * Keeps new provider work out of a process that is handing off to an update. The event sink
- * checks it inside the transaction that records a process-bound effect (a turn start, steer or
- * approval reply) or creates a run that prepares a workspace, for commands and for the
- * orchestrator's own writes, so every origin passes it: sends, launches, queued runs, delegated
- * tasks and their results, scheduled and webhook runs and agents' tools. A queued message is
- * durable, and writes that settle a running attempt record no new provider work; neither is
- * checked. While the fence is open a check reads one reference and never waits, so it
- * serializes nothing. A scheduled task's message is held until admission reopens rather than
- * refused; see `holdScheduledDispatch`.
- *
- * The final check of an automatic installation runs on the SQLite writer after the fence is
- * raised. A transaction admitted just before the fence went up holds the writer, so that check
- * waits for it and sees its work; one that starts later trips the fence.
+ * Fence process-bound effects and workspace-preparing runs inside the event-sink write transaction for every origin.
+ * Durable queued messages and settlement-only writes bypass it; an open check reads one reference without waiting.
+ * Scheduled dispatches wait via holdScheduledDispatch rather than fail. Installation's final SQLite writer check
+ * runs after fencing, waits for pre-fence transactions and observes their work; later transactions are refused.
  */
 export class UpdateAdmissionFence extends Context.Service<
   UpdateAdmissionFence,
@@ -236,11 +227,9 @@ export function isUpdateAdmissionRefusal(error: unknown): boolean {
 }
 
 /**
- * Runs a scheduled task's dispatch, holding it while the fence refuses new provider work instead
- * of failing it. The scheduler would record a refusal as a failed run and drop an accepted webhook
- * delivery with it. A held dispatch records nothing: it runs under the same command id once
- * admission reopens here, and the restart that follows an accepted handoff interrupts it from
- * outside, which leaves the delivery for the next server to run.
+ * Hold scheduled dispatch without recording a failure or dropping an accepted webhook delivery.
+ * Retry under the same command id when admission reopens. An accepted handoff interrupts the hold
+ * externally, leaving its durable delivery for the next server.
  */
 export const holdScheduledDispatch = <A, E, R>(
   fence: Option.Option<UpdateAdmissionFence["Service"]>,
@@ -265,13 +254,10 @@ const withdrawn = (reason: string) =>
   });
 
 /**
- * Runs one qualified installation with admission fenced from its final check until the launcher
- * accepts it. `install` must call `onPrepared` last before the launcher handoff, passing its
- * continuity capture, and `onAccepted` once the launcher accepts. A failure before the handoff
- * reopens admission. After a failed handoff admission stays closed while `handoffOutcome` waits,
- * in the background, for the launcher's proof: accepted keeps it closed until this process exits,
- * rejected reopens it. No proof, a timeout or an unreadable receipt never reopens it. When
- * admission reopens after refusing work, `reopened` restarts what the refusal held.
+ * Fence from installation's final check through launcher acceptance. install calls onPrepared last before
+ * handoff with continuity capture, then onAccepted at acceptance. Pre-handoff failure reopens admission.
+ * Failed handoff stays fenced while background handoffOutcome seeks proof: accepted stays closed until exit;
+ * rejected reopens and reopened resumes held work. Missing proof, timeout or unreadable receipts never reopen.
  */
 export const fencedInstall = <A>(options: {
   readonly fence: UpdateAdmissionFence["Service"];

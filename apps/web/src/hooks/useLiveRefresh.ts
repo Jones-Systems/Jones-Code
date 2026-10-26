@@ -46,11 +46,7 @@ function shouldRefreshOnInterval(input: {
   );
 }
 
-/**
- * When each view last read, kept outside React because a mount is exactly what it has to outlive:
- * a reader who navigates away and straight back mounts a fresh hook, and a timestamp that started
- * at zero would call that first read due.
- */
+// Survive remounts so returning to a view does not make fresh reads look overdue.
 const lastRefreshedAtByView = new Map<string, number>();
 
 let lastInteractedAt = 0;

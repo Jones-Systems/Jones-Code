@@ -51,7 +51,7 @@ export const make = Effect.gen(function* () {
         return unknown(binding.runtimeGeneration, "not_captured");
       const captured = yield* entry.lease.capture;
       const decoded = yield* decodeObservation(captured).pipe(
-        Effect.catch(() => Effect.succeed(unknown(binding.runtimeGeneration, "malformed"))),
+        Effect.orElseSucceed(() => unknown(binding.runtimeGeneration, "malformed")),
       );
       const observation =
         decoded.runtimeGeneration === binding.runtimeGeneration

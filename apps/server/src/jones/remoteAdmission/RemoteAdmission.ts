@@ -173,7 +173,7 @@ const decodeRow = Effect.fn("RemoteAdmission.decodeRow")(
       updatedAt: row.updated_at,
     });
     if (digest({ version: 1, envelope }) !== record.bindingDigest) {
-      return yield* Effect.fail(new RemoteAdmissionBindingMismatch({}));
+      return yield* new RemoteAdmissionBindingMismatch({});
     }
     return record;
   },

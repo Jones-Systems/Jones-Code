@@ -116,13 +116,10 @@ export function QueuedRunsControl({
     readonly runId: RunId;
     readonly insertIndex: number | null;
   } | null>(null);
-  // Drags must start from the grip, not from an accidental text-drag on the
-  // row. The grip arms its run id on pointerdown; dragstart verifies it.
+  // Arm from the grip to prevent accidental text drags from reordering queued runs.
   const dragArmedRunIdRef = useRef<RunId | null>(null);
   const steerInFlightRef = useRef(false);
-  // Once the projection holds the message the optimistic copy is stale no
-  // matter what happened to its run — keying on still-queued runs alone would
-  // resurrect a phantom "pending" row after the run is cancelled or started.
+  // Run-only acknowledgements can resurrect pending rows after cancellation or startup.
   const acknowledgedMessageIds = new Set((projection?.messages ?? []).map((message) => message.id));
   const queuedImageAttachmentResources = queuedImageResources(projection);
   const queuedImageAttachmentUrls = useAssetUrls(
@@ -144,6 +141,7 @@ export function QueuedRunsControl({
     importedEligible,
   });
   // Async review guards always compare against the latest committed route and queue.
+  // oxlint-disable-next-line t3code/react-effect-budget -- Publish the committed route and queue to asynchronous imported-run review guards.
   useLayoutEffect(() => {
     currentQueueRef.current = {
       environmentId: props.environmentId,
@@ -249,12 +247,15 @@ export function QueuedRunsControl({
     queuedRunStart: serverConfig?.environment.capabilities.queuedRunStart,
   });
   const items = [
-    ...queued.map(({ run, text, attachments }, serverIndex) => ({
+    ...queued.map(({ run, text, attachments, context }, serverIndex) => ({
       key: run.id,
       runId: run.id,
       messageId: run.userMessageId,
       serverIndex,
       text,
+      // A guest's message keeps the guest's words; the owner can cancel it, not rewrite it.
+      editable: context?.guest === undefined,
+      guestName: context?.guest?.name,
       attachments,
       thumbnails: attachments
         .filter((attachment) => attachment.type === "image")
@@ -271,6 +272,8 @@ export function QueuedRunsControl({
       messageId: null,
       serverIndex: null,
       text: message.text,
+      editable: true,
+      guestName: undefined,
       attachments: [] as ReadonlyArray<ContractChatAttachment>,
       thumbnails: (message.attachments ?? [])
         .filter(isImageAttachment)
@@ -339,12 +342,12 @@ export function QueuedRunsControl({
       if (!repeat && !queueBusy) void sendQueuedMessage(next.run.id);
       return true;
     },
-    // Declines while a queued message is already being edited so the key keeps
-    // moving the caret inside that draft.
+    // Leave the key to caret navigation while editing.
     editLatest(repeat) {
       const latest = queued.at(-1);
       if (
         !latest ||
+        latest.context?.guest !== undefined ||
         props.editingRunId !== null ||
         queueBusy ||
         steerInFlightRef.current ||
@@ -539,6 +542,9 @@ export function QueuedRunsControl({
                           ))}
                         </span>
                       ) : null}
+                      {item.guestName === undefined ? null : (
+                        <span className="shrink-0 text-guest-foreground">{item.guestName}</span>
+                      )}
                       <Tooltip>
                         <TooltipTrigger render={<span className="min-w-0 flex-1 truncate" />}>
                           {previewText}
@@ -588,9 +594,14 @@ export function QueuedRunsControl({
                                   size="icon-xs"
                                   variant="ghost-muted"
                                   aria-label="Edit queued message"
-                                  disabled={item.runId === null || queueBusy}
+                                  disabled={item.runId === null || !item.editable || queueBusy}
                                   onClick={() => {
-                                    if (queueBusy || steerInFlightRef.current || removals.isBusy())
+                                    if (
+                                      !item.editable ||
+                                      queueBusy ||
+                                      steerInFlightRef.current ||
+                                      removals.isBusy()
+                                    )
                                       return;
                                     if (item.runId !== null && item.messageId !== null) {
                                       props.onEditQueuedRun({

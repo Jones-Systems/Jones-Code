@@ -132,7 +132,7 @@ const dependencies = Layer.mergeAll(
     },
   ]),
   Layer.mock(ProviderSessions.ProviderSessionManagerV2)({
-    get: () => Effect.succeed(Option.some(runtime)),
+    get: () => Effect.succeedSome(runtime),
   }),
   Layer.mock(Scheduler.Scheduler)({ register: () => Effect.void }),
   NodeServices.layer,
@@ -971,7 +971,7 @@ it.effect("a completed persisted context without a live session never starts a r
       DateTime.toEpochMillis(yield* DateTime.now),
     )!;
     const cold = Layer.mock(ProviderSessions.ProviderSessionManagerV2)({
-      get: () => Effect.succeed(Option.none()),
+      get: () => Effect.succeedNone,
     });
     assert.equal(
       yield* Effect.gen(function* () {
@@ -1157,7 +1157,7 @@ it.effect.each([
       const cold = Layer.mergeAll(
         Layer.succeed(PlannedUpdateContinuity.PlannedUpdateContinuity, continuity),
         Layer.mock(ProviderSessions.ProviderSessionManagerV2)({
-          get: () => Effect.succeed(Option.none()),
+          get: () => Effect.succeedNone,
         }),
       );
       yield* Effect.gen(function* () {
@@ -1419,21 +1419,17 @@ it.effect.each(["read", "decode", "cancel"] as const)(
         snapshot: (input) =>
           Effect.gen(function* () {
             if (failRefresh && failure === "read") {
-              return yield* Effect.fail(
-                new ProjectionStore.ProjectionStoreReadError({
-                  threadId: fixture.thread.id,
-                }),
-              );
+              return yield* new ProjectionStore.ProjectionStoreReadError({
+                threadId: fixture.thread.id,
+              });
             }
             const snapshot = yield* projections.getShellSnapshot(input);
             if (failRefresh) {
               if (failure === "decode") {
-                return yield* Effect.fail(
-                  new ProjectionStore.ProjectionStoreReadError({
-                    threadId: fixture.thread.id,
-                    cause: "Synthetic decode failure after rows were read",
-                  }),
-                );
+                return yield* new ProjectionStore.ProjectionStoreReadError({
+                  threadId: fixture.thread.id,
+                  cause: "Synthetic decode failure after rows were read",
+                });
               }
               yield* Deferred.succeed(entered, undefined);
               return yield* Effect.never;
@@ -1521,14 +1517,21 @@ it.effect.each(["after-probe", "during-snapshot"] as const)(
         const events = yield* EventStore.EventStoreV2;
         const projections = yield* ProjectionStore.ProjectionStoreV2;
         const firstSequence = yield* events.latestSequence();
+        const sql = yield* SqlClient.SqlClient;
         const ready = yield* Deferred.make<void>();
         const committed = yield* Deferred.make<void, Error>();
         // This fiber is created outside the sweep's reader context.
         const writer = yield* Effect.forkChild(
           Effect.gen(function* () {
             yield* Deferred.await(ready);
-            yield* updateDiscoveryThread({ threadMessagesBlocked: false });
-            const sequence = yield* events.latestSequence();
+            // The new projection reader route must not make the independent writer
+            // wait for the deliberately paused reader transaction.
+            const sequence = yield* sql.withTransaction(
+              Effect.gen(function* () {
+                yield* updateDiscoveryThread({ threadMessagesBlocked: false });
+                return yield* events.latestSequence();
+              }),
+            );
             yield* Deferred.succeed(committed, undefined);
             return sequence;
           }).pipe(

@@ -19,7 +19,6 @@ import {
   readServiceEnvironment,
   type BackupSpaceProbe,
   readServiceState,
-  validateDatabasePathForBaseDir,
   writeServiceState,
 } from "./serviceLauncher.ts";
 import {

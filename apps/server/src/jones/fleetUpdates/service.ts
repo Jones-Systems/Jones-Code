@@ -844,7 +844,12 @@ export const layer = Layer.effect(
       yield* forkParked(
         fleet.follow.pipe(
           Effect.andThen(
-            Effect.raceFirst(Effect.sleep(FOLLOWER_PASS_INTERVAL), Queue.take(wakeups)),
+            Queue.take(wakeups).pipe(
+              Effect.timeoutOrElse({
+                duration: FOLLOWER_PASS_INTERVAL,
+                orElse: () => Effect.void,
+              }),
+            ),
           ),
           Effect.forever,
         ),

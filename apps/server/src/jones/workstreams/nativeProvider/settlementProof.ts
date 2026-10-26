@@ -145,7 +145,7 @@ export const captureNativeProviderSettlementProof = Effect.fn(
     WHERE native_command_id = ${input.receipt.commandId}`;
     const reservation = rows[0];
     if (reservation === undefined) return;
-    const decoded = Schema.decodeUnknownOption(SettlementProof)(input);
+    const decoded = Schema.decodeOption(SettlementProof)(input);
     if (
       Option.isNone(decoded) ||
       !matchesSettlementProof(
