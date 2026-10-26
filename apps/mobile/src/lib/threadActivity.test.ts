@@ -2063,3 +2063,31 @@ describe("work mode history", () => {
     ).toEqual(["Real content"]);
   });
 });
+
+it("keeps a message choice and multiline note, clears the choice explicitly, and leaves live replacement intact", () => {
+  const question = {
+    id: "notes",
+    header: "Scope",
+    question: "Which scope?",
+    options: [{ label: "Local", description: "This host" }],
+    multiSelect: false,
+  };
+  const options = { notes: true };
+  const selected = togglePendingUserInputOptionSelection(question, undefined, "Local", options);
+  const draft = setPendingUserInputCustomAnswer(
+    question,
+    selected,
+    " First line\nSecond line ",
+    options,
+  );
+  expect(buildPendingUserInputAnswers([question], { notes: draft }, options)).toEqual({
+    notes: "Local\nNote: First line\nSecond line",
+  });
+  const cleared = togglePendingUserInputOptionSelection(question, draft, "Local", options);
+  expect(buildPendingUserInputAnswers([question], { notes: cleared }, options)).toEqual({
+    notes: "First line\nSecond line",
+  });
+  expect(buildPendingUserInputAnswers([question], { notes: draft })).toEqual({
+    notes: "First line\nSecond line",
+  });
+});

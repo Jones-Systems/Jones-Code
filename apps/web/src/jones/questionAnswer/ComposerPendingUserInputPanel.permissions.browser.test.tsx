@@ -11,7 +11,7 @@ import { ComposerPendingUserInputPanel } from "~/components/chat/ComposerPending
 
 const threadRef = { environmentId: EnvironmentId.make("env"), threadId: ThreadId.make("thread") };
 
-it("cancels an answer's pending auto-submit on revocation and resumes after a new grant", async () => {
+it("blocks option selection on revocation and restores select-only behavior after a new grant", async () => {
   using _timers = fakeTimers();
   const onToggleOption = vi.fn();
   const onAdvance = vi.fn();
@@ -72,7 +72,7 @@ it("cancels an answer's pending auto-submit on revocation and resumes after a ne
     vi.runAllTimers();
   });
   expect(onToggleOption).toHaveBeenCalledTimes(2);
-  expect(onAdvance).toHaveBeenCalledTimes(1);
+  expect(onAdvance).not.toHaveBeenCalled();
 });
 
 it("allows a live question but fences option and submit actions for a non-resumable question", async () => {
