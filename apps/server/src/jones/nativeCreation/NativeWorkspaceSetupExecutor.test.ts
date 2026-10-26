@@ -523,7 +523,7 @@ it.effect("interrupting native completion cancels the real pending writer before
     const waiting = yield* Deferred.make<void>();
     const completion = yield* Deferred.succeed(waiting, undefined).pipe(
       Effect.andThen(result.completion),
-      Effect.forkChild,
+      Effect.forkChild({ startImmediately: true }),
     );
     yield* Deferred.await(waiting);
     yield* Fiber.interrupt(completion);
