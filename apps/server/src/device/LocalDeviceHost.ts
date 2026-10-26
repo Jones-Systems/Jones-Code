@@ -287,6 +287,8 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
       Effect.provideService(FileSystem.FileSystem, fs),
       Effect.provideService(Path.Path, path),
       Effect.provideService(ProcessRunner.ProcessRunner, runner),
+      Effect.provideService(HostProcess.Environment, environment),
+      Effect.provideService(HostProcess.Platform, hostPlatform),
     );
     return reason === null ? { platform, available: true } : { platform, available: false, reason };
   });

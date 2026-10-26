@@ -165,7 +165,7 @@ it.effect(
         if (scenario === "missing") continue;
         f.state.code = 0;
         f.state.timedOut = false;
-        const ready = yield* f.provideHost(f.host.ensureReady(() => Effect.void));
+        const ready = yield* f.host.ensureReady(() => Effect.void);
         expect((yield* f.provideHost(ready.devices.list)).devices[0]?.id).toBe("retained-iphone");
         expect((yield* f.provideHost(f.host.summary)).agentDeviceInstalled).toBe(false);
         expect(
