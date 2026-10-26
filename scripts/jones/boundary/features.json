@@ -111,9 +111,10 @@
         "packages/shared/src/nodeSqliteClient.test.ts",
         "apps/server/src/persistence/Sqlite.test.ts",
         "apps/server/src/jones/workstreams/enrollment/bearerRoute.test.ts",
-        "packages/shared/src/jones/checkpointContention.test.ts"
+        "packages/shared/src/jones/checkpointContention.test.ts",
+        "packages/shared/src/jones/sqliteWriterAdmission.test.ts"
       ],
-      "scope": "Bounded startup lock contention in the private upstream SQLite checkpoint worker and fail-fast test barriers on worker errors, exits and interruption. Timed-out reader workers recover on later demand after termination and a capped cooldown; the file-backed server opts into read failure rather than synchronous fallback while its reader is unavailable. Other consumers retain fallback compatibility. A small generic shared repair avoids duplicating the client's private lifecycle machinery; real-worker recovery, retirement and serving-loop progress regressions remain in its existing mock harness. Preserves WAL setup order, transaction affinity, checkpoint thresholds and shutdown ownership. No schema, wire, migration or runtime activation changes; historical CI timeout causality remains unproved."
+      "scope": "Bounded startup lock contention in the private upstream SQLite checkpoint worker and fail-fast test barriers on worker errors, exits and interruption. Timed-out reader workers recover on later demand after termination and a capped cooldown; the file-backed server opts into read failure rather than synchronous fallback while its reader is unavailable. Other consumers retain fallback compatibility. A small generic shared repair avoids duplicating the client's private lifecycle machinery; real-worker recovery, retirement and serving-loop progress regressions remain in its existing mock harness. Preserves WAL setup order, transaction affinity, checkpoint thresholds and shutdown ownership. No schema, wire, migration or runtime activation changes; historical CI timeout causality remains unproved. Synthetic file-WAL regressions restore queued, elected and resumed writer-admission cancellation coverage, reservation and BEGIN ownership, masked cleanup, and real worker/protocol recovery. Incident cause and production prevention remain unresolved."
     },
     {
       "id": "usage",

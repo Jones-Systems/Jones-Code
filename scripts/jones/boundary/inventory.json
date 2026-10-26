@@ -2006,6 +2006,8 @@
     "packages/client-runtime/src/state/threads-sync.test.ts": "jones-tests-in-upstream",
     "packages/client-runtime/src/state/shell-sync.test.ts": "jones-tests-in-upstream",
     "packages/client-runtime/src/state/shell.ts": "hook",
+    "packages/shared/src/jones/sqliteWriterAdmission.fixture.ts": "jones-owned",
+    "packages/shared/src/jones/sqliteWriterAdmission.test.ts": "jones-owned",
     "apps/server/src/provider/ProviderRegistry.ts": "accepted-shared",
     "apps/server/src/provider/ClaudeProvider.ts": "accepted-shared",
     "apps/server/src/provider/ClaudeCapabilitiesProbe.test.ts": "accepted-shared",
