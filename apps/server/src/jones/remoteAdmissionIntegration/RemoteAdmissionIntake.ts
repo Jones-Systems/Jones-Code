@@ -23,6 +23,7 @@ import * as RemoteAdmission from "../remoteAdmission/RemoteAdmission.ts";
 import { isRemoteAdmissionOwner } from "./owner.ts";
 import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegistry.ts";
 import { resolveRemoteEvaluationModel } from "../../textGeneration/jones/remoteEvaluationModel.ts";
+import { readBoundLinkedRequestContext } from "../peerTransport/LinkedRequestContext.ts";
 
 export class RemoteAdmissionIntakeError extends Schema.TaggedError<RemoteAdmissionIntakeError>()(
   "RemoteAdmissionIntakeError",
@@ -106,6 +107,37 @@ const unpack = (record: RemoteAdmissionRecord) => {
       thread: payload.invocation.thread ?? undefined,
       client: payload.invocation.client ?? undefined,
     } satisfies Invocation,
+  };
+};
+// Pin only display data. Every other invocation field belongs to this attempt
+// and must still participate in the generic admission's digest comparison.
+const pinOriginTitle = (invocation: Invocation, previous: RemoteAdmissionRecord): Invocation => {
+  const original = unpack(previous).invocation.client?.remoteOrigin;
+  const client = invocation.client;
+  const origin = client?.remoteOrigin;
+  if (
+    !client ||
+    !origin?.thread ||
+    !original?.thread ||
+    origin.schemaVersion !== original.schemaVersion ||
+    origin.environmentId !== original.environmentId ||
+    origin.linkSessionId !== original.linkSessionId ||
+    origin.thread.threadId !== original.thread.threadId
+  )
+    return invocation;
+  const { title: _title, ...thread } = origin.thread;
+  return {
+    ...invocation,
+    client: {
+      ...client,
+      remoteOrigin: {
+        ...origin,
+        thread: {
+          ...thread,
+          ...(Object.hasOwn(original.thread, "title") ? { title: original.thread.title } : {}),
+        },
+      },
+    },
   };
 };
 const pending = (record: RemoteAdmissionRecord) =>
@@ -241,12 +273,14 @@ const make = Effect.gen(function* () {
           operation,
           key: keyed ? params.clientRequestId : NodeCrypto.randomUUID(),
         });
-        const previousRows = keyed
-          ? yield* sql<{
-              id: string;
-            }>`SELECT id FROM jones_remote_admissions WHERE client_id = ${invocation.client.sessionId} AND idempotency_key = ${key}`
-          : [];
-        const previous = previousRows[0] ? yield* admissions.get(previousRows[0].id) : null;
+        const client = invocation.client;
+        const selectPrevious = Effect.fn("RemoteAdmissionIntake.selectPrevious")(function* () {
+          const rows = yield* sql<{
+            id: string;
+          }>`SELECT id FROM jones_remote_admissions WHERE client_id = ${client.sessionId} AND idempotency_key = ${key}`;
+          return rows[0] ? yield* admissions.get(rows[0].id) : null;
+        });
+        const previous = keyed ? yield* selectPrevious() : null;
         if (!current.enabled && previous === null) return yield* handler(params, invocation);
         const resolveTarget = targets.get(operation);
         if (!resolveTarget) return yield* Effect.fail(intakeError("target_unavailable"));
@@ -256,31 +290,66 @@ const make = Effect.gen(function* () {
         const reviewedTarget = previous
           ? unpack(previous).target
           : yield* resolveTarget(params, invocation);
-        const payload = decodeJson(
-          stable({ params, invocation: storedScope(invocation), target: reviewedTarget }),
-        );
-        const record = yield* admissions.request({
-          idempotencyKey: key,
-          envelope: {
-            identity: {
-              clientId: invocation.client.sessionId,
-              linkId: invocation.client.linked ? invocation.client.sessionId : null,
+        const bound = yield* readBoundLinkedRequestContext(invocation);
+        const submit = Effect.fn("RemoteAdmissionIntake.submit")(function* (
+          prior: RemoteAdmissionRecord | null,
+        ) {
+          const oldPayload = prior?.envelope.payload as Record<string, unknown> | undefined;
+          const advisory = oldPayload
+            ? Object.hasOwn(oldPayload, "advisory")
+              ? { advisory: oldPayload.advisory }
+              : {}
+            : bound
+              ? {
+                  advisory: {
+                    schemaVersion: "t3.remote-admission-advisory/v1",
+                    requestContext: bound.context,
+                  },
+                }
+              : {};
+          const payload = decodeJson(
+            stable({
+              params,
+              invocation: storedScope(prior ? pinOriginTitle(invocation, prior) : invocation),
+              target: prior ? unpack(prior).target : reviewedTarget,
+              ...advisory,
+            }),
+          );
+          return yield* admissions.request({
+            idempotencyKey: key,
+            envelope: {
+              identity: {
+                clientId: client.sessionId,
+                linkId: client.linked ? client.sessionId : null,
+              },
+              operation,
+              payload,
+              target: {
+                projectId: typeof params.projectId === "string" ? params.projectId : null,
+                threadId: typeof params.threadId === "string" ? params.threadId : null,
+                runtimeMode:
+                  typeof params.runtimeMode === "string"
+                    ? params.runtimeMode
+                    : McpInvocationContext.clientModeCeiling(client).runtimeMode,
+                interactionMode:
+                  typeof params.interactionMode === "string" ? params.interactionMode : "default",
+              },
+              receiverPolicy: current,
             },
-            operation,
-            payload,
-            target: {
-              projectId: typeof params.projectId === "string" ? params.projectId : null,
-              threadId: typeof params.threadId === "string" ? params.threadId : null,
-              runtimeMode:
-                typeof params.runtimeMode === "string"
-                  ? params.runtimeMode
-                  : McpInvocationContext.clientModeCeiling(invocation.client).runtimeMode,
-              interactionMode:
-                typeof params.interactionMode === "string" ? params.interactionMode : "default",
-            },
-            receiverPolicy: current,
-          },
+          });
         });
+        const record = yield* submit(previous).pipe(
+          Effect.catchTags({
+            RemoteAdmissionKeyConflict: (error) =>
+              keyed && previous === null
+                ? selectPrevious().pipe(
+                    Effect.flatMap((winner) =>
+                      winner === null ? Effect.fail(error) : submit(winner),
+                    ),
+                  )
+                : Effect.fail(error),
+          }),
+        );
         if (["passed", "approved", "dispatching", "dispatched"].includes(record.status))
           return yield* dispatch(record);
         return yield* Effect.fail(pending(record));

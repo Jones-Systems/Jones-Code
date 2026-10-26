@@ -16,6 +16,10 @@
     {
       "from": "apps/server/src/mcp/McpHttpServer.ts",
       "to": "apps/server/src/jones/peerTransport/LinkedRequestContext.ts"
+    },
+    {
+      "from": "apps/server/src/peer/PeerForwarding.ts",
+      "to": "apps/server/src/jones/peerTransport/RequestContextSender.ts"
     }
   ]
 }

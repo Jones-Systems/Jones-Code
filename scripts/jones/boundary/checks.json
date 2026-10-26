@@ -2382,13 +2382,21 @@
         "apps/web/src/jones/remoteAdmission/RemoteAdmissionNotifications.browser.test.tsx",
         "apps/server/src/jones/remoteAdmission/evaluationDiagnostic.test.ts",
         "apps/web/src/jones/remoteAdmission/runtime.test.ts",
-        "packages/client-runtime/src/jones/remoteAdmission/index.test.ts"
+        "packages/client-runtime/src/jones/remoteAdmission/index.test.ts",
+        "apps/server/src/jones/remoteAdmissionIntegration/registration.test.ts",
+        "apps/server/src/jones/remoteAdmissionIntegration/RequestContextAdmission.http.test.ts",
+        "apps/web/src/jones/remoteAdmission/requestTime.test.ts",
+        "apps/web/src/jones/remoteAdmission/RequestCard.browser.test.tsx"
       ],
       "commands": [
         "vp test run apps/web/src/reactCompilerCoverage.test.ts -t \"compiles apps/web/src/jones/remoteAdmission/useAdmission.ts\" --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/server/src/jones/remoteAdmission/RemoteAdmission.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/remoteAdmissionIntegration/RemoteAdmissionIntake.test.ts apps/server/src/jones/remoteAdmissionIntegration/http.test.ts apps/server/src/jones/remoteAdmissionIntegration/target.test.ts apps/web/src/jones/remoteAdmission/presentation.test.ts apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts apps/server/src/jones/remoteAdmissionIntegration/owner.test.ts apps/server/src/textGeneration/jones/CodexRemoteRequestEvaluation.test.ts apps/server/src/textGeneration/jones/remoteEvaluationModel.test.ts apps/web/src/jones/remoteAdmission/store.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run --root apps/web --config vite.config.ts --project browser src/jones/remoteAdmission/RemoteAdmissionSettings.browser.test.tsx src/jones/remoteAdmission/useEvaluatorProviders.browser.test.tsx src/jones/remoteAdmission/RequestsPage.browser.test.tsx src/jones/remoteAdmission/RemoteAdmissionNotifications.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
-        "vp test run apps/server/src/jones/remoteAdmission/evaluationDiagnostic.test.ts apps/web/src/jones/remoteAdmission/runtime.test.ts packages/client-runtime/src/jones/remoteAdmission/index.test.ts --maxWorkers=1 --no-file-parallelism"
+        "vp test run apps/server/src/jones/remoteAdmission/evaluationDiagnostic.test.ts apps/web/src/jones/remoteAdmission/runtime.test.ts packages/client-runtime/src/jones/remoteAdmission/index.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/jones/remoteAdmissionIntegration/registration.test.ts apps/server/src/jones/remoteAdmissionIntegration/RequestContextAdmission.http.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/web --config vite.config.ts --project unit src/jones/remoteAdmission/requestTime.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/web --config vite.config.ts --project browser src/jones/remoteAdmission/RequestCard.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/web typecheck"
       ]
     },
     {
@@ -2424,14 +2432,17 @@
         "apps/server/src/peer/RemoteDelegation.test.ts",
         "packages/contracts/src/jones/remoteAdmission.test.ts",
         "apps/server/src/jones/peerTransport/LinkedRequestContext.test.ts",
-        "apps/server/src/jones/peerTransport/LinkedRequestContext.http.test.ts"
+        "apps/server/src/jones/peerTransport/LinkedRequestContext.http.test.ts",
+        "apps/server/src/jones/peerTransport/RequestContextSender.test.ts",
+        "apps/server/src/jones/peerTransport/LinkedRequestContextTransport.test.ts"
       ],
       "commands": [
         "vp test run apps/server/src/jones/peerTransport/PeerMcpClient.test.ts apps/server/src/jones/peerTransport/PeerMcpSessions.test.ts apps/server/src/jones/peerTransport/LinkedMessageOrigin.test.ts apps/server/src/jones/peerTransport/PeerLinkLifecycle.test.ts apps/server/src/jones/peerTransport/PeerSessionContext.test.ts apps/server/src/peer/PeerLinks.test.ts apps/server/src/peer/RemoteDelegation.test.ts packages/contracts/src/jones/remoteAdmission.test.ts apps/server/src/jones/peerTransport/LinkedRequestContext.test.ts apps/server/src/jones/peerTransport/LinkedRequestContext.http.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp lint apps/server/src/jones/peerTransport/InFlight.ts apps/server/src/jones/peerTransport/PeerMcpTransport.ts apps/server/src/jones/peerTransport/PeerMcpClient.test.ts apps/server/src/jones/peerTransport/PeerMcpSessions.test.ts apps/server/src/jones/peerTransport/PeerLinkLifecycle.test.ts apps/server/src/jones/peerTransport/PeerSessionContext.test.ts apps/server/src/peer/PeerLinks.ts apps/server/src/peer/PeerLinks.testkit.ts apps/server/src/peer/RemoteDelegation.test.ts",
         "vp run --filter t3 typecheck",
         "knip --workspace apps/server --exports --preprocessor ./scripts/knip-schemas.ts --no-config-hints",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp test run apps/server/src/jones/peerTransport/RequestContextSender.test.ts apps/server/src/jones/peerTransport/LinkedRequestContextTransport.test.ts apps/server/src/peer/PeerForwarding.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {

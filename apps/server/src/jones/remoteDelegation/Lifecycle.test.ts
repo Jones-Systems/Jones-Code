@@ -14,9 +14,11 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 import * as Threads from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Forwarding from "../../peer/PeerForwarding.ts";
 import * as Links from "../../peer/PeerLinks.ts";
+import { LinkedRequestSentAtOverride } from "../peerTransport/LinkedRequestContext.ts";
 import * as Lifecycle from "./Lifecycle.ts";
 import * as Store from "./IntentStore.ts";
 import { commandId, envelope, layer } from "./RemoteDelegation.testkit.ts";
@@ -38,6 +40,8 @@ const makeFixture = Effect.gen(function* () {
   const keys: Array<string | undefined> = [];
   const notices = new Map<string, string>();
   const namespaces: Array<string> = [];
+  const launchSentAts: Array<string | undefined> = [];
+  const otherSentAts: Array<string | undefined> = [];
   const result = {
     threadId: ThreadId.make("remote:child"),
     runId: RunId.make("remote:run"),
@@ -99,6 +103,9 @@ const makeFixture = Effect.gen(function* () {
     Layer.mock(Forwarding.PeerForwarding)({
       call: (scope, tool, _environmentId, input) =>
         Effect.gen(function* () {
+          const sentAt = yield* LinkedRequestSentAtOverride;
+          if (tool.name === "t3_thread_launch") launchSentAts.push(sentAt);
+          else otherSentAts.push(sentAt);
           if (tool.name === "orchestrator_capabilities")
             return {
               features: observationSupported
@@ -165,6 +172,8 @@ const makeFixture = Effect.gen(function* () {
     withdrew,
     keys,
     namespaces,
+    launchSentAts,
+    otherSentAts,
     dispatchRacedCancel: () => {
       cancelAfterDispatch = true;
     },
@@ -265,6 +274,8 @@ it.effect(
   "recovers a launch acknowledgement lost before local persistence after restart using the original key",
   () =>
     Effect.gen(function* () {
+      const createdAt = "2026-10-26T12:00:00.000Z";
+      yield* TestClock.setTime(Date.parse(createdAt));
       const fixture = yield* makeFixture;
       const sql = yield* SqlClient.SqlClient;
       yield* sql`CREATE TRIGGER simulated_crash BEFORE UPDATE OF launched_json ON jones_remote_delegation_intents BEGIN SELECT RAISE(ABORT, 'synthetic crash after remote launch'); END`;
@@ -278,6 +289,7 @@ it.effect(
       assert.equal((yield* fixture.store.get(commandId))?.launched, null);
       yield* first.close;
       yield* sql`DROP TRIGGER simulated_crash`;
+      yield* TestClock.adjust("1 hour");
       const restarted = yield* fixture.create();
       yield* restarted.lifecycle.start;
       yield* Deferred.await(fixture.bound);
@@ -285,6 +297,8 @@ it.effect(
       assert.isAtLeast(fixture.getCounts().launches, 2);
       assert.deepEqual(new Set(fixture.keys), new Set([envelope.launch.clientRequestId]));
       assert.deepEqual(new Set(fixture.namespaces), new Set([envelope.scope.requestNamespace]));
+      assert.deepEqual(new Set(fixture.launchSentAts), new Set([createdAt]));
+      assert.equal((yield* fixture.store.get(commandId))?.createdAt, createdAt);
       assert.equal(fixture.getTask().remoteChild?.runId, "remote:run");
       yield* restarted.close;
     }).pipe(Effect.provide(layer)),
@@ -294,6 +308,8 @@ it.effect(
   "held admission keeps the reserved task nonterminal and approval binds that same task after restart",
   () =>
     Effect.gen(function* () {
+      const createdAt = "2026-10-26T12:00:00.000Z";
+      yield* TestClock.setTime(Date.parse(createdAt));
       const fixture = yield* makeFixture;
       fixture.held(true);
       const first = yield* fixture.create();
@@ -309,7 +325,14 @@ it.effect(
       assert.equal(fixture.getCounts().notices, 1);
       assert.equal(fixture.getTask().remoteChild, undefined);
       assert.equal(fixture.getCounts().remoteExecutions, 0);
+      assert.deepEqual(new Set(fixture.launchSentAts), new Set([createdAt]));
+      yield* TestClock.adjust("10 seconds");
+      const launchesBeforeRetry = fixture.getCounts().launches;
+      yield* first.lifecycle.submit(commandId, { task: "Inspect fixture" }, envelope);
+      assert.isAbove(fixture.getCounts().launches, launchesBeforeRetry);
+      assert.deepEqual(new Set(fixture.launchSentAts), new Set([createdAt]));
       yield* first.close;
+      yield* TestClock.adjust("1 hour");
       fixture.held(false);
       const restarted = yield* fixture.create();
       yield* restarted.lifecycle.start;
@@ -317,6 +340,9 @@ it.effect(
       assert.equal(fixture.getTask().id, submitted.taskId);
       assert.equal(fixture.getTask().result, null);
       assert.equal(fixture.getCounts().remoteExecutions, 1);
+      assert.deepEqual(new Set(fixture.launchSentAts), new Set([createdAt]));
+      assert.deepEqual(new Set(fixture.otherSentAts), new Set([undefined]));
+      assert.equal((yield* fixture.store.get(commandId))?.createdAt, createdAt);
       yield* restarted.close;
     }).pipe(Effect.provide(layer)),
 );

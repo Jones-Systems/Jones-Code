@@ -101,6 +101,7 @@ function EnvironmentNotifications({
                       {groupAdmissions([record])[0]?.source}
                     </p>
                     <RequestReviewRow
+                      environmentId={environmentId}
                       record={record}
                       policyRevision={snapshot.policy.revision}
                       blocked={requestBlockedReason(state, admissionBindingKey(record))}

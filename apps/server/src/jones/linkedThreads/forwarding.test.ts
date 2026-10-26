@@ -10,6 +10,7 @@ import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import { ProjectToolkit } from "../../mcp/toolkits/project/tools.ts";
 import * as Threads from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Forwarding from "../../peer/PeerForwarding.ts";
+import * as Projects from "../../project/ProjectService.ts";
 import * as Peers from "../../peer/PeerMcpClient.ts";
 import * as PeerLinks from "../../peer/PeerLinks.ts";
 import * as Links from "./LinkedThreads.ts";
@@ -46,6 +47,7 @@ it.effect(
       Layer.mock(Threads.ThreadManagementService)({
         getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),
       }),
+      Layer.mock(Projects.ProjectService)({ getById: () => Effect.succeed(Option.none()) }),
       Layer.mock(PeerLinks.PeerLinks)({ get: () => Effect.succeed(Option.none()) }),
       Layer.mock(Peers.PeerMcpClient)({
         call: (input) => {

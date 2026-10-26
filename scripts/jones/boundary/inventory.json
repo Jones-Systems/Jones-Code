@@ -2036,7 +2036,20 @@
     "apps/server/src/jones/peerTransport/LinkedRequestContext.ts": "jones-owned",
     "apps/server/src/jones/peerTransport/LinkedRequestContext.test.ts": "jones-owned",
     "apps/server/src/jones/peerTransport/LinkedRequestContext.http.test.ts": "jones-owned",
-    "apps/server/src/jones/peerTransport/LinkedMcpProbe.testkit.ts": "jones-owned"
+    "apps/server/src/jones/peerTransport/LinkedMcpProbe.testkit.ts": "jones-owned",
+    "apps/server/src/jones/peerTransport/LinkedRequestContextTransport.test.ts": "jones-owned",
+    "apps/server/src/jones/peerTransport/RequestContextSender.test.ts": "jones-owned",
+    "apps/server/src/jones/peerTransport/RequestContextSender.ts": "jones-owned",
+    "apps/server/src/jones/remoteAdmissionIntegration/RequestContextAdmission.http.test.ts": "jones-owned",
+    "apps/server/src/jones/remoteAdmissionIntegration/registration.test.ts": "jones-owned",
+    "apps/web/src/jones/remoteAdmission/RequestCard.browser.test.tsx": "jones-owned",
+    "apps/web/src/jones/remoteAdmission/RequestCard.tsx": "jones-owned",
+    "apps/web/src/jones/remoteAdmission/RequestMarkdown.tsx": "jones-owned",
+    "apps/web/src/jones/remoteAdmission/SenderProjectIcon.tsx": "jones-owned",
+    "apps/web/src/jones/remoteAdmission/requestTarget.ts": "jones-owned",
+    "apps/web/src/jones/remoteAdmission/requestTime.test.ts": "jones-owned",
+    "apps/web/src/jones/remoteAdmission/requestTime.ts": "jones-owned",
+    "apps/web/src/jones/remoteAgentLineage/MachineIcon.tsx": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
