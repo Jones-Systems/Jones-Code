@@ -1,0 +1,59 @@
+.host-status-pills {
+  display: flex;
+  align-items: center;
+  gap: var(--host-gap, 8px);
+}
+.host-status-pill {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding-inline: var(--host-padding, 8px);
+  font-size: var(--host-font-size, 12px);
+}
+.host-status-pair {
+  display: inline-flex;
+  align-items: center;
+}
+.host-status-pill[data-pair="diagonal"],
+.host-status-pill[data-pair="vertical"] {
+  column-gap: 0.25em;
+}
+.host-status-pill[data-pair="diagonal"] .host-status-pair {
+  position: relative;
+  display: block;
+  width: calc(var(--host-cell-width) + 0.833333em);
+  height: calc(2em + 5px);
+}
+.host-status-pill[data-pair="diagonal"] .host-status-value {
+  position: absolute;
+  width: var(--host-cell-width);
+  text-align: center;
+  line-height: 1em;
+}
+.host-status-pill[data-pair="diagonal"] .host-status-cpu {
+  top: 0;
+  left: 0;
+}
+.host-status-pill[data-pair="diagonal"] .host-status-ram {
+  bottom: 0;
+  right: 0;
+}
+.host-status-slash {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 7px;
+  height: 8px;
+  transform: translate(-50%, -50%);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1;
+}
+.host-status-pill[data-pair="vertical"] .host-status-pair {
+  display: grid;
+  justify-items: center;
+  row-gap: 3px;
+  line-height: 1em;
+}
