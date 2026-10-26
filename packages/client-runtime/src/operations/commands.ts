@@ -1,3 +1,5 @@
+import { requireMonitorGuardedSettle } from "../jones/threadMonitor/guardedSettle.ts";
+import type { GuardedThreadSettlement } from "@t3tools/contracts/jones/guardedThreadSettlement";
 import { requireQueuedRunStart } from "../jones/queue/commands.ts";
 export { promoteQueuedBatch, type PromoteQueuedBatchInput } from "../jones/queue/commands.ts";
 import { remapComposerContextAttachments } from "@t3tools/shared/composerContextReferences";
@@ -90,7 +92,9 @@ export interface ThreadCommandInput extends CommandMetadata {
 export type DeleteThreadInput = ThreadCommandInput;
 export type ArchiveThreadInput = ThreadCommandInput;
 export type UnarchiveThreadInput = ThreadCommandInput;
-export type SettleThreadInput = ThreadCommandInput;
+export interface SettleThreadInput extends ThreadCommandInput {
+  readonly guard?: GuardedThreadSettlement;
+}
 
 export interface UnsettleThreadInput extends ThreadCommandInput {
   readonly reason: "user";
@@ -186,6 +190,8 @@ export interface StartThreadTurnInput extends ThreadCommandInput {
   readonly bootstrap?: StartThreadBootstrap;
   readonly sourceProposedPlan?: { readonly threadId: ThreadId; readonly planId: PlanId };
   readonly dispatchMode?: "auto" | "queue" | "steer" | "restart" | "start";
+  /** False prevents automatic tool-boundary steering of queued replies. */
+  readonly allowQueuedToolBoundaryDelivery?: boolean;
 }
 
 export interface InterruptThreadTurnInput extends ThreadCommandInput {
@@ -495,7 +501,13 @@ export const unarchiveThread = Effect.fn("EnvironmentCommands.unarchiveThread")(
 export const settleThread = Effect.fn("EnvironmentCommands.settleThread")(function* (
   input: SettleThreadInput,
 ) {
-  return yield* simpleThreadCommand("thread.settle", input);
+  if (input.guard !== undefined) yield* requireMonitorGuardedSettle();
+  return yield* dispatch({
+    type: "thread.settle",
+    commandId: yield* allocateCommandId(input),
+    threadId: input.threadId,
+    ...(input.guard === undefined ? {} : { guard: input.guard }),
+  });
 });
 
 export const pinThread = Effect.fn("EnvironmentCommands.pinThread")(function* (
@@ -792,6 +804,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
   const serverResolvesCommandContext = capabilities.serverResolvedCommandContext === true;
   const creationSource = input.creationSource ?? "web";
   const queuedToolBoundaryEligible =
+    input.allowQueuedToolBoundaryDelivery !== false &&
     (creationSource === "web" || creationSource === "mobile") &&
     (requestedMode === "queue" || requestedMode === "auto") &&
     capabilities.queuedToolBoundaryDelivery === true;
@@ -1245,6 +1258,9 @@ export const prepareImportedHistoryMessage = Effect.fn(
     attachments,
     ...(context === undefined ? {} : { context }),
     ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
+    ...(input.modelSelectionExplicit === undefined
+      ? {}
+      : { modelSelectionExplicit: input.modelSelectionExplicit }),
     runtimeMode: input.runtimeMode,
     interactionMode: input.interactionMode,
     ...(input.sourceProposedPlan === undefined ? {} : { sourcePlanRef: input.sourceProposedPlan }),

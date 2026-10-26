@@ -181,7 +181,12 @@ jobs:
         run: vp run --filter @t3tools/desktop ensure:electron
 
       - name: Typecheck
+        id: typecheck
         run: vpr typecheck
+
+      - name: Report typecheck task details
+        if: ${{ failure() && steps.typecheck.outcome == 'failure' }}
+        run: vp run --last-details
 
   build:
     needs: linux_changes

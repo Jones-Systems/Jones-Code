@@ -1,3 +1,4 @@
+import { buildQueuedFollowUpStartTurnInput } from "../jones/threadConfiguration/queuedFollowUp";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import * as Dialog from "../components/ui/Dialog";
 import { useAtomValue } from "@effect/atom-react";
@@ -8,10 +9,6 @@ import {
 } from "@t3tools/client-runtime/state/shell";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import { threadFamilyRead, type ThreadFamilyRead } from "@t3tools/client-runtime/state/threads";
-import {
-  deriveThreadTitleSeed,
-  type StartThreadTurnInput,
-} from "@t3tools/client-runtime/operations";
 import {
   AuthOrchestrationOperateScope,
   CommandId,
@@ -32,7 +29,6 @@ import { serializeComposerMessageForServer, uploadedComposerContext } from "../l
 import { prepareTurnAttachments, type PreparedTurnAttachments } from "../lib/attachmentUpload";
 import { randomHex } from "../lib/uuid";
 import {
-  outboxSelectionCommandFields,
   outboxSelectionRestoreSettings,
   retainComposerModelSelectionSnapshot,
   trackComposerModelSelectionInteractions,
@@ -196,37 +192,6 @@ function findCreationProject(
 
 function settingsCommandId(message: QueuedThreadMessage, setting: string): CommandId {
   return CommandId.make(`${message.commandId}:${setting}`);
-}
-
-export function buildQueuedThreadMessageStartTurnInput(input: {
-  readonly message: QueuedThreadMessage;
-  readonly settings: ThreadSettingsSnapshot;
-  readonly attachments: PreparedTurnAttachments["attachments"];
-  readonly inlineMessageContext: boolean;
-}): StartThreadTurnInput {
-  const { message, settings } = input;
-  return {
-    commandId: message.commandId,
-    creationSource: "mobile",
-    threadId: message.threadId,
-    message: {
-      messageId: message.messageId,
-      role: "user",
-      ...serializeComposerMessageForServer(
-        message.text,
-        uploadedComposerContext(message.context, message.attachments, input.attachments),
-        input.inlineMessageContext,
-      ),
-      attachments: input.attachments,
-    },
-    modelSelection: settings.modelSelection,
-    ...outboxSelectionCommandFields(message),
-    titleSeed: deriveThreadTitleSeed({ text: message.text, attachments: message.attachments }),
-    runtimeMode: settings.runtimeMode,
-    interactionMode: settings.interactionMode,
-    createdAt: message.createdAt,
-    dispatchMode: message.dispatchMode ?? "start",
-  };
 }
 
 export function buildQueuedThreadCreationStartTurnInput(input: {
@@ -924,24 +889,35 @@ export function useThreadOutboxDrain(): void {
         serverEnvironment.configValueAtom(queuedMessage.environmentId),
       );
       if (!currentConfig) return false;
-      if (isModelSelectionUnavailable(currentConfig, settings.modelSelection, thread.projectId)) {
+      const currentThread = findThread(
+        appAtomRegistry.get(environmentThreadShells.threadShellsAtom),
+        queuedMessage,
+      );
+      if (!currentThread) return false;
+      const sendSettings = resolveQueuedThreadSettings(
+        persistedMessage,
+        currentThread,
+        currentConfig.providers,
+      );
+      if (
+        isModelSelectionUnavailable(
+          currentConfig,
+          sendSettings.modelSelection,
+          currentThread.projectId,
+        )
+      ) {
         const { title, detail } = describeUnavailableModelSelection(
           currentConfig,
-          settings.modelSelection,
-          thread.projectId,
+          sendSettings.modelSelection,
+          currentThread.projectId,
         );
         return restoreQueuedMessage(persistedMessage, `${title}. ${detail}`);
       }
-      const sendSettings = resolveQueuedThreadSettings(
-        queuedMessage,
-        settings,
-        currentConfig.providers,
-      );
       if (!hasAccess()) return true;
       const deliveryResult = await startTurn({
         environmentId: queuedMessage.environmentId,
-        input: buildQueuedThreadMessageStartTurnInput({
-          message: queuedMessage,
+        input: buildQueuedFollowUpStartTurnInput({
+          message: persistedMessage,
           settings: sendSettings,
           attachments: prepared.attachments,
           inlineMessageContext:

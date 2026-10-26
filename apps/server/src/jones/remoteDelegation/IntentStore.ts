@@ -29,6 +29,7 @@ export interface IntentEnvelope {
 }
 export interface Intent {
   readonly commandId: CommandId;
+  readonly createdAt: string;
   readonly envelope: IntentEnvelope;
   readonly launched: LaunchResult | null;
   readonly taskId: NodeId | null;
@@ -38,6 +39,7 @@ export interface Intent {
 }
 interface Row {
   readonly command_id: CommandId;
+  readonly created_at: string;
   readonly request_json: string;
   readonly envelope_json: string;
   readonly launched_json: string | null;
@@ -67,6 +69,7 @@ const storageFailure = () =>
   });
 const decode = (row: Row): Intent => ({
   commandId: row.command_id,
+  createdAt: row.created_at,
   envelope: decodeJson(row.envelope_json) as IntentEnvelope,
   launched: row.launched_json === null ? null : (decodeJson(row.launched_json) as LaunchResult),
   taskId: row.task_id,
@@ -108,6 +111,7 @@ export const make = Effect.gen(function* () {
         VALUES (${commandId}, ${canonicalRequest(request)}, ${encodeJson(envelope)}, 'pending', ${now})`;
           return {
             commandId,
+            createdAt: now,
             envelope,
             launched: null,
             taskId: null,

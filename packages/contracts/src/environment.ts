@@ -1,3 +1,4 @@
+import { ThreadMonitorGuardedSettleCapability } from "./jones/guardedThreadSettlement.ts";
 import { LinkedThreadsCapability } from "./jones/linkedThreadsCapability.ts";
 import { WORKSTREAM_OPERATIONS_CONTRACT } from "./jones/workstreamOperations.ts";
 import { QueuedSteerBatchCapability } from "./jones/queuedSteerBatch.ts";
@@ -109,6 +110,7 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   workQueueMetadata: Schema.optionalKey(Schema.Boolean),
   settlementOrigins: Schema.optionalKey(SettlementOriginsCapability),
   settlementRestore: Schema.optionalKey(SettlementRestoreCapability),
+  threadMonitorGuardedSettle: Schema.optionalKey(ThreadMonitorGuardedSettleCapability),
   queueDispatch: Schema.optionalKey(QueueDispatchCapability),
   threadCorpus: Schema.optionalKey(ThreadCorpusCapability),
   threadAttention: Schema.optionalKey(ThreadAttentionCapability),

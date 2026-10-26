@@ -78,6 +78,14 @@
     "./jones/linkedThreadsRpc": {
       "types": "./src/jones/linkedThreadsRpc.ts",
       "import": "./src/jones/linkedThreadsRpc.ts"
+    },
+    "./jones/desktopThreadMonitor": {
+      "types": "./src/jones/desktopThreadMonitor.ts",
+      "import": "./src/jones/desktopThreadMonitor.ts"
+    },
+    "./jones/guardedThreadSettlement": {
+      "types": "./src/jones/guardedThreadSettlement.ts",
+      "import": "./src/jones/guardedThreadSettlement.ts"
     }
   },
   "scripts": {

@@ -25,6 +25,7 @@ import {
   renderProviderTraitsPicker,
 } from "./composerProviderState";
 import type { useComposerProviderModel } from "./useComposerProviderModel";
+import { ComposerQuickControls } from "../../jones/composer/ComposerQuickControls";
 
 /**
  * The composer footer controls: model picker, traits, mode controls and the overflow menu for
@@ -302,6 +303,7 @@ export function ComposerControlsBar(props: {
             </div>
           );
         })}
+        <ComposerQuickControls {...providerTraitsPickerInput} hidden={composerControlsHidden} />
         <div
           data-resting-controls-overflow
           aria-hidden={hiddenRestingBlockIds.length === 0 || undefined}

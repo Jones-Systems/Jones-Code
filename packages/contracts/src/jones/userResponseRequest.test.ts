@@ -21,12 +21,48 @@ describe("owner response request input", () => {
       }).choices,
     ).toEqual(["Local", "Remote"]);
   });
-  it.each(["", "   ", "first\nsecond", "first\rsecond", "x".repeat(501)])(
-    "rejects invalid instruction %j",
-    (instruction) => {
-      expect(() => decode({ instruction, clientRequestId: "review" })).toThrow();
-    },
-  );
+  it.each(["", "   ", "x".repeat(1501)])("rejects invalid instruction %j", (instruction) => {
+    expect(() => decode({ instruction, clientRequestId: "review" })).toThrow();
+  });
+  // CR-01 widens legacy input; newline/501 rejection is superseded by multiline/1500 boundaries.
+  it("uses per-question code-point limits for both forms without an aggregate cap", () => {
+    const prompt = "a".repeat(1499) + "😀";
+    expect(decode({ instruction: prompt, clientRequestId: "emoji" }).instruction).toBe(prompt);
+    expect(
+      decode({ instruction: "first\n\n**second**", clientRequestId: "lines" }).instruction,
+    ).toContain("\n\n");
+    expect(
+      decode({ instruction: "a".repeat(1500), clientRequestId: "limit" }).instruction,
+    ).toHaveLength(1500);
+    expect(
+      decode({ clientRequestId: "batch", questions: Array.from({ length: 5 }, () => ({ prompt })) })
+        .questions,
+    ).toHaveLength(5);
+    for (const input of [
+      { instruction: prompt + "a" },
+      { questions: [{ prompt: prompt + "a" }] },
+      { questions: [] },
+      { questions: [{ prompt: " " }] },
+      { questions: [{ prompt: "Question", header: "two\nlines" }] },
+      { questions: [{ prompt: "Question", choices: [{ label: "a\nb" }] }] },
+      {
+        questions: [
+          { prompt: "Question", choices: [{ label: "A", description: "x".repeat(301) }] },
+        ],
+      },
+      { questions: Array.from({ length: 6 }, () => ({ prompt: "Question" })) },
+      {
+        questions: [
+          { prompt: "Question", choices: Array.from({ length: 7 }, (_, i) => ({ label: `${i}` })) },
+        ],
+      },
+      { questions: [{ prompt: "Question", choices: [{ label: "same" }, { label: " same " }] }] },
+      { instruction: "Question", questions: [{ prompt: "Question" }] },
+      { questions: [{ prompt: "Question" }], choices: [] },
+      {},
+    ])
+      expect(() => decode({ clientRequestId: "invalid", ...input })).toThrow();
+  });
   it("keeps the instruction limit separate from the nonblank retry identity", () => {
     expect(
       decode({ instruction: "Review the plan.", clientRequestId: "r".repeat(501) }).clientRequestId,

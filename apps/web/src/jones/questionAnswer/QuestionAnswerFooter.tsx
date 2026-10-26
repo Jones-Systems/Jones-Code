@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef } from "react";
+import { useId, useLayoutEffect, useRef } from "react";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { PaperclipIcon } from "lucide-react";
 import { Button } from "../../components/ui/button";
@@ -13,6 +13,7 @@ import { readPastedComposerContext } from "../../components/composerInlineTokenP
 import type { PendingUserInputProgress } from "../../pendingUserInput";
 import type { PendingUserInput } from "../../session-logic";
 import {
+  ANSWER_FIELD_MAX_LINES,
   deriveQuestionAnswerFooterState,
   isQuestionAnswerSubmitKey,
   type QuestionAnswerAttachmentCapabilities,
@@ -28,6 +29,7 @@ export function QuestionAnswerFooter({
   isResponding,
   capabilities,
   onChangeCustomAnswer,
+  onToggleOption,
   onPrevious,
   onAdvance,
 }: {
@@ -38,9 +40,11 @@ export function QuestionAnswerFooter({
   isResponding: boolean;
   capabilities: QuestionAnswerAttachmentCapabilities;
   onChangeCustomAnswer: (questionId: string, value: string) => void;
+  onToggleOption: (questionId: string, optionValue: string) => void;
   onPrevious: () => void;
   onAdvance: () => void;
 }) {
+  const reasonId = useId();
   const state = deriveQuestionAnswerFooterState({ prompt, progress, disabled, isResponding });
   const fieldRef = useRef<HTMLTextAreaElement>(null);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
@@ -76,7 +80,8 @@ export function QuestionAnswerFooter({
       const border =
         Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth);
       const padding = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom);
-      const maxHeight = 4 * Number.parseFloat(style.lineHeight) + padding + border;
+      const maxHeight =
+        ANSWER_FIELD_MAX_LINES * Number.parseFloat(style.lineHeight) + padding + border;
       field.style.height = progress.customAnswer.length === 0 ? "auto" : "0px";
       field.style.height = `${Math.min(field.scrollHeight + border, maxHeight)}px`;
     };
@@ -116,6 +121,27 @@ export function QuestionAnswerFooter({
         }}
         className="ms-5 space-y-2 pb-2"
       >
+        {state.showField ? (
+          <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+            <span>
+              {state.fieldLabel}
+              {!state.notes && progress.activeQuestion?.options.length
+                ? " · Typing replaces your choice"
+                : ""}
+            </span>
+            {state.notes && state.hasChoice ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                disabled={state.fieldDisabled}
+                onClick={() => onToggleOption(questionId, progress.selectedOptionValues[0]!)}
+              >
+                Clear choice
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
         <div className="flex items-end gap-2">
           {state.showField ? (
             <div className="relative min-w-0 flex-1">
@@ -130,7 +156,14 @@ export function QuestionAnswerFooter({
                 onChange={(event) => onChangeCustomAnswer(questionId, event.target.value)}
                 onKeyDown={(event) => {
                   event.stopPropagation();
-                  if (!isQuestionAnswerSubmitKey(event.nativeEvent, state.literal)) return;
+                  if (
+                    !isQuestionAnswerSubmitKey(
+                      event.nativeEvent,
+                      state.literal,
+                      prompt.responseCapability === "message",
+                    )
+                  )
+                    return;
                   event.preventDefault();
                   if (!state.primaryDisabled) onAdvance();
                 }}
@@ -201,13 +234,35 @@ export function QuestionAnswerFooter({
             <Button
               type="button"
               size="sm"
-              disabled={state.primaryDisabled || attachments.preparationCount > 0}
-              onClick={onAdvance}
+              disabled={
+                state.fieldDisabled ||
+                attachments.preparationCount > 0 ||
+                progress.activeDraft?.attachmentsBlocked ||
+                (!progress.isLastQuestion && !progress.canAdvance)
+              }
+              aria-disabled={state.primaryDisabled || attachments.preparationCount > 0}
+              aria-describedby={state.blockedReason ? reasonId : undefined}
+              onClick={() => {
+                if (!state.primaryDisabled && attachments.preparationCount === 0) onAdvance();
+              }}
             >
               {state.primaryLabel}
             </Button>
           </div>
         </div>
+        {state.sends !== null ? (
+          <p
+            role="status"
+            className="max-h-24 overflow-y-auto whitespace-pre-wrap wrap-anywhere text-xs text-muted-foreground"
+          >
+            Sends: {state.sends || "Your attachment"}
+          </p>
+        ) : null}
+        {state.blockedReason ? (
+          <p id={reasonId} className="text-xs text-muted-foreground">
+            {state.blockedReason}
+          </p>
+        ) : null}
         {attachments.attachments.length > 0 ? (
           <ul className="space-y-1 text-xs" aria-label="Answer attachments">
             {attachments.attachments.map((attachment) => {

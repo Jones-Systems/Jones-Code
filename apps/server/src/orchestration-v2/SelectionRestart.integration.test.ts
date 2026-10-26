@@ -857,7 +857,12 @@ it.live.each([
         const targetThread = second.providerThreads.find(
           (thread) => thread.id === second.thread.activeProviderThreadId,
         )!;
-        assert.equal(targetThread.id, originalThread.id);
+        assert.notEqual(targetThread.id, originalThread.id);
+        assert.equal(
+          second.providerThreads.find((thread) => thread.id === originalThread.id)
+            ?.providerInstanceId,
+          providerInstanceId,
+        );
         assert.deepEqual(targetThread.nativeThreadRef, originalThread.nativeThreadRef);
         assert.equal(targetThread.providerInstanceId, targetId);
         assert.notEqual(targetThread.providerSessionId, originalThread.providerSessionId);

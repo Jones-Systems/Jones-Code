@@ -1,3 +1,7 @@
+import * as TitleStore from "../jones/threadTitle/store.ts";
+import { automaticTitleContext } from "../jones/threadTitle/evidence.ts";
+import { ThreadTitleAssessment } from "../jones/threadTitle/commitContext.ts";
+import type { ThreadTitleVerdict } from "@t3tools/provider-core/server/jones/ThreadTitleAssessment";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   CommandId,
@@ -36,6 +40,7 @@ export class ThreadTitleRegenerationService extends Context.Service<
         | { readonly type: "regenerate" };
     }) => Effect.Effect<
       void,
+      | TitleStore.ThreadTitleStateError
       | OrchestratorV2Error
       | ProjectStore.ProjectStoreV2Error
       | ServerSettingsError
@@ -46,6 +51,7 @@ export class ThreadTitleRegenerationService extends Context.Service<
 
 const make = Effect.gen(function* () {
   const threads = yield* ThreadManagementService.ThreadManagementService;
+  const titleStore = yield* TitleStore.AutomaticTitleState;
   const projects = yield* ProjectStore.ProjectStoreV2;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const textGeneration = yield* TextGeneration.TextGeneration;
@@ -107,15 +113,26 @@ const make = Effect.gen(function* () {
   const execute: ThreadTitleRegenerationService["Service"]["execute"] = Effect.fn(
     "ThreadTitleRegenerationService.execute",
   )(function* (input) {
+    const state = titleStore === undefined ? null : yield* titleStore.read(input.threadId);
+    const automatic =
+      state?.status === "active" && state.pending?.requestId === input.requestId
+        ? state.pending
+        : undefined;
     const outcome:
       | { readonly type: "stale" }
-      | { readonly type: "complete"; readonly title?: string } = yield* Effect.gen(function* () {
+      | {
+          readonly type: "complete";
+          readonly title?: string;
+          readonly assessment?: ThreadTitleVerdict | undefined;
+        } = yield* Effect.gen(function* () {
       const projection = yield* threads.getThreadRecords(
         input.threadId,
-        ["messages"],
-        input.kind.type === "initial"
-          ? { messageIds: [input.kind.messageId] }
-          : { messageRoles: ["user", "assistant"] },
+        automatic ? ["messages", "runs", "nodes", "turnItems"] : ["messages"],
+        automatic
+          ? { messageRoles: ["user", "assistant"] }
+          : input.kind.type === "initial"
+            ? { messageIds: [input.kind.messageId] }
+            : { messageRoles: ["user", "assistant"] },
       );
       if (projection.thread.titleRegeneration?.requestId !== input.requestId) {
         return { type: "stale" as const };
@@ -130,7 +147,9 @@ const make = Effect.gen(function* () {
         readonly message: string;
         readonly attachments: ReadonlyArray<ChatAttachment>;
       };
-      if (input.kind.type === "initial") {
+      if (automatic) {
+        context = automaticTitleContext(projection, automatic.evidence);
+      } else if (input.kind.type === "initial") {
         const messageId = input.kind.messageId;
         const message = projection.messages.find(
           (candidate) => candidate.id === messageId && !candidate.streaming,
@@ -149,14 +168,15 @@ const make = Effect.gen(function* () {
       }
 
       // A deleted source should not cost the fork its title.
-      const inherited = yield* forkSource(projection.thread).pipe(
-        Effect.orElseSucceed(() => undefined),
-      );
+      const inherited = automatic
+        ? undefined
+        : yield* forkSource(projection.thread).pipe(Effect.orElseSucceed(() => undefined));
       const settings = resolveProjectSettings(
         yield* serverSettings.getSettings,
         projection.thread.projectId,
       ).settings;
       const result = yield* textGeneration.generateThreadTitle({
+        ...(automatic ? { titleAssessment: true, linkedContext: "" } : {}),
         cwd: projection.thread.worktreePath ?? project.value.workspaceRoot,
         message: context.message,
         attachments: context.attachments,
@@ -166,13 +186,18 @@ const make = Effect.gen(function* () {
         modelSelection: settings.textGenerationModelSelection,
       });
       const generatedTitle = result.title.trim();
+      const assessment = automatic
+        ? result.needsRefinement === true
+          ? "insufficient"
+          : (result.assessment ?? "unknown")
+        : undefined;
       return generatedTitle === "New thread" ||
         (input.kind.type === "regenerate" && generatedTitle === projection.thread.title.trim())
-        ? { type: "complete" as const }
-        : { type: "complete" as const, title: result.title };
+        ? { type: "complete" as const, assessment }
+        : { type: "complete" as const, title: result.title, assessment };
     }).pipe(
       Effect.retry({
-        times: input.kind.type === "initial" ? 2 : 0,
+        times: !automatic && input.kind.type === "initial" ? 2 : 0,
         schedule: Schedule.exponential("2 seconds"),
       }),
       Effect.catchCause((cause) =>
@@ -192,7 +217,14 @@ const make = Effect.gen(function* () {
     yield* complete({
       ...input,
       ...(outcome.title === undefined ? {} : { title: outcome.title }),
-    });
+    }).pipe(
+      Effect.provideService(
+        ThreadTitleAssessment,
+        automatic
+          ? { requestId: input.requestId, verdict: outcome.assessment ?? "unknown" }
+          : undefined,
+      ),
+    );
   });
 
   return ThreadTitleRegenerationService.of({ execute });

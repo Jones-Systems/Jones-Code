@@ -64,6 +64,7 @@ export interface BranchNameGenerationResult {
 }
 
 export interface ThreadTitleGenerationInput {
+  titleAssessment?: boolean | undefined;
   linkedContext?: string | undefined;
   cwd: string;
   message: string;
@@ -77,6 +78,7 @@ export interface ThreadTitleGenerationInput {
 export interface ThreadTitleGenerationResult {
   title: string;
   needsRefinement?: boolean | undefined;
+  assessment?: import("./jones/ThreadTitleAssessment.ts").ThreadTitleVerdict | undefined;
 }
 
 export interface ReviewGuideStackLayer {

@@ -2,7 +2,7 @@ import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime
 import { AsyncResult } from "effect/reactivity";
 import * as Dialog from "../../components/ui/Dialog";
 import { TextInputWrapper } from "expo-paste-input";
-import { AppTextInput as TextInput } from "../../components/ui/AppText";
+import { AppText as Text, AppTextInput as TextInput } from "../../components/ui/AppText";
 import { useNativePaste } from "../../lib/useNativePaste";
 import { convertPastedImagesToAttachments } from "../../lib/composerImages";
 import { PROVIDER_SEND_TURN_MAX_ATTACHMENTS, type UserInputQuestion } from "@t3tools/contracts";
@@ -31,6 +31,8 @@ import {
 } from "../../state/question-attachments";
 
 export function QuestionAttachments(props: {
+  messageMode?: boolean;
+  hasChoice?: boolean;
   requestId: string;
   question: UserInputQuestion;
   questions: ReadonlyArray<UserInputQuestion>;
@@ -200,11 +202,20 @@ export function QuestionAttachments(props: {
       />
       <FilePreviewModal source={previewFile} onRequestClose={() => setPreviewFile(null)} />
       <VideoPreviewModal source={previewVideo} onRequestClose={() => setPreviewVideo(null)} />
+      <Text className="font-sans text-xs text-foreground-muted">
+        {props.messageMode && props.hasChoice
+          ? "Note (optional): sent with your choice"
+          : props.messageMode
+            ? "Your answer"
+            : "Your answer · Typing replaces your choice"}
+      </Text>
       <TextInputWrapper onPaste={paste}>
         <TextInput
           value={props.value}
-          multiline={props.question.initialAnswer !== undefined}
-          submitBehavior={props.question.initialAnswer !== undefined ? "newline" : undefined}
+          multiline={props.messageMode || props.question.initialAnswer !== undefined}
+          submitBehavior={
+            props.messageMode || props.question.initialAnswer !== undefined ? "newline" : undefined
+          }
           editable={!props.disabled}
           onChangeText={props.onChangeText}
           onFocus={() => {
@@ -215,8 +226,12 @@ export function QuestionAttachments(props: {
             focusedRef.current = false;
             onInputFocusChange?.(false);
           }}
-          placeholder="Or type a custom answer"
-          className="min-h-[54px] rounded-2xl border border-input-border bg-input px-3.5 py-3 font-sans text-base text-foreground"
+          placeholder={
+            props.messageMode && props.hasChoice
+              ? "Add a note (optional)"
+              : "Or type a custom answer"
+          }
+          className="max-h-[220px] min-h-[54px] rounded-2xl border border-input-border bg-input px-3.5 py-3 font-sans text-base text-foreground"
         />
       </TextInputWrapper>
     </View>

@@ -14,11 +14,14 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderSessionId,
+  ProviderThreadId,
   RunId,
   ThreadId,
   TurnItemId,
   WS_METHODS,
   type OrchestrationV2Command,
+  type OrchestrationV2ProviderSession,
   type OrchestrationV2ThreadLaunchInput,
   type OrchestrationV2ThreadProjection,
   type ProjectMutation,
@@ -49,6 +52,7 @@ import {
   revertThreadCheckpoint,
   resumeThreadQueue,
   startThreadTurn,
+  prepareImportedHistoryMessage,
 } from "./commands.ts";
 
 const layerTestCrypto = Layer.succeed(
@@ -160,7 +164,7 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
 
 describe("V2 environment commands", () => {
   it.effect.each([false, true, undefined])(
-    "preserves composer selection intent %s through ordinary and immediate dispatch",
+    "preserves composer selection intent %s through ordinary, immediate and imported dispatch",
     (modelSelectionExplicit) =>
       Effect.gen(function* () {
         const commands: OrchestrationV2Command[] = [];
@@ -185,7 +189,25 @@ describe("V2 environment commands", () => {
             dispatchMode,
           }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
         }
-        expect(commands).toHaveLength(2);
+        const imported = yield* prepareImportedHistoryMessage({
+          commandId: CommandId.make("composer-imported"),
+          threadId: v2ThreadId,
+          message: {
+            messageId: MessageId.make("composer-imported"),
+            role: "user",
+            text: "continue imported work",
+            attachments: [],
+          },
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex-compatible-b"),
+            model: "gpt-6-astra",
+          },
+          ...(modelSelectionExplicit === undefined ? {} : { modelSelectionExplicit }),
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+        commands.push(imported);
+        expect(commands).toHaveLength(3);
         for (const command of commands) {
           expect(command.type).toBe("message.dispatch");
           if (command.type !== "message.dispatch") throw new Error("Expected message dispatch");
@@ -833,10 +855,127 @@ it.effect.each([true, false, undefined] as const)(
             runtimeMode: "full-access",
             interactionMode: "default",
             dispatchMode: "queue",
+            allowQueuedToolBoundaryDelivery: true,
           }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
           expect(commands.at(-1)).not.toHaveProperty("queuedToolBoundaryEligible");
         }
       }
+    }).pipe(Effect.provide(layerTestCrypto)),
+);
+
+it.effect.each([true, false])(
+  "opts out of queued tool-boundary delivery during an active run with server resolution %s",
+  (serverResolution) =>
+    Effect.gen(function* () {
+      const providerThreadId = ProviderThreadId.make("active-provider-thread");
+      const providerSessionId = ProviderSessionId.make("active-session");
+      const activeRunId = RunId.make("active-root-run");
+      const providerSession: OrchestrationV2ProviderSession = {
+        id: providerSessionId,
+        driver: ProviderDriverKind.make("codex"),
+        providerInstanceId: v2Projection.thread.providerInstanceId,
+        status: "running",
+        cwd: "/workspace/project",
+        model: v2Projection.thread.modelSelection.model,
+        // The command only reads turn capabilities from this RPC fixture.
+        capabilities: {
+          turns: {
+            supportsActiveSteering: true,
+            supportsQueuedMessages: true,
+            supportsSteeringByInterruptRestart: true,
+          },
+        } as OrchestrationV2ProviderSession["capabilities"],
+        createdAt: v2Now,
+        updatedAt: v2Now,
+        lastError: null,
+      };
+      const projection: OrchestrationV2ThreadProjection = {
+        ...v2Projection,
+        thread: { ...v2Projection.thread, activeProviderThreadId: providerThreadId },
+        runs: [
+          {
+            id: activeRunId,
+            threadId: v2ThreadId,
+            ordinal: 1,
+            providerInstanceId: v2Projection.thread.providerInstanceId,
+            modelSelection: v2Projection.thread.modelSelection,
+            providerThreadId,
+            userMessageId: MessageId.make("active-user-message"),
+            rootNodeId: NodeId.make("active-root-node"),
+            activeAttemptId: null,
+            status: "running",
+            requestedAt: v2Now,
+            startedAt: v2Now,
+            completedAt: null,
+            checkpointId: null,
+            contextHandoffId: null,
+          },
+        ],
+        providerThreads: [
+          {
+            id: providerThreadId,
+            driver: providerSession.driver,
+            providerInstanceId: providerSession.providerInstanceId,
+            providerSessionId,
+            appThreadId: v2ThreadId,
+            ownerNodeId: null,
+            nativeThreadRef: null,
+            nativeConversationHeadRef: null,
+            status: "active",
+            firstRunOrdinal: 1,
+            lastRunOrdinal: 1,
+            handoffIds: [],
+            forkedFrom: null,
+            createdAt: v2Now,
+            updatedAt: v2Now,
+          },
+        ],
+        providerSessions: [providerSession],
+      };
+      const commands: OrchestrationV2Command[] = [];
+      const projectionRequests: ThreadId[] = [];
+      const supervisor = yield* makeSupervisor({
+        commands,
+        projects: [],
+        projection,
+        projectionRequests,
+        advertiseServerResolvedCommandContext: serverResolution,
+        advertiseQueuedToolBoundaryDelivery: true,
+      });
+      for (const creationSource of [undefined, "mobile"] as const) {
+        for (const allow of [undefined, false, true] as const) {
+          const commandId = CommandId.make(`reply-${creationSource}-${allow}`);
+          const messageId = MessageId.make(`message-${creationSource}-${allow}`);
+          yield* startThreadTurn({
+            commandId,
+            threadId: v2ThreadId,
+            ...(creationSource === undefined ? {} : { creationSource }),
+            message: { messageId, role: "user", text: "Queued reply", attachments: [] },
+            modelSelection: projection.thread.modelSelection,
+            runtimeMode: projection.thread.runtimeMode,
+            interactionMode: projection.thread.interactionMode,
+            dispatchMode: "queue",
+            ...(allow === undefined ? {} : { allowQueuedToolBoundaryDelivery: allow }),
+          }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+          const command = commands.at(-1)!;
+          expect(command).toMatchObject({
+            type: "message.dispatch",
+            commandId,
+            messageId,
+            threadId: v2ThreadId,
+            createdBy: "user",
+            creationSource: creationSource ?? "web",
+            modelSelection: projection.thread.modelSelection,
+            dispatchMode: { type: "queue_after_active" },
+          });
+          expect(command).not.toHaveProperty("deliveryIntent");
+          expect(command).not.toHaveProperty("allowQueuedToolBoundaryDelivery");
+          if (allow === false) expect(command).not.toHaveProperty("queuedToolBoundaryEligible");
+          else expect(command).toHaveProperty("queuedToolBoundaryEligible", true);
+        }
+      }
+      expect(commands).toHaveLength(6);
+      expect(projectionRequests).toHaveLength(serverResolution ? 0 : 6);
     }).pipe(Effect.provide(layerTestCrypto)),
 );
 

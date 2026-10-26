@@ -9,6 +9,7 @@ import * as Ref from "effect/Ref";
 import * as Electron from "electron";
 
 import { type DesktopSnapShotEvent, DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as DesktopAssets from "../app/DesktopAssets.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
@@ -35,6 +36,7 @@ import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as DesktopRendererHistory from "../telemetry/DesktopRendererHistory.ts";
 import { makeQuitShortcutHandler } from "./QuitHold.ts";
 import { copyContextMenuImage } from "./ContextMenuImage.ts";
+import { attachThreadMonitor, type ThreadMonitorHost } from "../jones/threadMonitor/host.ts";
 
 const TITLEBAR_HEIGHT = 40;
 // Match --workspace-topbar-height in apps/web/src/index.css; native macOS buttons stay 14 points at any zoom.
@@ -285,6 +287,7 @@ function bindFirstRevealTrigger(
 /** @public */
 export const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  const hostEnvironment = yield* HostProcess.Environment;
   const desktopState = yield* DesktopState.DesktopState;
   const assets = yield* DesktopAssets.DesktopAssets;
   const electronMenu = yield* ElectronMenu.ElectronMenu;
@@ -303,6 +306,13 @@ export const make = Effect.gen(function* () {
   const runFork = Effect.runForkWith(context);
   const runPromise = Effect.runPromiseWith(context);
   let flushMainWindowBounds: Effect.Effect<void> = Effect.void;
+  const threadMonitors = new Set<ThreadMonitorHost>();
+  yield* Effect.addFinalizer(() =>
+    Effect.sync(() => {
+      for (const monitor of threadMonitors) monitor.dispose();
+      threadMonitors.clear();
+    }),
+  );
 
   const dismissConnectingSplash = Effect.gen(function* () {
     const splash = yield* Ref.getAndSet(splashWindowRef, Option.none());
@@ -384,7 +394,11 @@ export const make = Effect.gen(function* () {
       ...getWindowTitleBarOptions(shouldUseDarkColors, environment.platform),
       webPreferences: {
         preload: environment.preloadPath,
-        // Hidden-renderer throttling stalls first paint; re-enable it after the first reveal.
+        additionalArguments: ["--jones-thread-monitor-publisher"],
+        // Chromium throttles hidden renderers: timers coalesce and rAF stops,
+        // which stalls first paint. Boot unthrottled; the first-reveal trigger
+        // restores normal throttling unless the visible thread monitor needs
+        // this sole authenticated publisher to keep processing updates.
         backgroundThrottling: false,
         contextIsolation: true,
         nodeIntegration: false,
@@ -398,6 +412,23 @@ export const make = Effect.gen(function* () {
       yield* electronWindow.destroyAll;
       return Option.none();
     }
+
+    const threadMonitor = yield* Effect.sync(() =>
+      attachThreadMonitor({
+        main: window,
+        bundleDirectory: environment.dirname,
+        stateDirectory: environment.stateDir,
+        hostEnvironment,
+        platform: environment.platform,
+        scheme: new URL(applicationUrl).protocol.slice(0, -1),
+        assetDirectory: environment.clientAssetsDir,
+        developmentOrigin: Option.getOrNull(environment.devServerUrl),
+        revealMain: () => {
+          void runPromise(electronWindow.reveal(window));
+        },
+      }),
+    );
+    threadMonitors.add(threadMonitor);
 
     yield* rendererHistory.register(window.webContents, { surface: "main" });
     if (environment.platform === "darwin") {
@@ -806,7 +837,7 @@ export const make = Effect.gen(function* () {
     }
     bindFirstRevealTrigger(revealSubscribers, () => {
       if (!window.isDestroyed()) {
-        window.webContents.setBackgroundThrottling(true);
+        threadMonitor.setMainBackgroundThrottling(true);
       }
       if (persistedSettings.mainWindowMaximized) {
         window.maximize();
@@ -820,6 +851,8 @@ export const make = Effect.gen(function* () {
     }
 
     window.on("closed", () => {
+      threadMonitor.dispose();
+      threadMonitors.delete(threadMonitor);
       clearDevelopmentLoadRetry();
       clearBoundsPersist();
       void runPromise(electronWindow.clearMain(Option.some(window)));

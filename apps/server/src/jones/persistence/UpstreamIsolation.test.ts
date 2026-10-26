@@ -328,7 +328,9 @@ it.effect(
         [122, "ThreadLinks"],
         [123, "WorkspaceLifecycle"],
         [124, "TaskContinuations"],
-        [130, "OwnerSelections"],
+        [129, "CodexFailover"],
+        [130, "ThreadTitleRefinement"],
+        [131, "OwnerSelections"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= 107 ORDER BY migration_id`,

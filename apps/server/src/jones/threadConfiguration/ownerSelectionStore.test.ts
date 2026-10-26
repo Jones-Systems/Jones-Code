@@ -4,7 +4,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
-import migration from "../persistence/Migrations/130_JonesOwnerSelections.ts";
+import migration from "../persistence/Migrations/131_JonesOwnerSelections.ts";
 import { makeJonesTablePresence } from "../persistence/JonesTablePresence.ts";
 import { makeOwnerSelectionStore } from "./ownerSelectionStore.ts";
 

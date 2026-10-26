@@ -1596,7 +1596,7 @@ it.live.each(["internal", "peer"] as const)(
 );
 
 it.live.each(["setter", "message"] as const)(
-  "A4/A10/A12 equal owner %s fences stale CAS, preserves rebound work after fresh D, and monitors follow D",
+  "A4/A10/A12 equal owner %s fences stale CAS, supersedes failover overrides, preserves rebound work after fresh D, and monitors follow D",
   (selectionKind) =>
     scenario("equal-owner-" + selectionKind, false, ({ threadId, call, state, sql }) =>
       Effect.gen(function* () {
@@ -1629,6 +1629,13 @@ it.live.each(["setter", "message"] as const)(
         yield* decodeReceipt(
           (yield* save("agent:restore:A", initialSelection, yield* read())).structuredContent,
         );
+        const queuedRun = (yield* orchestrator.getThreadProjection(threadId)).runs[1]!;
+        const inheritedAt = DateTime.formatIso(yield* DateTime.now);
+        yield* sql`INSERT INTO jones_codex_failover_queued_runs
+          (run_id, thread_id, inherited_at, override_selection_json,
+            override_switch_command_id, updated_at)
+          VALUES (${queuedRun.id}, ${threadId}, ${inheritedAt}, ${JSON.stringify(replacement)},
+            'earlier-failover-switch', ${inheritedAt})`;
         const stale = yield* read();
         const command =
           selectionKind === "setter"
@@ -1650,6 +1657,17 @@ it.live.each(["setter", "message"] as const)(
         assert.isAbove((yield* read()).configurationRevision, stale.configurationRevision);
         const rebound = (yield* orchestrator.getThreadProjection(threadId)).runs[1]!;
         assert.deepEqual(rebound.modelSelection, initialSelection);
+        assert.deepEqual(
+          yield* sql`SELECT inherited_at, override_selection_json, override_switch_command_id
+            FROM jones_codex_failover_queued_runs WHERE run_id = ${queuedRun.id}`,
+          [
+            {
+              inherited_at: inheritedAt,
+              override_selection_json: null,
+              override_switch_command_id: null,
+            },
+          ],
+        );
         const replay = yield* orchestrator.dispatch(command).pipe(withOwnerSelectionIngress);
         assert.isTrue(replay.replayed);
         assert.equal(replay.sequence, accepted.sequence);

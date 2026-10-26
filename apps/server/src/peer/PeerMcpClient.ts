@@ -1,5 +1,6 @@
 import {
   type EnvironmentId,
+  type LinkedRequestContext,
   OrchestratorMcpFailure,
   type ProviderInteractionMode,
   type RuntimeMode,
@@ -33,6 +34,7 @@ export class PeerMcpClient extends Context.Service<
       readonly arguments: Record<string, unknown>;
       readonly limits: PeerCallLimits;
       readonly origin?: LinkedMessageOrigin;
+      readonly context?: LinkedRequestContext;
       readonly success: S;
     }) => Effect.Effect<S["Type"], OrchestratorMcpFailure>;
   }

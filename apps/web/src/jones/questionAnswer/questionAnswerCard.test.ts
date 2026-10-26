@@ -157,3 +157,27 @@ describe("normal message delivery while a question is pending", () => {
     expect(promoted).toBe(0);
   });
 });
+
+it("keeps message Enter as newline and describes the final all-question gate", () => {
+  expect(isQuestionAnswerSubmitKey(event, false, true)).toBe(false);
+  expect(isQuestionAnswerSubmitKey({ ...event, ctrlKey: true }, false, true)).toBe(false);
+  const progress = derivePendingUserInputProgress(
+    [question, { ...question, id: "last" }],
+    { last: { customAnswer: "Final" } },
+    1,
+    { notes: true },
+  );
+  expect(progress).toMatchObject({ answeredByIndex: [false, true], firstUnansweredIndex: 0 });
+  expect(
+    deriveQuestionAnswerFooterState({
+      progress,
+      prompt: { responseCapability: "message", dismissible: true },
+      disabled: false,
+      isResponding: false,
+    }),
+  ).toMatchObject({
+    primaryLabel: "Send",
+    primaryDisabled: true,
+    blockedReason: "Answer question 1 to send · 1 of 2 answered",
+  });
+});

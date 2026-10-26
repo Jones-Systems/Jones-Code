@@ -346,6 +346,7 @@ export function ShellDestinationCodeBlock({
                 terminalLabel={`Run on ${destination.label}`}
                 cwd={run.cwd}
                 attachExistingOnly
+                showCopyButton
                 advancedTypography={false}
                 onSessionExited={() => {
                   if (run.phase !== "writeUnknown")

@@ -578,6 +578,10 @@
     "./jones/activity/report-lanes": {
       "types": "./src/jones/activity/reportLanes.ts",
       "default": "./src/jones/activity/reportLanes.ts"
+    },
+    "./jones/thread-monitor": {
+      "types": "./src/jones/threadMonitor/index.ts",
+      "default": "./src/jones/threadMonitor/index.ts"
     }
   },
   "scripts": {
