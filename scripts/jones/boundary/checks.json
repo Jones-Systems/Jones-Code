@@ -358,11 +358,13 @@
         "apps/web/src/hostStatus.test.ts",
         "apps/web/src/components/chat/HostStatusIndicators.browser.test.tsx",
         "apps/web/src/jones/hostStatus/GlobalHostStatusIndicators.browser.test.tsx",
-        "packages/client-runtime/src/state/environmentHttpAuth.test.ts"
+        "packages/client-runtime/src/state/environmentHttpAuth.test.ts",
+        "apps/web/src/jones/hostStatus/responsiveLayout.test.ts",
+        "apps/web/src/jones/hostStatus/ResponsiveHostStatusPills.browser.test.tsx"
       ],
       "commands": [
-        "vp test run apps/server/src/hostStatus/gateway.test.ts apps/web/src/hostStatus.test.ts packages/client-runtime/src/state/environmentHttpAuth.test.ts",
-        "vp test run --root apps/web --config vite.config.ts --project browser src/components/chat/HostStatusIndicators.browser.test.tsx src/jones/hostStatus/GlobalHostStatusIndicators.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
+        "vp test run apps/server/src/hostStatus/gateway.test.ts apps/web/src/hostStatus.test.ts packages/client-runtime/src/state/environmentHttpAuth.test.ts apps/web/src/jones/hostStatus/responsiveLayout.test.ts",
+        "vp test run --root apps/web --config vite.config.ts --project browser src/components/chat/HostStatusIndicators.browser.test.tsx src/jones/hostStatus/GlobalHostStatusIndicators.browser.test.tsx src/jones/hostStatus/ResponsiveHostStatusPills.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {

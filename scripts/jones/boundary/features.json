@@ -222,9 +222,11 @@
         "apps/server/src/hostStatus/gateway.test.ts",
         "apps/web/src/hostStatus.test.ts",
         "apps/web/src/components/chat/HostStatusIndicators.browser.test.tsx",
-        "apps/web/src/jones/hostStatus/GlobalHostStatusIndicators.browser.test.tsx"
+        "apps/web/src/jones/hostStatus/GlobalHostStatusIndicators.browser.test.tsx",
+        "apps/web/src/jones/hostStatus/responsiveLayout.test.ts",
+        "apps/web/src/jones/hostStatus/ResponsiveHostStatusPills.browser.test.tsx"
       ],
-      "scope": "Host status badges discover a registered connected gateway with configured VPS telemetry using shared HTTP authentication. Gateway selection survives thread switches and temporary disconnection; explicit removal clears selection and old samples."
+      "scope": "Host status badges discover a registered connected gateway with configured VPS telemetry using shared HTTP authentication. Gateway selection survives thread switches and temporary disconnection; explicit removal clears selection and old samples. Host chips retain both readings through measured spacing, individual name reductions, diagonal and vertical layouts; the title keeps priority and expansion restores full detail."
     },
     {
       "id": "desktop-background-preparation",
