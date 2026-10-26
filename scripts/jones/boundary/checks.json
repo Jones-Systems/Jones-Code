@@ -2705,8 +2705,10 @@
       "id": "jones-shell-destination",
       "tests": [
         "apps/web/src/jones/shellDestination/model.test.ts",
+        "apps/web/src/jones/shellDestination/terminalContents.test.ts",
+        "apps/web/src/jones/shellDestination/TerminalContentsFrame.browser.test.tsx",
         "apps/web/src/jones/shellDestination/controller.test.ts",
-        "apps/web/src/jones/shellDestination/ShellDestinationCodeBlock.browser.test.tsx",
+        "apps/web/src/jones/shellDestination/TerminalContentsFrame.browser.test.tsx src/jones/shellDestination/ShellDestinationCodeBlock.browser.test.tsx",
         "packages/contracts/src/jones/shellDestinationFence.test.ts",
         "packages/provider-core/src/server/jones/ShellDestinationInstructions.test.ts",
         "packages/provider-core/src/jones/orchestrationInstructions.test.ts",
@@ -2719,7 +2721,7 @@
         "apps/server/src/jones/terminal/ShellIdlePrompt.test.ts"
       ],
       "commands": [
-        "vp test run apps/web/src/jones/shellDestination/model.test.ts apps/web/src/jones/shellDestination/controller.test.ts packages/contracts/src/jones/shellDestinationFence.test.ts packages/provider-core/src/server/jones/ShellDestinationInstructions.test.ts packages/provider-core/src/jones/orchestrationInstructions.test.ts apps/web/src/components/ThreadTerminalDrawer.test.ts apps/web/src/state/terminalSessions.test.ts --maxWorkers=1 --no-file-parallelism apps/server/src/jones/terminal/ShellIdleExpiry.test.ts apps/server/src/terminal/Manager.test.ts apps/server/src/jones/terminal/ShellIdlePrompt.test.ts",
+        "vp test run apps/web/src/jones/shellDestination/terminalContents.test.ts apps/web/src/terminal/ghostty/core.test.ts apps/web/src/terminal/ghostty/surface.test.ts apps/web/src/jones/shellDestination/model.test.ts apps/web/src/jones/shellDestination/controller.test.ts packages/contracts/src/jones/shellDestinationFence.test.ts packages/provider-core/src/server/jones/ShellDestinationInstructions.test.ts packages/provider-core/src/jones/orchestrationInstructions.test.ts apps/web/src/components/ThreadTerminalDrawer.test.ts apps/web/src/state/terminalSessions.test.ts --maxWorkers=1 --no-file-parallelism apps/server/src/jones/terminal/ShellIdleExpiry.test.ts apps/server/src/terminal/Manager.test.ts apps/server/src/jones/terminal/ShellIdlePrompt.test.ts",
         "cd apps/web && vp test run src/jones/shellDestination/ShellDestinationCodeBlock.browser.test.tsx src/jones/shellDestination/terminalAttachment.browser.test.tsx src/components/ChatMarkdown.browser.test.tsx --project browser --maxWorkers=1 --no-file-parallelism",
         "vp lint apps/web/src/jones/shellDestination apps/web/src/components/ChatMarkdown.tsx apps/web/src/components/ChatMarkdown.browser.test.tsx apps/web/src/components/chat/MessagesTimeline.tsx apps/web/src/components/chat/TimelineAssistantRows.tsx apps/web/src/components/chat/MarkdownCodeBlock.tsx apps/web/src/components/ThreadTerminalDrawer.tsx packages/contracts/src/jones/shellDestinationFence.ts packages/contracts/src/jones/shellDestinationFence.test.ts packages/provider-core/src/server/jones/ShellDestinationInstructions.ts packages/provider-core/src/server/jones/ShellDestinationInstructions.test.ts packages/provider-core/src/server/orchestrationInstructions.ts apps/server/src/jones/terminal/ShellIdleExpiry.ts apps/server/src/jones/terminal/ShellIdleExpiry.test.ts apps/server/src/terminal/Manager.ts apps/server/src/terminal/Manager.test.ts apps/web/src/components/chat/useChatTerminalActions.ts apps/server/src/jones/terminal/ShellIdlePrompt.ts apps/server/src/jones/terminal/ShellIdlePrompt.test.ts",
         "vp run --filter @t3tools/web typecheck",

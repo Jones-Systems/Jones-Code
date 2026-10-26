@@ -1,4 +1,5 @@
 import { isShellRunTerminal } from "@t3tools/contracts/jones/shellDestinationFence";
+import { TerminalContentsFrame } from "../jones/shellDestination/TerminalContentsFrame";
 import { useAtomValue } from "@effect/atom-react";
 import {
   isAtomCommandInterrupted,
@@ -424,6 +425,7 @@ interface TerminalViewportProps {
   cwd: string;
   /** Reattach a known run without creating or restarting a missing shell. */
   attachExistingOnly?: boolean;
+  showCopyButton?: boolean;
   worktreePath?: string | null;
   runtimeEnv?: Record<string, string>;
   providerInstanceId?: ProviderInstanceId;
@@ -464,6 +466,7 @@ function TerminalSessionViewport({
   terminalLabel,
   cwd,
   attachExistingOnly = false,
+  showCopyButton = false,
   worktreePath,
   runtimeEnv,
   providerInstanceId,
@@ -1155,12 +1158,22 @@ function TerminalSessionViewport({
       containerRef.current = null;
     };
   };
-  return (
+  const viewport = (
     <div
       ref={attachContainer}
       tabIndex={-1}
-      className="relative h-full w-full overflow-hidden bg-(--terminal-background)"
+      className={cn(
+        "relative h-full w-full overflow-hidden bg-(--terminal-background)",
+        showCopyButton && "min-h-0 flex-1",
+      )}
     />
+  );
+  return showCopyButton ? (
+    <TerminalContentsFrame getText={() => terminalRef.current?.getText() ?? ""}>
+      {viewport}
+    </TerminalContentsFrame>
+  ) : (
+    viewport
   );
 }
 
