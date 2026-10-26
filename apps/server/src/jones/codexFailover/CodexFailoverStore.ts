@@ -11,7 +11,6 @@ import {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -105,7 +104,7 @@ export class CodexFailoverStoreError extends Schema.TaggedError<CodexFailoverSto
   }
 }
 type Result<A> = Effect.Effect<A, CodexFailoverStoreError>;
-export class CodexFailoverStore extends Context.Service<
+class CodexFailoverStore extends Context.Service<
   CodexFailoverStore,
   {
     readonly getEvidence: (id: ProviderTurnId) => Result<CodexFailoverEvidenceRecord | null>;
@@ -447,4 +446,3 @@ export const make = Effect.gen(function* () {
     selectionRevision,
   });
 });
-export const layer = Layer.effect(CodexFailoverStore, make);

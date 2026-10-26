@@ -6,14 +6,10 @@ import {
   type OrchestrationV2ServerCommand,
   type RunId,
   type ThreadId,
-  isOrchestrationV2WorkActive,
 } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
-import {
-  latestExecutedRun,
-  latestRootProviderFailure,
-} from "@t3tools/shared/orchestrationV2ThreadError";
-import { pendingBackgroundTurnItems } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import { latestRootProviderFailure } from "@t3tools/shared/orchestrationV2ThreadError";
+import { turnItemUpdateCanEndBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -28,7 +24,11 @@ import * as Adapters from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as Switch from "../../orchestration-v2/ProviderSwitchService.ts";
 import * as Locks from "../../orchestration-v2/ThreadCommandExecutor.ts";
 import { isBufferedProviderNotification } from "../../orchestration-v2/NotificationMailbox.ts";
-import type { RecordedLifecycleEvent, RecordedRun } from "../../orchestration-v2/RecordedTypes.ts";
+import type {
+  RecordedLifecycleEvent,
+  RecordedRun,
+  RecordedStoredLifecycleEvent,
+} from "../../orchestration-v2/RecordedTypes.ts";
 import * as Registry from "../../provider/ProviderRegistry.ts";
 import * as Settings from "../../serverSettings.ts";
 import { selectionAdmissionReason } from "../threadConfiguration/selectionAdmission.ts";
@@ -38,10 +38,16 @@ import {
   codexFailoverEligibility,
   codexFailoverFollowerSelection,
   codexFailoverPostSwitchEligible,
+  latestCodexExecutedRun,
 } from "./CodexFailoverEligibility.ts";
 import * as Store from "./CodexFailoverStore.ts";
+import * as Lineage from "./CodexFailoverLineage.ts";
 
 const prefix = "jones:codex-failover:";
+export const settlesTurnItem = (stored: RecordedStoredLifecycleEvent): boolean =>
+  stored.event.type === "turn-item.updated" &&
+  !String(stored.commandId).startsWith("command:runtime-reconcile:") &&
+  turnItemUpdateCanEndBackgroundWork(stored.event.payload);
 type Command = Extract<OrchestrationV2ServerCommand, { readonly type: "message.dispatch" }>;
 type Envelope = {
   readonly commandId: CommandId;
@@ -104,6 +110,7 @@ const fields = [
   "runs",
   "attempts",
   "providerThreads",
+  "providerTurns",
   "providerSessions",
   "runtimeRequests",
   "turnItems",
@@ -129,6 +136,7 @@ export const make = Effect.fn("CodexFailover.make")(function* <DispatchError, Qu
   const registry = yield* Effect.serviceOption(Registry.ProviderRegistry);
   const fs = yield* FileSystem.FileSystem;
   const store = yield* Store.make;
+  const lineage = yield* Lineage.make();
   const enabled = Option.isSome(registry);
   const snapshot = (threadId: ThreadId) => projections.getThreadRecords(threadId, fields);
   const metadata = Effect.fn("CodexFailover.metadata")(function* () {
@@ -158,14 +166,7 @@ export const make = Effect.fn("CodexFailover.make")(function* <DispatchError, Qu
         (item) => item.runId === runId && item.type === "run_interrupt_request",
       ),
       pendingRequest: projection.runtimeRequests.some((request) => request.status === "pending"),
-      sourceQuiet:
-        !projection.subagents.some((task) => isOrchestrationV2WorkActive(task.status)) &&
-        !projection.providerThreads.some(
-          (row) =>
-            row.id === origin?.providerThreadId && (row.pendingBackgroundTasks?.length ?? 0) > 0,
-        ) &&
-        pendingBackgroundTurnItems({ runs: projection.runs, turnItems: projection.turnItems })
-          .length === 0,
+      sourceQuiet: yield* lineage.sourceQuiet(projection, origin?.providerThreadId),
       worktreePresent,
       now: DateTime.toEpochMillis(yield* DateTime.now),
       startup,
@@ -405,21 +406,26 @@ export const make = Effect.fn("CodexFailover.make")(function* <DispatchError, Qu
       yield* react(evidence);
     }
   });
-  const afterChildWorkSettled = (threadId: ThreadId) =>
-    !enabled
-      ? Effect.void
-      : locks.withLock(
-          threadId,
-          Effect.gen(function* () {
-            for (const evidence of yield* store.listOpenEvidenceForThread(threadId)) {
-              // Recorded evidence can precede the root terminal projection. Only the
-              // failed-run reactor (or startup reconciliation) admits that first reaction.
-              if (evidence.state !== "deferred") continue;
-              yield* react(evidence);
-              yield* input.queueAfterFailure(threadId, evidence.runId);
-            }
-          }),
-        );
+  const afterChildWorkSettled = Effect.fn("CodexFailover.afterChildWorkSettled")(function* (
+    threadId: ThreadId,
+  ) {
+    if (!enabled) return;
+    // Discover ownership without locks, then release each lock before taking an ancestor's.
+    // Native descendants publish independently; nesting parent under child would invert delegation.
+    for (const owner of yield* lineage.settleThreadIds(threadId))
+      yield* locks.withLock(
+        owner,
+        Effect.gen(function* () {
+          for (const evidence of yield* store.listOpenEvidenceForThread(owner)) {
+            // Recorded evidence can precede the root terminal projection. Only the
+            // failed-run reactor (or startup reconciliation) admits that first reaction.
+            if (evidence.state !== "deferred") continue;
+            yield* react(evidence);
+            yield* input.queueAfterFailure(owner, evidence.runId);
+          }
+        }),
+      );
+  });
   const queuedSelection = (threadId: ThreadId, run: RecordedRun) =>
     !enabled || run.threadId !== threadId || run.status !== "queued"
       ? Effect.succeed(null)
@@ -441,21 +447,24 @@ export const make = Effect.fn("CodexFailover.make")(function* <DispatchError, Qu
     threadId: ThreadId,
     run: RecordedRun | null | undefined,
   ) {
-    if (!enabled || run?.threadId !== threadId || run.status !== "failed") return false;
+    if (!enabled || run?.threadId !== threadId) return false;
     const projection = yield* projections.getThreadRecords(threadId, ["runs", "attempts"]);
     const taskRuns =
       run.delegatedTaskId === undefined
         ? projection.runs
         : projection.runs.filter((row) => row.delegatedTaskId === run.delegatedTaskId);
-    if (latestExecutedRun(taskRuns)?.id !== run.id) return false;
-    const step = yield* store.getStepByOrigin(run.id);
+    const latest = latestCodexExecutedRun(taskRuns);
+    if (latest?.status !== "failed") return false;
+    const step = yield* store.getStepByOrigin(latest.id);
     if (step?.threadId === threadId && step.status === "switched") return true;
-    const turn = projection.attempts.find((row) => row.id === run.activeAttemptId)
+    const turn = projection.attempts.find((row) => row.id === latest.activeAttemptId)
       ?.providerSettlement?.providerTurnId;
     if (turn === undefined) return false;
     const evidence = yield* store.getEvidence(turn);
     return (
-      evidence?.threadId === threadId && evidence.runId === run.id && evidence.state !== "decided"
+      evidence?.threadId === threadId &&
+      evidence.runId === latest.id &&
+      evidence.state !== "decided"
     );
   });
   const commitContext = (command: {
@@ -546,7 +555,9 @@ export const make = Effect.fn("CodexFailover.make")(function* <DispatchError, Qu
             (event) => event.type === "run.created" && event.payload.status === "queued",
           );
           if (queuedEvents.length === 0) return;
-          const pool = Option.isSome(registry) ? yield* registry.value.getProviders : [];
+          const { providerThreads } = yield* projections.getThreadRecords(message.threadId, [
+            "providerThreads",
+          ]);
           for (const event of queuedEvents) {
             if (
               event.type !== "run.created" ||
@@ -555,9 +566,11 @@ export const make = Effect.fn("CodexFailover.make")(function* <DispatchError, Qu
             )
               continue;
             if (
-              !pool.some(
+              !providerThreads.some(
                 (row) =>
-                  row.instanceId === event.payload.providerInstanceId && row.driver === "codex",
+                  row.id === event.payload.providerThreadId &&
+                  row.providerInstanceId === event.payload.providerInstanceId &&
+                  row.driver === "codex",
               )
             )
               continue;

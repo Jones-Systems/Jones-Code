@@ -13,10 +13,16 @@ import {
   RunAttemptId,
   RunId,
   ThreadId,
+  TurnItemId,
   type ModelSelection,
+  type OrchestrationV2ProviderThread,
+  type OrchestrationV2ProviderTurn,
   type OrchestrationV2ServerCommand,
+  type OrchestrationV2Subagent,
+  type OrchestrationV2TurnItem,
   type ServerProvider,
 } from "@t3tools/contracts";
+import { makeSubagentChildThread } from "@t3tools/provider-core/server/subagentProjection";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -43,6 +49,7 @@ import * as Settings from "../../serverSettings.ts";
 import * as Evidence from "./CodexFailoverEvidence.ts";
 import * as Store from "./CodexFailoverStore.ts";
 import * as Failover from "./CodexFailover.ts";
+import * as Lineage from "./CodexFailoverLineage.ts";
 
 const threadId = ThreadId.make("thread:failover-service");
 const originId = RunId.make("run:failed");
@@ -408,6 +415,195 @@ const queueRun = Effect.fn("CodexFailover.test.queueRun")(function* (
   return run;
 });
 
+type ServiceFixture = Effect.Success<ReturnType<typeof makeService>>;
+type NativeChild = {
+  readonly thread: RecordedAppThread;
+  readonly provider: OrchestrationV2ProviderThread;
+  readonly turn: OrchestrationV2ProviderTurn;
+  readonly task: OrchestrationV2Subagent;
+  readonly item: Extract<OrchestrationV2TurnItem, { type: "subagent" }>;
+};
+const nativeChild = Effect.fn("CodexFailover.test.nativeChild")(function* (
+  ctx: ServiceFixture,
+  id: string,
+  parent?: NativeChild,
+) {
+  const parentThread = parent?.thread ?? ctx.thread;
+  const parentProvider =
+    parent?.provider ??
+    (yield* ctx.projections.getThreadRecords(threadId, ["providerThreads"])).providerThreads[0]!;
+  const childThreadId = ThreadId.make(`thread:${id}`);
+  const nodeId = NodeId.make(`node:${id}`);
+  const provider: OrchestrationV2ProviderThread = {
+    ...parentProvider,
+    id: ProviderThreadId.make(`provider:${id}`),
+    appThreadId: childThreadId,
+    nativeThreadRef: { driver, nativeId: id, strength: "strong" },
+    forkedFrom: {
+      providerThreadId: parentProvider.id,
+      providerTurnId: parent?.turn.id ?? providerTurnId,
+    },
+    firstRunOrdinal: null,
+    lastRunOrdinal: null,
+    pendingBackgroundTasks: [],
+  };
+  // Use the same child-thread materializer and links as CodexAdapterV2.
+  const thread = makeSubagentChildThread({
+    parentThread,
+    childThreadId,
+    parentNodeId: nodeId,
+    activeProviderThreadId: provider.id,
+    providerInstanceId: source,
+    modelSelection: captured,
+    title: id,
+    now: ctx.now,
+    createdBy: "agent",
+    creationSource: "provider",
+  });
+  const task: OrchestrationV2Subagent = {
+    id: nodeId,
+    threadId: parentThread.id,
+    runId: parent === undefined ? originId : null,
+    parentNodeId: parent?.turn.nodeId ?? ctx.run.rootNodeId!,
+    origin: "provider_native",
+    createdBy: "agent",
+    driver,
+    providerInstanceId: source,
+    providerThreadId: provider.id,
+    childThreadId,
+    nativeTaskRef: { driver, nativeId: `spawn:${id}`, strength: "strong" },
+    prompt: id,
+    title: id,
+    model: captured.model,
+    status: "running",
+    result: null,
+    startedAt: ctx.now,
+    completedAt: null,
+    updatedAt: ctx.now,
+  };
+  const turn: OrchestrationV2ProviderTurn = {
+    id: ProviderTurnId.make(`turn:${id}`),
+    providerThreadId: provider.id,
+    nodeId: NodeId.make(`root:${id}`),
+    runAttemptId: null,
+    nativeTurnRef: { driver, nativeId: `turn:${id}`, strength: "strong" },
+    ordinal: 1,
+    status: "running",
+    startedAt: ctx.now,
+    completedAt: null,
+  };
+  const item: NativeChild["item"] = {
+    id: TurnItemId.make(`item:${id}`),
+    threadId: task.threadId,
+    runId: task.runId,
+    nodeId,
+    providerThreadId: provider.id,
+    providerTurnId: parent?.turn.id ?? providerTurnId,
+    nativeItemRef: task.nativeTaskRef,
+    parentItemId: null,
+    ordinal: 1,
+    type: "subagent",
+    subagentId: task.id,
+    origin: task.origin,
+    driver,
+    providerInstanceId: source,
+    childThreadId,
+    prompt: task.prompt,
+    result: null,
+    status: "running",
+    title: id,
+    startedAt: ctx.now,
+    completedAt: null,
+    updatedAt: ctx.now,
+  };
+  yield* ctx.sink.write({
+    events: [
+      {
+        id: EventId.make(`${id}:thread`),
+        type: "thread.created",
+        threadId: childThreadId,
+        occurredAt: ctx.now,
+        payload: thread,
+      },
+      {
+        id: EventId.make(`${id}:provider`),
+        type: "provider-thread.updated",
+        threadId: childThreadId,
+        occurredAt: ctx.now,
+        payload: provider,
+      },
+      {
+        id: EventId.make(`${id}:turn`),
+        type: "provider-turn.updated",
+        threadId: childThreadId,
+        occurredAt: ctx.now,
+        payload: turn,
+      },
+      {
+        id: EventId.make(`${id}:task`),
+        type: "subagent.updated",
+        threadId: task.threadId,
+        occurredAt: ctx.now,
+        payload: task,
+      },
+      {
+        id: EventId.make(`${id}:item`),
+        type: "turn-item.updated",
+        threadId: item.threadId,
+        occurredAt: ctx.now,
+        payload: item,
+      },
+    ],
+  });
+  return { thread, provider, turn, task, item } satisfies NativeChild;
+});
+const settleNativeTask = Effect.fn("CodexFailover.test.settleNativeTask")(function* (
+  ctx: ServiceFixture,
+  child: NativeChild,
+) {
+  // The adapter commits the terminal task before its terminal subagent turn item.
+  yield* ctx.sink.write({
+    events: [
+      {
+        id: EventId.make(`${child.task.id}:turn:done`),
+        type: "provider-turn.updated",
+        threadId: child.thread.id,
+        occurredAt: ctx.now,
+        payload: { ...child.turn, status: "completed", completedAt: ctx.now },
+      },
+      {
+        id: EventId.make(`${child.task.id}:task:done`),
+        type: "subagent.updated",
+        threadId: child.task.threadId,
+        occurredAt: ctx.now,
+        payload: { ...child.task, status: "completed", completedAt: ctx.now },
+      },
+    ],
+  });
+  yield* ctx.service.afterChildWorkSettled(child.task.threadId);
+});
+const settleItem = Effect.fn("CodexFailover.test.settleItem")(function* (
+  ctx: ServiceFixture,
+  item: OrchestrationV2TurnItem,
+  suffix = "done",
+) {
+  const stored = yield* ctx.sink.write({
+    events: [
+      {
+        id: EventId.make(`${item.id}:${suffix}`),
+        type: "turn-item.updated",
+        threadId: item.threadId,
+        occurredAt: ctx.now,
+        payload: { ...item, status: "completed", completedAt: ctx.now },
+      },
+    ],
+  });
+  for (const event of stored) {
+    assert.isTrue(Failover.settlesTurnItem(event));
+    yield* ctx.service.afterChildWorkSettled(event.event.threadId);
+  }
+});
+
 it.effect("prefix gating and explicit queued intent avoid failover lookups and markers", () =>
   Effect.gen(function* () {
     const ctx = yield* makeService();
@@ -623,6 +819,290 @@ it.effect("startup catches missed evidence and cleans finished queue markers", (
     assert.equal((yield* ctx.store.getStepByOrigin(originId))?.status, "continued");
     assert.deepEqual(yield* ctx.store.listInheritedQueuedRuns(), []);
     assert.deepEqual(ctx.queues, [originId]);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("the final native subagent turn item wakes deferred failover exactly once", () =>
+  Effect.gen(function* () {
+    const ctx = yield* makeService();
+    const child = yield* nativeChild(ctx, "child");
+    yield* ctx.service.afterFailedRun(threadId, originId);
+    assert.equal((yield* ctx.store.getEvidence(providerTurnId))?.state, "deferred");
+    yield* settleNativeTask(ctx, child);
+    assert.equal((yield* ctx.store.getEvidence(providerTurnId))?.state, "deferred");
+    assert.lengthOf(ctx.dispatched, 0);
+    yield* settleItem(ctx, child.item);
+    assert.equal((yield* ctx.store.getStepByOrigin(originId))?.status, "continued");
+    yield* settleItem(ctx, child.item, "duplicate");
+    assert.lengthOf(ctx.dispatched, 1);
+    assert.deepEqual(ctx.queues, [originId, originId]);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+const deferredGrandchild = Effect.fn("CodexFailover.test.deferredGrandchild")(function* (
+  ctx: ServiceFixture,
+) {
+  const child = yield* nativeChild(ctx, "child");
+  const grandchild = yield* nativeChild(ctx, "grandchild", child);
+  const work: Extract<OrchestrationV2TurnItem, { type: "command_execution" }> = {
+    ...grandchild.item,
+    id: TurnItemId.make("grandchild:command"),
+    threadId: grandchild.thread.id,
+    runId: null,
+    nodeId: grandchild.turn.nodeId,
+    providerThreadId: grandchild.provider.id,
+    providerTurnId: grandchild.turn.id,
+    type: "command_execution",
+    input: "synthetic-work",
+  };
+  yield* ctx.sink.write({
+    events: [
+      {
+        id: EventId.make("grandchild:command:active"),
+        type: "turn-item.updated",
+        threadId: grandchild.thread.id,
+        occurredAt: ctx.now,
+        payload: work,
+      },
+    ],
+  });
+  yield* settleNativeTask(ctx, child);
+  yield* settleItem(ctx, child.item);
+  yield* ctx.service.afterFailedRun(threadId, originId);
+  assert.equal((yield* ctx.store.getEvidence(providerTurnId))?.state, "deferred");
+  assert.lengthOf(ctx.dispatched, 0);
+  return { child, grandchild, work };
+});
+
+it.effect(
+  "completed native parents retain ownership and a grandchild's final item wakes all ancestors",
+  () =>
+    Effect.gen(function* () {
+      const ctx = yield* makeService();
+      const { child, grandchild, work } = yield* deferredGrandchild(ctx);
+      // An independently owned app task under the native child does not share its adapter.
+      const unrelated = yield* nativeChild(ctx, "app-owned", child);
+      yield* ctx.sink.write({
+        events: [
+          {
+            id: EventId.make("unrelated:task"),
+            type: "subagent.updated",
+            threadId: child.thread.id,
+            occurredAt: ctx.now,
+            payload: { ...unrelated.task, origin: "app_owned" },
+          },
+          {
+            id: EventId.make("unrelated:item"),
+            type: "turn-item.updated",
+            threadId: child.thread.id,
+            occurredAt: ctx.now,
+            payload: { ...unrelated.item, origin: "app_owned" },
+          },
+        ],
+      });
+      const lineage = yield* Lineage.make();
+      assert.deepEqual(yield* lineage.settleThreadIds(unrelated.thread.id), [unrelated.thread.id]);
+      yield* settleNativeTask(ctx, grandchild);
+      yield* settleItem(ctx, grandchild.item);
+      assert.equal((yield* ctx.store.getEvidence(providerTurnId))?.state, "deferred");
+      assert.lengthOf(ctx.dispatched, 0);
+      const before = ctx.queues.length;
+      yield* settleItem(ctx, work);
+      assert.equal((yield* ctx.store.getStepByOrigin(originId))?.status, "continued");
+      assert.deepEqual(ctx.queues.slice(before), [originId]);
+      yield* settleItem(ctx, work, "duplicate");
+      assert.lengthOf(ctx.dispatched, 1);
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect(
+  "Stop during a native grandchild defer prevents continuation on the final item wake",
+  () =>
+    Effect.gen(function* () {
+      const ctx = yield* makeService();
+      const { grandchild, work } = yield* deferredGrandchild(ctx);
+      yield* ctx.sink.write({
+        events: [
+          {
+            id: EventId.make("stop:during-defer"),
+            type: "turn-item.updated",
+            threadId,
+            occurredAt: ctx.now,
+            payload: {
+              ...work,
+              id: TurnItemId.make("stop:request"),
+              threadId,
+              runId: originId,
+              providerThreadId,
+              providerTurnId,
+              type: "run_interrupt_request",
+              status: "completed",
+              completedAt: ctx.now,
+              message: "Stop",
+            },
+          },
+        ],
+      });
+      yield* settleNativeTask(ctx, grandchild);
+      yield* settleItem(ctx, grandchild.item);
+      yield* settleItem(ctx, work);
+      yield* settleItem(ctx, work, "duplicate");
+      assert.equal((yield* ctx.store.getEvidence(providerTurnId))?.decision, "stopped");
+      assert.isNull(yield* ctx.store.getStepByOrigin(originId));
+      assert.lengthOf(ctx.dispatched, 0);
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("missing or mismatched native ownership evidence keeps failover deferred", () =>
+  Effect.gen(function* () {
+    const ctx = yield* makeService();
+    const child = yield* nativeChild(ctx, "child");
+    yield* settleNativeTask(ctx, child);
+    yield* settleItem(ctx, child.item);
+    yield* ctx.sink.write({
+      events: [
+        {
+          id: EventId.make("child:missing"),
+          type: "subagent.updated",
+          threadId,
+          occurredAt: ctx.now,
+          payload: {
+            ...child.task,
+            status: "completed",
+            completedAt: ctx.now,
+            childThreadId: ThreadId.make("thread:missing"),
+          },
+        },
+      ],
+    });
+    yield* ctx.service.afterFailedRun(threadId, originId);
+    assert.equal((yield* ctx.store.getEvidence(providerTurnId))?.state, "deferred");
+    assert.lengthOf(ctx.dispatched, 0);
+    yield* ctx.sink.write({
+      events: [
+        {
+          id: EventId.make("child:restore"),
+          type: "subagent.updated",
+          threadId,
+          occurredAt: ctx.now,
+          payload: { ...child.task, status: "completed", completedAt: ctx.now },
+        },
+        {
+          id: EventId.make("child:wrong-owner"),
+          type: "provider-thread.updated",
+          threadId: child.thread.id,
+          occurredAt: ctx.now,
+          payload: { ...child.provider, forkedFrom: null },
+        },
+      ],
+    });
+    const lineage = yield* Lineage.make();
+    assert.deepEqual(yield* lineage.settleThreadIds(child.thread.id), [child.thread.id]);
+    yield* ctx.service.afterChildWorkSettled(threadId);
+    assert.equal((yield* ctx.store.getEvidence(providerTurnId))?.state, "deferred");
+    assert.lengthOf(ctx.dispatched, 0);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("completed native history on another account does not block the current account", () =>
+  Effect.gen(function* () {
+    const ctx = yield* makeService();
+    const child = yield* nativeChild(ctx, "old-account-child");
+    yield* settleNativeTask(ctx, child);
+    yield* settleItem(ctx, child.item);
+    const records = yield* ctx.projections.getThreadRecords(threadId, [
+      "runs",
+      "providerThreads",
+      "providerTurns",
+      "subagents",
+      "turnItems",
+    ]);
+    const current = {
+      ...records.providerThreads[0]!,
+      id: ProviderThreadId.make("current-account"),
+      providerInstanceId: target,
+    };
+    const lineage = yield* Lineage.make();
+    assert.isTrue(
+      yield* lineage.sourceQuiet(
+        { ...records, providerThreads: [...records.providerThreads, current] },
+        current.id,
+      ),
+    );
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("native ownership cycles are finite and never qualify a source as quiet", () =>
+  Effect.gen(function* () {
+    const ctx = yield* makeService();
+    const child = yield* nativeChild(ctx, "child");
+    yield* settleNativeTask(ctx, child);
+    yield* settleItem(ctx, child.item);
+    const backEdge: OrchestrationV2Subagent = {
+      ...child.task,
+      id: NodeId.make("cycle:back-edge"),
+      threadId: child.thread.id,
+      runId: null,
+      childThreadId: threadId,
+      providerThreadId,
+      status: "completed",
+      completedAt: ctx.now,
+    };
+    const rootProvider = (yield* ctx.projections.getThreadRecords(threadId, ["providerThreads"]))
+      .providerThreads[0]!;
+    yield* ctx.sink.write({
+      events: [
+        {
+          id: EventId.make("cycle:root"),
+          type: "thread.created",
+          threadId,
+          occurredAt: ctx.now,
+          payload: {
+            ...ctx.thread,
+            lineage: {
+              ...ctx.thread.lineage,
+              parentThreadId: child.thread.id,
+              relationshipToParent: "subagent",
+            },
+            forkedFrom: { type: "node", nodeId: backEdge.id },
+          },
+        },
+        {
+          id: EventId.make("cycle:provider"),
+          type: "provider-thread.updated",
+          threadId,
+          occurredAt: ctx.now,
+          payload: {
+            ...rootProvider,
+            forkedFrom: { providerThreadId: child.provider.id },
+          },
+        },
+        {
+          id: EventId.make("cycle:task"),
+          type: "subagent.updated",
+          threadId: child.thread.id,
+          occurredAt: ctx.now,
+          payload: backEdge,
+        },
+      ],
+    });
+    const lineage = yield* Lineage.make();
+    const cycle = yield* ctx.projections.getThreadRecords(threadId, [
+      "runs",
+      "providerThreads",
+      "providerTurns",
+      "subagents",
+      "turnItems",
+    ]);
+    assert.equal(cycle.thread.lineage.parentThreadId, child.thread.id);
+    assert.isFalse(yield* lineage.sourceQuiet(cycle, providerThreadId));
+    const owners = yield* lineage.settleThreadIds(child.thread.id);
+    assert.equal(new Set(owners).size, owners.length);
+    assert.isAtMost(owners.length, 2);
+    yield* ctx.service.afterFailedRun(threadId, originId);
+    yield* ctx.service.afterChildWorkSettled(child.thread.id);
+    assert.equal((yield* ctx.store.getEvidence(providerTurnId))?.state, "deferred");
+    assert.lengthOf(ctx.dispatched, 0);
   }).pipe(Effect.provide(testLayer)),
 );
 

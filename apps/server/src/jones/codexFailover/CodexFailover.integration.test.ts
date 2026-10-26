@@ -36,6 +36,7 @@ import { resolveCodexHomeLayout } from "../../provider/Drivers/CodexHomeLayout.t
 import * as Settings from "../../serverSettings.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as Evidence from "./CodexFailoverEvidence.ts";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as ControlAdmission from "../orchestration/ControlAdmission.ts";
 import * as ProcessAttribution from "../resourceTelemetry/ProcessAttribution.ts";
 
@@ -131,23 +132,29 @@ const awaitMilestone = Effect.fn("CodexFailoverTest.awaitMilestone")(function* (
     Stream.runCollect,
     Effect.timeout("10 seconds"),
     Effect.catch((error) =>
-      orchestrator.getThreadProjection(threadId).pipe(
-        Effect.flatMap((projection) =>
-          Effect.die(
-            new Error(
-              `Automatic Codex failover milestone missing: ${JSON.stringify({
-                runs: projection.runs.map(({ ordinal, status, modelSelection }) => ({
-                  ordinal,
-                  status,
-                  modelSelection,
-                })),
-                providerTurns: projection.providerTurns.map(({ status }) => status),
-              })}`,
-              { cause: error },
-            ),
+      Effect.gen(function* () {
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        const sql = yield* SqlClient.SqlClient;
+        const decisions =
+          yield* sql`SELECT e.run_id, e.provider_thread_id, e.provider_instance_id, d.state, d.decision FROM jones_codex_failover_evidence e LEFT JOIN jones_codex_failover_decisions d USING(provider_turn_id) WHERE e.thread_id = ${threadId}`;
+        return yield* Effect.die(
+          new Error(
+            `Automatic Codex failover milestone missing: ${JSON.stringify({
+              runs: projection.runs.map(({ ordinal, status, modelSelection }) => ({
+                ordinal,
+                status,
+                modelSelection,
+              })),
+              providerTurns: projection.providerTurns.map(({ status }) => status),
+              failures: projection.turnItems.flatMap((item) =>
+                item.type === "error" ? [item.failure] : [],
+              ),
+              decisions,
+            })}`,
+            { cause: error },
           ),
-        ),
-      ),
+        );
+      }),
     ),
   );
   assert.isDefined(reached);
@@ -299,13 +306,14 @@ const scenario = (mode: "chain" | "all-unavailable") =>
         createdBy: "user",
         creationSource: "web",
       });
-      const dispatch = (marker: string) =>
+      const dispatch = (marker: string, modelSelection?: ModelSelection) =>
         orchestrator.dispatch({
           type: "message.dispatch",
           commandId: CommandId.make(marker),
           threadId,
           messageId: MessageId.make(marker),
           text: marker,
+          ...(modelSelection === undefined ? {} : { modelSelection, modelSelectionExplicit: true }),
           attachments: [],
           createdBy: "user",
           creationSource: "web",
@@ -357,18 +365,31 @@ const scenario = (mode: "chain" | "all-unavailable") =>
             ?.nativeThreadRef,
           nativeRef,
         );
+        const returnSequence = yield* sink.latestSequence();
+        yield* dispatch("SYNTHETIC_EXPLICIT_RETURN", initialSelection);
+        const returned = yield* awaitMilestone(
+          threadId,
+          returnSequence,
+          (projection) => projection.providerTurns.length >= 7 && isIdle(projection),
+        );
+        assert.lengthOf(returned.providerTurns, 7);
+        assert.equal(returned.runs.at(-1)?.status, "completed");
+        assert.deepEqual(returned.thread.modelSelection, saved);
       }
       yield* worker.drain(100);
       const history = yield* fs.readFileString(historyPath).pipe(Effect.flatMap(decodeHistory));
       assert.equal(history.id, nativeRef.nativeId);
       assert.equal(history.cwd, cwd);
       assert.deepEqual(history.turns.slice(0, before.turns.length), before.turns);
-      const visited = mode === "chain" ? [...expected, "C"] : expected;
+      const visited = mode === "chain" ? [...expected, "C", ...expected] : expected;
       assert.lengthOf(history.turns, visited.length);
       const markers = [
         "SYNTHETIC_ORIGINAL",
         ...expected.slice(1).map(() => "SYNTHETIC_CONTINUATION"),
         ...(mode === "chain" ? ["SYNTHETIC_FRESH_INHERITED"] : []),
+        ...(mode === "chain"
+          ? ["SYNTHETIC_EXPLICIT_RETURN", "SYNTHETIC_CONTINUATION", "SYNTHETIC_CONTINUATION"]
+          : []),
       ];
       assert.deepEqual(
         history.turns.map((turn) =>

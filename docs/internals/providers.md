@@ -63,8 +63,11 @@ live admission before committing queue overrides. Only queued sends with recorde
 inherited intent follow the switch; explicit selections and older unmarked runs remain fixed.
 A refused continuation leaves the saved target visible and applies the existing failure hold.
 
-Detaching a Codex session interrupts native children, so failover waits for source work to
-settle. The same pending decision holds delegated-child result delivery until continuation or
+Account runtimes keep separate provider-thread records while sharing the native conversation,
+so explicitly returning to an earlier account preserves its runtime-generation ownership.
+Detaching a Codex session interrupts native children, so failover waits for its owned native
+descendants to settle, including descendants of completed parents. Final turn-item updates
+wake deferred ancestors. The same pending decision holds delegated-child result delivery until continuation or
 exhaustion, preventing a transient failure from finalizing its parent. Startup reconciles these
 decisions after native runtime recovery and before delegated-result recovery and effect workers;
 evidence older than 24 hours cannot start an automatic continuation. Rejected command receipts

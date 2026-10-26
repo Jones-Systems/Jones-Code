@@ -17,6 +17,22 @@ import * as DateTime from "effect/DateTime";
 import type { CodexFailoverEvidenceInput } from "./CodexFailoverEvidence.ts";
 import type { CodexFailoverFailure } from "../provider/codex/CodexFailoverFailure.ts";
 
+/** Native completion clocks can be rounded; execution cannot finish before admission. */
+export function latestCodexExecutedRun(runs: ReadonlyArray<OrchestrationV2Run>) {
+  return latestExecutedRun(
+    runs.map((run) => {
+      if (run.completedAt === null) return run;
+      const lowerBound = Math.max(
+        DateTime.toEpochMillis(run.requestedAt),
+        run.startedAt === null ? 0 : DateTime.toEpochMillis(run.startedAt),
+      );
+      return DateTime.toEpochMillis(run.completedAt) >= lowerBound
+        ? run
+        : { ...run, completedAt: DateTime.makeUnsafe(lowerBound) };
+    }),
+  );
+}
+
 export type CodexFailoverEvidence = Pick<
   CodexFailoverEvidenceInput,
   | "providerTurnId"
@@ -126,7 +142,7 @@ export function codexFailoverEligibility(input: {
     attempt.providerSettlement.providerTurnId !== evidence.providerTurnId
   )
     return skip("not_failed");
-  if (latestExecutedRun(projection.runs)?.id !== origin.id) return skip("not_latest");
+  if (latestCodexExecutedRun(projection.runs)?.id !== origin.id) return skip("not_latest");
   if (facts.driver !== "codex") return skip("not_codex");
   if (
     origin.providerInstanceId !== evidence.providerInstanceId ||
@@ -183,7 +199,7 @@ export function codexFailoverPostSwitchEligible(input: {
     modelSelectionsEqual(projection.thread.modelSelection, step.savedSelection) &&
     input.switchSequence !== null &&
     input.selectionRevision === input.switchSequence &&
-    latestExecutedRun(projection.runs)?.id === step.originRunId &&
+    latestCodexExecutedRun(projection.runs)?.id === step.originRunId &&
     !facts.stopped &&
     !facts.blockingRun &&
     !facts.pendingRequest &&

@@ -18,6 +18,7 @@ import {
   codexFailoverEligibility,
   codexFailoverFollowerSelection,
   codexFailoverPostSwitchEligible,
+  latestCodexExecutedRun,
   type CodexFailoverChainStep,
   type CodexFailoverSkipReason,
 } from "./CodexFailoverEligibility.ts";
@@ -122,6 +123,47 @@ function pre(): Pre {
 }
 
 describe("Codex failover pre-switch eligibility", () => {
+  it("bounds rounded native completion times by server admission without changing stored history", () => {
+    const previous = run({
+      id: RunId.make("previous"),
+      ordinal: 1,
+      status: "completed",
+      requestedAt: DateTime.makeUnsafe("2026-10-26T12:00:00.100Z"),
+      startedAt: DateTime.makeUnsafe("2026-10-26T12:00:00.100Z"),
+      completedAt: DateTime.makeUnsafe("2026-10-26T12:00:00.500Z"),
+    });
+    const failure = run({
+      ordinal: 2,
+      requestedAt: DateTime.makeUnsafe("2026-10-26T12:00:00.600Z"),
+      startedAt: DateTime.makeUnsafe("2026-10-26T12:00:00.600Z"),
+      completedAt: DateTime.makeUnsafe("2026-10-26T12:00:00Z"),
+    });
+    expect(latestCodexExecutedRun([previous, failure])?.id).toBe(failure.id);
+    expect(DateTime.formatIso(failure.completedAt!)).toBe("2026-10-26T12:00:00.000Z");
+    expect(
+      latestCodexExecutedRun([
+        failure,
+        run({
+          id: RunId.make("newer-active"),
+          ordinal: 3,
+          status: "running",
+          completedAt: null,
+        }),
+      ])?.id,
+    ).toBe(RunId.make("newer-active"));
+    expect(
+      latestCodexExecutedRun([
+        previous,
+        {
+          ...failure,
+          ordinal: 0,
+          requestedAt: previous.requestedAt,
+          startedAt: previous.startedAt,
+          completedAt: DateTime.makeUnsafe("2026-10-26T12:00:01Z"),
+        },
+      ])?.id,
+    ).toBe(failure.id);
+  });
   it("allows an attributed failure even when saved and captured models differ", () => {
     expect(codexFailoverEligibility(pre())).toEqual({ type: "eligible" });
   });

@@ -6561,10 +6561,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           }),
       ),
     );
-    const targetProviderThread =
-      isProviderSwitch && !canResumeAcrossInstances
-        ? rootProviderThreadsForProvider(projection, modelSelection.instanceId)[0]
-        : activeProviderThread;
+    const targetProviderThread = isProviderSwitch
+      ? rootProviderThreadsForProvider(projection, modelSelection.instanceId)[0]
+      : activeProviderThread;
     const providerSessionId =
       (canResumeAcrossInstances ? undefined : targetProviderThread?.providerSessionId) ??
       (yield* mapDispatchError(command)(
@@ -6631,7 +6630,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
     }
 
-    const ensuredProviderThread: OrchestrationV2ProviderThread =
+    const targetProviderThreadBase: OrchestrationV2ProviderThread =
       targetProviderThread === undefined
         ? {
             id: idAllocator.derive.providerThread({
@@ -6667,6 +6666,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             providerSessionId,
             updatedAt: now,
           };
+    // Account runtimes retain generation-bound records. Share the native history
+    // through the target account's own record so returning to an account can rebind.
+    const ensuredProviderThread =
+      canResumeAcrossInstances && activeProviderThread !== undefined
+        ? {
+            ...targetProviderThreadBase,
+            nativeThreadRef: activeProviderThread.nativeThreadRef,
+            nativeConversationHeadRef: activeProviderThread.nativeConversationHeadRef,
+            nativeMetadata: activeProviderThread.nativeMetadata,
+          }
+        : targetProviderThreadBase;
     const portableForkItems =
       !requiresPortableFork || sourceProjection === null || sourceRun === null
         ? []
@@ -15160,16 +15170,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               Effect.andThen(releasePlannedUpdateQueue(threadId)),
               Effect.andThen(
                 run.status === "failed"
-                  ? codexFailover
-                      .afterFailedRun(threadId, run.id)
-                      .pipe(
-                        Effect.catchCause((cause) =>
-                          Effect.logWarning("Failed to react to Codex provider failure", {
-                            threadId,
-                            cause,
-                          }),
-                        ),
-                      )
+                  ? codexFailover.afterFailedRun(threadId, run.id).pipe(
+                      Effect.catchCause((cause) =>
+                        Effect.logWarning("Failed to react to Codex provider failure", {
+                          threadId,
+                          cause,
+                        }),
+                      ),
+                    )
                   : Effect.void,
               ),
               Effect.andThen(
@@ -15372,6 +15380,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const { event } = stored;
     if (event.type === "subagent.updated")
       return !isOrchestrationV2WorkActive(event.payload.status);
+    if (event.type === "turn-item.updated") return CodexFailover.settlesTurnItem(stored);
     if (event.type !== "provider-thread.updated") return false;
     if ((event.payload.pendingBackgroundTasks?.length ?? 0) > 0) {
       providerThreadsWithBackgroundWork.add(event.payload.id);
@@ -15384,7 +15393,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       afterSequence: terminalEventsAfterSequence,
       eventType: "provider-thread.updated",
     }),
-    eventSink.stream({ afterSequence: terminalEventsAfterSequence, eventType: "subagent.updated" }),
+    Stream.merge(
+      eventSink.stream({
+        afterSequence: terminalEventsAfterSequence,
+        eventType: "subagent.updated",
+      }),
+      eventSink.stream({
+        afterSequence: terminalEventsAfterSequence,
+        eventType: "turn-item.updated",
+      }),
+    ),
   ).pipe(
     Stream.filter(settlesChildWork),
     Stream.runForEach((stored) =>
