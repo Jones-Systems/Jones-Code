@@ -98,7 +98,7 @@ const serviceLayer = (
       Layer.mergeAll(
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          readRemoteTaskObservation: () => Effect.void,
+          readRemoteTaskObservation: () => Effect.sync(() => undefined),
           ...management,
         }),
         Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),

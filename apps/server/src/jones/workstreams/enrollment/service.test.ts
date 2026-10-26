@@ -223,9 +223,11 @@ it.effect(
       yield* f.enrollments.reserve(request);
       const upgraded = yield* f.make({
         ...ports,
-        build: Effect.succeed(
-          Option.some({ ...request.context.build, sha: "b".repeat(40), tree: "c".repeat(40) }),
-        ),
+        build: Effect.succeedSome({
+          ...request.context.build,
+          sha: "b".repeat(40),
+          tree: "c".repeat(40),
+        }),
       });
       const operations = makeNativeEnrollmentOperations({
         enrollments: upgraded,

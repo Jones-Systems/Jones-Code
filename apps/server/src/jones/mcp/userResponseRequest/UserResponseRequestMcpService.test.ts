@@ -240,7 +240,7 @@ it.effect(
           .request(scope, { ...input, instruction: "Different action." })
           .pipe(Effect.result))._tag,
       ).toBe("Failure");
-      const concurrent = yield* Effect.all(
+      const concurrent = yield* Effect.forEach(
         [
           service.request(scope, { ...input, clientRequestId: "concurrent" }),
           service.request(scope, {
@@ -248,7 +248,8 @@ it.effect(
             clientRequestId: "concurrent",
             instruction: "Different action.",
           }),
-        ].map((effect) => effect.pipe(Effect.result)),
+        ],
+        Effect.result,
         { concurrency: 2 },
       );
       expect(concurrent.map((result) => result._tag).sort()).toEqual(["Failure", "Success"]);

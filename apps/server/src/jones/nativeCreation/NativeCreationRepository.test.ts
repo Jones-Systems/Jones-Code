@@ -485,8 +485,9 @@ it.effect("assigns distinct fact ordinals when asynchronous completions arrive c
     const repository = yield* Repository.NativeCreationRepository;
     const value = yield* fixture();
     yield* repository.claim(value.input, value.authorize);
-    const starts = yield* Effect.all(
-      ["first", "second"].map((effectId) =>
+    const starts = yield* Effect.forEach(
+      ["first", "second"],
+      (effectId) =>
         repository.startEffect(
           value.input.claimId,
           {
@@ -499,11 +500,11 @@ it.effect("assigns distinct fact ordinals when asynchronous completions arrive c
           },
           value.authorize,
         ),
-      ),
       { concurrency: "unbounded" },
     );
-    const completions = yield* Effect.all(
-      starts.map((fact) => {
+    const completions = yield* Effect.forEach(
+      starts,
+      (fact) => {
         if (fact.kind !== "lifecycle") return Effect.die("Fixture lifecycle fact changed");
         const { ordinal: _ordinal, ...started } = fact;
         return repository.completeEffect(value.input.claimId, {
@@ -511,7 +512,7 @@ it.effect("assigns distinct fact ordinals when asynchronous completions arrive c
           phase: "completed",
           result: "succeeded",
         });
-      }),
+      },
       { concurrency: "unbounded" },
     );
     assert.deepEqual(starts.map((fact) => fact.ordinal).sort(), [0, 1]);

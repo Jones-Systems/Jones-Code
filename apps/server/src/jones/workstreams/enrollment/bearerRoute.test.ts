@@ -83,9 +83,11 @@ it.live(
     Effect.gen(function* () {
       const home = yield* syntheticT3Home("workstreams-native-bearer-route-");
       // First server start: full migrations, WAL journal and the server-created signing key.
-      yield* Effect.gen(function* () {
-        yield* EnvironmentAuth.EnvironmentAuth;
-      }).pipe(Effect.provide(serverAuthLayer(home.baseDir)), Effect.scoped);
+      yield* EnvironmentAuth.EnvironmentAuth.pipe(
+        Effect.asVoid,
+        Effect.provide(serverAuthLayer(home.baseDir)),
+        Effect.scoped,
+      );
       assert.strictEqual(NodeFS.existsSync(`${home.dbPath}-wal`), false);
 
       const requestFile = `${home.baseDir}/native-enrollment-request.json`;

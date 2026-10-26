@@ -108,15 +108,13 @@ export default Effect.gen(function* () {
         ({ table: target }) => !target.startsWith("jones_") && target !== "native_creation_intents",
       )
     ) {
-      return yield* Effect.fail(
-        new SqlError({
-          reason: new ConstraintError({
-            cause: undefined,
-            operation: "Jones migration 105 self-check",
-            message: "Jones migration 105 did not preserve rows or isolate upstream references.",
-          }),
+      return yield* new SqlError({
+        reason: new ConstraintError({
+          cause: undefined,
+          operation: "Jones migration 105 self-check",
+          message: "Jones migration 105 did not preserve rows or isolate upstream references.",
         }),
-      );
+      });
     }
   }
 });
