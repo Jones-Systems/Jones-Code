@@ -176,9 +176,6 @@ catalogs:
     '@effect/sql-sqlite-do':
       specifier: 4.0.5
       version: 4.0.5
-    '@effect/tsgo':
-      specifier: 0.51.1
-      version: 0.51.1
     '@noble/curves':
       specifier: 1.9.1
       version: 1.9.1
@@ -389,9 +386,6 @@ importers:
       '@coderabbitai/config':
         specifier: 1.1.0
         version: 1.1.0
-      '@effect/tsgo':
-        specifier: 'catalog:'
-        version: 0.51.1
       '@shadcn/lint':
         specifier: 0.1.5
         version: 0.1.5
@@ -401,9 +395,6 @@ importers:
       knip:
         specifier: 6.34.0
         version: 6.34.0
-      tsc-rs:
-        specifier: 0.7.0
-        version: 0.7.0
       tsrs:
         specifier: 0.18.0-ts7.1.0-dev.20260929
         version: 0.18.0-ts7.1.0-dev.20260929
@@ -3540,45 +3531,6 @@ packages:
     resolution: {integrity: sha512-TGlU65ZJJMa81I7EoicQXxhRsJDxDPz6A/PNOPzMYRgmCdLs6EsTTXIkKZ+8apb7pl2o0OKVcrT6i6mGlluyLg==}
     peerDependencies:
       effect: 4.0.5
-
-  '@effect/tsgo-darwin-arm64@0.51.1':
-    resolution: {integrity: sha512-Jx+1RB3pz1B2zYs1EmxybwDOq9KRpfdu/rn1XTULNMZmqUJZuvTQU9CRqB0g/ZgIa6MeNBZEYvmAu4Dq2/QVWA==}
-    cpu: [arm64]
-    os: [darwin]
-
-  '@effect/tsgo-darwin-x64@0.51.1':
-    resolution: {integrity: sha512-eRz7eHOOb2eJPUj66m89Zhzu924vGvNLDAXzcEAIaXVsWc4Zw29RVUsRnp/ozTmCbDVCvMqPSh8i9bkdAmt8mA==}
-    cpu: [x64]
-    os: [darwin]
-
-  '@effect/tsgo-linux-arm64@0.51.1':
-    resolution: {integrity: sha512-LqZKkEEgJcq7dOho+h0esioU/idlB/+VhPuMR7l9B5Y7mk17Eivs8TiJQHtxLVfrh/nizbvZih7O5GujRNG0bw==}
-    cpu: [arm64]
-    os: [linux]
-
-  '@effect/tsgo-linux-arm@0.51.1':
-    resolution: {integrity: sha512-vub6MCJIbczHp+Im1GTEUh5YyS+6YHcvH0ZmBdSjdvqzzBKbRnl5xUbO52tRJlty74f+3ey+uSh0nIO99NnggA==}
-    cpu: [arm]
-    os: [linux]
-
-  '@effect/tsgo-linux-x64@0.51.1':
-    resolution: {integrity: sha512-zyKKcdL2Pr4C//9raggaEuxhsSUR7jT6517vHvPwykbBPjPnnmGtM1Kq7NKEIZnvXWzXcaK+4wAK/0FqSqMOmw==}
-    cpu: [x64]
-    os: [linux]
-
-  '@effect/tsgo-win32-arm64@0.51.1':
-    resolution: {integrity: sha512-yIF88Za3Bs793Mb8OShet8gc3kj/NNty6+ZoTdgiPXWlY6xh84bZZCOETqE7VcCmxXFT3NZSYQuDrU35/CTvRQ==}
-    cpu: [arm64]
-    os: [win32]
-
-  '@effect/tsgo-win32-x64@0.51.1':
-    resolution: {integrity: sha512-5HO1TJkWMlErIXbfKKWEMzg0Jj0MPQAzs0g1k7wA3B1ZxNDoDY9iRu5eGM+G1a4HmKl3zA7hQZd0ch2Dh4MohQ==}
-    cpu: [x64]
-    os: [win32]
-
-  '@effect/tsgo@0.51.1':
-    resolution: {integrity: sha512-i6mA6cNah+0mkPdu8qZILCO3Pnd9kWo03/s82Ju+1DFhdL28HFagi+1PRGxqgq1uMaHziWQ+ciKvOmIoks2RdA==}
-    hasBin: true
 
   '@effect/vitest@4.0.5':
     resolution: {integrity: sha512-q64paZ/i4V2NiRhTyqCmT2KiDbFjlxc2EZrZca8GGt+Nf8844946HyJM5bPk/q+YeRkFSxIrlCs+J+LSfky/wA==}
@@ -6727,22 +6679,10 @@ packages:
   '@tiptap/starter-kit@3.31.3':
     resolution: {integrity: sha512-WKof9RewdmGHvWJ1wn0/HVNG2mV+HOgVRyJkKekuM9fgr6BZAAH/xZsWE1eon+94JnQ+KtK2ThydXQM/qc6b2A==}
 
-  '@tsc-rs/darwin-arm64@0.7.0':
-    resolution: {integrity: sha512-3execGkNh7DXNZr03dhQP2wqmsjB1Q4OJnTMgKIibjeQMsjNK8HTalJZPIG6PkiXeusXUweHP3+4yJjbi5auNw==}
-    engines: {node: '>=16.20.0'}
-    cpu: [arm64]
-    os: [darwin]
-
   '@tsc-rs/darwin-arm64@0.8.0':
     resolution: {integrity: sha512-1aGCULRzd7KXIFh72Ja1K+35bQ1AeW9P3F3S36MXXhp5EQCezqxeXKkL3kQ3kH+ebfI/wA2gxyus34rllF1keQ==}
     engines: {node: '>=16.20.0'}
     cpu: [arm64]
-    os: [darwin]
-
-  '@tsc-rs/darwin-x64@0.7.0':
-    resolution: {integrity: sha512-Wi3CNYWgyIOcWTQjihXCFPTul+aTEXVq1og8rO22Cq6/Mz6lKk+9YSXycWOkJql6D0uE0l/S1nMStq4mx7ydpA==}
-    engines: {node: '>=16.20.0'}
-    cpu: [x64]
     os: [darwin]
 
   '@tsc-rs/darwin-x64@0.8.0':
@@ -6751,22 +6691,10 @@ packages:
     cpu: [x64]
     os: [darwin]
 
-  '@tsc-rs/linux-arm64@0.7.0':
-    resolution: {integrity: sha512-sm+xPELgQGKOoFeklJAmIi99Fi3fIUFgGPYQclC/IiVdUTzHtKw6yg6JRNEI74JIaSxGRAGbtmHcVvTkC93ZLw==}
-    engines: {node: '>=16.20.0'}
-    cpu: [arm64]
-    os: [linux]
-
   '@tsc-rs/linux-arm64@0.8.0':
     resolution: {integrity: sha512-mo8qBCCgvMv7jYJrYSbHjc5CBVkzMQiJFOVF6oL4nP7sp/QjywskFZwUduw8Yn1MX83fR1zbJbhAkKtlwRZ3hg==}
     engines: {node: '>=16.20.0'}
     cpu: [arm64]
-    os: [linux]
-
-  '@tsc-rs/linux-x64@0.7.0':
-    resolution: {integrity: sha512-gyDPxVNmasL/RMPXzutxhaUqyLlPLTcPhWl5pWCkuZdV0dUfGpR4PG5h1Nht9Db3MMHs9ixzl+uS6Nc5+qA/jg==}
-    engines: {node: '>=16.20.0'}
-    cpu: [x64]
     os: [linux]
 
   '@tsc-rs/linux-x64@0.8.0':
@@ -6780,22 +6708,10 @@ packages:
     engines: {node: '>=16.20.0'}
     hasBin: true
 
-  '@tsc-rs/win32-arm64@0.7.0':
-    resolution: {integrity: sha512-dPLJLH5iXgBzMRiuSGz4awMu8dxOI2iXRN0ZDqs/LolZ1ShbjmgIcH1bwQeObdyFwyen44c6vK8mFIiJELsv4Q==}
-    engines: {node: '>=16.20.0'}
-    cpu: [arm64]
-    os: [win32]
-
   '@tsc-rs/win32-arm64@0.8.0':
     resolution: {integrity: sha512-JNycrZs0LcZ8Rx1+Ik3z9R7YkNIKE2ZQjWKmI6os3EpGrMpfSztFYhbuI0whiZpFfL0AqaVu4o0F1+oR0Z8YDQ==}
     engines: {node: '>=16.20.0'}
     cpu: [arm64]
-    os: [win32]
-
-  '@tsc-rs/win32-x64@0.7.0':
-    resolution: {integrity: sha512-n/bJeMWvr0KbBPYVXroe23ia82Q6ZizUBYhgoZvsUasK4RfZ/rsJdIoP1Jpcw0ONXEbC8AKwHVi8BSOiUlSOuw==}
-    engines: {node: '>=16.20.0'}
-    cpu: [x64]
     os: [win32]
 
   '@tsc-rs/win32-x64@0.8.0':
@@ -11736,11 +11652,6 @@ packages:
   ts-algebra@2.0.0:
     resolution: {integrity: sha512-FPAhNPFMrkwz76P7cdjdmiShwMynZYN6SgOujD1urY4oNm80Ou9oMdmbR45LotcKOXoy7wSmHkRFE6Mxbrhefw==}
 
-  tsc-rs@0.7.0:
-    resolution: {integrity: sha512-diVCBljoXLQjvXRkIuamR3QRrmNyqgYDePKA5SFXTSDPSjku2a2JXj/bOxG4DoPUbYkzWl/XFu1689z/46TCaA==}
-    engines: {node: '>=16.20.0'}
-    hasBin: true
-
   tslib@2.8.1:
     resolution: {integrity: sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==}
 
@@ -13878,37 +13789,6 @@ snapshots:
   '@effect/sql-sqlite-do@4.0.5(effect@4.0.5(patch_hash=c45feb52a7b4010859c019b830ced3b3bcde8fffdd13f49ada808a256d72a724))':
     dependencies:
       effect: 4.0.5(patch_hash=c45feb52a7b4010859c019b830ced3b3bcde8fffdd13f49ada808a256d72a724)
-
-  '@effect/tsgo-darwin-arm64@0.51.1':
-    optional: true
-
-  '@effect/tsgo-darwin-x64@0.51.1':
-    optional: true
-
-  '@effect/tsgo-linux-arm64@0.51.1':
-    optional: true
-
-  '@effect/tsgo-linux-arm@0.51.1':
-    optional: true
-
-  '@effect/tsgo-linux-x64@0.51.1':
-    optional: true
-
-  '@effect/tsgo-win32-arm64@0.51.1':
-    optional: true
-
-  '@effect/tsgo-win32-x64@0.51.1':
-    optional: true
-
-  '@effect/tsgo@0.51.1':
-    optionalDependencies:
-      '@effect/tsgo-darwin-arm64': 0.51.1
-      '@effect/tsgo-darwin-x64': 0.51.1
-      '@effect/tsgo-linux-arm': 0.51.1
-      '@effect/tsgo-linux-arm64': 0.51.1
-      '@effect/tsgo-linux-x64': 0.51.1
-      '@effect/tsgo-win32-arm64': 0.51.1
-      '@effect/tsgo-win32-x64': 0.51.1
 
   '@effect/vitest@4.0.5(patch_hash=2731c9c3761c595f25ddc625a7d61ca376b389d5b3049ecb837c8940f21cfa02)(@astrojs/compiler-rs@0.5.1)(@tsc-rs/typescript@0.8.0)(@types/node@24.12.4)(@vitest/browser-playwright@5.0.5)(@vitest/ui@5.0.5)(@volar/typescript@2.4.28(@tsc-rs/typescript@0.8.0))(bufferutil@4.1.0)(effect@4.0.5(patch_hash=c45feb52a7b4010859c019b830ced3b3bcde8fffdd13f49ada808a256d72a724))(esbuild@0.28.2)(jiti@2.7.0)(jsdom@30.1.0(@noble/hashes@1.8.0))(playwright@1.60.0)(terser@5.48.0)(unrun@0.2.39)(utf-8-validate@6.0.6)(yaml@2.9.0)':
     dependencies:
@@ -16695,25 +16575,13 @@ snapshots:
       '@tiptap/extensions': 3.31.3(@tiptap/core@3.31.3(@tiptap/pm@3.31.3))(@tiptap/pm@3.31.3)
       '@tiptap/pm': 3.31.3
 
-  '@tsc-rs/darwin-arm64@0.7.0':
-    optional: true
-
   '@tsc-rs/darwin-arm64@0.8.0':
-    optional: true
-
-  '@tsc-rs/darwin-x64@0.7.0':
     optional: true
 
   '@tsc-rs/darwin-x64@0.8.0':
     optional: true
 
-  '@tsc-rs/linux-arm64@0.7.0':
-    optional: true
-
   '@tsc-rs/linux-arm64@0.8.0':
-    optional: true
-
-  '@tsc-rs/linux-x64@0.7.0':
     optional: true
 
   '@tsc-rs/linux-x64@0.8.0':
@@ -16728,13 +16596,7 @@ snapshots:
       '@typescript/typescript-win32-arm64': '@tsc-rs/win32-arm64@0.8.0'
       '@typescript/typescript-win32-x64': '@tsc-rs/win32-x64@0.8.0'
 
-  '@tsc-rs/win32-arm64@0.7.0':
-    optional: true
-
   '@tsc-rs/win32-arm64@0.8.0':
-    optional: true
-
-  '@tsc-rs/win32-x64@0.7.0':
     optional: true
 
   '@tsc-rs/win32-x64@0.8.0':
@@ -22577,15 +22439,6 @@ snapshots:
       utf8-byte-length: 1.0.5
 
   ts-algebra@2.0.0: {}
-
-  tsc-rs@0.7.0:
-    optionalDependencies:
-      '@tsc-rs/darwin-arm64': 0.7.0
-      '@tsc-rs/darwin-x64': 0.7.0
-      '@tsc-rs/linux-arm64': 0.7.0
-      '@tsc-rs/linux-x64': 0.7.0
-      '@tsc-rs/win32-arm64': 0.7.0
-      '@tsc-rs/win32-x64': 0.7.0
 
   tslib@2.8.1: {}
 
