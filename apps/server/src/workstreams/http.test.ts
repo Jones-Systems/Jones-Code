@@ -653,3 +653,30 @@ it.effect("both live consumers share one file snapshot and keep it until the nex
 vi.mock("node:fs", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:fs")>()),
 }));
+
+it.effect.each([
+  { contract: "workstreams-t3-placement/2.0.0", status: 409 },
+  { contract: "workstreams-t3-placement/9.0.0", status: 400 },
+])("refuses placement negotiation $contract without native service", ({ contract, status }) =>
+  withHttpFixture([AuthOrchestrationReadScope], async ({ handler, calls }) => {
+    const response = await handler(
+      new Request("http://fixture/api/workstreams/thread-placements", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer synthetic-token",
+          "content-type": "application/json",
+          "x-t3-workstreams-placement-contract": contract,
+        },
+        body: JSON.stringify({ identities: [] }),
+      }),
+    );
+    expect(response.status).toBe(status);
+    if (status === 409)
+      expect(await response.json()).toEqual({
+        _tag: "EnvironmentHttpConflictError",
+        message: "workstreams_native_unavailable",
+      });
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(calls).toEqual({ reads: 0, writes: 0 });
+  }),
+);

@@ -2108,7 +2108,8 @@
     "apps/server/src/jones/workstreams/native/transition/fixtures/v1/snapshot.schema.json": "jones-owned",
     "apps/server/src/jones/workstreams/native/transition/fixtures/v1/spec.md": "jones-owned",
     "apps/server/src/jones/workstreams/native/transition/fixtures/v1/vectors.json": "jones-owned",
-    "apps/server/src/jones/workstreams/native/transition/fixtures/v1/vectors.sha256": "jones-owned"
+    "apps/server/src/jones/workstreams/native/transition/fixtures/v1/vectors.sha256": "jones-owned",
+    "docs/operations/workstreams-native.md": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

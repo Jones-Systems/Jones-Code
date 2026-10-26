@@ -1,3 +1,4 @@
+import { NativeEntry } from "../jones/workstreams/native/integration.ts";
 import { decodeRegistryBinding } from "@t3tools/shared/jones/workstreamsRegistryBinding";
 import * as WorkstreamOperations from "../jones/workstreams/operations/service.ts";
 import * as WorkstreamOperationsLive from "../jones/workstreams/operations/live.ts";
@@ -299,9 +300,25 @@ export const workstreamHttpApiLayer = HttpApiBuilder.group(
         }),
       )
       .handle("threadPlacements", (args) =>
-        read(args.endpoint.name).pipe(
-          Effect.andThen(internal("threadPlacements", gateway.readThreadPlacements(args.payload))),
-        ),
+        Effect.gen(function* () {
+          yield* read(args.endpoint.name);
+          const contract = args.headers["x-t3-workstreams-placement-contract"];
+          if (contract === undefined)
+            return yield* internal("threadPlacements", gateway.readThreadPlacements(args.payload));
+          const native = yield* Effect.serviceOption(NativeEntry);
+          if (Option.isNone(native))
+            return yield* new EnvironmentHttpConflictError({
+              message: "workstreams_native_unavailable",
+            });
+          return yield* native.value.adapter
+            .placementResponse(args.payload, contract)
+            .pipe(
+              Effect.mapError(
+                () =>
+                  new EnvironmentHttpConflictError({ message: "workstreams_native_unavailable" }),
+              ),
+            );
+        }),
       )
       .handle("list", (args) =>
         read(args.endpoint.name).pipe(

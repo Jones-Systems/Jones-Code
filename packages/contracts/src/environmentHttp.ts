@@ -105,6 +105,7 @@ import {
   WorkstreamReceipt,
 } from "./workstreams.ts";
 import { T3PlacementLoadRequest, T3PlacementResult } from "./workstreamPlacements.ts";
+import { WorkstreamsNativePlacementResult } from "./jones/workstreamsNativePlacement.ts";
 
 const OptionalBearerHeaders = Schema.Struct({
   authorization: Schema.optionalKey(Schema.String),
@@ -884,10 +885,15 @@ const {
 
 class EnvironmentWorkstreamsHttpApi extends EnvironmentWorkstreamAppearanceHttpApi.add(
   HttpApiEndpoint.post("threadPlacements", "/api/workstreams/thread-placements", {
-    headers: OptionalBearerHeaders,
+    headers: Schema.Struct({
+      ...OptionalBearerHeaders.fields,
+      "x-t3-workstreams-placement-contract": Schema.optionalKey(
+        Schema.Literal("workstreams-t3-placement/2.0.0"),
+      ),
+    }),
     payload: T3PlacementLoadRequest,
-    success: T3PlacementResult,
-    error: EnvironmentWorkstreamSnapshotErrors,
+    success: Schema.Union([WorkstreamsNativePlacementResult, T3PlacementResult]),
+    error: EnvironmentWorkstreamPagedSnapshotErrors,
   }).middleware(EnvironmentAuthenticatedAuth),
 )
   .add(

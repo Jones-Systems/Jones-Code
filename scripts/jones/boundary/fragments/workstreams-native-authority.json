@@ -11,6 +11,10 @@
     {
       "from": "packages/contracts/src/environment.ts",
       "to": "packages/contracts/src/jones/workstreamsNative.ts"
+    },
+    {
+      "from": "packages/contracts/src/environmentHttp.ts",
+      "to": "packages/contracts/src/jones/workstreamsNativePlacement.ts"
     }
   ]
 }

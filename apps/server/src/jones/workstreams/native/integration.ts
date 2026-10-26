@@ -1,3 +1,14 @@
+import * as Context from "effect/Context";
+import type { AdmittedCaller } from "./mode/authorityMode.ts";
+import * as NativeSession from "./registry/session.ts";
+import * as NativeRegistry from "./registry/service.ts";
+import * as NativeEffectRunner from "./registry/effectRunner.ts";
+import * as NativeAppearance from "./registry/appearance.ts";
+import * as NativeCounts from "./registry/counts.ts";
+import * as NativePlacements from "./registry/placements.ts";
+import * as NativeRegistration from "./registry/registration.ts";
+import * as NativeLocalTransport from "./registry/localTransport.ts";
+import type * as RegistrationContext from "../registrationContext/service.ts";
 import * as Transition from "./transition/cli.ts";
 import * as DurableEntries from "./operations/durableEntries.ts";
 import * as HomeExecutor from "./operations/homeExecutor.ts";
@@ -63,3 +74,63 @@ export const nativeOperationsExecutionLayer = Layer.effect(
 export const nativeTransitionLayer = Transition.layer.pipe(
   Layer.provideMerge(nativePersistenceLayer),
 );
+
+const nativeRegistryLayer = NativeRegistry.layer.pipe(
+  Layer.provideMerge(NativeSession.layer),
+  Layer.provideMerge(nativePersistenceLayer),
+);
+
+/** Requires explicit NativeHome, source/provider routing and source trust. No mode is inferred here. */
+export const nativeHomeRuntimeLayer = NativeLocalTransport.layer.pipe(
+  Layer.provideMerge(
+    Layer.mergeAll(
+      NativeEffectRunner.layer,
+      NativeAppearance.layer,
+      NativeCounts.layer,
+      NativePlacements.layer,
+      NativeRegistration.layer,
+    ).pipe(Layer.provideMerge(nativeRegistryLayer)),
+  ),
+);
+
+export class NativeEntry extends Context.Service<
+  NativeEntry,
+  {
+    readonly caller: AdmittedCaller;
+    readonly adapter: NativeLocalTransport.NativeAdapter;
+    readonly registration: RegistrationContext.WorkstreamsRegistrationContext["Service"];
+  }
+>()("t3/jones/workstreams/native/integration/NativeEntry") {}
+
+/** Apply only inside a source-owned, admitted native entry context. */
+export const nativeEntryLayer = (caller: AdmittedCaller) =>
+  Layer.effect(
+    NativeEntry,
+    Effect.gen(function* () {
+      const local = yield* NativeLocalTransport.LocalTransport;
+      const registration = yield* NativeRegistration.Registration;
+      return {
+        caller,
+        adapter: yield* local.forCaller(caller),
+        registration: registration.forCaller(caller),
+      };
+    }),
+  );
+
+const admittedHomeTransportLayer = Layer.effect(
+  HomeExecutor.HomeTransport,
+  Effect.map(NativeEntry, (entry) => entry.adapter.homeTransport),
+);
+
+/** Source admission selects this layer; it must never be installed as a global native default. */
+export const nativeAdmittedOperationsExecutionLayer = Layer.effect(
+  ExecutionContext,
+  Effect.gen(function* () {
+    const entry = yield* NativeEntry;
+    return {
+      mode: "native" as const,
+      entries: yield* DurableEntries.DurableEntries,
+      executor: entry.adapter.guardExecutor(yield* HomeExecutor.HomeExecutor),
+    };
+  }),
+).pipe(Layer.provideMerge(nativeOperationsLayer), Layer.provide(admittedHomeTransportLayer));
