@@ -99,6 +99,34 @@ const makeApi = (capable: boolean): MobileWorkstreams & MobileOperationActions =
   assignOperation: vi.fn(async () => {}),
 });
 describe("mobile never-verified primary assignment", () => {
+  it("labels native cached data and missing provenance without requesting CP enrollment", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const api = makeApi(true);
+    const nativeSnapshot: MobileWorkstreamSnapshot = {
+      ...snapshot,
+      stale: true,
+      nativeCapability: {
+        contract: "workstreams-native/1.0.0",
+        mode: "native-home",
+        reads: ["workstreams-read/1.0.0"],
+        placement_proofs: ["workstreams-t3-placement/1.0.0"],
+        registry: {
+          registry_instance_id: "8cdd84b6-81c5-4c88-9d13-5d324abaf662",
+          owner_id: data.binding.ownerId,
+          canonical_origin: data.binding.registryId,
+          home_environment_id: "env:home",
+          server_generation: 7,
+        },
+      },
+    };
+    await act(async () => mountControls({ ...api, stale: true, snapshots: [nativeSnapshot] }));
+    expect(container?.textContent).toContain("Home env:home");
+    expect(container?.textContent).toContain("Native read provenance unavailable");
+    expect(container?.textContent).toContain("Stale · Read-only");
+    expect(container?.textContent).not.toContain("verified enrollment");
+    expect(assignmentButton().disabled).toBe(true);
+  });
+
   it("uses one operation with no reference scan on a capable server", async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     const api = makeApi(true);

@@ -98,6 +98,45 @@ function setup() {
   };
 }
 describe("capability-gated application operations", () => {
+  it("keeps native request and result projection plaintext out of local storage", async () => {
+    using _setup = setup();
+    registry.set(config(primary), {
+      environment: {
+        capabilities: {
+          workstreamOperations: { contract: WORKSTREAM_OPERATIONS_CONTRACT },
+          workstreamsNative: {
+            contract: "workstreams-native/1.0.0",
+            mode: "native-home",
+            reads: ["workstreams-read/1.0.0"],
+            placement_proofs: ["workstreams-t3-placement/1.0.0"],
+            registry: {
+              registry_instance_id: setupFixture.registry.registry_id,
+              owner_id: operationFixtureData.binding.ownerId,
+              canonical_origin: operationFixtureData.binding.registryId,
+              home_environment_id: primary,
+              server_generation: operationFixtureData.binding.serverGeneration,
+            },
+          },
+        },
+      },
+    } as unknown as ServerConfig);
+    await using _screen = await mount();
+    fixture.submit.mockImplementation(async ({ request }) => ({
+      ...operationFixtureResult(),
+      kind: request.kind,
+      observed: null,
+      result: { workstream_id: "beta", membership_id: null, registry_version: 12 },
+    }));
+    await act(async () => {
+      await latest.create("Protected native name", {
+        commandId: async () => "operation-fixture-0001",
+      });
+    });
+    expect(fixture.submit).toHaveBeenCalledTimes(1);
+    expect(window.localStorage.length).toBe(0);
+    expect(latest.capability?.mode).toBe("native-home");
+  });
+
   it("does not use operation endpoints when the capability is absent", async () => {
     using _setup = setup();
     registry.set(config(primary), null);

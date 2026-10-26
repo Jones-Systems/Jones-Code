@@ -1,5 +1,9 @@
 import type { PreparedConnection } from "@t3tools/client-runtime/connection";
 import {
+  nativeWorkstreamGroupKey,
+  assertNativeWorkstreamBinding,
+  nativeWorkstreamsBlock,
+  type NativeWorkstreamsCapability,
   buildConnectedEnvironmentTrust,
   groupNativeThreadsByWorkstream,
   orderWorkstreamMetadata,
@@ -21,6 +25,10 @@ import {
 } from "@t3tools/contracts";
 const COLORS = ["#0284c7", "#7c3aed", "#059669", "#d97706", "#e11d48"];
 export interface MobileWorkstreamSnapshot {
+  readonly nativeCapability?: NativeWorkstreamsCapability | null;
+  readonly nativeRead?:
+    | import("@t3tools/contracts/jones/workstreamsNativeRead").WorkstreamsNativeReadEnvelope
+    | null;
   readonly appearance?: WorkstreamAppearancePage | null;
   readonly prepared: PreparedConnection;
   readonly generation: number;
@@ -41,6 +49,7 @@ export function sameMobileWorkstreamAuthority(
   right: MobileWorkstreamSnapshot,
 ): boolean {
   return (
+    JSON.stringify(left.nativeCapability) === JSON.stringify(right.nativeCapability) &&
     left.prepared === right.prepared &&
     left.generation === right.generation &&
     left.data === right.data &&
@@ -87,6 +96,16 @@ export function projectMobileWorkstreams(
   const nowIso = new Date(now).toISOString();
   for (const snapshot of snapshots) {
     const binding = snapshot.data.binding;
+    try {
+      assertNativeWorkstreamBinding(snapshot.nativeCapability, binding);
+    } catch {
+      continue;
+    }
+    if (
+      snapshot.nativeCapability?.mode === "transition-fenced" ||
+      snapshot.nativeCapability?.mode === "disabled"
+    )
+      continue;
     const proof = currentProof(snapshot);
     const index = snapshot.index;
     if (
@@ -113,6 +132,7 @@ export function projectMobileWorkstreams(
     }
     const live =
       !snapshot.stale &&
+      !nativeWorkstreamsBlock(snapshot.nativeCapability) &&
       snapshot.data.source === "live" &&
       !snapshot.data.stale &&
       snapshot.data.nextCursor === null;
@@ -139,7 +159,11 @@ export function projectMobileWorkstreams(
       const group = grouped.groups.find(
         (entry) => entry.workstream.workstreamId === workstream.workstreamId,
       ) ?? { workstream, threads: [] };
-      const key = JSON.stringify([namespace(snapshot.data), group.workstream.workstreamId]);
+      const key = JSON.stringify([
+        (snapshot.nativeCapability && nativeWorkstreamGroupKey(snapshot.nativeCapability)) ||
+          namespace(snapshot.data),
+        group.workstream.workstreamId,
+      ]);
       if (conflicts.has(key)) continue;
       const prior = groups.get(key);
       if (
@@ -192,7 +216,13 @@ export function projectMobileWorkstreams(
     confirmedUnassignedKeys,
     /** Threads with conflicting stored assignments; membership changes stay blocked. */
     conflictingThreadKeys,
-    stale: snapshots.some((snapshot) => snapshot.stale),
+    stale: snapshots.some(
+      (snapshot) =>
+        snapshot.stale ||
+        snapshot.data.stale ||
+        snapshot.data.source === "cache" ||
+        nativeWorkstreamsBlock(snapshot.nativeCapability) !== null,
+    ),
   };
 }
 

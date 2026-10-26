@@ -7,6 +7,9 @@
   },
   "baseline": "05b697f6a2012497ae790425e197fbd1fcef7de7",
   "paths": {
+    "packages/client-runtime/src/state/workstreams/native.ts": "jones-owned",
+    "packages/client-runtime/src/state/workstreams/native.test.ts": "jones-owned",
+
     "packages/contracts/src/jones/fixtures/workstreamsNative/v1/conformance.json": "jones-owned",
     "packages/contracts/src/jones/workstreamsNative.ts": "jones-owned",
     "packages/contracts/src/jones/workstreamsNativeRead.ts": "jones-owned",

@@ -1391,6 +1391,32 @@ describe("durable Workstream assignment display", () => {
     expect(document.body.textContent).toContain("Assignment unknown");
   });
 
+  it("labels the native home and cached read provenance explicitly", async () => {
+    await using _fixture = await setupFixture1();
+    controller = {
+      ...controller,
+      stale: true,
+      data: { ...data, source: "cache", stale: true },
+      nativeCapability: {
+        contract: "workstreams-native/1.0.0",
+        mode: "native-home",
+        reads: ["workstreams-read/1.0.0"],
+        placement_proofs: ["workstreams-t3-placement/1.0.0"],
+        registry: {
+          registry_instance_id: "8cdd84b6-81c5-4c88-9d13-5d324abaf662",
+          owner_id: data.binding.ownerId,
+          canonical_origin: data.binding.registryId,
+          home_environment_id: "env:home",
+          server_generation: 7,
+        },
+      },
+    };
+    await render(threads);
+    expect(container.textContent).toContain("Home env:home");
+    expect(container.textContent).toContain("Native read provenance unavailable");
+    expect(container.textContent).toContain("Showing cached Workstreams · Stale · Read-only");
+  });
+
   it("shows stale Workstreams read-only without confirming Unassigned", async () => {
     await using _fixture = await setupFixture1();
     const assignment = vi.fn(async () => undefined);

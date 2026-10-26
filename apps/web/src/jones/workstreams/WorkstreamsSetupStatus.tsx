@@ -11,8 +11,18 @@ import { Button } from "../../components/ui/button";
 import { environmentOperationsTransport } from "./environmentWorkstreamsRequest";
 
 import { SetupStatusContent } from "./SetupStatusContent";
+import {
+  nativeWorkstreamsCapability,
+  type NativeWorkstreamsCapability,
+} from "@t3tools/client-runtime/state/workstreams";
 const emptyConfig = Atom.make(null);
-function SetupStatusRequest({ environmentId }: { environmentId: EnvironmentId | null }) {
+function SetupStatusRequest({
+  environmentId,
+  capability,
+}: {
+  environmentId: EnvironmentId | null;
+  capability: NativeWorkstreamsCapability | null;
+}) {
   const [status, setStatus] = useState<WorkstreamSetupStatus | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   useEffect(() => {
@@ -30,7 +40,7 @@ function SetupStatusRequest({ environmentId }: { environmentId: EnvironmentId | 
     return () => abort.abort();
   }, [environmentId]);
   return status ? (
-    <SetupStatusContent status={status} />
+    <SetupStatusContent status={status} capability={capability} />
   ) : (
     <p role="status">{message ?? "Checking Workstreams setup…"}</p>
   );
@@ -55,6 +65,7 @@ export function WorkstreamsSetupStatus() {
             <SetupStatusRequest
               key={`${environmentId}:${revision}`}
               environmentId={environmentId}
+              capability={nativeWorkstreamsCapability(config?.environment.capabilities)}
             />
             <div className="mt-3">
               <Button size="sm" variant="outline" onClick={() => setRevision((value) => value + 1)}>

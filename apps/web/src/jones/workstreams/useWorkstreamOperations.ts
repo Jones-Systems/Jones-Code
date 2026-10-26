@@ -7,12 +7,20 @@ import {
 } from "@t3tools/contracts/jones/workstreamOperations";
 import {
   WorkstreamOperationsClient,
+  memoryWorkstreamOperationStorage,
   supportsWorkstreamOperations,
   operationSucceeded,
   operationRegistryIdentity,
   WorkstreamOperationError,
   type RetainedOperation,
 } from "@t3tools/client-runtime/jones/workstreams/operations";
+import {
+  nativeWorkstreamsCapability,
+  isNativeWorkstreams,
+  nativeWorkstreamGroupKey,
+  nativeWorkstreamsBlock,
+  assertNativeWorkstreamBinding,
+} from "@t3tools/client-runtime/state/workstreams";
 import { environmentCatalog } from "../../connection/catalog";
 import { environmentSession } from "../../state/session";
 import { enabledEnvironmentIds } from "@t3tools/client-runtime/state/connections";
@@ -52,25 +60,53 @@ export function useWorkstreamOperations(input: {
       input.data.binding.ownerId,
       input.data.binding.principalId,
     ]);
+  const capabilityFor = (id: string) =>
+    nativeWorkstreamsCapability(
+      configs.find((entry) => entry.environmentId === id)?.config?.environment.capabilities,
+    );
+  const primaryNative = input.primaryEnvironmentId
+    ? capabilityFor(input.primaryEnvironmentId)
+    : null;
   const capableIds = configs
     .filter((entry) => supportsWorkstreamOperations(entry.config?.environment.capabilities))
     .map((entry) => entry.environmentId);
-  const watchKey = JSON.stringify([authority, capableIds, watchRevision]);
+  const watchKey = JSON.stringify([
+    authority,
+    capableIds,
+    watchRevision,
+    configs.map(({ environmentId, config }) => [
+      environmentId,
+      config?.environment.capabilities.workstreamsNative,
+    ]),
+  ]);
   const clientFor = (environmentId: string, newId?: () => Promise<string>) => {
     if (!authority) throw new Error("Workstream registry is unavailable.");
-    const key = JSON.stringify([environmentId, authority]);
+    const native = capabilityFor(environmentId);
+    const key = JSON.stringify(
+      native && native.mode !== "legacy"
+        ? [
+            environmentId,
+            authority,
+            nativeWorkstreamGroupKey(native),
+            native.registry?.home_environment_id,
+            input.data?.binding.authorizationRevision,
+          ]
+        : [environmentId, authority],
+    );
     if (newId) idFactories.current.set(key, newId);
     let client = clients.current.get(key);
     if (!client) {
       const storageKey = `jones.workstream-operations.v1:${key}`;
       client = new WorkstreamOperationsClient(
         environmentOperationsTransport(environmentId),
-        {
-          load: async () => window.localStorage.getItem(storageKey),
-          save: async (value) => {
-            window.localStorage.setItem(storageKey, value);
-          },
-        },
+        native && native.mode !== "legacy"
+          ? memoryWorkstreamOperationStorage()
+          : {
+              load: async () => window.localStorage.getItem(storageKey),
+              save: async (value) => {
+                window.localStorage.setItem(storageKey, value);
+              },
+            },
         () => {
           const factory = idFactories.current.get(key);
           if (!factory) throw new Error("A new Workstream operation requires an explicit action.");
@@ -127,7 +163,17 @@ export function useWorkstreamOperations(input: {
   const registryFor = async (environmentId: string, signal?: AbortSignal) => {
     const status = await environmentOperationsTransport(environmentId).setup(signal);
     if (!input.data) throw new Error("Workstreams unavailable.");
-    return operationRegistryIdentity(status, input.data.binding.ownerId);
+    const native = capabilityFor(environmentId);
+    const block = nativeWorkstreamsBlock(native);
+    if (block) throw new Error(block);
+    assertNativeWorkstreamBinding(native, input.data.binding);
+    const registry = operationRegistryIdentity(status, input.data.binding.ownerId);
+    if (
+      isNativeWorkstreams(native) &&
+      registry.registry_id !== native?.registry?.registry_instance_id
+    )
+      throw new Error("Workstream change rejected: registry_mismatch. Refresh native setup.");
+    return registry;
   };
   const run = async (
     environmentId: string,
@@ -159,6 +205,8 @@ export function useWorkstreamOperations(input: {
   return {
     entries,
     error,
+    capability: primaryNative,
+    capabilityFor,
     supports: (id: string) => capableIds.includes(EnvironmentId.make(id)),
     assign: async (
       thread: { environmentId: string; id: string },

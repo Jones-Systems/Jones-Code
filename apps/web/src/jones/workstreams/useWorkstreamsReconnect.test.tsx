@@ -1,5 +1,10 @@
 vi.mock("./useWorkstreamOperations", () => ({
-  useWorkstreamOperations: () => ({ entries: [], error: null, supports: () => false }),
+  useWorkstreamOperations: () => ({
+    entries: [],
+    error: null,
+    supports: () => false,
+    capabilityFor: () => null,
+  }),
 }));
 // @effect-diagnostics globalFetch:off -- Joined tests use captured, task-owned loopback listeners.
 import { act } from "../testing/nodeRenderer";

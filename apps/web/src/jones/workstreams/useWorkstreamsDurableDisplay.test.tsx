@@ -1,5 +1,15 @@
+import type { NativeWorkstreamsCapability } from "@t3tools/client-runtime/state/workstreams";
+const nativeFixture = vi.hoisted(() => ({
+  capability: null as NativeWorkstreamsCapability | null,
+}));
 vi.mock("./useWorkstreamOperations", () => ({
-  useWorkstreamOperations: () => ({ entries: [], error: null, supports: () => false }),
+  useWorkstreamOperations: () => ({
+    entries: [],
+    error: null,
+    supports: () => false,
+    capability: nativeFixture.capability,
+    capabilityFor: () => nativeFixture.capability,
+  }),
 }));
 import { act } from "../testing/nodeRenderer";
 import { RegistryContext } from "@effect/atom-react";
@@ -154,6 +164,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], now: start });
   vi.stubGlobal("window", globalThis);
   http.run.mockReset();
+  nativeFixture.capability = null;
   registry = AtomRegistry.make();
   registry.set(connection, AsyncResult.success(connected));
   renders = [];
@@ -169,6 +180,44 @@ afterEach(async () => {
 });
 
 describe("durable Workstream assignment display", () => {
+  it("loads native home assignments without calling the CP enrollment context and fences reads during transition", async () => {
+    nativeFixture.capability = {
+      contract: "workstreams-native/1.0.0",
+      mode: "native-home",
+      reads: ["workstreams-read/1.0.0"],
+      placement_proofs: ["workstreams-t3-placement/1.0.0"],
+      registry: {
+        registry_instance_id: "8cdd84b6-81c5-4c88-9d13-5d324abaf662",
+        owner_id: data.binding.ownerId,
+        canonical_origin: data.binding.registryId,
+        home_environment_id: "env:a",
+        server_generation: data.binding.serverGeneration,
+      },
+    };
+    const threads = nativeThreads(2);
+    const server = syntheticWorkstreams({
+      now: () => vi.getMockedSystemTime()!.getTime(),
+      assignments: [assign(threads[0]!, "alpha")],
+    });
+    server.state.intercept = (call) => {
+      if (call.route === "registrationContext") throw new Error("CP context must not be requested");
+    };
+    http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
+    await mount(threads);
+    await settle(() => loaded());
+    expect(latest.view.registrationContext).toBeNull();
+    expect(latest.view.primaryAssignmentAvailability?.state).toBe("ready");
+    expect(server.state.calls.some((call) => call.route === "registrationContext")).toBe(false);
+    const calls = server.state.calls.length;
+    nativeFixture.capability = { ...nativeFixture.capability, mode: "transition-fenced" };
+    await act(async () => latest.view.refresh());
+    await settle(() => expect(latest.view.loading).toBe(false));
+    expect(latest.view.data).toBeNull();
+    expect(latest.view.assignmentIndex).toBeNull();
+    expect(latest.view.error).toContain("fenced");
+    expect(server.state.calls.length).toBe(calls);
+  });
+
   it("groups 4,600 native threads with assignments beyond 1,000 and bounds every proof batch", async () => {
     const threads = nativeThreads(4_600);
     const assigned = threads.filter((_, index) => index % 2 === 1);
