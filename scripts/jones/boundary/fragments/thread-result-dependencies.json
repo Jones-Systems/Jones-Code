@@ -1,0 +1,146 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "thread-result-dependencies",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/threadResultDependencies/",
+    "packages/client-runtime/src/jones/threadResultDependencies/",
+    "packages/shared/src/jones/threadResultDependencies/",
+    "apps/web/src/jones/threadResultDependencies/",
+    "apps/mobile/src/jones/threadResultDependencies/"
+  ],
+  "hookPaths": [
+    "apps/server/src/orchestration-v2/IdleCompaction.ts",
+    "apps/server/src/orchestration-v2/IdleCompactionService.ts",
+    "apps/server/src/orchestration-v2/ProjectionStore.ts",
+    "apps/web/src/components/ChatView.logic.ts",
+    "packages/client-runtime/src/state/shellReducer.ts",
+    "packages/shared/src/orchestrationV2PendingBackgroundWork.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/mcp/OrchestratorMcpService.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/DependencyStore.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/OrchestratorMcpService.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/DependencyCommit.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/orchestrator/handlers.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/tools.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/tools.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/DependencyStore.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/DependencyChanges.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/TransactionHooks.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/DependencyCommit.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/IdleCompactionService.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/DependencyStore.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/IdleCompactionService.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/Projection.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/DependencyStore.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/DependencyChanges.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/DependencyCommit.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProjectionStore.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/DependencyStore.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProjectionStore.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/Projection.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadManagementService.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/DependencyChanges.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadSettlementService.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/DependencyChanges.ts"
+    },
+    {
+      "from": "apps/server/src/peer/PeerForwarding.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/DependencyStore.ts"
+    },
+    {
+      "from": "apps/server/src/peer/PeerForwarding.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/DependencyChanges.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/DependencyChanges.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/DependencyReactor.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/RequestWatch.ts"
+    },
+    {
+      "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/DependencyChanges.ts"
+    },
+    {
+      "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/DependencyStore.ts"
+    },
+    {
+      "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/jones/orchestration/shellThreadRefresh.ts"
+    },
+    {
+      "from": "apps/web/src/components/ChatView.logic.ts",
+      "to": "apps/web/src/jones/threadResultDependencies/bannerTasks.ts"
+    },
+    {
+      "from": "packages/client-runtime/src/state/shell.ts",
+      "to": "packages/client-runtime/src/jones/threadResultDependencies/shellRefresh.ts"
+    },
+    {
+      "from": "packages/client-runtime/src/state/shellReducer.ts",
+      "to": "packages/client-runtime/src/jones/threadResultDependencies/shellRefresh.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/threadResultDependency.ts"
+    },
+    {
+      "from": "packages/contracts/src/orchestratorMcp.ts",
+      "to": "packages/contracts/src/jones/threadResultDependency.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/ChangeTracking.ts"
+    }
+  ]
+}

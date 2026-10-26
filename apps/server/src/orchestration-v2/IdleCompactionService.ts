@@ -1,3 +1,7 @@
+import * as SqlClient from "effect/sql/SqlClient";
+import { makeDependencyStore } from "../jones/threadResultDependencies/DependencyStore.ts";
+import { makeJonesTablePresence } from "../jones/persistence/JonesTablePresence.ts";
+import { roster } from "../jones/threadResultDependencies/Projection.ts";
 import {
   CommandId,
   IDLE_COMPACTION_TEXT,
@@ -29,6 +33,8 @@ export const make = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const settings = yield* ServerSettings.ServerSettingsService;
+  const sql = yield* SqlClient.SqlClient;
+  const dependencies = makeDependencyStore(sql, makeJonesTablePresence(sql));
 
   const compactWhenDue = Effect.fn("IdleCompactionService.compactWhenDue")(
     function* (threadId: ThreadId, runId: RunId) {
@@ -59,7 +65,7 @@ export const make = Effect.gen(function* () {
         )
           return;
         const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
-        const window = idleCompactionWindow(records, nowMs);
+        const window = idleCompactionWindow(records, nowMs, roster(yield* dependencies.dependencies(threadId)));
         if (window?.runId !== runId) return;
         if (nowMs < window.startMs) {
           yield* Effect.sleep(Duration.millis(window.startMs - nowMs));

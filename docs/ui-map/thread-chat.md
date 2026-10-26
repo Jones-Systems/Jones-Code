@@ -63,6 +63,25 @@ Known shared consumers:
   this map's journeys. Shared workspace header consumers are listed in
   [Settings](settings.md#shared-layout-and-consumers).
 
+### Expected thread responses
+
+An explicit expected-result request keeps its sender **Waiting** after the
+foreground turn ends. The pending-work banner identifies the expected response.
+An ordinary message or navigation link alone does not establish a wait. A
+correlated answer or explicit release clears that dependency; unrelated replies
+and the recipient finishing a turn do not. Multiple requests clear independently.
+Active foreground work, owner input and approval controls retain their existing
+status precedence.
+
+For isolated verification, send an expected-result request between two synthetic
+threads, finish the sender's turn, and check its sidebar status and chat banner.
+Reconnect without a new conversation event and verify that Waiting persists.
+Deliver an unrelated reply, then the correlated result, and check that only the
+result clears the wait and wakes the sender. Repeat with two requests, a release,
+and an ordinary no-response message. Inspect the existing mobile thread list and
+pending-work sheet as well as the shared desktop renderer. These journeys require
+feature-revision evidence before being reported as verified.
+
 ### Sidebar build label
 
 The environment-filter footer in current and legacy sidebars, and the Settings

@@ -19,6 +19,11 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import { AsyncResult, Atom } from "effect/reactivity";
 
 import { publishInBatches } from "../jones/shellPublication/batchedPublication.ts";
+import {
+  advanceThreadRefreshWatermarks,
+  isThreadReplayBehindRefresh,
+  shellRefreshSubscription,
+} from "../jones/threadResultDependencies/shellRefresh.ts";
 import * as EnvironmentRegistry from "../connection/registry.ts";
 import { connectionProjectionPhase } from "../connection/model.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
@@ -113,6 +118,8 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
   const producerGuard = makeProducerGuard(supervisor.session);
   let lastAuthoritativeSession: RpcSession | null = null;
   let latestLiveSnapshot: Option.Option<OrchestrationV2ShellSnapshot> = Option.none();
+  // Retain across replay-only resubscriptions; authoritative snapshots reset both rows and fences.
+  let refreshedAt: ReadonlyMap<ThreadId, number> = new Map();
   const persistence = yield* Queue.sliding<OrchestrationV2ShellSnapshot>(1);
 
   const persistenceLock = yield* Semaphore.make(1);
@@ -234,18 +241,30 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
               )
             : Option.match(next.snapshot, {
                 onNone: () => null,
-                onSome: (snapshot) =>
-                  item.sequence > snapshot.snapshotSequence
-                    ? applyShellStreamEvent(snapshot, item)
-                    : snapshot,
+                onSome: (snapshot) => applyShellStreamEvent(snapshot, item, next.removedAt, refreshedAt),
               });
         if (nextSnapshot === null) continue;
         receivedSnapshot ||= item.kind === "snapshot";
         const removal =
-          item.kind === "thread.removed" &&
+          (item.kind === "thread.removed" ||
+            (item.kind === "thread.updated" && item.location === "archive")) &&
+          !isThreadReplayBehindRefresh(item, refreshedAt) &&
           Option.exists(next.snapshot, (snapshot) => item.sequence > snapshot.snapshotSequence)
-            ? item
+            ? {
+                threadId: item.kind === "thread.removed" ? item.threadId : item.thread.id,
+                sequence: item.sequence,
+              }
             : null;
+        if (authoritative) {
+          refreshedAt = new Map();
+        } else if (item.kind !== "snapshot" && Option.isSome(next.snapshot)) {
+          refreshedAt = advanceThreadRefreshWatermarks(
+            refreshedAt,
+            next.snapshot.value,
+            item,
+            next.removedAt,
+          );
+        }
         next = {
           snapshot: Option.some(nextSnapshot),
           status: waiting ? "synchronizing" : "live",
@@ -351,16 +370,18 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
       Effect.fn("EnvironmentShellState.makeSubscribeInput")(function* (producer) {
         yield* producerGuard.begin(producer);
         const { session } = producer;
-        const { supportsCompletionMarker, omitIdleSubagents, omitOlderSettled } =
+        const { supportsCompletionMarker, omitIdleSubagents, omitOlderSettled, refreshSubscription } =
           yield* session.initialConfig.pipe(
             Effect.map((config) => ({
               supportsCompletionMarker: config.shellResumeCompletionMarker === true,
+              refreshSubscription: shellRefreshSubscription(config),
               omitIdleSubagents: config.shellThreadFamilies === true,
               omitOlderSettled:
                 config.shellOlderSettled === true && config.shellThreadFamilies === true,
             })),
             Effect.orElseSucceed(() => ({
               supportsCompletionMarker: false,
+              refreshSubscription: {},
               omitIdleSubagents: false,
               omitOlderSettled: false,
             })),
@@ -423,6 +444,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         }
 
         const omission = {
+          ...refreshSubscription,
           ...(omitIdleSubagents ? { omitIdleSubagents: true as const } : {}),
           ...(omitOlderSettled ? { omitOlderSettled: true as const } : {}),
         };

@@ -1,3 +1,5 @@
+import * as DependencyChanges from "../jones/threadResultDependencies/DependencyChanges.ts";
+import * as Option from "effect/Option";
 import { LifecycleError } from "../jones/workspaceLifecycle/Protocol.ts";
 import {
   backgroundWorkHoldsCompletion,
@@ -688,6 +690,11 @@ export const make = Effect.gen(function* () {
   const start: ThreadSettlementServiceV2["Service"]["start"] = Effect.fn(
     "ThreadSettlementServiceV2.start",
   )(function* () {
+    const dependencyChanges = yield* Effect.serviceOption(DependencyChanges.DependencyChanges);
+    if (Option.isSome(dependencyChanges)) {
+      const subscription = yield* dependencyChanges.value.subscribe;
+      yield* Stream.fromSubscription(subscription).pipe(Stream.runForEach((change) => Effect.forEach(change.threadIds, enqueueThread, { discard: true })), Effect.forkScoped);
+    }
     const settingsChanges = yield* settingsService.subscribeChanges;
     const mergedPullRequests = yield* pullRequests.subscribeMerges;
     const events = orchestrator.streamDomainEvents;

@@ -34,7 +34,8 @@ function automaticMessageIds(projection: SettlementProjection): ReadonlySet<stri
   );
 }
 
-function blocksSettlement(projection: SettlementProjection, exceptRunId: RunId): boolean {
+function blocksSettlement(projection: SettlementProjection, exceptRunId: RunId, dependencies?: { readonly outgoing: number; readonly owed: number }): boolean {
+  if (dependencies && (dependencies.outgoing > 0 || dependencies.owed > 0)) return true;
   const automatic = automaticMessageIds(projection);
   return (
     projection.runs.some(
@@ -67,6 +68,7 @@ export function selfSettlementRun(
   projection: SettlementProjection,
   caller: Caller,
   owner: Owner | null,
+  dependencies?: { readonly outgoing: number; readonly owed: number },
 ): OrchestrationV2Run | undefined {
   const run = projection.runs
     .toSorted((a, b) => b.ordinal - a.ordinal)
@@ -90,7 +92,7 @@ export function selfSettlementRun(
         attempt.providerInstanceId === owner.instanceId &&
         (attempt.status === "pending" || attempt.status === "running"),
     ) ||
-    blocksSettlement(projection, run.id) ||
+    blocksSettlement(projection, run.id, dependencies) ||
     hasSuccessorWork(projection, run)
   )
     return undefined;
@@ -100,6 +102,7 @@ export function selfSettlementRun(
 export function selfSettlementTerminalDisposition(
   projection: SettlementProjection,
   terminalRunId: RunId,
+  dependencies?: { readonly outgoing: number; readonly owed: number },
 ): "ignore" | "cancel" | "settle" {
   const intent = projection.thread.selfSettlement;
   if (intent == null) return "ignore";
@@ -111,7 +114,7 @@ export function selfSettlementTerminalDisposition(
     run.status !== "completed" ||
     projection.thread.deletedAt !== null ||
     projection.thread.archivedAt !== null ||
-    blocksSettlement(projection, run.id)
+    blocksSettlement(projection, run.id, dependencies)
   )
     return "cancel";
   return "settle";
