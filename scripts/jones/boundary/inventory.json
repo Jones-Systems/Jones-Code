@@ -1643,6 +1643,7 @@
     "apps/web/src/hooks/useHandleNewThread.ts": "hook",
     "apps/web/src/components/chat/DraftHeroHeadline.tsx": "hook",
     "apps/web/src/components/CommandPalette.tsx": "hook",
+    "apps/web/src/components/CommandPaletteLookups.ts": "accepted-shared",
     "apps/web/src/uiStateStore.ts": "accepted-shared",
     "apps/web/src/uiStateStore.test.ts": "jones-tests-in-upstream",
     "apps/web/src/hooks/useHandleNewThread.test.ts": "jones-tests-in-upstream",

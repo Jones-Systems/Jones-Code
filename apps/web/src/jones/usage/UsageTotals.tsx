@@ -4,7 +4,7 @@ import type { MergedUsage } from "@t3tools/shared/usageMerge";
 import { cn } from "../../lib/utils";
 
 export function formatCachePercent(cachedInputTokens: number, totalTokens: number): string {
-  return totalTokens > 0 ? formatPercent(cachedInputTokens / totalTokens) : ":";
+  return totalTokens > 0 ? formatPercent(cachedInputTokens / totalTokens) : "N/A";
 }
 
 export function formatCacheWrite(tokens: number): string {

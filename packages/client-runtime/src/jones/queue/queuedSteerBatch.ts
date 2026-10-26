@@ -95,7 +95,7 @@ export function deriveQueuedSteerBatch(input: {
                       : null;
   const detail =
     plan.remainingCount > 0
-      ? `${plan.remainingCount} still queued. ${plan.reason === "ineligible" ? "the next message needs its own turn" : "batch size limit"}.`
+      ? `${plan.remainingCount} still queued. ${plan.reason === "ineligible" ? "The next message needs its own turn" : "Batch size limit"}.`
       : "Send the queued messages together as one steering input.";
   return {
     targetRunId: active?.id ?? null,

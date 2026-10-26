@@ -494,7 +494,7 @@ describe("UsagePage provider and model details", () => {
     expect(known.querySelector("td:nth-child(4)")?.textContent).toBe("100.0%");
     expect(known.querySelector("td:nth-child(6)")?.textContent).toBe("92.5%");
     const unknown = container.querySelectorAll("tbody tr")[1]!;
-    expect(unknown.querySelector("td:nth-child(4)")?.textContent).toBe("—");
+    expect(unknown.querySelector("td:nth-child(4)")?.textContent).toBe("N/A");
     expect(unknown.querySelector("td:nth-child(6)")?.textContent).toBe("7.5%");
   });
 
@@ -507,7 +507,7 @@ describe("UsagePage provider and model details", () => {
     const totals = [...container.querySelectorAll("section")].find(
       (section) => section.querySelector("h2")?.textContent === "Totals",
     )!;
-    expect(metric(totals, "Cache %")).toBe("—");
+    expect(metric(totals, "Cache %")).toBe("N/A");
     expect(metric(totals, "Cache write")).toBe("0 reported");
   });
 

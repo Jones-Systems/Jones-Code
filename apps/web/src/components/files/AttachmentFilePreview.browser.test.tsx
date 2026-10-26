@@ -1882,6 +1882,46 @@ it("keeps spreadsheet dates on their calendar day west of UTC", async () => {
 });
 
 it.each([60, 100])("renders all %i pages of a table-heavy Word report", async (pages) => {
+  const workerTrace: unknown[] = [];
+  const record = (entry: unknown) => {
+    workerTrace.push(entry);
+    if (workerTrace.length > 48) workerTrace.shift();
+  };
+  const NativeWorker = Worker;
+  using _workers = stubGlobal(
+    "Worker",
+    class extends NativeWorker {
+      constructor(url: string | URL, options?: WorkerOptions) {
+        super(url, options);
+        const name = String(url).split("/").pop();
+        record({ worker: name, event: "started" });
+        this.addEventListener("message", (event) => {
+          const data = event.data;
+          record({
+            worker: name,
+            event: "reply",
+            type: data?.type,
+            id: data?.id,
+            ok: data?.ok,
+            pages: data?.value?.pages?.length,
+            loading: data?.value?.loading,
+          });
+        });
+        this.addEventListener("error", (event) =>
+          record({ worker: name, event: "error", message: event.message }),
+        );
+      }
+      override postMessage(
+        message: unknown,
+        options: Transferable[] | StructuredSerializeOptions = [],
+      ) {
+        const data = message as { method?: string; type?: string; id?: number };
+        record({ event: "request", method: data.method, type: data.type, id: data.id });
+        if (Array.isArray(options)) super.postMessage(message, options);
+        else super.postMessage(message, options);
+      }
+    },
+  );
   const { default: JSZip } = await import("jszip");
   const archive = new JSZip();
   const paragraph = (text: string) =>
@@ -1911,9 +1951,16 @@ it.each([60, 100])("renders all %i pages of a table-heavy Word report", async (p
       />
     </div>,
   );
-  await vi.waitFor(() => expect(screen.container.textContent).toMatch(/\d+ pages/), {
-    timeout: 10_000,
-  });
+  await vi.waitFor(
+    () =>
+      expect(
+        screen.container.textContent,
+        JSON.stringify({ viewer: officePreviewState(screen), workerTrace }),
+      ).toMatch(/\d+ pages/),
+    {
+      timeout: 10_000,
+    },
+  );
   expect(screen.container.textContent).not.toContain("Preview limited");
   expect(screen.container.querySelector('[role="alert"]')).toBeNull();
   const scroll = screen.container.querySelector<HTMLElement>("[data-office-pages]")!;
