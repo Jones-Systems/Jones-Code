@@ -509,6 +509,7 @@ export interface ChatComposerProps {
   onAdvanceActivePendingUserInput: () => void;
   onDismissActivePendingUserInput: (requestId: RuntimeRequestId) => void;
   onPreviousActivePendingUserInputQuestion: () => void;
+  onSelectActivePendingUserInputQuestion?: ((index: number) => void) | undefined;
   onChangeActivePendingUserInputCustomAnswer: (
     questionId: string,
     value: string,
@@ -634,6 +635,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onAdvanceActivePendingUserInput,
     onDismissActivePendingUserInput,
     onPreviousActivePendingUserInputQuestion,
+    onSelectActivePendingUserInputQuestion,
     onChangeActivePendingUserInputCustomAnswer,
     onProviderModelSelect,
     onOpenProviderSetup,
@@ -3672,6 +3674,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       );
                     }}
                     onPrevious={onPreviousActivePendingUserInputQuestion}
+                    onSelectQuestion={onSelectActivePendingUserInputQuestion}
                     onDismiss={onDismissActivePendingUserInput}
                   />
                 ) : !isComposerCollapsedMobile && showPlanFollowUpPrompt && activeProposedPlan ? (

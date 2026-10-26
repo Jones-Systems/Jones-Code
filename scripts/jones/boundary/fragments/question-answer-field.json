@@ -13,11 +13,18 @@
     "apps/web/src/jones/questionAnswer/useQuestionAnswerAttachments.ts",
     "apps/web/src/jones/questionAnswer/workspaceFileDragLifecycle.ts",
     "apps/web/src/jones/questionAnswer/threadReferenceAnswer.ts",
-    "apps/web/src/jones/questionAnswer/threadReferenceAnswer.test.ts"
+    "apps/web/src/jones/questionAnswer/threadReferenceAnswer.test.ts",
+    "apps/web/src/jones/questionAnswer/QuestionProgress.tsx",
+    "apps/mobile/src/jones/questionAnswer/QuestionProgress.tsx",
+    "apps/mobile/src/jones/questionAnswer/sequentialQuestions.ts",
+    "apps/mobile/src/jones/questionAnswer/sequentialQuestions.test.ts"
   ],
   "hookPaths": [
     "apps/web/src/components/chat/ComposerPendingUserInputPanel.tsx",
-    "apps/web/src/pendingUserInput.ts"
+    "apps/web/src/pendingUserInput.ts",
+    "apps/mobile/src/features/threads/PendingUserInputCard.tsx",
+    "apps/mobile/src/features/threads/QuestionAttachments.tsx",
+    "apps/mobile/src/state/use-selected-thread-requests.ts"
   ],
   "tombstones": [],
   "allowedImports": [
@@ -44,6 +51,42 @@
     {
       "from": "apps/web/src/pendingUserInput.ts",
       "to": "apps/web/src/jones/questionAnswer/threadReferenceAnswer.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ComposerPendingUserInputPanel.tsx",
+      "to": "apps/web/src/jones/questionAnswer/QuestionProgress.tsx"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/PendingUserInputCard.tsx",
+      "to": "apps/mobile/src/jones/questionAnswer/QuestionProgress.tsx"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/PendingUserInputCard.tsx",
+      "to": "apps/mobile/src/jones/questionAnswer/sequentialQuestions.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/PendingUserInputCard.tsx",
+      "to": "packages/contracts/src/jones/userResponseRequest.ts"
+    },
+    {
+      "from": "apps/mobile/src/lib/threadActivity.ts",
+      "to": "packages/contracts/src/jones/userResponseRequest.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/use-selected-thread-requests.ts",
+      "to": "packages/contracts/src/jones/userResponseRequest.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ComposerPendingUserInputPanel.tsx",
+      "to": "packages/contracts/src/jones/userResponseRequest.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/usePendingThreadRequests.ts",
+      "to": "packages/contracts/src/jones/userResponseRequest.ts"
+    },
+    {
+      "from": "apps/web/src/pendingUserInput.ts",
+      "to": "packages/contracts/src/jones/userResponseRequest.ts"
     }
   ]
 }

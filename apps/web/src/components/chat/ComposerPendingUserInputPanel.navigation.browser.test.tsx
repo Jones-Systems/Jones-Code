@@ -1,3 +1,5 @@
+import * as Cause from "effect/Cause";
+import { AsyncResult } from "effect/reactivity";
 import { type PendingUserInputDraftAnswer } from "../../pendingUserInput";
 import { togglePendingUserInputOptionSelection } from "../../pendingUserInput";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
@@ -20,6 +22,15 @@ vi.mock(import("../ChatMarkdown"), async (importOriginal) => ({
 import { act, fakeTimers, render } from "../../../test/render";
 import { makeThreadProjectionFixture } from "../../test-fixtures";
 import { usePendingThreadRequests } from "./usePendingThreadRequests";
+
+const { respond } = vi.hoisted(() => ({ respond: vi.fn() }));
+vi.mock(import("../../state/use-orchestration-command"), () => ({
+  useOrchestrationCommand: () => respond,
+}));
+vi.mock(import("../../state/session"), async (original) => ({
+  ...(await original()),
+  readEnvironmentScope: () => true,
+}));
 
 const threadRef = { environmentId: EnvironmentId.make("env"), threadId: ThreadId.make("thread") };
 
@@ -54,6 +65,7 @@ function Questions({ initialIndex = 0 }: { initialIndex?: number }) {
         respondingRequestIds={[]}
         answers={answers}
         questionIndex={questionIndex}
+        onSelectQuestion={setQuestionIndex}
         onAdvance={advance}
         onToggleOption={(questionId, value) => {
           const question = prompt.questions.find((entry) => entry.id === questionId)!;
@@ -238,7 +250,7 @@ function activeIndex() {
   return document.querySelector("output")!.textContent;
 }
 
-it("does not skip the next unanswered question after manual advance", async () => {
+it("selects without advancing and waits for manual continuation", async () => {
   using _timers = fakeTimers();
   await using _screen = await render(<Questions />);
   await chooseOption();
@@ -249,10 +261,10 @@ it("does not skip the next unanswered question after manual advance", async () =
 
   await chooseOption();
   await act(async () => vi.advanceTimersByTime(200));
-  expect(activeIndex()).toBe("2");
+  expect(activeIndex()).toBe("1");
 });
 
-it("does not undo previous-question navigation with a stale timer", async () => {
+it("preserves previous-question navigation after a selection", async () => {
   using _timers = fakeTimers();
   await using _screen = await render(<Questions initialIndex={1} />);
   await chooseOption();
@@ -261,12 +273,56 @@ it("does not undo previous-question navigation with a stale timer", async () => 
   expect(activeIndex()).toBe("0");
 });
 
-it("still auto-advances once after the answer draft rerenders the same question", async () => {
+it("never auto-advances after the answer draft rerenders the same question", async () => {
   using _timers = fakeTimers();
   await using _screen = await render(<Questions />);
+  await act(() =>
+    document.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "1", bubbles: true, cancelable: true }),
+    ),
+  );
+  expect(document.querySelector('button[aria-pressed="true"]')).not.toBeNull();
   await chooseOption();
   await act(async () => vi.advanceTimersByTime(200));
-  expect(activeIndex()).toBe("1");
+  expect(activeIndex()).toBe("0");
   await act(async () => vi.advanceTimersByTime(200));
-  expect(activeIndex()).toBe("1");
+  expect(activeIndex()).toBe("0");
+});
+
+it("guards duplicate sends and preserves drafts while clearing sending state after failure", async () => {
+  const projection = questionProjection(ThreadId.make("failed-submission"), ["failure"]);
+  const environmentId = EnvironmentId.make("failure-env");
+  let finish!: (value: unknown) => void;
+  respond.mockReset();
+  respond.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  await using _screen = await render(
+    <PendingRequestsProbe environmentId={environmentId} projection={projection} />,
+  );
+  for (const question of prompt.questions)
+    await act(() =>
+      requests.onChangeActivePendingUserInputCustomAnswer(question.id, `Answer ${question.id}`),
+    );
+  await act(() => requests.onSelectActivePendingUserInputQuestion(2));
+  await act(() => {
+    requests.onAdvanceActivePendingUserInput();
+    requests.onAdvanceActivePendingUserInput();
+  });
+  expect(respond).toHaveBeenCalledTimes(1);
+  expect(requests.activePendingIsResponding).toBe(true);
+  await act(async () =>
+    finish(AsyncResult.failure(Cause.fail(new Error("Synthetic response failure")))),
+  );
+  expect(requests.activePendingIsResponding).toBe(false);
+  expect(requests.activePendingResolvedAnswers).toEqual(
+    Object.fromEntries(prompt.questions.map((q) => [q.id, `Answer ${q.id}`])),
+  );
+  await act(() => requests.onAdvanceActivePendingUserInput());
+  expect(respond).toHaveBeenCalledTimes(2);
+  await act(async () => finish(AsyncResult.success(undefined)));
+  expect(requests.activePendingIsResponding).toBe(false);
 });

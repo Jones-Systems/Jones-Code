@@ -329,6 +329,171 @@ it.effect(
     }).pipe(Effect.provide(testLayer)),
 );
 
+it.effect(
+  "keeps retry identity for a pre-change stored legacy question and preserves multiline instructions",
+  () =>
+    Effect.gen(function* () {
+      const { orchestrator, run } = yield* seed;
+      const key = `${encodeURIComponent(JSON.stringify(scope.requestNamespace))}:${encodeURIComponent(JSON.stringify("stored"))}`;
+      yield* orchestrator.dispatch({
+        type: "user_input_request.record",
+        commandId: CommandId.make(`user-response:${key}`),
+        threadId,
+        runId: run.id,
+        rootNodeId: run.rootNodeId!,
+        providerInstanceId: instanceId,
+        requestId: RuntimeRequestId.make(`user-response:${key}`),
+        requestNodeId: NodeId.make(`user-response:${key}`),
+        turnItemId: TurnItemId.make(`user-response:${key}`),
+        question: {
+          id: "response",
+          header: "Action needed",
+          question: "Review the plan.",
+          options: [{ label: "Local", description: "Local" }],
+          allowCustomAnswer: true,
+          required: true,
+        },
+      });
+      const service = yield* Service.UserResponseRequestMcpService;
+      expect(
+        yield* service.request(scope, {
+          instruction: "Review the plan.",
+          choices: ["Local"],
+          clientRequestId: "stored",
+        }),
+      ).toMatchObject({ created: false });
+      const instruction = "Setup\n\n- detail\n**Question?**";
+      const result = yield* service.request(scope, { instruction, clientRequestId: "multiline" });
+      expect(
+        (yield* orchestrator.getThreadProjection(threadId)).turnItems.find(
+          (item) => item.type === "user_input_request" && item.requestId === result.requestId,
+        ),
+      ).toMatchObject({ questions: [{ question: instruction }] });
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect(
+  "delivers a complete ordered batch once after recovery, rejects an earlier missing answer without resolving or queuing",
+  () =>
+    Effect.gen(function* () {
+      const { orchestrator, sink, now, run } = yield* seed;
+      const service = yield* Service.UserResponseRequestMcpService;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const input = {
+        clientRequestId: "batch",
+        questions: [
+          {
+            prompt: "Setup\n\n**Which scope?**",
+            choices: [{ label: "Local", description: "This host only" }],
+          },
+          { prompt: "When?", choices: [{ label: "Later" }] },
+          { prompt: "What else?" },
+        ],
+      };
+      const first = yield* service.request(scope, input);
+      expect(first.created).toBe(true);
+      expect(yield* service.request(scope, input)).toEqual({ ...first, created: false });
+      expect(
+        (yield* service
+          .request(scope, { ...input, questions: [input.questions[0]!, { prompt: "Changed?" }] })
+          .pipe(Effect.result))._tag,
+      ).toBe("Failure");
+      expect(
+        (yield* orchestrator.getThreadProjection(threadId)).turnItems.find(
+          (item) => item.type === "user_input_request",
+        ),
+      ).toMatchObject({
+        questions: [{ id: "q1" }, { id: "q2" }, { id: "q3" }],
+        responseMode: "message",
+      });
+      yield* sink.write({
+        commandId: CommandId.make("batch-complete"),
+        events: [
+          {
+            id: EventId.make("batch-complete"),
+            type: "run.updated",
+            threadId,
+            runId: run.id,
+            occurredAt: now,
+            payload: { ...run, status: "completed", completedAt: now },
+          },
+        ],
+      });
+      yield* Recovery.ProviderRuntimeRecoveryService.use((value) => value.recover);
+      const beforeEffects = yield* outbox.listByThreadId(threadId);
+      expect(
+        (yield* orchestrator
+          .dispatch({
+            type: "runtime-request.respond",
+            commandId: CommandId.make("incomplete-batch"),
+            threadId,
+            requestId: first.requestId,
+            answers: { q2: "Later", q3: "Details" },
+          })
+          .pipe(Effect.result))._tag,
+      ).toBe("Failure");
+      let projection = yield* orchestrator.getThreadProjection(threadId);
+      expect(
+        projection.runtimeRequests.find((request) => request.id === first.requestId)?.status,
+      ).toBe("pending");
+      expect(projection.messages).toHaveLength(0);
+      expect(projection.runs).toHaveLength(1);
+      expect(yield* outbox.listByThreadId(threadId)).toEqual(beforeEffects);
+      const longReply = `First paragraph.\n\n${"More detail. ".repeat(180)}\nFinal line.`;
+      const answers = {
+        q1: "Local\nNote: Keep this bounded.\nPreserve this line.",
+        q2: "Later",
+        q3: longReply,
+      };
+      const command = {
+        type: "runtime-request.respond" as const,
+        commandId: CommandId.make("batch-answer"),
+        threadId,
+        requestId: first.requestId,
+        answers,
+      };
+      yield* orchestrator.dispatch(command);
+      projection = yield* orchestrator.getThreadProjection(threadId);
+      expect(
+        projection.runtimeRequests.find((request) => request.id === first.requestId),
+      ).toMatchObject({ status: "resolved", answers });
+      const text = input.questions
+        .map(
+          (question, index) =>
+            `${question.prompt}\n${answers[`q${index + 1}` as keyof typeof answers]}`,
+        )
+        .join("\n\n");
+      expect(projection.messages.map((message) => message.text)).toEqual([text]);
+      expect(projection.runs).toHaveLength(2);
+      const receipt = yield* ReceiptStore.CommandReceiptStoreV2.use((store) =>
+        store.getByCommandId(command.commandId),
+      );
+      expect(Option.getOrNull(receipt)).toMatchObject({
+        status: "accepted",
+        commandType: "runtime-request.respond",
+      });
+      const recordedEffects = yield* outbox.listByThreadId(threadId);
+      expect(recordedEffects.filter((effect) => effect.commandId === command.commandId)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            status: "pending",
+            request: expect.objectContaining({ type: "provider-turn.start" }),
+          }),
+        ]),
+      );
+      yield* orchestrator.dispatch(command);
+      expect(
+        (yield* orchestrator
+          .dispatch({ ...command, commandId: CommandId.make("batch-answer-again") })
+          .pipe(Effect.result))._tag,
+      ).toBe("Failure");
+      projection = yield* orchestrator.getThreadProjection(threadId);
+      expect(projection.messages.map((message) => message.text)).toEqual([text]);
+      expect(projection.runs).toHaveLength(2);
+      expect(yield* outbox.listByThreadId(threadId)).toEqual(recordedEffects);
+    }).pipe(Effect.provide(testLayer)),
+);
+
 it.effect("keeps a newly created request pending when recovery terminalizes its active run", () =>
   Effect.gen(function* () {
     const { orchestrator } = yield* seed;
@@ -462,7 +627,17 @@ it("publishes a self-only object input schema", () => {
   const schema = Tool.getJsonSchema(UserResponseRequestToolkit.tools.t3_request_user_response);
   expect(schema).toMatchObject({
     type: "object",
-    properties: { instruction: { type: "string" }, clientRequestId: { type: "string" } },
+    properties: {
+      instruction: { anyOf: [{ type: "string", maxLength: 1500 }, { type: "null" }] },
+      clientRequestId: { type: "string" },
+      questions: {
+        anyOf: [
+          { type: "array", items: { properties: { prompt: { maxLength: 1500 } } } },
+          { type: "null" },
+        ],
+      },
+    },
+    required: ["clientRequestId"],
   });
   expect(schema.properties).not.toHaveProperty("threadId");
   expect(schema.properties).not.toHaveProperty("runId");
