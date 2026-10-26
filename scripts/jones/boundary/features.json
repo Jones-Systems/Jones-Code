@@ -1863,11 +1863,6 @@
       "scope": "Local-environment MCP and executable CLI workstream list, create, assign, unassign and status use the application-owned operation service or its authenticated typed HTTP boundary. Production MCP registration consumes that service as a required dependency, sharing its retained results with HTTP. Requests obtain the signed registry UUID from setup status, not the legacy gateway origin. Tests cover production MCP registration, parsed CLI commands against real loopback HTTP handlers, operation replay, conflicts, owning-environment checks, and all CONFIG/open retry advice. Synthetic CP and authentication seams do not qualify installed sessions or live Control Plane state."
     },
     {
-      "id": "ci-registry-search-timers",
-      "tests": ["apps/web/src/components/settings/AcpRegistrySearchStep.browser.test.tsx"],
-      "scope": "Accepted shared test-only CI repair: control the existing registry-search debounce clock so the first Enter submits before debounce and the second Enter refreshes. Preserve every assertion and all eight test cases; production behavior is unchanged. The existing upstream browser harness requires this direct one-line edit rather than a duplicated Jones harness."
-    },
-    {
       "id": "pr-cache-scope-locks",
       "tests": [
         "apps/server/src/pullRequest/PullRequestReadCache.test.ts",
@@ -2159,6 +2154,32 @@
         "apps/server/scripts/jones/currentFixtures.test.ts"
       ],
       "scope": "Explicit local Claude delegated-task continuation preserves the recorded native session, provider, model and options. Sparse Jones tables bind transactional acceptance, idempotent retries and restart ancestry to provider-confirmed per-attempt witnesses. Small MCP, orchestration and turn-start hooks enforce the guard. The existing Claude adapter harness retains integration cases because it owns SDK streams, warm queries, callbacks and idle lifecycle. Unsupported providers and legacy tasks without original attempt identity refuse explicitly; ordinary recovery remains unchanged."
+    },
+    {
+      "id": "upstream-24899-provider-snapshots-on-demand",
+      "tests": [
+        "apps/server/src/provider/ProviderRegistry.test.ts",
+        "apps/server/src/provider/ClaudeCapabilitiesProbe.test.ts",
+        "apps/server/src/ws.test.ts",
+        "packages/client-runtime/src/state/server.test.ts",
+        "packages/client-runtime/src/rpc/session.test.ts",
+        "packages/client-runtime/src/providerSkills.test.ts",
+        "packages/client-runtime/src/jones/providerWorkspaceRefresh.test.ts"
+      ],
+      "scope": "Targeted upstream backport abd9d9f9709b8873f542f53dd12d26b33690d5e1 (#24899): optional provider workspace snapshot negotiation and folder-scoped replies, shared scan completion, deleted-cwd settlement, bounded client refresh retries and lazy timeline images. Preserve legacy payloads, per-environment capability gating and Jones connection/discovery owners; no full upstream import or migration. Jones retry repair retains independent environment/instance/cwd failure windows across selection and TTL renewal in a shared client-runtime helper, with a narrow package export and two platform hooks; at most 64 live policy records defer overflow rather than evicting active budgets."
+    },
+    {
+      "id": "upstream-24589-long-turn-history-caps",
+      "tests": [
+        "apps/server/src/jones/orchestration/historyPaging.test.ts",
+        "apps/server/src/orchestration-v2/threadHistoryPaging.test.ts",
+        "apps/server/src/orchestration-v2/ProjectionStore.test.ts",
+        "apps/server/src/orchestration-v2/ThreadStream.test.ts",
+        "apps/server/src/orchestration-v2/ThreadFind.test.ts",
+        "apps/server/integration/transferBudgetV2.integration.test.ts",
+        "packages/client-runtime/src/platform/orchestrationCache.test.ts"
+      ],
+      "scope": "Targeted upstream backport 553203c57b780cef9fb30ad835d759befe0dcb7c (#24589): cap every long-turn snapshot and history page by row and encoded-byte budgets, preserve cursor/interrupt dependencies, remove unused full-projection overflow encoding, and expire old thread caches. Jones keyset selection retains its extracted budget and keyed interrupt lookup; no contracts, schema or migrations change. No full upstream import."
     }
   ]
 }

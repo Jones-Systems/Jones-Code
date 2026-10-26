@@ -459,6 +459,10 @@
       "types": "./src/pullRequestMarkdown.ts",
       "default": "./src/pullRequestMarkdown.ts"
     },
+    "./jones/provider-workspace-refresh": {
+      "types": "./src/jones/providerWorkspaceRefresh.ts",
+      "default": "./src/jones/providerWorkspaceRefresh.ts"
+    },
     "./jones/host-status/http": {
       "types": "./src/jones/hostStatus/http.ts",
       "default": "./src/jones/hostStatus/http.ts"
