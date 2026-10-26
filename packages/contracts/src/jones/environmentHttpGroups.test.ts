@@ -125,9 +125,19 @@ describe("Jones environment HTTP registration", () => {
       authorization: Schema.optionalKey(Schema.String),
       dpop: Schema.optionalKey(Schema.String),
     });
+    const placementHeaders = Schema.Struct({
+      ...bearerHeaders.fields,
+      "x-t3-workstreams-placement-contract": Schema.optionalKey(
+        Schema.Literal("workstreams-t3-placement/2.0.0"),
+      ),
+    });
     for (const endpoint of routes) {
       expect(endpoint.middlewares.has(EnvironmentAuthenticatedAuth)).toBe(true);
-      expect(endpoint.headers?.ast).toEqual(bearerHeaders.ast);
+      expect(endpoint.headers?.ast).toEqual(
+        endpoint === groups.workstreams.endpoints.threadPlacements
+          ? placementHeaders.ast
+          : bearerHeaders.ast,
+      );
     }
   });
 });
