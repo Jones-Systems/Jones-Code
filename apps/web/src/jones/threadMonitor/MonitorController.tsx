@@ -59,6 +59,7 @@ function NativeMonitorPublisher({ router }: { readonly router: AppRouter }) {
     );
   })();
   const expiry = cohort.nextDoneExpiryMs;
+  // oxlint-disable-next-line t3code/react-effect-budget -- Publish the rendered cohort to the external monitor store and native peer.
   useEffect(() => {
     monitorStore.setCohort(
       inputs.map((input) => input.environment),
@@ -78,6 +79,7 @@ function NativeMonitorPublisher({ router }: { readonly router: AppRouter }) {
     );
     // Draft and view-state notifications retain this compiler-memoized cohort.
   }, [inputs, cohort]);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Synchronize the wall clock with expiry timers and native resume events.
   useEffect(() => {
     const refresh = () => setNow(Date.now());
     const minute = setInterval(refresh, 60_000);
@@ -93,6 +95,7 @@ function NativeMonitorPublisher({ router }: { readonly router: AppRouter }) {
       window.removeEventListener("pageshow", refresh);
     };
   }, [expiry]);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Subscribe to native visibility changes so hidden time is reflected on reveal.
   useEffect(
     () =>
       subscribeMonitorNativeState(() => {
@@ -100,6 +103,7 @@ function NativeMonitorPublisher({ router }: { readonly router: AppRouter }) {
       }),
     [],
   );
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own the native bridge subscriptions and release them with this authenticated renderer.
   useEffect(() => {
     const bridge = window.desktopBridge!.threadMonitor!;
     let alive = true;
@@ -293,6 +297,7 @@ function NativeMonitorPublisher({ router }: { readonly router: AppRouter }) {
       setMonitorNativeState(null);
     };
   }, [router]);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Mount only the selected external thread-detail subscription and fence its cleanup.
   useEffect(() => {
     if (!selection || !native?.visible || !monitorStore.fence.accepts(selection)) return;
     const atom = environmentThreadDetails.stateAtom(selection);

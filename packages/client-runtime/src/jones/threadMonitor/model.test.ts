@@ -73,7 +73,7 @@ describe("source-grounded monitor cohorts", () => {
     for (const patch of [
       { status: "waiting" as const },
       { goal: { objective: "Finish", status: "active" as const } },
-      { pendingBackgroundTasks: [{ kind: "monitor" as const, taskId: "watch" }] },
+      { pendingBackgroundTasks: [{ kind: "monitor" as const, taskId: "watch", awaited: true }] },
       { blockedOnThreadWait: true },
       { activeRunId: RunId.make("active") },
     ])
@@ -83,6 +83,18 @@ describe("source-grounded monitor cohorts", () => {
     expect(
       buildMonitorCohort([environment([{ ...completed, status: "waiting" }])], now).rows[0]?.status,
     ).toBe("checkpoint");
+  });
+  it("keeps unawaited monitoring complete while refusing to settle its background work", () => {
+    const thread = {
+      ...completed,
+      pendingBackgroundTasks: [{ kind: "monitor" as const, taskId: "watch" }],
+    };
+    const cohort = buildMonitorCohort([environment([thread])], now);
+    expect(cohort.counts.done).toBe(1);
+    expect(cohort.rows[0]?.actions.settle).toEqual({
+      available: false,
+      reason: "Thread has background work",
+    });
   });
   it("retains hidden child attention, request precedence, and scoped duplicate IDs", () => {
     const child = shell({

@@ -266,7 +266,7 @@ export default defineConfig(() => {
               { bundle: "desktop", path: new URL("../desktop/package.json", import.meta.url) },
             ],
           }),
-      tanstackRouter({ autoCodeSplitting: true }),
+      tanstackRouter({ autoCodeSplitting: true, semicolons: true }),
       react({ compiler: true }),
       tailwindPlugins(bundledDev),
       warmBundledDevPlugin(),
@@ -364,16 +364,14 @@ export default defineConfig(() => {
     },
     build: {
       outDir: "dist",
+      emptyOutDir: true,
+      manifest: true,
+      sourcemap: buildSourcemap,
       rolldownOptions: {
         input: {
           app: new URL("./index.html", import.meta.url).pathname,
           threadMonitor: new URL("./thread-monitor.html", import.meta.url).pathname,
         },
-      },
-      emptyOutDir: true,
-      manifest: true,
-      sourcemap: buildSourcemap,
-      rolldownOptions: {
         output: {
           // PDF.js resolves decoder modules and ICC data relative to wasmUrl.
           assetFileNames: (asset) =>

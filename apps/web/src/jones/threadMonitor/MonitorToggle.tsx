@@ -23,6 +23,7 @@ const subscribeOwnership = (listener: () => void) => {
 export function MonitorToggle({ priority = 20 }: { readonly priority?: number }) {
   const id = useId();
   const owner = useSyncExternalStore(subscribeOwnership, readOwner);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Register this mounted toolbar candidate with the shared native-toggle ownership store.
   useEffect(() => {
     candidates.set(id, priority);
     notifyOwnership();

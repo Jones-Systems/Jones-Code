@@ -603,11 +603,8 @@ it.effect.each(["codex", "cursor"] as const)(
             yield* Fiber.join(running);
           }
 
-          // Matches commands.test.ts's active-run opt-out case: startThreadTurn with
-          // allowQueuedToolBoundaryDelivery:false and advertised queuedToolBoundaryDelivery:true,
-          // for both server-resolved and legacy command context. The option is client-only;
-          // the wire command omits queuedToolBoundaryEligible and retains real web provenance.
-          // Keep the server independent of the client-runtime command implementation.
+          // Bind the client opt-out wire shape to actual server delivery without a client dependency.
+          // Both modern and legacy context omit eligibility while preserving web provenance.
           const monitorCommand = {
             type: "message.dispatch",
             commandId: CommandId.make("monitor:original-command"),

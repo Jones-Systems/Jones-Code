@@ -107,7 +107,9 @@ function harness() {
     revealMain,
     timers,
     fire: (milliseconds: number) => {
-      for (const [callback, delay] of [...timers])
+      // Callbacks can register new timers; only fire the captured batch.
+      const pendingTimers = [...timers];
+      for (const [callback, delay] of pendingTimers)
         if (delay === milliseconds) {
           timers.delete(callback);
           callback();

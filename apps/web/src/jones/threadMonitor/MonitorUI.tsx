@@ -87,7 +87,7 @@ const idFor = (row: ThreadMonitorRow) => ({
 });
 function age(row: ThreadMonitorRow, now: number) {
   const stamp = row.group === "done" ? row.completedAt : row.updatedAt;
-  if (stamp === null) return "—";
+  if (stamp === null) return "Unknown";
   const minutes = Math.max(0, Math.floor((now - Date.parse(stamp)) / 60_000));
   return minutes === 0
     ? "now"
@@ -134,6 +134,7 @@ export function MonitorUI({ store }: { readonly store: MonitorPeerStore }) {
       if (!applyingViewState.current) captureViewState.current?.();
     });
   });
+  // oxlint-disable-next-line t3code/react-effect-budget -- Capture committed DOM selection and scroll anchors for replay in a recreated native peer.
   useLayoutEffect(() => {
     captureViewState.current = () => {
       if (!store.generation || !root.current) return;
@@ -176,6 +177,7 @@ export function MonitorUI({ store }: { readonly store: MonitorPeerStore }) {
       captureViewState.current = null;
     };
   }, [store, collapsed, activeRow, selectionKey, scheduleViewState]);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Restore authoritative native replay into DOM scroll, focus and selection after commit.
   useLayoutEffect(() => {
     const saved = authoritativeViewState;
     if (!saved || !root.current) return;
@@ -282,6 +284,7 @@ export function MonitorUI({ store }: { readonly store: MonitorPeerStore }) {
     }
     dispatch(latest, { ...idFor(latest), type: "settle", expectedUpdatedAt: latest.updatedAt });
   };
+  // oxlint-disable-next-line t3code/react-effect-budget -- Refresh relative timestamps from the clock and external store without publishing data.
   useEffect(() => {
     const refresh = () => setNow(Date.now());
     const timer = setInterval(refresh, 60_000);
@@ -297,6 +300,7 @@ export function MonitorUI({ store }: { readonly store: MonitorPeerStore }) {
       window.removeEventListener("pageshow", refresh);
     };
   }, [store]);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Release owned hover and close timers when this native peer unmounts.
   useEffect(
     () => () => {
       if (hover.current) clearTimeout(hover.current);
@@ -324,9 +328,11 @@ export function MonitorUI({ store }: { readonly store: MonitorPeerStore }) {
     form.style.left = `${rect.left - bounds.left}px`;
     form.style.width = `${rect.width}px`;
   });
+  // oxlint-disable-next-line t3code/react-effect-budget -- Position the floating editor from the committed row and panel DOM geometry.
   useLayoutEffect(() => {
     positionEditor();
   });
+  // oxlint-disable-next-line t3code/react-effect-budget -- Subscribe to native viewport and element resize events for editor placement.
   useLayoutEffect(() => {
     const form = editor.current;
     const panel = root.current;

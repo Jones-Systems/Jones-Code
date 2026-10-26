@@ -1,6 +1,5 @@
 import type { OrchestrationV2TurnItem, ThreadId } from "@t3tools/contracts";
 import { isOrchestrationV2WorkActive } from "@t3tools/contracts";
-import { threadPullRequestsOf } from "@t3tools/shared/threadPullRequests";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import type { ProjectionStoreV2Shape } from "../../orchestration-v2/ProjectionStore.ts";
@@ -72,7 +71,7 @@ export function monitorSettlementBlocker(
         session.status === "running" ||
         session.status === "waiting",
     ) ||
-    threadPullRequestsOf(records.thread).some((link) => link.watch !== undefined) ||
+    (records.thread.pullRequests ?? []).some((link) => link.watch !== undefined) ||
     records.turnItems.some(
       (item) => executingItems.has(item.type) && isOrchestrationV2WorkActive(item.status),
     )
