@@ -18,6 +18,7 @@ import {
 } from "../../../../packages/client-runtime/src/state/orchestrationV2TestFixtures";
 import type { DraftComposerImageAttachment } from "../lib/composerImages";
 import type { PendingThreadRequests } from "@t3tools/client-runtime/state/thread-requests";
+import { sendApprovalFeedback } from "@t3tools/client-runtime/state/thread-requests";
 import { AsyncResult, type Atom } from "effect/reactivity";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -38,8 +39,6 @@ const state = vi.hoisted(() => ({
   answer: vi.fn(),
   feedback: vi.fn(),
   updateSettings: vi.fn(),
-  prepareImportedHistory: vi.fn(),
-  getImportedHistoryChoice: vi.fn(),
   question: {
     id: "language",
     header: "Language",
@@ -62,7 +61,7 @@ const state = vi.hoisted(() => ({
 vi.mock("react", () => ({
   useCallback: <A>(callback: A) => callback,
   useEffect: () => {},
-  useLayoutEffect: (effect: () => void) => effect(),
+  useLayoutEffect: () => {},
   useRef: <A>(current: A) => ({ current }),
   useMemo: <A>(factory: () => A) => factory(),
   useState: <A>(initial: A | (() => A)) => [
@@ -71,10 +70,6 @@ vi.mock("react", () => ({
   ],
 }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => "uuid" }));
-vi.mock("../jones/importedHistory/runtime", () => ({
-  mobileImportedHistoryCommands: { prepare: state.prepareImportedHistory },
-  getMobileImportedHistoryChoice: state.getImportedHistoryChoice,
-}));
 vi.mock("../lib/attachmentUpload", () => ({ prepareTurnAttachments: vi.fn() }));
 vi.mock("../lib/uuid", () => ({ uuidv4: () => "uuid" }));
 vi.mock("./queued-run-edit", () => ({
@@ -208,45 +203,48 @@ beforeEach(() => {
 });
 
 describe("mobile task permissions", () => {
-  it.each([false, true])(
-    "rechecks permission after the approval wait before sending (imported=%s)",
-    async (imported) => {
-      state.grantedEnvironments.add("secondary");
-      if (imported) {
-        state.projection = {
-          ...v2Projection,
-          thread: { ...v2Projection.thread, historyOrigin: "v1_import" },
-        };
-      }
-      const composer = useThreadComposerState();
-      let release!: () => void;
-      const waiting = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      const beforeDispatch = vi.fn(async () => {
-        await waiting;
-        return true;
-      });
-      const result = composer.onSendMessage(undefined, beforeDispatch);
-      expect(beforeDispatch).toHaveBeenCalledTimes(1);
-      state.grantedEnvironments.delete("secondary");
-      release();
-      expect(await result).toBeNull();
-      expect(state.draft.text).toBe("Keep my draft");
-      expect(state.clearDraft).not.toHaveBeenCalled();
-      expect(state.enqueue).not.toHaveBeenCalled();
-      expect(state.prepareImportedHistory).not.toHaveBeenCalled();
-      expect(state.getImportedHistoryChoice).not.toHaveBeenCalled();
-    },
-  );
+  it("consumes an approval reply without queueing a parent message", async () => {
+    state.grantedEnvironments.add("secondary");
+    const composer = useThreadComposerState();
+    const requests = useSelectedThreadRequests();
+    const approval = { ...state.pendingRequests.approvals[0]!, supportsFeedback: true };
+    const messageId = await composer.onSendMessage(undefined, async (text) =>
+      (await sendApprovalFeedback(approval, text, requests.onRespondToApproval))
+        ? "responded"
+        : false,
+    );
+    expect(messageId).toBeNull();
+    expect(state.approve).toHaveBeenCalledWith({
+      environmentId: "secondary",
+      input: {
+        threadId: "thread",
+        requestId: "approval",
+        decision: "decline",
+        feedback: "Keep my draft",
+      },
+    });
+    expect(state.enqueue).not.toHaveBeenCalled();
+    expect(state.clearDraft).toHaveBeenCalledOnce();
+  });
+
+  it("preserves a draft changed during an approval reply and never sends it to the parent", async () => {
+    state.grantedEnvironments.add("secondary");
+    const composer = useThreadComposerState();
+    const beforeDispatch = async () => {
+      state.draft = { ...state.draft, text: "New feedback" };
+      return "responded" as const;
+    };
+    expect(await composer.onSendMessage(undefined, beforeDispatch)).toBeNull();
+    expect(state.enqueue).not.toHaveBeenCalled();
+    expect(state.clearDraft).not.toHaveBeenCalled();
+    expect(state.draft.text).toBe("New feedback");
+  });
 
   it("keeps a connected read-only task's draft instead of queueing it with another environment's grant", async () => {
     const composer = useThreadComposerState();
     expect(await composer.onSendMessage()).toBeNull();
     expect(state.enqueue).not.toHaveBeenCalled();
     expect(state.clearDraft).not.toHaveBeenCalled();
-    expect(state.prepareImportedHistory).not.toHaveBeenCalled();
-    expect(state.getImportedHistoryChoice).not.toHaveBeenCalled();
     composer.onChangeDraftMessage("Edited locally");
     composer.onUpdateInteractionMode("plan");
     expect(state.draft.text).toBe("Edited locally");
@@ -262,8 +260,6 @@ describe("mobile task permissions", () => {
     expect(await composer.onSendMessage()).toBeNull();
     expect(state.clearDraft).not.toHaveBeenCalled();
     expect(state.enqueue).not.toHaveBeenCalled();
-    expect(state.prepareImportedHistory).not.toHaveBeenCalled();
-    expect(state.getImportedHistoryChoice).not.toHaveBeenCalled();
     state.grantedEnvironments.add("secondary");
     expect(await composer.onSendMessage()).toBe("message");
     expect(state.enqueue).toHaveBeenCalledWith(

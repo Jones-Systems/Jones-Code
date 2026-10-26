@@ -1,24 +1,9 @@
-import type {
-  NativeProviderExecutionGuard,
-  PhysicalProcessLease,
-  ProviderRuntimeObservation,
-  ProviderGoalReadResult,
-  ProviderGoalControlInput,
-  ProviderGoalControlResult,
-} from "./jones/runtimeTypes.ts";
-import type { ProviderEventProducerOrigin } from "./jones/ProviderEventOrigin.ts";
-import { classifyProviderRuntimeBindingFailure } from "./jones/ProviderRuntimeBindingDiagnostics.ts";
 import type { OrchestrationV2HistoricalMessage } from "@t3tools/contracts";
 import {
   ChatAttachment,
   CheckpointId,
   MessageId,
   ModelSelection,
-  ObservedRuntimeIdentity,
-  ProviderRuntimeBinding,
-  ProviderRuntimeEvidenceCapture,
-  RequestedRuntimeIdentity,
-  RuntimeIdentityAttestation,
   NodeId,
   OrchestrationV2AppThread,
   OrchestrationV2ConversationMessage,
@@ -93,72 +78,52 @@ export type ProviderAdapterV2SessionStatus = typeof ProviderAdapterV2SessionStat
 
 export const ProviderAdapterV2Event = Schema.Union([
   Schema.Struct({
-    type: Schema.Literal("runtime_identity.observed"),
-    driver: ProviderDriverKind,
-    binding: ProviderRuntimeBinding,
-    requested: RequestedRuntimeIdentity,
-    observed: ObservedRuntimeIdentity,
-  }),
-  Schema.Struct({
     type: Schema.Literal("app_thread.created"),
     driver: ProviderDriverKind,
-    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     appThread: OrchestrationV2AppThread,
     createOnly: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({
     type: Schema.Literal("provider_session.updated"),
     driver: ProviderDriverKind,
-    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     providerSession: OrchestrationV2ProviderSession,
   }),
   Schema.Struct({
     type: Schema.Literal("provider_thread.updated"),
     driver: ProviderDriverKind,
-    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     providerThread: OrchestrationV2ProviderThread,
     retainedNativeTurnIds: Schema.optional(Schema.Array(Schema.String)),
   }),
   Schema.Struct({
     type: Schema.Literal("provider_turn.updated"),
     driver: ProviderDriverKind,
-    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     threadId: Schema.optional(ThreadId),
     providerTurn: OrchestrationV2ProviderTurn,
   }),
   Schema.Struct({
     type: Schema.Literal("node.updated"),
     driver: ProviderDriverKind,
-    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     node: OrchestrationV2ExecutionNode,
   }),
   Schema.Struct({
     type: Schema.Literal("subagent.updated"),
     driver: ProviderDriverKind,
-    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     subagent: OrchestrationV2Subagent,
   }),
   Schema.Struct({
     type: Schema.Literal("message.updated"),
     driver: ProviderDriverKind,
-    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     message: OrchestrationV2ConversationMessage,
   }),
   Schema.Struct({
     type: Schema.Literal("turn_item.updated"),
     driver: ProviderDriverKind,
-    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     turnItem: OrchestrationV2TurnItem,
   }),
-  /**
-   * Raw output from a running command. Never persisted: the session manager
-   * hands it to the command output hub, which only clients showing the row see.
-   * The item's final output still arrives in its `turn_item.updated`.
-   */
+  /** Unpersisted deltas go only to clients showing the row; final output arrives in turn_item.updated. */
   Schema.Struct({
     type: Schema.Literal("command_output.delta"),
     driver: ProviderDriverKind,
-    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     threadId: ThreadId,
     itemId: TurnItemId,
     chunk: Schema.String,
@@ -166,24 +131,17 @@ export const ProviderAdapterV2Event = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("runtime_request.updated"),
     driver: ProviderDriverKind,
-    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     threadId: Schema.optional(ThreadId),
     runtimeRequest: OrchestrationV2RuntimeRequest,
   }),
   Schema.Struct({
     type: Schema.Literal("plan.updated"),
     driver: ProviderDriverKind,
-    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     plan: OrchestrationV2PlanArtifact,
   }),
   Schema.Struct({
     type: Schema.Literal("turn.terminal"),
-    providerTurn: Schema.optional(OrchestrationV2ProviderTurn),
-    evidenceKind: Schema.optional(
-      Schema.Literals(["provider_result", "attributed_abort", "local_failure"]),
-    ),
     driver: ProviderDriverKind,
-    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     providerThreadId: ProviderThreadId,
     providerTurnId: ProviderTurnId,
     runOrdinal: PositiveInt,
@@ -193,12 +151,7 @@ export const ProviderAdapterV2Event = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("turn.terminal"),
-    providerTurn: Schema.optional(OrchestrationV2ProviderTurn),
-    evidenceKind: Schema.optional(
-      Schema.Literals(["provider_result", "attributed_abort", "local_failure"]),
-    ),
     driver: ProviderDriverKind,
-    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     providerThreadId: ProviderThreadId,
     providerTurnId: ProviderTurnId,
     runOrdinal: PositiveInt,
@@ -208,11 +161,7 @@ export const ProviderAdapterV2Event = Schema.Union([
     retry: Schema.optional(OrchestrationV2ProviderRetry),
     retryStartedAt: Schema.optional(Schema.DateTimeUtc),
     threadDisposition: Schema.Literals(["reusable", "broken"]),
-    /**
-     * Child turns the root started outlive its failure and will report their
-     * own terminals, as after a completed root. Without it, the run settles
-     * every child it still sees as open.
-     */
+    /** Child turns outlive root failure and report their own terminals; otherwise open children settle. */
     childTurnsContinue: Schema.optional(Schema.Literal(true)),
   }),
 ]);
@@ -426,26 +375,7 @@ export class ProviderAdapterProtocolError extends Schema.TaggedError<ProviderAda
   }
 }
 
-export class ProviderRuntimeBindingError extends Schema.TaggedError<ProviderRuntimeBindingError>()(
-  "ProviderRuntimeBindingError",
-  { driver: ProviderDriverKind, detail: Schema.String, cause: Schema.optional(Schema.Defect()) },
-) {
-  override get message(): string {
-    return `Provider runtime binding failed [${classifyProviderRuntimeBindingFailure(this)}].`;
-  }
-}
-
-export function hasUnknownRuntimeBinding(error: unknown): boolean {
-  let current = error;
-  for (let depth = 0; depth < 8 && typeof current === "object" && current !== null; depth += 1) {
-    if (Reflect.get(current, "_tag") === "ProviderRuntimeBindingError") return true;
-    current = Reflect.get(current, "cause");
-  }
-  return false;
-}
-
 export const ProviderAdapterV2Error = Schema.Union([
-  ProviderRuntimeBindingError,
   ProviderAdapterCapabilitiesError,
   ProviderAdapterOpenSessionError,
   ProviderAdapterCloseSessionError,
@@ -464,100 +394,7 @@ export const ProviderAdapterV2Error = Schema.Union([
 ]);
 export type ProviderAdapterV2Error = typeof ProviderAdapterV2Error.Type;
 
-export interface ProviderRuntimeLifecycle {
-  readonly reserve: (threadId: ThreadId) => Effect.Effect<string, ProviderAdapterV2Error>;
-  // Capture this app thread's predecessors immediately before the generation's native effect.
-  readonly admit: (input: {
-    readonly runtimeGeneration: string;
-    readonly threadId: ThreadId;
-  }) => Effect.Effect<void, ProviderAdapterV2Error>;
-  readonly bind: (input: {
-    readonly providerThread: OrchestrationV2ProviderThread;
-    readonly runtimeGeneration: string;
-    readonly requested: RequestedRuntimeIdentity;
-    readonly observed: ObservedRuntimeIdentity;
-    readonly producerOrigin?: ProviderEventProducerOrigin;
-    readonly physicalProcess?: PhysicalProcessLease | undefined;
-  }) => Effect.Effect<OrchestrationV2ProviderThread, ProviderAdapterV2Error>;
-  readonly abandon: (runtimeGeneration: string) => Effect.Effect<void, ProviderAdapterV2Error>;
-  readonly invalidate: (
-    binding: ProviderRuntimeBinding,
-  ) => Effect.Effect<void, ProviderAdapterV2Error>;
-}
-
-export function requestedRuntimeIdentity(
-  selection: ModelSelection,
-  driver: ProviderDriverKind,
-): RequestedRuntimeIdentity {
-  const tier = selection.options?.find((option) => option.id === "serviceTier")?.value;
-  return {
-    providerInstanceId: selection.instanceId,
-    providerDriver: driver,
-    model: selection.model,
-    serviceTier: typeof tier === "string" ? tier : null,
-  };
-}
-
-export function unobservedRuntimeIdentity(): ObservedRuntimeIdentity {
-  return {
-    backend: { status: "unknown" },
-    model: { status: "unknown" },
-    account: {
-      status: "unavailable",
-      reason: "No supported provider event safely binds an account to this runtime.",
-    },
-    serviceTier: { status: "unknown" },
-  };
-}
-
-export function runtimeBinding(
-  thread: OrchestrationV2ProviderThread,
-  runtimeGeneration: string,
-): ProviderRuntimeBinding | undefined {
-  if (
-    thread.appThreadId === null ||
-    thread.providerSessionId === null ||
-    thread.nativeThreadRef === null ||
-    thread.nativeThreadRef.nativeId === null
-  )
-    return undefined;
-  return {
-    threadId: thread.appThreadId,
-    providerThreadId: thread.id,
-    providerSessionId: thread.providerSessionId,
-    providerInstanceId: thread.providerInstanceId,
-    driver: thread.driver,
-    nativeThreadId: thread.nativeThreadRef.nativeId,
-    runtimeGeneration,
-  };
-}
-
-export function identityForRequest(
-  requested: RequestedRuntimeIdentity,
-  previous?: RuntimeIdentityAttestation,
-): RuntimeIdentityAttestation {
-  const sameOwner =
-    previous?.requested.providerInstanceId === requested.providerInstanceId &&
-    previous.requested.providerDriver === requested.providerDriver;
-  const sameRequest =
-    sameOwner &&
-    previous.requested.model === requested.model &&
-    previous.requested.serviceTier === requested.serviceTier;
-  return {
-    ...(sameOwner && previous.runtimeGeneration !== undefined
-      ? { runtimeGeneration: previous.runtimeGeneration }
-      : {}),
-    ...(sameOwner && previous.evidenceRevision !== undefined
-      ? { evidenceRevision: previous.evidenceRevision }
-      : {}),
-    requested,
-    observed: sameRequest ? previous.observed : unobservedRuntimeIdentity(),
-  };
-}
-
 export interface ProviderAdapterV2OpenSessionInput {
-  readonly nativeCreationGuard?: NativeProviderExecutionGuard;
-  readonly runtimeLifecycle?: ProviderRuntimeLifecycle;
   readonly threadId: ThreadId;
   readonly providerSessionId: ProviderSessionId;
   readonly modelSelection: ModelSelection;
@@ -568,7 +405,6 @@ export interface ProviderAdapterV2OpenSessionInput {
 }
 
 export interface ProviderAdapterV2EnsureThreadInput {
-  readonly nativeCreationGuard?: NativeProviderExecutionGuard;
   readonly threadId: ThreadId;
   readonly title?: string;
   readonly modelSelection: ModelSelection;
@@ -578,8 +414,6 @@ export interface ProviderAdapterV2EnsureThreadInput {
 }
 
 export interface ProviderAdapterV2TurnInput {
-  readonly nativeCreationGuard?: NativeProviderExecutionGuard;
-  readonly revalidateStartAdmission?: Effect.Effect<void, ProviderAdapterV2Error>;
   readonly appThread: OrchestrationV2AppThread;
   readonly threadId: ThreadId;
   readonly runId: RunId;
@@ -592,8 +426,6 @@ export interface ProviderAdapterV2TurnInput {
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly message: ProviderAdapterV2TurnMessage;
   readonly modelSelection: ModelSelection;
-  /** Dispatch-only default; never changes durable requested model options. */
-  readonly configuredReasoningEffort?: string;
   readonly runtimePolicy: ProviderAdapterV2RuntimePolicy;
   readonly appContext?: ReadonlyArray<{ readonly key: string; readonly text: string }>;
 }
@@ -610,13 +442,12 @@ export interface ProviderAdapterV2InterruptInput {
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly providerTurnId: ProviderTurnId;
   readonly requestRuntimeRestart?: boolean;
-  /** Internal recovery preserves the native goal; user Stop pauses it before interruption. */
-  readonly preserveGoal?: boolean;
 }
 
 export interface ProviderAdapterV2RuntimeRequestResponseInput {
   readonly requestId: RuntimeRequestId;
   readonly decision?: ProviderApprovalDecision;
+  readonly feedback?: string;
   readonly answers?: ProviderUserInputAnswers;
   readonly response?: unknown;
 }
@@ -672,13 +503,6 @@ export interface ProviderAdapterV2HistoricalContext {
   readonly context: string;
 }
 
-export interface CapturedRuntimeStop {
-  readonly binding: ProviderRuntimeBinding;
-  readonly evidenceRevision: number;
-  readonly isCurrent: Effect.Effect<boolean>;
-  readonly stop: Effect.Effect<void, ProviderAdapterV2Error>;
-}
-
 export interface ProviderAdapterV2McpTool {
   readonly name: string;
   readonly _meta?: unknown;
@@ -717,39 +541,19 @@ export type ProviderAdapterV2SubagentOutcome = {
 };
 
 export interface ProviderAdapterV2SessionRuntime {
-  readonly captureRuntimeStop?: (
-    providerThread: OrchestrationV2ProviderThread,
-  ) => Effect.Effect<CapturedRuntimeStop | null, ProviderAdapterV2Error>;
-  readonly eventOriginMode?: "captured";
   readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind;
   readonly providerSessionId: ProviderSessionId;
   readonly providerSession: OrchestrationV2ProviderSession;
   readonly events: Stream.Stream<ProviderAdapterV2Event, ProviderAdapterV2Error>;
-  /**
-   * Manager-owned runtimes expose a synchronous subscription so concurrent
-   * provider threads receive independent copies of the process event stream.
-   * Adapter runtimes may omit this and expose only their single-consumer event stream.
-   */
+  /** Manager runtimes broadcast independent subscriptions; adapters may expose only a single-consumer stream. */
   readonly subscribeEvents?: Effect.Effect<ProviderAdapterV2EventSubscription>;
   readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
-  readonly readThreadActivity?: (
-    providerThread: OrchestrationV2ProviderThread,
-  ) => Effect.Effect<ProviderRuntimeObservation>;
-  /**
-   * When present, RunExecutionService uses only this probe (never the
-   * session-wide hasPendingBackgroundWork) so sibling native threads cannot pin
-   * an unrelated root subscription open.
-   */
+  /** Overrides the session-wide probe so sibling threads cannot keep this root subscription open. */
   readonly hasPendingBackgroundWorkForThread?: (
     providerThread: OrchestrationV2ProviderThread,
   ) => Effect.Effect<boolean>;
-  /**
-   * Set when every background task this session lists on its provider threads
-   * runs inside the session's own process and ends when it closes. Leave unset
-   * when a task can outlive the session, for example on a shared server, so its
-   * thread keeps showing Waiting.
-   */
+  /** Set only if all session background tasks end with its process; otherwise threads must keep Waiting. */
   readonly backgroundTasksEndWithProcess?: true;
   readonly getModelContextWindow?: (
     modelSelection: ModelSelection,
@@ -774,14 +578,6 @@ export interface ProviderAdapterV2SessionRuntime {
   readonly startTurn: (
     input: ProviderAdapterV2TurnInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
-  /** Confirmed maintenance only; must not attribute a provider turn to the pending input. */
-  readonly compactForContextHandoff?: (
-    input: ProviderAdapterV2TurnInput,
-  ) => Effect.Effect<
-    NonNullable<OrchestrationV2ProviderThread["contextUsage"]>,
-    ProviderAdapterV2Error,
-    Scope.Scope
-  >;
   readonly compactThread?: (
     input: ProviderAdapterV2TurnInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
@@ -792,6 +588,15 @@ export interface ProviderAdapterV2SessionRuntime {
     readonly providerThread: OrchestrationV2ProviderThread;
     readonly taskId: string;
   }) => Effect.Effect<void, ProviderAdapterV2Error>;
+  /**
+   * Marks or unmarks background tasks the agent will resume from, using the ids the agent saw.
+   * Ids not running on this provider thread come back unmatched and change nothing.
+   */
+  readonly awaitBackgroundTasks?: (input: {
+    readonly providerThread: OrchestrationV2ProviderThread;
+    readonly taskIds: ReadonlyArray<string>;
+    readonly awaited: boolean;
+  }) => Effect.Effect<{ readonly matched: ReadonlyArray<string> }, ProviderAdapterV2Error>;
   readonly interruptTurn: (
     input: ProviderAdapterV2InterruptInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
@@ -807,12 +612,6 @@ export interface ProviderAdapterV2SessionRuntime {
   readonly respondToRuntimeRequest: (
     input: ProviderAdapterV2RuntimeRequestResponseInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
-  readonly controlGoal?: (
-    input: ProviderGoalControlInput,
-  ) => Effect.Effect<ProviderGoalControlResult>;
-  readonly readGoalState?: (
-    providerThread: OrchestrationV2ProviderThread,
-  ) => Effect.Effect<ProviderGoalReadResult>;
   readonly readThreadSnapshot: (
     input: ProviderAdapterV2ReadThreadSnapshotInput,
   ) => Effect.Effect<ProviderAdapterV2ThreadSnapshot, ProviderAdapterV2Error>;
@@ -820,10 +619,7 @@ export interface ProviderAdapterV2SessionRuntime {
     readonly providerThread: OrchestrationV2ProviderThread;
     readonly reason?: string;
   }) => Effect.Effect<{ readonly feedbackId: string }, ProviderAdapterV2Error>;
-  /**
-   * Absent means apps from this provider are not interactive and their tool
-   * calls stay plain tool rows.
-   */
+  /** Absent means non-interactive apps with plain tool rows. */
   readonly mcpApps?: ProviderAdapterV2McpApps;
   readonly rollbackThread: (
     input: ProviderAdapterV2RollbackThreadInput,
@@ -836,7 +632,6 @@ export interface ProviderAdapterV2SessionRuntime {
 export class ProviderAdapterV2 extends Context.Service<
   ProviderAdapterV2,
   {
-    readonly nativeCreationExecution?: boolean;
     readonly instanceId: ProviderInstanceId;
     readonly driver: ProviderDriverKind;
     readonly getCapabilities: () => Effect.Effect<
@@ -851,5 +646,3 @@ export class ProviderAdapterV2 extends Context.Service<
     ) => Effect.Effect<ProviderAdapterV2SessionRuntime, ProviderAdapterV2Error, Scope.Scope>;
   }
 >()("@t3tools/provider-core/server/ProviderAdapter/ProviderAdapterV2") {}
-
-export type ProviderAdapterV2Shape = ProviderAdapterV2["Service"];

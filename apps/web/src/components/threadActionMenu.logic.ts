@@ -1,16 +1,12 @@
 import type { ContextMenuItem } from "@t3tools/contracts";
 import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled";
 
-import type { EnvironmentScopeAccess } from "../state/session";
-
 export type ThreadActionMenuId =
-  | "environment-access-status"
   | "new-thread-on-branch"
   | "filter-by-project"
   | "project-settings"
   | "pin"
   | "unpin"
-  | "stop-thread"
   | "settle"
   | "unsettle"
   | "auto-settle"
@@ -19,11 +15,10 @@ export type ThreadActionMenuId =
   | "snooze"
   | `snooze:${string}`
   | "unsnooze"
-  | "assign-thread"
-  | `assign-workstream:${string}`
   | "rename"
   | "regenerate-title"
   | "mark-unread"
+  | "share-guest"
   | "copy"
   | "copy-path"
   | "copy-branch"
@@ -70,9 +65,7 @@ export function buildDraftActionMenuItems(options: {
 }
 
 export interface ThreadActionMenuState {
-  readonly assignmentItems?: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>> | undefined;
   readonly canOperate: boolean;
-  readonly environmentAccessStatus?: EnvironmentScopeAccess["status"];
   readonly branch: string | null;
   readonly projectFilter: {
     readonly label: string;
@@ -84,7 +77,7 @@ export interface ThreadActionMenuState {
   readonly isSnoozed: boolean;
   readonly canSnoozeNow: boolean;
   readonly isRegeneratingTitle: boolean;
-  /** Archive rejects a thread with an attached provider, so disable it here rather than let the action fail. */
+  /** Archive rejects attached providers, so disable it while running. */
   readonly isRunning: boolean;
   readonly supports: {
     readonly settlement: boolean;
@@ -94,6 +87,8 @@ export interface ThreadActionMenuState {
     readonly titleRegeneration: boolean;
   };
   readonly snoozePresets: ReadonlyArray<SnoozePreset>;
+  /** Guest links need their own grant, so the caller checks it instead of `canOperate`. */
+  readonly canShareWithGuest?: boolean;
 }
 
 /** Local navigation, read markers, and copying remain available to read-only clients. */
@@ -102,6 +97,7 @@ export function threadActionRequiresOperate(action: ThreadActionMenuId): boolean
     "new-thread-on-branch",
     "project-settings",
     "mark-unread",
+    "share-guest",
     "copy",
     "copy-path",
     "copy-branch",
@@ -112,25 +108,16 @@ export function threadActionRequiresOperate(action: ThreadActionMenuId): boolean
 export function buildThreadActionMenuItems(
   state: ThreadActionMenuState,
 ): ReadonlyArray<ContextMenuItem<ThreadActionMenuId>> {
-  const accessLabels = {
-    checking: "Checking access to this environment…",
-    check_failed: "Couldn't check access to this environment. Refresh to retry.",
-    signed_out: "Sign in to this environment to change threads.",
-    scope_missing: "This connection can't change threads.",
-  };
   const items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>> = [
-    ...(!state.canOperate &&
-    state.environmentAccessStatus &&
-    state.environmentAccessStatus !== "granted"
+    ...(state.branch
       ? [
           {
-            id: "environment-access-status" as const,
-            label: accessLabels[state.environmentAccessStatus],
-            disabled: true,
+            id: "new-thread-on-branch" as const,
+            label: `New thread on ${state.branch}`,
+            icon: "message-square-plus",
           },
         ]
       : []),
-    { id: "mark-unread", label: "Mark unread", icon: "mail-open" },
     ...(state.supports.pinning
       ? [
           state.isPinned
@@ -145,43 +132,15 @@ export function buildThreadActionMenuItems(
             : { id: "settle" as const, label: "Settle thread", icon: "circle-check" },
         ]
       : []),
-    ...(state.supports.titleRegeneration
-      ? [
-          {
-            id: "regenerate-title" as const,
-            label: state.isRegeneratingTitle ? "Regenerating…" : "Regenerate title",
-            icon: "refresh-cw",
-            disabled: state.isRegeneratingTitle,
-            separatorBefore: true,
-          },
-        ]
-      : []),
-    ...(state.assignmentItems
-      ? [
-          {
-            id: "assign-thread" as const,
-            label: "Assign thread",
-            icon: "folder",
-            separatorBefore: !state.supports.titleRegeneration,
-            children: state.assignmentItems,
-          },
-        ]
-      : []),
     ...(state.supports.snooze
       ? [
           state.isSnoozed
-            ? {
-                id: "unsnooze" as const,
-                label: "Wake thread",
-                icon: "clock",
-                separatorBefore: !state.supports.titleRegeneration && !state.assignmentItems,
-              }
+            ? { id: "unsnooze" as const, label: "Wake thread", icon: "clock" }
             : {
                 id: "snooze" as const,
                 label: "Snooze",
                 icon: "clock",
                 disabled: !state.canSnoozeNow,
-                separatorBefore: !state.supports.titleRegeneration && !state.assignmentItems,
                 children: [
                   ...state.snoozePresets.map((preset) => ({
                     id: `snooze:${preset.id}` as const,
@@ -192,26 +151,21 @@ export function buildThreadActionMenuItems(
               },
         ]
       : []),
-    {
-      id: "stop-thread",
-      label: "Stop thread",
-      icon: "square",
-      // Session liveness is checked by the stop command when selected.
-      disabled: !state.canOperate,
-      separatorBefore:
-        !state.supports.titleRegeneration && !state.assignmentItems && !state.supports.snooze,
-    },
-    ...(state.branch
+    { id: "rename", label: "Rename thread", icon: "pencil", separatorBefore: true },
+    ...(state.supports.titleRegeneration
       ? [
           {
-            id: "new-thread-on-branch" as const,
-            label: `New thread on ${state.branch}`,
-            icon: "message-square-plus",
-            separatorBefore: true,
+            id: "regenerate-title" as const,
+            label: state.isRegeneratingTitle ? "Regenerating…" : "Regenerate title",
+            icon: "refresh-cw",
+            disabled: state.isRegeneratingTitle,
           },
         ]
       : []),
-    { id: "rename", label: "Rename thread", icon: "pencil", separatorBefore: !state.branch },
+    { id: "mark-unread", label: "Mark unread", icon: "mail-open" },
+    ...(state.canShareWithGuest
+      ? [{ id: "share-guest" as const, label: "Share with guest", icon: "user-plus" }]
+      : []),
     ...(state.projectFilter
       ? [
           {

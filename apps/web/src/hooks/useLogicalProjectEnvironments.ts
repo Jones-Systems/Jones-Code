@@ -7,8 +7,6 @@ import {
   resolveEnvironmentMachineKind,
 } from "@t3tools/contracts";
 
-import { sortEnvironmentOptions } from "../jones/presentationOrder/environmentOrder";
-import { useUiStateStore } from "../uiStateStore";
 import type { EnvironmentOption } from "../components/BranchToolbar.logic";
 import {
   deriveLogicalProjectKeyFromSettings,
@@ -18,17 +16,11 @@ import { useProjects } from "../state/entities";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import { useClientSettings } from "./useSettings";
 
-/**
- * The environments a project (or a scratch draft) can move between. It reads only the
- * environment, project, grouping and presentation-order inputs, so the list keeps its
- * identity while the thread streams and the chat chrome can skip those renders.
- */
 export function useLogicalProjectEnvironments(
   activeProject: EnvironmentProject | null,
   scratchDraft: boolean,
 ): readonly EnvironmentOption[] {
   const { environments } = useEnvironments();
-  const environmentOrder = useUiStateStore((state) => state.environmentOrder);
   const allProjects = useProjects();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
@@ -75,5 +67,9 @@ export function useLogicalProjectEnvironments(
       pushEnvironment(p.environmentId, p.id);
     }
   }
-  return sortEnvironmentOptions(envs, environmentOrder);
+  envs.sort((a, b) => {
+    if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
+    return a.label.localeCompare(b.label);
+  });
+  return envs;
 }

@@ -11,7 +11,10 @@ import { matchComposerThreadItems } from "@t3tools/client-runtime/composerThread
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 
 const EMPTY_THREAD_SHELLS: ReadonlyArray<EnvironmentThreadShell> = [];
-import { COMPOSER_CONTEXT_MAX_RECORDS } from "@t3tools/contracts";
+import {
+  COMPOSER_CONTEXT_MAX_RECORDS,
+  PROVIDER_WORKSPACE_SNAPSHOT_TTL_MS,
+} from "@t3tools/contracts";
 import { formatComposerContextReference } from "@t3tools/shared/composerContextReferences";
 import { pullRequestComposerContext, threadComposerContext } from "../../lib/composerContext";
 import { uuidv4 } from "../../lib/uuid";
@@ -47,15 +50,17 @@ import { useEffect, useRef, useState } from "react";
 import type { ComposerEditorSelection } from "../../components/ComposerEditor";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { useComposerPathSearch, useComposerPullRequestSearch } from "../../state/queries";
+import {
+  useComposerPathSearch,
+  useComposerPullRequestSearch,
+  useThreadSearch,
+} from "../../state/queries";
 import type { ComposerCommandItem } from "./ComposerCommandPopover";
 import { matchesSlashSkillQuery } from "./composerSlashSkillSearch";
 
-// Jones retry policy repairs upstream #24899's single-selection failure budget.
-import {
-  createProviderWorkspaceRefresh,
-  providerWorkspaceRefreshKey,
-} from "@t3tools/client-runtime/jones/provider-workspace-refresh";
+const WORKSPACE_SNAPSHOT_RETRY_COOLDOWN_MS = 10_000;
+// A cwd that never scans, such as a deleted worktree, would otherwise retry forever.
+const WORKSPACE_SNAPSHOT_MAX_ATTEMPTS = 3;
 
 function composerSelectionAtEnd(draftMessage: string): ComposerEditorSelection {
   return { start: draftMessage.length, end: draftMessage.length };
@@ -206,6 +211,8 @@ export function useComposerCommandMenu({
   readonly onUsageLimits?: () => void;
 }) {
   const [selection, setSelection] = useState(() => composerSelectionAtEnd(draftMessage));
+  // Thread mentions rank by recency as of when the composer mounted.
+  const [now] = useState(() => Date.now());
   const previousOwnerKeyRef = useRef(ownerKey);
   const onSelectionChange = (nextSelection: ComposerEditorSelection) => {
     setSelection(nextSelection);
@@ -241,52 +248,101 @@ export function useComposerCommandMenu({
     reportFailure: false,
   });
   const selectedProviderInstanceId = selectedProviderStatus?.instanceId;
-  const [workspaceRefresh] = useState(createProviderWorkspaceRefresh);
-  const [workspaceRefreshRetry, setWorkspaceRefreshRetry] = useState(0);
-  useEffect(() => () => workspaceRefresh.pause(), [workspaceRefresh]);
+  const hasWorkspaceSnapshot = hasCompleteProviderWorkspaceSnapshot(
+    selectedProviderStatus,
+    projectCwd,
+  );
+  // Record client request time to enforce TTL even when the client clock runs ahead of the server.
+  const workspaceRefreshKeyRef = useRef<{ key: string; requestedAt: number } | null>(null);
+  const failedRefreshesRef = useRef<{ key: string; count: number } | null>(null);
+  const [workspaceRefreshRetry, setWorkspaceRefreshRetry] = useState<{
+    key: string;
+    notBefore: number;
+  } | null>(null);
+  const workspaceRefreshScopeKey =
+    environmentId && projectCwd && selectedProviderInstanceId
+      ? `${environmentId}:${selectedProviderInstanceId}:${projectCwd}`
+      : null;
+  const workspaceSlashCommandsPending =
+    selectedProviderStatus?.workspaceSnapshots?.some(
+      (snapshot) => snapshot.cwd === projectCwd && snapshot.slashCommandsPending === true,
+    ) ?? false;
   useEffect(() => {
-    if (!environmentId || !projectCwd || !selectedProviderInstanceId) {
-      workspaceRefresh.update(null);
+    if (
+      !workspaceSlashCommandsPending ||
+      !workspaceRefreshRetry ||
+      workspaceRefreshRetry.key !== workspaceRefreshScopeKey
+    )
+      return;
+    const timeout = setTimeout(
+      () => {
+        setWorkspaceRefreshRetry((current) => (current === workspaceRefreshRetry ? null : current));
+      },
+      Math.max(0, workspaceRefreshRetry.notBefore - Date.now()),
+    );
+    return () => clearTimeout(timeout);
+  }, [workspaceRefreshRetry, workspaceRefreshScopeKey, workspaceSlashCommandsPending]);
+  const hadWorkspaceSnapshotRef = useRef(false);
+  useEffect(() => {
+    if (hadWorkspaceSnapshotRef.current && !hasWorkspaceSnapshot) {
+      workspaceRefreshKeyRef.current = null;
+      setWorkspaceRefreshRetry(null);
+    }
+    hadWorkspaceSnapshotRef.current = hasWorkspaceSnapshot;
+  }, [hasWorkspaceSnapshot]);
+  useEffect(() => {
+    if (!environmentId || !projectCwd || !selectedProviderInstanceId) return;
+    const key = `${environmentId}:${selectedProviderInstanceId}:${projectCwd}`;
+    const now = Date.now();
+    const lastRequest = workspaceRefreshKeyRef.current;
+    if (
+      lastRequest?.key === key &&
+      now - lastRequest.requestedAt < PROVIDER_WORKSPACE_SNAPSHOT_TTL_MS
+    )
+      return;
+    if (hasCurrentProviderWorkspaceSnapshot(selectedProviderStatus, projectCwd, now)) {
+      setWorkspaceRefreshRetry(null);
       return;
     }
-    workspaceRefresh.update({
-      key: providerWorkspaceRefreshKey(environmentId, selectedProviderInstanceId, projectCwd),
-      hasSnapshot: hasCompleteProviderWorkspaceSnapshot(selectedProviderStatus, projectCwd),
-      isCurrent: hasCurrentProviderWorkspaceSnapshot(
-        selectedProviderStatus,
-        projectCwd,
-        Date.now(),
-      ),
-      retryPending:
-        selectedProviderStatus?.workspaceSnapshots?.some(
-          (snapshot) => snapshot.cwd === projectCwd && snapshot.slashCommandsPending === true,
-        ) ?? false,
-      onRetry: () => setWorkspaceRefreshRetry((retry) => retry + 1),
-      refresh: () =>
-        refreshProviders({
-          environmentId,
-          input: { instanceId: selectedProviderInstanceId, cwd: projectCwd },
-        }).then(
-          (result) =>
-            result._tag === "Success" &&
-            hasCompleteProviderWorkspaceSnapshot(
-              result.value.providers.find(
-                (provider) => provider.instanceId === selectedProviderInstanceId,
-              ),
-              projectCwd,
-            ),
-        ),
-    });
+    const retry = workspaceRefreshRetry;
+    if (retry?.key === key && now < retry.notBefore) return;
+    const request = { key, requestedAt: now };
+    workspaceRefreshKeyRef.current = request;
+    const retryLater = () => {
+      if (workspaceRefreshKeyRef.current !== request) return;
+      const failed = failedRefreshesRef.current;
+      const count = failed?.key === key ? failed.count + 1 : 1;
+      failedRefreshesRef.current = { key, count };
+      // Keeping the request marker lets the TTL hold off the next scan.
+      if (count >= WORKSPACE_SNAPSHOT_MAX_ATTEMPTS) return;
+      workspaceRefreshKeyRef.current = null;
+      setWorkspaceRefreshRetry({
+        key,
+        notBefore: Date.now() + WORKSPACE_SNAPSHOT_RETRY_COOLDOWN_MS,
+      });
+    };
+    void refreshProviders({
+      environmentId,
+      input: { instanceId: selectedProviderInstanceId, cwd: projectCwd },
+    }).then((result) => {
+      const refreshed =
+        result._tag === "Success" &&
+        hasCompleteProviderWorkspaceSnapshot(
+          result.value.providers.find(
+            (provider) => provider.instanceId === selectedProviderInstanceId,
+          ),
+          projectCwd,
+        );
+      if (!refreshed) retryLater();
+      else failedRefreshesRef.current = null;
+    }, retryLater);
   }, [
-    // Typing and timer wakeups deliberately recheck freshness even when scope is unchanged.
-    // oxlint-disable-next-line react/exhaustive-effect-dependencies
     draftMessage,
     environmentId,
     projectCwd,
     refreshProviders,
     selectedProviderInstanceId,
     selectedProviderStatus,
-    workspaceRefresh,
     workspaceRefreshRetry,
   ]);
 
@@ -301,6 +357,12 @@ export function useComposerCommandMenu({
     cwd: trigger?.kind === "path" ? projectCwd : null,
     query: trigger?.kind === "path" ? trigger.query : null,
   });
+  // Mounts older settled threads matching the mention, which shells may leave out.
+  useThreadSearch(
+    trigger?.kind === "path" && environmentId ? [environmentId] : [],
+    trigger?.kind === "path" ? trigger.query : "",
+    { titlesOnly: true },
+  );
   const pullRequestSearch = useComposerPullRequestSearch({
     environmentId,
     projectId: pullRequestProjectId,
@@ -458,6 +520,7 @@ export function useComposerCommandMenu({
             environmentId,
             excludeThreadId: currentThreadId,
             query: trigger.query,
+            now,
           })
         : [];
       return [

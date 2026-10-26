@@ -1,27 +1,17 @@
-import { useState } from "react";
-import { userEvent } from "vite-plus/test/browser";
-import { serverEnvironment } from "../../state/server";
-import { PullRequestLinkPreview } from "../pullRequest/PullRequestLinkPreview";
-import { Tooltip, TooltipPopup, TooltipScrollDismissArea, TooltipTrigger } from "../ui/tooltip";
-import { readTimelinePosition } from "./timelineScrollAnchoring";
-import { useComposerFocusState } from "./useComposerFocusState";
-import { RegistryProvider } from "@effect/atom-react";
-import {
-  ApprovalRequestId,
-  CheckpointRef,
-  EnvironmentId,
-  MessageId,
-  RunId,
-  ScheduledTaskId,
-} from "@t3tools/contracts";
+import { AudioPreview } from "../files/AudioPreview";
+import { onTestFinished } from "vite-plus/test";
+import { stubGlobal } from "../../../test/render";
+import { EnvironmentId, MessageId, RunId, ScheduledTaskId, ThreadId } from "@t3tools/contracts";
 import type { LegendListRef } from "@legendapp/list/react";
 import { createRef, Profiler, type ComponentProps, type ReactElement } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import "~/index.css";
 
-import { act, render, fakeTimers, type Screen } from "../../../test/render";
+import { act, render } from "../../../test/render";
 import { MessagesTimeline } from "./MessagesTimeline";
+import { makeStreamingTimelineFixture } from "../../test-fixtures";
+import { deriveTimelineEntriesFromVisibleTurnItems } from "../../session-logic";
 import { remarkThoughtPreview } from "./TimelineWorkEntryRow.logic";
 import { parseMarkdownWithMath } from "@t3tools/shared/markdownMath";
 import { collectThreadFindRanges } from "./threadFindHighlights";
@@ -42,6 +32,18 @@ vi.mock(import("~/state/query"), async (original) => ({
     refresh: () => {},
   })) as never,
 }));
+
+const audioAsset = vi.hoisted(() => ({ url: "" }));
+vi.mock(import("~/assets/assetUrls"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    useAssetUrlState: ((...args: Parameters<typeof actual.useAssetUrlState>) =>
+      audioAsset.url
+        ? { _tag: "Success", url: audioAsset.url }
+        : actual.useAssetUrlState(...args)) as typeof actual.useAssetUrlState,
+  };
+});
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-local");
 const CREATED_AT = "2026-03-17T19:12:28.000Z";
@@ -106,64 +108,8 @@ function message(
   };
 }
 
-function work(id: string, entry: Record<string, unknown>): Entry {
-  return {
-    id,
-    kind: "work",
-    createdAt: CREATED_AT,
-    entry: { id, createdAt: CREATED_AT, ...entry },
-  } as Entry;
-}
-
-function v2Item(type: string, fields: Record<string, unknown>) {
-  const id = (fields.id as string | undefined) ?? type;
-  return {
-    position: 0,
-    visibility: "local",
-    sourceThreadId: "thread-1",
-    sourceItemId: id,
-    item: {
-      id,
-      threadId: "thread-1",
-      runId: "run-1",
-      nodeId: null,
-      providerThreadId: null,
-      providerTurnId: null,
-      nativeItemRef: null,
-      parentItemId: null,
-      ordinal: 0,
-      status: "completed",
-      title: null,
-      startedAt: null,
-      completedAt: null,
-      updatedAt: {},
-      type,
-      ...fields,
-    },
-  } as never;
-}
-
-let container: HTMLElement;
-
-function text() {
-  return container.textContent ?? "";
-}
-
-function buttons(name: string | RegExp) {
-  return [...container.querySelectorAll<HTMLElement>("button, [role=button]")].filter((button) => {
-    const label = button.getAttribute("aria-label") ?? button.textContent ?? "";
-    return typeof name === "string" ? label === name : name.test(label);
-  });
-}
-
-function button(name: string | RegExp) {
-  const [match] = buttons(name);
-  if (!match) throw new Error(`Missing button: ${String(name)}`);
-  return match;
-}
-
 async function renderElement(element: ReactElement) {
-  container = document.createElement("div");
+  const container = document.createElement("div");
   container.style.cssText = "height: 1200px; width: 900px; display: flex; flex-direction: column;";
   const screen = await render(element, { container });
   const buttons = (name: string | RegExp) =>
@@ -381,6 +327,206 @@ describe("MessagesTimeline automation prompts", () => {
   });
 });
 
+const SENDER_THREAD_ID = ThreadId.make("thread-sender");
+const AGENT_MESSAGE = "Review finished\n\nThe migration drops the index before backfilling it.";
+
+describe("MessagesTimeline agent messages", () => {
+  it("folds a message from another agent into a one-line preview", async () => {
+    setup();
+    const onOpenThread = vi.fn();
+    await using screen = await renderTimeline(
+      [message(AGENT_MESSAGE, { createdBy: "agent", senderThreadId: SENDER_THREAD_ID })],
+      { onOpenThread },
+    );
+    const row = screen.button(/^Agent/);
+    expect(row.textContent).toContain("Review finished");
+    expect(row.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.text()).not.toContain("drops the index");
+    expect(screen.buttons("Open thread")).toHaveLength(0);
+
+    await click(row);
+    expect(screen.text()).toContain("The migration drops the index before backfilling it.");
+    await click(screen.button("Open thread"));
+    expect(onOpenThread).toHaveBeenCalledWith(SENDER_THREAD_ID);
+
+    await click(screen.button(/^Agent/));
+    expect(screen.text()).not.toContain("drops the index");
+  });
+
+  it("leaves messages sent by T3 Code as full bubbles", async () => {
+    setup();
+    await using screen = await renderTimeline([
+      message(AGENT_MESSAGE, { createdBy: "agent", creationSource: "server" }),
+    ]);
+    expect(screen.buttons(/^Agent/)).toHaveLength(0);
+    expect(screen.text()).toContain("drops the index");
+  });
+
+  it("reveals a find match inside a folded agent message", async () => {
+    setup();
+    const text = `${"Checked the next file.\n\n".repeat(16)}The migration drops the index.`;
+    await using screen = await renderTimeline(
+      [message(text, { createdBy: "agent", senderThreadId: SENDER_THREAD_ID })],
+      {
+        findExpanded: true,
+        findQuery: "drops the index",
+        activeFindMatch: { entryId: "entry-message-1", runId: null, occurrence: 0 },
+      },
+    );
+    await vi.waitFor(() =>
+      expect(screen.button(/^Agent/).getAttribute("aria-expanded")).toBe("true"),
+    );
+    const { range } = collectThreadFindRanges(screen.container, "drops the index")[0]!;
+    const body = screen.container.querySelector("[data-user-message-body]")!;
+    expect(range.getBoundingClientRect().height).toBeGreaterThan(0);
+    expect(range.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+      body.getBoundingClientRect().bottom,
+    );
+  });
+});
+
+describe("MessagesTimeline attachments", () => {
+  it.each(["loadedmetadata", "loadeddata", "canplay"])(
+    "plays audio with unknown duration after %s and updates the total later",
+    async (readyEvent) => {
+      const onOpen = vi.fn();
+      const preview = (failed = false) => (
+        <AudioPreview
+          compact
+          src="data:audio/webm;base64,"
+          name="recording.webm"
+          failed={failed}
+          onOpen={onOpen}
+        />
+      );
+      await using screen = await renderElement(preview());
+      const audio = screen.container.querySelector("audio")!;
+      const duration = vi.spyOn(audio, "duration", "get").mockReturnValue(Infinity);
+      const play = vi.spyOn(audio, "play").mockResolvedValue();
+      expect(screen.button("Loading recording.webm")).toHaveProperty("disabled", true);
+      await act(() => audio.dispatchEvent(new Event(readyEvent)));
+      expect(screen.button("Play recording.webm")).toHaveProperty("disabled", false);
+      expect(screen.text()).toContain("0:00");
+      expect(screen.text()).not.toContain("/");
+      await click(screen.button("Play recording.webm"));
+      expect(play).toHaveBeenCalledOnce();
+      await act(() => {
+        vi.spyOn(audio, "currentTime", "get").mockReturnValue(3);
+        audio.dispatchEvent(new Event("play"));
+        audio.dispatchEvent(new Event("timeupdate"));
+      });
+      expect(screen.button("Pause recording.webm")).toHaveProperty("disabled", false);
+      expect(screen.text()).toContain("0:03");
+      const progress = screen.container.querySelector<HTMLElement>("span[aria-hidden]")!;
+      expect(progress.style.width).toBe("0%");
+      await act(() => {
+        duration.mockReturnValue(10);
+        audio.dispatchEvent(new Event("durationchange"));
+      });
+      expect(screen.text()).toContain("0:03 / 0:10");
+      expect(progress.style.width).toBe("30%");
+      await act(() => {
+        duration.mockReturnValue(NaN);
+        audio.dispatchEvent(new Event("durationchange"));
+      });
+      expect(screen.text()).not.toContain("/");
+      expect(progress.style.width).toBe("0%");
+      expect(screen.button("Pause recording.webm")).toHaveProperty("disabled", false);
+      await screen.rerender(preview(true));
+      expect(screen.text()).toContain("Unavailable");
+      await click(screen.button("Audio unavailable. Open recording.webm"));
+      expect(onOpen).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(["pause", "error"])("unpins audio after %s", async (event) => {
+    const NativeObserver = IntersectionObserver;
+    using _observer = stubGlobal(
+      "IntersectionObserver",
+      class extends NativeObserver {
+        constructor(
+          private readonly notify: IntersectionObserverCallback,
+          options?: IntersectionObserverInit,
+        ) {
+          super(notify, options);
+        }
+        override observe(target: Element) {
+          this.notify([{ target, isIntersecting: true } as IntersectionObserverEntry], this);
+        }
+      },
+    );
+    const src =
+      "data:audio/wav;base64,UklGRiUAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQEAAACA";
+    audioAsset.url = src;
+    onTestFinished(() => {
+      audioAsset.url = "";
+    });
+    const props = baseProps();
+    await using screen = await renderTimeline(
+      [
+        message(
+          "Two recordings.",
+          {
+            attachments: ["one", "two"].map((name) => ({
+              type: "file",
+              id: `attachment-${name}`,
+              name: `${name}.wav`,
+              mimeType: "audio/wav",
+              sizeBytes: 45,
+              previewUrl: src,
+            })),
+          },
+          "audio",
+        ),
+        ...Array.from({ length: 40 }, (_, index) =>
+          message("Conversation history. ".repeat(40), { role: "user" }, `history-${index}`),
+        ),
+      ],
+      props,
+    );
+    screen.container.style.height = "600px";
+    screen.container.scrollIntoView({ block: "start" });
+    await vi.waitFor(
+      async () => {
+        await act(() => {
+          void props.listRef.current?.scrollToIndex({ index: 0, animated: false });
+        });
+        expect(screen.container.querySelectorAll("audio")).toHaveLength(2);
+      },
+      { timeout: 5000 },
+    );
+    const [one, two] = [...screen.container.querySelectorAll("audio")];
+    await act(async () => {
+      vi.spyOn(one!, "paused", "get").mockReturnValue(false);
+      vi.spyOn(two!, "paused", "get").mockReturnValue(false);
+      one!.dispatchEvent(new Event("play"));
+      two!.dispatchEvent(new Event("play"));
+    });
+    await vi.waitFor(async () => {
+      await act(() => {
+        void props.listRef.current!.scrollToEnd({ animated: false });
+      });
+      const scroll = props.listRef.current!.getScrollableNode()!;
+      expect(scroll.scrollTop).toBeGreaterThan(5000);
+    });
+    expect(one!.isConnected).toBe(true);
+    expect(two!.isConnected).toBe(true);
+    await act(async () => {
+      vi.spyOn(one!, "paused", "get").mockReturnValue(true);
+      one!.dispatchEvent(new Event("pause"));
+    });
+    expect(two!.isConnected).toBe(true);
+    await act(async () => {
+      if (event === "pause") vi.spyOn(two!, "paused", "get").mockReturnValue(true);
+      two!.dispatchEvent(new Event(event));
+    });
+    await act(() => {
+      void props.listRef.current!.scrollToIndex({ index: 20, animated: false });
+    });
+    await vi.waitFor(() => expect(one!.isConnected).toBe(false));
+  });
+});
+
 describe("compact reasoning math", () => {
   it("keeps formulas while flattening compact reasoning previews", () => {
     const tree = parseMarkdownWithMath("## Reasoning\n\nUse **norm** $|x|$ and \\[x^2\\]");
@@ -400,551 +546,77 @@ describe("compact reasoning math", () => {
   });
 });
 
-describe("MessagesTimeline attachments", () => {
-  it("renders unknown attachment types as inert rows instead of crashing", async () => {
-    await using screen = await renderTimeline([
-      message("Read the report.", {
-        attachments: [
-          {
-            type: "recording",
-            id: "attachment-voice-memo",
-            name: "voice-memo.ogg",
-            mimeType: "audio/ogg",
-            sizeBytes: 42,
-          },
-        ] as never,
-      }),
-    ]);
-    expect(text()).toContain("voice-memo.ogg");
-    expect(buttons("Download voice-memo.ogg")).toHaveLength(0);
-    expect(container.querySelector("a[href], img")).toBeNull();
-  });
-
-  it("shows SnapShot window details only after the preview resolves", async () => {
-    const snapShot = (previewUrl?: string) =>
-      message("First prompt.", {
-        attachments: [
-          {
-            type: "image",
-            id: "attachment-1",
-            name: "screenshot.png",
-            mimeType: "image/png",
-            sizeBytes: 1,
-            ...(previewUrl ? { previewUrl } : {}),
-            source: {
-              kind: "snap-shot",
-              capturedAt: CREATED_AT,
-              appName: "Terminal",
-              windowTitle: "t3code — Tests",
-              appIconDataUrl: "data:image/png;base64,aWNvbg==",
-            },
-          },
-        ] as never,
-      });
-    await using withoutPreview = await renderTimeline([snapShot()]);
-    expect(text()).toContain("screenshot.png");
-    expect(text()).not.toContain("t3code — Tests");
-    await withoutPreview.unmount();
-    await using withPreview = await renderTimeline([
-      snapShot("data:image/png;base64,iVBORw0KGgo="),
-    ]);
-    expect(text()).toContain("Terminal");
-    expect(text()).toContain("t3code — Tests");
-  });
-});
-
-describe("MessagesTimeline history and thread links", () => {
-  it("loads earlier turns from a control ahead of the bounded timeline", async () => {
-    const onLoadEarlier = vi.fn();
-    await using screen1 = await renderTimeline([message("Recent activity")], {
-      historyControls: {
-        hasMoreHistory: true,
-        loading: false,
-        error: "Earlier activity could not be loaded.",
-        onLoadEarlier,
-      },
-    });
-    expect(text()).toContain("Earlier activity could not be loaded.");
-    expect(text().indexOf("Load earlier turns")).toBeLessThan(text().indexOf("Recent activity"));
-    await click(button("Load earlier turns"));
-    expect(onLoadEarlier).toHaveBeenCalledOnce();
-  });
-
-  it("keeps an empty bounded timeline busy while earlier history loads", async () => {
-    await using screen2 = await renderTimeline([], {
-      historyControls: {
-        hasMoreHistory: true,
-        loading: true,
-        error: null,
-        onLoadEarlier: () => {},
-      },
-    });
-    expect(text()).toContain("Loading earlier turns…");
-    expect(button("Load earlier turns")).toHaveProperty("disabled", true);
-    expect(text()).not.toContain("Send a message to start the conversation.");
-  });
-
-  it("opens the parent thread from the top of an empty subagent timeline", async () => {
-    const open = vi.fn();
-    await using screen3 = await renderTimeline([], {
-      parentThreadLink: { title: "Architecture audit", open },
-    });
-    expect(text()).toContain("Subagent of");
-    expect(text()).toContain("Architecture audit");
-    expect(text()).not.toContain("Send a message to start the conversation");
-    await click(button("Open parent thread"));
-    expect(open).toHaveBeenCalledOnce();
-  });
-
-  it("does not render the transient V2 interruption request", async () => {
-    await using screen4 = await renderTimeline([
-      {
-        id: "interrupt-request",
-        kind: "event",
-        createdAt: CREATED_AT,
-        projectedItem: v2Item("run_interrupt_request", {
-          id: "interrupt-request",
-          message: "Waiting for the provider to stop.",
-        }),
-      } as Entry,
-    ]);
-    expect(text()).not.toContain("Interrupt requested");
-    expect(text()).not.toContain("Waiting for the provider to stop.");
-  });
-
-  it("opens created threads from a lean row", async () => {
-    const onOpenThread = vi.fn();
-    await using screen5 = await renderTimeline(
-      [
+it("renders automatic compaction as one live divider that finishes with its reason and token delta", async () => {
+  setup();
+  const fixture = makeStreamingTimelineFixture();
+  const prompt = fixture.visibleTurnItems[3]!;
+  const assistant = fixture.visibleTurnItems[5]!;
+  if (prompt.item.type !== "user_message" || assistant.item.type !== "assistant_message") {
+    throw new Error("Expected streaming fixture messages");
+  }
+  const promptItem = prompt.item;
+  const compaction = {
+    ...assistant,
+    item: {
+      ...assistant.item,
+      type: "compaction" as const,
+      driver: null,
+      beforeTokenCount: 899_000,
+    },
+  };
+  const entries = (completed: boolean) =>
+    deriveTimelineEntriesFromVisibleTurnItems({
+      visibleTurnItems: [
         {
-          id: "thread-created",
-          kind: "event",
-          createdAt: CREATED_AT,
-          projectedItem: v2Item("thread_created", {
-            id: "thread-created",
-            nodeId: "node-1",
-            ordinal: 1,
-            title: "Claude research thread",
-            targetThreadId: "thread-2",
-            targetRunId: "run-2",
-            targetProviderInstanceId: "claude-default",
-            targetModel: "claude-sonnet-4-6",
-          }),
-        } as Entry,
+          ...prompt,
+          item: { ...promptItem, text: "/compact", idleCompaction: "beforeCacheExpires" },
+        },
+        {
+          ...compaction,
+          item: {
+            ...compaction.item,
+            status: completed ? "completed" : "running",
+            afterTokenCount: completed ? 19_000 : undefined,
+          },
+        },
       ],
-      { onOpenThread },
-    );
-    expect(text()).toContain("Claude research thread");
-    expect(text()).not.toContain("Work Log");
-    await click(button("Open Claude research thread"));
-    expect(onOpenThread).toHaveBeenCalledWith("thread-2");
-  });
-
-  it("renders context handoffs as from → to model endpoints instead of the summary", async () => {
-    const provider = (instanceId: string, driver: string, slug: string, name: string) => ({
-      instanceId,
-      driver,
-      enabled: true,
-      installed: true,
-      version: null,
-      status: "ready",
-      auth: {},
-      checkedAt: CREATED_AT,
-      models: [{ slug, name, isCustom: false, capabilities: null }],
-      slashCommands: [],
-      skills: [],
+      optimisticMessages: [],
     });
-    const providers = [
-      provider("codex_personal", "codex", "gpt-5.6-sol", "GPT 5.6 Sol"),
-      provider("claudeAgent", "claudeAgent", "claude-fable-5", "Claude Fable 5"),
-    ] as never;
-    const handoff = (fields: Record<string, unknown>) =>
-      ({
-        id: "handoff-1",
-        kind: "event",
-        createdAt: CREATED_AT,
-        projectedItem: v2Item("handoff", {
-          id: "handoff-1",
-          runId: "run-2",
-          title: "Provider handoff",
-          contextHandoffId: "handoff-1",
-          fromProviderThreadIds: ["provider-thread-1"],
-          toProviderThreadId: "provider-thread-2",
-          strategy: "full_thread_summary",
-          summary: "Full conversation context for provider handoff.",
-          fromProviderInstanceIds: ["codex_personal"],
-          toProviderInstanceId: "claudeAgent",
-          ...fields,
-        }),
-      }) as Entry;
-    await using views = new AsyncDisposableStack();
-    let previous: Screen | undefined;
-    const show = async (entry: Entry, props: Partial<TimelineProps> = {}) => {
-      await previous?.unmount();
-      previous = views.use(
-        await renderElement(
-          <RegistryProvider
-            initialValues={[[serverEnvironment.providersValueAtom(ENVIRONMENT_ID), providers]]}
-          >
-            <MessagesTimeline {...baseProps()} timelineEntries={[entry]} {...props} />
-          </RegistryProvider>,
-        ),
-      );
-    };
-
-    await show(
-      handoff({
-        fromModelSelections: [{ instanceId: "codex_personal", model: "gpt-5.6-sol" }],
-        toModel: "claude-fable-5",
+  const props = baseProps();
+  const ui = (completed: boolean) => (
+    <MessagesTimeline
+      {...props}
+      timelineEntries={entries(completed)}
+      isWorking={!completed}
+      isCompacting={!completed}
+      activeTurnInProgress={!completed}
+      activeTurnStartedAt={fixture.time(5)}
+      latestRun={{
+        runId: fixture.runId,
+        status: completed ? "completed" : "running",
+        startedAt: fixture.time(5),
+        completedAt: completed ? fixture.time(9) : null,
+      }}
+    />
+  );
+  const container = document.createElement("div");
+  container.style.cssText = "height: 1200px; width: 900px; display: flex; flex-direction: column;";
+  await using screen = await render(ui(false), { container });
+  await expect
+    .element(screen.getByRole("separator", { name: "Compacting before the cache expires…" }))
+    .toBeVisible();
+  expect(container.textContent).not.toContain("/compact");
+  expect(container.textContent).not.toContain("Thinking");
+  expect(container.textContent).not.toContain("Working");
+  expect(container.querySelectorAll('[role="separator"]')).toHaveLength(1);
+  await screen.rerender(ui(true));
+  await expect
+    .element(
+      screen.getByRole("separator", {
+        name: "Context automatically compacted before cache expiry 899K → 19K tokens",
       }),
-    );
-    expect(text()).toContain("Context handoff");
-    expect(text()).toContain("GPT 5.6 Sol");
-    expect(text()).toContain("Claude Fable 5");
-    expect(text()).not.toContain("Full conversation context");
-
-    await show(handoff({}), {
-      runs: [
-        {
-          id: "run-1",
-          ordinal: 1,
-          providerInstanceId: "codex_personal",
-          modelSelection: { instanceId: "codex_personal", model: "gpt-5.6-sol" },
-        },
-        {
-          id: "run-2",
-          ordinal: 2,
-          providerInstanceId: "claudeAgent",
-          modelSelection: { instanceId: "claudeAgent", model: "claude-fable-5" },
-        },
-      ] as never,
-    });
-    expect(text()).toContain("GPT 5.6 Sol");
-    expect(text()).toContain("Claude Fable 5");
-
-    await show(handoff({}));
-    expect(text()).toContain("Codex Personal");
-    expect(text()).not.toContain("Full conversation context");
-  });
-});
-
-describe("MessagesTimeline subagents", () => {
-  it.each(
-    (
-      [
-        {
-          status: "running",
-          progress: "Reading src/index.ts",
-          result: null,
-          preview: "Reading src/index.ts",
-        },
-        {
-          status: "completed",
-          progress: "Reading src/index.ts",
-          result: "Tests should be isolated.",
-          preview: "Tests should be isolated.",
-        },
-        {
-          status: "running",
-          progress: "Reading src/index.ts",
-          result: "Partial streamed answer",
-          preview: "Reading src/index.ts",
-        },
-        {
-          status: "running",
-          progress: undefined,
-          result: "Streaming answer so far",
-          preview: "Streaming answer so far",
-        },
-        {
-          status: "cancelled",
-          progress: "Reading src/index.ts",
-          result: "Partial output before cancel",
-          preview: "Partial output before cancel",
-        },
-        {
-          status: "completed",
-          progress: "Audited 12 packages",
-          result: "  \n\t  ",
-          preview: "Audited 12 packages",
-        },
-      ] as const
-    ).flatMap((scenario) => [1, 2].map((count) => ({ ...scenario, count }))),
-  )(
-    "shows $count $status subagents with '$preview', grouping only multiple agents",
-    async ({ status, progress, result, preview, count }) => {
-      const onOpenThread = vi.fn();
-      await using screen6 = await renderTimeline(
-        Array.from(
-          { length: count },
-          (_, index) =>
-            ({
-              id: `subagent-progress-${index}`,
-              kind: "event",
-              createdAt: CREATED_AT,
-              projectedItem: v2Item("subagent", {
-                id: `subagent-progress-${index}`,
-                nodeId: `node-subagent-${index}`,
-                providerThreadId: "provider-thread-1",
-                providerTurnId: "provider-turn-1",
-                ordinal: 1,
-                status,
-                title: "Package audit",
-                subagentId: `node-subagent-${index}`,
-                origin: "provider_native",
-                driver: "claudeAgent",
-                providerInstanceId: "claudeAgent",
-                childThreadId: "thread-subagent-1",
-                prompt: "Inspect the package",
-                progress,
-                result,
-              }),
-            }) as Entry,
-        ),
-        { onOpenThread },
-      );
-      const children = () => buttons("Open Package audit");
-      // A settled run folds its work behind a "Worked for" summary.
-      const fold = buttons(/^Worked for/)[0];
-      if (fold) await click(fold);
-      if (count > 1) {
-        expect(children()).toHaveLength(0);
-        await click(button(`${count} subagents`));
-      } else {
-        expect(buttons(`${count} subagents`)).toHaveLength(0);
-      }
-      expect(children()).toHaveLength(count);
-      expect(text()).toContain(preview);
-      expect(text()).not.toContain("Inspect the package");
-      if (result?.trim() && result !== preview) expect(text()).not.toContain(result);
-      if (progress && progress !== preview) expect(text()).not.toContain(progress);
-      await click(children()[0]!);
-      expect(onOpenThread).toHaveBeenCalledWith("thread-subagent-1");
-      if (count > 1) {
-        await click(button(`${count} subagents`));
-        await vi.waitFor(() => expect(children()).toHaveLength(0));
-      }
-    },
-  );
-});
-
-describe("timeline tooltip scroll dismissal", () => {
-  const openPopup = () =>
-    document.querySelector('[data-slot="tooltip-popup"][data-open]')?.textContent ?? null;
-
-  async function renderTooltip(pullRequest: boolean, outside: boolean) {
-    environmentQuery.data = null;
-    const tooltip = pullRequest ? (
-      <PullRequestLinkPreview
-        link={<button>message link</button>}
-        originalUrl="https://example.com"
-        target={{
-          environmentId: ENVIRONMENT_ID,
-          input: { projectId: "project-1" as never, repository: "pingdotgg/t3code", number: 1 },
-        }}
-      />
-    ) : (
-      <Tooltip>
-        <TooltipTrigger delay={50}>message link</TooltipTrigger>
-        <TooltipPopup>https://example.com</TooltipPopup>
-      </Tooltip>
-    );
-    const screen = await renderElement(
-      <>
-        <TooltipScrollDismissArea>
-          <div data-testid="scrollable" className="h-[100px] overflow-auto">
-            {outside ? null : tooltip}
-            <div className="h-[1000px]" />
-          </div>
-        </TooltipScrollDismissArea>
-        {outside ? tooltip : null}
-      </>,
-    );
-    return Object.assign(screen, {
-      trigger: container.querySelector<HTMLButtonElement>("button")!,
-      scrollable: container.querySelector<HTMLElement>('[data-testid="scrollable"]')!,
-    });
-  }
-
-  async function scroll(scrollable: HTMLElement) {
-    await act(async () => {
-      scrollable.scrollTop += 50;
-      scrollable.dispatchEvent(new Event("scroll"));
-    });
-  }
-
-  it.each([false, true])(
-    "closes a hovered tooltip on scroll but keeps a focused one (pull request=%s)",
-    async (pullRequest) => {
-      await using fixture = await renderTooltip(pullRequest, false);
-      const { trigger, scrollable } = fixture;
-      await userEvent.hover(trigger);
-      await vi.waitFor(() => expect(openPopup()).toBe("https://example.com"));
-      await scroll(scrollable);
-      await vi.waitFor(() => expect(openPopup()).toBeNull());
-
-      await userEvent.unhover(trigger);
-      await userEvent.keyboard("{Tab}");
-      expect(document.activeElement).toBe(trigger);
-      await vi.waitFor(() => expect(openPopup()).toBe("https://example.com"));
-      await scroll(scrollable);
-      expect(openPopup()).toBe("https://example.com");
-      expect(document.activeElement).toBe(trigger);
-    },
-  );
-
-  it("leaves tooltips outside the timeline open when it scrolls", async () => {
-    await using fixture = await renderTooltip(false, true);
-    const { trigger, scrollable } = fixture;
-    await userEvent.hover(trigger);
-    await vi.waitFor(() => expect(openPopup()).toBe("https://example.com"));
-    await scroll(scrollable);
-    expect(openPopup()).toBe("https://example.com");
-  });
-
-  it("keeps a hovered tooltip open on a wheel that does not scroll", async () => {
-    await using fixture = await renderTooltip(false, false);
-    const { trigger, scrollable } = fixture;
-    await userEvent.hover(trigger);
-    await vi.waitFor(() => expect(openPopup()).toBe("https://example.com"));
-    await act(async () => {
-      scrollable.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 100 }));
-    });
-    expect(openPopup()).toBe("https://example.com");
-  });
-});
-
-describe("MessagesTimeline scroll position", () => {
-  const tall = (index: number) =>
-    message(
-      `Message ${index}\n\n${"Long paragraph. ".repeat(80)}`,
-      { role: "assistant" },
-      `message-${index}`,
-    );
-  const tallEntries = Array.from({ length: 12 }, (_, index) => tall(index));
-
-  async function waitForList(props: ReturnType<typeof baseProps>) {
-    await vi.waitFor(() => {
-      const viewport = props.listRef.current?.getScrollableNode();
-      expect(viewport?.scrollHeight ?? 0).toBeGreaterThan(viewport?.clientHeight ?? 0);
-    });
-    return props.listRef.current!.getScrollableNode()!;
-  }
-
-  it("remembers a manual reading position when the chat closes", async () => {
-    const props = baseProps();
-    function Chat() {
-      const [liveFollowEnabled, setLiveFollowEnabled] = useState(true);
-      // The chat view stops following the live edge when the reader scrolls.
-      return (
-        <div className="contents" onWheelCapture={() => setLiveFollowEnabled(false)}>
-          <MessagesTimeline
-            {...props}
-            timelineEntries={tallEntries}
-            liveFollowEnabled={liveFollowEnabled}
-          />
-        </div>
-      );
-    }
-    await using screen7 = await renderElement(<Chat />);
-    const viewport = await waitForList(props);
-    await vi.waitFor(() => expect(readTimelinePosition(props.routeThreadKey)?.atEnd).toBe(true));
-
-    await userEvent.wheel(viewport, { delta: { y: -600 } });
-    await vi.waitFor(() => expect(readTimelinePosition(props.routeThreadKey)?.atEnd).toBe(false));
-    const offset = viewport.scrollTop;
-    await screen7.unmount();
-    expect(readTimelinePosition(props.routeThreadKey)).toMatchObject({
-      atEnd: false,
-      scrollOffset: offset,
-    });
-  });
-
-  it("restores the composer after closing tool output only at the end", async () => {
-    const props = baseProps();
-    function Thread() {
-      const composer = useComposerFocusState();
-      const [liveFollowEnabled, setLiveFollowEnabled] = useState(true);
-      return (
-        <div className="contents" onWheelCapture={() => setLiveFollowEnabled(false)}>
-          <button onClick={() => composer.setIsComposerScrollCollapsed(true)}>Collapse</button>
-          <output>{composer.isComposerScrollCollapsed ? "collapsed" : "resting"}</output>
-          <MessagesTimeline
-            {...props}
-            liveFollowEnabled={liveFollowEnabled}
-            onManualNavigation={() => setLiveFollowEnabled(false)}
-            onToolOutputCollapsedAtEnd={composer.restoreAfterTimelineReachedEnd}
-            timelineEntries={[
-              ...tallEntries,
-              work("tool", {
-                label: "Run command",
-                tone: "tool",
-                toolLifecycleStatus: "completed",
-                detail: "Command output",
-              }),
-            ]}
-          />
-        </div>
-      );
-    }
-    await using screen8 = await renderElement(<Thread />);
-    const composerState = () => container.querySelector("output")!.textContent;
-    const viewport = await waitForList(props);
-    await click(button("Collapse"));
-    const toggle = () => button("Command output");
-    await click(toggle());
-    await click(toggle());
-    await vi.waitFor(() => expect(composerState()).toBe("resting"));
-
-    await click(button("Collapse"));
-    await userEvent.wheel(viewport, { delta: { y: -2000 } });
-    await vi.waitFor(() => expect(readTimelinePosition(props.routeThreadKey)?.atEnd).toBe(false));
-    using _timers = fakeTimers();
-    await click(toggle());
-    await click(toggle());
-    await act(async () => {
-      vi.advanceTimersToNextFrame();
-      vi.advanceTimersToNextFrame();
-    });
-    expect(composerState()).toBe("collapsed");
-  });
-});
-
-describe("MessagesTimeline send anchor", () => {
-  it("reports the anchored sent message once it is laid out", async () => {
-    const onAnchorReady = vi.fn();
-    const sent = message("Newest prompt.", {}, "message-2");
-    const props = baseProps();
-    await using screen9 = await renderTimeline(
-      [message("Earlier reply.", { role: "assistant" }), sent],
-      {
-        ...props,
-        anchorMessageId: MessageId.make("message-2"),
-        onAnchorReady,
-        contentInsetEndAdjustment: 144,
-      },
-    );
-    await vi.waitFor(() =>
-      expect(onAnchorReady).toHaveBeenCalledWith(MessageId.make("message-2"), 1),
-    );
-  });
-
-  it("does not anchor a follow-up user message that is not the newest turn", async () => {
-    const onAnchorReady = vi.fn();
-    const props = baseProps();
-    await using screen10 = await renderTimeline(
-      [message("First prompt."), message("Newest prompt.", {}, "message-2")],
-      {
-        ...props,
-        anchorMessageId: MessageId.make("message-2"),
-        onAnchorReady,
-      },
-    );
-    await vi.waitFor(() => {
-      const state = props.listRef.current?.getState();
-      expect(state?.sizeAtIndex(state.data.length - 1) ?? 0).toBeGreaterThan(0);
-      expect(text()).toContain("Newest prompt.");
-    });
-    expect(onAnchorReady).not.toHaveBeenCalled();
-  });
+    )
+    .toBeVisible();
+  expect(container.querySelectorAll('[role="separator"]')).toHaveLength(1);
+  expect(container.textContent).not.toContain("Compacting before");
 });

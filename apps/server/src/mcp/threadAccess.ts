@@ -1,11 +1,8 @@
-import * as ProviderSessions from "../orchestration-v2/ProviderSessionManager.ts";
-import * as Option from "effect/Option";
 import type { ProjectionRecordField } from "../orchestration-v2/ProjectionStore.ts";
 import {
   CommandId,
   OrchestratorMcpFailure,
   type ProjectId,
-  type ProviderInstanceId,
   type ProviderInteractionMode,
   type RuntimeMode,
   type ThreadId,
@@ -16,9 +13,8 @@ import * as Effect from "effect/Effect";
 
 import type { OrchestratorV2Error } from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
-import { resolveInteractionMode, resolveRuntimeMode } from "./delegatedTaskModes.ts";
-import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as OrchestrationMcp from "./OrchestratorMcpService.ts";
+import * as McpInvocationContext from "./McpInvocationContext.ts";
 
 export const unavailable = () =>
   new OrchestratorMcpFailure({
@@ -72,7 +68,10 @@ export const loadCaller = Effect.fn("mcp.loadCaller")(function* () {
       scope,
       threads,
       caller: undefined,
-      limits: McpInvocationContext.clientModeCeiling(scope.client),
+      limits: {
+        runtimeMode: McpInvocationContext.clientRuntimeModeCeiling(scope.client),
+        interactionMode: "default",
+      },
     } satisfies Caller;
   }
   const caller = yield* threads
@@ -96,73 +95,24 @@ export const assertTargetWithinLimits = (
   limits: CallerLimits,
   target: { readonly runtimeMode: RuntimeMode; readonly interactionMode: ProviderInteractionMode },
 ) =>
-  resolveRuntimeMode(limits.runtimeMode, target.runtimeMode).pipe(
-    Effect.andThen(resolveInteractionMode(limits.interactionMode, target.interactionMode)),
+  OrchestrationMcp.resolveRuntimeMode(limits.runtimeMode, target.runtimeMode).pipe(
+    Effect.andThen(
+      OrchestrationMcp.resolveInteractionMode(limits.interactionMode, target.interactionMode),
+    ),
     Effect.asVoid,
   );
 
-/**
- * A caller's thread is live while it is not archived, runs on the caller's
- * provider instance, and has an active run or a background subagent that
- * instance started. A background subagent outlives its run and calls tools
- * with its thread's credential, which is revoked when the provider process
- * goes away.
- */
-export const isLiveCallerShell = (
-  shell: Pick<
-    OrchestrationV2ThreadShell,
-    "archivedAt" | "activeRunId" | "providerInstanceId" | "pendingBackgroundTasks"
-  > | null,
-  providerInstanceId: ProviderInstanceId | undefined,
-) =>
-  shell !== null &&
-  shell.archivedAt === null &&
-  shell.providerInstanceId === providerInstanceId &&
-  (shell.activeRunId !== null ||
-    (shell.pendingBackgroundTasks?.some(
-      (task) => task.kind === "subagent" && task.providerInstanceId === providerInstanceId,
-    ) ??
-      false));
-
-/**
- * A thread caller acts only while it owns a live run, or a background
- * subagent that run started, of a thread that is not archived, so a provider
- * token that outlived its session cannot act. An OAuth client has no run; its
- * session and ceiling are its authority.
- */
-export function assertLiveCaller({ caller, scope, threads }: Caller) {
+/** Thread callers need a live run or its background subagent in an unarchived thread. OAuth clients rely on their session and ceiling. */
+export function assertLiveCaller({ caller, scope }: Caller) {
   if (caller === undefined) return Effect.void;
-  return Effect.gen(function* () {
-    if (isLiveCallerShell(caller, scope.thread?.providerInstanceId)) return;
-    const manager = yield* Effect.serviceOption(ProviderSessions.ProviderSessionManagerV2);
-    if (
-      caller.archivedAt === null &&
-      caller.deletedAt === null &&
-      scope.thread !== undefined &&
-      Option.isSome(manager)
-    ) {
-      const records = yield* threads
-        .getThreadRecords(caller.id, ["runs", "providerThreads"])
-        .pipe(Effect.mapError(unavailable));
-      const run = records.runs.find((run) => run.id === caller.activeRunId);
-      const provider = records.providerThreads.find((row) => row.id === run?.providerThreadId);
-      if (
-        run?.providerInstanceId === scope.thread.providerInstanceId &&
-        provider?.providerSessionId != null &&
-        (yield* manager.value.isMcpCallerAttached({
-          threadId: caller.id,
-          providerSessionId: provider.providerSessionId,
-          providerInstanceId: scope.thread.providerInstanceId,
-          mcpCredentialId: scope.thread.providerSessionId,
-        }))
-      )
-        return;
-    }
-    return yield* new OrchestratorMcpFailure({
-      code: "parent_not_active",
-      message: "The calling provider no longer owns an active thread run.",
-    });
-  });
+  return OrchestrationMcp.isLiveCallerShell(caller, scope.thread?.providerInstanceId)
+    ? Effect.void
+    : Effect.fail(
+        new OrchestratorMcpFailure({
+          code: "parent_not_active",
+          message: "The calling provider no longer owns an active thread run.",
+        }),
+      );
 }
 
 export const assertFullAccess = (context: Caller, message: string) =>
@@ -222,23 +172,6 @@ export const readThread = Effect.fn("mcp.readThread")(function* <
       ),
     );
   return { ...context, projection };
-});
-
-export const readMessageWritableThread = Effect.fn("mcp.readMessageWritableThread")(function* <
-  K extends ProjectionRecordField = never,
->(threadId?: ThreadId, fields: ReadonlyArray<K> = []) {
-  const context = yield* readThread(threadId, fields);
-  if (
-    (context.scope.client?.linked === true ||
-      (context.caller !== undefined && context.caller.id !== context.projection.thread.id)) &&
-    context.projection.thread.threadMessagesBlocked === true
-  ) {
-    return yield* new OrchestratorMcpFailure({
-      code: "capability_denied",
-      message: `Thread ${context.projection.thread.id} is blocking messages from other threads.`,
-    });
-  }
-  return context;
 });
 
 export const newCommandId = Effect.fn("mcp.newCommandId")(function* () {

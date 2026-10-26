@@ -1,14 +1,8 @@
-/**
- * The hub binds loopback and is never reachable directly: serve-sim exposes a shell-exec route
- * and serve-emu's action routes are unauthenticated, so the only way to a device stream is
- * through this route, which requires an environment session with read scope (operate scope for
- * input and tuning).
- */
+// Loopback-only hubs expose shell execution or unauthenticated actions.
+// Proxy with environment read scope for streams and operate scope for input and tuning.
 import { AuthOrchestrationReadScope, AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import * as Layer from "effect/Layer";
-import { directAccess } from "../jones/device/directAccess.ts";
 import {
   HttpClient,
   HttpClientRequest,
@@ -63,14 +57,7 @@ const DROPPED_REQUEST_HEADERS = new Set([
   "dpop",
   "content-length",
   "accept-encoding",
-  "proxy-authorization",
-  "proxy-authenticate",
-  "keep-alive",
-  "te",
-  "trailer",
-  "transfer-encoding",
-  // Describes the client's HTTPS hop to T3. The hub builds its own origin from it and then
-  // rejects the loopback Origin set below, so every mutation fails over T3 Connect.
+  // The client's HTTPS hop makes the hub reject our loopback Origin over T3 Connect.
   "x-forwarded-proto",
 ]);
 
@@ -79,19 +66,8 @@ const isWebSocketUpgrade = (request: HttpServerRequest.HttpServerRequest) =>
 
 const forwardHeaders = (request: HttpServerRequest.HttpServerRequest, origin: string) => {
   const headers: Record<string, string> = {};
-  const connection = new Set(
-    String(request.headers.connection ?? "")
-      .toLowerCase()
-      .split(",")
-      .map((name) => name.trim()),
-  );
   for (const [name, value] of Object.entries(request.headers)) {
-    if (
-      DROPPED_REQUEST_HEADERS.has(name.toLowerCase()) ||
-      connection.has(name.toLowerCase()) ||
-      value === undefined
-    )
-      continue;
+    if (DROPPED_REQUEST_HEADERS.has(name) || value === undefined) continue;
     headers[name] = value;
   }
   // serve-emu refuses mutations whose Origin differs from the request origin.
@@ -113,8 +89,6 @@ const proxyWebSocket = Effect.fn("DeviceHubProxy.proxyWebSocket")(function* (
     Effect.gen(function* () {
       const writeToClient = yield* client.writer;
       const writeToUpstream = yield* upstream.writer;
-      // Whichever side closes first ends the other via scope teardown: a close
-      // fails the pull with a SocketError, which loses the race.
       return yield* Effect.raceFirst(
         pumpFrames(upstream, writeToClient),
         pumpFrames(client, writeToUpstream),
@@ -161,8 +135,7 @@ const proxyHttp = Effect.fn("DeviceHubProxy.proxyHttp")(function* (
       name === "content-encoding" ||
       name === "transfer-encoding" ||
       name === "connection" ||
-      name === "set-cookie" ||
-      name === "location"
+      name === "set-cookie"
     ) {
       continue;
     }
@@ -187,12 +160,6 @@ const handler = Effect.gen(function* () {
     return HttpServerResponse.text("Bad Request", { status: 400 });
   }
   const hubPath = url.value.pathname.slice(DeviceService.DEVICE_HUB_ROUTE_PREFIX.length) || "/";
-  if (hubPath === "/direct-access")
-    return yield* directAccess(
-      request,
-      url.value,
-      authenticateMediaRequest(AuthOrchestrationReadScope),
-    );
   const upgrade = isWebSocketUpgrade(request);
   const allowed = (upgrade ? ALLOWED_WS_PATHS : ALLOWED_PATHS).some((pattern) =>
     pattern.test(hubPath),
@@ -215,12 +182,10 @@ const handler = Effect.gen(function* () {
   if (!ready) {
     return HttpServerResponse.text("Device hub is not running", { status: 503 });
   }
-  // The ticket authenticates here and must not travel on to the hub.
+  // Consume the auth ticket here; never forward it to the hub.
   const upstreamSearch = new URLSearchParams(url.value.search);
   upstreamSearch.delete("wsTicket");
   upstreamSearch.delete("hostId");
-  upstreamSearch.delete("grant");
-  upstreamSearch.delete("clientOrigin");
   const search = upstreamSearch.size > 0 ? `?${upstreamSearch.toString()}` : "";
   // Hosts with several upstreams (one per cloud session) route and authenticate requests themselves.
   const routed = ready.upstream ? yield* ready.upstream(hubPath, upstreamSearch) : undefined;

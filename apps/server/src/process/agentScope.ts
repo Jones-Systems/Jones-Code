@@ -4,7 +4,6 @@ import * as NodeOS from "node:os";
 
 import {
   AgentScope,
-  AgentScopeStopError,
   agentScopeCommand,
   type AgentScopeShape,
   type AgentSystemdScope,
@@ -13,6 +12,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveCommandPath } from "@t3tools/shared/shell";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 
 import * as ServerConfig from "../config.ts";
@@ -42,18 +42,13 @@ function agentSliceMemoryLimits(totalBytes: number) {
 
 export interface ScopeState {
   readonly loadState: string;
-  readonly controlGroup?: string;
   readonly activeState: string;
   readonly result: string;
-  readonly oomKills: number;
+  readonly oomKills: number | undefined;
   readonly populated: boolean | undefined;
 }
 
-/**
- * Our pipe can close before systemd handles the kill, so a scope that is
- * still stopping, is empty, or already counted an OOM kill is "stopping":
- * systemd records `Result=oom-kill` for it in a moment.
- */
+/** Pipes can close before systemd records oom-kill; stopping, empty or OOM-counted scopes remain pending. */
 export function classifyScope(state: ScopeState): "oom-killed" | "gone" | "running" | "stopping" {
   if (state.result === "oom-kill") return "oom-killed";
   if (
@@ -63,7 +58,11 @@ export function classifyScope(state: ScopeState): "oom-killed" | "gone" | "runni
   ) {
     return "gone";
   }
-  if (state.activeState === "deactivating" || state.oomKills > 0 || state.populated === false) {
+  if (
+    state.activeState === "deactivating" ||
+    (state.oomKills ?? 0) > 0 ||
+    state.populated === false
+  ) {
     return "stopping";
   }
   return "running";
@@ -83,8 +82,7 @@ function parseCgroupCounter(text: string, key: string): number | undefined {
   return match === null ? undefined : Number(match[1]);
 }
 
-// A stop sends SIGTERM, then SIGKILL after this long. systemd's 90 s default
-// would outlast the wait for a previous server's agents below.
+// systemd's default 90 s stop timeout would outlast our leftover-agent wait.
 const STOP_TIMEOUT_OPTION = "--property=TimeoutStopSec=10s";
 const STOPPING_POLL_INTERVAL = "100 millis";
 const STOPPING_POLL_ATTEMPTS = 20;
@@ -111,11 +109,8 @@ export const make = Effect.gen(function* () {
       Effect.provideService(HostProcess.Platform, platform),
     );
 
-  const run = (
-    command: string,
-    args: ReadonlyArray<string>,
-    timeout: ProcessRunner.ProcessRunInput["timeout"] = "5 seconds",
-  ) => runner.run({ command, args, timeout }).pipe(Effect.option);
+  const run = (command: string, args: ReadonlyArray<string>) =>
+    runner.run({ command, args, timeout: "5 seconds" }).pipe(Effect.option);
 
   const readCgroupFile = (controlGroup: string, file: string) =>
     fileSystem
@@ -222,36 +217,11 @@ export const make = Effect.gen(function* () {
     const populated = parseCgroupCounter(cgroupEvents, "populated");
     return {
       loadState: values.get("LoadState") ?? "",
-      controlGroup,
       activeState: values.get("ActiveState") ?? "",
       result: values.get("Result") ?? "",
-      oomKills: parseCgroupCounter(memoryEvents, "oom_kill") ?? 0,
+      oomKills: parseCgroupCounter(memoryEvents, "oom_kill"),
       populated: populated === undefined ? undefined : populated === 1,
     } satisfies ScopeState;
-  });
-
-  // The returned effect captures one unit, not the thread's replaceable map entry.
-  const stopScope = Effect.fn("agentScope.stopScope")(function* (systemctl: string, unit: string) {
-    const empty = (state: ScopeState | undefined) =>
-      state !== undefined &&
-      (state.loadState === "not-found" ||
-        ((state.activeState === "inactive" || state.activeState === "failed") &&
-          (state.controlGroup === "" || state.populated === false)));
-    const before = yield* readScope(systemctl, unit);
-    if (empty(before)) return;
-    if (before === undefined || before.loadState !== "loaded")
-      return yield* new AgentScopeStopError({
-        unit,
-        detail: "Agent scope retirement unavailable",
-      });
-    // Existing scope TimeoutStopSec sends SIGKILL after the graceful stop period.
-    // Reconcile the observed postcondition even when the command response is lost.
-    yield* run(systemctl, ["--user", "stop", unit], "30 seconds");
-    if (!empty(yield* readScope(systemctl, unit)))
-      return yield* new AgentScopeStopError({
-        unit,
-        detail: "Agent scope retirement remains unknown",
-      });
   });
 
   const clearFailed = Effect.fn("agentScope.clearFailed")(function* (
@@ -329,6 +299,32 @@ export const make = Effect.gen(function* () {
     },
   );
 
+  const stop = Effect.fn("AgentScope.stop")(function* (unit: string) {
+    if (!unit.startsWith("t3code-") || !unit.endsWith(".scope")) return;
+    const scope = yield* systemd;
+    if (scope === undefined) return;
+    const state = yield* readScope(scope.systemctl, unit);
+    if (
+      state === undefined ||
+      state.loadState !== "loaded" ||
+      state.activeState !== "active" ||
+      state.result === "oom-kill" ||
+      state.populated === false
+    )
+      return;
+    // The kernel counts OOM kills before signaling the victim. Let OOMPolicy
+    // record the result before a manual stop can overwrite it; an unreadable
+    // counter cannot rule out that race. Older managers need us to stop it.
+    if (scope.supportsOomPolicy && (state.oomKills === undefined || state.oomKills > 0)) return;
+    const stopped = yield* run(scope.systemctl, ["--user", "stop", "--no-block", unit]);
+    if (stopped._tag === "None" || stopped.value.code !== 0) {
+      yield* Effect.logWarning("Could not stop an exited agent's scope", {
+        unit,
+        exitCode: stopped._tag === "Some" ? stopped.value.code : undefined,
+      });
+    }
+  });
+
   const clear: AgentScopeShape["clear"] = Effect.fn("agentScope.clear")(function* (threadId) {
     if (!scopeByThread.has(threadId)) return;
     const scope = yield* systemd;
@@ -370,12 +366,12 @@ export const make = Effect.gen(function* () {
           ...(owned ? [] : ["--collect"]),
         ],
       };
-      return {
-        ...agentScopeCommand({ command: resolved, args, scope: systemdScope }),
-        stop: yield* Effect.cached(stopScope(scope.systemctl, unit)),
-      };
+      return { ...agentScopeCommand({ command: resolved, args, scope: systemdScope }), unit };
     }),
     oomKilled,
+    stop,
     clear,
   } satisfies AgentScopeShape;
 });
+
+export const layer = Layer.effect(AgentScope, make).pipe(Layer.provide(ProcessRunner.layer));

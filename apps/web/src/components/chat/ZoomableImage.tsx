@@ -1,6 +1,3 @@
-import { Button } from "../ui/button";
-import { Input } from "../ui/input";
-import { observeResize } from "~/lib/observeResize";
 import { useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type Ref } from "react";
 
 import {
@@ -10,12 +7,9 @@ import {
 
 import { AttachmentImage } from "../media/AttachmentImage";
 
-const MIN_ZOOM = 0.6;
 const MAX_ZOOM = 8;
 
-// The viewer lays out below the native caption strip so its controls never share a row with
-// the window buttons. ExpandedImageDialog and the media dialog viewport mirror this in CSS
-// through --native-titlebar-height.
+// Subtract the caption strip, matching dialog CSS's --native-titlebar-height.
 function readViewerSize() {
   return { width: window.innerWidth, height: window.innerHeight - windowControlsOverlayHeight() };
 }
@@ -30,22 +24,17 @@ export function ZoomableImage({
   mimeType,
   onError,
   ref,
-  layout = "dialog",
 }: {
   src: string;
   name: string;
   mimeType?: string | undefined;
   onError: () => void;
   ref?: Ref<ZoomableImageHandle>;
-  layout?: "dialog" | "panel";
 }) {
-  const sizingRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const [naturalSize, setNaturalSize] = useState({ width: 0, height: 0 });
   const [viewerSize, setViewerSize] = useState(readViewerSize);
-  const [panelSize, setPanelSize] = useState({ width: 0, height: 0 });
   const [zoom, setZoom] = useState(1);
-  const [percentInput, setPercentInput] = useState("100");
   const zoomRef = useRef(1);
   const anchorRef = useRef<{ x: number; y: number; clientX: number; clientY: number } | null>(null);
   const dragRef = useRef<{
@@ -58,15 +47,10 @@ export function ZoomableImage({
   const suppressClickRef = useRef(false);
   const [dragging, setDragging] = useState(false);
   const maxHeight = Math.max(1, Math.min(viewerSize.height * 0.86, viewerSize.height - 160));
-  const fit = Math.max(
-    0,
-    Math.min(
-      1,
-      (layout === "panel"
-        ? panelSize.width
-        : viewerSize.width * 0.92 - (viewerSize.width >= 640 ? 96 : 0)) / (naturalSize.width || 1),
-      (layout === "panel" ? panelSize.height : maxHeight) / (naturalSize.height || 1),
-    ),
+  const fit = Math.min(
+    1,
+    (viewerSize.width * 0.92 - (viewerSize.width >= 640 ? 96 : 0)) / (naturalSize.width || 1),
+    maxHeight / (naturalSize.height || 1),
   );
   const width = naturalSize.width * fit * zoom;
   const height = naturalSize.height * fit * zoom;
@@ -108,7 +92,7 @@ export function ZoomableImage({
   const changeZoom = (next: number, point?: { x: number; y: number }) => {
     const viewport = viewportRef.current;
     const previous = zoomRef.current;
-    const clamped = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, next));
+    const clamped = Math.min(MAX_ZOOM, Math.max(1, next));
     if (!viewport || previous === clamped) return;
     const bounds = viewport.getBoundingClientRect();
     const x = point ? point.x - bounds.left : viewport.clientWidth / 2;
@@ -121,7 +105,6 @@ export function ZoomableImage({
     };
     zoomRef.current = clamped;
     setZoom(clamped);
-    setPercentInput(String(Math.round(clamped * 100)));
   };
 
   useLayoutEffect(() => {
@@ -140,45 +123,13 @@ export function ZoomableImage({
       changeZoom(1);
     };
     window.addEventListener("resize", resize);
-    // The caption strip can come and go around fullscreen without a matching resize event.
+    // Fullscreen caption-strip changes may not emit resize.
     const stopOverlayListener = onWindowControlsOverlayGeometryChange(resize);
     return () => {
       window.removeEventListener("resize", resize);
       stopOverlayListener();
     };
   }, [changeZoom]);
-
-  useLayoutEffect(() => {
-    if (layout !== "panel") return;
-    const viewport = viewportRef.current;
-    if (!viewport) return;
-    const sizing = sizingRef.current;
-    if (!sizing) return;
-    return observeResize(sizing, ([entry]) => {
-      if (!entry) return;
-      setPanelSize({ width: entry.contentRect.width, height: entry.contentRect.height });
-      changeZoom(1);
-    });
-  }, [layout, changeZoom]);
-
-  const stepZoom = (direction: number) =>
-    changeZoom((Math.round(zoomRef.current * 100) + direction * 10) / 100);
-  const cycleZoom = (point?: { x: number; y: number }) =>
-    changeZoom(zoomRef.current >= 1.5 ? 1 : (Math.round(zoomRef.current * 100) + 10) / 100, point);
-  const commitPercent = () => {
-    const value = Number(percentInput.trim());
-    if (
-      percentInput.trim() &&
-      Number.isFinite(value) &&
-      value >= MIN_ZOOM * 100 &&
-      value <= MAX_ZOOM * 100
-    ) {
-      changeZoom(value / 100);
-      setPercentInput(String(Math.round(value)));
-    } else {
-      setPercentInput(String(Math.round(zoomRef.current * 100)));
-    }
-  };
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -199,179 +150,103 @@ export function ZoomableImage({
   }, [changeZoom]);
 
   return (
-    <div
-      className={
-        layout === "panel"
-          ? "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
-          : "min-w-0 max-w-[var(--media-width)]"
-      }
-    >
-      {layout === "panel" && (
-        <div
-          role="toolbar"
-          aria-label="Image zoom"
-          className="mb-2 flex shrink-0 justify-end gap-1 text-sm"
-          onKeyDown={(event) => event.stopPropagation()}
-        >
-          <Button
-            type="button"
-            aria-label="Zoom out"
-            variant="outline"
-            size="compact"
-            onClick={() => stepZoom(-1)}
-          >
-            −
-          </Button>
-          <label className="flex items-center gap-1">
-            <Input
-              size="compact"
-              font="mono"
-              nativeInput
-              aria-label="Zoom percentage"
-              inputMode="decimal"
-              className="w-16"
-              value={percentInput}
-              onChange={(event) => setPercentInput(event.target.value)}
-              onBlur={commitPercent}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  commitPercent();
-                }
-              }}
-            />
-            <span aria-hidden="true">%</span>
-          </label>
-          <Button
-            type="button"
-            aria-label="Zoom in"
-            variant="outline"
-            size="compact"
-            onClick={() => stepZoom(1)}
-          >
-            +
-          </Button>
-          <Button
-            type="button"
-            aria-label="Reset zoom to 100%"
-            variant="outline"
-            size="compact"
-            onClick={() => changeZoom(1)}
-          >
-            100%
-          </Button>
-        </div>
-      )}
+    <div className="min-w-0">
       <div
-        ref={sizingRef}
-        className={layout === "panel" ? "relative min-h-0 min-w-0 flex-1" : undefined}
+        ref={viewportRef}
+        role="region"
+        aria-label={`${name}, zoomable image`}
+        aria-description="Click to zoom in or return to fit. Scroll to zoom, drag to pan. Use Enter to toggle zoom, plus or minus to zoom, and 0 to fit."
+        tabIndex={0}
+        className="max-w-[var(--media-width)] overflow-auto overscroll-contain rounded-lg bg-background shadow-2xl ring-1 ring-border/70 outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:-outline-offset-2 focus-visible:outline-ring"
+        style={{
+          width: width || undefined,
+          height: height || undefined,
+          maxHeight,
+          cursor: zoom > 1 ? (dragging ? "grabbing" : "grab") : "zoom-in",
+        }}
+        onClick={(event) => {
+          // Pointer capture emits a click after dragging; preserve zoom.
+          if (suppressClickRef.current || event.detail > 1) return;
+          changeZoom(zoomRef.current > 1 ? 1 : 2, { x: event.clientX, y: event.clientY });
+        }}
+        onKeyDown={(event) => {
+          if (event.ctrlKey || event.metaKey || event.altKey) return;
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            if (!event.repeat) changeZoom(zoomRef.current > 1 ? 1 : 2);
+          } else if (event.key === "+" || event.key === "=") {
+            event.preventDefault();
+            changeZoom(zoomRef.current * 1.5);
+          } else if (event.key === "-") {
+            event.preventDefault();
+            changeZoom(zoomRef.current / 1.5);
+          } else if (event.key === "0") {
+            event.preventDefault();
+            changeZoom(1);
+          }
+        }}
+        onPointerDown={(event) => {
+          if (dragRef.current) return;
+          suppressClickRef.current = false;
+          if (event.pointerType !== "mouse" || event.button !== 0 || zoomRef.current <= 1) return;
+          const viewport = event.currentTarget;
+          const bounds = viewport.getBoundingClientRect();
+          if (
+            event.clientX - bounds.left >= viewport.clientWidth ||
+            event.clientY - bounds.top >= viewport.clientHeight
+          )
+            return;
+          dragRef.current = {
+            pointerId: event.pointerId,
+            x: event.clientX,
+            y: event.clientY,
+            left: viewport.scrollLeft,
+            top: viewport.scrollTop,
+          };
+          viewport.setPointerCapture(event.pointerId);
+          setDragging(true);
+        }}
+        onPointerMove={(event) => {
+          const drag = dragRef.current;
+          if (!drag || drag.pointerId !== event.pointerId) return;
+          if (Math.hypot(event.clientX - drag.x, event.clientY - drag.y) > 4) {
+            suppressClickRef.current = true;
+          }
+          event.currentTarget.scrollLeft = drag.left - (event.clientX - drag.x);
+          event.currentTarget.scrollTop = drag.top - (event.clientY - drag.y);
+        }}
+        onPointerUp={(event) => {
+          if (dragRef.current?.pointerId !== event.pointerId) return;
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          }
+          dragRef.current = null;
+          setDragging(false);
+        }}
+        onLostPointerCapture={(event) => {
+          if (dragRef.current?.pointerId !== event.pointerId) return;
+          dragRef.current = null;
+          setDragging(false);
+        }}
       >
-        <div
-          ref={viewportRef}
-          role="region"
-          aria-label={`${name}, zoomable image`}
-          aria-description="Click to zoom in or return to fit. Scroll to zoom, drag to pan. Use Enter to cycle zoom, plus or minus to zoom, and 0 to fit."
-          tabIndex={0}
-          className={`${layout === "panel" ? "absolute inset-0 min-h-0 min-w-0" : "max-w-[var(--media-width)]"} overflow-auto overscroll-contain rounded-lg bg-background shadow-2xl ring-1 ring-border/70 outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:-outline-offset-2 focus-visible:outline-ring`}
-          style={{
-            width: layout === "panel" ? undefined : width || undefined,
-            height: layout === "panel" ? undefined : height || undefined,
-            maxHeight: layout === "panel" ? undefined : maxHeight,
-            cursor: dragging ? "grabbing" : zoom >= 1.5 ? "zoom-out" : "zoom-in",
+        <AttachmentImage
+          name={name}
+          mimeType={mimeType}
+          src={src}
+          alt={name}
+          draggable={false}
+          className="block max-w-none select-none"
+          style={
+            naturalSize.width ? { width, height } : { maxWidth: "var(--media-width)", maxHeight }
+          }
+          onLoad={(event) => {
+            setNaturalSize({
+              width: event.currentTarget.naturalWidth,
+              height: event.currentTarget.naturalHeight,
+            });
           }}
-          onClick={(event) => {
-            // Pointer capture also produces a click after dragging; leave the image zoomed.
-            if (suppressClickRef.current) return;
-            cycleZoom({ x: event.clientX, y: event.clientY });
-          }}
-          onKeyDown={(event) => {
-            if (event.ctrlKey || event.metaKey || event.altKey) return;
-            if (event.key === "Enter" || event.key === " ") {
-              event.preventDefault();
-              if (!event.repeat) cycleZoom();
-            } else if (event.key === "+" || event.key === "=") {
-              event.preventDefault();
-              stepZoom(1);
-            } else if (event.key === "-") {
-              event.preventDefault();
-              stepZoom(-1);
-            } else if (event.key === "0") {
-              event.preventDefault();
-              changeZoom(1);
-            }
-          }}
-          onPointerDown={(event) => {
-            if (dragRef.current) return;
-            suppressClickRef.current = false;
-            if (event.pointerType !== "mouse" || event.button !== 0 || zoomRef.current <= 1) return;
-            const viewport = event.currentTarget;
-            const bounds = viewport.getBoundingClientRect();
-            if (
-              event.clientX - bounds.left >= viewport.clientWidth ||
-              event.clientY - bounds.top >= viewport.clientHeight
-            )
-              return;
-            dragRef.current = {
-              pointerId: event.pointerId,
-              x: event.clientX,
-              y: event.clientY,
-              left: viewport.scrollLeft,
-              top: viewport.scrollTop,
-            };
-            viewport.setPointerCapture(event.pointerId);
-          }}
-          onPointerMove={(event) => {
-            const drag = dragRef.current;
-            if (!drag || drag.pointerId !== event.pointerId) return;
-            if (Math.hypot(event.clientX - drag.x, event.clientY - drag.y) > 4) {
-              suppressClickRef.current = true;
-              setDragging(true);
-            }
-            event.currentTarget.scrollLeft = drag.left - (event.clientX - drag.x);
-            event.currentTarget.scrollTop = drag.top - (event.clientY - drag.y);
-          }}
-          onPointerUp={(event) => {
-            if (dragRef.current?.pointerId !== event.pointerId) return;
-            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-              event.currentTarget.releasePointerCapture(event.pointerId);
-            }
-            dragRef.current = null;
-            setDragging(false);
-          }}
-          onLostPointerCapture={(event) => {
-            if (dragRef.current?.pointerId !== event.pointerId) return;
-            dragRef.current = null;
-            setDragging(false);
-          }}
-        >
-          <div style={layout === "panel" ? { minHeight: "100%", display: "flex" } : undefined}>
-            <AttachmentImage
-              name={name}
-              mimeType={mimeType}
-              src={src}
-              alt={name}
-              draggable={false}
-              className="block max-w-none select-none"
-              style={
-                naturalSize.width
-                  ? {
-                      width,
-                      height,
-                      flexShrink: 0,
-                      margin: layout === "panel" ? "auto" : undefined,
-                    }
-                  : { maxWidth: "var(--media-width)", maxHeight }
-              }
-              onLoad={(event) => {
-                setNaturalSize({
-                  width: event.currentTarget.naturalWidth,
-                  height: event.currentTarget.naturalHeight,
-                });
-              }}
-              onError={onError}
-            />
-          </div>
-        </div>
+          onError={onError}
+        />
       </div>
       <span className="sr-only" aria-live="polite">
         {Math.round(zoom * 100)}% zoom

@@ -1,8 +1,4 @@
 import {
-  isHistoricalTerminalCandidate,
-  type HistoricalTerminalInput,
-} from "../jones/orchestration/HistoricalTerminalHistory.ts";
-import {
   NodeId,
   CommandId,
   OrchestrationV2DomainEvent,
@@ -13,6 +9,8 @@ import {
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
   type ModelSelection,
+  type OrchestrationV2Actor,
+  type OrchestrationV2CreationSource,
   type RuntimeMode,
   type ProviderInteractionMode,
   ProviderInstanceId,
@@ -29,6 +27,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as SqlError from "effect/sql/SqlError";
 
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import { isTemporaryWorktreeBranch } from "@t3tools/shared/git";
@@ -71,6 +70,14 @@ export class ProviderEventPublishError extends Schema.TaggedError<ProviderEventP
   }
 }
 
+// A write that outlasts busy_timeout at BEGIN IMMEDIATE fails before anything
+// commits, and the sink publishes only after a commit, so repeating the whole
+// write is safe. Failing it would fail the run over a brief lock.
+const isLockTimeout = (error: EventSink.EventSinkV2Error) =>
+  SqlError.isSqlError(error.cause) && error.cause.reason._tag === "LockTimeoutError";
+const retryLockTimeout = <A, R>(write: Effect.Effect<A, EventSink.EventSinkV2Error, R>) =>
+  Effect.retry(write, { while: isLockTimeout, times: 2 });
+
 export const ProviderEventIngestorV2Error = Schema.Union([
   ProviderEventNormalizeError,
   ProviderEventPublishError,
@@ -81,6 +88,19 @@ export interface ProviderTurnAnalyticsContext {
   readonly modelSelection: ModelSelection;
   readonly runtimeMode?: RuntimeMode;
   readonly interactionMode?: ProviderInteractionMode;
+  readonly origin?: ProviderTurnOrigin;
+}
+
+/**
+ * Where the run's starting message came from. Most turns start without a
+ * person (provider continuations, agent sends, delegated subagents), so
+ * reports need this to tell user turns apart.
+ */
+export interface ProviderTurnOrigin {
+  readonly createdBy: OrchestrationV2Actor;
+  readonly creationSource: OrchestrationV2CreationSource;
+  readonly scheduled: boolean;
+  readonly subagent: boolean;
 }
 
 export class ProviderTurnAnalytics extends Context.Reference<{
@@ -130,6 +150,7 @@ function providerTurnAnalyticsProperties(input: {
     ...(effort ? { effort } : {}),
     ...(input.context?.runtimeMode ? { runtimeMode: input.context.runtimeMode } : {}),
     ...(input.context?.interactionMode ? { interactionMode: input.context.interactionMode } : {}),
+    ...input.context?.origin,
     ...(input.providerTurn.startedAt && input.providerTurn.completedAt
       ? {
           durationMs: Math.max(
@@ -394,12 +415,7 @@ export const layer: Layer.Layer<
       },
     );
 
-    /**
-     * A native subagent's thread starts on the parent's model when the provider
-     * names the real one later (a Claude agent file's model arrives with the
-     * subagent's first reply). Thread commands rewrite the whole thread row
-     * under the thread's lock, so this read and write take it too.
-     */
+    /** Providers may reveal native subagent models late; lock full-row updates against concurrent thread commands. */
     const syncSubagentThreadModel = Effect.fn("ProviderEventIngestor.syncSubagentThreadModel")(
       function* (input: ProviderEventIngestInput, subagent: OrchestrationV2Subagent) {
         const { childThreadId, model } = subagent;
@@ -438,18 +454,13 @@ export const layer: Layer.Layer<
               },
               occurredAt: now,
             });
-            return yield* eventSink.write({ events: [event] });
+            return yield* eventSink.write({ events: [event] }).pipe(retryLockTimeout);
           }),
         );
       },
     );
 
-    /**
-     * Retire the runs that fell off its active branch with the same run,
-     * root-node, and checkpoint updates CheckpointRollbackService writes for a
-     * T3 revert. The run reporting the rewind performed it and stays, so it
-     * keeps lastRunOrdinal.
-     */
+    /** Retire rewound runs like CheckpointRollbackService; retain the reporting run and its lastRunOrdinal. */
     const rollBackRewoundRuns = Effect.fn("ProviderEventIngestor.rollBackRewoundRuns")(function* (
       input: ProviderEventIngestInput,
       rewind: {
@@ -527,31 +538,6 @@ export const layer: Layer.Layer<
       Effect.fnUntraced(
         function* (input) {
           switch (input.event.type) {
-            case "runtime_identity.observed": {
-              const { binding, requested, observed } = input.event;
-              if (
-                input.providerInstanceId !== binding.providerInstanceId ||
-                input.providerSessionId !== binding.providerSessionId ||
-                input.threadId !== binding.threadId ||
-                input.event.driver !== binding.driver
-              )
-                return [];
-              const current = (yield* projections.getThreadRecords(binding.threadId, [
-                "providerThreads",
-              ])).providerThreads.find((thread) => thread.id === binding.providerThreadId);
-              if (current?.runtimeIdentity === undefined) return [];
-              return [
-                yield* makeDomainEvent(input, {
-                  type: "provider-thread.updated",
-                  threadId: binding.threadId,
-                  payload: {
-                    ...current,
-                    runtimeIdentity: { ...current.runtimeIdentity, requested, observed },
-                  },
-                }),
-              ];
-            }
-
             case "app_thread.created": {
               const offered = input.event.appThread;
               const existing = yield* projections.getThread(offered.id).pipe(
@@ -762,91 +748,10 @@ export const layer: Layer.Layer<
         /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
         Effect.fnUntraced(
           function* (input) {
-            let historicalInput: HistoricalTerminalInput | undefined;
-            let historicalWrite:
-              | Effect.Effect<
-                  {
-                    readonly handled: boolean;
-                    readonly storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>;
-                  },
-                  ProviderEventPublishError
-                >
-              | undefined;
-            if (
-              isHistoricalTerminalCandidate(input.event) &&
-              eventSink.writeHistoricalTerminal !== undefined
-            ) {
-              historicalInput = {
-                providerSessionId: input.providerSessionId,
-                providerInstanceId: input.providerInstanceId,
-                threadId: input.threadId,
-                ...(input.runId === undefined ? {} : { runId: input.runId }),
-                event: input.event,
-                terminal: yield* makeDomainEvent(input, {
-                  type: "provider-turn.updated",
-                  ...(input.event.threadId === undefined ? {} : { threadId: input.event.threadId }),
-                  payload: input.event.providerTurn,
-                  nodeId: input.event.providerTurn.nodeId,
-                }).pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new ProviderEventNormalizeError({
-                        providerSessionId: input.providerSessionId,
-                        threadId: input.threadId,
-                        providerEvent: input.event,
-                        cause,
-                      }),
-                  ),
-                ),
-              };
-              historicalWrite = eventSink.writeHistoricalTerminal(historicalInput).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new ProviderEventPublishError({
-                      providerSessionId: input.providerSessionId,
-                      eventCount: 1,
-                      cause,
-                    }),
-                ),
-              );
-              const historical = yield* historicalWrite;
-              if (historical.handled) return historical.storedEvents;
-            }
-            // Restart can commit after the initial eligibility read. A rejected
-            // ordinary write retries only exact terminal history, never its bundle.
-            const retainRejectedTerminal = (
-              storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>,
-            ) =>
-              storedEvents.length === 0 && historicalWrite !== undefined
-                ? historicalWrite.pipe(Effect.map((historical) => historical.storedEvents))
-                : Effect.succeed(storedEvents);
             const events = yield* normalize(input);
             if (events.length === 0) {
               return [];
             }
-            const observation =
-              input.event.type === "runtime_identity.observed" ? input.event : undefined;
-            const identity =
-              observation === undefined
-                ? undefined
-                : events.find((event) => event.type === "provider-thread.updated");
-            const runtimeGuard = {
-              ...(historicalInput === undefined ? {} : { historicalTerminal: historicalInput }),
-              ...(observation === undefined
-                ? "runtimeEvidence" in input.event && input.event.runtimeEvidence !== undefined
-                  ? { runtimeEvidence: input.event.runtimeEvidence }
-                  : {}
-                : {
-                    runtimeEvidence: {
-                      ...observation.binding,
-                      ...(identity?.type === "provider-thread.updated" &&
-                      identity.payload.runtimeIdentity?.evidenceRevision !== undefined
-                        ? { evidenceRevision: identity.payload.runtimeIdentity.evidenceRevision }
-                        : {}),
-                    },
-                    runtimeIdentityObservation: observation.requested,
-                  }),
-            };
             const mapWriteError = (cause: unknown) =>
               new ProviderEventPublishError({
                 providerSessionId: input.providerSessionId,
@@ -857,35 +762,32 @@ export const layer: Layer.Layer<
               const ownerResult = yield* eventSink
                 .writeIfProviderThreadOwner({
                   guardPendingUserInputCancellations: true,
-                  ...runtimeGuard,
                   ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
                   ...input.writeIfProviderThreadOwner,
                   events,
                 })
-                .pipe(Effect.mapError(mapWriteError));
-              return yield* retainRejectedTerminal(ownerResult.storedEvents);
+                .pipe(retryLockTimeout, Effect.mapError(mapWriteError));
+              return ownerResult.storedEvents;
             }
             if (input.writeIfRunCurrent === undefined) {
               return yield* eventSink
                 .write({
                   guardPendingUserInputCancellations: true,
-                  ...runtimeGuard,
                   ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
                   events,
                 })
-                .pipe(Effect.mapError(mapWriteError), Effect.flatMap(retainRejectedTerminal));
+                .pipe(retryLockTimeout, Effect.mapError(mapWriteError));
             }
             const result = yield* eventSink
               .writeIfRunCurrent({
                 guardPendingUserInputCancellations: true,
-                ...runtimeGuard,
                 ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
                 threadId: input.threadId,
                 ...input.writeIfRunCurrent,
                 events,
               })
-              .pipe(Effect.mapError(mapWriteError));
-            return yield* retainRejectedTerminal(result.storedEvents);
+              .pipe(retryLockTimeout, Effect.mapError(mapWriteError));
+            return result.storedEvents;
           },
           (effect, input) =>
             effect.pipe(

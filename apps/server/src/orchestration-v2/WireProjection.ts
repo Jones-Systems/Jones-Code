@@ -1,22 +1,19 @@
 import type {
-  RecordedAppThread,
-  RecordedRun,
-  RecordedLifecycleEvent,
-  RecordedStoredLifecycleEvent,
-  RecordedEvent as OrchestrationV2RecordedEvent,
-  RecordedStoredEvent as OrchestrationV2RecordedStoredEvent,
-  RecordedThreadProjection,
-  ApplicationRecordedLifecycleEvent,
-} from "./RecordedTypes.ts";
-import type {
+  CheckpointId,
+  MessageId,
+  NodeId,
+  OrchestrationV2Checkpoint,
   OrchestrationV2DomainEvent,
-  OrchestrationV2AppThread,
-  OrchestrationV2Run,
-  ApplicationProjectEvent,
   OrchestrationV2ContextHandoff,
+  OrchestrationV2Subagent,
   OrchestrationV2ThreadProjection,
+  OrchestrationV2ThreadStreamItem,
   OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
+import {
+  dedupeSubagentBodies,
+  dedupeTurnItemBodies,
+} from "@t3tools/shared/orchestrationV2DedupedBodies";
 import {
   compactDynamicToolOutput,
   omitToolOutputImageData,
@@ -38,8 +35,7 @@ function truncateDetail(
   ) {
     return value;
   }
-  // UTF-8 needs at least one byte per UTF-16 code unit. Only encode the prefix
-  // that could fit, rather than allocating a buffer for the complete output.
+  // UTF-8 needs at least one byte per UTF-16 unit; encode only a potentially fitting prefix.
   const prefix = Buffer.from(value.slice(0, maxBytes), "utf8")
     .subarray(0, maxBytes)
     .toString("utf8")
@@ -47,11 +43,7 @@ function truncateDetail(
   return `${prefix}\n… output truncated for transport`;
 }
 
-/**
- * Clients never receive more than this (see projectTurnItemForWire), so a full
- * diff of a large file would only grow the database and the heap that reads it
- * back.
- */
+/** Bound stored diffs to the client wire limit to avoid retaining invisible data in SQLite and heap. */
 export function boundFileChangeForStorage(item: OrchestrationV2TurnItem): OrchestrationV2TurnItem {
   if (item.type !== "file_change") return item;
   const { diffStr, oldStr, newStr } = item;
@@ -172,10 +164,7 @@ function boundDynamicValue(value: unknown): unknown {
     : truncateDetail(json, MAX_ON_DEMAND_BYTES);
 }
 
-/**
- * When the rest is too large to send whole, its truncated text still comes with
- * the image markers, in order, so clients can load each image by index.
- */
+/** Preserve ordered image markers in truncated output so clients can load images by index. */
 function boundToolOutput(output: unknown): unknown {
   const omitted = omitToolOutputImageData(output);
   const bounded = boundDynamicValue(omitted);
@@ -226,36 +215,8 @@ export function projectContextHandoffForWire(
   return { ...projected, summaryText: "" };
 }
 
-function projectRecordedThreadForWire(thread: RecordedAppThread): OrchestrationV2AppThread {
-  if (!("legacyBootstrapClaim" in thread)) return thread;
-  const { legacyBootstrapClaim: _claim, ...publicThread } = thread;
-  return publicThread;
-}
-
-function projectRecordedRunForWire(run: RecordedRun): OrchestrationV2Run {
-  if (
-    !("legacyBootstrap" in run) &&
-    !("legacyPreparationFailureKnown" in run) &&
-    !("workspaceRunSetupScript" in run) &&
-    !("legacyReleaseDecision" in run) &&
-    !("legacyPreparationFailureDecision" in run) &&
-    !("legacyPreparation" in run)
-  )
-    return run;
-  const {
-    legacyBootstrap: _policy,
-    legacyPreparationFailureKnown: _known,
-    workspaceRunSetupScript: _setup,
-    legacyReleaseDecision: _decision,
-    legacyPreparationFailureDecision: _failureDecision,
-    legacyPreparation: _preparation,
-    ...publicRun
-  } = run;
-  return publicRun;
-}
-
 export function projectThreadProjectionForWire(
-  projection: RecordedThreadProjection,
+  projection: OrchestrationV2ThreadProjection,
 ): OrchestrationV2ThreadProjection {
   const projectedById = new Map<string, OrchestrationV2TurnItem>();
   const project = (item: OrchestrationV2TurnItem) => {
@@ -268,8 +229,6 @@ export function projectThreadProjectionForWire(
   };
   return {
     ...projection,
-    thread: projectRecordedThreadForWire(projection.thread),
-    runs: projection.runs.map(projectRecordedRunForWire),
     contextHandoffs: projection.contextHandoffs.map(projectContextHandoffForWire),
     turnItems: projection.turnItems.map(project),
     visibleTurnItems: projection.visibleTurnItems.map((row) => ({
@@ -280,60 +239,72 @@ export function projectThreadProjectionForWire(
 }
 
 export function projectDomainEventForWire(
-  event: RecordedLifecycleEvent,
+  event: OrchestrationV2DomainEvent,
 ): OrchestrationV2DomainEvent {
-  switch (event.type) {
-    case "thread.created":
-    case "thread.archived":
-    case "thread.unarchived":
-    case "thread.deleted":
-    case "thread.settled":
-    case "thread.unsettled":
-    case "thread.snoozed":
-    case "thread.unsnoozed":
-    case "thread.pinned":
-    case "thread.auto-settle-set":
-    case "thread.unpinned":
-    case "thread.pin-reordered":
-    case "thread.active-reordered":
-    case "thread.visited":
-    case "thread.marked-unread":
-    case "thread.metadata-updated":
-    case "thread.pull-request-synced":
-    case "thread.runtime-mode-updated":
-    case "thread.interaction-mode-updated":
-    case "thread.model-selection-updated":
-    case "thread.provider-switched":
-      return { ...event, payload: projectRecordedThreadForWire(event.payload) };
-    case "run.created":
-    case "run.updated":
-      return { ...event, payload: projectRecordedRunForWire(event.payload) };
-    case "turn-item.updated":
-      return { ...event, payload: projectTurnItemForWire(event.payload) };
-    case "context-handoff.updated":
-      return { ...event, payload: projectContextHandoffForWire(event.payload) };
-    default:
-      return event;
-  }
+  return event.type === "turn-item.updated"
+    ? { ...event, payload: projectTurnItemForWire(event.payload) }
+    : event.type === "context-handoff.updated"
+      ? { ...event, payload: projectContextHandoffForWire(event.payload) }
+      : event;
 }
 
-export function isPublicOrchestrationEvent(
-  event: OrchestrationV2RecordedEvent,
-): event is RecordedLifecycleEvent {
-  return (
-    event.type !== "legacy-bootstrap.preflight-intent" &&
-    event.type !== "legacy-bootstrap.preflight-outcome"
-  );
+const LIVE_DEDUPE_MEMORY = 32;
+
+function remember<K, V>(memory: Map<K, V>, key: K, value: V): void {
+  memory.delete(key);
+  memory.set(key, value);
+  if (memory.size > LIVE_DEDUPE_MEMORY) memory.delete(memory.keys().next().value as K);
 }
 
-export function isPublicStoredOrchestrationEvent(
-  stored: OrchestrationV2RecordedStoredEvent,
-): stored is RecordedStoredLifecycleEvent {
-  return isPublicOrchestrationEvent(stored.event);
-}
-
-export function isPublicApplicationEvent(
-  event: ApplicationProjectEvent | OrchestrationV2RecordedStoredEvent,
-): event is ApplicationRecordedLifecycleEvent {
-  return !("event" in event) || isPublicStoredOrchestrationEvent(event);
+/**
+ * One per subscription, after coalescing, so it remembers only records the client received. A
+ * record event comes before the turn item that repeats its body, so the item (or a repeated
+ * subagent record) ships blank and marked. The other order, or a forgotten record, only costs
+ * bytes: the repeat ships whole.
+ */
+export function makeLiveBodyDeduper(): (
+  item: OrchestrationV2ThreadStreamItem,
+) => OrchestrationV2ThreadStreamItem {
+  const messageText = new Map<MessageId, string>();
+  const checkpointFiles = new Map<CheckpointId, OrchestrationV2Checkpoint["files"]>();
+  const subagents = new Map<NodeId, Pick<OrchestrationV2Subagent, "prompt" | "result">>();
+  const source = {
+    messageText: (id: MessageId) => messageText.get(id),
+    checkpointFiles: (id: CheckpointId) => checkpointFiles.get(id),
+    subagent: (id: NodeId) => subagents.get(id),
+  };
+  const rememberSubagent = ({ id, prompt, result }: OrchestrationV2Subagent) =>
+    remember(subagents, id, { prompt, result });
+  return (item) => {
+    if (item.kind === "snapshot") {
+      // The client now holds exactly these records; their bodies are never blanked.
+      const { messages, checkpoints, subagents: records } = item.projection;
+      for (const message of messages) remember(messageText, message.id, message.text);
+      for (const checkpoint of checkpoints)
+        remember(checkpointFiles, checkpoint.id, checkpoint.files);
+      for (const subagent of records) rememberSubagent(subagent);
+      return item;
+    }
+    if (item.kind !== "event") return item;
+    const { event } = item;
+    switch (event.type) {
+      case "message.updated":
+        remember(messageText, event.payload.id, event.payload.text);
+        return item;
+      case "checkpoint.captured":
+        remember(checkpointFiles, event.payload.id, event.payload.files);
+        return item;
+      case "subagent.updated": {
+        const payload = dedupeSubagentBodies(event.payload, subagents.get(event.payload.id));
+        rememberSubagent(event.payload);
+        return payload === event.payload ? item : { ...item, event: { ...event, payload } };
+      }
+      case "turn-item.updated": {
+        const payload = dedupeTurnItemBodies(event.payload, source);
+        return payload === event.payload ? item : { ...item, event: { ...event, payload } };
+      }
+      default:
+        return item;
+    }
+  };
 }

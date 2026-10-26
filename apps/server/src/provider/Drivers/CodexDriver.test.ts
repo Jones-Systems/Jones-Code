@@ -1,5 +1,5 @@
-import * as ControlAdmission from "../../jones/orchestration/ControlAdmission.ts";
 import * as CodexInstallation from "../CodexInstallation.ts";
+import * as CodexManagedTokenBroker from "../CodexManagedTokenBroker.ts";
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 // @effect-diagnostics nodeBuiltinImport:off
@@ -24,7 +24,6 @@ import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
-import * as ProcessAttribution from "../../jones/resourceTelemetry/ProcessAttribution.ts";
 import * as ServerConfig from "../../config.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
@@ -48,7 +47,6 @@ const layerDeps = ServerConfig.layerTest(process.cwd(), {
 }).pipe(
   Layer.provideMerge(NodeServices.layer),
   Layer.provideMerge(IdAllocator.layer),
-  Layer.provideMerge(ControlAdmission.layer),
   Layer.provideMerge(McpProviderSessions.layer),
   Layer.provideMerge(
     Layer.mock(CodexAdapterV2.CodexAppServerClientFactory)({
@@ -62,6 +60,12 @@ const layerDeps = ServerConfig.layerTest(process.cwd(), {
   ),
   Layer.provideMerge(Layer.mock(ServerSecretStore.ServerSecretStore)({})),
   Layer.provideMerge(
+    Layer.mock(CodexManagedTokenBroker.CodexManagedTokenBroker)({
+      endpoint: Effect.succeed("unused-private-pipe"),
+      awaitIdle: Effect.void,
+    }),
+  ),
+  Layer.provideMerge(
     Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
       getEnvironmentId: Effect.succeed(EnvironmentId.make("00000000-0000-4000-8000-000000000001")),
     }),
@@ -69,7 +73,6 @@ const layerDeps = ServerConfig.layerTest(process.cwd(), {
   Layer.provideMerge(ServerSettings.layerTest()),
   Layer.provideMerge(ModelManifest.layerTest),
   Layer.provideMerge(ResetCreditCoordinator.layerTest),
-  Layer.provideMerge(ProcessAttribution.layer),
   Layer.provideMerge(
     Layer.mock(BackgroundPolicy.BackgroundPolicy)({
       shouldRunScopeWork: () => Effect.succeed(false),
@@ -100,11 +103,13 @@ const noSpawn = ChildProcessSpawner.make(() =>
 const encodeCredentials = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 it.layer(layerTest)("CodexDriver", (it) => {
-  it.effect("disconnect refreshes a restored managed account while its auth flow is idle", () =>
+  const checkManagedAccount = (replacementTiming: "unchanged" | "during-probe") =>
     Effect.gen(function* () {
       const instanceId = ProviderInstanceId.make("restored-managed-account");
-      let evaluationRequests = 0;
       const credentials = new Map<string, Uint8Array>();
+      const catalogTokens: Array<string | undefined> = [];
+      const probeEntered = yield* Deferred.make<void>();
+      const resumeProbe = yield* Deferred.make<void>();
       const secrets = ServerSecretStore.ServerSecretStore.of({
         get: (key) => Effect.sync(() => Option.fromUndefinedOr(credentials.get(key))),
         set: (key, value) =>
@@ -131,6 +136,17 @@ it.layer(layerTest)("CodexDriver", (it) => {
           email: "account@example.test",
         });
         yield* store.set(new TextEncoder().encode(json));
+        const replacement = yield* encodeCredentials({
+          clientId: "oaiapp_replacement",
+          subject: "replacement-user",
+          email: "replacement@example.test",
+          accessToken: "replacement-access",
+          refreshToken: "replacement-refresh",
+          expiresAt: Number.MAX_SAFE_INTEGER,
+          earliestRefreshAt: null,
+          scopes: ["chatgpt.tokens.use.direct"],
+        });
+        const replaceAccount = store.set(new TextEncoder().encode(replacement)).pipe(Effect.orDie);
         const executable = {
           executablePath: "/user/bin/codex",
           managedVersionDirectory: null,
@@ -192,13 +208,17 @@ it.layer(layerTest)("CodexDriver", (it) => {
           Effect.provideService(
             ChildProcessSpawner.ChildProcessSpawner,
             ChildProcessSpawner.make(() =>
-              Effect.fail(
-                PlatformError.badArgument({
+              Effect.gen(function* () {
+                if (replacementTiming === "during-probe") {
+                  yield* Deferred.succeed(probeEntered, undefined);
+                  yield* Deferred.await(resumeProbe);
+                }
+                return yield* PlatformError.badArgument({
                   module: "ChildProcessSpawner",
                   method: "spawn",
                   description: "The fixture app-server is unavailable",
-                }),
-              ),
+                });
+              }),
             ),
           ),
         );
@@ -214,32 +234,29 @@ it.layer(layerTest)("CodexDriver", (it) => {
           Effect.forkScoped,
         );
         yield* Deferred.await(startupChecksInterrupted);
-        const restored = yield* instance.snapshot.refresh;
-        expect(restored.supportsRemoteRequestEvaluation).toBe(true);
+        const refresh = yield* instance.snapshot.refresh.pipe(Effect.forkChild);
+        if (replacementTiming === "during-probe") {
+          yield* Deferred.await(probeEntered);
+          yield* replaceAccount;
+          yield* Deferred.succeed(resumeProbe, undefined);
+        }
+        const restored = yield* Fiber.join(refresh);
+        if (replacementTiming === "during-probe") {
+          expect(catalogTokens).toEqual([]);
+          expect(restored.models).toEqual([]);
+          expect(restored.auth.email).toBe("replacement@example.test");
+          expect(restored.auth.profileId).toBe("oaiapp_replacement");
+          return;
+        }
+        expect(catalogTokens).toEqual(["Bearer dummy-owned-access"]);
         expect(restored.auth.email).toBe("account@example.test");
         expect(restored.runtimePaths?.homePath).toBe(sharedHome);
         expect(restored.runtimePaths?.shadowHomePath).toContain(
           `providers/codex/${instanceId}/shadow`,
         );
-        // The fixture app-server cannot start, so the workspace scan fails
-        // instead of passing the machine snapshot off as the workspace's skills.
         const scan = yield* instance.snapshotForCwd!(serverConfig.stateDir).pipe(Effect.exit);
         expect(Exit.isFailure(scan)).toBe(true);
-        // The account is still signed in, so a runtime that cannot start is a
-        // failed scan too, not the machine snapshot's inventory.
         failAcquire = true;
-        expect(
-          yield* instance.textGeneration.evaluateRemoteRequest({
-            cwd: "/missing/untrusted-project",
-            modelSelection: {
-              instanceId,
-              model: "gpt-6.1-sol",
-              options: [{ id: "reasoningEffort", value: "high" }],
-            },
-            message: "Fix the parser",
-          }),
-        ).toEqual({ verdict: "pass", category: "none", reason: "Routine work" });
-        expect(evaluationRequests).toBe(1);
         const runtimeScan = yield* instance.snapshotForCwd!(serverConfig.stateDir).pipe(
           Effect.exit,
         );
@@ -264,7 +281,9 @@ it.layer(layerTest)("CodexDriver", (it) => {
         const launch = launches[0]!;
         expect(launch.settings.binaryPath).toBe(executable.executablePath);
         expect(launch.settings.launchArgs).toContain("openai_token_sharing");
-        expect(launch.environment.ACCESS_TOKEN).toBe("dummy-owned-access");
+        expect(launch.environment.ACCESS_TOKEN).toBeUndefined();
+        expect(launch.settings.launchArgs).toContain("__managed-chatgpt-token");
+        expect(launch.settings.launchArgs).not.toContain("dummy-owned-access");
         expect(launch.environment.OPENAI_API_KEY).toBeUndefined();
         expect(launch.environment.CODEX_HOME).toBe(launch.settings.homePath);
         const before = yield* instance.auth!.subscribe("test-owner").pipe(Stream.runHead);
@@ -276,16 +295,6 @@ it.layer(layerTest)("CodexDriver", (it) => {
         expect(after.installed).toBe(true);
         expect(after.models).toEqual([]);
         expect(Option.isNone(yield* store.get)).toBe(true);
-        yield* instance.textGeneration
-          .evaluateRemoteRequest({
-            cwd: "/missing/untrusted-project",
-            modelSelection: { instanceId, model: "gpt-6.1-sol" },
-            message: "Fix the parser",
-          })
-          .pipe(Effect.flip);
-        expect(evaluationRequests).toBe(1);
-        // Signed out, there is no runtime to scan with, so the machine
-        // snapshot's empty inventory stands instead of a failed scan.
         const signedOutScan = yield* instance.snapshotForCwd!(serverConfig.stateDir);
         expect(signedOutScan.skills).toEqual([]);
       }).pipe(
@@ -298,43 +307,11 @@ it.layer(layerTest)("CodexDriver", (it) => {
                 "https://auth.openai.com/.well-known/openid-configuration",
                 "https://auth.openai.com/revoke",
                 "https://api.openai.com/v1/models",
-                "https://api.openai.com/v1/responses",
               ]).toContain(request.url);
-              if (request.url.endsWith("/responses")) {
-                evaluationRequests++;
-                expect(request.headers.authorization).toBe("Bearer dummy-owned-access");
-                return HttpClientResponse.fromWeb(
-                  request,
-                  new Response(
-                    `event: response.completed\ndata: ${JSON.stringify({
-                      type: "response.completed",
-                      response: {
-                        status: "completed",
-                        output: [
-                          {
-                            type: "message",
-                            role: "assistant",
-                            status: "completed",
-                            content: [
-                              {
-                                type: "output_text",
-                                text: JSON.stringify({
-                                  verdict: "pass",
-                                  category: "none",
-                                  reason: "Routine work",
-                                }),
-                              },
-                            ],
-                          },
-                        ],
-                      },
-                    })}\n\n`,
-                    { headers: { "content-type": "text/event-stream" } },
-                  ),
-                );
-              }
-              if (request.url.endsWith("/models"))
+              if (request.url.endsWith("/models")) {
+                catalogTokens.push(request.headers.authorization);
                 return HttpClientResponse.fromWeb(request, Response.json({ models: [] }));
+              }
               return HttpClientResponse.fromWeb(
                 request,
                 request.url.endsWith("/revoke")
@@ -351,7 +328,12 @@ it.layer(layerTest)("CodexDriver", (it) => {
           ),
         ),
       );
-    }).pipe(Effect.scoped),
+    }).pipe(Effect.scoped);
+  // regression: a sign-in that replaces the account mid-probe must not label the old
+  // account's catalog with the new identity.
+  it.effect.each(["unchanged", "during-probe"] as const)(
+    "managed catalog keeps its account label and token together: %s",
+    checkManagedAccount,
   );
 
   it.effect.skipIf(windowsHost)(
@@ -473,9 +455,6 @@ it.layer(layerTest)("CodexDriver", (it) => {
         Effect.scoped,
       ),
     );
-  }
-
-  for (const {} of ["direct", "wrapper"] as const) {
   }
 
   it.effect.each([

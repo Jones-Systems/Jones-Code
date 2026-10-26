@@ -1,4 +1,3 @@
-import { registerCompanionGuest } from "../jones/previewCompanion/guest";
 import type {
   DesktopPreviewColorScheme,
   PreviewViewportSetting,
@@ -12,11 +11,7 @@ import { usePreviewBridge } from "~/components/preview/usePreviewBridge";
 import { useClientSettingsHydrated } from "~/hooks/useSettings";
 import { cn, isMacPlatform } from "~/lib/utils";
 
-import {
-  acquireBrowserSurfaceActivity,
-  resolveBrowserSurfacePanelRect,
-  useBrowserSurfaceStore,
-} from "./browserSurfaceStore";
+import { resolveBrowserSurfacePanelRect, useBrowserSurfaceStore } from "./browserSurfaceStore";
 import { useActiveBrowserRecordingTabIds } from "./browserRecording";
 import {
   browserViewportSettingKey,
@@ -58,14 +53,10 @@ export function HostedBrowserWebview(props: {
   readonly initialUrl: string | null;
   readonly viewport: PreviewViewportSetting;
   readonly pictureInPicture: boolean;
-  /**
-   * Fixed for the tab's lifetime: Electron only honours `partition` before the
-   * guest attaches, so a live change here would not move the tab anyway.
-   */
+  /** Fixed for the tab lifetime; Electron reads partition before guest attachment. */
   readonly profileId: string | undefined;
   readonly zoomFactor: number;
   readonly serverDriven?: boolean;
-  readonly companion?: boolean;
   readonly serverRendering?: {
     readonly colorScheme: DesktopPreviewColorScheme;
     readonly zoomFactor: number;
@@ -81,12 +72,11 @@ export function HostedBrowserWebview(props: {
     zoomFactor,
     profileId,
     serverDriven = false,
-    companion = false,
     serverRendering,
   } = props;
   const clientSettingsHydrated = useClientSettingsHydrated();
   const config = usePreviewWebviewConfig(threadRef.environmentId, profileId);
-  const [initialSrc] = useState(() => (companion ? "about:blank" : (initialUrl ?? "about:blank")));
+  const [initialSrc] = useState(() => initialUrl ?? "about:blank");
   const tabLeaseRef = useRef<AcquiredDesktopTab | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const webviewRef = useRef<ElectronWebview | null>(null);
@@ -141,18 +131,11 @@ export function HostedBrowserWebview(props: {
   }, [runtimeTabId, serverZoomFactor]);
 
   const [webviewGeneration, setWebviewGeneration] = useState(0);
-  useEffect(
-    () => (companion ? acquireBrowserSurfaceActivity(runtimeTabId) : undefined),
-    [companion, runtimeTabId],
-  );
-
   const [recoverySrc, setRecoverySrc] = useState(initialSrc);
   const remountCrashedWebview = useEffectEvent(() => {
-    setRecoverySrc(companion ? "about:blank" : (initialUrl ?? initialSrc));
+    setRecoverySrc(initialUrl ?? initialSrc);
     setWebviewGeneration((generation) => generation + 1);
   });
-
-  const readInitialUrl = useEffectEvent(() => initialUrl);
 
   const setWebviewRef = (node: HTMLElement | null) => {
     webviewRef.current = node as ElectronWebview | null;
@@ -163,46 +146,20 @@ export function HostedBrowserWebview(props: {
     const bridge = previewBridge;
     if (!clientSettingsHydrated || !webview || !config || !bridge) return;
     let disposed = false;
-    let registered = false;
-    let registering = false;
     let recoveryTimeout: ReturnType<typeof setTimeout> | null = null;
     const register = () => {
       const lease = tabLeaseRef.current;
-      if (!lease || (companion && registered) || registering) return;
-      registering = true;
+      if (!lease) return;
       void (async () => {
-        return await (async () => {
-          try {
-            // The main-process tab and the DOM webview are created by separate
-            // effects. Wait for the former so registration cannot race and fail
-            // with PreviewTabNotFoundError on a fast about:blank attachment.
-            const isCurrent = () => !disposed && webviewRef.current === webview;
-            const registerWebview = async () => {
-              const webContentsId = webview.getWebContentsId();
-              if (!Number.isInteger(webContentsId) || webContentsId <= 0)
-                throw new Error("Guest is not attached.");
-              await bridge.registerWebview(runtimeTabId, webContentsId);
-            };
-            if (companion) {
-              registered = await registerCompanionGuest({
-                ready: lease.ready,
-                isCurrent,
-                register: registerWebview,
-                url: () => readInitialUrl(),
-                navigate: (url) => {
-                  webview.src = url;
-                },
-              });
-            } else {
-              await lease.ready;
-              if (isCurrent()) await registerWebview();
-            }
-          } catch {
-            // did-attach/dom-ready will retry if the guest was not ready yet.
+        try {
+          // Tab creation and webview attachment use separate effects; wait to avoid PreviewTabNotFoundError.
+          await lease.ready;
+          if (disposed || webviewRef.current !== webview) return;
+          const webContentsId = webview.getWebContentsId();
+          if (Number.isInteger(webContentsId) && webContentsId > 0) {
+            await bridge.registerWebview(runtimeTabId, webContentsId);
           }
-        })().finally(() => {
-          registering = false;
-        });
+        } catch {}
       })();
     };
     const recoverGuest = () => {
@@ -215,9 +172,7 @@ export function HostedBrowserWebview(props: {
         if (!disposed) remountCrashedWebview();
       }, recovery.delayMs);
     };
-    // A click inside the guest only reaches this document as a webview focus
-    // event, so open menus and popovers never see the outside press that
-    // would dismiss them. Replay it as a pointerdown on the webview itself.
+    // Guest clicks only emit focus here; replay pointerdown to dismiss host popups.
     const dismissHostPopups = () => {
       webview.dispatchEvent(
         new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse" }),
@@ -238,7 +193,6 @@ export function HostedBrowserWebview(props: {
     };
   }, [
     clientSettingsHydrated,
-    companion,
     config,
     runtimeTabId,
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A crash recovery remounts the webview under a new key, so the listeners attach to the new element.
@@ -270,8 +224,7 @@ export function HostedBrowserWebview(props: {
       : content
         ? content.height / content.scale
         : (lastRect?.height ?? 800);
-  // Built from primitives on each side of the resize hook, so neither object is
-  // shared across it and both stay cached; the hook's layout keys the sync effect.
+  // Build from primitives on each side of the resize hook to keep both objects cached.
   const containerSize =
     active && lastRect ? lastRect : { width: hiddenWidth, height: hiddenHeight };
   const deviceToolbarVisible = active && viewport._tag !== "fill" && !presentation.fitSourceContent;
@@ -366,11 +319,7 @@ export function HostedBrowserWebview(props: {
         <webview
           key={webviewGeneration}
           ref={setWebviewRef}
-          // Must be an attribute on the element itself: Electron reads it when the
-          // guest attaches, so setting it from the ref callback lands too late and
-          // the guest attaches with popups disabled. React types `allowpopups` as a
-          // boolean, but react-dom drops boolean values for unrecognized attributes,
-          // so the literal string has to be spread past the type.
+          // Electron needs allowpopups at attachment. React drops boolean values for unknown attributes.
           {...({ allowpopups: "true" } as unknown as { readonly allowpopups?: boolean })}
           src={webviewGeneration === 0 ? initialSrc : recoverySrc}
           partition={config.partition}

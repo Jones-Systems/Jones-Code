@@ -12,7 +12,6 @@ import { ChildProcessSpawner } from "effect/process";
 
 import {
   GitCommandError,
-  VcsPrimaryCheckoutCheckpointError,
   VcsProcessExitError,
   VcsUnsupportedOperationError,
   type VcsSwitchRefInput,
@@ -55,11 +54,7 @@ export interface ExecuteGitInput {
   readonly forceKillAfterMs?: number;
   readonly maxOutputBytes?: number;
   readonly appendTruncationMarker?: boolean;
-  /**
-   * With `appendTruncationMarker`, keep invoking the line callbacks after the
-   * buffered copy is full. For long-running commands whose output is only
-   * consumed through `progress`.
-   */
+  /** With appendTruncationMarker, line callbacks continue beyond the buffer cap for progress-only consumers. */
   readonly keepLineCallbacksAfterTruncation?: boolean;
   readonly progress?: ExecuteGitProgress;
 }
@@ -122,10 +117,7 @@ export interface ExecuteGitProgress {
 }
 
 export interface CreateWorktreeProgress {
-  /**
-   * Git refuses an existing path, so a path reported here belongs to this call and is safe to
-   * remove on cancel.
-   */
+  /** Git refuses existing paths; claimed paths belong to this call and can be removed on cancel. */
   readonly onWorktreeClaimed?: (path: string) => Effect.Effect<void, never>;
   readonly onCheckoutProgress?: (input: {
     percent: number;
@@ -143,71 +135,9 @@ export interface CreateWorktreeProgress {
   }) => Effect.Effect<void, never>;
 }
 
-export interface LegacyWorktreeBeforeObservation {
-  readonly parentPath: string;
-  readonly parentRealPath: string;
-  readonly parentDevice: string;
-  readonly parentInode: string;
-  readonly commonDirectoryDevice?: string | undefined;
-  readonly commonDirectoryInode?: string | undefined;
-  readonly targetRefAbsent: true;
-  readonly registrationAbsent: true;
-}
-
-export interface LegacyWorktreeMaterialClaim {
-  readonly path: string;
-  readonly realPath: string;
-  readonly device: string;
-  readonly inode: string;
-  readonly parentRealPath: string;
-  readonly gitDirectory: string;
-  readonly commonDirectory: string;
-  readonly registeredPath: string;
-  readonly headRef: string;
-  readonly headOid: string;
-  readonly parentDevice?: string | undefined;
-  readonly parentInode?: string | undefined;
-  readonly dotGitDevice?: string | undefined;
-  readonly dotGitInode?: string | undefined;
-  readonly gitDirectoryDevice?: string | undefined;
-  readonly gitDirectoryInode?: string | undefined;
-  readonly commonDirectoryDevice?: string | undefined;
-  readonly commonDirectoryInode?: string | undefined;
-}
-
-export interface LegacyWorktreePreparationStep {
-  readonly kind: "worktree.add" | "worktree.submodules" | "worktree.base-config";
-  readonly cwd: string;
-  readonly args: ReadonlyArray<string>;
-  readonly worktreePath: string;
-  readonly commonDirectory: string;
-  readonly baseCommitOid: string;
-  readonly targetRef: string;
-  readonly before?: LegacyWorktreeBeforeObservation;
-}
-
-export interface LegacyWorktreePreparationHooks {
-  /** Affirmative owner refusal after exact intent readback and before invocation. */
-  readonly neverInvoked?: (
-    step: LegacyWorktreePreparationStep,
-    reason: "input_validation_failed",
-  ) => Effect.Effect<void, Error>;
-  readonly beforeEffect: (step: LegacyWorktreePreparationStep) => Effect.Effect<void, Error>;
-  readonly afterEffect: (
-    step: LegacyWorktreePreparationStep,
-    outcome: "settled_success" | "failed_or_unknown",
-    claim?: LegacyWorktreeMaterialClaim,
-  ) => Effect.Effect<void, Error>;
-}
-
 export interface CreateWorktreeOptions {
-  /** Private legacy journaling; independent of the producer's physical mutation guard. */
-  readonly legacyPreparation?: LegacyWorktreePreparationHooks;
   readonly progress?: CreateWorktreeProgress;
-  /**
-   * Null (or omitted, for callers without settings access) defers to the
-   * checkout's own t3.json.
-   */
+  /** Null or omitted defers to the checkout's t3.json. */
   readonly submodules?: WorktreeSubmodules | null;
   readonly worktreesDirectory?: string;
 }
@@ -250,30 +180,7 @@ export interface GitRangeContext {
   diffPatch: string;
 }
 
-export interface LegacyBranchRenameStep {
-  readonly claim: LegacyWorktreeMaterialClaim;
-  readonly oldRef: string;
-  readonly oldOid: string;
-  readonly targetRef: string;
-  readonly exactName: boolean;
-  readonly args: ReadonlyArray<string>;
-}
-
-export interface LegacyBranchRenameHooks {
-  readonly before: LegacyWorktreeBeforeObservation;
-  readonly claim: LegacyWorktreeMaterialClaim;
-  readonly beforeEffect: (step: LegacyBranchRenameStep) => Effect.Effect<void, Error>;
-  readonly afterEffect: (
-    step: LegacyBranchRenameStep,
-    outcome: "settled_success" | "failed_or_unknown",
-    claim?: LegacyWorktreeMaterialClaim,
-  ) => Effect.Effect<void, Error>;
-}
-
 export interface GitRenameBranchInput {
-  /** Exact private preparation journal, independent of current physical admission. */
-  readonly legacyPreparation?: LegacyBranchRenameHooks;
-  /** Fail on a name collision instead of appending a numeric suffix. */
   exactName?: boolean;
   cwd: string;
   oldBranch: string;
@@ -284,15 +191,10 @@ export interface GitRenameBranchResult {
   branch: string;
 }
 
-export interface GitFetchPullRequestBranchInput {
+export interface GitFetchRefInput {
   cwd: string;
-  prNumber: number;
-  branch: string;
-}
-
-export interface GitFetchPullRequestHeadCommitInput {
-  cwd: string;
-  prNumber: number;
+  /** A ref on the primary remote, such as a host's change request head ref. */
+  ref: string;
 }
 
 export interface GitResolveCommitInput {
@@ -307,10 +209,7 @@ export interface GitResolveCommitResult {
 export interface GitRefreshCheckedOutBranchInput {
   cwd: string;
   targetCommit: string;
-  /**
-   * Commit the checkout is allowed to be hard-reset away from: the upstream commit read before
-   * the fetch. HEAD sitting there means the checkout holds no work of its own.
-   */
+  /** Pre-fetch upstream commit; resetting away is safe only if HEAD stayed here. */
   resetWhenHeadCommit?: string | null | undefined;
 }
 
@@ -363,12 +262,6 @@ export interface GitResolveRemoteTrackingCommitInput {
 export interface GitResolveRemoteTrackingCommitResult {
   commitSha: string;
   remoteRefName: string;
-}
-
-export interface GitResolveRemoteTrackingCommitIfExistsInput {
-  readonly cwd: string;
-  readonly remoteName: string;
-  readonly branchName: string;
 }
 
 export interface GitFetchWorktreeBaseCommitInput {
@@ -431,6 +324,14 @@ export class GitVcsDriver extends Context.Service<
       cwd: string,
       key: string,
     ) => Effect.Effect<string | null, GitCommandError>;
+    /**
+     * The branch, named as on the host, that T3 recorded `branch` was cut from. Null when none
+     * was recorded.
+     */
+    readonly readBranchBase: (
+      cwd: string,
+      branch: string,
+    ) => Effect.Effect<string | null, GitCommandError>;
     readonly resolveBranchName: (
       cwd: string,
       refName: string,
@@ -443,11 +344,12 @@ export class GitVcsDriver extends Context.Service<
       input: VcsCreateWorktreeInput,
       options?: CreateWorktreeOptions,
     ) => Effect.Effect<VcsCreateWorktreeResult, GitCommandError>;
-    readonly fetchPullRequestBranch: (
-      input: GitFetchPullRequestBranchInput,
+    /** Force-updates local `branch` to the primary remote's `ref`. */
+    readonly fetchRefIntoBranch: (
+      input: GitFetchRefInput & { readonly branch: string },
     ) => Effect.Effect<void, GitCommandError>;
-    readonly fetchPullRequestHeadCommit: (
-      input: GitFetchPullRequestHeadCommitInput,
+    readonly fetchRefCommit: (
+      input: GitFetchRefInput,
     ) => Effect.Effect<GitResolveCommitResult, GitCommandError>;
     readonly resolveCommit: (
       input: GitResolveCommitInput,
@@ -469,9 +371,6 @@ export class GitVcsDriver extends Context.Service<
     readonly resolveRemoteTrackingCommit: (
       input: GitResolveRemoteTrackingCommitInput,
     ) => Effect.Effect<GitResolveRemoteTrackingCommitResult, GitCommandError>;
-    readonly resolveRemoteTrackingCommitIfExists: (
-      input: GitResolveRemoteTrackingCommitIfExistsInput,
-    ) => Effect.Effect<GitResolveRemoteTrackingCommitResult | null, GitCommandError>;
     readonly resolveWorktreeBaseRemote: (
       input: GitFetchWorktreeBaseCommitInput,
     ) => Effect.Effect<{ remoteName: string; branchName: string } | null, GitCommandError>;
@@ -595,39 +494,41 @@ function parseGitRemoteVerboseOutput(
   return remotes;
 }
 
-const gitCommand = (
-  process: VcsProcess.VcsProcess["Service"],
-  operation: string,
-  cwd: string,
-  args: ReadonlyArray<string>,
-  options?: {
-    readonly stdin?: string;
-    readonly env?: NodeJS.ProcessEnv;
-    readonly allowNonZeroExit?: boolean;
-    readonly timeoutMs?: number;
-    readonly maxOutputBytes?: number;
-    readonly outputMode?: VcsProcess.VcsProcessInput["outputMode"];
-    readonly appendTruncationMarker?: boolean;
-  },
-) =>
-  process.run({
-    operation,
-    command: "git",
-    args: ["-C", cwd, ...args],
-    cwd,
-    spawnCwd: globalThis.process.cwd(),
-    ...(options?.stdin !== undefined ? { stdin: options.stdin } : {}),
-    ...(options?.env !== undefined ? { env: options.env } : {}),
-    ...(options?.allowNonZeroExit !== undefined
-      ? { allowNonZeroExit: options.allowNonZeroExit }
-      : {}),
-    ...(options?.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
-    ...(options?.maxOutputBytes !== undefined ? { maxOutputBytes: options.maxOutputBytes } : {}),
-    ...(options?.outputMode !== undefined ? { outputMode: options.outputMode } : {}),
-    ...(options?.appendTruncationMarker !== undefined
-      ? { appendTruncationMarker: options.appendTruncationMarker }
-      : {}),
-  });
+const gitCommand = Effect.fn("GitVcsDriver.gitCommand")(
+  (
+    process: VcsProcess.VcsProcess["Service"],
+    operation: string,
+    cwd: string,
+    args: ReadonlyArray<string>,
+    options?: {
+      readonly stdin?: string;
+      readonly env?: NodeJS.ProcessEnv;
+      readonly allowNonZeroExit?: boolean;
+      readonly timeoutMs?: number;
+      readonly maxOutputBytes?: number;
+      readonly outputMode?: VcsProcess.VcsProcessInput["outputMode"];
+      readonly appendTruncationMarker?: boolean;
+    },
+  ) =>
+    process.run({
+      operation,
+      command: "git",
+      args: ["-C", cwd, ...args],
+      cwd,
+      spawnCwd: globalThis.process.cwd(),
+      ...(options?.stdin !== undefined ? { stdin: options.stdin } : {}),
+      ...(options?.env !== undefined ? { env: options.env } : {}),
+      ...(options?.allowNonZeroExit !== undefined
+        ? { allowNonZeroExit: options.allowNonZeroExit }
+        : {}),
+      ...(options?.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+      ...(options?.maxOutputBytes !== undefined ? { maxOutputBytes: options.maxOutputBytes } : {}),
+      ...(options?.outputMode !== undefined ? { outputMode: options.outputMode } : {}),
+      ...(options?.appendTruncationMarker !== undefined
+        ? { appendTruncationMarker: options.appendTruncationMarker }
+        : {}),
+    }),
+);
 
 export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
@@ -896,24 +797,10 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
     return path.resolve(physicalCwd, gitCommonDir);
   });
 
-  const resolveGitDir = Effect.fn("resolveGitDir")(function* (cwd: string) {
-    const result = yield* execute({
-      operation: "GitVcsDriver.checkpoints.resolveGitDir",
-      cwd,
-      args: ["rev-parse", "--git-dir"],
-    });
-    const gitDir = result.stdout.trim();
-    return path.isAbsolute(gitDir) ? gitDir : path.resolve(cwd, gitDir);
-  });
-
-  // Git renames loose objects and refs into place without fsync by default, so
-  // an unclean restart can leave 0-byte files under refs/t3/** that break every
-  // later fetch and push. Checkpoint writes flush before they are published;
-  // macOS defaults to writeout-only, which does not reach the disk either.
+  // Git defaults and macOS writeout-only can leave empty refs after crashes; flush before publication.
   // Set fsync first: Git 2.36 ignores unknown batch without resetting the method.
-  // Git documents batch/fsync equivalence on macOS HFS+/APFS and Windows NTFS/ReFS;
-  // keep per-object fsync on other platforms. Batch still fully flushes refs.
-  // On macOS, VcsProcess retries unsupported full flushes with plain fsync.
+  // Batch fully flushes refs and equals fsync on macOS HFS+/APFS and Windows NTFS/ReFS.
+  // Keep per-object fsync elsewhere; VcsProcess retries unsupported macOS full flushes with plain fsync.
   const durableWrite = [
     "-c",
     "core.fsync=objects,reference",
@@ -931,8 +818,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
   const checkpoints: VcsDriver.VcsCheckpointOps = {
     captureCheckpoint: Effect.fn("GitVcsDriver.checkpoints.captureCheckpoint")(function* (input) {
       const operation = VcsProcess.CHECKPOINT_CAPTURE_OPERATION;
-      // core.splitIndex governs every index Git writes, so an unguarded write to the
-      // scratch index can expire the sharedindex.* the real .git/index still uses.
+      // Scratch split-index writes can expire sharedindex files still used by the real index.
       const indexConfig = [
         "-c",
         "core.fsmonitor=false",
@@ -944,13 +830,6 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
         "splitIndex.sharedIndexExpire=never",
       ];
       const gitCommonDir = yield* resolveGitCommonDir(input.cwd);
-      const gitDir = yield* resolveGitDir(input.cwd);
-      if (path.normalize(gitDir) === path.normalize(gitCommonDir)) {
-        return yield* new VcsPrimaryCheckoutCheckpointError({
-          operation,
-          cwd: input.cwd,
-        });
-      }
       const indexId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
       const tempIndexPath = path.join(gitCommonDir, `t3-checkpoint-index-${indexId}`);
       const commitEnv: NodeJS.ProcessEnv = {
@@ -1170,8 +1049,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
           Effect.catchTags({
             VcsProcessExitError: (error) =>
               Effect.gen(function* () {
-                // Git cannot stage an embedded repository until it has a commit. Discover these
-                // only after staging fails so ordinary checkpoints do not need another file scan.
+                // Git cannot stage uncommitted embedded repos; scan for them only after staging fails.
                 const untracked = yield* execute({
                   operation,
                   cwd: input.cwd,
@@ -1467,8 +1345,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
           maxOutputBytes: VcsDriver.CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
           outputMode: "error",
         }).pipe(Effect.map((result) => result.stdout.split("\0")));
-      // Remerge diff lists a merge's paths only where the result differs from Git's
-      // automatic merge, so a merge keeps its conflict fixes and drops clean upstream changes.
+      // Remerge diffs retain merge conflict fixes while excluding clean upstream changes.
       const pathLists = yield* Effect.all(
         [
           listPaths(["diff", startHead, `${input.fromCheckpointRef}^{commit}`]),

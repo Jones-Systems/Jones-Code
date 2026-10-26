@@ -5,14 +5,14 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { AuthStandardClientScopes, ExecutionEnvironmentDescriptor } from "@t3tools/contracts";
+import { AuthStandardClientScopes, ORCHESTRATION_PROTOCOL_VERSION } from "@t3tools/contracts";
 import * as NetService from "@t3tools/shared/Net";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { assert, describe, expect, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
-import * as Schema from "effect/Schema";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
@@ -35,10 +35,6 @@ import {
 import { DevServerNotProxiableError, resolveTailscaleLocalTarget } from "./pair.ts";
 
 import packageJson from "../../package.json" with { type: "json" };
-import * as Fiber from "effect/Fiber";
-import * as TestClock from "effect/testing/TestClock";
-import { HttpClient, HttpClientResponse } from "effect/http";
-import { resolveTailscalePairingBase } from "./pair.ts";
 
 const layerCliRuntime = Layer.mergeAll(NodeServices.layer, NetService.layer);
 
@@ -55,12 +51,10 @@ describe("pair tailscale local target", () => {
     expect(resolveTailscaleLocalTarget({ ...baseState, devUrl: "http://localhost:5733/" })).toEqual(
       { localPort: 5_733 },
     );
-    // A dev server on a non-loopback interface must be proxied at that
-    // interface; tailscale serve defaults to 127.0.0.1 otherwise.
+    // tailscale serve defaults to loopback, so non-loopback dev servers need an explicit target.
     expect(
       resolveTailscaleLocalTarget({ ...baseState, devUrl: "http://192.168.1.10:5733/" }),
     ).toEqual({ localPort: 5_733, localHost: "192.168.1.10" });
-    // URL.hostname keeps IPv6 brackets, so the serve target stays valid.
     expect(
       resolveTailscaleLocalTarget({ ...baseState, devUrl: "http://[fd7a:115c::1]:5733/" }),
     ).toEqual({ localPort: 5_733, localHost: "[fd7a:115c::1]" });
@@ -95,19 +89,21 @@ const testDescriptor = {
   label: "pair-test",
   platform: { os: "linux", arch: "x64" },
   serverVersion: "0.0.1",
+  orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
   capabilities: { repositoryIdentity: true },
 };
 
 const withDescriptorServer = <A, E, R>(
   run: (origin: string) => Effect.Effect<A, E, R>,
   host = "127.0.0.1",
+  descriptor: object = testDescriptor,
 ) =>
   Effect.acquireUseRelease(
     Effect.callback<NodeHttp.Server>((resume) => {
       const server = NodeHttp.createServer((request, response) => {
         if (request.url === "/.well-known/t3/environment") {
           response.writeHead(200, { "content-type": "application/json" });
-          response.end(JSON.stringify(testDescriptor));
+          response.end(JSON.stringify(descriptor));
           return;
         }
         response.writeHead(404);
@@ -132,35 +128,18 @@ describe("t3 pair", () => {
         Effect.gen(function* () {
           const fetch = yield* FetchHttpClient.Fetch;
           let serving = false;
-          let serveTarget: string | undefined;
           const spawner = ChildProcessSpawner.make((command) =>
             Effect.gen(function* () {
               if (!ChildProcess.isStandardCommand(command))
                 return yield* Effect.die("Unexpected pipeline");
-              if (command.args[0] === "serve" && command.args[1] !== "status") {
+              if (command.args[0] === "serve") {
                 const target = command.args.at(-1)!;
                 const descriptor = yield* Effect.promise(async () =>
                   (await fetch(new URL("/.well-known/t3/environment", target))).json(),
                 );
                 expect(descriptor).toEqual(testDescriptor);
                 serving = true;
-                serveTarget = target;
               }
-              const stdout =
-                command.args[0] === "serve"
-                  ? JSON.stringify(
-                      serveTarget === undefined
-                        ? {}
-                        : {
-                            TCP: { "443": { HTTPS: true } },
-                            Web: {
-                              "pair-test.tail.ts.net:443": {
-                                Handlers: { "/": { Proxy: serveTarget } },
-                              },
-                            },
-                          },
-                    )
-                  : '{"Self":{"DNSName":"pair-test.tail.ts.net."}}';
               return ChildProcessSpawner.makeHandle({
                 pid: ChildProcessSpawner.ProcessId(1),
                 exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
@@ -168,7 +147,9 @@ describe("t3 pair", () => {
                 kill: () => Effect.void,
                 unref: Effect.succeed(Effect.void),
                 stdin: Sink.drain,
-                stdout: Stream.make(new TextEncoder().encode(stdout)),
+                stdout: Stream.make(
+                  new TextEncoder().encode('{"Self":{"DNSName":"pair-test.tail.ts.net."}}'),
+                ),
                 stderr: Stream.empty,
                 all: Stream.empty,
                 getInputFd: () => Sink.drain,
@@ -177,8 +158,7 @@ describe("t3 pair", () => {
             }),
           );
 
-          const fs = yield* FileSystem.FileSystem;
-          const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pair-ipv6-test-" });
+          const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-pair-ipv6-test-"));
           yield* persistServerRuntimeState({
             path: NodePath.join(baseDir, "userdata", "server-runtime.json"),
             state: yield* makePersistedServerRuntimeState({
@@ -207,7 +187,7 @@ describe("t3 pair", () => {
           assert.include(output, "Pairing URL: https://pair-test.tail.ts.net/pair#token=");
         }),
       "::1",
-    ).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(NodeServices.layer)),
   );
 
   it.effect("mints a token and prints a QR pairing URL for a live server", () =>
@@ -350,6 +330,40 @@ describe("t3 pair", () => {
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  // regression: #15492 an older CLI minted into a V1 database the protocol 2
+  // server never reads, so pairing must refuse before opening the database.
+  it.effect("rejects a server on another protocol before opening its database", () =>
+    withDescriptorServer(
+      (origin) =>
+        Effect.gen(function* () {
+          const baseDir = NodeFS.mkdtempSync(
+            NodePath.join(NodeOS.tmpdir(), "t3-pair-protocol-test-"),
+          );
+          yield* persistServerRuntimeState({
+            path: NodePath.join(baseDir, "userdata", "server-runtime.json"),
+            state: yield* makePersistedServerRuntimeState({
+              config: { host: "127.0.0.1", devUrl: undefined },
+              port: Number(new URL(origin).port),
+            }),
+          });
+
+          const exit = yield* provideCliTestLayers(
+            runCli(["pair", "--base-dir", baseDir]).pipe(Effect.exit),
+          );
+
+          assert.deepEqual(NodeFS.readdirSync(NodePath.join(baseDir, "userdata")), [
+            "server-runtime.json",
+          ]);
+          assert.isTrue(Exit.isFailure(exit));
+          if (Exit.isFailure(exit)) {
+            assert.include(String(Cause.squash(exit.cause)), "t3@0.0.45 pair");
+          }
+        }),
+      "127.0.0.1",
+      { ...testDescriptor, serverVersion: "0.0.45", orchestrationProtocolVersion: 1 },
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   // Without the capability `tailscale serve` blocks on an enablement URL, so
   // pairing must stop at status instead of spawning it.
   it.effect("explains a tailnet without HTTPS serve instead of running tailscale serve", () =>
@@ -401,235 +415,6 @@ describe("t3 pair", () => {
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );
-});
-
-const guardedPairClaim = { servePort: 8443, localPort: baseState.port };
-const guardedServeConfig = (
-  localPort: number = guardedPairClaim.localPort,
-  extraHandlers = false,
-) =>
-  JSON.stringify({
-    TCP: { "8443": { HTTPS: true } },
-    Web: {
-      "pair.tail.ts.net:8443": {
-        Handlers: {
-          "/": { Proxy: `http://127.0.0.1:${String(localPort)}` },
-          ...(extraHandlers ? { "/api": { Proxy: "http://127.0.0.1:1" } } : {}),
-        },
-      },
-    },
-  });
-const pairEncoder = new TextEncoder();
-const pairStatusArgs = ["serve", "status", "--json"];
-
-function guardedPairLayers(input: {
-  readonly serveReads: ReadonlyArray<string>;
-  readonly probe: "same" | "different" | "502";
-  readonly writeTimeout?: boolean;
-}) {
-  const commands: Array<ReadonlyArray<string>> = [];
-  let readIndex = 0;
-  const spawner = ChildProcessSpawner.make((command) => {
-    const child = command as unknown as { readonly args: ReadonlyArray<string> };
-    commands.push(child.args);
-    const isStatus = child.args[0] === "status";
-    const isServeRead = child.args[1] === "status";
-    const stdout = isStatus
-      ? '{"Self":{"DNSName":"pair.tail.ts.net."}}'
-      : isServeRead
-        ? input.serveReads[readIndex++]
-        : "";
-    if (stdout === undefined) return Effect.die(new Error("Unexpected Serve read"));
-    return Effect.succeed(
-      ChildProcessSpawner.makeHandle({
-        pid: ChildProcessSpawner.ProcessId(1),
-        exitCode:
-          input.writeTimeout && child.args.includes("--bg")
-            ? Effect.never
-            : Effect.succeed(ChildProcessSpawner.ExitCode(0)),
-        isRunning: Effect.succeed(false),
-        kill: () => Effect.void,
-        unref: Effect.succeed(Effect.void),
-        stdin: Sink.drain,
-        stdout: Stream.make(pairEncoder.encode(stdout)),
-        stderr: Stream.empty,
-        all: Stream.empty,
-        getInputFd: () => Sink.drain,
-        getOutputFd: () => Stream.empty,
-      }),
-    );
-  });
-  let probes = 0;
-  const client = HttpClient.make((request) => {
-    probes += 1;
-    const response =
-      input.probe === "502" && probes === 1
-        ? new Response("", { status: 502 })
-        : new Response(
-            JSON.stringify({
-              ...testDescriptor,
-              environmentId:
-                input.probe === "different" ? "another-environment" : testDescriptor.environmentId,
-            }),
-            { headers: { "content-type": "application/json" } },
-          );
-    return Effect.succeed(HttpClientResponse.fromWeb(request, response));
-  });
-  return {
-    commands,
-    layer: Layer.mergeAll(
-      Layer.succeed(HostProcess.Platform, "linux"),
-      Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
-      Layer.succeed(HttpClient.HttpClient, client),
-    ),
-  };
-}
-
-const decodePairDescriptor = Schema.decodeUnknownSync(ExecutionEnvironmentDescriptor);
-
-const guardedPairTarget = (dev = false) => ({
-  baseDir: "/synthetic-pair-base",
-  variant: dev ? ("dev" as const) : ("userdata" as const),
-  state: dev ? { ...baseState, devUrl: "http://localhost:5733/" } : baseState,
-  descriptor: decodePairDescriptor(testDescriptor),
-});
-
-describe("guarded Tailscale pairing", () => {
-  it.effect("refuses a conflicting route even when it returns 502", () => {
-    const { commands, layer } = guardedPairLayers({
-      serveReads: [guardedServeConfig(9999)],
-      probe: "502",
-    });
-    return Effect.gen(function* () {
-      const error = yield* resolveTailscalePairingBase({
-        target: guardedPairTarget(),
-        servePort: 8443,
-      }).pipe(Effect.flip);
-      assert.equal(error._tag, "ServePortClaimedError");
-      assert.deepEqual(commands, [["status", "--json"], pairStatusArgs]);
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect(
-    "writes an absent mapping and requires exact readback before returning a pairing URL",
-    () => {
-      const { commands, layer } = guardedPairLayers({
-        serveReads: ["{}", guardedServeConfig()],
-        probe: "502",
-      });
-      return Effect.gen(function* () {
-        const resolved = yield* resolveTailscalePairingBase({
-          target: guardedPairTarget(),
-          servePort: 8443,
-        });
-        assert.equal(resolved.baseUrl, "https://pair.tail.ts.net:8443/");
-        assert.deepEqual(commands, [
-          ["status", "--json"],
-          pairStatusArgs,
-          ["serve", "--bg", "--https=8443", "http://127.0.0.1:3773"],
-          pairStatusArgs,
-        ]);
-      }).pipe(Effect.provide(layer));
-    },
-  );
-
-  it.effect("reuses an exact route without writing", () => {
-    const { commands, layer } = guardedPairLayers({
-      serveReads: [guardedServeConfig()],
-      probe: "same",
-    });
-    return Effect.gen(function* () {
-      yield* resolveTailscalePairingBase({ target: guardedPairTarget(), servePort: 8443 });
-      assert.deepEqual(commands, [["status", "--json"], pairStatusArgs]);
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect("stops on unknown configuration without writing", () => {
-    const { commands, layer } = guardedPairLayers({ serveReads: [""], probe: "same" });
-    return Effect.gen(function* () {
-      const error = yield* resolveTailscalePairingBase({
-        target: guardedPairTarget(),
-        servePort: 8443,
-      }).pipe(Effect.flip);
-      assert.equal(error._tag, "TailscaleServeStateUnknownError");
-      assert.deepEqual(commands, [["status", "--json"], pairStatusArgs]);
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect(
-    "returns unknown after mismatching postwrite readback and never removes the route",
-    () => {
-      const { commands, layer } = guardedPairLayers({
-        serveReads: ["{}", guardedServeConfig(9999)],
-        probe: "502",
-      });
-      return Effect.gen(function* () {
-        const error = yield* resolveTailscalePairingBase({
-          target: guardedPairTarget(),
-          servePort: 8443,
-        }).pipe(Effect.flip);
-        assert.equal(error._tag, "TailscaleServeStateUnknownError");
-        assert.equal(commands.length, 4);
-        assert.isFalse(commands.some((args) => args.includes("off")));
-      }).pipe(Effect.provide(layer));
-    },
-  );
-
-  it.effect("returns unknown on ensure timeout without readback, cleanup or retry", () => {
-    const { commands, layer } = guardedPairLayers({
-      serveReads: ["{}"],
-      probe: "502",
-      writeTimeout: true,
-    });
-    return Effect.gen(function* () {
-      const fiber = yield* resolveTailscalePairingBase({
-        target: guardedPairTarget(),
-        servePort: 8443,
-      }).pipe(Effect.flip, Effect.forkChild);
-      yield* TestClock.adjust("10 seconds");
-      assert.equal((yield* Fiber.join(fiber))._tag, "TailscaleServeStateUnknownError");
-      assert.equal(commands.length, 3);
-      assert.isFalse(commands.some((args) => args.includes("off")));
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect("repoints only a dev target proved to be the same environment", () => {
-    const { commands, layer } = guardedPairLayers({
-      serveReads: [guardedServeConfig(), guardedServeConfig(5733)],
-      probe: "same",
-    });
-    return Effect.gen(function* () {
-      yield* resolveTailscalePairingBase({ target: guardedPairTarget(true), servePort: 8443 });
-      assert.deepEqual(commands, [
-        ["status", "--json"],
-        pairStatusArgs,
-        ["serve", "--bg", "--https=8443", "http://127.0.0.1:5733"],
-        pairStatusArgs,
-      ]);
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect.each([
-    { label: "a different environment", probe: "different", extraHandlers: false },
-    {
-      label: "a route with extra handlers despite the same environment",
-      probe: "same",
-      extraHandlers: true,
-    },
-  ] as const)("does not repoint $label", ({ probe, extraHandlers }) => {
-    const { commands, layer } = guardedPairLayers({
-      serveReads: [guardedServeConfig(3773, extraHandlers)],
-      probe,
-    });
-    return Effect.gen(function* () {
-      const error = yield* resolveTailscalePairingBase({
-        target: guardedPairTarget(true),
-        servePort: 8443,
-      }).pipe(Effect.flip);
-      assert.equal(error._tag, "ServePortClaimedError");
-      assert.deepEqual(commands, [["status", "--json"], pairStatusArgs]);
-    }).pipe(Effect.provide(layer));
-  });
 });
 
 describe("auth scope options", () => {

@@ -14,11 +14,15 @@ import type {
 } from "./model.ts";
 import { ConnectionTransientError } from "./model.ts";
 import * as ConnectionResolver from "./resolver.ts";
-import { connectionRoutes, routeEntry, routeHttpBaseUrl, usableRoutes } from "./routes.ts";
+import {
+  connectionRoutes,
+  routeEntry,
+  routeHttpBaseUrl,
+  sendsTokenInClear,
+  usableRoutes,
+} from "./routes.ts";
 import * as RpcSession from "../rpc/session.ts";
 import { fetchRemoteEnvironmentDescriptor } from "../environment/descriptor.ts";
-import { preflightBetterRoute } from "../jones/connection/betterRouteRecovery.ts";
-import { withRouteAttemptBudget } from "../jones/connection/routeAttemptBudget.ts";
 
 export type ConnectionDriverProgress =
   | {
@@ -37,6 +41,10 @@ export interface EnvironmentConnectionLease {
 export type RouteCheck = "answered" | "silent" | "unchecked";
 
 const ROUTE_CHECK_TIMEOUT_MS = 2_500;
+// Preferred direct routes share one head start, so a relay connection does not
+// wait the full probe timeout for a LAN the device has already left. A route
+// that misses it connects over relay, then upgrades with a second reconnect.
+const ROUTE_CHECK_HEAD_START_MS = 500;
 
 export class ConnectionDriver extends Context.Service<
   ConnectionDriver,
@@ -61,7 +69,6 @@ export const connectOverRoutes = Effect.fn("ConnectionDriver.connectOverRoutes")
   checkRoute: (route: ConnectionRoute) => Effect.Effect<RouteCheck>,
   connectRoute: (
     route: ConnectionRoute,
-    hasFallback: boolean,
   ) => Effect.Effect<EnvironmentConnectionLease, ConnectionAttemptError, R | Scope.Scope>,
 ) {
   const routes = usableRoutes(entry);
@@ -69,13 +76,14 @@ export const connectOverRoutes = Effect.fn("ConnectionDriver.connectOverRoutes")
     routes.length === 1
       ? []
       : yield* Effect.forEach(routes, (route) => Effect.forkChild(checkRoute(route)));
+  const headStart = yield* Effect.forkChild(Effect.sleep(ROUTE_CHECK_HEAD_START_MS));
   const attemptScope = yield* Scope.Scope;
   let transient: ConnectionAttemptError | undefined;
   let blocked: ConnectionAttemptError | undefined;
   // Each route gets its own scope so a half-open session closes before the next try.
-  const attempt = Effect.fnUntraced(function* (route: ConnectionRoute, hasFallback: boolean) {
+  const attempt = Effect.fnUntraced(function* (route: ConnectionRoute) {
     const routeScope = yield* Scope.fork(attemptScope);
-    const result = yield* connectRoute(route, hasFallback).pipe(
+    const result = yield* connectRoute(route).pipe(
       Scope.provide(routeScope),
       Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : Scope.close(routeScope, exit))),
       Effect.result,
@@ -86,20 +94,35 @@ export const connectOverRoutes = Effect.fn("ConnectionDriver.connectOverRoutes")
     }
     return result;
   });
-  const silent: Array<ConnectionRoute> = [];
+  const silent: Array<{ readonly route: ConnectionRoute; readonly index: number }> = [];
   for (const [index, route] of routes.entries()) {
-    const check = checks.length === 0 ? "unchecked" : yield* Fiber.join(checks[index]!);
+    const check =
+      checks.length === 0
+        ? "unchecked"
+        : yield* Effect.raceFirst(
+            Fiber.join(checks[index]!),
+            Fiber.join(headStart).pipe(Effect.as<RouteCheck>("silent")),
+          );
     if (check === "silent") {
-      silent.push(route);
+      silent.push({ route, index });
       continue;
     }
-    const result = yield* attempt(route, index < routes.length - 1 || silent.length > 0);
+    const result = yield* attempt(route);
     if (result._tag === "Success") return result.success;
     // An incompatible server is the same server on every route.
     if (result.failure.reason === "unsupported") return yield* result.failure;
   }
-  for (const [index, route] of silent.entries()) {
-    const result = yield* attempt(route, index < silent.length - 1);
+  // A slow route that answered after the head start goes before one that is
+  // still dead, which can hold an attempt open far longer than its probe.
+  const late = yield* Effect.forEach(silent, ({ index }) => Fiber.join(checks[index]!), {
+    concurrency: "unbounded",
+  });
+  const retry = [
+    ...silent.filter((_, position) => late[position] !== "silent"),
+    ...silent.filter((_, position) => late[position] === "silent"),
+  ];
+  for (const { route } of retry) {
+    const result = yield* attempt(route);
     if (result._tag === "Success") return result.success;
     if (result.failure.reason === "unsupported") return yield* result.failure;
   }
@@ -113,7 +136,7 @@ export const connectOverRoutes = Effect.fn("ConnectionDriver.connectOverRoutes")
   );
 });
 
-/** @public Service construction is part of the canonical Effect module API. */
+/** @public */
 export const make = Effect.gen(function* () {
   const resolver = yield* ConnectionResolver.ConnectionResolver;
   const sessions = yield* RpcSession.RpcSessionFactory;
@@ -153,27 +176,30 @@ export const make = Effect.gen(function* () {
     return yield* connectOverRoutes(
       entry,
       (route) => checkRoute(entry, route),
-      (route, hasFallback) =>
-        withRouteAttemptBudget(
-          hasFallback,
-          Effect.gen(function* () {
-            const prepared = yield* resolver.prepare(routeEntry(entry, route));
-            yield* reportProgress({ stage: "opening", prepared });
-            const session = yield* sessions.connect(prepared);
-            return { prepared, session } satisfies EnvironmentConnectionLease;
-          }),
-          (lease) =>
-            Effect.gen(function* () {
-              yield* reportProgress({ stage: "synchronizing", prepared: lease.prepared });
-              yield* lease.session.ready;
-              return lease;
-            }),
-        ),
+      Effect.fnUntraced(function* (route) {
+        const prepared = yield* resolver.prepare(routeEntry(entry, route));
+        yield* reportProgress({ stage: "opening", prepared });
+        const session = yield* sessions.connect(prepared);
+        yield* reportProgress({ stage: "synchronizing", prepared });
+        yield* session.ready;
+        return { prepared, session } satisfies EnvironmentConnectionLease;
+      }),
     );
   });
 
   const preflight = (entry: ConnectionCatalogEntry, route: ConnectionRoute) =>
-    preflightBetterRoute(entry, route, checkRoute(entry, route), resolver.prepare).pipe(
+    (sendsTokenInClear(connectionRoutes(entry), route)
+      ? Effect.succeed("silent" as const)
+      : checkRoute(entry, route)
+    ).pipe(
+      Effect.flatMap((check) =>
+        check === "answered"
+          ? resolver.prepare(routeEntry(entry, route)).pipe(
+              Effect.as(true),
+              Effect.orElseSucceed(() => false),
+            )
+          : Effect.succeed(false),
+      ),
       Effect.withSpan("ConnectionDriver.preflight"),
     );
 

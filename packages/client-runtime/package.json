@@ -3,30 +3,6 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./jones/linked-threads": {
-      "types": "./src/jones/linkedThreads/index.ts",
-      "default": "./src/jones/linkedThreads/index.ts"
-    },
-    "./jones/workstreams/operations": {
-      "types": "./src/jones/workstreams/operations.ts",
-      "default": "./src/jones/workstreams/operations.ts"
-    },
-    "./jones/remote-admission": {
-      "types": "./src/jones/remoteAdmission/index.ts",
-      "default": "./src/jones/remoteAdmission/index.ts"
-    },
-    "./jones/queue": {
-      "types": "./src/jones/queue/queuedSteerBatch.ts",
-      "default": "./src/jones/queue/queuedSteerBatch.ts"
-    },
-    "./jones/provider-updates": {
-      "types": "./src/jones/providerUpdates/index.ts",
-      "default": "./src/jones/providerUpdates/index.ts"
-    },
-    "./jones/fleet-updates": {
-      "types": "./src/jones/fleetUpdates/index.ts",
-      "default": "./src/jones/fleetUpdates/index.ts"
-    },
     "./workspace-basename-lookup": {
       "types": "./src/workspaceBasenameLookup.ts",
       "default": "./src/workspaceBasenameLookup.ts"
@@ -171,6 +147,14 @@
       "types": "./src/webhookAddress.ts",
       "default": "./src/webhookAddress.ts"
     },
+    "./queued-run-edit": {
+      "types": "./src/queuedRunEdit.ts",
+      "default": "./src/queuedRunEdit.ts"
+    },
+    "./clock": {
+      "types": "./src/clock.ts",
+      "default": "./src/clock.ts"
+    },
     "./delayed-status": {
       "types": "./src/delayedStatus.ts",
       "default": "./src/delayedStatus.ts"
@@ -222,10 +206,6 @@
     "./state/deviceHubAccess": {
       "types": "./src/state/deviceHubAccess.ts",
       "default": "./src/state/deviceHubAccess.ts"
-    },
-    "./state/peerLinks": {
-      "types": "./src/state/peerLinks.ts",
-      "default": "./src/state/peerLinks.ts"
     },
     "./state/preview": {
       "types": "./src/state/preview.ts",
@@ -359,6 +339,10 @@
       "types": "./src/state/threadSearch.ts",
       "default": "./src/state/threadSearch.ts"
     },
+    "./state/thread-visits": {
+      "types": "./src/state/threadVisits.ts",
+      "default": "./src/state/threadVisits.ts"
+    },
     "./state/turn-item-presentation": {
       "types": "./src/state/turnItemPresentation.ts",
       "default": "./src/state/turnItemPresentation.ts"
@@ -390,6 +374,22 @@
     "./work-log/scroll-anchor": {
       "types": "./src/work-log/scrollAnchor.ts",
       "default": "./src/work-log/scrollAnchor.ts"
+    },
+    "./pull-request-link-input": {
+      "types": "./src/pullRequestLinkInput.ts",
+      "default": "./src/pullRequestLinkInput.ts"
+    },
+    "./change-request-links": {
+      "types": "./src/changeRequestLinks.ts",
+      "default": "./src/changeRequestLinks.ts"
+    },
+    "./thread-pull-requests": {
+      "types": "./src/threadPullRequests.ts",
+      "default": "./src/threadPullRequests.ts"
+    },
+    "./thread-reference": {
+      "types": "./src/threadReference.ts",
+      "default": "./src/threadReference.ts"
     },
     "./thread-pull-request-compatibility": {
       "types": "./src/threadPullRequestCompatibility.ts",
@@ -459,6 +459,54 @@
       "types": "./src/pullRequestMarkdown.ts",
       "default": "./src/pullRequestMarkdown.ts"
     },
+    "./pull-request-checks": {
+      "types": "./src/pullRequestChecks.ts",
+      "default": "./src/pullRequestChecks.ts"
+    },
+    "./pull-request-editing": {
+      "types": "./src/pullRequestEditing.ts",
+      "default": "./src/pullRequestEditing.ts"
+    },
+    "./pull-request-reactions": {
+      "types": "./src/pullRequestReactions.ts",
+      "default": "./src/pullRequestReactions.ts"
+    },
+    "./pull-request-query": {
+      "types": "./src/pullRequestQuery.ts",
+      "default": "./src/pullRequestQuery.ts"
+    },
+    "./model-traits": {
+      "types": "./src/modelTraits.ts",
+      "default": "./src/modelTraits.ts"
+    },
+    "./jones/linked-threads": {
+      "types": "./src/jones/linkedThreads/index.ts",
+      "default": "./src/jones/linkedThreads/index.ts"
+    },
+    "./jones/workstreams/operations": {
+      "types": "./src/jones/workstreams/operations.ts",
+      "default": "./src/jones/workstreams/operations.ts"
+    },
+    "./jones/remote-admission": {
+      "types": "./src/jones/remoteAdmission/index.ts",
+      "default": "./src/jones/remoteAdmission/index.ts"
+    },
+    "./jones/queue": {
+      "types": "./src/jones/queue/queuedSteerBatch.ts",
+      "default": "./src/jones/queue/queuedSteerBatch.ts"
+    },
+    "./jones/provider-updates": {
+      "types": "./src/jones/providerUpdates/index.ts",
+      "default": "./src/jones/providerUpdates/index.ts"
+    },
+    "./jones/fleet-updates": {
+      "types": "./src/jones/fleetUpdates/index.ts",
+      "default": "./src/jones/fleetUpdates/index.ts"
+    },
+    "./state/peerLinks": {
+      "types": "./src/state/peerLinks.ts",
+      "default": "./src/state/peerLinks.ts"
+    },
     "./jones/provider-workspace-refresh": {
       "types": "./src/jones/providerWorkspaceRefresh.ts",
       "default": "./src/jones/providerWorkspaceRefresh.ts"
@@ -511,14 +559,6 @@
       "types": "./src/jones/workQueueMetadata.ts",
       "default": "./src/jones/workQueueMetadata.ts"
     },
-    "./pull-request-link-input": {
-      "types": "./src/pullRequestLinkInput.ts",
-      "default": "./src/pullRequestLinkInput.ts"
-    },
-    "./pull-request-query": {
-      "types": "./src/pullRequestQuery.ts",
-      "default": "./src/pullRequestQuery.ts"
-    },
     "./jones/settlement-notifications": {
       "types": "./src/jones/settlementNotifications/index.ts",
       "default": "./src/jones/settlementNotifications/index.ts"
@@ -531,10 +571,6 @@
       "types": "./src/jones/threadReadDwell.ts",
       "default": "./src/jones/threadReadDwell.ts"
     },
-    "./model-traits": {
-      "types": "./src/modelTraits.ts",
-      "default": "./src/modelTraits.ts"
-    },
     "./jones/threadReferenceExcerpt": {
       "types": "./src/jones/threadReferenceExcerpt.ts",
       "default": "./src/jones/threadReferenceExcerpt.ts"
@@ -545,22 +581,23 @@
     }
   },
   "scripts": {
-    "typecheck": "tsc-rs --noEmit",
+    "typecheck": "tsc --noEmit",
     "test": "vp test run"
   },
   "dependencies": {
     "@pierre/diffs": "catalog:",
     "@t3tools/contracts": "workspace:*",
     "@t3tools/shared": "workspace:*",
+    "@t3tools/source-control-core": "workspace:*",
+    "@t3tools/source-control-definitions": "workspace:*",
+    "effect": "catalog:",
+    "three": "0.180.0",
     "@t3tools/source-control-azure-devops": "workspace:*",
     "@t3tools/source-control-bitbucket": "workspace:*",
-    "@t3tools/source-control-core": "workspace:*",
     "@t3tools/source-control-forgejo": "workspace:*",
     "@t3tools/source-control-gitcafe": "workspace:*",
     "@t3tools/source-control-github": "workspace:*",
-    "@t3tools/source-control-gitlab": "workspace:*",
-    "effect": "catalog:",
-    "three": "0.180.0"
+    "@t3tools/source-control-gitlab": "workspace:*"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",

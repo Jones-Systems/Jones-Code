@@ -1,12 +1,5 @@
-import {
-  ImportedHistoryLockUnavailable,
-  decodeImportedHistoryCorrelation,
-  encodeImportedHistoryCorrelation,
-  type ImportedHistoryCorrelation,
-  type ImportedHistoryCorrelationStorage,
-} from "@t3tools/client-runtime/jones/imported-history/continuation";
-import { DraftId } from "./draftId";
 import { stripInlineContextReferences } from "./lib/composerContextReferences";
+import { composerFileAttachmentMimeType } from "./components/chat/composerAttachmentFiles";
 import { elementContextToPreviewAnnotation } from "./lib/elementContext";
 import {
   ElementContextDetails,
@@ -113,7 +106,8 @@ const COMPOSER_DRAFT_STORAGE_VERSION = 9;
 const DraftThreadEnvModeSchema = Schema.Literals(["local", "worktree"]);
 export type DraftThreadEnvMode = typeof DraftThreadEnvModeSchema.Type;
 
-export { DraftId } from "./draftId";
+export const DraftId = Schema.String.pipe(Schema.brand("DraftId"));
+export type DraftId = typeof DraftId.Type;
 
 const COMPOSER_PERSIST_DEBOUNCE_MS = 300;
 
@@ -211,11 +205,7 @@ export const PersistedComposerFileAttachment = Schema.Struct({
 });
 export type PersistedComposerFileAttachment = typeof PersistedComposerFileAttachment.Type;
 
-/**
- * Its `File` handle cannot serialize, so it persists as a metadata-only marker
- * (no `attachmentId`) and hydrates as a needs-reattach row instead of
- * vanishing.
- */
+/** File handles cannot serialize; metadata-only markers hydrate as needs-reattach rows. */
 export const PersistedComposerDraftFileAttachment = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
@@ -248,10 +238,6 @@ const PersistedComposerThreadDraftState = Schema.Struct({
   previewAnnotations: Schema.optionalKey(Schema.Array(PreviewAnnotationPayloadSchema)),
   reviewComments: Schema.optionalKey(Schema.Array(ReviewCommentContextSchema)),
   threadContexts: Schema.optionalKey(Schema.Array(ThreadContextRecord)),
-  // The record's value schema is NOT wrapped in `Schema.optionalKey`: that
-  // helper is only meaningful on property signatures with a known key set, and
-  // `Schema.Record(<branded string>, …)` produces an index signature at runtime
-  // (Schema rejects the combination).
   modelSelectionByProvider: Schema.optionalKey(Schema.Record(ProviderInstanceId, ModelSelection)),
   activeProvider: Schema.optionalKey(Schema.NullOr(ProviderInstanceId)),
   modelSelectionExplicit: Schema.optionalKey(Schema.Boolean),
@@ -512,10 +498,7 @@ interface ComposerDraftStoreState {
     modelSelection: ModelSelection | null | undefined,
     opts?: {
       explicit?: boolean;
-      /**
-       * Replace the stored entry outright instead of preserving its existing
-       * options when the incoming selection has none.
-       */
+      /** Replace existing options even when the incoming selection has none. */
       replaceOptions?: boolean;
     },
   ) => void;
@@ -624,16 +607,9 @@ interface ComposerDraftStoreState {
     attachments: PersistedComposerImageAttachment[],
   ) => Promise<void>;
   clearComposerContent: (threadRef: ComposerThreadTarget) => void;
-  /**
-   * Clears the prompt text and attachments, preserving terminal / element contexts, preview annotations, and
-   * review comments. Session-bound context stays in the source draft.
-   */
+  /** Clears text and attachments, preserving terminal/element contexts, preview annotations, and review comments. */
   clearComposerPromptAndImages: (threadRef: ComposerThreadTarget) => void;
-  /**
-   * Attachments over the destination limit and uploaded files that belong to
-   * another environment stay in the source draft. Terminal and element
-   * context, preview annotations, and review comments also stay in the source.
-   */
+  /** Keeps attachments over destination limits, other environments' uploads, terminal/element contexts, annotations, and review comments in source. */
   moveComposerPromptAndImages: (from: ComposerThreadTarget, to: ComposerThreadTarget) => void;
 }
 
@@ -673,15 +649,6 @@ function modelSelectionByProviderToOptions(
   return Object.keys(result).length > 0 ? result : null;
 }
 
-function modelOptionsForSelection(
-  selection: ModelSelection | null | undefined,
-  model: string,
-): ReadonlyArray<ProviderOptionSelection> | undefined {
-  return selection?.model === model
-    ? selection.options
-    : selection?.options?.filter((option) => option.id !== "reasoningEffort");
-}
-
 function cloneModelSelection(selection: ModelSelection): DeepMutable<ModelSelection> {
   return {
     ...selection,
@@ -715,11 +682,6 @@ function compactStickyOptionsByModel(
   return result as NonNullable<PersistedComposerDraftStoreState["stickyOptionsByModelByProvider"]>;
 }
 
-/**
- * Storage written before per-model memory existed carries the last sticky
- * selection only. Seed the map from it so an upgrade keeps that model's
- * remembered options instead of clearing them on the first switch.
- */
 function seedStickyOptionsByModel(
   stickySelections: Partial<Record<ProviderInstanceId, ModelSelection>>,
 ): NonNullable<PersistedComposerDraftStoreState["stickyOptionsByModelByProvider"]> {
@@ -803,8 +765,7 @@ function createEmptyThreadDraft(): ComposerThreadDraftState {
 }
 
 function composerImageDedupKey(image: ComposerImageAttachment): string {
-  // Keep this independent from File.lastModified so dedupe is stable for hydrated
-  // images reconstructed from localStorage (which get a fresh lastModified value).
+  // Hydrated images get fresh lastModified values, so exclude it from dedupe.
   return `${image.mimeType}\u0000${image.sizeBytes}\u0000${image.name}`;
 }
 
@@ -820,6 +781,17 @@ export function composerFileMatchesReattachMarker(
 ): boolean {
   if (marker.name !== file.name || marker.sizeBytes !== file.sizeBytes) return false;
   if (marker.mimeType === file.mimeType) return true;
+  const normalizedMarkerMimeType = composerFileAttachmentMimeType({
+    name: marker.name,
+    type: marker.mimeType,
+  });
+  if (
+    normalizedMarkerMimeType === "image/x-adobe-dng" &&
+    normalizedMarkerMimeType ===
+      composerFileAttachmentMimeType({ name: file.name, type: file.mimeType })
+  ) {
+    return true;
+  }
   const markerMimeType = marker.mimeType.toLowerCase();
   return (
     (markerMimeType === "" || markerMimeType === "application/octet-stream") &&
@@ -901,11 +873,7 @@ function normalizeProviderDriverKind(value: unknown): ProviderDriverKind | null 
   return isProviderDriverKind(value) ? value : null;
 }
 
-/**
- * Permissive validator — the schema layer owns authoritative validation; this
- * is used inline to gate typed writes to the draft's instance-keyed maps
- * without pulling the full Effect Schema runtime into the hot path.
- */
+/** The schema owns validation; this permissive pattern keeps Effect Schema off the hot path. */
 const PROVIDER_INSTANCE_ID_PATTERN = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 
 function normalizeProviderInstanceId(value: unknown): ProviderInstanceId | null {
@@ -1172,31 +1140,11 @@ export function deriveEffectiveComposerModelState(input: {
         activeSelection.model,
       ))
     : baseModel;
-  const fallbackSelection = input.threadModelSelection ?? input.projectModelSelection;
-  const selectionsForOptions = activeSelection
-    ? {
-        ...input.draft?.modelSelectionByProvider,
-        [activeSelection.instanceId]: createModelSelection(
-          activeSelection.instanceId,
-          selectedModel,
-          modelOptionsForSelection(activeSelection, selectedModel),
-        ),
-      }
-    : input.draft?.modelSelectionByProvider;
-  // An optionless draft is an inherited selection, so do not restore the
-  // previous thread/project effort. Catalog fallback also changes its owner.
-  const modelOptions = activeSelection
-    ? modelSelectionByProviderToOptions(selectionsForOptions)
-    : (modelSelectionByProviderToOptions(selectionsForOptions) ??
-      providerSelectionsFromModelSelection(
-        fallbackSelection
-          ? createModelSelection(
-              fallbackSelection.instanceId,
-              selectedModel,
-              modelOptionsForSelection(fallbackSelection, selectedModel),
-            )
-          : null,
-      ));
+  const modelOptions =
+    modelSelectionByProviderToOptions(input.draft?.modelSelectionByProvider) ??
+    providerSelectionsFromModelSelection(input.threadModelSelection) ??
+    providerSelectionsFromModelSelection(input.projectModelSelection) ??
+    null;
 
   return {
     selectedModel,
@@ -1452,9 +1400,6 @@ function createDraftThreadState(
     loadBalancedEnvironmentId?: EnvironmentId | null;
   },
 ): DraftThreadState {
-  // A project change (including switching environments within a logical
-  // project) invalidates machine-specific context: the branch may not exist
-  // there and the worktree path certainly doesn't.
   const projectChanged =
     existingThread !== undefined &&
     (existingThread.environmentId !== projectRef.environmentId ||
@@ -1717,9 +1662,7 @@ function normalizePersistedDraftThreads(
       if (parsedThreadRef) {
         environmentIdByThreadId.set(parsedThreadRef.threadId, parsedThreadRef.environmentId);
       }
-      // Logical project keys may contain a workspace path after the
-      // environment prefix. When the persisted draft already names that
-      // logical key, its concrete project id remains authoritative.
+      // Logical keys may contain workspace paths; a matching draft's concrete project id wins.
       if (existingDraftThread?.logicalProjectKey === logicalProjectKey) {
         continue;
       }
@@ -2611,10 +2554,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               previousThreadKeyForLogicalProject === undefined
                 ? undefined
                 : nextDraftThreadsByThreadKey[previousThreadKeyForLogicalProject];
-            // A draft with typed text or attachments stays alive unmapped — the
-            // sidebar draft rows list every such session, so "new thread" can
-            // mint a fresh draft without destroying the one the user walked
-            // away from.
+            // Keep populated drafts unmapped: sidebar rows still expose them when a new draft is opened.
             if (
               previousThreadKeyForLogicalProject &&
               previousThreadKeyForLogicalProject !== draftId &&
@@ -2848,17 +2788,11 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               return state;
             }
             const current = state.stickyModelSelectionByProvider[normalized.instanceId];
-            // Model-only picker updates inherit effort for a new model while
-            // preserving instance-wide speed settings, including Fast/Normal
-            // across Composer 2 → 2.5 and new chats.
+            // Model-only updates omit options; preserve sticky traits across model switches and new chats.
             const nextSelection =
               normalized.options !== undefined
                 ? normalized
-                : createModelSelection(
-                    normalized.instanceId,
-                    normalized.model,
-                    modelOptionsForSelection(current, normalized.model),
-                  );
+                : createModelSelection(normalized.instanceId, normalized.model, current?.options);
             const nextMap: Partial<Record<ProviderInstanceId, ModelSelection>> = {
               ...state.stickyModelSelectionByProvider,
               [normalized.instanceId]: nextSelection,
@@ -2983,7 +2917,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 nextMap[normalized.instanceId] = createModelSelection(
                   normalized.instanceId,
                   normalized.model,
-                  modelOptionsForSelection(current, normalized.model),
+                  current?.options,
                 );
               }
             }
@@ -3678,8 +3612,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           const current = get().draftsByThreadKey[threadKey];
           const alreadyPresent =
             current?.previewAnnotations.some((entry) => entry.id === annotation.id) ?? false;
-          // The handler updates the same draft through `setPrompt`. Calling it from
-          // inside the updater lets the outer update overwrite the inserted reference.
+          // The handler calls setPrompt; running it inside the updater would overwrite the inserted reference.
           const placedAtCaret =
             !alreadyPresent &&
             options?.appendReference !== false &&
@@ -3771,8 +3704,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           const shouldPlaceReference =
             options?.appendReference !== false &&
             (!alreadyPresent || options?.allowDuplicateReference === true);
-          // See addPreviewAnnotation: editor insertion writes the prompt through this store and
-          // must complete before the record update reads the draft it is extending.
+          // Editor insertion must finish before this update reads the draft it extends.
           const placedAtCaret =
             shouldPlaceReference &&
             options?.insertAtCaret !== false &&
@@ -4082,10 +4014,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             const movedFiles = transferableFiles
               .slice(0, remainingAttachmentSlots - movedImages.length)
               .map((file) => {
-                // A byte-backed file moving across environments re-uploads at
-                // the destination. Keeping the source-environment upload id
-                // would mark it uploaded after a reload with no local bytes and
-                // no valid upload anywhere the destination can reach.
+                // Re-upload local bytes across environments; the destination cannot reach source upload ids.
                 if (
                   file.file === null ||
                   file.uploadEnvironmentId === undefined ||
@@ -4118,9 +4047,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 ),
               ],
             };
-            // Same clearing shape as clearComposerPromptAndImages, but the
-            // preview URLs are NOT revoked: the images moved and their blobs
-            // are still referenced from the destination.
+            // Moved images still use these blob URLs at the destination; do not revoke them.
             const nextSource: ComposerThreadDraftState = {
               ...source,
               prompt: ensureInlineContextReferences(
@@ -4423,48 +4350,4 @@ export function finalizePromotedDraftThreadByRef(threadRef: ScopedThreadRef): vo
     }
   }
   clearBackgroundDraftSubmissionByRef(threadRef);
-}
-
-export function importedHistoryCorrelationStorage(
-  ref: ScopedThreadRef,
-): ImportedHistoryCorrelationStorage {
-  const key = `jones:imported-history-choice:v1:${scopedThreadKey(ref)}`;
-  const storage = () => {
-    if (typeof localStorage === "undefined")
-      throw new Error("Durable imported history storage is unavailable.");
-    return localStorage;
-  };
-  const read = () => {
-    const raw = storage().getItem(key);
-    if (raw === null) return null;
-    const value = decodeImportedHistoryCorrelation(raw);
-    if (value.environmentId !== ref.environmentId || value.command.threadId !== ref.threadId)
-      throw new Error("Imported history storage target changed.");
-    return value;
-  };
-  return {
-    withLock<A>(operation: () => Promise<A>): Promise<A> {
-      if (typeof navigator === "undefined" || navigator.locks === undefined)
-        return Promise.reject(new ImportedHistoryLockUnavailable());
-      return navigator.locks.request(key, { mode: "exclusive" }, operation);
-    },
-    read,
-    reserve(value) {
-      composerDebouncedStorage.flush();
-      if (read() !== null)
-        throw new Error("An imported history choice already awaits observation.");
-      const encoded = encodeImportedHistoryCorrelation(value);
-      storage().setItem(key, encoded);
-      if (storage().getItem(key) !== encoded)
-        throw new Error("Imported history reservation was not persisted.");
-    },
-    remove(value) {
-      const current = read();
-      if (
-        current !== null &&
-        encodeImportedHistoryCorrelation(current) === encodeImportedHistoryCorrelation(value)
-      )
-        storage().removeItem(key);
-    },
-  };
 }

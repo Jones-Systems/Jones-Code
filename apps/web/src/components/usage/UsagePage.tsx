@@ -27,12 +27,12 @@ import {
 
 import {
   isCompatibleUsageContractVersion,
+  isModelCostUnknown,
   type DailyTotals,
   type HourlyTotals,
   type MergedUsage,
 } from "@t3tools/shared/usageMerge";
 
-import { isElectron } from "../../env";
 import { cn } from "../../lib/utils";
 import { usePrimarySettings } from "../../hooks/useSettings";
 import { resolveHour12 } from "../../timestampFormat";
@@ -55,6 +55,7 @@ import {
   formatTokens,
   formatUsageContractMismatch,
   formatUsd,
+  makeWindow,
 } from "@t3tools/shared/usageFormat";
 import { Button, InlineButton } from "../ui/button";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
@@ -68,7 +69,7 @@ import {
 } from "../ui/menu";
 import { ScrollArea } from "../ui/scroll-area";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
-import { SidebarInset } from "../ui/sidebar";
+import { AppRouteModal, AppRouteModalClose } from "../AppRouteModal";
 import { Skeleton } from "../ui/skeleton";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -80,7 +81,6 @@ import {
   WorkspaceBreadcrumbText,
 } from "../WorkspaceBreadcrumb";
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
-import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import { UsageLimitsSection } from "./UsageLimits";
 import { UsagePriceOverrides } from "./UsagePriceOverrides";
 import { UsageProviderChart } from "./UsageProviderChart";
@@ -88,6 +88,7 @@ import { SpeedPremium, UsageModelDialog } from "./UsageModelDialog";
 import { UsageShareBar } from "./UsageShareBar";
 import {
   costTypeSegments,
+  modelShare,
   sortModelsByTokens,
   speedCostSegments,
   tokenTypeSegments,
@@ -98,19 +99,19 @@ import {
   resolveUsageShortcut,
   type UsageMetric,
 } from "./usageShortcuts";
-import { useEscapeToGoBack } from "../../hooks/useNavigateBack";
 import { PROVIDER_ORDER, PROVIDER_PRESENTATION, providersWithUsage } from "./usageProviders";
-import { SavedTokenAccounting } from "../../jones/usage/SavedTokenAccounting";
-import { UsageRangePicker } from "../../jones/usage/UsageRangePicker";
-import { useUsageWindow } from "../../jones/usage/useUsageWindow";
-import { useUsageProviderDetails } from "../../jones/usage/useUsageProviderDetails";
-import { UsageProviderDetails, UsageProviderSummary } from "../../jones/usage/UsageProviderDetails";
-import { UsageModelRow } from "../../jones/usage/UsageModelRow";
-import { UsageTotals } from "../../jones/usage/UsageTotals";
-import { UsageModelTableHead } from "../../jones/usage/UsageModelTableHead";
+import {
+  readUsagePagePreferences,
+  saveUsagePagePreferences,
+  type UsagePagePreferences,
+} from "./usagePagePreferences";
 
 function isUsageMetric(value: string | null | undefined): value is UsageMetric {
   return METRIC_OPTIONS.some((option) => option.value === value);
+}
+
+function isUsageWindowDays(value: number): value is UsagePagePreferences["windowDays"] {
+  return WINDOW_OPTIONS.some((option) => option.days === value);
 }
 
 const providerLabel = (provider: UsageProviderKind) => PROVIDER_PRESENTATION[provider].label;
@@ -133,10 +134,7 @@ function usageLoading(
   };
 }
 
-/**
- * The model whose detail dialog is open. It lives outside UsagePage so opening
- * or closing the dialog renders only its host, not the whole usage page.
- */
+/** Keep dialog selection outside UsagePage so opening/closing rerenders only its host. */
 const selectedUsageModelKeyAtom = Atom.make<string | null>(null).pipe(
   Atom.keepAlive,
   Atom.withLabel("usage:selected-model-key"),
@@ -175,26 +173,7 @@ function UsageModelDialogHost({
 }
 
 export function UsagePage() {
-  const {
-    preferences,
-    updatePreferences,
-    metric,
-    windowDays,
-    window,
-    windowSelection,
-    customSinceValue,
-    customUntilValue,
-    customWindowValidation,
-    setCustomSinceValue,
-    setCustomUntilValue,
-    selectWindow,
-    selectHourWindow,
-    applyCustomWindow,
-    clearCustomWindow,
-    selectMetric: selectWindowMetric,
-    refreshUsageWindow,
-  } = useUsageWindow();
-  useEscapeToGoBack();
+  const [preferences, setPreferences] = useState(readUsagePagePreferences);
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const hour12 = usePrimarySettings((settings) => resolveHour12(settings.timestampFormat));
   const shortcutTitle = (
@@ -205,6 +184,15 @@ export function UsagePage() {
     });
     return shortcut ? `${option.label} (${shortcut})` : option.label;
   };
+  const [windowSelection, setWindowSelection] = useState(() => ({
+    days: preferences.windowDays,
+    window: makeWindow(
+      preferences.windowDays,
+      undefined,
+      preferences.windowDays === 1 ? "hour" : "day",
+    ),
+  }));
+  const metric = preferences.metric;
   const showingLimits = metric === "limits";
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [limitsNow, setLimitsNow] = useState(() => Date.now());
@@ -213,6 +201,8 @@ export function UsagePage() {
   const [selectedEnvironmentIds, setSelectedEnvironmentIds] =
     useState<ReadonlySet<EnvironmentId> | null>(null);
   const hiddenProviders = new Set(preferences.hiddenProviders);
+  const { days: windowDays, window } = windowSelection;
+  const isPast24Hours = windowDays === 1;
   const {
     merged: answeredUsage,
     environments,
@@ -241,9 +231,22 @@ export function UsagePage() {
     (environment) => environment.canReadDiagnostics,
   );
 
+  const updatePreferences = (patch: Partial<UsagePagePreferences>) => {
+    const nextPreferences = { ...preferences, ...patch };
+    setPreferences(nextPreferences);
+    saveUsagePagePreferences(nextPreferences);
+  };
+  const selectWindow = (days: number) => {
+    if (!isUsageWindowDays(days)) return;
+    updatePreferences({ windowDays: days });
+    setWindowSelection({
+      days,
+      window: makeWindow(days, undefined, days === 1 ? "hour" : "day"),
+    });
+  };
   const selectMetric = (nextMetric: UsageMetric) => {
     if (nextMetric === "limits") setLimitsNow(Date.now());
-    selectWindowMetric(nextMetric);
+    updatePreferences({ metric: nextMetric });
   };
   const refreshLimits = (automatic = false, afterPending = false) =>
     // Settled so the timestamp still advances when a refresh throws.
@@ -303,7 +306,15 @@ export function UsagePage() {
       });
       return;
     }
-    const nextWindow = refreshUsageWindow();
+    const nextWindow = makeWindow(windowDays, undefined, isPast24Hours ? "hour" : "day");
+    if (
+      nextWindow.sinceDay !== window.sinceDay ||
+      nextWindow.untilDay !== window.untilDay ||
+      nextWindow.sinceTime !== window.sinceTime ||
+      nextWindow.untilTime !== window.untilTime
+    ) {
+      setWindowSelection({ days: windowDays, window: nextWindow });
+    }
     refreshingRef.current = true;
     setIsRefreshing(true);
     void refresh(nextWindow).finally(() => {
@@ -345,28 +356,8 @@ export function UsagePage() {
     shownHourly && shownWindow.sinceTime !== undefined && shownWindow.untilTime !== undefined
       ? `${formatDateTimeShort(shownWindow.sinceTime, shownWindow.timeZone, hour12)} to ${formatDateTimeShort(shownWindow.untilTime, shownWindow.timeZone, hour12)}`
       : `${formatDayShort(shownWindow.sinceDay)} to ${formatDayShort(shownWindow.untilDay)}`;
-  const desktopWindowLabel =
-    windowSelection.kind === "hours"
-      ? `Past ${windowSelection.hours}h · ${windowLabel}`
-      : windowSelection.kind === "custom"
-        ? `Custom range · ${windowLabel}`
-        : windowLabel;
-  const windowPeriodValue = windowSelection.kind === "day" ? String(windowDays) : "";
-  const rangePickerProps = {
-    selection: windowSelection,
-    timeZone: window.timeZone,
-    sinceValue: customSinceValue,
-    untilValue: customUntilValue,
-    validation: customWindowValidation,
-    disabled: showingLimits,
-    onSinceValueChange: setCustomSinceValue,
-    onUntilValueChange: setCustomUntilValue,
-    onSelectHours: selectHourWindow,
-    onApplyCustom: applyCustomWindow,
-    onClear: clearCustomWindow,
-  };
   const topbarContent = (
-    <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 py-2 xl:flex">
+    <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 py-2 @4xl/usage-header:flex">
       <WorkspaceBreadcrumb ariaLabel="Usage breadcrumb" className="min-w-0">
         <WorkspaceBreadcrumbItem>
           <h1>Usage</h1>
@@ -395,11 +386,11 @@ export function UsagePage() {
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
       {!showingLimits ? (
-        <span className="hidden min-w-0 truncate text-xs text-muted-foreground 2xl:block">
-          {desktopWindowLabel}
+        <span className="hidden min-w-0 truncate text-xs text-muted-foreground @7xl/usage-header:block">
+          {windowLabel}
         </span>
       ) : null}
-      <div className="ms-auto hidden min-w-0 items-center justify-end gap-2 xl:flex">
+      <div className="ms-auto hidden shrink-0 items-center justify-end gap-2 @4xl/usage-header:flex">
         <ToggleGroup
           aria-label="Usage metric"
           variant="segmented"
@@ -418,7 +409,7 @@ export function UsagePage() {
         <ToggleGroup
           aria-label="Usage period"
           variant="segmented"
-          value={windowPeriodValue ? [windowPeriodValue] : []}
+          value={[String(windowDays)]}
           disabled={showingLimits}
           onValueChange={(next) => {
             const value = next[0];
@@ -431,7 +422,6 @@ export function UsagePage() {
             </Toggle>
           ))}
         </ToggleGroup>
-        <UsageRangePicker {...rangePickerProps} />
         <Button
           onClick={refreshWindow}
           aria-label={showingLimits ? "Refresh limits" : "Refresh usage"}
@@ -443,7 +433,7 @@ export function UsagePage() {
           <RefreshIcon size="sm" refreshing={isRefreshing} />
         </Button>
       </div>
-      <div className="ms-auto flex min-w-0 items-center justify-end gap-1 xl:hidden">
+      <div className="ms-auto flex shrink-0 items-center justify-end gap-1 @4xl/usage-header:hidden">
         <Select
           value={metric}
           onValueChange={(value) => {
@@ -469,7 +459,7 @@ export function UsagePage() {
           </SelectPopup>
         </Select>
         <Select
-          value={windowPeriodValue || null}
+          value={String(windowDays)}
           disabled={showingLimits}
           onValueChange={(value) => selectWindow(Number(value))}
         >
@@ -480,11 +470,7 @@ export function UsagePage() {
             className="w-auto min-w-0"
           >
             <SelectValue>
-              {windowSelection.kind === "day"
-                ? WINDOW_OPTIONS.find((option) => option.days === windowDays)?.label
-                : windowSelection.kind === "hours"
-                  ? `Past ${windowSelection.hours}h`
-                  : "Custom range"}
+              {WINDOW_OPTIONS.find((option) => option.days === windowDays)?.label}
             </SelectValue>
           </SelectTrigger>
           <SelectPopup align="end" alignItemWithTrigger={false}>
@@ -499,7 +485,6 @@ export function UsagePage() {
             ))}
           </SelectPopup>
         </Select>
-        <UsageRangePicker {...rangePickerProps} />
         <Button
           onClick={refreshWindow}
           aria-label={showingLimits ? "Refresh limits" : "Refresh usage"}
@@ -515,20 +500,15 @@ export function UsagePage() {
   );
 
   return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none isolate">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
-        <WorkspacePageHeader electron={isElectron}>{topbarContent}</WorkspacePageHeader>
+    <AppRouteModal label="Usage">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <header className="@container/usage-header flex min-h-12 shrink-0 items-center gap-1 border-b ps-5 pe-2">
+          {topbarContent}
+          <AppRouteModalClose />
+        </header>
 
         <ScrollArea className="min-h-0 flex-1">
           <WorkspacePageContainer width="wide">
-            {!showingLimits && windowSelection.kind === "custom" ? (
-              <p
-                aria-label="Applied custom usage range"
-                className="mb-4 text-xs text-muted-foreground"
-              >
-                Custom range: {windowLabel} ({window.timeZone}; end exclusive)
-              </p>
-            ) : null}
             {selectedEnvironments.length === 0 ? (
               <p className="text-sm text-muted-foreground">
                 {environments.length === 0
@@ -566,11 +546,6 @@ export function UsagePage() {
             ) : (
               <UsageOverview
                 merged={merged}
-                providerSelectionScope={
-                  selectedEnvironmentIds === null
-                    ? "all"
-                    : JSON.stringify([...selectedEnvironmentIds].sort())
-                }
                 shownWindow={shownWindow}
                 hour12={hour12}
                 days={days}
@@ -589,7 +564,6 @@ export function UsagePage() {
                 onSelectModel={selectUsageModel}
               />
             )}
-            {!showingLimits ? <SavedTokenAccounting /> : null}
           </WorkspacePageContainer>
         </ScrollArea>
       </div>
@@ -619,13 +593,12 @@ export function UsagePage() {
           }}
         />
       ) : null}
-    </SidebarInset>
+    </AppRouteModal>
   );
 }
 
 function UsageOverview({
   merged,
-  providerSelectionScope,
   shownWindow,
   hour12,
   days,
@@ -641,7 +614,6 @@ function UsageOverview({
   onSelectModel,
 }: {
   readonly merged: MergedUsage;
-  readonly providerSelectionScope: string;
   readonly shownWindow: UsageSummaryInput;
   readonly hour12: boolean;
   readonly days: readonly string[];
@@ -657,26 +629,17 @@ function UsageOverview({
   readonly onSelectModel: (key: string) => void;
 }) {
   const [breakdown, setBreakdown] = useState<"model" | "time">("model");
-  const providerTriggers = useRef(new Map<UsageProviderKind, HTMLButtonElement>());
   const shownHourly = shownWindow.resolution === "hour";
   const loading = usageLoading(showingKept, selectedEnvironments, refreshingUsage, hiddenProviders);
-  // A primitive copy: reading `loading.partial` in the JSX would keep `loading` alive
-  // across every derivation below and fold them into one cache scope.
+  // Copy the primitive; JSX reads of loading.partial would merge all derivations into one compiler cache
+  // scope.
   const loadingPartial = loading.partial === true;
-  const {
-    detailBreakdown,
-    focusedProvider,
-    expandedModelKey,
-    setExpandedModelKey,
-    selectProvider,
-  } = useUsageProviderDetails(merged, loadingPartial, providerSelectionScope);
   const loadingProviders = new Set(
     PROVIDER_ORDER.filter((provider) => loading.everyProvider || loading.providers.has(provider)),
   );
   const providersWithData = new Set(providersWithUsage(merged.providers));
-  // `everyProvider` marks shown providers as loading; only `loading.providers`, which excludes
-  // hidden ones, may add a provider that has no data yet.
-  // Filtering a fresh copy, not the shared module array, lets the compiler cache this on its own.
+  // Only loading.providers excludes hidden providers without data. Filter a fresh array so the compiler can
+  // cache independently.
   const activeProviders = [...PROVIDER_ORDER].filter(
     (provider) => providersWithData.has(provider) || loading.providers.has(provider),
   );
@@ -701,12 +664,12 @@ function UsageOverview({
     ),
   ];
   const breakdownPeriods: readonly (DailyTotals | HourlyTotals)[] = (
-    shownHourly ? detailBreakdown.hourly : detailBreakdown.daily
+    shownHourly ? merged.hourly : merged.daily
   ).toReversed();
   const breakdownModels =
     breakdown === "model" && metric === "tokens"
-      ? sortModelsByTokens(detailBreakdown.models)
-      : detailBreakdown.models;
+      ? sortModelsByTokens(merged.models)
+      : merged.models;
   const breakdownPeak = breakdownModels.reduce(
     (peak, model) => Math.max(peak, metric === "tokens" ? model.totalTokens : model.costUsd),
     0,
@@ -725,8 +688,6 @@ function UsageOverview({
       .slice(cursorInsertAt)
       .map((provider) => ({ kind: "usage" as const, provider })),
   ];
-  const breakdownProviders = focusedProvider === null ? activeProviders : [focusedProvider];
-  const timeValueColumnWidth = `${60 / (breakdownProviders.length + 2)}%`;
 
   return (
     <div aria-busy={loadingPartial} className="flex flex-col gap-6">
@@ -800,17 +761,8 @@ function UsageOverview({
             const providerLoading = loadingProviders.has(provider);
             const awaitingData = providerLoading && !providersWithData.has(provider);
             return (
-              <UsageProviderSummary
-                key={provider}
-                provider={provider}
-                selected={focusedProvider === provider}
-                ref={(element) => {
-                  if (element) providerTriggers.current.set(provider, element);
-                  else providerTriggers.current.delete(provider);
-                }}
-                onClick={() => selectProvider(focusedProvider === provider ? null : provider)}
-              >
-                <span className="flex items-baseline justify-between gap-4">
+              <div key={provider} className="flex flex-col gap-1">
+                <div className="flex items-baseline justify-between gap-4">
                   <span className="flex min-w-0 items-center gap-2 text-sm text-foreground">
                     <span
                       aria-hidden
@@ -840,12 +792,12 @@ function UsageOverview({
                     )}
                   >
                     {awaitingData
-                      ? "—"
+                      ? "-"
                       : metric === "cost"
                         ? formatUsd(totals?.costUsd ?? 0)
                         : formatTokens(totals?.totalTokens ?? 0)}
                   </span>
-                </span>
+                </div>
                 <span
                   className={cn(
                     "text-xs text-muted-foreground",
@@ -857,7 +809,7 @@ function UsageOverview({
                     ? `${formatPercent(share)} of cost · ${formatTokens(totals?.totalTokens ?? 0)} tokens`
                     : `${formatPercent(share)} of tokens · ${formatUsd(totals?.costUsd ?? 0)}`}
                 </span>
-              </UsageProviderSummary>
+              </div>
             );
           })}
         </div>
@@ -882,20 +834,36 @@ function UsageOverview({
         </div>
       </section>
 
-      {detailBreakdown.providerTotals !== null ? (
-        <UsageProviderDetails
-          provider={detailBreakdown.providerTotals}
-          onClose={() => {
-            selectProvider(null);
-            if (focusedProvider !== null) providerTriggers.current.get(focusedProvider)?.focus();
-          }}
-        />
-      ) : (
-        <section className="flex flex-col gap-2">
-          <h2 className="text-sm font-medium text-foreground">Totals</h2>
-          <UsageTotals usage={merged} loading={loadingPartial} />
-        </section>
-      )}
+      <section className="flex flex-col gap-2">
+        <h2 className="text-sm font-medium text-foreground">Totals</h2>
+        <div className="grid grid-cols-2 gap-x-6 gap-y-4 py-1 md:grid-cols-5">
+          <Metric
+            loading={loadingPartial}
+            label="Processed tokens"
+            value={formatTokens(merged.totalTokens)}
+          />
+          <Metric
+            loading={loadingPartial}
+            label="Cached input"
+            value={formatTokens(merged.cachedInputTokens)}
+          />
+          <Metric
+            loading={loadingPartial}
+            label="Uncached input"
+            value={formatTokens(merged.uncachedInputTokens)}
+          />
+          <Metric
+            loading={loadingPartial}
+            label="Output"
+            value={formatTokens(merged.outputTokens)}
+          />
+          <Metric
+            loading={loadingPartial}
+            label="Cache savings"
+            value={formatUsd(merged.costQuality.cacheSavingsUsd)}
+          />
+        </div>
+      </section>
 
       {merged.totalTokens > 0 ? (
         <section
@@ -928,21 +896,8 @@ function UsageOverview({
       ) : null}
 
       <section className="flex flex-col gap-3">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex min-w-0 flex-wrap items-center gap-3">
-            <h2 className="text-sm font-medium text-foreground">
-              {focusedProvider === null
-                ? "Breakdown"
-                : `${PROVIDER_PRESENTATION[focusedProvider].label} breakdown`}
-            </h2>
-            <InlineButton
-              tone="muted"
-              disabled={focusedProvider === null}
-              onClick={() => selectProvider(null)}
-            >
-              All providers
-            </InlineButton>
-          </div>
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-sm font-medium text-foreground">Breakdown</h2>
           <ToggleGroup
             aria-label="Usage breakdown"
             variant="segmented"
@@ -965,43 +920,80 @@ function UsageOverview({
           </ToggleGroup>
         </div>
 
-        <p className="text-xs text-muted-foreground">
-          {focusedProvider === null
-            ? "Shares are of all providers' API estimates."
-            : `Shares are within ${PROVIDER_PRESENTATION[focusedProvider].label}'s API estimate. The summary and chart include all providers.`}
-        </p>
         {breakdown === "model" ? (
-          <div className="@container">
-            <table className="w-full text-sm">
-              <UsageModelTableHead />
-              <tbody>
-                {breakdownModels.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="py-6 text-center text-muted-foreground">
-                      No activity in this window.
-                    </td>
-                  </tr>
-                ) : (
-                  breakdownModels.map((model, index) => {
-                    const key = `${model.provider}:${model.model}`;
-                    return (
-                      <UsageModelRow
-                        key={key}
-                        model={model}
-                        index={index}
-                        metric={metric}
-                        breakdownPeak={breakdownPeak}
-                        loading={loadingProviders.has(model.provider)}
-                        expanded={expandedModelKey === key}
-                        onSelect={() => onSelectModel(key)}
-                        onToggle={() => setExpandedModelKey(expandedModelKey === key ? null : key)}
-                      />
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border text-right text-xs text-muted-foreground">
+                <th className="py-2 pr-3 text-left font-normal">#</th>
+                <th className="w-full py-2 text-left font-normal">Model</th>
+                <th className="py-2 pl-6 font-normal">Cost</th>
+                <th className="hidden py-2 pl-6 font-normal sm:table-cell">Share</th>
+                <th className="py-2 pl-6 font-normal">Tokens</th>
+              </tr>
+            </thead>
+            <tbody>
+              {breakdownModels.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="py-6 text-center text-muted-foreground">
+                    No activity in this window.
+                  </td>
+                </tr>
+              ) : (
+                breakdownModels.map((model, index) => {
+                  const key = `${model.provider}:${model.model}`;
+                  const value = metric === "tokens" ? model.totalTokens : model.costUsd;
+                  const hasBar = value > 0 && breakdownPeak > 0;
+                  const share = modelShare(model, metric === "tokens" ? "tokens" : "cost");
+                  const rowFigures = figureClass(loadingProviders.has(model.provider));
+                  return (
+                    <tr
+                      key={key}
+                      className="relative border-b border-border/50 text-right whitespace-nowrap text-muted-foreground tabular-nums transition-colors hover:bg-muted/50 has-focus-visible:bg-muted/50"
+                    >
+                      <td className="py-2.5 pr-3 text-left text-xs">{index + 1}</td>
+                      <td className="py-2.5 text-left whitespace-normal">
+                        <button
+                          type="button"
+                          onClick={() => onSelectModel(key)}
+                          className={cn(
+                            "flex items-center gap-2 text-left text-foreground outline-none after:absolute after:inset-0",
+                            !hasBar && "py-1",
+                          )}
+                        >
+                          <ProviderMark provider={model.provider} className="size-3.5" />
+                          {model.model}
+                        </button>
+                        {hasBar ? (
+                          <div aria-hidden className={cn("mt-1.5 h-0.5 max-w-48", rowFigures)}>
+                            <div
+                              className="h-full rounded-full"
+                              style={{
+                                width: `max(0.5rem, ${(value / breakdownPeak) * 100}%)`,
+                                backgroundColor: PROVIDER_PRESENTATION[model.provider].color,
+                              }}
+                            />
+                          </div>
+                        ) : null}
+                      </td>
+                      <td className={cn("py-2.5 pl-6 text-foreground", rowFigures)}>
+                        {isModelCostUnknown(model) ? (
+                          <span className="text-muted-foreground">Unpriced</span>
+                        ) : (
+                          formatUsd(model.costUsd)
+                        )}
+                      </td>
+                      <td className={cn("hidden py-2.5 pl-6 sm:table-cell", rowFigures)}>
+                        {share === null ? "" : formatPercent(share)}
+                      </td>
+                      <td className={cn("py-2.5 pl-6", rowFigures)}>
+                        {formatTokens(model.totalTokens)}
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
         ) : (
           <div
             className="overflow-x-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
@@ -1012,16 +1004,11 @@ function UsageOverview({
             <table className="w-full text-sm whitespace-nowrap">
               <colgroup>
                 <col className="w-2/5" />
-                {breakdownProviders.map((provider) => (
-                  <col key={provider} style={{ width: timeValueColumnWidth }} />
-                ))}
-                <col style={{ width: timeValueColumnWidth }} />
-                <col style={{ width: timeValueColumnWidth }} />
               </colgroup>
               <thead>
                 <tr className="border-b border-border text-left text-xs text-muted-foreground">
                   <th className="py-2 font-normal">{shownHourly ? "Hour" : "Day"}</th>
-                  {breakdownProviders.map((provider) => (
+                  {activeProviders.map((provider) => (
                     <th key={provider} className="py-2 pl-4 text-right font-normal">
                       {PROVIDER_PRESENTATION[provider].label}
                     </th>
@@ -1034,7 +1021,7 @@ function UsageOverview({
                 {breakdownPeriods.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={breakdownProviders.length + 3}
+                      colSpan={activeProviders.length + 3}
                       className="py-6 text-center text-muted-foreground"
                     >
                       No activity in this window.
@@ -1051,7 +1038,7 @@ function UsageOverview({
                           ? formatHourShort(period.hourStart, shownWindow.timeZone, hour12)
                           : formatDayShort(period.day)}
                       </td>
-                      {breakdownProviders.map((provider) => (
+                      {activeProviders.map((provider) => (
                         <td
                           key={provider}
                           className={cn(
@@ -1237,6 +1224,27 @@ function ProviderMark({
 
 function figureClass(loading: boolean) {
   return cn("transition-opacity", loading && "opacity-40 delay-150");
+}
+
+function Metric({
+  label,
+  value,
+  loading,
+}: {
+  readonly label: string;
+  readonly value: string;
+  readonly loading: boolean;
+}) {
+  return (
+    <div className="flex min-w-0 flex-col gap-0.5">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <span
+        className={cn("text-base font-medium text-foreground tabular-nums", figureClass(loading))}
+      >
+        {value}
+      </span>
+    </div>
+  );
 }
 
 function UsageCoverageNotice({
@@ -1513,15 +1521,7 @@ function UsageSkeleton() {
       <section className="flex flex-col gap-2">
         <h2 className="text-sm font-medium text-foreground">Totals</h2>
         <MetricSkeletons
-          labels={[
-            "Processed tokens",
-            "Cached input",
-            "Uncached input",
-            "Cache write",
-            "Output",
-            "Cache savings",
-            "Cache %",
-          ]}
+          labels={["Processed tokens", "Cached input", "Uncached input", "Output", "Cache savings"]}
         />
       </section>
 
@@ -1546,7 +1546,7 @@ function UsageSkeleton() {
 
 function MetricSkeletons({ labels }: { readonly labels: readonly string[] }) {
   return (
-    <div className="flex flex-wrap justify-between gap-x-6 gap-y-4 py-1">
+    <div className="grid grid-cols-2 gap-x-6 gap-y-4 py-1 md:grid-cols-5">
       {labels.map((label) => (
         <div key={label} className="flex flex-col gap-0.5">
           <span className="text-xs text-muted-foreground">{label}</span>

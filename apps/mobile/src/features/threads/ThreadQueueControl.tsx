@@ -1,22 +1,10 @@
-import { useServerConfigs } from "../../state/entities";
-import { importedHistoryContinuationEligible } from "@t3tools/client-runtime/jones/imported-history/continuation";
-import {
-  MobileQueuedSteerBatchAction,
-  useMobileQueuedSteerBatch,
-} from "../../jones/queue/QueuedSteerBatchAction";
-import {
-  ContinuationChoiceNotice,
-  useMobileImportedHistoryChoice,
-} from "../../jones/importedHistory/ContinuationChoiceNotice";
-import { importedHistoryCanonicalJson } from "@t3tools/shared/jones/importedHistoryCanonical";
-import * as Option from "effect/Option";
 import { type StaticScreenProps, useNavigation } from "@react-navigation/native";
 import { useAtomValue } from "@effect/atom-react";
 import type { ChatAttachment, EnvironmentId, RunId, ThreadId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 import { Image } from "expo-image";
 import * as Haptics from "expo-haptics";
-import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { Animated, Platform, Pressable, ScrollView, View } from "react-native";
 import { Gesture, GestureDetector, GestureHandlerRootView } from "react-native-gesture-handler";
 import ReanimatedSwipeable, {
@@ -38,11 +26,7 @@ import { NativeStackScreenOptions, nativeHeaderScrollEdgeEffects } from "../../n
 import { useAssetUrl } from "../../state/assets";
 import { assetImageSource } from "../../lib/assetImageSource";
 import { beginQueuedRunEdit, useQueuedRunEdit } from "../../state/queued-run-edit";
-import {
-  environmentThreadDetails,
-  threadEnvironment,
-  useEnvironmentThread,
-} from "../../state/threads";
+import { environmentThreadDetails, threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import {
@@ -78,22 +62,10 @@ export function useThreadQueuedCount(target: QueueTarget | null) {
 export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
   const { layout } = useAdaptiveWorkspaceLayout();
   const target = route.params;
-  const { choice: importedChoice, state: importedState } = useMobileImportedHistoryChoice(
-    target.environmentId,
-    target.threadId,
-  );
-  const projection = Option.getOrNull(
-    useEnvironmentThread(target.environmentId, target.threadId).data,
-  );
-  const importedThread = importedHistoryContinuationEligible(projection);
-
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const theme = useUniwindTheme();
   const workflow = useThreadQueueWorkflow(target);
-  const serverConfig = useServerConfigs().get(target.environmentId);
-  const canSendNow =
-    workflow?.canSendNow === true && serverConfig?.environment.capabilities.queuedRunStart === true;
   const threadKey = scopedThreadKey(target.environmentId, target.threadId);
   const editing = useQueuedRunEdit(threadKey);
   const reorder = useAtomCommand(threadEnvironment.reorderQueuedRun, "reorder queued message");
@@ -114,54 +86,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
     rows: ReadonlyArray<QueueRowLayout>;
   } | null>(null);
   const [translation] = useState(() => new Animated.Value(0));
-  const batch = useMobileQueuedSteerBatch({
-    ...target,
-    projection,
-    editing: editing !== null,
-    busy: busyRunId !== null || draggedRunId !== null || resuming || importedState.busy,
-    mutationLock: {
-      acquire: () => {
-        if (busyRef.current) return false;
-        busyRef.current = true;
-        return true;
-      },
-      release: () => {
-        busyRef.current = false;
-      },
-    },
-  });
-  const queueBusy = busyRunId !== null || batch.pending;
   const queuedRuns = workflow?.queuedRuns ?? [];
-  const importedQueueRef = useRef({ target, queuedRuns, importedThread });
-  useLayoutEffect(() => {
-    importedQueueRef.current = { target, queuedRuns, importedThread };
-  }, [target, queuedRuns, importedThread]);
-  const reviewImportedQueued = async (runId: RunId) => {
-    if (!importedThread || busyRef.current) return;
-    const entry = queuedRuns.find((candidate) => candidate.run.id === runId);
-    if (entry === undefined || entry !== queuedRuns[0]) return;
-    const snapshot = importedHistoryCanonicalJson(entry);
-    const queueIdentity = importedHistoryCanonicalJson(queuedRuns);
-    const unchanged = () => {
-      const current = importedQueueRef.current;
-      const row = current.queuedRuns.find(
-        (candidate) => candidate.run.id === runId && candidate.messageId === entry.messageId,
-      );
-      return (
-        current.importedThread &&
-        current.target.environmentId === target.environmentId &&
-        current.target.threadId === target.threadId &&
-        row !== undefined &&
-        importedHistoryCanonicalJson(row) === snapshot &&
-        importedHistoryCanonicalJson(current.queuedRuns) === queueIdentity
-      );
-    };
-    await importedChoice.review(
-      { type: "queued_run", runId, messageId: entry.messageId },
-      snapshot,
-      unchanged,
-    );
-  };
   const order = queuedRuns.map(({ run }) => run.id).join(",");
 
   useEffect(() => {
@@ -219,19 +144,12 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
       return;
     }
     if (action !== "steer" && action !== "remove") return;
-    if (action === "steer" && workflow?.canSendNow) {
-      if (!canSendNow) return;
-      if (importedThread) {
-        await reviewImportedQueued(runId);
-        return;
-      }
-    }
     busyRef.current = true;
     setBusyRunId(runId);
     void Haptics.selectionAsync();
     if (action === "remove") {
       await cancel(buildCancelQueuedRunCommand({ ...target, runId }));
-    } else if (canSendNow) {
+    } else if (workflow?.canSendNow) {
       await resume({ ...target, input: { threadId: target.threadId, runId } });
     } else if (workflow?.activeRun && workflow.canPromoteToSteer) {
       await promote({
@@ -265,20 +183,17 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
       nestedScrollEnabled
       className="flex-1"
       scrollEnabled={draggedRunId === null}
-      // The iOS header is translucent and floats over this view; UIKit has to
-      // inset the content or the first row sits underneath the title.
+      // UIKit must inset content beneath the floating translucent iOS header.
       contentInsetAdjustmentBehavior={Platform.OS === "ios" ? "automatic" : "never"}
       contentContainerClassName="px-5 pb-6"
       contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 16) + 8 }}
     >
-      <ContinuationChoiceNotice environmentId={target.environmentId} threadId={target.threadId} />
-      <MobileQueuedSteerBatchAction batch={batch} />
       {workflow?.isHeld && queuedRuns.length > 0 ? (
         <View className="gap-2 py-3">
           <Text className="text-sm text-foreground-muted">Queue paused</Text>
           <Button
             label="Resume queue"
-            disabled={resuming || queueBusy}
+            disabled={resuming || busyRunId !== null}
             onPress={async () => {
               if (busyRef.current) return;
               busyRef.current = true;
@@ -295,7 +210,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
           No messages waiting in this queue.
         </Text>
       ) : null}
-      {queuedRuns.map(({ run, text, attachments }, index) => {
+      {queuedRuns.map(({ run, text, attachments, context }, index) => {
         const layout = dragRows?.find((row) => row.id === run.id);
         const offset =
           sourceLayout?.y !== undefined &&
@@ -305,12 +220,13 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
             ? threadDragGapOffset(layout.y, sourceLayout.y, sourceLayout.height, insertionOffset)
             : 0;
         const controls = resolveThreadQueueRowControls({
-          busy: queueBusy || draggedRunId !== null,
+          busy: busyRunId !== null || draggedRunId !== null,
           canPromoteToSteer: workflow?.canPromoteToSteer ?? false,
-          canSendNow,
+          canSendNow: workflow?.canSendNow ?? false,
           canReorder: workflow?.canReorder ?? false,
           index,
           isEditing: editing?.runId === run.id,
+          isGuestMessage: context?.guest !== undefined,
           queuedCount: queuedRuns.length,
           text,
         });
@@ -333,10 +249,9 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
               }
             >
               {canReorder ? (
-                // Outside the swipeable: two pans on one row would race, and
-                // the handle owns vertical movement while the row owns sideways.
+                // Keep the vertical handle outside the sideways swipeable so their pans do not race.
                 <QueueDragHandle
-                  disabled={queueBusy}
+                  disabled={busyRunId !== null}
                   title={title}
                   canMoveUp={controls.canMoveUp}
                   canMoveDown={controls.canMoveDown}
@@ -405,101 +320,112 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
                 />
               ) : null}
               <QueueRowSwipeable
-                enabled={draggedRunId === null && !queueBusy && controls.canDismiss}
+                enabled={draggedRunId === null && busyRunId === null && controls.canDismiss}
                 background={theme["--color-sheet"]}
                 onRemove={() => void act(run.id, "remove")}
               >
-                {importedThread && index === 0 ? (
-                  <Button
-                    label="Review imported history"
-                    disabled={importedState.busy || queueBusy}
-                    onPress={() => {
-                      void reviewImportedQueued(run.id);
-                    }}
-                  />
-                ) : null}
-                <Menu
-                  accessibilityLabel={`Actions for queued message ${index + 1}`}
-                  shouldOpenOnLongPress
-                  actions={[
-                    ...(workflow?.canPromoteToSteer || canSendNow
-                      ? [
-                          {
-                            id: "steer",
-                            title: canSendNow ? "Send now" : "Steer now",
-                            attributes: { disabled: !controls.canSend },
-                            image: Platform.OS === "ios" ? "arrow.turn.left.up" : "arrow_upward",
-                          },
-                        ]
-                      : []),
-                    {
-                      id: "edit",
-                      title: "Edit",
-                      attributes: { disabled: !controls.canEdit },
-                      image: Platform.OS === "ios" ? "pencil" : "edit",
-                    },
-                    { id: "up", title: "Move up", attributes: { disabled: !controls.canMoveUp } },
-                    {
-                      id: "down",
-                      title: "Move down",
-                      attributes: { disabled: !controls.canMoveDown },
-                    },
-                    {
-                      id: "remove",
-                      title: "Remove",
-                      attributes: { disabled: !controls.canDismiss, destructive: true },
-                    },
-                  ]}
-                  onPressAction={({ nativeEvent }) =>
-                    void act(run.id, nativeEvent.event as QueueAction)
-                  }
-                >
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={title}
-                    accessibilityHint="Opens this message in the composer for editing"
-                    disabled={!controls.canEdit}
-                    onPress={() => void act(run.id, "edit")}
-                    className="min-h-14 flex-row items-center gap-2.5 py-2.5 active:opacity-70"
+                <View className="flex-row items-center">
+                  <Menu
+                    accessibilityLabel={`Actions for queued message ${index + 1}`}
+                    shouldOpenOnLongPress
+                    style={{ flex: 1 }}
+                    actions={[
+                      ...(workflow?.canPromoteToSteer || workflow?.canSendNow
+                        ? [
+                            {
+                              id: "steer",
+                              title: workflow?.canSendNow ? "Send now" : "Steer now",
+                              attributes: { disabled: !controls.canSend },
+                              image: Platform.OS === "ios" ? "arrow.turn.left.up" : "arrow_upward",
+                            },
+                          ]
+                        : []),
+                      {
+                        id: "edit",
+                        title: "Edit",
+                        attributes: { disabled: !controls.canEdit },
+                        image: Platform.OS === "ios" ? "pencil" : "edit",
+                      },
+                      { id: "up", title: "Move up", attributes: { disabled: !controls.canMoveUp } },
+                      {
+                        id: "down",
+                        title: "Move down",
+                        attributes: { disabled: !controls.canMoveDown },
+                      },
+                      {
+                        id: "remove",
+                        title: "Remove",
+                        attributes: { disabled: !controls.canDismiss, destructive: true },
+                      },
+                    ]}
+                    onPressAction={({ nativeEvent }) =>
+                      void act(run.id, nativeEvent.event as QueueAction)
+                    }
                   >
-                    <QueueAttachmentThumbnails
-                      environmentId={target.environmentId}
-                      attachments={attachments}
-                    />
-                    <Text
-                      className={
-                        controls.isEditing
-                          ? "min-w-0 flex-1 text-sm text-foreground-muted"
-                          : "min-w-0 flex-1 text-sm text-foreground"
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={title}
+                      accessibilityHint={
+                        controls.canEdit
+                          ? "Opens this message in the composer for editing"
+                          : undefined
                       }
-                      numberOfLines={1}
+                      disabled={!controls.canEdit}
+                      onPress={() => void act(run.id, "edit")}
+                      className="min-h-14 flex-row items-center gap-2.5 py-2.5 active:opacity-70"
                     >
-                      {title}
-                    </Text>
-                    {controls.isEditing ? (
-                      <Text className="shrink-0 text-2xs uppercase tracking-wide text-primary">
-                        Editing
-                      </Text>
-                    ) : null}
-                    {workflow?.canPromoteToSteer || canSendNow ? (
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel={
-                          canSendNow
-                            ? `Send message ${index + 1} now`
-                            : `Steer with message ${index + 1} now`
+                      <QueueAttachmentThumbnails
+                        environmentId={target.environmentId}
+                        attachments={attachments}
+                      />
+                      <Text
+                        className={
+                          controls.isEditing
+                            ? "min-w-0 flex-1 text-sm text-foreground-muted"
+                            : "min-w-0 flex-1 text-sm text-foreground"
                         }
-                        disabled={!controls.canSend}
-                        onPress={() => void act(run.id, "steer")}
-                        className="h-8 shrink-0 justify-center rounded-full bg-primary px-3 active:opacity-70 disabled:opacity-40"
+                        numberOfLines={1}
                       >
-                        <Text className="font-t3-medium text-xs text-primary-foreground">
-                          {canSendNow ? "Send now" : "Steer"}
+                        {context?.guest === undefined ? null : (
+                          <Text className="font-t3-medium text-adaptive-fuchsia-600-300">
+                            {`${context.guest.name}  `}
+                          </Text>
+                        )}
+                        {title}
+                      </Text>
+                      {controls.isEditing ? (
+                        <Text className="shrink-0 text-2xs uppercase tracking-wide text-primary">
+                          Editing
                         </Text>
-                      </Pressable>
-                    ) : null}
-                  </Pressable>
-                </Menu>
+                      ) : null}
+                    </Pressable>
+                  </Menu>
+                  {workflow?.canPromoteToSteer || workflow?.canSendNow ? (
+                    // Outside the edit row and full row height, so a near miss never opens the editor.
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={
+                        workflow?.canSendNow
+                          ? `Send message ${index + 1} now`
+                          : `Steer with message ${index + 1} now`
+                      }
+                      disabled={!controls.canSend}
+                      onPress={() => void act(run.id, "steer")}
+                      className="shrink-0 justify-center self-stretch pl-4 active:opacity-70 disabled:opacity-40"
+                    >
+                      <View className="min-h-9 flex-row items-center gap-1.5 rounded-full bg-primary px-4">
+                        <SymbolView
+                          name={workflow?.canSendNow ? "arrow.up" : "arrow.turn.left.up"}
+                          size={13}
+                          tintColorClassName="accent-primary-foreground"
+                        />
+                        <Text className="font-t3-medium text-sm text-primary-foreground">
+                          {workflow?.canSendNow ? "Send now" : "Steer"}
+                        </Text>
+                      </View>
+                    </Pressable>
+                  ) : null}
+                </View>
               </QueueRowSwipeable>
             </Animated.View>
           </QueueShiftedRow>
@@ -509,8 +435,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
   );
 
   if (Platform.OS === "ios") {
-    // A plain formSheet screen never renders a stack header, so it comes from
-    // a nested native stack inside the sheet (same shape as the git sheet).
+    // Plain formSheets lack stack headers; host one in a nested native stack.
     return (
       <GestureHandlerRootView style={{ flex: 1 }}>
         <View collapsable={false} className="flex-1 bg-sheet">
@@ -591,8 +516,7 @@ function QueueRowSwipeable(props: {
       friction={2}
       rightThreshold={40}
       overshootRight={false}
-      // The sheet's own vertical scroll and the drag handle both move up and
-      // down; a swipe has to be clearly sideways before it takes the gesture.
+      // Require a clearly sideways swipe to avoid competing with sheet scroll and drag handles.
       failOffsetY={[-12, 12]}
       containerStyle={{ backgroundColor: props.background, flex: 1 }}
       childrenContainerStyle={{ backgroundColor: props.background }}
@@ -687,11 +611,10 @@ function QueueDragHandle(props: {
   onMove: (y: number) => void;
   onEnd: (y: number, success: boolean) => void;
 }) {
-  // Gesture callbacks fire outside render, so effect events read the latest
-  // props without rebuilding the gesture.
   const onStart = useEffectEvent(() => props.onStart());
   const onMove = useEffectEvent((y: number) => props.onMove(y));
   const onEnd = useEffectEvent((y: number, success: boolean) => props.onEnd(y, success));
+  // oxlint-disable-next-line react/capitalized-calls -- Gesture.Pan is a gesture factory, not a React component.
   const gesture = Gesture.Pan()
     .enabled(!props.disabled)
     .minDistance(0)

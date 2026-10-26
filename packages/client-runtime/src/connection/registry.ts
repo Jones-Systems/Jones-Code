@@ -1,4 +1,4 @@
-import { EnvironmentId, type ExecutionEnvironmentDescriptor } from "@t3tools/contracts";
+import { EnvironmentId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
@@ -36,18 +36,13 @@ import type {
 } from "./model.ts";
 import { ConnectionBlockedError } from "./model.ts";
 import * as Persistence from "../platform/persistence.ts";
-import {
-  connectionCompatibilityRouteBinding,
-  decodeConnectionCompatibilityHints,
-} from "../platform/storageDocument.ts";
-import { orchestrationProtocolCompatibilityError } from "./compatibility.ts";
 import * as EnvironmentSupervisor from "./supervisor.ts";
 import * as ConnectionDriver from "./driver.ts";
 import * as ConnectionWakeups from "./wakeups.ts";
 import {
-  GitHubRoutingPermissions,
-  gitHubRoutingConnectionKey,
-} from "./githubRoutingPermissions.ts";
+  PullRequestRoutingPermissions,
+  pullRequestRoutingConnectionKey,
+} from "./pullRequestRoutingPermissions.ts";
 import {
   RELAY_ROUTE_ID,
   connectionRouteId,
@@ -169,11 +164,6 @@ export class EnvironmentRegistry extends Context.Service<
       environmentId: EnvironmentId,
       error: ConnectionBlockedError | null,
     ) => Effect.Effect<void, Persistence.ConnectionPersistenceError>;
-    /** Accepts fresh update preparation only while its captured registration is still current. */
-    readonly recordUpdateCompatibility: (
-      entry: ConnectionCatalogEntry,
-      descriptor: ExecutionEnvironmentDescriptor,
-    ) => Effect.Effect<boolean, Persistence.ConnectionPersistenceError>;
     readonly state: (
       environmentId: EnvironmentId,
     ) => Effect.Effect<SupervisorConnectionState, EnvironmentNotRegisteredError>;
@@ -209,7 +199,7 @@ interface EnvironmentServiceScope {
   readonly scope: Scope.Closeable;
 }
 
-/** @public Service construction is part of the canonical Effect module API. */
+/** @public */
 export const make = Effect.gen(function* () {
   const registryScope = yield* Scope.Scope;
   const storage = yield* Persistence.ConnectionTargetStore;
@@ -218,21 +208,13 @@ export const make = Effect.gen(function* () {
   const ownedDataCleanup = yield* Persistence.EnvironmentOwnedDataCleanup;
   const profiles = yield* ConnectionProfileStore.ConnectionProfileStore;
   const credentials = yield* ConnectionCredentialStore.ConnectionCredentialStore;
-  const githubRoutingPermissions = yield* GitHubRoutingPermissions;
+  const pullRequestRoutingPermissions = yield* PullRequestRoutingPermissions;
   const connectivity = yield* Connectivity.Connectivity;
   const driver = yield* ConnectionDriver.ConnectionDriver;
   const wakeups = yield* ConnectionWakeups.ConnectionWakeups;
   const ssh = yield* ClientCapabilities.SshEnvironmentGateway;
   const persistedTargets = yield* storage.list;
   const disabledEnvironmentIds = new Set(yield* storage.listDisabled);
-  const compatibilityHints = yield* (storage.listCompatibilityHints ?? Effect.succeed([])).pipe(
-    Effect.map(decodeConnectionCompatibilityHints),
-    Effect.catch(() =>
-      Effect.logWarning("Could not load historical connection compatibility hints.").pipe(
-        Effect.as([]),
-      ),
-    ),
-  );
   const loadRoute = Effect.fn("EnvironmentRegistry.loadRoute")(function* (
     target: ConnectionTarget,
   ) {
@@ -262,23 +244,16 @@ export const make = Effect.gen(function* () {
         });
         const routes = usable.length > 0 ? usable : loaded.slice(0, 1);
         const first = routes[0]!;
-        const entry = entryWithRoutes(
-          {
-            target: first.target,
-            profile: first.profile,
-            enabled: !disabledEnvironmentIds.has(environmentId),
-          },
-          routes,
-        );
-        const binding = connectionCompatibilityRouteBinding(connectionRoutes(entry));
-        const hint = compatibilityHints.find(
-          (hint) => hint.environmentId === environmentId && hint.routeBinding === binding,
-        );
         return [
           environmentId,
-          hint === undefined
-            ? entry
-            : { ...entry, compatibilityHint: { routeBinding: hint.routeBinding, kind: hint.kind } },
+          entryWithRoutes(
+            {
+              target: first.target,
+              profile: first.profile,
+              enabled: !disabledEnvironmentIds.has(environmentId),
+            },
+            routes,
+          ),
         ] as const;
       }),
       { concurrency: "unbounded" },
@@ -385,15 +360,6 @@ export const make = Effect.gen(function* () {
             // Seed the intent to avoid publishing a false switched-off state
             // before an enabled, compatible environment starts connecting.
             initiallyDesired: entry.enabled && entry.unsupportedReason === undefined,
-            betterRouteEntryOwner: {
-              withCurrentEntry: (use) =>
-                withLeaseLock(
-                  environmentId,
-                  Effect.suspend(() =>
-                    use(() => SubscriptionRef.getUnsafe(entries).get(environmentId)),
-                  ),
-                ),
-            },
             learnRoutes: (input) => learnRoutes({ environmentId, ...input }),
           }).pipe(
             Effect.provideService(Connectivity.Connectivity, connectivity),
@@ -542,7 +508,7 @@ export const make = Effect.gen(function* () {
     environmentId: EnvironmentId,
     operation: "register-connection" | "set-connection-routes",
   ) =>
-    githubRoutingPermissions.forget(environmentId).pipe(
+    pullRequestRoutingPermissions.forget(environmentId).pipe(
       Effect.mapError(
         (error) =>
           new Persistence.ConnectionPersistenceError({
@@ -556,17 +522,12 @@ export const make = Effect.gen(function* () {
     connectionRoutes(entry).map((route) => route.target as PersistedConnectionTarget);
 
   /**
-   * GitHub trust and an unsupported verdict both belong to the saved addresses: a changed set may
+   * Pull request routing trust and an unsupported verdict both belong to the saved addresses: a changed set may
    * reach a different server, so both are dropped and the next connection decides.
    */
   const withRoutes = (previous: ConnectionCatalogEntry, routes: ReadonlyArray<ConnectionRoute>) => {
-    const routed = entryWithRoutes(previous, routes);
-    const { compatibilityHint, ...withoutHint } = routed;
-    const next =
-      compatibilityHint?.routeBinding === connectionCompatibilityRouteBinding(routes)
-        ? routed
-        : withoutHint;
-    if (gitHubRoutingConnectionKey(previous) === gitHubRoutingConnectionKey(next)) {
+    const next = entryWithRoutes(previous, routes);
+    if (pullRequestRoutingConnectionKey(previous) === pullRequestRoutingConnectionKey(next)) {
       return { entry: next, addressesChanged: false };
     }
     const { unsupportedReason: _reason, serverUpdateRequired: _update, ...rest } = next;
@@ -643,19 +604,20 @@ export const make = Effect.gen(function* () {
           const previous = (yield* SubscriptionRef.get(entries)).get(target.environmentId);
           const entry: ConnectionCatalogEntry =
             previous?.unsupportedReason !== undefined &&
-            gitHubRoutingConnectionKey(previous) === gitHubRoutingConnectionKey(registered)
+            pullRequestRoutingConnectionKey(previous) ===
+              pullRequestRoutingConnectionKey(registered)
               ? { ...registered, ...unsupportedState(previous) }
               : registered;
           const persisted = (yield* Ref.get(persistedEnvironmentIds)).has(target.environmentId);
           if (
             persisted ||
             (previous !== undefined &&
-              gitHubRoutingConnectionKey(previous) !== gitHubRoutingConnectionKey(entry))
+              pullRequestRoutingConnectionKey(previous) !== pullRequestRoutingConnectionKey(entry))
           ) {
-            const revoked = yield* githubRoutingPermissions.forget(target.environmentId).pipe(
+            const revoked = yield* pullRequestRoutingPermissions.forget(target.environmentId).pipe(
               Effect.tapError((error) =>
                 Effect.logWarning(
-                  "Could not clear GitHub routing permission for a platform environment.",
+                  "Could not clear pull request routing permission for a platform environment.",
                   {
                     environmentId: target.environmentId,
                     error,
@@ -764,10 +726,10 @@ export const make = Effect.gen(function* () {
         environmentId,
         Effect.gen(function* () {
           const entry = (yield* SubscriptionRef.get(entries)).get(environmentId);
-          const revoked = yield* githubRoutingPermissions.forget(environmentId).pipe(
+          const revoked = yield* pullRequestRoutingPermissions.forget(environmentId).pipe(
             Effect.tapError((error) =>
               Effect.logWarning(
-                "Could not clear GitHub routing permission after platform removal.",
+                "Could not clear pull request routing permission after platform removal.",
                 {
                   environmentId,
                   error,
@@ -850,7 +812,7 @@ export const make = Effect.gen(function* () {
     }
     const entry = yield* getEntry(environmentId);
 
-    yield* githubRoutingPermissions.forget(environmentId);
+    yield* pullRequestRoutingPermissions.forget(environmentId);
     yield* registrations.remove(environmentId);
     yield* Ref.update(persistedEnvironmentIds, (current) => {
       const next = new Set(current);
@@ -906,7 +868,7 @@ export const make = Effect.gen(function* () {
     typeof globalThis.location === "undefined" || globalThis.location.protocol !== "https:";
 
   /**
-   * Learned routes reuse the active route's credential, so they do not revoke GitHub routing
+   * Learned routes reuse the active route's credential, so they do not revoke pull request routing
    * trust the way a newly paired address does.
    */
   const learnRoutes = Effect.fn("EnvironmentRegistry.learnRoutes")(function* (input: {
@@ -929,7 +891,7 @@ export const make = Effect.gen(function* () {
           allowInsecure: allowInsecureRoutes,
         });
         if (routes === null) return Option.none<ConnectionCatalogEntry>();
-        const next = withRoutes(entry, routes).entry;
+        const next = entryWithRoutes(entry, routes);
         const previousProfiles = new Map(
           connectionRoutes(entry).map((route) => [
             connectionRouteId(route.target),
@@ -1087,8 +1049,8 @@ export const make = Effect.gen(function* () {
         } else if (enabled) {
           yield* createServiceScope(next);
         }
-        // The supervisor only owns the RPC session. Switching off releases local
-        // SSH tunnels while preserving the host server and provider processes.
+        // The supervisor only owns the RPC session. A managed SSH backend and
+        // its tunnel outlive it, so switching off tears those down as well.
         if (!enabled) {
           for (const route of connectionRoutes(entry)) {
             const profile = Option.getOrNull(route.profile);
@@ -1130,59 +1092,31 @@ export const make = Effect.gen(function* () {
     Effect.forkScoped,
   );
 
-  const updateCompatibility = Effect.fn("EnvironmentRegistry.updateCompatibility")(function* (
+  const setCompatibility = Effect.fn("EnvironmentRegistry.setCompatibility")(function* (
     environmentId: EnvironmentId,
     error: ConnectionBlockedError | null,
-    capturedEntry?: ConnectionCatalogEntry,
   ) {
-    return yield* withLeaseLock(
+    yield* withLeaseLock(
       environmentId,
       Effect.gen(function* () {
         const entry = (yield* SubscriptionRef.get(entries)).get(environmentId);
-        // Hold the same lease lock through optional hint write settlement. Route CAS alone cannot
-        // distinguish removal followed by re-registration of identical addresses.
-        if (entry === undefined || (capturedEntry !== undefined && entry !== capturedEntry))
-          return false;
-        const routeBinding = connectionCompatibilityRouteBinding(connectionRoutes(entry));
-        const kind = error?.serverUpdateRequired === true ? "outdated-update" : null;
-        const persisted = !(yield* Ref.get(platformEnvironmentIds)).has(environmentId);
-        const hint: ConnectionCatalogEntry["compatibilityHint"] =
-          kind !== null && routeBinding !== null && persisted ? { routeBinding, kind } : undefined;
-        const persistHint = () =>
-          persisted && routeBinding !== null && registrations.setCompatibilityHint !== undefined
-            ? registrations
-                .setCompatibilityHint(environmentId, routeBinding, kind)
-                .pipe(
-                  Effect.catch(() =>
-                    Effect.logWarning(
-                      "Could not persist historical connection compatibility hints.",
-                    ),
-                  ),
-                )
-            : Effect.void;
         if (
-          entry.unsupportedReason === (error?.message ?? undefined) &&
-          entry.serverUpdateRequired === (error?.serverUpdateRequired ?? undefined) &&
-          entry.compatibilityHint?.kind === hint?.kind &&
-          entry.compatibilityHint?.routeBinding === hint?.routeBinding
-        ) {
-          // A fresh captured check can retry persistence without republishing unchanged live state.
-          if (capturedEntry !== undefined) yield* persistHint();
-          return true;
-        }
+          entry === undefined ||
+          (entry.unsupportedReason === (error?.message ?? undefined) &&
+            entry.serverUpdateRequired === (error?.serverUpdateRequired ?? undefined))
+        )
+          return;
         const {
           unsupportedReason: _previousReason,
           serverUpdateRequired: _previousUpdateRequired,
-          compatibilityHint: _previousHint,
           ...rest
         } = entry;
-        const hinted = hint !== undefined ? { ...rest, compatibilityHint: hint } : rest;
         // Compatibility pauses connections without changing the user's saved on/off choice.
         const next: ConnectionCatalogEntry =
           error === null
-            ? hinted
+            ? rest
             : {
-                ...hinted,
+                ...rest,
                 unsupportedReason: error.message,
                 ...(error.serverUpdateRequired === true ? { serverUpdateRequired: true } : {}),
               };
@@ -1197,26 +1131,9 @@ export const make = Effect.gen(function* () {
         yield* SubscriptionRef.update(entries, (current) =>
           new Map(current).set(environmentId, next),
         );
-        // Fresh compatibility and disconnection do not depend on historical persistence.
-        yield* persistHint();
-        return true;
-      }).pipe(Effect.uninterruptible),
+      }),
     );
   });
-
-  const setCompatibility = (environmentId: EnvironmentId, error: ConnectionBlockedError | null) =>
-    updateCompatibility(environmentId, error).pipe(Effect.asVoid);
-  const recordUpdateCompatibility = (
-    entry: ConnectionCatalogEntry,
-    descriptor: ExecutionEnvironmentDescriptor,
-  ) =>
-    descriptor.environmentId !== entry.target.environmentId
-      ? Effect.succeed(false)
-      : updateCompatibility(
-          entry.target.environmentId,
-          orchestrationProtocolCompatibilityError(descriptor),
-          entry,
-        );
 
   return EnvironmentRegistry.of({
     entries,
@@ -1232,7 +1149,6 @@ export const make = Effect.gen(function* () {
     retryNow,
     setEnabled,
     setCompatibility,
-    recordUpdateCompatibility,
     state,
     stateChanges,
     run,

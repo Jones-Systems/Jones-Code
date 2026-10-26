@@ -1,6 +1,5 @@
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
-import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import { expect, it } from "@effect/vitest";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -9,8 +8,6 @@ import {
   OrchestratorMcpFailure,
   PreviewTabId,
   ProviderInstanceId,
-  ProviderInteractionMode,
-  RuntimeMode,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
@@ -135,7 +132,6 @@ const callTool = (name: string, args: Record<string, unknown>) =>
 
 const callSnapshot = (args: Record<string, unknown>) => callTool("preview_snapshot", args);
 
-// Real tool definitions with handlers that record what they decoded.
 const layerRecordingTools = (calls: Array<unknown>) => {
   const RecordingToolkit = Toolkit.make(
     OrchestratorToolkit.tools.delegate_task,
@@ -368,7 +364,6 @@ it.effect("decodes null optional arguments the way it decodes omitted ones", () 
     yield* callTool("t3_thread_read", { ...thread, afterPosition: null, view: null });
     yield* callTool("delegate_task", { task: "Inspect", target: {} });
     yield* callTool("delegate_task", { task: "Inspect", title: null, target: { model: null } });
-    // A null the schema declares keeps its meaning: here it clears the project icon.
     yield* callTool("t3_project_update", { projectId: "project-1", projectIcon: null });
 
     expect(calls).toHaveLength(5);
@@ -425,6 +420,15 @@ it.effect.each(["limit", "runLimit", "maxCharsPerItem"])(
   },
 );
 
+it("keeps cross-tool routing out of the delegate_task description", () => {
+  const description = OrchestratorToolkit.tools.delegate_task.description ?? "";
+  expect(description).toContain("Start one child agent with only `task`");
+  // Review rounds, follow-ups, and polling are routed in the system text.
+  expect(description).not.toContain("t3_thread_send");
+  expect(description).not.toContain("Do not poll");
+  expect(description).not.toContain("Prefer native");
+});
+
 it.effect(
   "registers the pull request toolkit and surfaces a missing capability as a tool error",
   () =>
@@ -441,7 +445,8 @@ it.effect(
       const linkTool = server.tools.find(({ tool }) => tool.name === "link_pull_request");
       expect(linkTool?.tool.annotations?.idempotentHint).toBe(true);
       expect(linkTool?.tool.annotations?.openWorldHint).toBe(false);
-      expect(linkTool?.tool.description).toContain("Register every pull request you open");
+      expect(linkTool?.tool.description).toContain("Link a PR to this thread");
+      expect(linkTool?.tool.description).toContain("settles the thread on merge");
 
       const denied = yield* server
         .callTool({ name: "list_thread_pull_requests", arguments: {} })
@@ -536,7 +541,6 @@ it.effect("keeps the snapshot text under the agent's output ceiling", () =>
       expect(parsed.consoleEntries[0]?.text).toBe("entry 60");
       expect(notice?.type === "text" ? notice.text : "").toContain("accessibilityTree");
       expect(notice?.type === "text" ? notice.text : "").toContain("60 older console entries");
-      // Claude Code shows the model structuredContent instead of the text, so it is bounded too.
       expect(snapshot.structuredContent).toEqual({
         ...parsed,
         omitted: expect.arrayContaining(["60 older console entries"]),
@@ -813,145 +817,89 @@ it.effect("admits provider and OAuth client credentials and points only clients 
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect(
-  "narrows an OAuth client's modes to the T3-Mode-Limit it sends, and never widens them",
-  () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const clientToken = "client-payload.client-signature";
-        const clientScope: McpInvocationContext.McpInvocationScope = {
-          environmentId,
-          requestNamespace: "client:linked",
-          thread: undefined,
-          client: { sessionId: "linked", label: "T3 Code · laptop", access: "auto" },
-          capabilities: new Set(["orchestration"]),
-          issuedAt: 1,
-        };
-        // Starts a thread at the modes the gate hands it, so the outcome is those modes.
-        const StartsToolkit = Toolkit.make(
-          Tool.make("starts", {
-            description: "Reports the modes a started thread would run with.",
-            parameters: Schema.Struct({
-              runtimeMode: Schema.optional(RuntimeMode),
-              interactionMode: Schema.optional(ProviderInteractionMode),
-            }),
-            success: Schema.Struct({ modes: Schema.String }),
-            failure: OrchestratorMcpFailure,
-            failureMode: "return",
-            dependencies: [
-              McpInvocationContext.McpInvocationContext,
-              ThreadManagementService.ThreadManagementService,
-            ],
+it.effect("lists pull request watch tools only to threads that are not delegated children", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const scopeFor = (
+        token: string,
+        subagent: boolean,
+      ): McpInvocationContext.McpThreadInvocationScope => ({
+        environmentId,
+        requestNamespace: token,
+        thread: {
+          threadId: ThreadId.make(`thread-${token}`),
+          providerSessionId: token,
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          subagent,
+        },
+        client: undefined,
+        capabilities: new Set(["pull-requests"]),
+        issuedAt: 1,
+      });
+      const scopes = new Map([
+        ["parentToken", scopeFor("parentToken", false)],
+        ["childToken", scopeFor("childToken", true)],
+      ]);
+      const serverLayer = McpHttpServer.layerPullRequestsToolkit.pipe(
+        Layer.provideMerge(McpHttpServer.layerMcpTransport),
+        Layer.provide(
+          Layer.mock(McpSessionRegistry.McpSessionRegistry)({
+            resolve: (token) => Effect.succeed(scopes.get(token)),
           }),
-        );
-        const serverLayer = McpHttpServer.toolkitRegistration(
-          StartsToolkit,
-          McpToolAccess.toLayer(StartsToolkit, {
-            starts: McpToolAccess.startsThreads(
-              (input) => input,
-              (_, modes) =>
-                Effect.succeed({ modes: `${modes.runtimeMode}/${modes.interactionMode}` }),
-              "stamped",
+        ),
+        Layer.provide(
+          Layer.mergeAll(
+            McpToolAccessTestkit.liveThreadsLayer,
+            Layer.mock(ProjectService.ProjectService)({}),
+            Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
+            Layer.mock(Orchestrator.OrchestratorV2)({}),
+            Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
+            NodeServices.layer,
+          ),
+        ),
+      );
+      yield* HttpRouter.serve(serverLayer, { disableListenLog: true, disableLogger: true }).pipe(
+        Layer.build,
+      );
+      const httpClient = yield* HttpClient.HttpClient;
+      const listedTools = (token: string) =>
+        Effect.gen(function* () {
+          const headers = {
+            accept: "application/json, text/event-stream",
+            authorization: `Bearer ${token}`,
+          };
+          const initialize = yield* httpClient.post("/mcp", {
+            headers,
+            body: HttpBody.text(
+              `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"1.0.0"}}}`,
+              "application/json",
             ),
-          }),
-        ).pipe(
-          Layer.provideMerge(McpHttpServer.layerMcpTransport),
-          Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
-          Layer.provide(
-            Layer.mock(McpSessionRegistry.McpSessionRegistry)({
-              resolve: () => Effect.succeed(undefined),
-            }),
-          ),
-          Layer.provide(
-            Layer.succeed(McpHttpServer.McpClientAuthenticator, {
-              authenticate: (request) =>
-                Effect.succeed(
-                  request.headers.authorization === `Bearer ${clientToken}`
-                    ? clientScope
-                    : undefined,
-                ),
-            }),
-          ),
-        );
-        yield* HttpRouter.serve(serverLayer, { disableListenLog: true, disableLogger: true }).pipe(
-          Layer.build,
-        );
-        const httpClient = yield* HttpClient.HttpClient;
-        const decodeOutcome = Schema.decodeUnknownEffect(
-          Schema.fromJsonString(
-            Schema.Struct({
-              result: Schema.Struct({
-                content: Schema.Array(Schema.Struct({ text: Schema.String })),
-              }),
-            }),
-          ),
-        );
-        const decodeText = Schema.decodeUnknownEffect(
-          Schema.fromJsonString(
-            Schema.Union([
-              Schema.Struct({ modes: Schema.String }),
-              Schema.Struct({ code: Schema.String }),
-            ]),
-          ),
-        );
-        /** Starts a thread as the client, with `limit` as T3-Mode-Limit; the HTTP status or the outcome. */
-        const start = (limit: string | undefined, args: Record<string, string> = {}) =>
-          Effect.gen(function* () {
-            const headers = {
-              accept: "application/json, text/event-stream",
-              authorization: `Bearer ${clientToken}`,
-              ...(limit === undefined ? {} : { "t3-mode-limit": limit }),
-            };
-            const initialize = yield* httpClient.post("/mcp", {
-              headers,
-              body: HttpBody.text(
-                `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"1.0.0"}}}`,
-                "application/json",
-              ),
-            });
-            if (initialize.status !== 200) return initialize.status;
-            const response = yield* httpClient.post("/mcp", {
-              headers: {
-                ...headers,
-                "mcp-session-id": initialize.headers["mcp-session-id"]!,
-                "mcp-protocol-version": "2025-06-18",
-              },
-              body: HttpBody.text(
-                JSON.stringify({
-                  jsonrpc: "2.0",
-                  id: 2,
-                  method: "tools/call",
-                  params: { name: "starts", arguments: args },
-                }),
-                "application/json",
-              ),
-            });
-            const body = yield* decodeOutcome(yield* response.text);
-            const outcome = yield* decodeText(
-              body.result.content.map((part) => part.text).join(""),
-            );
-            return "code" in outcome ? outcome.code : outcome.modes;
           });
+          const listed = yield* httpClient.post("/mcp", {
+            headers: {
+              ...headers,
+              "mcp-session-id": initialize.headers["mcp-session-id"]!,
+              "mcp-protocol-version": "2025-06-18",
+            },
+            body: HttpBody.text(
+              `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`,
+              "application/json",
+            ),
+          });
+          const body = (yield* listed.json) as {
+            readonly result: { readonly tools: ReadonlyArray<{ readonly name: string }> };
+          };
+          return body.result.tools.map((tool) => tool.name);
+        });
 
-        // Approved for auto: without the header the client keeps its ceiling.
-        expect(yield* start(undefined)).toBe("auto/default");
-        // The header narrows both modes, and asking above it is refused.
-        expect(yield* start("approval-required/plan")).toBe("approval-required/plan");
-        expect(yield* start("approval-required/plan", { runtimeMode: "auto" })).toBe(
-          "runtime_mode_escalation_denied",
-        );
-        expect(yield* start("auto-accept-edits/plan", { interactionMode: "default" })).toBe(
-          "interaction_mode_escalation_denied",
-        );
-        // A broader header changes nothing: the approved ceiling still holds.
-        expect(yield* start("full-access/default")).toBe("auto/default");
-        expect(yield* start("full-access/default", { runtimeMode: "full-access" })).toBe(
-          "runtime_mode_escalation_denied",
-        );
-        // A malformed header is refused before anything runs.
-        expect(yield* start("auto")).toBe(400);
-        expect(yield* start("auto/default/extra")).toBe(400);
-        expect(yield* start("root/default")).toBe(400);
-      }),
-    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+      const parentTools = yield* listedTools("parentToken");
+      const childTools = yield* listedTools("childToken");
+      expect(parentTools).toEqual(
+        expect.arrayContaining(["link_pull_request", "watch_pull_request", "unwatch_pull_request"]),
+      );
+      expect(childTools).toContain("link_pull_request");
+      expect(childTools).not.toContain("watch_pull_request");
+      expect(childTools).not.toContain("unwatch_pull_request");
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
