@@ -184,7 +184,7 @@ const requireCapabilities = () => {
   }
 };
 
-export const observeWorker = (worker: NodeWorkerThreads.Worker) => {
+const observeWorker = (worker: NodeWorkerThreads.Worker) => {
   const messages: unknown[] = [];
   const waiters = new Set<() => void>();
   let terminal: Error | undefined;
@@ -240,7 +240,7 @@ export const observeWorker = (worker: NodeWorkerThreads.Worker) => {
   };
 };
 
-export const checkpointTraffic = (worker: NodeWorkerThreads.Worker) => {
+const checkpointTraffic = (worker: NodeWorkerThreads.Worker) => {
   const send = worker.postMessage.bind(worker);
   const queued: Array<Parameters<typeof worker.postMessage>> = [];
   const requests: Message[] = [];
