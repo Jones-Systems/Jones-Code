@@ -73,7 +73,11 @@ describe("source-grounded monitor cohorts", () => {
     for (const patch of [
       { status: "waiting" as const },
       { goal: { objective: "Finish", status: "active" as const } },
-      { pendingBackgroundTasks: [{ kind: "monitor" as const, taskId: "watch", awaited: true }] },
+      {
+        pendingBackgroundTasks: [
+          { kind: "monitor" as const, taskId: "watch", awaited: true as const },
+        ],
+      },
       { blockedOnThreadWait: true },
       { activeRunId: RunId.make("active") },
     ])
