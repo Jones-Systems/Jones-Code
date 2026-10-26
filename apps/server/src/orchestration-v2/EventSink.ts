@@ -3,6 +3,8 @@ import { makeDependencyStore } from "../jones/threadResultDependencies/Dependenc
 import * as DependencyChanges from "../jones/threadResultDependencies/DependencyChanges.ts";
 import { acceptEvents as acceptDependencyEvents } from "../jones/threadResultDependencies/TransactionHooks.ts";
 import type { OpenRequest, WakeCommit } from "../jones/threadResultDependencies/DependencyCommit.ts";
+import type { ThreadTitleCommitContext } from "../jones/threadTitle/commitContext.ts";
+import type { CodexFailoverCommitContext } from "../jones/codexFailover/CodexFailover.ts";
 import type { ThreadSelfConfigurationCommitContext } from "../jones/threadConfiguration/ThreadSelfConfiguration.ts";
 import type { TaskContinuationCommitContext } from "../jones/taskContinuation/commitContext.ts";
 import * as HistoricalTerminalHistory from "../jones/orchestration/HistoricalTerminalHistory.ts";
@@ -355,9 +357,11 @@ export interface EventSinkV2Shape {
     EventSinkV2Error
   >;
   readonly commitCommand: (input: {
+    readonly codexFailover?: CodexFailoverCommitContext | undefined;
     readonly taskContinuation?: TaskContinuationCommitContext | undefined;
     readonly resultRequest?: OpenRequest | undefined;
     readonly dependencyWake?: WakeCommit | undefined;
+    readonly threadTitle?: ThreadTitleCommitContext | undefined;
     readonly selfSettlementProjectRemaining?: SelfSettlementProjectRemaining;
     readonly settlementRestore?: { readonly settleCommandId: CommandId };
     readonly ordinaryCheckoutCommand?: CheckoutIntent.IntentCommand;
@@ -1254,9 +1258,12 @@ const layerBase: Layer.Layer<
 
           if (input.threadSelfConfiguration)
             input = { ...input, events: yield* input.threadSelfConfiguration.revalidate() };
+          if (input.codexFailover?.revalidate)
+            input = { ...input, events: yield* input.codexFailover.revalidate(input) };
           if (input.providerConversationReselection)
             yield* input.providerConversationReselection.revalidate(input);
           if (input.taskContinuation) yield* input.taskContinuation.accept(input);
+          if (input.threadTitle) yield* input.threadTitle.accept;
 
           if (imported !== undefined && choice !== undefined && choice.rejectionReason !== null) {
             const receipt: CommandReceiptStore.CommandReceiptV2 = {
@@ -1313,6 +1320,7 @@ const layerBase: Layer.Layer<
           if (input.resultRequest) yield* dependencies.open(input.resultRequest);
           if (input.dependencyWake) yield* dependencies.admitWake(input.dependencyWake);
           yield* acceptDependencyEvents(dependencies, storedEvents.map((stored) => stored.event), input, false);
+          if (input.codexFailover?.accept) yield* input.codexFailover.accept(input);
           if (Option.isSome(admission)) yield* admission.value.admit(input.effects, input.events);
           yield* effectOutbox.enqueue(input.effects);
           const receipt: CommandReceiptStore.CommandReceiptV2 = {

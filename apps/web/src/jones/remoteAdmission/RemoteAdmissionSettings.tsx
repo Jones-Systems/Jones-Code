@@ -80,6 +80,36 @@ function EvaluatorConfiguration({ environmentId }: { readonly environmentId: Env
     selectedModel &&
     !selectedModel.isUnavailable,
   );
+  const configuredProviders = providerData ?? EMPTY_SERVER_PROVIDERS;
+  const configuredModelOptions = getCustomModelOptionsByInstance(settings, configuredProviders);
+  const rejectedInstances = sortProviderInstanceEntries(
+    applyProviderInstanceSettings(
+      deriveProviderInstanceEntries(configuredProviders),
+      settings,
+      null,
+    ),
+  ).flatMap((entry) => {
+    const provider = entry.snapshot;
+    let reason: string;
+    if (provider.supportsRemoteRequestEvaluation !== true) {
+      reason = "Does not advertise remote evaluation support.";
+    } else if (provider.availability === "unavailable") {
+      reason = `Unavailable.${provider.unavailableReason ? ` ${provider.unavailableReason}` : ""}`;
+    } else if (!entry.enabled) {
+      reason = "Not enabled.";
+    } else if (provider.auth.status === "unauthenticated") {
+      reason = `Not signed in.${provider.message ? ` ${provider.message}` : ""}`;
+    } else if (entry.status !== "ready") {
+      reason = `Status: ${entry.status}.${provider.message ? ` ${provider.message}` : ""}`;
+    } else if (
+      !configuredModelOptions.get(entry.instanceId)?.some((model) => !model.isUnavailable)
+    ) {
+      reason = "No available models reported.";
+    } else {
+      return [];
+    }
+    return [{ entry, reason }];
+  });
   const blocked = busy
     ? "Saving evaluator settings…"
     : loadFailed
@@ -287,14 +317,21 @@ function EvaluatorConfiguration({ environmentId }: { readonly environmentId: Env
           {error}
         </p>
       ) : null}
+      {providersKnown && rejectedInstances.length > 0 ? (
+        <ul
+          aria-label="Provider instances unavailable for remote evaluation"
+          className="space-y-1 text-xs text-muted-foreground wrap-anywhere"
+        >
+          {rejectedInstances.map(({ entry, reason }) => (
+            <li key={entry.instanceId}>
+              <bdi>{entry.displayName}</bdi> · <bdi>{entry.instanceId}</bdi>: {reason}
+            </li>
+          ))}
+        </ul>
+      ) : null}
       <p className="text-xs text-muted-foreground">
-        {providerData?.some((provider) => provider.driver === "codex") ? (
-          <>
-            This Codex CLI integration cannot disable all task tools. Managed Codex (ChatGPT
-            authorization) and qualified Claude integrations support remote evaluation.{" "}
-          </>
-        ) : null}
-        Held requests stay in the{" "}
+        Only provider instances that advertise tool-free remote evaluation can be selected. Held
+        requests stay in the{" "}
         <Link to="/requests" className="underline underline-offset-2">
           Requests inbox
         </Link>

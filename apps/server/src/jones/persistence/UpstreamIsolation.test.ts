@@ -328,6 +328,8 @@ it.effect(
         [122, "ThreadLinks"],
         [123, "WorkspaceLifecycle"],
         [124, "TaskContinuations"],
+        [129, "CodexFailover"],
+        [130, "ThreadTitleRefinement"],
         [131, "ThreadResultDependencies"],
       ]);
       assert.deepStrictEqual(

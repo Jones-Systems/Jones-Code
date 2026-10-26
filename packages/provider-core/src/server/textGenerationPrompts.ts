@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import { assessmentAddendum, assessedThreadTitleSchema } from "./jones/ThreadTitleAssessment.ts";
 import * as Effect from "effect/Effect";
 import { limitTitleMessage } from "./threadTitleContext.ts";
 import type { BranchNamingOptions, ChatAttachment } from "@t3tools/contracts";
@@ -347,6 +348,7 @@ export function buildBranchNamePrompt(input: BranchNamePromptInput) {
 }
 
 export interface ThreadTitlePromptInput {
+  titleAssessment?: boolean | undefined;
   linkedContext?: string | undefined;
   message: string;
   previousTitle?: string | undefined;
@@ -475,10 +477,11 @@ export function buildThreadTitlePrompt(input: ThreadTitlePromptInput) {
       input.forkSource === undefined ? "Thread contents" : "Thread contents after the fork";
     prompt = `${regenerateThreadTitlePrompt(input.previousTitle)}${forkSourceSection(input.forkSource)}\n\n${label}:\n${message}${threadTitlePromptSuffix(input)}`;
   }
+  if (input.titleAssessment) prompt += assessmentAddendum;
   const outputSchema = Schema.Struct({
     title: Schema.String,
     needsRefinement: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   });
 
-  return { prompt, outputSchema };
+  return { prompt, outputSchema: input.titleAssessment ? assessedThreadTitleSchema : outputSchema };
 }

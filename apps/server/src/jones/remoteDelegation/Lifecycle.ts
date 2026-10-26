@@ -19,6 +19,7 @@ import { ProjectToolkit } from "../../mcp/toolkits/project/tools.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as PeerForwarding from "../../peer/PeerForwarding.ts";
 import * as PeerLinks from "../../peer/PeerLinks.ts";
+import { LinkedRequestSentAtOverride } from "../peerTransport/LinkedRequestContext.ts";
 import * as IntentStore from "./IntentStore.ts";
 import * as ObservationSupport from "./ObservationSupport.ts";
 import { CancelRemoteAdmissionTool } from "../remoteAdmissionIntegration/tools.ts";
@@ -178,7 +179,10 @@ export const make = Effect.fn("RemoteDelegationLifecycle.make")(function* (
               envelope.environmentId,
               envelope.launch,
             )
-            .pipe(Effect.result);
+            .pipe(
+              Effect.provideService(LinkedRequestSentAtOverride, intent.createdAt),
+              Effect.result,
+            );
           if (outcome._tag === "Failure") {
             const error = outcome.failure;
             if (error.remoteAdmission !== undefined)

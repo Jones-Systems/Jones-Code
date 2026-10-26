@@ -103,6 +103,8 @@ If dragging is unavailable for one environment, update the T3 Code server runnin
 environment. Pinned and active reordering require server support. Threads from older servers keep
 their default order until the server is updated.
 
+Automatic titles may improve as you clarify your goal in your first three messages, stopping once the title is specific enough. Renaming, manually regenerating, or cancelling title generation stops further automatic changes for that thread.
+
 To generate a fresh title from the conversation, open a thread's menu and choose
 **Regenerate title**. The action is unavailable while title generation is in progress
 or when the connected environment needs a server update.

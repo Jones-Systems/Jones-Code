@@ -148,6 +148,7 @@ vi.mock("./use-composer-drafts", async () => {
     getComposerDraftSnapshot: () => state.draft,
     clearComposerDraftContent: state.clearDraft,
     clearComposerDraft: state.clearDraft,
+    consumeSubmittedComposerModelPick: vi.fn(),
     setComposerDraftText: (_key: string, text: string) => {
       state.draft.text = text;
     },
