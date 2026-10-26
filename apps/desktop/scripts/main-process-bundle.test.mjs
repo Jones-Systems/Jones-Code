@@ -131,6 +131,7 @@ it("loads the emitted packaged boot entry and backend cache preload", async () =
       "src/jones/previewCompanion/CompanionProduct.ts",
       "src/jones/updates/jonesNativeStartup.ts",
       "src/jones/updates/jonesNativeHelperSource.ts",
+      "src/jones/updates/jonesSigningSource.ts",
       "src/jones/updates/jonesPairedStateSource.ts",
       "src/jones/updates/jonesColdDarwinLayout.ts",
     ];
