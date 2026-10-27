@@ -301,13 +301,13 @@ it.effect.each(["success", "failure"] as const)(
     }).pipe(Effect.provide(NodeServices.layer)),
 );
 
-
 it.effect.each(["codex", "claude-code"])(
   "preparing rebind proves pristine %s work and refuses every possible invocation",
   (driverName) => {
     const pendingDriver = ProviderDriverKind.make(driverName);
     const adapter = (instanceId: ProviderInstanceId) => ({
-      instanceId, driver: pendingDriver,
+      instanceId,
+      driver: pendingDriver,
       getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
       planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
       openSession: () => Effect.die("A preparation proof cannot open a session"),
@@ -315,12 +315,19 @@ it.effect.each(["codex", "claude-code"])(
     const registry = Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistryV2, {
       get: (id) => Effect.succeed(adapter(id)),
       list: () => Effect.succeed([current, target]),
-      getMetadata: () => Effect.succeed({ driver: pendingDriver, continuationKey: "shared", enabled: true, capabilities: CodexProviderCapabilitiesV2 }),
+      getMetadata: () =>
+        Effect.succeed({
+          driver: pendingDriver,
+          continuationKey: "shared",
+          enabled: true,
+          capabilities: CodexProviderCapabilitiesV2,
+        }),
     });
     const runtime = Layer.merge(
       ProviderSwitch.layer.pipe(Layer.provide(registry)),
       ProviderReplayHarness.layerWithRegistry(
-        { name: "preparing-rebind-guards-" + driverName }, registry,
+        { name: "preparing-rebind-guards-" + driverName },
+        registry,
         { runEffectWorker: false, serverConfigLayer: TestFixture.layer },
       ),
     );
@@ -328,31 +335,79 @@ it.effect.each(["codex", "claude-code"])(
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const service = yield* ProviderSwitch.ProviderSwitchServiceV2;
       yield* orchestrator.dispatch({
-        type: "thread.create", commandId: CommandId.make("preparing:create"), threadId,
-        projectId: ProjectId.make("project:preparing"), title: "Pristine preparation",
-        modelSelection, runtimeMode: "full-access", interactionMode: "default",
-        branch: null, worktreePath: null, createdBy: "user", creationSource: "web",
+        type: "thread.create",
+        commandId: CommandId.make("preparing:create"),
+        threadId,
+        projectId: ProjectId.make("project:preparing"),
+        title: "Pristine preparation",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
       });
-      for (const [id, mode] of [["first", "defer_start"], ["second", "queue_after_active"]] as const)
+      for (const [id, mode] of [
+        ["first", "defer_start"],
+        ["second", "queue_after_active"],
+      ] as const)
         yield* orchestrator.dispatch({
-          type: "message.dispatch", commandId: CommandId.make(id), threadId, messageId: MessageId.make(id),
-          text: id, attachments: [], createdBy: "user", creationSource: "web", dispatchMode: { type: mode },
+          type: "message.dispatch",
+          commandId: CommandId.make(id),
+          threadId,
+          messageId: MessageId.make(id),
+          text: id,
+          attachments: [],
+          createdBy: "user",
+          creationSource: "web",
+          dispatchMode: { type: mode },
         });
       const before = yield* orchestrator.getThreadProjection(threadId);
-      assert.equal(preparingPendingProviderThread(before, before)?.id, before.thread.activeProviderThreadId);
+      assert.equal(
+        preparingPendingProviderThread(before, before)?.id,
+        before.thread.activeProviderThreadId,
+      );
       const plan = yield* service.plan({
-        projection: before, beforeStartEvidence: before, rebindPreparing: true,
+        projection: before,
+        beforeStartEvidence: before,
+        rebindPreparing: true,
         targetModelSelection: { ...modelSelection, instanceId: target },
       });
       assert.equal(plan.rebindPendingProviderThread?.id, before.thread.activeProviderThreadId);
-      const mutations: ReadonlyArray<(p: OrchestrationV2ThreadProjection) => OrchestrationV2ThreadProjection> = [
-        ...variants.filter(({ name }) => !["wrong pending driver", "missing interrupt proof", "unknown interrupt text", "missing current metadata", "unloaded evidence"].includes(name)).map(({ change }) => change),
+      const mutations: ReadonlyArray<
+        (p: OrchestrationV2ThreadProjection) => OrchestrationV2ThreadProjection
+      > = [
+        ...variants
+          .filter(
+            ({ name }) =>
+              ![
+                "wrong pending driver",
+                "missing interrupt proof",
+                "unknown interrupt text",
+                "missing current metadata",
+                "unloaded evidence",
+              ].includes(name),
+          )
+          .map(({ change }) => change),
         (p) => ({ ...p, attempts: p.attempts.map((a) => ({ ...a, reason: "steering_restart" })) }),
         (p) => ({ ...p, attempts: p.attempts.map((a) => ({ ...a, attemptOrdinal: 2 })) }),
         (p) => ({ ...p, attempts: p.attempts.map((a) => ({ ...a, status: "running" })) }),
         (p) => ({ ...p, nodes: p.nodes.map((n) => ({ ...n, status: "running" })) }),
-        (p) => ({ ...p, providerThreads: p.providerThreads.map((t) => ({ ...t, nativeThreadRef: { driver: pendingDriver, nativeId: "native", strength: "strong" } })) }),
-        (p) => ({ ...p, providerThreads: p.providerThreads.map((t) => ({ ...t, handoffIds: [ContextHandoffId.make("handoff")] })) }),
+        (p) => ({
+          ...p,
+          providerThreads: p.providerThreads.map((t) => ({
+            ...t,
+            nativeThreadRef: { driver: pendingDriver, nativeId: "native", strength: "strong" },
+          })),
+        }),
+        (p) => ({
+          ...p,
+          providerThreads: p.providerThreads.map((t) => ({
+            ...t,
+            handoffIds: [ContextHandoffId.make("handoff")],
+          })),
+        }),
       ];
       for (const change of mutations) {
         const changed = change(before);

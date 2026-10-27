@@ -2119,7 +2119,11 @@ export const layerWsRpc = (
               }).pipe(
                 Effect.andThen(
                   startup
-                    .enqueueCommand(queueCompatibility.dispatch(command, "legacy_websocket").pipe(withOwnerSelectionIngress))
+                    .enqueueCommand(
+                      queueCompatibility
+                        .dispatch(command, "legacy_websocket")
+                        .pipe(withOwnerSelectionIngress),
+                    )
                     .pipe(
                       Effect.mapError((error) => {
                         const cause = error.cause;

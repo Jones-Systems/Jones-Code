@@ -140,13 +140,13 @@ export const layer: Layer.Layer<
             Option.isSome(targetInstance) &&
             currentInstance.value.driver === targetInstance.value.driver &&
             targetInstance.value.enabled
-              ? (currentInstance.value.driver === "codex"
+              ? ((currentInstance.value.driver === "codex"
                   ? interruptedPendingProviderThread(projection, beforeStartEvidence)
                   : undefined) ??
                 (rebindPreparing === true &&
                 beforeStartEvidence?.providerThreads[0]?.driver === targetInstance.value.driver
                   ? preparingPendingProviderThread(projection, beforeStartEvidence)
-                  : undefined)
+                  : undefined))
               : undefined;
           const hasCurrentHistory =
             currentSessions.length > 0 ||

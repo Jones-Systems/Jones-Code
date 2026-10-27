@@ -7,10 +7,7 @@ import type {
 } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import type * as DateTime from "effect/DateTime";
-import type {
-  RecordedRun,
-  RecordedLifecycleEvent,
-} from "../../orchestration-v2/RecordedTypes.ts";
+import type { RecordedRun, RecordedLifecycleEvent } from "../../orchestration-v2/RecordedTypes.ts";
 
 interface SelectionCommand {
   readonly type: string;
@@ -83,9 +80,10 @@ export function ownerSelectionCommit(
 export const hasSelectionEvent = (
   events: ReadonlyArray<SelectionEvent>,
   threadId?: ThreadId,
-): boolean => events.some((event) =>
-  selectionEvent(event) && (threadId === undefined || event.threadId === threadId),
-);
+): boolean =>
+  events.some(
+    (event) => selectionEvent(event) && (threadId === undefined || event.threadId === threadId),
+  );
 
 export function pendingOwnerSelection(
   owner: { readonly modelSelection: ModelSelection } | null,
@@ -122,12 +120,14 @@ export function rebindPreAdmissionRun(
     },
     ...(attempt === undefined || attempt.providerInstanceId === selection.instanceId
       ? []
-      : [{
-          ...common,
-          type: "run-attempt.updated" as const,
-          nodeId: attempt.rootNodeId,
-          payload: { ...attempt, providerInstanceId: selection.instanceId },
-        }]),
+      : [
+          {
+            ...common,
+            type: "run-attempt.updated" as const,
+            nodeId: attempt.rootNodeId,
+            payload: { ...attempt, providerInstanceId: selection.instanceId },
+          },
+        ]),
   ];
 }
 
@@ -142,7 +142,9 @@ export function admittedSessionIds(
   );
   return new Set(
     providerThreads.flatMap((thread) =>
-      admitted.has(thread.id) && thread.providerSessionId !== null ? [thread.providerSessionId] : [],
+      admitted.has(thread.id) && thread.providerSessionId !== null
+        ? [thread.providerSessionId]
+        : [],
     ),
   );
 }
@@ -157,7 +159,9 @@ export function ownerSteerSelection(input: {
   const ownerTransition = input.ownerMessage && (input.explicit || input.pending !== undefined);
   return {
     modelSelection: ownerTransition
-      ? (input.explicit ? input.requested : input.pending!)
+      ? input.explicit
+        ? input.requested
+        : input.pending!
       : input.active,
     ownerTransition,
   };
@@ -172,6 +176,8 @@ export function ownerPromoteSelection(input: {
 }): { readonly modelSelection: ModelSelection; readonly ownerTransition: boolean } {
   if (input.automaticBoundary) return { modelSelection: input.queued, ownerTransition: false };
   const ownerTransition =
-    input.ingress && input.pending !== undefined && modelSelectionsEqual(input.pending, input.queued);
+    input.ingress &&
+    input.pending !== undefined &&
+    modelSelectionsEqual(input.pending, input.queued);
   return { modelSelection: ownerTransition ? input.queued : input.active, ownerTransition };
 }

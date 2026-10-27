@@ -79,17 +79,18 @@ function pristinePendingProviderThread(
       node.rootNodeId === node.id &&
       node.providerTurnId === null &&
       node.nativeItemRef === null &&
-      (pristine || evidence.turnItems.some(
-        (item) =>
-          item.type === "run_interrupt_result" &&
-          item.threadId === run.threadId &&
-          item.runId === run.id &&
-          item.nodeId === run.rootNodeId &&
-          item.providerThreadId === pending.id &&
-          item.status === "interrupted" &&
-          item.completedAt !== null &&
-          item.message === "Run interrupted before provider start",
-      ))
+      (pristine ||
+        evidence.turnItems.some(
+          (item) =>
+            item.type === "run_interrupt_result" &&
+            item.threadId === run.threadId &&
+            item.runId === run.id &&
+            item.nodeId === run.rootNodeId &&
+            item.providerThreadId === pending.id &&
+            item.status === "interrupted" &&
+            item.completedAt !== null &&
+            item.message === "Run interrupted before provider start",
+        ))
     );
   });
   return provedBeforeStart ? pending : undefined;

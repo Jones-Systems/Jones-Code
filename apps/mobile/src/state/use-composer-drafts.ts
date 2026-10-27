@@ -1790,7 +1790,9 @@ export function undoComposerDraftMergeState(
     attachments: existing.attachments.filter(
       (attachment) => !insertedAttachmentIds.has(attachment.id),
     ),
-    modelSelection: modelSelectionUntouched ? undoSetting("modelSelection") : existing.modelSelection,
+    modelSelection: modelSelectionUntouched
+      ? undoSetting("modelSelection")
+      : existing.modelSelection,
     runtimeMode: undoSetting("runtimeMode"),
     interactionMode: undoSetting("interactionMode"),
     workspaceSelection: undoSetting("workspaceSelection"),

@@ -51,7 +51,9 @@ export function composerModelSelectionSnapshotIsCurrent(
   draftKey: string,
   snapshot: SelectionSnapshot,
 ): boolean {
-  return !snapshots.has(snapshot) || snapshots.get(snapshot) === interactions.get(draftKey)?.identity;
+  return (
+    !snapshots.has(snapshot) || snapshots.get(snapshot) === interactions.get(draftKey)?.identity
+  );
 }
 
 export function outboxSelectionCommandFields(message: QueuedSelection): {

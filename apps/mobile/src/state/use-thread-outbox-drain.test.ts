@@ -238,47 +238,50 @@ describe("queued mobile selection intent", () => {
     [undefined, 2],
     [undefined, 3],
     [undefined, 4],
-  ] as const)("forwards explicitness %s from version %s storage to delivery", async (flag, version) => {
-    const modelSelection = {
-      instanceId: ProviderInstanceId.make("codex"),
-      model: "gpt-6.1-sol",
-      options: [{ id: "reasoningEffort", value: "high" }],
-    };
-    const encoded = JSON.parse(
-      JSON.stringify(
-        encodeQueuedThreadMessage({
-          ...queuedMessage({ messageId: `selection-${version}-${flag}`, text: "Continue" }),
-          modelSelection,
-          ...(flag === undefined ? {} : { modelSelectionExplicit: flag }),
-        }),
-      ),
-    );
-    expect(encoded.schemaVersion).toBe(3);
-    const stored = decodeQueuedThreadMessage(
-      JSON.parse(JSON.stringify({ ...encoded, schemaVersion: version })),
-    );
-    await harness.manager.enqueue(stored);
-    const [enqueued] = remainingMessages();
-    expect(enqueued).toEqual(stored);
-    if (!enqueued) throw new Error("Expected the stored outbox entry");
-    const input = buildQueuedFollowUpStartTurnInput({
-      message: enqueued,
-      settings: { modelSelection, runtimeMode: "full-access", interactionMode: "default" },
-      attachments: [],
-      inlineMessageContext: true,
-    });
+  ] as const)(
+    "forwards explicitness %s from version %s storage to delivery",
+    async (flag, version) => {
+      const modelSelection = {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-6.1-sol",
+        options: [{ id: "reasoningEffort", value: "high" }],
+      };
+      const encoded = JSON.parse(
+        JSON.stringify(
+          encodeQueuedThreadMessage({
+            ...queuedMessage({ messageId: `selection-${version}-${flag}`, text: "Continue" }),
+            modelSelection,
+            ...(flag === undefined ? {} : { modelSelectionExplicit: flag }),
+          }),
+        ),
+      );
+      expect(encoded.schemaVersion).toBe(3);
+      const stored = decodeQueuedThreadMessage(
+        JSON.parse(JSON.stringify({ ...encoded, schemaVersion: version })),
+      );
+      await harness.manager.enqueue(stored);
+      const [enqueued] = remainingMessages();
+      expect(enqueued).toEqual(stored);
+      if (!enqueued) throw new Error("Expected the stored outbox entry");
+      const input = buildQueuedFollowUpStartTurnInput({
+        message: enqueued,
+        settings: { modelSelection, runtimeMode: "full-access", interactionMode: "default" },
+        attachments: [],
+        inlineMessageContext: true,
+      });
 
-    // Equal model values carry different intent; delivery must preserve the stored flag.
-    expect(input.modelSelection).toEqual(modelSelection);
-    expect(input.commandId).toBe(stored.commandId);
-    expect(input.message.messageId).toBe(stored.messageId);
-    if (flag === undefined) {
-      expect(stored).not.toHaveProperty("modelSelectionExplicit");
-      expect(input).not.toHaveProperty("modelSelectionExplicit");
-    } else {
-      expect(input.modelSelectionExplicit).toBe(flag);
-    }
-  });
+      // Equal model values carry different intent; delivery must preserve the stored flag.
+      expect(input.modelSelection).toEqual(modelSelection);
+      expect(input.commandId).toBe(stored.commandId);
+      expect(input.message.messageId).toBe(stored.messageId);
+      if (flag === undefined) {
+        expect(stored).not.toHaveProperty("modelSelectionExplicit");
+        expect(input).not.toHaveProperty("modelSelectionExplicit");
+      } else {
+        expect(input.modelSelectionExplicit).toBe(flag);
+      }
+    },
+  );
 });
 
 describe.each(["rejected", "delivered"] as const)("%s outbox selection recovery", (kind) => {
@@ -295,7 +298,10 @@ describe.each(["rejected", "delivered"] as const)("%s outbox selection recovery"
       JSON.parse(
         JSON.stringify(
           encodeQueuedThreadMessage({
-            ...queuedMessage({ messageId: `restore-selection-${kind}-${flag}`, text: "Recover me" }),
+            ...queuedMessage({
+              messageId: `restore-selection-${kind}-${flag}`,
+              text: "Recover me",
+            }),
             modelSelection: selection,
             ...(flag === undefined ? {} : { modelSelectionExplicit: flag }),
           }),
@@ -1121,7 +1127,9 @@ describe("thread outbox recovery rollback", () => {
         text: "Typed before",
         attachments: [],
       });
-      expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toEqual(ownerSelection);
+      expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toEqual(
+        ownerSelection,
+      );
       expect(remainingMessages()).toEqual([message]);
     },
   );

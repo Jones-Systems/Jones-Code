@@ -1332,9 +1332,12 @@ const layerBase: Layer.Layer<
           }
           if (input.runtimeStop) yield* runtimeStops.record(input.runtimeStop);
           yield* ownerSelections.commit({
-            threadId: input.threadId, commandId: input.commandId,
-            sequence: receipt.resultSequence, events: input.events,
-            record: input.ownerSelection, recordedAt: input.acceptedAt,
+            threadId: input.threadId,
+            commandId: input.commandId,
+            sequence: receipt.resultSequence,
+            events: input.events,
+            record: input.ownerSelection,
+            recordedAt: input.acceptedAt,
           });
           if (input.ownerSelection !== undefined)
             yield* codexFailoverStore.clearQueuedOverrides(

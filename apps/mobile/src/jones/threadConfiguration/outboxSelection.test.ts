@@ -76,7 +76,10 @@ describe("mobile outbox model selection", () => {
   it.each([false, undefined])("never restores inherited or legacy picks (%s)", (flag) => {
     expect(
       outboxSelectionRestoreSettings(
-        { modelSelection: selection, ...(flag === undefined ? {} : { modelSelectionExplicit: flag }) },
+        {
+          modelSelection: selection,
+          ...(flag === undefined ? {} : { modelSelectionExplicit: flag }),
+        },
         "inherited",
         {},
         {},
@@ -142,7 +145,9 @@ describe("mobile outbox model selection", () => {
       expect(composerModelSelectionSnapshotIsCurrent(key, merged)).toBe(true);
       retainComposerModelSelectionSnapshot(merged, before);
       expect(composerModelSelectionSnapshotIsCurrent(key, merged)).toBe(false);
-      expect(composerModelSelectionSnapshotIsCurrent(key, { modelSelection: selection })).toBe(true);
+      expect(composerModelSelectionSnapshotIsCurrent(key, { modelSelection: selection })).toBe(
+        true,
+      );
     } finally {
       release();
     }

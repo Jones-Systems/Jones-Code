@@ -56,9 +56,10 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
   }
   // A new session key prevents a pooled sibling's resident runtime from being reused.
   const replacement =
-    (plan.transition.type === "restart_and_resume" ||
-      (run.restartContinuationOfRunId !== undefined &&
-        (plan.transition.type === "switch_model_in_session" || plan.transition.type === "create_with_handoff")))
+    plan.transition.type === "restart_and_resume" ||
+    (run.restartContinuationOfRunId !== undefined &&
+      (plan.transition.type === "switch_model_in_session" ||
+        plan.transition.type === "create_with_handoff"))
       ? {
           ...provider,
           providerSessionId: ProviderSessionId.make(
