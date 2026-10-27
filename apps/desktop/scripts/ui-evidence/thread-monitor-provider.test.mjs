@@ -96,6 +96,7 @@ NodeTest.test(
     NodeAssert.equal(input.params.isBlocking, false);
     p.protocol.startApproval();
     const approval = p.request();
+    NodeAssert.equal(approval.params.startedAtMs, 1700000000000);
     NodeAssert.notEqual(input.id, approval.id);
     p.respond({ decision: "accept" });
     NodeAssert.equal(p.ledger.filter((e) => e.event === "completed").length, 0);

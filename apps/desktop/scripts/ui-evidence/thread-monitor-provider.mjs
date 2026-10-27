@@ -484,7 +484,12 @@ export function createMonitorProtocol({ write, trace, id, now }, spec) {
       request(
         "item/commandExecution/requestApproval",
         id(),
-        { command: "synthetic-monitor-noop", reason: "Approval alongside unanswered input", cwd },
+        {
+          command: "synthetic-monitor-noop",
+          reason: "Approval alongside unanswered input",
+          cwd,
+          startedAtMs: now(),
+        },
         { decision: "accept" },
       );
     },
