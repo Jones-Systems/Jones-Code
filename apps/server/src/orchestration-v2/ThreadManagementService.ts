@@ -1,3 +1,5 @@
+import * as DependencyChanges from "../jones/threadResultDependencies/DependencyChanges.ts";
+import * as Queue from "effect/Queue";
 import type { ObservationPorts } from "../jones/remoteDelegation/ObservationHooks.ts";
 import { IncomingLinkedMessage } from "../jones/peerTransport/LinkedMessageOrigin.ts";
 import {
@@ -1150,7 +1152,27 @@ const make = Effect.gen(function* () {
         : { blockingQuestions: current.questions, observationChanged: current.questionChanged }),
       ...(current.resultRun === undefined ? {} : { resultRun: current.resultRun }),
     });
-    const initial = yield* evaluate(target.runs);
+    const dependencyChanges = yield* Effect.serviceOption(DependencyChanges.DependencyChanges);
+    const dependencySubscription = Option.isSome(dependencyChanges)
+      ? yield* dependencyChanges.value.subscribe
+      : undefined;
+    const continuationSignals = yield* Queue.unbounded<void>();
+    const watchingContinuations = new Set<RunId>();
+    const evaluateAndWatch = (runs: ReadonlyArray<OrchestrationV2Run>) =>
+      evaluate(runs).pipe(
+        Effect.tap((current) => {
+          if (!current.pending || watchingContinuations.has(current.run.id)) return Effect.void;
+          watchingContinuations.add(current.run.id);
+          return orchestrator
+            .awaitRestartContinuation(current.run)
+            .pipe(
+              Effect.andThen(Queue.offer(continuationSignals, undefined)),
+              Effect.forkScoped,
+              Effect.asVoid,
+            );
+        }),
+      );
+    const initial = yield* evaluateAndWatch(target.runs);
     if (initial.settled || initial.questionChanged) return settledResult(initial);
 
     // A declined continuation records no event, so its effect settling wakes
@@ -1192,13 +1214,18 @@ const make = Effect.gen(function* () {
             stored.event.payload.restartContinuationOfRunId !== undefined,
         ),
       ),
-      initial.pending
-        ? Stream.fromEffect(orchestrator.awaitRestartContinuation(initial.run))
-        : Stream.empty,
+      Stream.merge(
+        Stream.fromQueue(continuationSignals),
+        dependencySubscription === undefined
+          ? Stream.empty
+          : Stream.fromSubscription(dependencySubscription).pipe(
+              Stream.filter((change) => change.threadIds.includes(input.threadId)),
+            ),
+      ),
     ).pipe(
       Stream.mapEffect(() =>
         getProjectThreadRecords(input, ["runs"]).pipe(
-          Effect.flatMap((current) => evaluate(current.runs)),
+          Effect.flatMap((current) => evaluateAndWatch(current.runs)),
         ),
       ),
       Stream.filter((current) => current.settled || current.questionChanged),
@@ -1211,7 +1238,7 @@ const make = Effect.gen(function* () {
     // winning the race; the final projection read decides what actually
     // happened, so only a still-active run counts as timed out.
     return settledResult(yield* evaluate((yield* getProjectThreadRecords(input, ["runs"])).runs));
-  });
+  }, Effect.scoped);
 
   const settleAfterRun: ThreadManagementServiceShape["settleAfterRun"] = Effect.fn(
     "orchestrationV2.threadManagement.settleAfterRun",

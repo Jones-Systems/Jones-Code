@@ -49,28 +49,43 @@ export function hostStatusMetrics(sample: HostStatus | undefined) {
       ramHealth: "unavailable",
       health: "unavailable",
       detail: reason,
+      tooltipLines: [reason],
     } as const;
   }
   const cpuHealth = utilizationHealth(host.cpuUsagePercent);
   const cpu = `${Math.round(host.cpuUsagePercent)}%`;
   const availableMemoryBytes = host.availableMemoryBytes;
+  const formatGiB = (bytes: number) => `${Number((bytes / 1024 ** 3).toFixed(1))} GiB`;
+  const storageLabel =
+    host.storageMountPoint &&
+    host.storageMountPoint !== "/" &&
+    host.storageMountPoint !== "/System/Volumes/Data"
+      ? `Storage (${host.storageMountPoint})`
+      : "Storage";
+  const tooltipLines = [
+    `CPU ${cpu} of total cores`,
+    `RAM ${availableMemoryBytes === undefined ? "unavailable" : `${formatGiB(availableMemoryBytes)} available of ${formatGiB(host.totalMemoryBytes)}`}`,
+    ...(host.id === "mini" || host.id === "home"
+      ? [
+          `Swap I/O ${host.swapIoBytesPerSecond === undefined ? "unavailable" : `${(host.swapIoBytesPerSecond / 1024 ** 2).toFixed(1)} MiB/s`}`,
+        ]
+      : []),
+    `${storageLabel} ${host.availableStorageBytes === undefined || host.totalStorageBytes === undefined ? "unavailable" : `${formatGiB(host.availableStorageBytes)} free of ${formatGiB(host.totalStorageBytes)}`}`,
+  ];
   if (host.id === "mini" || host.id === "home") {
     const swap = host.swapIoBytesPerSecond;
     const swapMiB = swap === undefined ? undefined : swap / 1024 ** 2;
     const ramHealth = swapMiB === undefined ? "unavailable" : swapMiB > 10 ? "warning" : "healthy";
     const ram = swapMiB === undefined ? UNAVAILABLE_READING : `${swapMiB.toFixed(1)} mb/s`;
     const health = cpuHealth === "healthy" && ramHealth === "warning" ? "warning" : cpuHealth;
-    const availableRam =
-      availableMemoryBytes === undefined
-        ? "unavailable"
-        : `${(availableMemoryBytes / 1024 ** 3).toFixed(1)} GiB (collector estimate, including reclaimable memory)`;
     return {
       health,
       cpuHealth,
       ramHealth,
       cpu,
       ram,
-      detail: `CPU ${cpu} of total cores. Swap I/O ${swapMiB === undefined ? "unavailable" : `${swapMiB.toFixed(1)} MiB/s (combined reads and writes, 10-second average)`}. Available RAM ${availableRam}. Swap activity above 10 MiB/s is amber; this is not native macOS memory pressure or an agent-admission decision.`,
+      detail: tooltipLines.join(". "),
+      tooltipLines,
     } as const;
   }
   const ramHealth =
@@ -93,7 +108,8 @@ export function hostStatusMetrics(sample: HostStatus | undefined) {
     ramHealth,
     cpu,
     ram,
-    detail: `CPU ${cpu} of total cores. Available RAM ${availableMemoryBytes === undefined ? "unavailable" : `${ram} GiB (collector estimate, including reclaimable memory)`}. Colors reflect CPU and RAM utilization.`,
+    detail: tooltipLines.join(". "),
+    tooltipLines,
   } as const;
 }
 

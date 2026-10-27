@@ -331,6 +331,7 @@ it.effect(
         [129, "CodexFailover"],
         [130, "ThreadTitleRefinement"],
         [132, "OwnerSelections"],
+        [133, "ThreadResultDependencies"],
         [134, "GoalContinuity"],
       ]);
       assert.deepStrictEqual(

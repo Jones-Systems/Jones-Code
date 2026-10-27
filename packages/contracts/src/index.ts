@@ -130,3 +130,5 @@ export * from "./jones/linkedThreads.ts";
 
 export * from "./jones/desktopThreadMonitor.ts";
 export * from "./jones/guardedThreadSettlement.ts";
+
+export * from "./jones/threadResultDependency.ts";

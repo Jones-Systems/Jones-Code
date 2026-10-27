@@ -7,6 +7,7 @@
   },
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "paths": {
+    "scripts/jones/boundary/fragments/thread-result-dependencies.json": "jones-owned",
     "apps/server/src/jones/persistence/Migrations/132_JonesOwnerSelections.ts": "jones-owned",
     "apps/server/src/jones/threadConfiguration/ownerIngress.test.ts": "jones-owned",
     "apps/server/src/jones/threadConfiguration/ownerIngress.ts": "jones-owned",
