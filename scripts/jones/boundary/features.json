@@ -2482,6 +2482,20 @@
         "apps/mobile/src/jones/descendantApproval/PendingApprovalStack.test.tsx"
       ],
       "scope": "Shared selected-descendant approval atoms require current detail, current connected environment data, operate scope and an exact live pending request. Environment/thread/request scoped response guards preserve one-request actions and prevent duplicate dispatch. Web and mobile parent surfaces offer approval options, Next and Open while retaining parent input controls and stale-data explanations. Small lifecycle, ChatView, thread activity and mobile ThreadDetailScreen hooks connect Jones-owned controls. Existing ThreadActivityBanners browser harness proves parent-question coexistence; mobile Vite configuration registers the component interaction test in the native React harness. Monitor text and sidebar guidance point to the parent surface. Private package metadata exports the shared feature without a new wire contract. A bounded scrolling pending-request stack opts the existing iOS question card into in-flow expansion, preventing overlap; normal question-only overlay behavior remains. The existing PendingUserInputCard hook exposes this presentation option; its rendered regression uses the real card with native primitive mocks."
+    },
+    {
+      "id": "remote-owner-shell-retention",
+      "tests": [
+        "apps/server/src/jones/remoteDelegation/ShellRetention.test.ts",
+        "apps/server/src/jones/remoteDelegation/ShellRetention.diagnostic.test.ts",
+        "packages/shared/src/jones/threadAttention.test.ts",
+        "packages/client-runtime/src/jones/threadShellCompatibility.test.ts",
+        "apps/server/src/jones/remoteDelegation/ShellRetention.composition.test.ts",
+        "apps/web/src/jones/remoteDelegation/Sidebar.delegateRequests.browser.test.tsx",
+        "apps/mobile/src/jones/remoteDelegation/threadListV2.delegateRequests.test.ts",
+        "apps/mobile/src/jones/remoteDelegation/thread-order.delegateRequests.test.ts"
+      ],
+      "scope": "Reduced HTTP and WebSocket snapshots retain existing active owners of bound remote tasks in the snapshot reader transaction, preserving local ancestry and older-settled counts. A shared attention rule keeps asking remote delegates eligible for navigation when the loaded local parent chain is settled, incomplete, cyclic, or itself delegated. Existing orphan, environment, list placement and notification policies remain; no wire, schema, index or installed-runtime changes."
     }
   ]
 }

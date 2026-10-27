@@ -283,6 +283,32 @@ export function subagentRequest(thread: OrchestrationV2ThreadShell): PendingSuba
 }
 
 /**
+ * Hide a linked task only when its parent is loaded. Asking tasks also need a complete
+ * local chain to an unsettled, non-delegated root that can surface their request.
+ */
+export function isDelegatedTaskShownUnderParent(
+  task: OrchestrationV2ThreadShell,
+  parents: ReadonlyMap<ThreadId, OrchestrationV2ThreadShell> | null,
+  taskRequests: ReadonlyMap<ThreadId, PendingSubagentRequest>,
+): boolean {
+  const from = task.delegatedFrom;
+  if (from === undefined || parents === null) return false;
+  let row = parents.get(from.threadId);
+  if (row === undefined) return false;
+  if (subagentRequest(task) === null && !taskRequests.has(task.id)) return true;
+  const seen = new Set<ThreadId>();
+  while (row.lineage.relationshipToParent === "subagent") {
+    seen.add(row.id);
+    const parentId: ThreadId | null = row.lineage.parentThreadId;
+    const parent: OrchestrationV2ThreadShell | undefined =
+      parentId === null ? undefined : parents.get(parentId);
+    if (parent === undefined || seen.has(parent.id)) return false;
+    row = parent;
+  }
+  return row.delegatedFrom === undefined && row.settledOverride !== "settled";
+}
+
+/**
  * The threads to flag for a subagent's live question or approval, up its
  * subagent chain. `delegated` are tasks this environment's threads delegated
  * to linked environments, with what each one, or its own subagents, asks.

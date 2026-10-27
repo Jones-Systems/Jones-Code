@@ -1,3 +1,4 @@
+import { readRemoteTaskOwnerIds } from "./jones/remoteDelegation/ShellRetention.ts";
 import * as DependencyChanges from "./jones/threadResultDependencies/DependencyChanges.ts";
 import { makeDependencyStore } from "./jones/threadResultDependencies/DependencyStore.ts";
 import { makeJonesTablePresence } from "./jones/persistence/JonesTablePresence.ts";
@@ -1077,17 +1078,20 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
       },
     );
     const loadSnapshot = Effect.fn("ws.orchestrationV2.loadShellSnapshot")(function* () {
-      const base = buildActiveShellSnapshot(
-        yield* loadShellSnapshotParts({
-          sql,
-          readThreads: threadManagement.readShellSnapshot({ location: "active" }),
-          listProjects: projects.listShells(),
-          latestSequence: applicationEvents.latestApplicationSequence,
-        }),
-      );
+      const parts = yield* loadShellSnapshotParts({
+        sql,
+        readThreads: threadManagement.readShellSnapshot({ location: "active" }),
+        listProjects: projects.listShells(),
+        latestSequence: applicationEvents.latestApplicationSequence,
+        ...(input.omitIdleSubagents === true || input.omitOlderSettled === true
+          ? { readRetainedThreadIds: readRemoteTaskOwnerIds(sql) }
+          : {}),
+      });
+      const base = buildActiveShellSnapshot(parts);
       const forSubscriber = shellSnapshotForSubscriber(base, {
         omitIdleSubagents: input.omitIdleSubagents === true,
         omitOlderSettled: input.omitOlderSettled === true,
+        retainedThreadIds: parts.retainedThreadIds,
         now: yield* DateTime.now,
       });
       subagentThreadIds = forSubscriber.subagentThreadIds;

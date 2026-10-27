@@ -83,6 +83,7 @@ export function buildActiveShellSnapshot(input: {
  */
 export function omitIdleSubagentShells(
   threads: ReadonlyArray<OrchestrationV2ThreadShell>,
+  retainedThreadIds: ReadonlySet<string> = new Set(),
 ): ReadonlyArray<OrchestrationV2ThreadShell> {
   const parentIds = new Set<string>();
   for (const thread of threads) {
@@ -95,7 +96,8 @@ export function omitIdleSubagentShells(
       thread.lineage.relationshipToParent !== "subagent" ||
       isLiveSubagentShell(thread) ||
       hasPendingGuestMessages(thread) ||
-      parentIds.has(thread.id),
+      parentIds.has(thread.id) ||
+      retainedThreadIds.has(thread.id),
   );
 }
 
@@ -106,12 +108,13 @@ export function omitIdleSubagentShells(
 export function activeShellRowsForSubscriber(
   threads: ReadonlyArray<OrchestrationV2ThreadShell>,
   omitIdleSubagents: boolean,
+  retainedThreadIds: ReadonlySet<string> = new Set(),
 ): {
   readonly threads: ReadonlyArray<OrchestrationV2ThreadShell>;
   readonly subagentThreadIds: Set<string>;
 } {
   return {
-    threads: omitIdleSubagents ? omitIdleSubagentShells(threads) : threads,
+    threads: omitIdleSubagents ? omitIdleSubagentShells(threads, retainedThreadIds) : threads,
     subagentThreadIds: new Set(
       threads
         .filter((thread) => thread.lineage.relationshipToParent === "subagent")
@@ -131,6 +134,7 @@ export function omitOlderSettledShells(input: {
   readonly threads: ReadonlyArray<OrchestrationV2ThreadShell>;
   readonly snapshotSequence: number;
   readonly now: DateTime.Utc;
+  readonly retainedThreadIds?: ReadonlySet<string> | undefined;
 }): {
   readonly threads: ReadonlyArray<OrchestrationV2ThreadShell>;
   readonly olderSettled: OrchestrationV2OlderSettledThreads;
@@ -161,7 +165,8 @@ export function omitOlderSettledShells(input: {
       thread.pinnedAt != null ||
       (thread.snoozedUntil != null && DateTime.toEpochMillis(thread.snoozedUntil) > nowMs) ||
       isLiveSubagentShell(thread) ||
-      ancestorIds.has(thread.id)
+      ancestorIds.has(thread.id) ||
+      input.retainedThreadIds?.has(thread.id) === true
     );
   });
   return {
@@ -184,12 +189,17 @@ export function shellSnapshotForSubscriber(
     readonly omitIdleSubagents: boolean;
     readonly omitOlderSettled: boolean;
     readonly now: DateTime.Utc;
+    readonly retainedThreadIds?: ReadonlySet<string> | undefined;
   },
 ): {
   readonly snapshot: OrchestrationV2ShellSnapshot;
   readonly subagentThreadIds: Set<string>;
 } {
-  const rows = activeShellRowsForSubscriber(base.threads, options.omitIdleSubagents);
+  const rows = activeShellRowsForSubscriber(
+    base.threads,
+    options.omitIdleSubagents,
+    options.retainedThreadIds,
+  );
   if (!options.omitOlderSettled) {
     return {
       snapshot: { ...base, threads: rows.threads },
@@ -200,6 +210,7 @@ export function shellSnapshotForSubscriber(
     threads: rows.threads,
     snapshotSequence: base.snapshotSequence,
     now: options.now,
+    retainedThreadIds: options.retainedThreadIds,
   });
   return {
     snapshot: { ...base, threads: older.threads, olderSettled: older.olderSettled },
@@ -217,11 +228,13 @@ export const loadShellSnapshotParts = Effect.fn("ShellStream.loadShellSnapshotPa
   E2,
   E3,
   E4,
+  E5 = never,
 >(input: {
   readonly sql: SqlClient.SqlClient;
   readonly readThreads: Effect.Effect<Effect.Effect<OrchestrationV2ThreadShellSnapshot, E2>, E1>;
   readonly listProjects: Effect.Effect<ReadonlyArray<OrchestrationProjectShell>, E3>;
   readonly latestSequence: Effect.Effect<number, E4>;
+  readonly readRetainedThreadIds?: Effect.Effect<ReadonlySet<string>, E5>;
 }) {
   const read = yield* input.sql
     .withTransaction(
@@ -229,6 +242,7 @@ export const loadShellSnapshotParts = Effect.fn("ShellStream.loadShellSnapshotPa
         decodeThreads: input.readThreads,
         projects: input.listProjects,
         snapshotSequence: input.latestSequence,
+        retainedThreadIds: input.readRetainedThreadIds ?? Effect.succeed(new Set<string>()),
       }),
     )
     .pipe(NodeSqliteClient.readOnly);
@@ -236,6 +250,7 @@ export const loadShellSnapshotParts = Effect.fn("ShellStream.loadShellSnapshotPa
     projects: read.projects,
     threads: yield* read.decodeThreads,
     snapshotSequence: read.snapshotSequence,
+    retainedThreadIds: read.retainedThreadIds,
   };
 });
 

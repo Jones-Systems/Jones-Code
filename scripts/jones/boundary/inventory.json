@@ -2276,7 +2276,16 @@
     "apps/web/src/components/chat/useAttachmentPreviewHandoff.ts": "accepted-shared",
     "apps/web/src/components/chat/chatViewSend.ts": "accepted-shared",
     "apps/web/test/fakeEnvironment.ts": "accepted-shared",
-    "apps/web/src/components/ThreadRouteView.tsx": "hook"
+    "apps/web/src/components/ThreadRouteView.tsx": "hook",
+    "apps/server/src/jones/remoteDelegation/ShellRetention.ts": "jones-owned",
+    "apps/server/src/jones/remoteDelegation/ShellRetention.test.ts": "jones-owned",
+    "apps/server/src/jones/remoteDelegation/ShellRetention.testkit.ts": "jones-owned",
+    "apps/server/src/jones/remoteDelegation/ShellRetention.diagnostic.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/remote-owner-shell-retention.json": "jones-owned",
+    "apps/server/src/jones/remoteDelegation/ShellRetention.composition.test.ts": "jones-owned",
+    "apps/web/src/jones/remoteDelegation/Sidebar.delegateRequests.browser.test.tsx": "jones-owned",
+    "apps/mobile/src/jones/remoteDelegation/threadListV2.delegateRequests.test.ts": "jones-owned",
+    "apps/mobile/src/jones/remoteDelegation/thread-order.delegateRequests.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -3054,6 +3063,14 @@
     {
       "from": "apps/web/src/components/chat/useComposerResume.ts",
       "to": "apps/web/src/jones/pendingSends/usePendingTurn.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/http.ts",
+      "to": "apps/server/src/jones/remoteDelegation/ShellRetention.ts"
+    },
+    {
+      "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/jones/remoteDelegation/ShellRetention.ts"
     }
   ]
 }
