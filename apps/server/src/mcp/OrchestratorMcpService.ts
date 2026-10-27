@@ -1498,7 +1498,9 @@ const make = Effect.gen(function* () {
     const dependencyDuty =
       resultDependencies === undefined
         ? false
-        : (yield* resultDependencies.duties(task.childThreadId).pipe(Effect.mapError(unavailable)))
+        : (yield* resultDependencies
+            .duties(task.childThreadId)
+            .pipe(NodeSqliteClient.readOnly, Effect.mapError(unavailable)))
             .outgoing > 0;
     const taskWorkState = dependencyDuty
       ? "waiting_for_children"
@@ -2981,7 +2983,7 @@ const make = Effect.gen(function* () {
                   : {
                       waitingOn: (yield* resultDependencies
                         .dependencies(shell.id)
-                        .pipe(Effect.mapError(unavailable)))
+                        .pipe(NodeSqliteClient.readOnly, Effect.mapError(unavailable)))
                         .filter((item) => ["sending", "awaiting", "resolved"].includes(item.state))
                         .slice(0, 20),
                     }),
@@ -3096,12 +3098,12 @@ const make = Effect.gen(function* () {
             : {
                 waitingOn: (yield* resultDependencies
                   .dependencies(input.threadId)
-                  .pipe(Effect.mapError(unavailable))).filter((item) =>
+                  .pipe(NodeSqliteClient.readOnly, Effect.mapError(unavailable))).filter((item) =>
                   ["sending", "awaiting", "resolved"].includes(item.state),
                 ),
                 owedRequests: (yield* resultDependencies
                   .requests(input.threadId)
-                  .pipe(Effect.mapError(unavailable))).filter(
+                  .pipe(NodeSqliteClient.readOnly, Effect.mapError(unavailable))).filter(
                   (item) => item.state === "pending" && !item.requesterReleased,
                 ),
               }),

@@ -13,6 +13,7 @@ const decodeEnvelope = Schema.decodeUnknownOption(Schema.fromJsonString(RemoteAd
 const decodeResult = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ ok: Schema.Boolean, value: Schema.Unknown })),
 );
+const decodeFailure = Schema.decodeUnknownOption(OrchestratorMcpFailure);
 const noEffectFailures = new Set<OrchestratorMcpFailure["code"]>([
   "capability_denied",
   "parent_not_active",
@@ -90,14 +91,16 @@ export const readAdmissionObservation = Effect.fn("ResultDependencies.readAdmiss
     }
     const saved =
       admission.result_json === null ? Option.none() : decodeResult(admission.result_json);
+    // JSON persistence removes the tagged error instance; decode it before classifying the code.
+    const savedFailure = Option.flatMap(saved, (saved) =>
+      saved.ok ? Option.none() : decodeFailure(saved.value),
+    );
     const refused =
       receiptStatus === "rejected" ||
       (exactIdentity &&
         receiptStatus === null &&
-        Option.isSome(saved) &&
-        saved.value.ok === false &&
-        Schema.is(OrchestratorMcpFailure)(saved.value.value) &&
-        noEffectFailures.has(saved.value.value.code));
+        Option.isSome(savedFailure) &&
+        noEffectFailures.has(savedFailure.value.code));
     if (refused) {
       outcome = "refused";
       result = "The receiving send was refused before accepting the request.";

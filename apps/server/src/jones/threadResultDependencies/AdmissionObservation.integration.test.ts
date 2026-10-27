@@ -3,6 +3,7 @@ import {
   AuthSessionId,
   EnvironmentId,
   OrchestratorMcpFailure,
+  OrchestrationV2ProviderThread,
   type AuthClientSession,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
@@ -89,17 +90,53 @@ it.effect.each([
         modelSelection: { instanceId: "codex", model: "synthetic-admission" },
       });
       yield* f.sql`INSERT INTO jones_remote_admission_policy (singleton, policy_json) VALUES (1, ${policy})`;
-      if (scenario === "refused") {
-        yield* f.sink.write({
-          events: [
-            f.event({
-              type: "thread.metadata-updated",
-              threadId: f.receiver.id,
-              payload: { ...f.receiver, threadMessagesBlocked: true },
-            }),
-          ],
-        });
-      }
+      // Real queued dispatch needs a provider-thread binding. A preparing run
+      // accepts the queued message without preparing a filesystem checkpoint.
+      const providerThread = Schema.decodeUnknownSync(OrchestrationV2ProviderThread)({
+        id: "receiving-provider-thread",
+        driver: "codex",
+        providerInstanceId: f.receiver.providerInstanceId,
+        providerSessionId: null,
+        appThreadId: f.receiver.id,
+        ownerNodeId: null,
+        nativeThreadRef: null,
+        nativeConversationHeadRef: null,
+        status: "not_loaded",
+        firstRunOrdinal: null,
+        lastRunOrdinal: null,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: Fixture.time,
+        updatedAt: Fixture.time,
+      });
+      yield* f.sink.write({
+        events: [
+          f.event({
+            type: "provider-thread.created",
+            threadId: f.receiver.id,
+            payload: providerThread,
+          }),
+          f.event({
+            type: "run.updated",
+            threadId: f.receiver.id,
+            runId: f.receiverRun.id,
+            payload: {
+              ...f.receiverRun,
+              status: "preparing",
+              providerThreadId: providerThread.id,
+            },
+          }),
+          f.event({
+            type: "thread.metadata-updated",
+            threadId: f.receiver.id,
+            payload: {
+              ...f.receiver,
+              activeProviderThreadId: providerThread.id,
+              threadMessagesBlocked: scenario === "refused",
+            },
+          }),
+        ],
+      });
       // A refusal belonging to a different namespace must never settle this operation.
       const other = threadSendIdentity("unrelated-namespace", key);
       yield* f.sink.commitRejectedCommand({
@@ -229,6 +266,12 @@ it.effect.each([
         yield* f.sql`SELECT result_json FROM jones_remote_admission_results WHERE admission_id = ${pending.admissionId}`,
         1,
       );
+      const receipt = yield* f.sql<{
+        status: string;
+      }>`SELECT status FROM orchestration_command_receipts WHERE command_id = ${identity.commandId}`;
+      assert.equal(receipt.length, ["refused", "uncertain"].includes(scenario) ? 0 : 1);
+      if (receipt[0])
+        assert.equal(receipt[0].status, scenario === "rejected-receipt" ? "rejected" : "accepted");
       if (scenario === "bound-request") {
         assert.equal(recovered.request?.messageId, identity.messageId);
         assert.equal(recovered.outcome, null);
@@ -243,12 +286,6 @@ it.effect.each([
         if (recovered.outcome === "unknown")
           assert.include(recovered.result, "Remote work may continue");
       }
-      const receipt = yield* f.sql<{
-        status: string;
-      }>`SELECT status FROM orchestration_command_receipts WHERE command_id = ${identity.commandId}`;
-      assert.equal(receipt.length, ["refused", "uncertain"].includes(scenario) ? 0 : 1);
-      if (receipt[0])
-        assert.equal(receipt[0].status, scenario === "rejected-receipt" ? "rejected" : "accepted");
       const stranger = yield* watch.observe({
         originEnvironmentId: "other-origin",
         operationId,
