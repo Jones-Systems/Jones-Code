@@ -86,7 +86,7 @@ it.effect.each([
       const policy = JSON.stringify({
         enabled: true,
         revision: "synthetic-policy",
-        modelSelection: null,
+        modelSelection: { instanceId: "codex", model: "synthetic-admission" },
       });
       yield* f.sql`INSERT INTO jones_remote_admission_policy (singleton, policy_json) VALUES (1, ${policy})`;
       if (scenario === "refused") {
@@ -190,7 +190,12 @@ it.effect.each([
       const dispatch = yield* intake
         .invoke("t3_thread_send", params, invocation)
         .pipe(Effect.forkScoped);
-      yield* Deferred.await(entered);
+      yield* Effect.raceFirst(
+        Deferred.await(entered),
+        Fiber.join(dispatch).pipe(
+          Effect.andThen(Effect.die("The synthetic admission must enter its registered handler")),
+        ),
+      );
       const pending = yield* watch.observe({
         originEnvironmentId: "origin",
         operationId,
