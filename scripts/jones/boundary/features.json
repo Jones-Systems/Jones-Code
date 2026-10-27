@@ -4,6 +4,15 @@
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "features": [
     {
+      "id": "migration-order",
+      "tests": [
+        "scripts/jones/ci/jones-migration-order.node-test.cjs",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/updates/migrationPlan.test.ts"
+      ],
+      "scope": "Append-only Jones manifest admission parses literal identities from exact Git revisions without executing their source. The existing ci-change-selection workflow hook adds one unconditional Lint step that fetches canonical main for PRs and compares pre-push main for pushes; only byte-unchanged manifests since the common ancestor are selected out. Private Git fixtures cover main advancing past a concurrent allocation. Fixed ff200fca history through 130 proves appended 131 runs once, late 125 still refuses without writes, and update preflight remains read-only. Released migrations and production guard/preflight behavior are unchanged. CI binds its observed revisions; the merge owner must requalify against fresh main immediately before merge."
+    },
+    {
       "id": "composer-quick-controls",
       "tests": ["apps/web/src/jones/composer/ComposerQuickControls.browser.test.tsx"],
       "scope": "Inline current-model M/H/E shortcuts and Fast toggle share the traits persistence path. Measured fit retains reasoning until 4px clearance, while Fast stays in the fixed footer width. Browser tests cover boolean Fast, Codex service tier, draft persistence and resize restoration. Native mobile and other model efforts retain existing menus."

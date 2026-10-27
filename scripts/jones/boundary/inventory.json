@@ -8,6 +8,9 @@
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "paths": {
     "scripts/jones/boundary/fragments/thread-result-dependencies.json": "jones-owned",
+    "scripts/jones/ci/jones-migration-order.cjs": "jones-owned",
+    "scripts/jones/ci/jones-migration-order.node-test.cjs": "jones-owned",
+    "scripts/jones/boundary/fragments/migration-order.json": "jones-owned",
     "apps/web/src/jones/composer/ComposerQuickControls.tsx": "jones-owned",
     "apps/web/src/jones/composer/ComposerQuickControls.browser.test.tsx": "jones-owned",
     "scripts/jones/boundary/fragments/composer-quick-controls.json": "jones-owned",

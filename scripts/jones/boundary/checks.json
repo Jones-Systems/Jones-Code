@@ -2,6 +2,21 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-migration-order",
+      "tests": [
+        "scripts/jones/ci/jones-migration-order.node-test.cjs",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/updates/migrationPlan.test.ts"
+      ],
+      "commands": [
+        "node --test --test-concurrency=1 scripts/jones/ci/jones-migration-order.node-test.cjs scripts/jones/ci/check-results.node-test.cjs",
+        "vp test run apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/updates/migrationPlan.test.ts apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts",
+        "vp run --filter t3 typecheck",
+        "vp lint scripts/jones/ci/jones-migration-order.cjs scripts/jones/ci/jones-migration-order.node-test.cjs apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/updates/migrationPlan.test.ts",
+        "node scripts/jones/check-boundary.ts --strict --json"
+      ]
+    },
+    {
       "id": "jones-composer-quick-controls",
       "tests": ["apps/web/src/jones/composer/ComposerQuickControls.browser.test.tsx"],
       "commands": [
