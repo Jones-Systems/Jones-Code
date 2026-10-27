@@ -166,6 +166,14 @@ export function installPlanPresentation(
     };
   });
   const laptopOperation = plan.laptop.operations.at(-1);
+  const laptopState = options.laptop?.freshness === "fresh" ? options.laptop.state : null;
+  const coldStage =
+    !readOnly &&
+    laptopOperation === undefined &&
+    laptopState?.phase === "staged" &&
+    laptopState.stagedHandle !== undefined &&
+    laptopState.provenance?.sourceSha === plan.target.sourceSha &&
+    laptopState.provenance.sourceTree === plan.target.sourceTree;
   const laptopPhase =
     plan.laptop.gateClosed !== undefined
       ? "gateClosed"
@@ -182,7 +190,9 @@ export function installPlanPresentation(
                     options.laptop.state?.phase === "verifying"
                   ? "verifying"
                   : "downloading"
-              : (laptopOperation?.result?.status ?? "preview");
+              : coldStage
+                ? "staged"
+                : (laptopOperation?.result?.status ?? "preview");
   const laptopCopy: Record<string, string> = {
     gateClosed: "Laptop changed · others won't start",
     verified: "Updated · verified",
@@ -202,12 +212,12 @@ export function installPlanPresentation(
     preview: `Goes first · ${plan.target.version} available`,
   };
   const complete = isPlanComplete(plan);
-  const laptopState = options.laptop?.freshness === "fresh" ? options.laptop.state : null;
   const laptopActions = {
     download:
       !readOnly &&
       ["preview", "stopped", "interrupted", "failed", "refused"].includes(laptopPhase) &&
       laptopState?.capability.download === true &&
+      laptopState.stagedHandle === undefined &&
       laptopState.provenance?.sourceSha === plan.target.sourceSha,
     install:
       !readOnly &&

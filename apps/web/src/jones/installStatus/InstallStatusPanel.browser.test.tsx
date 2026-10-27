@@ -158,6 +158,28 @@ const click = async (screen: Screen, name: string) => {
 // These use real browser interactions and the real pure model/runner against scripted receipts.
 // They cannot qualify native installs, host worker exit, Electron IPC or publication.
 describe("Install status receipt fixture", () => {
+  it("reviews an already staged Laptop build without requesting another download", async () => {
+    await using world = await setup();
+    await world.stageLaptop();
+    expect(world.fixture.snapshot().current).toBeNull();
+    expect(world.screen.container.textContent).toContain("Downloaded · ready to install");
+    expect(
+      [...world.screen.container.querySelectorAll("button")].some(
+        (node) => node.textContent === "Download on Laptop",
+      ),
+    ).toBe(false);
+    expect(visibleDone(world.screen)).toHaveLength(0);
+    await click(world.screen, "Install on Laptop");
+    await expect
+      .poll(() => world.calls.filter((c) => c.action === "fixture-laptop-install").length)
+      .toBe(1);
+    expect(world.calls.filter((c) => c.action === "fixture-review")).toHaveLength(1);
+    expect(world.calls.filter((c) => c.action === "fixture-laptop-download")).toHaveLength(0);
+    expect(world.calls.filter((c) => c.action === "fixture-host-operationStart")).toHaveLength(0);
+    expect(world.fixture.snapshot().current?.laptop.gate).toBeUndefined();
+    expect(visibleDone(world.screen)).toHaveLength(0);
+  });
+
   it("uses one editing Done, applies its draft once, and discards a collapsed draft", async () => {
     await using world = await setup();
     const { screen, fixture, calls } = world;
