@@ -1500,8 +1500,7 @@ const make = Effect.gen(function* () {
         ? false
         : (yield* resultDependencies
             .duties(task.childThreadId)
-            .pipe(NodeSqliteClient.readOnly, Effect.mapError(unavailable)))
-            .outgoing > 0;
+            .pipe(NodeSqliteClient.readOnly, Effect.mapError(unavailable))).outgoing > 0;
     const taskWorkState = dependencyDuty
       ? "waiting_for_children"
       : childRun?.delegatedTaskId === task.id
