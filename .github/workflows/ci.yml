@@ -108,6 +108,9 @@ jobs:
           cache: true
           run-install: true
 
+      - name: Check Jones migration order
+        run: node scripts/jones/ci/jones-migration-order.cjs
+
       # electron's install.js (run by ensure:electron) reads this cache before it
       # downloads from GitHub. The key changes only with the Electron version.
       - name: Cache Electron download
@@ -181,7 +184,12 @@ jobs:
         run: vp run --filter @t3tools/desktop ensure:electron
 
       - name: Typecheck
+        id: typecheck
         run: vpr typecheck
+
+      - name: Report typecheck task details
+        if: ${{ failure() && steps.typecheck.outcome == 'failure' }}
+        run: vp run --last-details
 
   build:
     needs: linux_changes

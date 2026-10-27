@@ -20,7 +20,7 @@ import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import type * as Tool from "effect/ai/Tool";
+import * as Tool from "effect/ai/Tool";
 
 import { assertNotLinked } from "../mcp/linkOrigin.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
@@ -29,6 +29,8 @@ import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.t
 import * as PeerLinks from "./PeerLinks.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
 import type { LinkedMessageOrigin } from "../jones/peerTransport/LinkedMessageOrigin.ts";
+import * as RequestContextSender from "../jones/peerTransport/RequestContextSender.ts";
+import * as ProjectService from "../project/ProjectService.ts";
 
 /**
  * A peer's `/mcp` holds a wait open for its whole timeout without sending
@@ -95,6 +97,7 @@ const make = Effect.gen(function* () {
   const links = yield* PeerLinks.PeerLinks;
   const crypto = yield* Crypto.Crypto;
   const threads = yield* ThreadManagement.ThreadManagementService;
+  const projects = yield* ProjectService.ProjectService;
 
   /**
    * Forward the caller's own limits because the peer sees only the link credential; refuse local authority first.
@@ -127,6 +130,7 @@ const make = Effect.gen(function* () {
     success: Schema.Top,
     environmentId: EnvironmentId,
     params: unknown,
+    readOnly: boolean,
   ) {
     const caller = yield* forwardingCaller(scope);
     const limits = caller.limits;
@@ -191,12 +195,20 @@ const make = Effect.gen(function* () {
               },
             }),
       };
+    const context = yield* RequestContextSender.contextFor({
+      scope,
+      caller,
+      toolName,
+      args,
+      readOnly,
+    }).pipe(Effect.provideService(ProjectService.ProjectService, projects));
     const result = yield* peers.call({
       environmentId,
       tool: toolName,
       arguments: args,
       limits,
       ...(origin === undefined ? {} : { origin }),
+      ...(context === undefined ? {} : { context }),
       success: success as Schema.Decoder<A>,
     });
     if (
@@ -235,6 +247,7 @@ const make = Effect.gen(function* () {
       OrchestratorMcpThreadReadResult,
       environmentId,
       input,
+      true,
     );
 
   const interruptThread: PeerForwarding["Service"]["interruptThread"] = (
@@ -249,6 +262,7 @@ const make = Effect.gen(function* () {
       OrchestratorMcpThreadInterruptResult,
       environmentId,
       input,
+      false,
     );
 
   const waitForThread: PeerForwarding["Service"]["waitForThread"] = Effect.fn(
@@ -276,6 +290,7 @@ const make = Effect.gen(function* () {
             ? {}
             : { untilDelegatedWorkSettled: input.untilDelegatedWorkSettled }),
         },
+        true,
       );
       remaining -= chunk;
       if (!result.timedOut || remaining <= 0) return result;
@@ -291,7 +306,15 @@ const make = Effect.gen(function* () {
           environmentId,
           params as OrchestratorMcpThreadWaitInput,
         ) as Effect.Effect<Tool.Success<typeof tool>, OrchestratorMcpFailure>)
-      : forward(scope, tool.name, tool.parametersSchema, tool.successSchema, environmentId, params);
+      : forward(
+          scope,
+          tool.name,
+          tool.parametersSchema,
+          tool.successSchema,
+          environmentId,
+          params,
+          Context.get(tool.annotations, Tool.Readonly),
+        );
 
   const listLinks: PeerForwarding["Service"]["links"] = Effect.fn("PeerForwarding.listLinks")(
     function* (scope) {

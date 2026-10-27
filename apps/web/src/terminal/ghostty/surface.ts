@@ -930,6 +930,10 @@ export class GhosttyTerminalSurface {
     return this.core.selectionText();
   }
 
+  getText(): string {
+    return this.core.getText();
+  }
+
   selectAll(): void {
     this.clearPrimedCopy();
     const range = this.core.selectAll();

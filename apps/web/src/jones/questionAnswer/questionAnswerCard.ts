@@ -1,6 +1,19 @@
 import type { PendingUserInput } from "../../session-logic";
 import type { PendingUserInputDraftAnswer, PendingUserInputProgress } from "../../pendingUserInput";
 
+export const ANSWER_FIELD_MAX_LINES = 10;
+
+export function questionSummaryLine(markdown: string): string {
+  return (
+    markdown
+      .split(/\r?\n/u)
+      .find((line) => line.trim().length > 0)
+      ?.replace(/^[#*> -]+/u, "")
+      .replace(/\*\*|__|`/gu, "")
+      .trim() ?? ""
+  );
+}
+
 // Question state belongs to the card; the main editor always owns the thread draft.
 export const INERT_QUESTION_COMPOSER_PROPS = {
   pendingUserInputs: [] as PendingUserInput[],
@@ -26,13 +39,26 @@ export function deriveQuestionAnswerFooterState(input: {
   const { progress, prompt, disabled, isResponding } = input;
   const unavailable = prompt.responseCapability === "not_resumable";
   const fieldDisabled = disabled || isResponding || unavailable;
+  const notes = prompt.responseCapability === "message" && !progress.activeQuestion?.multiSelect;
+  const hasChoice = progress.selectedOptionValues.length > 0;
+  const blockedReason =
+    progress.isLastQuestion && !progress.isComplete
+      ? `Answer question ${progress.firstUnansweredIndex + 1} to send · ${progress.answeredQuestionCount} of ${progress.answeredByIndex.length} answered`
+      : null;
   return {
+    notes,
+    hasChoice,
+    fieldLabel: notes && hasChoice ? "Note (optional): sent with your choice" : "Your answer",
+    sends: prompt.responseCapability === "message" ? progress.resolvedAnswer : null,
+    blockedReason,
     showField: progress.activeQuestion?.allowCustomAnswer !== false,
     fieldDisabled,
     placeholder: progress.activeQuestion?.options.length
-      ? "Or write your own response"
+      ? notes && hasChoice
+        ? "Add a note (optional)"
+        : "Or write your own response"
       : "Write your response",
-    primaryLabel: isResponding ? "Sending…" : progress.isLastQuestion ? "Send" : "Next",
+    primaryLabel: isResponding ? "Sending…" : progress.isLastQuestion ? "Send" : "Continue",
     primaryDisabled:
       fieldDisabled || !progress.canAdvance || (progress.isLastQuestion && !progress.isComplete),
     showBack: progress.questionIndex > 0,
@@ -51,8 +77,10 @@ export function isQuestionAnswerSubmitKey(
     "key" | "shiftKey" | "altKey" | "ctrlKey" | "metaKey" | "isComposing" | "keyCode" | "repeat"
   >,
   literal: boolean,
+  messageMode = false,
 ): boolean {
   return (
+    !messageMode &&
     event.key === "Enter" &&
     !event.shiftKey &&
     !event.altKey &&

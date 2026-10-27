@@ -46,7 +46,10 @@ async function readSelection(path: string): Promise<StagedQualifiedRuntime | und
   }
 }
 
-export async function retainStagedSelection(selection: StagedQualifiedRuntime): Promise<void> {
+export async function retainStagedSelection(
+  selection: StagedQualifiedRuntime,
+  syncDirectory: (directory: string) => Promise<void> = syncSelectionDirectory,
+): Promise<void> {
   const path = selectionPath(selection.binding);
   await NodeFSP.mkdir(NodePath.dirname(path), { recursive: true, mode: 0o700 });
   const prior = await readSelection(path);
@@ -62,7 +65,7 @@ export async function retainStagedSelection(selection: StagedQualifiedRuntime): 
     } finally {
       await file.close();
     }
-    await syncSelectionDirectory(NodePath.dirname(path));
+    await syncDirectory(NodePath.dirname(path));
     return;
   }
   const file = await NodeFSP.open(path, "wx", 0o600);
@@ -72,12 +75,7 @@ export async function retainStagedSelection(selection: StagedQualifiedRuntime): 
   } finally {
     await file.close();
   }
-  const parent = await NodeFSP.open(NodePath.dirname(path), "r");
-  try {
-    await parent.sync();
-  } finally {
-    await parent.close();
-  }
+  await syncDirectory(NodePath.dirname(path));
 }
 
 export async function restoreStagedSelection(

@@ -287,6 +287,9 @@ it.effect(
               Layer.mergeAll(
                 NodeServices.layer,
                 threads,
+                Layer.mock(Projects.ProjectService)({
+                  getById: () => Effect.succeedNone,
+                }),
                 Layer.mock(PeerLinks.PeerLinks)({ get: () => Effect.succeedNone }),
                 Layer.mock(Peers.PeerMcpClient)({
                   call: (request) => {
@@ -473,6 +476,7 @@ it.effect("preserves production blocked-send refusal locally and through forward
             Layer.mergeAll(
               NodeServices.layer,
               threads,
+              Layer.mock(Projects.ProjectService)({ getById: () => Effect.succeedNone }),
               Layer.mock(PeerLinks.PeerLinks)({ get: () => Effect.succeedNone }),
               Layer.mock(Peers.PeerMcpClient)({
                 call: (request) =>

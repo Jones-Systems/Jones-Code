@@ -71,6 +71,20 @@ describe("durable user input record", () => {
       },
     });
   });
+  it("records batches and rejects empty or duplicate question identifiers", () => {
+    const questions = [command.question, { ...command.question, id: "second" }];
+    expect(
+      buildUserInputRequestRecord({ ...input, command: { ...command, questions } }),
+    ).toMatchObject({ item: { questions } });
+    for (const invalid of [
+      [],
+      [command.question, command.question],
+      [{ ...command.question, id: " " }],
+    ])
+      expect(
+        buildUserInputRequestRecord({ ...input, command: { ...command, questions: invalid } }),
+      ).toHaveProperty("error");
+  });
   it("refuses terminal, newer-run, root, provider, archive, deletion and identifier collisions", () => {
     const run = projection.runs[0]!;
     const variants: Array<typeof input> = [

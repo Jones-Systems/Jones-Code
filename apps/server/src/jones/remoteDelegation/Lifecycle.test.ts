@@ -10,12 +10,16 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 import * as Threads from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Forwarding from "../../peer/PeerForwarding.ts";
 import * as Links from "../../peer/PeerLinks.ts";
+import { LinkedRequestSentAtOverride } from "../peerTransport/LinkedRequestContext.ts";
 import * as Lifecycle from "./Lifecycle.ts";
 import * as Store from "./IntentStore.ts";
 import { commandId, envelope, layer } from "./RemoteDelegation.testkit.ts";
@@ -31,12 +35,26 @@ const makeFixture = Effect.gen(function* () {
   let denied = false;
   let unreachable = false;
   let observationSupported = true;
-  let cancelAfterDispatch = false;
+  let withdrawalStatus: "cancelled" | "denied" | "dispatching" | "dispatched" = "cancelled";
+  let linkState: "original" | "missing" | "replaced" = "original";
+  let launchFailure: OrchestratorMcpFailure | undefined;
+  let failuresRemaining = Infinity;
+  let probeFailure: OrchestratorMcpFailure | undefined;
+  let lostAcknowledgement = false;
+  let probes = 0;
+  let activeLaunches = 0;
+  let maxActiveLaunches = 0;
+  const launchEntered = yield* Deferred.make<void>();
+  const launchRelease = yield* Deferred.make<void>();
+  const parked = yield* Deferred.make<void>();
+  let blockLaunch = false;
   let withdrawals = 0;
   const withdrew = yield* Deferred.make<void>();
   const keys: Array<string | undefined> = [];
   const notices = new Map<string, string>();
   const namespaces: Array<string> = [];
+  const launchSentAts: Array<string | undefined> = [];
+  const otherSentAts: Array<string | undefined> = [];
   const result = {
     threadId: ThreadId.make("remote:child"),
     runId: RunId.make("remote:run"),
@@ -68,6 +86,8 @@ const makeFixture = Effect.gen(function* () {
               task = { ...task, status: "waiting", progress: command.progress };
           } else if (command.type === "message.dispatch") {
             notices.set(command.commandId, command.text);
+            if (command.commandId.endsWith(":reconciliation-notice"))
+              yield* Deferred.succeed(parked, undefined);
           } else if (command.type === "delegated_task.remote.bind") {
             if (task === undefined) return yield* Effect.die("No reservation");
             task = {
@@ -88,20 +108,32 @@ const makeFixture = Effect.gen(function* () {
     }),
     Layer.mock(Links.PeerLinks)({
       get: () =>
-        Effect.succeedSome({
-          environmentId: envelope.environmentId,
-          linkedAt: DateTime.makeUnsafe(envelope.linkedAt),
-        } as never),
+        Effect.sync(() =>
+          linkState === "missing"
+            ? Option.none()
+            : Option.some({
+                environmentId: envelope.environmentId,
+                linkedAt: DateTime.makeUnsafe(
+                  linkState === "replaced" ? "2026-10-22T00:00:00.000Z" : envelope.linkedAt,
+                ),
+              } as never),
+        ),
     }),
     Layer.mock(Forwarding.PeerForwarding)({
       call: (scope, tool, _environmentId, input) =>
         Effect.gen(function* () {
-          if (tool.name === "orchestrator_capabilities")
+          const sentAt = yield* LinkedRequestSentAtOverride;
+          if (tool.name === "t3_thread_launch") launchSentAts.push(sentAt);
+          else otherSentAts.push(sentAt);
+          if (tool.name === "orchestrator_capabilities") {
+            probes++;
+            if (probeFailure !== undefined) return yield* probeFailure;
             return {
               features: observationSupported
                 ? { remoteTaskObservationVersion: "t3.remote-task-observation/v1" }
                 : {},
             } as never;
+          }
           if (tool.name === "t3_remote_admission_cancel") {
             withdrawals++;
             yield* Deferred.succeed(withdrew, undefined);
@@ -114,7 +146,9 @@ const makeFixture = Effect.gen(function* () {
             return {
               id: "held-1",
               bindingDigest: "a".repeat(64),
-              status: cancelAfterDispatch ? "dispatched" : "cancelled",
+              // The withdrawal adapter now returns authenticated, binding-verified
+              // existing states. It does not claim dispatched work was cancelled.
+              status: withdrawalStatus,
             } as never;
           }
           const saved = yield* store.get(commandId);
@@ -127,23 +161,51 @@ const makeFixture = Effect.gen(function* () {
           launches++;
           keys.push((input as { clientRequestId?: string }).clientRequestId);
           namespaces.push(scope.requestNamespace);
-          if (unreachable)
-            return yield* new OrchestratorMcpFailure({
-              code: "orchestration_error",
-              message: "Synthetic unreachable",
-            });
-          if (held || denied)
-            return yield* new OrchestratorMcpFailure({
-              code: denied ? "remote_admission_denied" : "remote_admission_pending",
-              message: "Synthetic admission",
-              remoteAdmission: {
-                id: "held-1",
-                bindingDigest: "a".repeat(64),
-                status: denied ? "denied" : "held",
-              },
-            });
-          if (remoteExecutions === 0) remoteExecutions++;
-          return result as never;
+          activeLaunches++;
+          maxActiveLaunches = Math.max(maxActiveLaunches, activeLaunches);
+          return yield* Effect.gen(function* () {
+            yield* Deferred.succeed(launchEntered, undefined);
+            if (blockLaunch) yield* Deferred.await(launchRelease);
+            if (launchFailure !== undefined && failuresRemaining-- > 0) return yield* launchFailure;
+            if (unreachable)
+              return yield* new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: "Synthetic unreachable",
+              });
+            if (held || denied)
+              return yield* new OrchestratorMcpFailure({
+                code: denied ? "remote_admission_denied" : "remote_admission_pending",
+                message: "Synthetic admission",
+                remoteAdmission: {
+                  id: "held-1",
+                  bindingDigest: "a".repeat(64),
+                  status: denied ? "denied" : "held",
+                },
+              });
+            if (withdrawalStatus === "dispatching")
+              return yield* new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: "Dispatch is claimed but its receipt is not available.",
+                remoteAdmission: {
+                  id: "held-1",
+                  bindingDigest: "a".repeat(64),
+                  status: "dispatching",
+                },
+              });
+            if (remoteExecutions === 0) remoteExecutions++;
+            if (lostAcknowledgement)
+              return yield* new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: "Synthetic lost acknowledgement",
+              });
+            return result as never;
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                activeLaunches--;
+              }),
+            ),
+          );
         }),
     }),
   );
@@ -162,11 +224,24 @@ const makeFixture = Effect.gen(function* () {
     withdrew,
     keys,
     namespaces,
-    dispatchRacedCancel: () => {
-      cancelAfterDispatch = true;
+    launchSentAts,
+    otherSentAts,
+    parked,
+    launchEntered,
+    launchRelease,
+    dispatchRacedCancel: (status: "dispatched" | "dispatching" | "denied" = "dispatched") => {
+      withdrawalStatus = status;
+      if (status === "dispatched") remoteExecutions = 1;
     },
     getTask: () => task!,
-    getCounts: () => ({ launches, remoteExecutions, withdrawals, notices: notices.size }),
+    getCounts: () => ({
+      launches,
+      probes,
+      maxActiveLaunches,
+      remoteExecutions,
+      withdrawals,
+      notices: notices.size,
+    }),
     getNotices: () => [...notices.entries()],
     observationSupported: (value: boolean) => {
       observationSupported = value;
@@ -179,6 +254,22 @@ const makeFixture = Effect.gen(function* () {
     },
     unreachable: (value: boolean) => {
       unreachable = value;
+    },
+    linkState: (value: typeof linkState) => {
+      linkState = value;
+    },
+    launchFailure: (value: OrchestratorMcpFailure | undefined, count = Infinity) => {
+      launchFailure = value;
+      failuresRemaining = count;
+    },
+    probeFailure: (value: OrchestratorMcpFailure | undefined) => {
+      probeFailure = value;
+    },
+    lostAcknowledgement: () => {
+      lostAcknowledgement = true;
+    },
+    blockLaunch: () => {
+      blockLaunch = true;
     },
   };
 });
@@ -228,8 +319,7 @@ it.effect.each(["lost receipt", "held admission"] as const)(
       assert.equal(pending?.launchStarted, true);
       assert.equal(pending?.launched, null);
       assert.deepEqual(pending?.admission, original?.admission);
-      if (state === "held admission")
-        assert.equal(fixture.getTask().progress, "Awaiting owner approval in Destination.");
+      assert.match(fixture.getTask().progress ?? "", /reconciliation.*on hold/i);
       const holds = fixture
         .getNotices()
         .filter(([, text]) => /observation/i.test(text) && /reconciliation/i.test(text));
@@ -242,6 +332,9 @@ it.effect.each(["lost receipt", "held admission"] as const)(
           .filter(([, text]) => /observation/i.test(text) && /reconciliation/i.test(text)),
         holds,
       );
+      const probes = fixture.getCounts().probes;
+      yield* TestClock.adjust("1 day");
+      assert.equal(fixture.getCounts().probes, probes);
       yield* recovering.close;
 
       fixture.observationSupported(true);
@@ -262,6 +355,8 @@ it.effect(
   "recovers a launch acknowledgement lost before local persistence after restart using the original key",
   () =>
     Effect.gen(function* () {
+      const createdAt = "2026-10-26T12:00:00.000Z";
+      yield* TestClock.setTime(Date.parse(createdAt));
       const fixture = yield* makeFixture;
       const sql = yield* SqlClient.SqlClient;
       yield* sql`CREATE TRIGGER simulated_crash BEFORE UPDATE OF launched_json ON jones_remote_delegation_intents BEGIN SELECT RAISE(ABORT, 'synthetic crash after remote launch'); END`;
@@ -275,6 +370,7 @@ it.effect(
       assert.equal((yield* fixture.store.get(commandId))?.launched, null);
       yield* first.close;
       yield* sql`DROP TRIGGER simulated_crash`;
+      yield* TestClock.adjust("1 hour");
       const restarted = yield* fixture.create();
       yield* restarted.lifecycle.start;
       yield* Deferred.await(fixture.bound);
@@ -282,6 +378,8 @@ it.effect(
       assert.isAtLeast(fixture.getCounts().launches, 2);
       assert.deepEqual(new Set(fixture.keys), new Set([envelope.launch.clientRequestId]));
       assert.deepEqual(new Set(fixture.namespaces), new Set([envelope.scope.requestNamespace]));
+      assert.deepEqual(new Set(fixture.launchSentAts), new Set([createdAt]));
+      assert.equal((yield* fixture.store.get(commandId))?.createdAt, createdAt);
       assert.equal(fixture.getTask().remoteChild?.runId, "remote:run");
       yield* restarted.close;
     }).pipe(Effect.provide(layer)),
@@ -291,6 +389,8 @@ it.effect(
   "held admission keeps the reserved task nonterminal and approval binds that same task after restart",
   () =>
     Effect.gen(function* () {
+      const createdAt = "2026-10-26T12:00:00.000Z";
+      yield* TestClock.setTime(Date.parse(createdAt));
       const fixture = yield* makeFixture;
       fixture.held(true);
       const first = yield* fixture.create();
@@ -306,7 +406,16 @@ it.effect(
       assert.equal(fixture.getCounts().notices, 1);
       assert.equal(fixture.getTask().remoteChild, undefined);
       assert.equal(fixture.getCounts().remoteExecutions, 0);
+      assert.deepEqual(new Set(fixture.launchSentAts), new Set([createdAt]));
+      yield* TestClock.adjust("10 seconds");
+      const launchesBeforeRetry = fixture.getCounts().launches;
+      yield* first.lifecycle.submit(commandId, { task: "Inspect fixture" }, envelope);
+      assert.equal(fixture.getCounts().launches, launchesBeforeRetry);
+      yield* TestClock.adjust("10 minutes");
+      assert.isAbove(fixture.getCounts().launches, launchesBeforeRetry);
+      assert.deepEqual(new Set(fixture.launchSentAts), new Set([createdAt]));
       yield* first.close;
+      yield* TestClock.adjust("1 hour");
       fixture.held(false);
       const restarted = yield* fixture.create();
       yield* restarted.lifecycle.start;
@@ -314,6 +423,9 @@ it.effect(
       assert.equal(fixture.getTask().id, submitted.taskId);
       assert.equal(fixture.getTask().result, null);
       assert.equal(fixture.getCounts().remoteExecutions, 1);
+      assert.deepEqual(new Set(fixture.launchSentAts), new Set([createdAt]));
+      assert.deepEqual(new Set(fixture.otherSentAts), new Set([undefined]));
+      assert.equal((yield* fixture.store.get(commandId))?.createdAt, createdAt);
       yield* restarted.close;
     }).pipe(Effect.provide(layer)),
 );
@@ -372,4 +484,338 @@ it.effect("withdraws held admission through the same connection before any provi
     assert.equal(fixture.getTask().status, "cancelled");
     yield* restarted.close;
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each(["submit", "startup", "replay", "cancellation"] as const)(
+  "%s activation stops after eight failed recovery attempts, excluding synchronous submit",
+  (entry) =>
+    Effect.gen(function* () {
+      const fixture = yield* makeFixture;
+      if (entry !== "submit") {
+        fixture.held(true);
+        const first = yield* fixture.create();
+        yield* first.lifecycle.submit(commandId, { task: "Inspect fixture" }, envelope);
+        yield* first.close;
+      }
+      const before = yield* fixture.store.get(commandId);
+      fixture.unreachable(true);
+      const active = yield* fixture.create();
+      const activate = () => {
+        switch (entry) {
+          case "submit":
+            return active.lifecycle
+              .submit(commandId, { task: "Inspect fixture" }, envelope)
+              .pipe(Effect.asVoid);
+          case "startup":
+            return active.lifecycle.start;
+          case "replay":
+            return active.lifecycle
+              .replay(commandId, { task: "Inspect fixture" })
+              .pipe(Effect.asVoid);
+          case "cancellation":
+            return active.lifecycle
+              .cancelPending(fixture.getTask(), "Owner cancelled")
+              .pipe(Effect.asVoid);
+        }
+      };
+      const count = () =>
+        entry === "cancellation" ? fixture.getCounts().withdrawals : fixture.getCounts().launches;
+      const initialCalls = count();
+      yield* activate();
+      yield* TestClock.adjust("1 hour");
+      yield* Deferred.await(fixture.parked);
+      const attempts = entry === "submit" ? 9 : 8;
+      assert.equal(count() - initialCalls, attempts);
+      const pending = yield* fixture.store.get(commandId);
+      assert.equal(pending?.status, "pending");
+      assert.equal(pending?.launchStarted, true);
+      assert.deepEqual(pending?.envelope, envelope);
+      assert.equal(pending?.taskId, fixture.getTask().id);
+      if (before !== undefined) {
+        assert.equal(pending?.createdAt, before.createdAt);
+        assert.deepEqual(pending?.admission, before.admission);
+      }
+      assert.equal(fixture.getTask().result === null, entry !== "cancellation");
+      if (entry === "cancellation") assert.equal(fixture.getTask().status, "cancelled");
+      else assert.match(fixture.getTask().progress ?? "", /reconciliation.*on hold/i);
+      const stopped = fixture.getCounts();
+      yield* TestClock.adjust("1 day");
+      assert.deepEqual(fixture.getCounts(), stopped);
+
+      // A deliberate activation gets a fresh bounded window, retaining identity
+      // and the one durable reconciliation notice across both windows.
+      yield* activate();
+      yield* TestClock.adjust("1 hour");
+      assert.equal(count() - initialCalls, attempts * 2);
+      assert.equal(
+        fixture.getNotices().filter(([id]) => id.endsWith(":reconciliation-notice")).length,
+        1,
+      );
+      assert.equal(fixture.getCounts().remoteExecutions, 0);
+      assert.deepEqual(new Set(fixture.keys), new Set([envelope.launch.clientRequestId]));
+      assert.deepEqual(new Set(fixture.namespaces), new Set([envelope.scope.requestNamespace]));
+      assert.deepEqual(yield* fixture.store.get(commandId), pending);
+      yield* active.close;
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
+  "invalid_request",
+  "request_conflict",
+  "capability_denied",
+  "model_unavailable",
+  "provider_unavailable",
+  "runtime_mode_escalation_denied",
+  "interaction_mode_escalation_denied",
+] as const)("first typed %s refusal rejects without automatic retries", (code) =>
+  Effect.gen(function* () {
+    const fixture = yield* makeFixture;
+    fixture.launchFailure(
+      new OrchestratorMcpFailure({ code, message: "Synthetic permanent refusal" }),
+    );
+    const active = yield* fixture.create();
+    yield* active.lifecycle.submit(commandId, { task: "Inspect fixture" }, envelope);
+    assert.equal(fixture.getTask().status, "failed");
+    assert.equal(fixture.getCounts().launches, 1);
+    assert.equal(fixture.getCounts().remoteExecutions, 0);
+    assert.equal((yield* fixture.store.get(commandId))?.status, "denied");
+    const stopped = fixture.getCounts();
+    yield* TestClock.adjust("1 day");
+    assert.deepEqual(fixture.getCounts(), stopped);
+    yield* active.close;
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each(["missing", "replaced", "probe refusal", "request conflict", "denial"] as const)(
+  "%s after possible execution parks the original intent without spinning or fabricating failure",
+  (refusal) =>
+    Effect.gen(function* () {
+      const fixture = yield* makeFixture;
+      fixture.unreachable(true);
+      const first = yield* fixture.create();
+      yield* first.lifecycle.submit(commandId, { task: "Inspect fixture" }, envelope);
+      yield* first.close;
+      const original = yield* fixture.store.get(commandId);
+      fixture.unreachable(false);
+      if (refusal === "missing" || refusal === "replaced") fixture.linkState(refusal);
+      else if (refusal === "probe refusal")
+        fixture.probeFailure(
+          new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "Synthetic probe refusal",
+          }),
+        );
+      else
+        fixture.launchFailure(
+          new OrchestratorMcpFailure({
+            code: refusal === "denial" ? "remote_admission_denied" : "request_conflict",
+            message: "Synthetic later refusal",
+            ...(refusal === "denial"
+              ? {
+                  remoteAdmission: {
+                    id: "held-1",
+                    bindingDigest: "a".repeat(64),
+                    status: "denied" as const,
+                  },
+                }
+              : {}),
+          }),
+        );
+      const active = yield* fixture.create();
+      yield* active.lifecycle.start;
+      yield* Deferred.await(fixture.parked);
+      assert.equal(fixture.getTask().result, null);
+      assert.equal(fixture.getTask().status, "waiting");
+      const pending = yield* fixture.store.get(commandId);
+      assert.deepEqual({ ...pending, admission: original?.admission }, original);
+      if (refusal === "denial") assert.equal(pending?.admission?.status, "denied");
+      else assert.deepEqual(pending?.admission, original?.admission);
+      assert.match(fixture.getTask().progress ?? "", /execution may already exist/i);
+      const stopped = fixture.getCounts();
+      yield* TestClock.adjust("1 day");
+      assert.deepEqual(fixture.getCounts(), stopped);
+      assert.equal(fixture.getCounts().notices, 1);
+      yield* active.close;
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each(["lost acknowledgement", "lost persistence", "dispatching"] as const)(
+  "%s remains nonterminal after recovery exhaustion",
+  (unknown) =>
+    Effect.gen(function* () {
+      const fixture = yield* makeFixture;
+      const sql = yield* SqlClient.SqlClient;
+      if (unknown === "lost acknowledgement") fixture.lostAcknowledgement();
+      else if (unknown === "lost persistence")
+        yield* sql`CREATE TRIGGER simulated_crash BEFORE UPDATE OF launched_json ON jones_remote_delegation_intents BEGIN SELECT RAISE(ABORT, 'synthetic crash after remote launch'); END`;
+      else
+        fixture.launchFailure(
+          new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message: "Dispatching without a receipt",
+            remoteAdmission: {
+              id: "held-1",
+              bindingDigest: "a".repeat(64),
+              status: "dispatching",
+            },
+          }),
+        );
+      const active = yield* fixture.create();
+      yield* active.lifecycle.submit(commandId, { task: "Inspect fixture" }, envelope);
+      yield* TestClock.adjust("1 hour");
+      yield* Deferred.await(fixture.parked);
+      assert.equal(fixture.getCounts().launches, 9);
+      assert.equal(fixture.getCounts().remoteExecutions, unknown === "dispatching" ? 0 : 1);
+      assert.equal(fixture.getTask().result, null);
+      assert.equal(fixture.getTask().status, "waiting");
+      const pending = yield* fixture.store.get(commandId);
+      assert.equal(pending?.status, "pending");
+      assert.equal(pending?.launchStarted, true);
+      assert.equal(pending?.launched, null);
+      if (unknown === "dispatching") assert.equal(pending?.admission?.status, "dispatching");
+      const stopped = fixture.getCounts();
+      yield* TestClock.adjust("1 day");
+      assert.deepEqual(fixture.getCounts(), stopped);
+      assert.deepEqual(new Set(fixture.keys), new Set([envelope.launch.clientRequestId]));
+      yield* active.close;
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([0, 8])(
+  "held approval remains actionable beyond the budget after %s initial errors and binds the original task",
+  (errors) =>
+    Effect.gen(function* () {
+      const fixture = yield* makeFixture;
+      fixture.held(true);
+      fixture.launchFailure(
+        new OrchestratorMcpFailure({ code: "orchestration_error", message: "Synthetic transient" }),
+        errors,
+      );
+      const active = yield* fixture.create();
+      const submitted = yield* active.lifecycle.submit(
+        commandId,
+        { task: "Inspect fixture" },
+        envelope,
+      );
+      yield* TestClock.adjust("1 hour");
+      assert.isAbove(fixture.getCounts().launches, errors + 8);
+      assert.equal(fixture.getTask().progress, "Awaiting owner approval in Destination.");
+      assert.equal(fixture.getTask().result, null);
+      assert.equal(fixture.getCounts().notices, 1);
+      const original = yield* fixture.store.get(commandId);
+      assert.equal(original?.admission?.status, "held");
+      fixture.held(false);
+      yield* TestClock.adjust("10 minutes");
+      yield* Deferred.await(fixture.bound);
+      assert.equal(fixture.getTask().id, submitted.taskId);
+      assert.equal(fixture.getCounts().remoteExecutions, 1);
+      assert.equal(fixture.getCounts().notices, 1);
+      assert.deepEqual(new Set(fixture.keys), new Set([envelope.launch.clientRequestId]));
+      assert.deepEqual(new Set(fixture.namespaces), new Set([envelope.scope.requestNamespace]));
+      assert.deepEqual(new Set(fixture.launchSentAts), new Set([original?.createdAt]));
+      const recorded = yield* fixture.store.get(commandId);
+      assert.equal(recorded?.status, "recorded");
+      assert.deepEqual(recorded?.envelope, original?.envelope);
+      assert.deepEqual(recorded?.admission, original?.admission);
+      yield* active.close;
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("submit, startup, replay and cancellation share one in-flight activation", () =>
+  Effect.gen(function* () {
+    const fixture = yield* makeFixture;
+    fixture.blockLaunch();
+    fixture.unreachable(true);
+    const active = yield* fixture.create();
+    const first = yield* active.lifecycle
+      .submit(commandId, { task: "Inspect fixture" }, envelope)
+      .pipe(Effect.forkChild);
+    yield* Deferred.await(fixture.launchEntered);
+    const duplicates = yield* Effect.all(
+      [
+        active.lifecycle.submit(commandId, { task: "Inspect fixture" }, envelope),
+        active.lifecycle.replay(commandId, { task: "Inspect fixture" }),
+      ],
+      { concurrency: "unbounded" },
+    ).pipe(Effect.forkChild);
+    yield* active.lifecycle.start;
+    yield* active.lifecycle.cancelPending(fixture.getTask(), "Owner cancelled");
+    assert.equal(fixture.getCounts().launches, 1);
+    yield* Deferred.succeed(fixture.launchRelease, undefined);
+    yield* Fiber.join(first);
+    yield* Fiber.join(duplicates);
+    yield* TestClock.adjust("1 hour");
+    yield* Deferred.await(fixture.parked);
+    assert.equal(fixture.getCounts().maxActiveLaunches, 1);
+    assert.equal(fixture.getCounts().launches, 9);
+    assert.equal(fixture.getCounts().remoteExecutions, 0);
+    assert.equal((yield* fixture.store.get(commandId))?.status, "pending");
+    assert.equal(fixture.getTask().status, "cancelled");
+    fixture.unreachable(false);
+    yield* active.lifecycle.start;
+    yield* Deferred.await(fixture.bound);
+    assert.equal(fixture.getCounts().launches, 10);
+    assert.equal(fixture.getCounts().remoteExecutions, 1);
+    assert.equal(fixture.getTask().remoteChild?.stoppedThere, false);
+    yield* active.close;
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("healthy approval holds do not reset failures already spent in the activation", () =>
+  Effect.gen(function* () {
+    const fixture = yield* makeFixture;
+    const transient = new OrchestratorMcpFailure({
+      code: "orchestration_error",
+      message: "Synthetic transient",
+    });
+    fixture.held(true);
+    // One synchronous failure and seven recovery failures precede healthy holds.
+    fixture.launchFailure(transient, 8);
+    const active = yield* fixture.create();
+    yield* active.lifecycle.submit(commandId, { task: "Inspect fixture" }, envelope);
+    yield* TestClock.adjust("1 hour");
+    assert.equal(fixture.getTask().progress, "Awaiting owner approval in Destination.");
+    const launches = fixture.getCounts().launches;
+    fixture.launchFailure(transient, 1);
+    yield* TestClock.adjust("10 minutes");
+    yield* Deferred.await(fixture.parked);
+    assert.equal(fixture.getCounts().launches, launches + 1);
+    assert.equal(fixture.getTask().result, null);
+    assert.equal((yield* fixture.store.get(commandId))?.admission?.status, "held");
+    const stopped = fixture.getCounts();
+    yield* TestClock.adjust("1 day");
+    assert.deepEqual(fixture.getCounts(), stopped);
+    yield* active.close;
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each(["dispatching", "denied"] as const)(
+  "cancellation reconciles authenticated withdrawal status %s without losing stop debt",
+  (status) =>
+    Effect.gen(function* () {
+      const fixture = yield* makeFixture;
+      fixture.held(true);
+      const first = yield* fixture.create();
+      yield* first.lifecycle.submit(commandId, { task: "Inspect fixture" }, envelope);
+      yield* first.close;
+      fixture.held(false);
+      fixture.dispatchRacedCancel(status);
+      const active = yield* fixture.create();
+      yield* active.lifecycle.cancelPending(fixture.getTask(), "Withdraw");
+      yield* TestClock.adjust("1 hour");
+      assert.equal(fixture.getTask().status, "cancelled");
+      assert.equal(fixture.getCounts().remoteExecutions, 0);
+      const intent = yield* fixture.store.get(commandId);
+      assert.equal(intent?.status, status === "denied" ? "stopped" : "pending");
+      if (status === "dispatching") {
+        yield* Deferred.await(fixture.parked);
+        assert.equal(fixture.getCounts().withdrawals, 8);
+        assert.equal(fixture.getTask().remoteChild, undefined);
+        assert.equal(intent?.admission?.status, "dispatching");
+        const stopped = fixture.getCounts();
+        yield* TestClock.adjust("1 day");
+        assert.deepEqual(fixture.getCounts(), stopped);
+      } else assert.equal(fixture.getCounts().launches, 1);
+      yield* active.close;
+    }).pipe(Effect.provide(layer)),
 );

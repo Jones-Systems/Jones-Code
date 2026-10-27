@@ -454,6 +454,10 @@
     {
       "from": "apps/server/src/server.ts",
       "to": "apps/server/src/jones/updates/sourceRelation.ts"
+    },
+    {
+      "from": "apps/server/src/cli/servicePreflight.ts",
+      "to": "apps/server/src/jones/cloud/qualifiedRuntime.ts"
     }
   ]
 }

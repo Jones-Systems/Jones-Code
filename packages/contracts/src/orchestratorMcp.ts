@@ -46,6 +46,7 @@ import {
 import { ProviderOptionSelection, ProviderOptionSelectionValue } from "./model.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { DelegatedTaskWorkspaceFields } from "./jones/delegatedTaskWorkspace.ts";
+import { DelegatedTaskNativeSession } from "./jones/delegatedTaskNativeSession.ts";
 
 const OrchestratorMcpPrompt = TrimmedNonEmptyString.check(Schema.isMaxLength(120_000));
 const OrchestratorMcpTitle = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
@@ -201,6 +202,7 @@ export const ORCHESTRATOR_MCP_RUNNING_TASK_NEXT =
 const OrchestratorMcpRunningTaskNext = Schema.Literal(ORCHESTRATOR_MCP_RUNNING_TASK_NEXT);
 
 export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
+  nativeSession: Schema.optional(DelegatedTaskNativeSession),
   remoteObservation: Schema.optional(RemoteTaskObservation),
   taskId: NodeId,
   /** Null for a task that runs in a linked environment; see `remoteChild`. */

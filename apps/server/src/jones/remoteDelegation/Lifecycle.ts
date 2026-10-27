@@ -19,6 +19,7 @@ import { ProjectToolkit } from "../../mcp/toolkits/project/tools.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as PeerForwarding from "../../peer/PeerForwarding.ts";
 import * as PeerLinks from "../../peer/PeerLinks.ts";
+import { LinkedRequestSentAtOverride } from "../peerTransport/LinkedRequestContext.ts";
 import * as IntentStore from "./IntentStore.ts";
 import * as ObservationSupport from "./ObservationSupport.ts";
 import { CancelRemoteAdmissionTool } from "../remoteAdmissionIntegration/tools.ts";
@@ -29,7 +30,19 @@ const retry = Schedule.exponential(Duration.seconds(2)).pipe(
   ),
   Schedule.jittered,
 );
-const refusedBeforeLaunch = (error: OrchestratorMcpFailure) =>
+// The synchronous submit attempt is excluded. Held approval polls never spend
+// this per-activation budget, and successful holds do not reset spent failures.
+const recoveryFailureBudget = 8;
+const heldAdmission = (error: OrchestratorMcpFailure) =>
+  error.code === "remote_admission_pending" && error.remoteAdmission?.status === "held";
+const permanentRefusal = (error: OrchestratorMcpFailure) =>
+  error.code === "invalid_request" ||
+  error.code === "request_conflict" ||
+  error.code === "remote_admission_denied" ||
+  error.code === "launch_fenced" ||
+  error.code === "thread_credential_required" ||
+  error.code === "target_required" ||
+  error.code === "parent_not_active" ||
   error.code === "runtime_mode_escalation_denied" ||
   error.code === "interaction_mode_escalation_denied" ||
   error.code === "capability_denied" ||
@@ -107,6 +120,35 @@ export const make = Effect.fn("RemoteDelegationLifecycle.make")(function* (
       .pipe(Effect.mapError(unavailable));
     yield* store.finish(intent.commandId, "denied");
   });
+  const park = Effect.fn("RemoteDelegationLifecycle.park")(function* (id: CommandId) {
+    const intent = yield* store.get(id);
+    if (intent === undefined || intent.status !== "pending" || intent.taskId === null) return;
+    const progress = `Remote launch reconciliation in ${intent.envelope.label} is on hold; execution may already exist. Review observation support, the original request and connection, then retry reconciliation; do not launch a replacement.`;
+    yield* threads
+      .dispatch({
+        type: "delegated_task.remote.hold",
+        commandId: CommandId.make(`${id}:reconciliation-hold`),
+        parentThreadId: intent.envelope.request.parentThreadId,
+        taskId: intent.taskId,
+        progress,
+      })
+      .pipe(Effect.mapError(unavailable));
+    // Both receipts are stable across activations, including after restart.
+    // Cancellation still owes remote withdrawal/stop; it must not erase intent.
+    yield* threads
+      .dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(`${id}:reconciliation-notice`),
+        threadId: intent.envelope.request.parentThreadId,
+        messageId: MessageId.make(`${id}:reconciliation-notice`),
+        text: `Remote task ${intent.taskId}: ${progress} Its original intent and any owner admission remain pending.`,
+        attachments: [],
+        createdBy: "system",
+        creationSource: "mcp",
+        dispatchMode: { type: "queue_after_active" },
+      })
+      .pipe(Effect.mapError(unavailable));
+  });
   const attempt = (id: CommandId): Effect.Effect<void, OrchestratorMcpFailure> =>
     locked(
       id,
@@ -120,147 +162,170 @@ export const make = Effect.fn("RemoteDelegationLifecycle.make")(function* (
           yield* store.finish(id, "stopped");
           return;
         }
-        const { envelope } = intent;
-        const link = yield* links.get(envelope.environmentId).pipe(Effect.mapError(unavailable));
-        if (Option.isNone(link) || DateTime.formatIso(link.value.linkedAt) !== envelope.linkedAt)
-          return yield* new OrchestratorMcpFailure({
-            code: "invalid_request",
-            message:
-              "The original remote delegation link is unavailable or was replaced; execution remains unresolved.",
-          });
-        const caller = scopeOf(intent);
-        if (task.result !== null && intent.admission != null && intent.launched === null) {
-          const withdrawn = yield* forwarding.call(
-            caller,
-            CancelRemoteAdmissionTool,
-            envelope.environmentId,
-            {
-              id: intent.admission.id,
-              bindingDigest: intent.admission.bindingDigest,
-            },
-          );
-          if (withdrawn.status === "cancelled" || withdrawn.status === "denied") {
-            yield* store.finish(id, "stopped");
-            return;
-          }
-        }
-        let launched = intent.launched;
-        if (launched === null || (launched.runId === null && task.result === null)) {
-          if (!(yield* ObservationSupport.supported(forwarding, caller, envelope.environmentId))) {
-            const error = ObservationSupport.unsupported();
-            if (!intent.launchStarted) {
-              yield* finishDenied(intent, error);
+        return yield* Effect.gen(function* () {
+          const { envelope } = intent;
+          const link = yield* links.get(envelope.environmentId).pipe(Effect.mapError(unavailable));
+          if (Option.isNone(link) || DateTime.formatIso(link.value.linkedAt) !== envelope.linkedAt)
+            return yield* new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message:
+                "The original remote delegation link is unavailable or was replaced; execution remains unresolved.",
+            });
+          const caller = scopeOf(intent);
+          if (task.result !== null && intent.admission != null && intent.launched === null) {
+            const withdrawn = yield* forwarding.call(
+              caller,
+              CancelRemoteAdmissionTool,
+              envelope.environmentId,
+              {
+                id: intent.admission.id,
+                bindingDigest: intent.admission.bindingDigest,
+              },
+            );
+            if (withdrawn.status === "cancelled" || withdrawn.status === "denied") {
+              yield* store.finish(id, "stopped");
               return;
             }
-            // A missing launch receipt is an unknown effect, including an admission
-            // that may have been approved there. Keep its original key and hold.
-            if (task.result === null)
-              yield* threads
-                .dispatch({
-                  type: "message.dispatch",
-                  commandId: CommandId.make(`${id}:observation-reconciliation`),
-                  threadId: envelope.request.parentThreadId,
-                  messageId: MessageId.make(`${id}:observation-reconciliation`),
-                  text: `Remote task ${task.id} in ${envelope.label}: observation support is unavailable; launch reconciliation is on hold. The original launch may already exist. Its intent and any owner admission remain pending. Upgrade the receiving server to reconcile the original request; do not launch a replacement.`,
-                  attachments: [],
-                  createdBy: "system",
-                  creationSource: "mcp",
-                  dispatchMode: { type: "queue_after_active" },
-                })
-                .pipe(Effect.mapError(unavailable));
-            return yield* error;
           }
-          yield* store.beginLaunch(id);
-          const outcome = yield* forwarding
-            .call(
-              caller,
-              ProjectToolkit.tools.t3_thread_launch,
-              envelope.environmentId,
-              envelope.launch,
-            )
-            .pipe(Effect.result);
-          if (outcome._tag === "Failure") {
-            const error = outcome.failure;
-            if (error.remoteAdmission !== undefined)
-              yield* store.admission(id, error.remoteAdmission);
+          let launched = intent.launched;
+          if (launched === null || (launched.runId === null && task.result === null)) {
             if (
-              error.code === "remote_admission_pending" &&
-              error.remoteAdmission?.status === "held"
+              !(yield* ObservationSupport.supported(forwarding, caller, envelope.environmentId))
             ) {
-              const progress = `Awaiting owner approval in ${envelope.label}.`;
-              yield* threads
-                .dispatch({
-                  type: "delegated_task.remote.hold",
-                  commandId: CommandId.make(`${id}:hold`),
-                  parentThreadId: envelope.request.parentThreadId,
-                  taskId: task.id,
-                  progress,
-                })
-                .pipe(Effect.mapError(unavailable));
-              const current = yield* taskFor(intent);
-              if (current?.result === null && envelope.request.completionWake !== "settled_only")
+              return yield* ObservationSupport.unsupported();
+            }
+            yield* store.beginLaunch(id);
+            const outcome = yield* forwarding
+              .call(
+                caller,
+                ProjectToolkit.tools.t3_thread_launch,
+                envelope.environmentId,
+                envelope.launch,
+              )
+              .pipe(
+                Effect.provideService(LinkedRequestSentAtOverride, intent.createdAt),
+                Effect.result,
+              );
+            if (outcome._tag === "Failure") {
+              const error = outcome.failure;
+              if (error.remoteAdmission !== undefined)
+                yield* store.admission(id, error.remoteAdmission);
+              if (heldAdmission(error)) {
+                const progress = `Awaiting owner approval in ${envelope.label}.`;
                 yield* threads
                   .dispatch({
-                    type: "message.dispatch",
-                    commandId: CommandId.make(`${id}:hold-notice`),
-                    threadId: envelope.request.parentThreadId,
-                    messageId: MessageId.make(`${id}:hold-notice`),
-                    text: `Remote task ${task.id}: ${progress} Ask the owner to review it in that environment. This task remains pending; do not launch a replacement.`,
-                    attachments: [],
-                    createdBy: "system",
-                    creationSource: "mcp",
-                    dispatchMode: { type: "queue_after_active" },
+                    type: "delegated_task.remote.hold",
+                    commandId: CommandId.make(`${id}:hold`),
+                    parentThreadId: envelope.request.parentThreadId,
+                    taskId: task.id,
+                    progress,
                   })
                   .pipe(Effect.mapError(unavailable));
+                const current = yield* taskFor(intent);
+                if (current?.result === null && envelope.request.completionWake !== "settled_only")
+                  yield* threads
+                    .dispatch({
+                      type: "message.dispatch",
+                      commandId: CommandId.make(`${id}:hold-notice`),
+                      threadId: envelope.request.parentThreadId,
+                      messageId: MessageId.make(`${id}:hold-notice`),
+                      text: `Remote task ${task.id}: ${progress} Ask the owner to review it in that environment. This task remains pending; do not launch a replacement.`,
+                      attachments: [],
+                      createdBy: "system",
+                      creationSource: "mcp",
+                      dispatchMode: { type: "queue_after_active" },
+                    })
+                    .pipe(Effect.mapError(unavailable));
+              }
+              return yield* error;
             }
-            if (
-              error.code === "remote_admission_denied" ||
-              (!intent.launchStarted && refusedBeforeLaunch(error))
-            ) {
-              yield* finishDenied(intent, error);
-              return;
-            }
-            return yield* error;
+            launched = outcome.success;
+            yield* store.launched(id, launched);
           }
-          launched = outcome.success;
-          yield* store.launched(id, launched);
-        }
-        const remoteChild: OrchestrationV2RemoteTaskChild = {
-          environmentId: envelope.environmentId,
-          threadId: launched.threadId,
-          label: envelope.label,
-          ...(launched.runId === null ? {} : { runId: launched.runId }),
-        };
-        if (launched.runId === null && task.result === null) return yield* unavailable();
-        yield* threads
-          .dispatch({
-            type: "delegated_task.remote.bind",
-            commandId: CommandId.make(`${id}:bind`),
-            parentThreadId: envelope.request.parentThreadId,
-            taskId: task.id,
-            remoteChild,
-          })
-          .pipe(Effect.mapError(unavailable));
-        yield* store.recorded(id, task.id);
-        yield* onBound(envelope.request.parentThreadId, task.id);
+          const remoteChild: OrchestrationV2RemoteTaskChild = {
+            environmentId: envelope.environmentId,
+            threadId: launched.threadId,
+            label: envelope.label,
+            ...(launched.runId === null ? {} : { runId: launched.runId }),
+          };
+          if (launched.runId === null && task.result === null) return yield* unavailable();
+          yield* threads
+            .dispatch({
+              type: "delegated_task.remote.bind",
+              commandId: CommandId.make(`${id}:bind`),
+              parentThreadId: envelope.request.parentThreadId,
+              taskId: task.id,
+              remoteChild,
+            })
+            .pipe(Effect.mapError(unavailable));
+          yield* store.recorded(id, task.id);
+          yield* onBound(envelope.request.parentThreadId, task.id);
+        }).pipe(
+          Effect.catchTags({
+            OrchestratorMcpFailure: (error): Effect.Effect<void, OrchestratorMcpFailure> => {
+              if (!permanentRefusal(error)) return Effect.fail(error);
+              // A refusal on a later attempt cannot disprove an earlier launch.
+              // Never clear launchStarted to turn uncertainty into a rejection.
+              return (intent.launchStarted ? park(id) : finishDenied(intent, error)).pipe(
+                Effect.catchTags({
+                  OrchestratorMcpFailure: () =>
+                    Effect.logWarning(
+                      "Unable to record remote delegation refusal; intent remains pending.",
+                    ),
+                }),
+              );
+            },
+          }),
+        );
       }),
     );
-  const recover = (id: CommandId) =>
-    Effect.suspend(() => {
-      if (recovering.has(id)) return Effect.void;
-      recovering.add(id);
-      return attempt(id).pipe(
-        Effect.retry(retry),
-        Effect.ignoreCause({ log: true }),
-        Effect.ensuring(
-          Effect.sync(() => {
-            recovering.delete(id);
+  const activate = (id: CommandId, synchronous = false) =>
+    Effect.uninterruptibleMask((restore) =>
+      Effect.suspend(() => {
+        if (recovering.has(id)) return Effect.void;
+        recovering.add(id);
+        // Guard ownership passes to the fork atomically; network work stays interruptible.
+        const recovery = restore(
+          Effect.suspend(() => {
+            let failures = 0;
+            return attempt(id).pipe(
+              Effect.retry({
+                schedule: retry,
+                while: (error) => heldAdmission(error) || ++failures < recoveryFailureBudget,
+              }),
+              Effect.catchTags({ OrchestratorMcpFailure: () => park(id) }),
+              Effect.catchTags({
+                OrchestratorMcpFailure: () =>
+                  Effect.logWarning("Unable to record remote delegation reconciliation hold."),
+              }),
+            );
           }),
-        ),
-        Effect.forkIn(scope),
-        Effect.asVoid,
-      );
-    });
+        ).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              recovering.delete(id);
+            }),
+          ),
+          Effect.forkIn(scope),
+          Effect.asVoid,
+        );
+        if (!synchronous) return recovery;
+        let background = false;
+        return restore(attempt(id)).pipe(
+          Effect.catchTags({
+            OrchestratorMcpFailure: () => {
+              background = true;
+              return recovery;
+            },
+          }),
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (!background) recovering.delete(id);
+            }),
+          ),
+        );
+      }),
+    );
   const submit = Effect.fn("RemoteDelegationLifecycle.submit")(function* (
     commandId: CommandId,
     request: unknown,
@@ -268,7 +333,7 @@ export const make = Effect.fn("RemoteDelegationLifecycle.make")(function* (
   ) {
     const intent = yield* store.prepare(commandId, request, envelope);
     const reserved = yield* locked(commandId, reserve(intent));
-    yield* attempt(commandId).pipe(Effect.catch(() => recover(commandId)));
+    yield* activate(commandId, true);
     return { taskId: reserved.taskId! };
   });
   const replay = Effect.fn("RemoteDelegationLifecycle.replay")(function* (
@@ -278,7 +343,7 @@ export const make = Effect.fn("RemoteDelegationLifecycle.make")(function* (
     const intent = yield* store.find(commandId, request);
     if (intent === undefined) return undefined;
     const reserved = yield* locked(commandId, reserve(intent));
-    if (intent.status === "pending") yield* recover(commandId);
+    if (intent.status === "pending") yield* activate(commandId);
     else if (intent.status === "recorded")
       yield* onBound(intent.envelope.request.parentThreadId, reserved.taskId!);
     return { taskId: reserved.taskId! };
@@ -306,7 +371,7 @@ export const make = Effect.fn("RemoteDelegationLifecycle.make")(function* (
             : `Cancelled: ${reason}. Remote launch reconciliation remains pending.`,
       })
       .pipe(Effect.mapError(unavailable));
-    yield* recover(intent.commandId);
+    yield* activate(intent.commandId);
     return { taskId: task.id, status: "cancel_requested" as const };
   });
   return {
@@ -315,7 +380,7 @@ export const make = Effect.fn("RemoteDelegationLifecycle.make")(function* (
     cancelPending,
     start: store.pending.pipe(
       Effect.flatMap((pending) =>
-        Effect.forEach(pending, (intent) => recover(intent.commandId), { discard: true }),
+        Effect.forEach(pending, (intent) => activate(intent.commandId), { discard: true }),
       ),
     ),
   };

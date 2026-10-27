@@ -120,6 +120,21 @@ those objects without knowing about Jones.
   new data-preserving Jones migration. Removing upstream residue that released
   migrations left behind, such as `runtime_identity_json` on the V1 thread
   session projection, needs a separately authorized operation.
+- **Append-only allocation.** Allocate new Jones migration IDs above the maximum
+  on freshly fetched canonical `Jones-Systems/Jones-Code` `main`. Numeric gaps
+  and allocations in concurrent branches do not reserve IDs. Before merging a
+  migration-changing PR, fetch main again and requalify the candidate against
+  that exact revision; update its unreleased allocation if main has overtaken
+  it. Never renumber a released migration to make room.
+  [CI admission](../../scripts/jones/ci/jones-migration-order.cjs) preserves all
+  baseline ID/name pairs and rejects lower insertions. PR runs fetch current
+  canonical main; main pushes compare the exact pre-push revision with the
+  pushed revision. An unrelated stale PR is selected out only when its manifest
+  source equals its common ancestor's source, with both manifests readable and
+  valid. CI proves the revisions printed in that run, without reserving IDs or
+  making a later main advance safe. The merge owner must repeat qualification
+  immediately before merge, for example with
+  `node scripts/jones/ci/jones-migration-order.cjs --baseline <fresh-main-commit> --candidate <candidate-commit>`.
 - **Update checks.** Trust upstream migrations through the normal T3 startup
   and recovery process. Before stopping the active server, the staged candidate
   reads the migration ledgers without writing them and reports pending IDs;

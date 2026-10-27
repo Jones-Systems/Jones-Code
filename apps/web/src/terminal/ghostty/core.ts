@@ -860,6 +860,28 @@ export class GhosttyTerminalCore {
   }
 
   selectionText(): string {
+    return this.formatSelection(0);
+  }
+
+  getText(): string {
+    this.ensureActive();
+    const layout = this.runtime.layout("GhosttySelection");
+    const selection = this.runtime.alloc(layout.size);
+    try {
+      this.runtime.setField(selection, "GhosttySelection", "size", layout.size);
+      if (
+        this.runtime.call("ghostty_terminal_select_all", this.terminal, selection) !==
+        GHOSTTY_SUCCESS
+      ) {
+        return "";
+      }
+      return this.formatSelection(selection);
+    } finally {
+      this.runtime.free(selection, layout.size);
+    }
+  }
+
+  private formatSelection(selection: number): string {
     this.ensureActive();
     const options = this.runtime.alloc(SELECTION_FORMAT_OPTIONS_SIZE);
     const optionsView = this.runtime.view(options, SELECTION_FORMAT_OPTIONS_SIZE);
@@ -867,7 +889,7 @@ export class GhosttyTerminalCore {
     optionsView.setUint32(4, 0, true);
     optionsView.setUint8(8, 1);
     optionsView.setUint8(9, 1);
-    optionsView.setUint32(12, 0, true);
+    optionsView.setUint32(12, selection, true);
     const written = this.runtime.call("ghostty_wasm_alloc_usize");
     const sizeResult = this.runtime.call(
       "ghostty_terminal_selection_format_buf",

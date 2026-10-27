@@ -1,3 +1,4 @@
+import { supportsUserResponseAnswerNotes } from "@t3tools/contracts/jones/userResponseRequest";
 import type { ThreadStructure } from "@t3tools/client-runtime/state/shell";
 import {
   AuthOrchestrationOperateScope,
@@ -83,6 +84,7 @@ function makePendingCustomAnswerSetter(input: {
           existing[activePendingRequestKey]?.[questionId],
           value,
           question,
+          { notes: supportsUserResponseAnswerNotes(activePendingUserInput.responseCapability) },
         ),
       },
     }));
@@ -266,10 +268,13 @@ export function usePendingThreadRequests(input: {
         activePendingUserInput.questions,
         activePendingDraftAnswers,
         activePendingQuestionIndex,
+        { notes: supportsUserResponseAnswerNotes(activePendingUserInput.responseCapability) },
       )
     : null;
   const activePendingResolvedAnswers = activePendingUserInput
-    ? buildPendingUserInputAnswers(activePendingUserInput.questions, activePendingDraftAnswers)
+    ? buildPendingUserInputAnswers(activePendingUserInput.questions, activePendingDraftAnswers, {
+        notes: supportsUserResponseAnswerNotes(activePendingUserInput.responseCapability),
+      })
     : null;
   const activePendingIsResponding = activePendingUserInput
     ? activePendingUserInput.responseCapability === "not_resumable" ||
@@ -410,7 +415,10 @@ export function usePendingThreadRequests(input: {
     }
     setPendingUserInputQuestionIndexByRequestId((existing) => ({
       ...existing,
-      [activePendingRequestKey]: nextQuestionIndex,
+      [activePendingRequestKey]: Math.max(
+        0,
+        Math.min(nextQuestionIndex, activePendingUserInput.questions.length - 1),
+      ),
     }));
   };
 
@@ -418,9 +426,11 @@ export function usePendingThreadRequests(input: {
     if (!activePendingUserInput) {
       return;
     }
-    // The option replaces the custom answer. Anything typed there is the
-    // user's text, so it goes back to the thread draft instead of vanishing.
-    const displacedAnswer = activePendingAnswerDrafts[questionId]?.customAnswer;
+    // Live-provider choices replace text; preserve that displaced text in the thread draft.
+    const notes =
+      supportsUserResponseAnswerNotes(activePendingUserInput.responseCapability) &&
+      !activePendingUserInput.questions.find((question) => question.id === questionId)?.multiSelect;
+    const displacedAnswer = notes ? undefined : activePendingAnswerDrafts[questionId]?.customAnswer;
     const currentPrompt =
       useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.prompt ?? "";
     const nextPrompt = carryDisplacedCustomAnswerIntoPrompt(currentPrompt, displacedAnswer);
@@ -461,6 +471,7 @@ export function usePendingThreadRequests(input: {
             question,
             existing[activePendingRequestKey]?.[questionId],
             optionValue,
+            { notes },
           ),
         },
       };
@@ -482,7 +493,8 @@ export function usePendingThreadRequests(input: {
     if (
       !activePendingUserInput ||
       activePendingUserInput.responseCapability === "not_resumable" ||
-      !activePendingProgress
+      !activePendingProgress ||
+      !activePendingProgress.canAdvance
     ) {
       return;
     }
@@ -519,6 +531,7 @@ export function usePendingThreadRequests(input: {
     respondingRequestIds,
     onRespondToApproval: onRespondToApprovalStable,
     onDismissUserInput: onDismissUserInputStable,
+    onSelectActivePendingUserInputQuestion: setActivePendingUserInputQuestionIndex,
     onSelectActivePendingUserInputOption: onSelectActivePendingUserInputOptionStable,
     onChangeActivePendingUserInputCustomAnswer,
     onAdvanceActivePendingUserInput,
