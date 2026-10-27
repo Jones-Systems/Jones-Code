@@ -65,7 +65,10 @@ describe("main-owned monitor lifetime and drafts", () => {
     expect(store.draft(row, input).answers).toEqual(draft.answers);
     store.setDetail({ ...detail, revision: 4, unavailableReason: "Disconnected" });
     expect(store.draft(row, input).answers).toEqual(draft.answers);
-    store.setDetail({ ...detail, revision: 5 }, new Set());
+    store.setDetail(
+      { ...detail, revision: 5, unavailableReason: "Only a child needs attention" },
+      new Set(),
+    );
     expect(store.drafts.has(monitorDraftKey(row, input))).toBe(false);
     expect(store.edit({ ...draft, revision: 2 })).toBe(false);
     await store.retire(row.environmentId);

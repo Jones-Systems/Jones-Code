@@ -263,7 +263,10 @@ export class MonitorStore {
       release();
     };
   }
-  setDetail(detail: ThreadMonitorDetail, pendingRequestIds?: ReadonlySet<RuntimeRequestId>) {
+  setDetail(
+    detail: ThreadMonitorDetail,
+    authoritativePendingRequestIds?: ReadonlySet<RuntimeRequestId>,
+  ) {
     if (
       !this.fence.accepts(detail) ||
       this.selection?.selectionId !== detail.selectionId ||
@@ -271,14 +274,14 @@ export class MonitorStore {
     )
       return;
     this.detail = detail;
-    if (pendingRequestIds && detail.unavailableReason === null) {
+    if (authoritativePendingRequestIds) {
       const threadKey = monitorThreadKey(detail);
-      this.pendingDecisionRequests.set(threadKey, new Set(pendingRequestIds));
+      this.pendingDecisionRequests.set(threadKey, new Set(authoritativePendingRequestIds));
       for (const [key, draft] of this.drafts) {
         if (
           draft.requestId !== null &&
           monitorThreadKey(draft) === threadKey &&
-          !pendingRequestIds.has(draft.requestId)
+          !authoritativePendingRequestIds.has(draft.requestId)
         ) {
           this.drafts.delete(key);
           this.clearedRevisions.delete(key);
