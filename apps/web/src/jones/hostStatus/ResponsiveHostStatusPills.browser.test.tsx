@@ -1,6 +1,8 @@
 import "../../index.css";
-import { expect, it } from "vite-plus/test";
-import { render } from "../../../test/render";
+import { expect, it, vi } from "vite-plus/test";
+import { userEvent } from "vite-plus/test/browser";
+import { act, render } from "../../../test/render";
+import { hostStatusMetrics } from "../../hostStatus";
 import { TooltipProvider } from "../../components/ui/tooltip";
 import { ResponsiveHostStatusPills, type HostStatusDisplay } from "./ResponsiveHostStatusPills";
 
@@ -14,7 +16,12 @@ const hosts: HostStatusDisplay[] = ["VPS", "Test", "Mini", "Laptop"].map((name, 
     health: "healthy",
     cpuHealth: "healthy",
     ramHealth: "healthy",
-    detail: "fixture",
+    tooltipLines: [
+      `CPU ${index === 1 ? "0%" : "26%"} of total cores`,
+      "RAM 42 GiB available of 64 GiB",
+      ...(index > 1 ? ["Swap I/O 0.0 MiB/s"] : []),
+      "Storage unavailable",
+    ],
   },
 }));
 
@@ -124,3 +131,61 @@ it("preserves all numbers through individual name reductions, diagonal and verti
     .toBe("VPS · 26% · 42");
   expect(names()).toEqual(["VPS", "Test", "Mini", "Laptop"]);
 });
+
+it.each(["vps", "home"] as const)(
+  "shows metric bullet lines on hover and keyboard focus for %s",
+  async (id) => {
+    using _clock = { [Symbol.dispose]: () => vi.useRealTimers() };
+    vi.setSystemTime(new Date("2027-01-15T08:00:00.000Z"));
+    const metrics = hostStatusMetrics({
+      id,
+      status: "available",
+      cpuUsagePercent: 18,
+      logicalCpuCount: 8,
+      occupiedMemoryBytes: 18 * 1024 ** 3,
+      availableMemoryBytes: 46 * 1024 ** 3,
+      totalMemoryBytes: 64 * 1024 ** 3,
+      swapIoBytesPerSecond: 0.3 * 1024 ** 2,
+      availableStorageBytes: 220 * 1024 ** 3,
+      totalStorageBytes: 500 * 1024 ** 3,
+      storageMountPoint: "/",
+      sampledAt: "2027-01-15T08:00:00.000Z",
+    });
+    const name = id === "home" ? "Laptop" : "VPS";
+    const label = `${name}: ${metrics.detail}`;
+    const container = document.createElement("div");
+    container.style.width = "1000px";
+    await using _screen = await render(
+      <TooltipProvider>
+        <ResponsiveHostStatusPills
+          hosts={hosts.map((host) => (host.id === id ? { id, name, label, metrics } : host))}
+        />
+      </TooltipProvider>,
+      { container, router: false },
+    );
+    await expect.poll(() => container.querySelector(`[data-host-id="${id}"]`)).not.toBeNull();
+    const pill = container.querySelector<HTMLElement>(`[data-host-id="${id}"]`)!;
+    const popup = () => document.querySelector<HTMLElement>('[data-slot="tooltip-popup"]');
+    const expected = [
+      "CPU 18% of total cores",
+      "RAM 46 GiB available of 64 GiB",
+      ...(id === "home" ? ["Swap I/O 0.3 MiB/s"] : []),
+      "Storage 220 GiB free of 500 GiB",
+    ];
+    await userEvent.hover(pill);
+    await expect
+      .poll(() => [...(popup()?.querySelectorAll("ul > li") ?? [])].map((li) => li.textContent))
+      .toEqual(expected);
+    expect(getComputedStyle(popup()!.querySelector("ul")!).listStyleType).toBe("disc");
+    expect(popup()!.textContent).not.toContain(name);
+    expect(pill.getAttribute("aria-label")).toBe(label);
+    await userEvent.unhover(pill);
+    await expect.poll(() => popup()).toBeNull();
+    await act(async () => pill.focus());
+    await expect
+      .poll(() => [...(popup()?.querySelectorAll("li") ?? [])].map((li) => li.textContent))
+      .toEqual(expected);
+    await userEvent.keyboard("{Escape}");
+    await expect.poll(() => popup()).toBeNull();
+  },
+);

@@ -24,8 +24,14 @@ import rootPackageJson from "../package.json" with { type: "json" };
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 
 import { requireJonesBuildTarget } from "./jones/platforms/supportedTargets.ts";
+import { planCliArchiveDependencies } from "./jones/packaging/cliArchiveDependencies.ts";
 import {
-  createStagePatchedDependencies,
+  assertCliPayloadUnchanged,
+  requireProductionCliBuild,
+  signProductionCli,
+  type CliPayloadSeal,
+} from "./jones/signing/cli.ts";
+import {
   createStageWorkspaceConfig,
   resolveFffNativeDependencies,
   STAGE_INSTALL_ARGS,
@@ -154,14 +160,14 @@ const stageRuntimeExternals = Effect.fn("stageRuntimeExternals")(function* (inpu
       hint: "The archive stages fff's platform binary from this version.",
     });
   }
-  const dependencies = {
-    ...selectCliRuntimeExternalDependencies(serverDependencies),
-    ...resolveFffNativeDependencies(input.platform, input.arch, fffNodeVersion),
-  };
-  const patchedDependencies = createStagePatchedDependencies(
-    workspace.patchedDependencies ?? {},
-    dependencies,
-  );
+  const { dependencies, patchedDependencies } = planCliArchiveDependencies({
+    dependencies: {
+      ...selectCliRuntimeExternalDependencies(serverDependencies),
+      ...resolveFffNativeDependencies(input.platform, input.arch, fffNodeVersion),
+    },
+    patchedDependencies: workspace.patchedDependencies ?? {},
+    lockfile: yield* fs.readFileString(path.join(input.repoRoot, "pnpm-lock.yaml")),
+  });
 
   yield* fs.writeFileString(
     path.join(input.stageDir, "package.json"),
@@ -269,9 +275,9 @@ const MacSigningConfig = Config.all({
 });
 
 /**
- * Apple Silicon requires signed Mach-O executables: use ad hoc signing without an identity,
- * or Developer ID plus notarization when configured. Notarization's hardened runtime
- * requires every native addon in the archive to share that signing identity.
+ * Apple Silicon needs signed Mach-O files; development builds use ad hoc signing.
+ * Developer ID notarization requires native addons to share that identity.
+ * Explicit Jones production builds sign and notarize the complete distribution.
  */
 const signMacArchiveContents = Effect.fn("signMacArchiveContents")(function* (input: {
   readonly repoRoot: string;
@@ -439,6 +445,7 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const repoRoot = yield* RepoRoot;
+  const production = requireProductionCliBuild(process.env, input);
   const serverDir = path.join(repoRoot, "apps/server");
   const executableName = input.platform === "win" ? "t3.exe" : "t3";
   // tsdown suffixes cross-built executables with their target (t3-darwin-x64);
@@ -491,13 +498,24 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   });
 
   const executablePath = path.join(contentDir, executableName);
-  if (input.platform === "mac") {
+  if (input.platform !== "win") {
+    yield* fs.chmod(executablePath, 0o755);
+  }
+  let productionSeal: CliPayloadSeal | undefined;
+  if (production) {
+    productionSeal = yield* Effect.try(() =>
+      signProductionCli(
+        {
+          contentDir,
+          entitlements: path.join(repoRoot, "apps/server/resources/cli-entitlements.plist"),
+        },
+        process.env,
+      ),
+    );
+  } else if (input.platform === "mac") {
     yield* signMacArchiveContents({ repoRoot, contentDir, executablePath });
   } else if (input.platform === "win") {
     yield* signWindowsExecutable(executablePath);
-  }
-  if (input.platform !== "win") {
-    yield* fs.chmod(executablePath, 0o755);
   }
 
   yield* fs.makeDirectory(input.outputDir, { recursive: true });
@@ -537,6 +555,7 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
       "tar (gzip)",
     );
   }
+  if (productionSeal) assertCliPayloadUnchanged(contentDir, productionSeal);
   const stat = yield* fs.stat(archivePath);
   yield* Effect.log(`[cli-archive] Wrote ${archivePath} (${String(stat.size)} bytes).`);
   return archivePath;

@@ -51,9 +51,11 @@ export const bufferShellLiveStream = <E, R>(
           return `project:${item.project.id}`;
         case "project.removed":
           return `project:${item.projectId}`;
+        case "thread.refreshed":
         case "thread.updated":
           return `thread:${item.location}:${item.thread.id}`;
         case "thread.removed":
+        case "thread.omitted":
           return `thread:${item.location}:${item.threadId}`;
       }
     },
