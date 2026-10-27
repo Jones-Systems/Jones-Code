@@ -1,3 +1,11 @@
+import { ChangedThreads as DependencyChangedThreads } from "../jones/threadResultDependencies/ChangeTracking.ts";
+import { makeDependencyStore } from "../jones/threadResultDependencies/DependencyStore.ts";
+import * as DependencyChanges from "../jones/threadResultDependencies/DependencyChanges.ts";
+import { acceptEvents as acceptDependencyEvents } from "../jones/threadResultDependencies/TransactionHooks.ts";
+import type {
+  OpenRequest,
+  WakeCommit,
+} from "../jones/threadResultDependencies/DependencyCommit.ts";
 import { makeOwnerSelectionStore } from "../jones/threadConfiguration/ownerSelectionStore.ts";
 import type { ModelSelection } from "@t3tools/contracts";
 import type { ThreadTitleCommitContext } from "../jones/threadTitle/commitContext.ts";
@@ -357,6 +365,8 @@ export interface EventSinkV2Shape {
   readonly commitCommand: (input: {
     readonly codexFailover?: CodexFailoverCommitContext | undefined;
     readonly taskContinuation?: TaskContinuationCommitContext | undefined;
+    readonly resultRequest?: OpenRequest | undefined;
+    readonly dependencyWake?: WakeCommit | undefined;
     readonly threadTitle?: ThreadTitleCommitContext | undefined;
     readonly selfSettlementProjectRemaining?: SelfSettlementProjectRemaining;
     readonly settlementRestore?: { readonly settleCommandId: CommandId };
@@ -558,6 +568,8 @@ const layerBase: Layer.Layer<
     // Take this lane last inside the transaction and hold it through publication to preserve that order.
     // Publication never waits, so a transaction waiting for the lane blocks only briefly.
     const jonesTables = makeJonesTablePresence(sql);
+    const dependencies = makeDependencyStore(sql, jonesTables);
+    const dependencyChanges = yield* Effect.serviceOption(DependencyChanges.DependencyChanges);
     const runtimeStops = RuntimeStop.makeRuntimeStopMethods(sql, jonesTables);
     const settlementRestores = makeSettlementRestoreStore(sql, jonesTables);
     const ownerSelections = makeOwnerSelectionStore(sql, jonesTables);
@@ -568,6 +580,8 @@ const layerBase: Layer.Layer<
       publish: (committed: A) => Effect.Effect<void>,
     ) =>
       Effect.uninterruptibleMask((restore) => {
+        const changedThreadIds = new Set<ThreadId>();
+        let dependencySequence = 0;
         let holdsLane = false;
         const takeLane = publishLane.take(1).pipe(
           Effect.andThen(
@@ -581,9 +595,33 @@ const layerBase: Layer.Layer<
         // every subscriber must hear about it before this writer can exit.
         // Otherwise a failed child run can leave its parent's task running.
         return sql
-          .withTransaction(Effect.tap(restore(transaction), () => takeLane))
+          .withTransaction(
+            restore(transaction).pipe(
+              Effect.provideService(DependencyChangedThreads, changedThreadIds),
+              Effect.tap(() =>
+                changedThreadIds.size === 0
+                  ? Effect.void
+                  : dependencies.sequence.pipe(
+                      Effect.tap((sequence) =>
+                        Effect.sync(() => {
+                          dependencySequence = sequence;
+                        }),
+                      ),
+                    ),
+              ),
+              Effect.tap(() => takeLane),
+            ),
+          )
           .pipe(
             Effect.tap(publish),
+            Effect.tap(() =>
+              changedThreadIds.size > 0 && Option.isSome(dependencyChanges)
+                ? dependencyChanges.value.publish({
+                    threadIds: [...changedThreadIds],
+                    sequence: dependencySequence,
+                  })
+                : Effect.void,
+            ),
             Effect.ensuring(
               Effect.suspend(() => (holdsLane ? publishLane.release(1) : Effect.void)),
             ),
@@ -816,6 +854,10 @@ const layerBase: Layer.Layer<
               updated_at = excluded.updated_at
           `;
         }
+        yield* acceptDependencyEvents(
+          dependencies,
+          storedEvents.filter(isPublicStoredOrchestrationEvent).map((stored) => stored.event),
+        );
         // Read lineage here, on the connection this transaction holds; see makeRunOutcomeRecorder.
         return yield* runOutcomes.prepare(storedEvents.filter(isPublicStoredOrchestrationEvent));
       });
@@ -1306,6 +1348,14 @@ const layerBase: Layer.Layer<
             );
           }
           const outcomes = yield* applyStoredEvents(storedEvents);
+          if (input.resultRequest) yield* dependencies.open(input.resultRequest);
+          if (input.dependencyWake) yield* dependencies.admitWake(input.dependencyWake);
+          yield* acceptDependencyEvents(
+            dependencies,
+            storedEvents.map((stored) => stored.event),
+            input,
+            false,
+          );
           if (input.codexFailover?.accept) yield* input.codexFailover.accept(input);
           if (Option.isSome(admission)) yield* admission.value.admit(input.effects, input.events);
           yield* effectOutbox.enqueue(input.effects);

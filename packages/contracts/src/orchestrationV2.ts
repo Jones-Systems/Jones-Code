@@ -2219,6 +2219,18 @@ export type OrchestrationV2ShellSnapshot = typeof OrchestrationV2ShellSnapshot.T
 
 export const OrchestrationV2ShellStreamItem = Schema.Union([
   Schema.Struct({
+    kind: Schema.Literal("thread.omitted"),
+    sequence: NonNegativeInt,
+    location: Schema.Literal("active"),
+    threadId: ThreadId,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("thread.refreshed"),
+    sequence: NonNegativeInt,
+    location: Schema.Literal("active"),
+    thread: OrchestrationV2ThreadShell,
+  }),
+  Schema.Struct({
     kind: Schema.Literal("synchronized"),
   }),
   Schema.Struct({
@@ -3705,6 +3717,7 @@ export type OrchestrationV2GetThreadProjectionInput =
   typeof OrchestrationV2GetThreadProjectionInput.Type;
 
 export const OrchestrationV2SubscribeShellInput = Schema.Struct({
+  acceptThreadRefresh: Schema.optional(Schema.Boolean),
   afterSequence: Schema.optionalKey(NonNegativeInt),
   requestCompletionMarker: Schema.optionalKey(Schema.Boolean),
   /**

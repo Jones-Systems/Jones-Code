@@ -1,4 +1,5 @@
 import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
+import * as ThreadResultMcpDependencies from "../jones/threadResultDependencies/McpDependencies.ts";
 import { WorkstreamToolkit } from "../jones/mcp/workstreams/tools.ts";
 import {
   handlers as workstreamHandlers,
@@ -1076,6 +1077,7 @@ export const layerOrchestratorToolkit = toolkitRegistration(
   OrchestratorToolkit,
   OrchestratorHandlers.layer,
 ).pipe(
+  Layer.provide(ThreadResultMcpDependencies.layer),
   Layer.provide(
     TaskContinuation.layer.pipe(
       Layer.provide(TaskContinuationStore.layer),
