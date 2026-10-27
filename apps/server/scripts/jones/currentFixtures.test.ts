@@ -192,6 +192,7 @@ describe("receiving V2 synthetic fixtures", () => {
           { id: 126, name: "WorkstreamsSourceEnrollments" },
           { id: 127, name: "WorkstreamsRollupAttempts" },
           { id: 128, name: "WorkstreamsPeerSessionPins" },
+          { id: 129, name: "WorkstreamsMemberBindings" },
         ]);
         NodeAssert.equal(result.capture?.integrity.ok, true);
         NodeAssert.equal(result.capture?.foreignKeys.violations, 0);
