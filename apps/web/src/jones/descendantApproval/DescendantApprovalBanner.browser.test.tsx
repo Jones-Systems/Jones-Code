@@ -349,7 +349,8 @@ it("cycles scoped siblings with identical IDs and keeps urgent approval in front
   await expect
     .element(screen.getByText("First child needs approval", { exact: true }))
     .toBeVisible();
-  await screen.getByRole("button", { name: "Show other notices" }).click();
+  // Pointer entry expands the stack and hides its peek before a click can land.
+  await screen.getByRole("button", { name: "Show other notices" }).hover();
   await expect.element(screen.getByText("Other warning", { exact: true })).toBeVisible();
   await screen.getByRole("button", { name: "Question child", exact: true }).click();
   expect(h.open).toHaveBeenLastCalledWith({
