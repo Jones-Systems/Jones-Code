@@ -2284,6 +2284,14 @@
   ],
   "allowedImports": [
     {
+      "from": "apps/server/src/cloud/bootService.test.ts",
+      "to": "apps/server/src/jones/cloud/launcherPointer.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/bootService.ts",
+      "to": "apps/server/src/jones/cloud/launcherPointer.ts"
+    },
+    {
       "from": "apps/server/src/device/LocalDeviceHost.ts",
       "to": "apps/server/src/jones/device/xcodeReadiness.ts"
     },

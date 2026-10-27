@@ -2087,3 +2087,71 @@ it("refuses a stale legacy Mac child capability after activation", () =>
     },
     { legacyMac: true },
   ));
+
+it.each([false, true])("plans stable pointer bootstrap without effects (launchd=%s)", (legacyMac) =>
+  fixture(
+    async (f) => {
+      const before = await tree(f.root);
+      const plan = await planHostAdoption({ ...f.input, launcherPointer: true }, f.host);
+      expect(plan.launcherPointer?.program).toBe(NodePath.join(f.runtime, "launcher/t3-launcher"));
+      expect(plan.serviceContents).toContain(NodePath.join(f.runtime, "launcher/t3-launcher"));
+      expect(plan.launcherPointer?.previousServiceSha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(await tree(f.root)).toEqual(before);
+    },
+    { legacyMac },
+  ),
+);
+
+it("bootstraps a stable pointer, archives its rollback preimage and checks the effective service program", () =>
+  fixture(async (f) => {
+    const program = NodePath.join(f.runtime, "launcher/t3-launcher");
+    const result = await adoptHost(
+      { ...f.input, launcherPointer: true },
+      {
+        ...f.host,
+        run: async (command) =>
+          command.command === "systemctl" && command.args.includes("--property=ExecStart")
+            ? program
+            : f.host.run(command),
+      },
+    );
+    expect(result.state).toBe("adopted");
+    expect(await NodeFSP.readlink(NodePath.join(f.runtime, "launcher/current"))).toBe(
+      `../versions/${newVersion}`,
+    );
+    const receipt = JSON.parse(
+      await NodeFSP.readFile(NodePath.join(f.runtime, ADOPTION_RECEIPT), "utf8"),
+    );
+    expect(receipt.launcherPointer.shimSha256).toBe(sha(await NodeFSP.readFile(program)));
+    const archive = NodePath.join(f.runtime, "launcher/previous-service-definition");
+    const archived = await NodeFSP.readFile(archive);
+    expect(receipt.launcherPointer.previousServiceSha256).toBe(sha(archived));
+    let rollbackRestarted = false;
+    const rollback = await adoptHost(f.input, {
+      ...f.host,
+      run: async (command) => {
+        const result = await f.host.run(command);
+        if (command.command === "systemctl" && command.args.includes("restart")) {
+          rollbackRestarted = true;
+          const capabilityPath = NodePath.join(f.runtime, UPDATE_CAPABILITY_RECEIPT);
+          const capability = JSON.parse(await NodeFSP.readFile(capabilityPath, "utf8"));
+          await NodeFSP.writeFile(
+            capabilityPath,
+            JSON.stringify({ ...capability, processId: 12348 }),
+          );
+        }
+        return result;
+      },
+      readback: async (plan) => {
+        const live = await f.host.readback(plan);
+        return { ...live, processId: rollbackRestarted ? 12348 : live.processId };
+      },
+    });
+    expect(rollback.state).toBe("adopted");
+    expect(rollback.plan.launcherPointer).toBeUndefined();
+    expect(rollback.plan.serviceContents).toContain(
+      NodePath.join(f.runtime, "versions", newVersion, "t3"),
+    );
+    expect(rollback.plan.serviceContents).not.toContain(program);
+    expect(await NodeFSP.readFile(archive)).toEqual(archived);
+  }));

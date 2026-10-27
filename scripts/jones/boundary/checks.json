@@ -1368,6 +1368,7 @@
     {
       "id": "jones-persistent-private-services",
       "tests": [
+        "apps/server/src/jones/cloud/launcherPointer.test.ts",
         "apps/server/src/cloud/bootService.test.ts",
         "apps/server/src/cloud/pinnedRuntime.test.ts",
         "apps/server/src/cloud/selfUpdate.test.ts",
@@ -1393,6 +1394,7 @@
         "apps/server/src/jones/hostService/systemBootService.test.ts"
       ],
       "commands": [
+        "vp test run apps/server/src/jones/cloud/launcherPointer.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter t3 typecheck",
         "vp run --filter @t3tools/tailscale typecheck",
         "vp run --filter @t3tools/scripts typecheck",
