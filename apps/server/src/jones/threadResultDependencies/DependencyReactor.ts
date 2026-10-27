@@ -29,7 +29,7 @@ import { notification } from "./Wake.ts";
 export class DependencyReactor extends Context.Service<
   DependencyReactor,
   { readonly start: () => Effect.Effect<void, never, import("effect/Scope").Scope> }
->()("jones/threadResultDependencies/DependencyReactor") {}
+>()("t3/jones/threadResultDependencies/DependencyReactor") {}
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const crypto = yield* Crypto.Crypto;

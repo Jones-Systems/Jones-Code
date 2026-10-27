@@ -145,6 +145,26 @@
     {
       "from": "apps/server/src/mcp/OrchestratorMcpService.ts",
       "to": "apps/server/src/jones/threadResultDependencies/RemoteRequestProtocol.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/OrchestratorMcpService.ts",
+      "to": "apps/server/src/jones/persistence/JonesTablePresence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/IdleCompactionService.ts",
+      "to": "apps/server/src/jones/persistence/JonesTablePresence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProjectionStore.ts",
+      "to": "apps/server/src/jones/persistence/JonesTablePresence.ts"
+    },
+    {
+      "from": "apps/server/src/peer/PeerForwarding.ts",
+      "to": "apps/server/src/jones/persistence/JonesTablePresence.ts"
+    },
+    {
+      "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/jones/persistence/JonesTablePresence.ts"
     }
   ]
 }

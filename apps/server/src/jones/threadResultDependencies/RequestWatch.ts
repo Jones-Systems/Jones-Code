@@ -27,12 +27,12 @@ export class RequestWatch extends Context.Service<
       readonly originEnvironmentId: string;
       readonly operationId: string;
       readonly targetThreadId?: ThreadId;
-      readonly afterToken?: string;
-      readonly fence?: boolean;
+      readonly afterToken?: string | undefined;
+      readonly fence?: boolean | undefined;
       readonly timeoutMs: number;
     }) => Effect.Effect<ThreadRequestObservation, OrchestratorMcpFailure>;
   }
->()("jones/threadResultDependencies/RequestWatch") {}
+>()("t3/jones/threadResultDependencies/RequestWatch") {}
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;

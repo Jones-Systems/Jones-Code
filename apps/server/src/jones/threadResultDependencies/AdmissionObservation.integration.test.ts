@@ -7,6 +7,7 @@ import {
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Auth from "../../auth/EnvironmentAuth.ts";
@@ -179,7 +180,7 @@ it.effect.each([
             return { sequence: sent.sequence };
           }).pipe(
             Effect.mapError((error) =>
-              error instanceof OrchestratorMcpFailure
+              Schema.is(OrchestratorMcpFailure)(error)
                 ? error
                 : new Intake.RemoteAdmissionIntakeError({ cause: error }),
             ),

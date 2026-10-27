@@ -133,7 +133,7 @@ it.effect(
           Effect.suspend(() => {
             calls.push(tool.name);
             assert.equal(scope.requestNamespace, "original-namespace");
-            assert.deepEqual(input, {
+            assert.deepEqual<unknown>(input, {
               operationId: "original-operation",
               fence: true,
               timeoutMs: 50_000,
@@ -156,8 +156,7 @@ it.effect(
         const dependency = (yield* f.store.get("recovered-remote"))!;
         // Delivery is committed before change publication. Reconciliation may
         // interrupt the completed follower before its dispatch port returns.
-        const messages = (yield* f.projection.getThreadRecords(f.waiter.id, ["messages"]))
-          .messages;
+        const messages = (yield* f.projection.getThreadRecords(f.waiter.id, ["messages"])).messages;
         assert.lengthOf(messages, 1);
         assert.equal(messages[0]?.id, dependency.wakeMessageId);
         assert.equal(messages[0]?.notification?.source.kind, "background_task");

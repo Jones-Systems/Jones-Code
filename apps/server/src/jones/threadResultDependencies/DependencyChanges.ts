@@ -18,7 +18,7 @@ export class DependencyChanges extends Context.Service<
     readonly subscribe: ReturnType<typeof PubSub.subscribe<Change>>;
     readonly publish: (change: Change) => Effect.Effect<void>;
   }
->()("jones/threadResultDependencies/DependencyChanges") {}
+>()("t3/jones/threadResultDependencies/DependencyChanges") {}
 export const layer = Layer.effect(
   DependencyChanges,
   Effect.gen(function* () {

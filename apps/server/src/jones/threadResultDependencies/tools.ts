@@ -88,7 +88,7 @@ const update = <A, E, R>(
     return yield* makeCommit(sql, store, changes)(run(store, bound.thread.threadId));
   }).pipe(
     Effect.mapError((error) =>
-      Schema.is(OrchestratorMcpFailure)(error) ? error : unavailable(error),
+      Schema.is(OrchestratorMcpFailure)(error) ? error : unavailable(),
     ),
   );
 

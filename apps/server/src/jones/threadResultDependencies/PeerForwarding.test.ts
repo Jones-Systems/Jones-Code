@@ -8,7 +8,6 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Projection from "../../orchestration-v2/ProjectionStore.ts";
 import * as Threads from "../../orchestration-v2/ThreadManagementService.ts";
@@ -48,9 +47,9 @@ const withPeer = (seen: Seen[], mode: "old" | "held" | "lost" | "answered") =>
   Forwarding.layer.pipe(
     Layer.provideMerge(threadPorts),
     Layer.provide(
-      Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeed(Option.none()) }),
+      Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
     ),
-    Layer.provide(Layer.mock(Links.PeerLinks)({ get: () => Effect.succeed(Option.none()) })),
+    Layer.provide(Layer.mock(Links.PeerLinks)({ get: () => Effect.succeedNone })),
     Layer.provide(
       Layer.mock(Peers.PeerMcpClient)({
         call: (input) =>

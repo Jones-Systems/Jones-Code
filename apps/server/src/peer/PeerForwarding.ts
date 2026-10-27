@@ -290,7 +290,7 @@ const make = Effect.gen(function* () {
           )
           .pipe(
             Effect.mapError((error) =>
-              Schema.is(OrchestratorMcpFailure)(error) ? error : unavailable(error),
+              Schema.is(OrchestratorMcpFailure)(error) ? error : unavailable(),
             ),
           );
         if (tracked.state === "released") {

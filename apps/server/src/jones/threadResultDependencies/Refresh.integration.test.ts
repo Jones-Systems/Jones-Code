@@ -57,8 +57,8 @@ it.effect(
       const sequence = yield* f.store.sequence;
       const first = yield* cache.forSubscription;
       const second = yield* cache.forSubscription;
-      assert.equal((yield* first.get(f.waiter.id, sequence))?.pendingBackgroundTasks.length, 1);
-      assert.equal((yield* second.get(f.waiter.id, sequence))?.pendingBackgroundTasks.length, 1);
+      assert.equal((yield* first.get(f.waiter.id, sequence))?.pendingBackgroundTasks?.length, 1);
+      assert.equal((yield* second.get(f.waiter.id, sequence))?.pendingBackgroundTasks?.length, 1);
       yield* makeCommit(f.sql, f.store, changes)(f.store.release(f.waiter.id, "dependency:cached"));
       assert.equal(yield* f.store.sequence, sequence);
       assert.deepEqual((yield* first.get(f.waiter.id, sequence))?.pendingBackgroundTasks, []);
@@ -127,7 +127,7 @@ it.effect(
       assert.deepEqual(waiter.thread.pendingBackgroundTasks, []);
       assert.equal(
         dependenciesBefore.find((thread) => thread.id === f.waiter.id)?.pendingBackgroundTasks
-          .length,
+          ?.length,
         1,
       );
       assert.deepEqual(
@@ -201,7 +201,7 @@ it.effect(
         assert(initial.kind === "snapshot");
         assert.equal(
           initial.snapshot.threads.find((thread) => thread.id === child.id)?.pendingBackgroundTasks
-            .length,
+            ?.length,
           1,
         );
         const sequence = initial.snapshot.snapshotSequence;
@@ -258,7 +258,7 @@ it.effect(
               item.kind === "thread.refreshed" &&
               item.thread.id === child.id &&
               item.sequence === sequence &&
-              item.thread.pendingBackgroundTasks.length === 0,
+              item.thread.pendingBackgroundTasks?.length === 0,
           ),
         );
         assert.deepEqual(yield* resume(false), [{ kind: "synchronized" }]);
