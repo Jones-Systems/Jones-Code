@@ -1688,7 +1688,7 @@
     "apps/web/src/components/chat/useComposerCommandKey.ts": "upstream-deleted",
     "apps/web/src/components/chat/useComposerContextImport.ts": "hook",
     "apps/web/src/components/chat/useComposerProviderModel.ts": "accepted-shared",
-    "apps/web/src/components/chat/useComposerResume.ts": "accepted-shared",
+    "apps/web/src/components/chat/useComposerResume.ts": "hook",
     "apps/web/src/components/chat/useComposerSelection.ts": "hook",
     "apps/web/src/components/chat/useComposerSend.ts": "hook",
     "apps/web/src/components/chat/useComposerStash.ts": "hook",
@@ -2314,7 +2314,38 @@
     "apps/server/src/jones/goals/preserveGoalConversation.test.ts": "jones-owned",
     "packages/contracts/src/jones/exactStruct.ts": "jones-owned",
     "apps/server/src/jones/updates/preparation/lifecycle.ts": "jones-owned",
-    "apps/server/src/jones/updates/preparation/lifecycle.test.ts": "jones-owned"
+    "apps/server/src/jones/updates/preparation/lifecycle.test.ts": "jones-owned",
+    "apps/server/src/jones/cloud/launcherPointer.ts": "jones-owned",
+    "apps/server/src/jones/cloud/launcherPointer.test.ts": "jones-owned",
+    "packages/client-runtime/src/operations/jonesPreparedTurn.ts": "jones-owned",
+    "apps/web/src/jones/pendingSends/usePendingTurn.ts": "jones-owned",
+    "apps/web/src/jones/pendingSends/newThread.ts": "jones-owned",
+    "apps/web/src/jones/pendingSends/PendingSendStatus.browser.test.tsx": "jones-owned",
+    "apps/web/src/jones/pendingSends/PendingSendStatus.tsx": "jones-owned",
+    "apps/web/src/jones/pendingSends/send.test.ts": "jones-owned",
+    "apps/web/src/jones/pendingSends/sidebar.ts": "jones-owned",
+    "apps/web/src/jones/pendingSends/sidebar.test.ts": "jones-owned",
+    "apps/web/src/jones/pendingSends/send.ts": "jones-owned",
+    "apps/web/src/jones/pendingSends/PendingSendsCoordinator.tsx": "jones-owned",
+    "apps/web/src/jones/pendingSends/hooks.ts": "jones-owned",
+    "apps/web/src/jones/pendingSends/store.ts": "jones-owned",
+    "apps/web/src/jones/pendingSends/store.test.ts": "jones-owned",
+    "apps/web/src/jones/pendingSends/app.browser.test.tsx": "jones-owned",
+    "apps/web/src/jones/pendingSends/previews.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/optimistic-send-feedback.json": "jones-owned",
+    "apps/web/src/components/chat/useAttachmentPreviewHandoff.ts": "accepted-shared",
+    "apps/web/src/components/chat/chatViewSend.ts": "accepted-shared",
+    "apps/web/test/fakeEnvironment.ts": "accepted-shared",
+    "apps/web/src/components/ThreadRouteView.tsx": "hook",
+    "apps/server/src/jones/remoteDelegation/ShellRetention.ts": "jones-owned",
+    "apps/server/src/jones/remoteDelegation/ShellRetention.test.ts": "jones-owned",
+    "apps/server/src/jones/remoteDelegation/ShellRetention.testkit.ts": "jones-owned",
+    "apps/server/src/jones/remoteDelegation/ShellRetention.diagnostic.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/remote-owner-shell-retention.json": "jones-owned",
+    "apps/server/src/jones/remoteDelegation/ShellRetention.composition.test.ts": "jones-owned",
+    "apps/web/src/jones/remoteDelegation/Sidebar.delegateRequests.browser.test.tsx": "jones-owned",
+    "apps/mobile/src/jones/remoteDelegation/threadListV2.delegateRequests.test.ts": "jones-owned",
+    "apps/mobile/src/jones/remoteDelegation/thread-order.delegateRequests.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -2409,6 +2440,14 @@
     "scripts/jones/boundary/fragments/experimental-typecheck.json"
   ],
   "allowedImports": [
+    {
+      "from": "apps/server/src/cloud/bootService.test.ts",
+      "to": "apps/server/src/jones/cloud/launcherPointer.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/bootService.ts",
+      "to": "apps/server/src/jones/cloud/launcherPointer.ts"
+    },
     {
       "from": "apps/server/src/device/LocalDeviceHost.ts",
       "to": "apps/server/src/jones/device/xcodeReadiness.ts"
@@ -3076,6 +3115,22 @@
     {
       "from": "apps/server/src/storageCleanup.test.ts",
       "to": "apps/server/src/jones/cleanup/DeletionAdmission.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useComposerResume.ts",
+      "to": "apps/web/src/jones/pendingSends/store.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useComposerResume.ts",
+      "to": "apps/web/src/jones/pendingSends/usePendingTurn.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/http.ts",
+      "to": "apps/server/src/jones/remoteDelegation/ShellRetention.ts"
+    },
+    {
+      "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/jones/remoteDelegation/ShellRetention.ts"
     }
   ]
 }

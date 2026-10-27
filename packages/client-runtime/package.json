@@ -602,6 +602,10 @@
     "./jones/updates/target-status": {
       "types": "./src/jones/updates/targetStatus.ts",
       "default": "./src/jones/updates/targetStatus.ts"
+    },
+    "./jones/descendant-approval": {
+      "types": "./src/jones/descendantApproval/index.ts",
+      "default": "./src/jones/descendantApproval/index.ts"
     }
   },
   "scripts": {

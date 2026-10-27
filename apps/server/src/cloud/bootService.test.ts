@@ -1,5 +1,8 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Synchronous fixture provenance hashes must match the staged executable bytes.
 import * as NodeCrypto from "node:crypto";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Native pointer bootstrap shares this test's scoped filesystem fixture.
+import * as NodeFSP from "node:fs/promises";
+import { bootstrapLauncherPointer } from "../jones/cloud/launcherPointer.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -1429,6 +1432,60 @@ it.layer(NodeServices.layer)("verified private artifact boot service", (it) => {
           `${plan.program[0]} --version`,
         ]);
         expect(parseServiceState(yield* fs.readFileString(statePath))?.activeVersion).toBe(version);
+      }),
+  );
+});
+
+it.layer(NodeServices.layer)("stable launcher pointer boot service", (it) => {
+  it.effect(
+    "preserves an enrolled stable launcher pointer when rendering an existing private service",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* makeHarness("linux", macInstallerPath, {
+          runtimeMode: "verified-private-artifact",
+        });
+        const base = yield* Effect.promise(() => NodeFSP.realpath(f.baseDir));
+        const version = "0.1.2-preview.20261026.100";
+        const directory = `${base}/runtime/versions/${version}`;
+        yield* f.fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
+        yield* f.fs.writeFileString(`${directory}/t3`, "#!/bin/sh\n", { mode: 0o700 });
+        yield* f.fs.writeFileString(
+          `${directory}/${QUALIFIED_RUNTIME_RECEIPT}`,
+          encodeNativeFixtureJson({
+            protocol: 1,
+            repository: "Jones-Systems/Jones-Code",
+            channel: "jones-main",
+            version,
+            sourceSha: "a".repeat(40),
+            sourceTree: "b".repeat(40),
+            installedSourceSha: "c".repeat(40),
+            runId: 100,
+            runAttempt: 1,
+            artifactId: 101,
+            workflow: ".github/workflows/artifact-cli-linux.yml",
+            artifactDigest: `sha256:${"d".repeat(64)}`,
+            archiveSha256: "e".repeat(64),
+            platform: "linux",
+            architecture: "x64",
+            payloadSha256: yield* Effect.promise(() => qualifiedPayloadDigest(directory)),
+          }),
+          { mode: 0o600 },
+        );
+        const pointer = yield* Effect.promise(() =>
+          bootstrapLauncherPointer(base, version, "retained service definition"),
+        );
+        const service = yield* f.makeService(macInstallerPath, "1.2.3", base);
+        const installed = yield* service.install();
+        expect(installed.program).toEqual([pointer.program, "__service-launcher"]);
+        expect(yield* f.fs.readFileString(installed.unitPath)).toContain(pointer.program);
+        expect(
+          yield* Effect.promise(() => NodeFSP.readlink(`${base}/runtime/launcher/current`)),
+        ).toBe(`../versions/${version}`);
+        f.commands.length = 0;
+        yield* f.fs.writeFileString(`${directory}/t3`, "tampered launcher");
+        const refused = yield* f.makeService(macInstallerPath, "1.2.3", base).pipe(Effect.flip);
+        expect(refused._tag).toBe("BootServiceInstallError");
+        expect(f.commands).toEqual([]);
       }),
   );
 });

@@ -566,6 +566,80 @@ it.effect(
     }),
 );
 
+it.effect("a delegated linked launch preserves inherited modes over project defaults", () =>
+  Effect.gen(function* () {
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const { projectId, dependencies } = clientLaunchHarness({
+      runtimeModeCeiling: "full-access",
+      defaultRuntimeMode: "approval-required",
+      linked: true,
+      narrowedTo: { runtimeMode: "auto", interactionMode: "default" },
+      launched,
+    });
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
+      ),
+    );
+    yield* toolkit
+      .handle("t3_thread_launch", {
+        title: "Inherited delegated task",
+        projectId,
+        delegatedFrom: {
+          environmentId: EnvironmentId.make("source-environment"),
+          threadId: ThreadId.make("source-parent"),
+          title: "Parent task",
+        },
+      })
+      .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+    expect(launched).toHaveLength(1);
+    expect(launched[0]?.runtimeMode).toBe("auto");
+    expect(launched[0]?.interactionMode).toBe("default");
+    expect(launched[0]?.linkOrigin?.access).toBe("full-access");
+  }),
+);
+
+it.effect.each(["without delegation", "without source modes"] as const)(
+  "a linked launch %s keeps its project mode default",
+  (scenario) =>
+    Effect.gen(function* () {
+      const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+      const { projectId, dependencies } = clientLaunchHarness({
+        runtimeModeCeiling: "full-access",
+        defaultRuntimeMode: "approval-required",
+        linked: true,
+        ...(scenario === "without delegation"
+          ? { narrowedTo: { runtimeMode: "auto" as const, interactionMode: "default" as const } }
+          : {}),
+        launched,
+      });
+      const toolkit = yield* ProjectToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+            Layer.provide(dependencies),
+          ),
+        ),
+      );
+      yield* toolkit
+        .handle("t3_thread_launch", {
+          title: "Ordinary linked launch",
+          projectId,
+          ...(scenario === "without source modes"
+            ? {
+                delegatedFrom: {
+                  environmentId: EnvironmentId.make("source-environment"),
+                  threadId: ThreadId.make("source-parent"),
+                  title: "Parent task",
+                },
+              }
+            : {}),
+        })
+        .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+      expect(launched).toHaveLength(1);
+      expect(launched[0]?.runtimeMode).toBe("approval-required");
+    }),
+);
+
 it.effect("a launch binds only an existing checkout that is one of the project's worktrees", () =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;

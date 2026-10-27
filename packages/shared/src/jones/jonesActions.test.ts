@@ -373,8 +373,8 @@ describe("Jones Actions qualification", () => {
       expect(calls.filter((endpoint) => endpoint.startsWith(`${ROOT}/actions/runs/`))).toEqual([]);
       expect(
         calls.filter((endpoint) => endpoint.includes(`/actions/workflows/${workflow}/runs?`)),
-      ).toHaveLength(platform === "darwin" ? 6 : 3);
-      expect(calls).toHaveLength(platform === "darwin" ? 8 : 5);
+      ).toHaveLength(platform === "darwin" ? 9 : 3);
+      expect(calls).toHaveLength(platform === "darwin" ? 11 : 5);
     },
   );
   it("retains pending-build reporting for an installed-source rerun", async () => {
@@ -568,8 +568,8 @@ describe("Jones Actions bounded event discovery", () => {
     return { f, ci, calls, run, artifact, client, listing };
   }
 
-  it.each(["push", "schedule"])(
-    "finds a %s Mac build without spending its budget on 150 manual runs",
+  it.each(["push", "schedule", "workflow_dispatch"])(
+    "finds a %s Mac build without spending its budget on 150 pull-request runs",
     async (event) => {
       const d = await discoveryFixture();
       const accepted = fixture({ platform: "darwin", run: { event }, receipt: { event } });
@@ -584,7 +584,7 @@ describe("Jones Actions bounded event discovery", () => {
             workflow_runs:
               page <= 3
                 ? Array.from({ length: 50 }, (_, index) =>
-                    d.run(1000 + page * 50 + index, "workflow_dispatch"),
+                    d.run(1000 + page * 50 + index, "pull_request"),
                   )
                 : [d.run(101, event)],
           };
@@ -599,14 +599,14 @@ describe("Jones Actions bounded event discovery", () => {
         d.calls
           .filter(d.listing)
           .map((endpoint) => new URLSearchParams(endpoint.split("?")[1]).get("event")),
-      ).toEqual(["push", "schedule"]);
+      ).toEqual(["push", "schedule", "workflow_dispatch"]);
       expect(
         d.calls.filter((endpoint) => /^repos\/.*\/actions\/runs\/\d+$/.test(endpoint)),
       ).toEqual([`${ROOT}/actions/runs/101`]);
     },
   );
 
-  it.each(["push", "schedule"])(
+  it.each(["push", "schedule", "workflow_dispatch"])(
     "refills the %s page frontier before choosing an older build from the other event",
     async (leadingEvent) => {
       const d = await discoveryFixture();
@@ -615,7 +615,9 @@ describe("Jones Actions bounded event discovery", () => {
         if (d.listing(endpoint)) {
           const query = new URLSearchParams(endpoint.split("?")[1]);
           if (query.get("event") !== leadingEvent)
-            return { workflow_runs: [d.run(101, otherEvent)] };
+            return {
+              workflow_runs: query.get("event") === otherEvent ? [d.run(101, otherEvent)] : [],
+            };
           return {
             workflow_runs:
               query.get("page") === "1"
@@ -642,6 +644,7 @@ describe("Jones Actions bounded event discovery", () => {
       ).toEqual([
         ["push", "1"],
         ["schedule", "1"],
+        ["workflow_dispatch", "1"],
         [leadingEvent, "2"],
       ]);
       expect(
@@ -660,6 +663,7 @@ describe("Jones Actions bounded event discovery", () => {
       const client = d.client(async (endpoint) => {
         if (d.listing(endpoint)) {
           const event = new URLSearchParams(endpoint.split("?")[1]).get("event")!;
+          if (event === "workflow_dispatch") return { workflow_runs: [] };
           return {
             workflow_runs: [
               d.run(event === "push" ? 101 : 102, event, {
@@ -685,6 +689,7 @@ describe("Jones Actions bounded event discovery", () => {
     const client = d.client(async (endpoint) => {
       if (d.listing(endpoint)) {
         const query = new URLSearchParams(endpoint.split("?")[1]);
+        if (query.get("event") === "workflow_dispatch") return { workflow_runs: [] };
         if (query.get("event") === "schedule") return { workflow_runs: [d.run(110, "schedule")] };
         return {
           workflow_runs:
@@ -711,7 +716,7 @@ describe("Jones Actions bounded event discovery", () => {
   });
 
   it.each([false, true])(
-    "keeps the exact target on all six bounded pages and preserves pending=%s at exhaustion",
+    "keeps the exact target on all nine bounded pages and preserves pending=%s at exhaustion",
     async (pending) => {
       const d = await discoveryFixture();
       const client = d.client(async (endpoint) => {
@@ -721,11 +726,15 @@ describe("Jones Actions bounded event discovery", () => {
           const event = query.get("event")!;
           return {
             workflow_runs: Array.from({ length: 50 }, (_, index) =>
-              d.run((event === "push" ? 2000 : 1000) - page * 50 - index, event, {
-                head_sha: index === 0 ? OLD : CURRENT,
-                status: pending && page === 3 && index === 49 ? "in_progress" : "completed",
-                conclusion: index === 0 ? "success" : "failure",
-              }),
+              d.run(
+                (event === "push" ? 3000 : event === "schedule" ? 2000 : 1000) - page * 50 - index,
+                event,
+                {
+                  head_sha: index === 0 ? OLD : CURRENT,
+                  status: pending && page === 3 && index === 49 ? "in_progress" : "completed",
+                  conclusion: index === 0 ? "success" : "failure",
+                },
+              ),
             ),
           };
         }
@@ -754,10 +763,13 @@ describe("Jones Actions bounded event discovery", () => {
       expect(queries.map((query) => [query.get("event"), query.get("page")])).toEqual([
         ["push", "1"],
         ["schedule", "1"],
+        ["workflow_dispatch", "1"],
         ["push", "2"],
         ["push", "3"],
         ["schedule", "2"],
         ["schedule", "3"],
+        ["workflow_dispatch", "2"],
+        ["workflow_dispatch", "3"],
       ]);
       for (const query of queries) {
         expect(query.get("branch")).toBe("main");
@@ -767,14 +779,14 @@ describe("Jones Actions bounded event discovery", () => {
     },
   );
 
-  it("refuses manual runs even if an event-filtered response includes them", async () => {
+  it("refuses pull-request runs even if an event-filtered response includes them", async () => {
     const d = await discoveryFixture();
     const client = d.client(async (endpoint) =>
       d.listing(endpoint)
         ? {
             workflow_runs: [
-              d.run(101, "workflow_dispatch"),
-              d.run(102, "workflow_dispatch", { status: "in_progress" }),
+              d.run(101, "pull_request"),
+              d.run(102, "pull_request", { status: "in_progress" }),
             ],
           }
         : d.f.transport.api(endpoint),
@@ -1046,15 +1058,17 @@ describe("Jones Actions check observations", () => {
         frontierWithinBudgetSatisfied: false,
       });
       expect(observation.discovery.streams).toEqual(
-        (platform === "darwin" ? ["push", "schedule"] : ["push"]).map((event) => ({
-          event,
-          pagesRead: 1,
-          lastRawRowCount: 0,
-          end: "short-page",
-          bufferedRunCount: 0,
-        })),
+        (platform === "darwin" ? ["push", "schedule", "workflow_dispatch"] : ["push"]).map(
+          (event) => ({
+            event,
+            pagesRead: 1,
+            lastRawRowCount: 0,
+            end: "short-page",
+            bufferedRunCount: 0,
+          }),
+        ),
       );
-      expect(calls).toHaveLength(platform === "darwin" ? 4 : 3);
+      expect(calls).toHaveLength(platform === "darwin" ? 5 : 3);
     },
   );
 
@@ -1460,7 +1474,7 @@ describe("Jones Actions check observations", () => {
               return {
                 workflow_runs: Array.from({ length: 50 }, (_, i) => ({
                   ...f.run,
-                  event: rowsKind === "filtered" ? "workflow_dispatch" : q.get("event"),
+                  event: rowsKind === "filtered" ? "pull_request" : q.get("event"),
                   id: rowsKind === "duplicates" ? 500 : 1000 + Number(q.get("page")) * 50 + i,
                   head_sha: OLD,
                 })),
@@ -1478,11 +1492,11 @@ describe("Jones Actions check observations", () => {
             end: "page-limit",
             bufferedRunCount: 0,
           });
-        expect(calls.filter(producerList)).toHaveLength(platform === "darwin" ? 6 : 3);
+        expect(calls.filter(producerList)).toHaveLength(platform === "darwin" ? 9 : 3);
         expect(calls.some((endpoint) => endpoint.startsWith(`${ROOT}/actions/runs/`))).toBe(false);
         if (rowsKind === "filtered")
           expect(observation.rejections.noncanonicalOrWrongTarget).toBe(
-            platform === "darwin" ? 300 : 150,
+            platform === "darwin" ? 450 : 150,
           );
         if (rowsKind === "duplicates") expect(observation.rejections.installedSource).toBe(1);
       }
@@ -1500,7 +1514,10 @@ describe("Jones Actions check observations", () => {
             return {
               workflow_runs: Array.from({ length: 50 }, (_, i) => ({
                 ...f.run,
-                id: (q.get("event") === "push" ? 2000 : 1000) - Number(q.get("page")) * 50 - i,
+                id:
+                  (q.get("event") === "push" ? 3000 : q.get("event") === "schedule" ? 2000 : 1000) -
+                  Number(q.get("page")) * 50 -
+                  i,
                 event: q.get("event"),
                 head_sha: i === 0 ? OLD : CURRENT,
                 status: pending && i === 49 ? "pending" : "completed",
@@ -1526,10 +1543,13 @@ describe("Jones Actions check observations", () => {
       expect(queries.map((q) => [q.get("event"), q.get("page")])).toEqual([
         ["push", "1"],
         ["schedule", "1"],
+        ["workflow_dispatch", "1"],
         ["push", "2"],
         ["push", "3"],
         ["schedule", "2"],
         ["schedule", "3"],
+        ["workflow_dispatch", "2"],
+        ["workflow_dispatch", "3"],
       ]);
       for (const q of queries) expect(q.get("head_sha")).toBe(CURRENT);
     },
@@ -1647,8 +1667,8 @@ describe("Jones Actions check observations", () => {
     expect(calls.filter(artifactList)).toHaveLength(1);
   });
 
-  it.each(["push", "schedule"])(
-    "refills %s before selection and records both event frontiers",
+  it.each(["push", "schedule", "workflow_dispatch"])(
+    "refills %s before selection and records all event frontiers",
     async (leading) => {
       const other = leading === "push" ? "schedule" : "push";
       const { observation, calls } = await observeAndProject(
@@ -1657,6 +1677,7 @@ describe("Jones Actions check observations", () => {
             if (producerList(endpoint)) {
               const q = new URLSearchParams(endpoint.split("?")[1]);
               if (q.get("event") === other) return { workflow_runs: [runFor(f, 101, other)] };
+              if (q.get("event") !== leading) return { workflow_runs: [] };
               return {
                 workflow_runs:
                   q.get("page") === "1"
@@ -1700,6 +1721,7 @@ describe("Jones Actions check observations", () => {
       ).toEqual([
         ["push", "1"],
         ["schedule", "1"],
+        ["workflow_dispatch", "1"],
         [leading, "2"],
       ]);
       expect(calls.slice(-4)).toEqual([
@@ -1722,6 +1744,7 @@ describe("Jones Actions check observations", () => {
           scenario({ platform: "darwin" }, (endpoint, f) => {
             if (producerList(endpoint)) {
               const event = new URLSearchParams(endpoint.split("?")[1]).get("event");
+              if (event === "workflow_dispatch") return { workflow_runs: [] };
               return {
                 workflow_runs: [
                   runFor(f, event === "push" ? 101 : 102, event ?? "push", {
@@ -1755,13 +1778,14 @@ describe("Jones Actions check observations", () => {
           scenario({ platform: "darwin" }, (endpoint, f) => {
             if (!producerList(endpoint)) return f.transport.api(endpoint);
             const q = new URLSearchParams(endpoint.split("?")[1]);
+            if (q.get("event") === "workflow_dispatch") return { workflow_runs: [] };
             if (q.get("event") === "push")
               return {
                 workflow_runs: [runFor(f, 101, "push"), runFor(f, 100, "push", { head_sha: OLD })],
               };
             return {
               workflow_runs: capped
-                ? Array.from({ length: 50 }, () => runFor(f, 999, "workflow_dispatch"))
+                ? Array.from({ length: 50 }, () => runFor(f, 999, "pull_request"))
                 : [runFor(f, 99, "schedule")],
             };
           }),
@@ -1781,7 +1805,7 @@ describe("Jones Actions check observations", () => {
           : { pagesRead: 1, end: "short-page", bufferedRunCount: 1, nextBuffered: { runId: 99 } },
       );
       expect(observation.discovery.unresolvedLimits).toEqual(capped ? ["producer-pages"] : []);
-      expect(calls.filter(producerList)).toHaveLength(capped ? 4 : 2);
+      expect(calls.filter(producerList)).toHaveLength(capped ? 5 : 3);
     },
   );
 
@@ -1791,6 +1815,7 @@ describe("Jones Actions check observations", () => {
         scenario({ platform: "darwin" }, (endpoint, f) => {
           if (producerList(endpoint)) {
             const q = new URLSearchParams(endpoint.split("?")[1]);
+            if (q.get("event") === "workflow_dispatch") return { workflow_runs: [] };
             if (q.get("event") === "schedule")
               return { workflow_runs: [runFor(f, 110, "schedule")] };
             return {
@@ -2142,7 +2167,7 @@ describe("Jones Actions ancestry memo", () => {
 });
 
 describe("Jones desktop producer events", () => {
-  it.each(["push", "schedule"])(
+  it.each(["push", "schedule", "workflow_dispatch"])(
     "discovers, stages and reuses an authenticated %s desktop build",
     async (event) => {
       const f = fixture({ platform: "darwin", run: { event }, receipt: { event } });
@@ -2158,14 +2183,69 @@ describe("Jones desktop producer events", () => {
         f.calls
           .filter((call) => call.includes("artifact-desktop-mac.yml/runs?"))
           .map((call) => new URLSearchParams(call.split("?")[1]).get("event")),
-      ).toEqual(["push", "schedule"]);
+      ).toEqual(["push", "schedule", "workflow_dispatch"]);
       expect(f.calls.find((call) => call.includes("ci.yml/runs?"))).toContain(
         `event=push&head_sha=${CURRENT}`,
       );
     },
   );
   it.each([
-    ["darwin", "workflow_dispatch"],
+    { head_branch: "feature" },
+    { head_repository: { full_name: "other/fork" } },
+    { repository: { full_name: "other/repo" } },
+    { path: ".github/workflows/other.yml" },
+  ])("rejects manual desktop provenance %j during discovery and staging", async (run) => {
+    const accepted = fixture({
+      platform: "darwin",
+      run: { event: "workflow_dispatch" },
+      receipt: { event: "workflow_dispatch" },
+    });
+    const candidate = await available(accepted.client, "darwin");
+    const rejected = fixture({
+      platform: "darwin",
+      run: { event: "workflow_dispatch", ...run },
+      receipt: { event: "workflow_dispatch" },
+    });
+    expect((await check(rejected.client, "darwin")).state).not.toBe("available");
+    await expect(rejected.client.stage(candidate, await cache())).rejects.toMatchObject({
+      reason: "unqualified",
+    });
+  });
+  it.each([
+    { conclusion: "failure" },
+    { status: "in_progress", conclusion: null },
+    { head_sha: OLD },
+    { event: "workflow_dispatch" },
+  ])("requires successful exact-source push CI for manual desktop builds: %j", async (ci) => {
+    const accepted = fixture({
+      platform: "darwin",
+      run: { event: "workflow_dispatch" },
+      receipt: { event: "workflow_dispatch" },
+    });
+    const candidate = await available(accepted.client, "darwin");
+    const rejected = fixture({
+      platform: "darwin",
+      run: { event: "workflow_dispatch" },
+      receipt: { event: "workflow_dispatch" },
+      ci,
+    });
+    expect((await check(rejected.client, "darwin")).state).not.toBe("available");
+    await expect(rejected.client.stage(candidate, await cache())).rejects.toMatchObject({
+      reason: "unqualified",
+    });
+  });
+  it("requires the authenticated manual artifact ref to remain canonical main", async () => {
+    const f = fixture({
+      platform: "darwin",
+      run: { event: "workflow_dispatch" },
+      receipt: { event: "workflow_dispatch", ref: "refs/heads/feature" },
+    });
+    const candidate = await available(f.client, "darwin");
+    await expect(f.client.stage(candidate, await cache())).rejects.toMatchObject({
+      reason: "unqualified",
+    });
+  });
+  it.each([
     ["darwin", "pull_request"],
     ["linux", "schedule"],
     ["linux", "workflow_dispatch"],
@@ -2217,7 +2297,7 @@ describe("Jones desktop producer events", () => {
       }
     },
   );
-  it.each(["push", "schedule"])(
+  it.each(["push", "schedule", "workflow_dispatch"])(
     "rejects a live producer event differing from authenticated %s metadata, including reuse",
     async (event) => {
       const f = fixture({ platform: "darwin", run: { event }, receipt: { event } });
@@ -2694,18 +2774,26 @@ describe("production desktop workflow selection", () => {
     architecture: "arm64",
     desktopBundleIdentifier: "com.jonessystems.jonescode",
   } as const;
-  it("discovers and stages only the exact signed main artifact", async () => {
-    const f = fixture({ desktop: "production" });
-    const result = await f.client.check(input);
-    expect(result.state).toBe("available");
-    if (result.state !== "available") throw new Error("Production fixture unavailable");
-    expect(result.candidate.workflow).toBe(".github/workflows/jones-desktop-signing.yml");
-    const staged = await f.client.stage(result.candidate, await cache());
-    expect(staged.receipt).toMatchObject({ signed: true, notarized: true, teamId: "2CUPSQS986" });
-    await expect(
-      validateJonesStagedArtifact(NodePath.dirname(staged.payloadPath), result.candidate),
-    ).resolves.toMatchObject({ candidate: result.candidate });
-  });
+  it.each(["push", "workflow_dispatch"])(
+    "discovers and stages the exact signed %s main artifact",
+    async (event) => {
+      const f = fixture({ desktop: "production", run: { event }, receipt: { event } });
+      const result = await f.client.check(input);
+      expect(result.state).toBe("available");
+      if (result.state !== "available") throw new Error("Production fixture unavailable");
+      expect(result.candidate.workflow).toBe(".github/workflows/jones-desktop-signing.yml");
+      const staged = await f.client.stage(result.candidate, await cache());
+      expect(staged.receipt).toMatchObject({
+        event,
+        signed: true,
+        notarized: true,
+        teamId: "2CUPSQS986",
+      });
+      await expect(
+        validateJonesStagedArtifact(NodePath.dirname(staged.payloadPath), result.candidate),
+      ).resolves.toMatchObject({ candidate: result.candidate });
+    },
+  );
   it("keeps omitted/legacy IDs on preview and rejects unknown or empty IDs", async () => {
     for (const desktopBundleIdentifier of [undefined, "com.t3tools.t3code"]) {
       const f = fixture({ desktop: "legacy" });
@@ -2730,7 +2818,6 @@ describe("production desktop workflow selection", () => {
   });
   it.each([
     { event: "pull_request" },
-    { event: "workflow_dispatch" },
     { event: "schedule" },
     { head_branch: "topic" },
     { path: ".github/workflows/artifact-desktop-mac.yml" },

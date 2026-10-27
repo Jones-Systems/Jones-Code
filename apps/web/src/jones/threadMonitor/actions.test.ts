@@ -55,6 +55,7 @@ vi.mock("@t3tools/client-runtime/state/runtime", async (original) => ({
   runAtomCommand: (...args: unknown[]) => ports.run(...args),
 }));
 import { MonitorActionController } from "./actions";
+import { restoreObservedSettlement } from "../settlementRestore/settlementRestore";
 import { MonitorStore, refOf, emptyCounts } from "./store";
 import { testEnvironment, testRow } from "./fixtures.test-support";
 function setup(active = false) {
@@ -119,8 +120,63 @@ beforeEach(() => {
   ports.scope = true;
   ports.run.mockReset();
   ports.run.mockResolvedValue(AsyncResult.success(undefined));
+  vi.mocked(restoreObservedSettlement).mockReset();
+  vi.mocked(restoreObservedSettlement).mockResolvedValue(AsyncResult.success(undefined));
 });
 describe("monitor uses the existing runtime command path", () => {
+  it("restores outside the cohort only with the exact observed settle identity and current permission", async () => {
+    const { controller, action, frames, store, input } = setup();
+    const settleCommandId = CommandId.make("observed-settle");
+    store.setCohort([testEnvironment], [], emptyCounts());
+    ports.values.set("inputs", [
+      {
+        ...input,
+        threads: input.threads.map((thread) => ({
+          ...thread,
+          settledAt: "2026-10-26T08:00:00.000Z",
+        })),
+      },
+    ]);
+    store.result({
+      ...refOf(action),
+      type: "actionResult",
+      actionId: "settle",
+      commandId: settleCommandId,
+      settleCommandId,
+      status: "accepted",
+      reason: null,
+    });
+    const restore = {
+      ...refOf(action),
+      type: "restore" as const,
+      actionId: "restore",
+      commandId: CommandId.make("restore-command"),
+      settleCommandId,
+    };
+    await controller.dispatch({
+      ...restore,
+      actionId: "wrong-settle",
+      commandId: CommandId.make("wrong-restore"),
+      settleCommandId: CommandId.make("unobserved-settle"),
+    });
+    expect(restoreObservedSettlement).not.toHaveBeenCalled();
+    expect(frames.at(-1)).toMatchObject({ status: "unavailable" });
+    await controller.dispatch(restore);
+    expect(restoreObservedSettlement).toHaveBeenCalledExactlyOnceWith(
+      { environmentId: action.environmentId, threadId: action.threadId },
+      settleCommandId,
+      { settleWasNoop: false },
+    );
+    expect(frames.at(-1)).toMatchObject({ status: "accepted", commandId: restore.commandId });
+    ports.scope = false;
+    await controller.dispatch({
+      ...restore,
+      actionId: "permission-denied",
+      commandId: CommandId.make("denied-restore"),
+    });
+    expect(restoreObservedSettlement).toHaveBeenCalledTimes(1);
+    expect(frames.at(-1)).toMatchObject({ status: "unavailable" });
+  });
   it.each([false, true])(
     "dispatches safe queue mode with exact saved context when active=%s",
     async (active) => {

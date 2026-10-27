@@ -70,7 +70,7 @@ function zip(entries: ReadonlyArray<{ name: string; bytes: Buffer }>): Buffer {
   return Buffer.concat([...local, directory, end]);
 }
 
-async function fixture(event: "push" | "schedule" = "push") {
+async function fixture(event: "push" | "schedule" | "workflow_dispatch" = "push") {
   const allocated = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-recover-stage-"));
   roots.push(allocated);
   const base = await NodeFSP.realpath(allocated);
@@ -492,20 +492,23 @@ it.each(["unenrolled", "stage-evidence", "dmg", "manifest", "ci", "http"])(
   },
 );
 
-it("qualifies scheduled macOS admission while retaining push-only CI and exact artifact events", async () => {
-  const f = await fixture("schedule");
-  await expect(inspectQualifiedStageRecovery(f.input, f.api)).resolves.toMatchObject({
-    trustBasis: "preserved-original-admission",
-  });
-  f.responses.set("actions/runs/101/attempts/1", {
-    status: 200,
-    body: { ...f.run, event: "workflow_dispatch" },
-  });
-  await expect(inspectQualifiedStageRecovery(f.input, f.api)).rejects.toThrow();
-  f.responses.set("actions/runs/101/attempts/1", { status: 200, body: f.run });
-  f.responses.set("actions/runs/102", {
-    status: 200,
-    body: { ...f.run, id: 102, path: ".github/workflows/ci.yml", event: "schedule" },
-  });
-  await expect(inspectQualifiedStageRecovery(f.input, f.api)).rejects.toThrow();
-});
+it.each(["schedule", "workflow_dispatch"] as const)(
+  "qualifies %s macOS admission while retaining push-only CI and exact artifact events",
+  async (event) => {
+    const f = await fixture(event);
+    await expect(inspectQualifiedStageRecovery(f.input, f.api)).resolves.toMatchObject({
+      trustBasis: "preserved-original-admission",
+    });
+    f.responses.set("actions/runs/101/attempts/1", {
+      status: 200,
+      body: { ...f.run, event: "push" },
+    });
+    await expect(inspectQualifiedStageRecovery(f.input, f.api)).rejects.toThrow();
+    f.responses.set("actions/runs/101/attempts/1", { status: 200, body: f.run });
+    f.responses.set("actions/runs/102", {
+      status: 200,
+      body: { ...f.run, id: 102, path: ".github/workflows/ci.yml", event: "schedule" },
+    });
+    await expect(inspectQualifiedStageRecovery(f.input, f.api)).rejects.toThrow();
+  },
+);

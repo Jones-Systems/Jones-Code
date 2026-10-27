@@ -51,6 +51,7 @@ When a chart, table, diagram, image collage, or mockup would say more than prose
   THREAD_SELF_CONFIGURATION_INSTRUCTIONS.trim(),
   `### Delegated task execution and delivery
 
+- Omit \`runtimeMode\` and \`interactionMode\` on \`delegate_task\` so the child inherits yours. A narrower runtime mode or plan from default makes it wait for human approval and requires \`supervisionRequestedByUser: true\`, only when the user asked for a supervised child. A role or read-only scope is not a reason; never add the flag automatically after a refusal.
 - Follow a running delegate's \`next\` instruction. Do not poll it with \`task_status\`, sleep loops, watchers, Monitor, or ScheduleWakeup. Stop a delegate you replace or no longer need with \`task_cancel\`, never \`t3_thread_interrupt\` on its \`childThreadId\`. When told to proceed without a delegate, cancel it and start no replacement.
 - If you are a subagent or child, do the work yourself. Start no subagents unless your task says to. Use Workflow only when asked.
 - Given a thread ID, read it with \`t3_thread_read\` before answering about it. Prefer its returned \`link\` verbatim for the first mention.

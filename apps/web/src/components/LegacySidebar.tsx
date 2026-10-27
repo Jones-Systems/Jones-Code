@@ -1,3 +1,4 @@
+import { usePendingSidebarThreads } from "../jones/pendingSends/sidebar";
 import { projectPreferenceIds } from "../jones/presentationOrder/projectOrder";
 import { RemoteAdmissionAttention } from "../jones/remoteAdmission/RemoteAdmissionAttention";
 import {
@@ -1135,7 +1136,13 @@ function useProjectThreads(
   const threadSortOrder = useClientSettings<SidebarThreadSortOrder>(
     (settings) => settings.sidebarThreadSortOrder,
   );
-  const sidebarThreads = useThreadShellsForProjectRefs(project.memberProjectRefs);
+  const sidebarThreads = usePendingSidebarThreads(
+    useThreadShellsForProjectRefs(project.memberProjectRefs),
+  ).filter((thread) =>
+    project.memberProjectRefs.some(
+      (ref) => ref.environmentId === thread.environmentId && ref.projectId === thread.projectId,
+    ),
+  );
   const delegatedUnderParent = useDelegatedUnderParent();
   const { excludedEnvironmentIds } = useSidebarEnvironmentFilter();
   const scopedThreads = filterSidebarV2VisibleThreads(
@@ -3300,7 +3307,7 @@ export default function LegacySidebar({ routeReveal }: { routeReveal: SidebarRou
   );
   const routeThreadRef = resolveActiveThreadRouteRef(routeTarget, routeDraftThread);
   const routeThreadKey = routeThreadRef ? scopedThreadKey(routeThreadRef) : null;
-  const allSidebarThreads = useThreadShells();
+  const allSidebarThreads = usePendingSidebarThreads(useThreadShells());
   const delegatedUnderParent = useDelegatedUnderParent();
   const { excludedEnvironmentIds, excludedEnvironmentKey } = useSidebarEnvironmentFilter();
   const visibleThreads = filterSidebarV2VisibleThreads(

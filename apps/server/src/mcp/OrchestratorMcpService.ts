@@ -145,6 +145,7 @@ import { isLiveCallerShell, unavailable } from "./threadAccess.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import { composeAgentMessage } from "../jones/mcp/agentMessageHeader.ts";
 import * as DelegatedTaskWorkspace from "../jones/mcp/delegatedTaskWorkspace/DelegatedTaskWorkspace.ts";
+import { refuseUnsolicitedSupervision } from "../jones/mcp/delegatedTaskSupervision/DelegatedTaskSupervision.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 
@@ -2359,6 +2360,7 @@ const make = Effect.gen(function* () {
         operation: "delegate-task",
       });
       const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
+      if (!isRetryOfAcceptedDelegation) yield* refuseUnsolicitedSupervision(parent.thread, input);
       const childProject = yield* DelegatedTaskWorkspace.resolveDelegatedTaskProject({
         request: input,
         parentProjectId: parent.thread.projectId,
