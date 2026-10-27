@@ -31,10 +31,7 @@
     "apps/server/src/orchestration-v2/ProviderSwitchService.ts",
     "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
     "packages/shared/src/t3McpToolPresentation.ts",
-    "apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts",
-    "apps/mobile/src/state/thread-outbox-model.ts",
-    "apps/mobile/src/state/use-thread-outbox-drain.ts",
-    "apps/mobile/src/state/use-thread-outbox-drain.test.ts"
+    "apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts"
   ],
   "tombstones": [],
   "allowedImports": [
