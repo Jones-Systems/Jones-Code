@@ -11,6 +11,8 @@ import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 import {
   hasUnseenCompletion,
+  isDelegatedTaskShownUnderParent,
+  type PendingSubagentRequest,
   pendingSubagentRequestsByThread,
   pendingSubagentGuestAttentionByThread,
   hasPendingGuestMessages,
@@ -401,5 +403,137 @@ describe("completed child guest attention", () => {
     };
     expect(pendingSubagentRequestsByThread([parent, native]).size).toBe(0);
     expect(pendingSubagentGuestAttentionByThread([parent, native])).toEqual(new Set([parent.id]));
+  });
+});
+
+describe("delegated task list membership", () => {
+  const origin = EnvironmentId.make("origin");
+  const parent = shell();
+  const task = shell({
+    id: ThreadId.make("remote-task"),
+    delegatedFrom: { environmentId: origin, threadId: parent.id, title: parent.title },
+    status: "waiting",
+  });
+  const localChild = (id: string, parentId: ThreadId | null) =>
+    shell({
+      id: ThreadId.make(id),
+      lineage: {
+        rootThreadId: parent.id,
+        parentThreadId: parentId,
+        relationshipToParent: "subagent",
+      },
+    });
+  const middle = localChild("middle", parent.id);
+  const leaf = localChild("leaf", middle.id);
+  const delegatedRoot = {
+    ...parent,
+    delegatedFrom: {
+      environmentId: EnvironmentId.make("third-environment"),
+      threadId: ThreadId.make("other-parent"),
+      title: "Other parent",
+    },
+  };
+  const settledRoot = { ...parent, settledOverride: "settled" as const };
+  const chains = [
+    { name: "unsettled root", rows: [parent], parentId: parent.id, hidden: true },
+    { name: "settled root", rows: [settledRoot], parentId: parent.id, hidden: false },
+    {
+      name: "complete nested chain",
+      rows: [parent, middle, leaf],
+      parentId: leaf.id,
+      hidden: true,
+    },
+    {
+      name: "nested settled root",
+      rows: [settledRoot, middle, leaf],
+      parentId: leaf.id,
+      hidden: false,
+    },
+    {
+      name: "null subagent parent",
+      rows: [localChild("leaf", null)],
+      parentId: leaf.id,
+      hidden: false,
+    },
+    { name: "missing middle", rows: [parent, leaf], parentId: leaf.id, hidden: false },
+    {
+      name: "self loop",
+      rows: [localChild("leaf", leaf.id)],
+      parentId: leaf.id,
+      hidden: false,
+    },
+    {
+      name: "two-row cycle",
+      rows: [localChild("middle", leaf.id), leaf],
+      parentId: leaf.id,
+      hidden: false,
+    },
+    { name: "remote delegated root", rows: [delegatedRoot], parentId: parent.id, hidden: false },
+    {
+      name: "remote delegated root with local child",
+      rows: [delegatedRoot, middle, leaf],
+      parentId: leaf.id,
+      hidden: false,
+    },
+  ];
+  const requests: ReadonlyMap<ThreadId, PendingSubagentRequest> = new Map();
+
+  it("requires delegation and a parent in an enabled environment", () => {
+    const parents = new Map([[parent.id, parent]]);
+    expect(isDelegatedTaskShownUnderParent(parent, parents, requests)).toBe(false);
+    expect(isDelegatedTaskShownUnderParent(task, null, requests)).toBe(false);
+    expect(isDelegatedTaskShownUnderParent(task, new Map(), requests)).toBe(false);
+  });
+
+  it.each(chains)("keeps an idle delegate hidden under $name", ({ rows, parentId }) => {
+    expect(
+      isDelegatedTaskShownUnderParent(
+        { ...task, delegatedFrom: { ...task.delegatedFrom!, threadId: parentId } },
+        new Map(rows.map((row) => [row.id, row])),
+        requests,
+      ),
+    ).toBe(true);
+  });
+
+  for (const source of [
+    "own approval",
+    "own input",
+    "local descendant approval",
+    "local descendant input",
+  ] as const) {
+    it.each(chains)(`${source}: $name`, ({ rows, parentId, hidden }) => {
+      const kind = source.endsWith("input") ? "user_input" : "command";
+      const own = source.startsWith("own");
+      const asking = {
+        ...task,
+        delegatedFrom: { ...task.delegatedFrom!, threadId: parentId },
+        pendingRuntimeRequest: own ? request(kind) : null,
+      };
+      const nested: ReadonlyMap<ThreadId, PendingSubagentRequest> = own
+        ? requests
+        : new Map([[task.id, kind === "command" ? "approval" : "user_input"]]);
+      expect(
+        isDelegatedTaskShownUnderParent(asking, new Map(rows.map((row) => [row.id, row])), nested),
+      ).toBe(hidden);
+    });
+  }
+
+  it.each([
+    { status: "waiting" as const, pendingRuntimeRequest: request("auth_refresh") },
+    { status: "completed" as const, pendingRuntimeRequest: request("user_input") },
+    { status: "failed" as const, pendingRuntimeRequest: request("command") },
+    {
+      status: "waiting" as const,
+      activityRunStatus: null,
+      pendingRuntimeRequest: request("user_input"),
+    },
+  ])("does not reveal authentication or nonlive requests: %j", (overrides) => {
+    expect(
+      isDelegatedTaskShownUnderParent(
+        { ...task, ...overrides },
+        new Map([[parent.id, settledRoot]]),
+        requests,
+      ),
+    ).toBe(true);
   });
 });

@@ -3847,6 +3847,24 @@
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-remote-owner-shell-retention",
+      "tests": [
+        "apps/server/src/jones/remoteDelegation/ShellRetention.test.ts",
+        "apps/server/src/jones/remoteDelegation/ShellRetention.diagnostic.test.ts",
+        "packages/shared/src/jones/threadAttention.test.ts",
+        "packages/client-runtime/src/jones/threadShellCompatibility.test.ts",
+        "apps/server/src/jones/remoteDelegation/ShellRetention.composition.test.ts",
+        "apps/web/src/jones/remoteDelegation/Sidebar.delegateRequests.browser.test.tsx",
+        "apps/mobile/src/jones/remoteDelegation/threadListV2.delegateRequests.test.ts",
+        "apps/mobile/src/jones/remoteDelegation/thread-order.delegateRequests.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/remoteDelegation/ShellRetention.test.ts packages/shared/src/jones/threadAttention.test.ts packages/client-runtime/src/jones/threadShellCompatibility.test.ts --maxWorkers=1 --no-file-parallelism apps/server/src/jones/remoteDelegation/ShellRetention.composition.test.ts apps/web/src/jones/remoteDelegation/Sidebar.delegateRequests.browser.test.tsx apps/mobile/src/jones/remoteDelegation/threadListV2.delegateRequests.test.ts apps/mobile/src/jones/remoteDelegation/thread-order.delegateRequests.test.ts",
+        "vp test run apps/server/src/jones/remoteDelegation/ShellRetention.diagnostic.test.ts --maxWorkers=1 --no-file-parallelism",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }

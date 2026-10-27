@@ -2441,6 +2441,20 @@
         "apps/mobile/src/jones/threadResultDependencies/presentation.test.ts"
       ],
       "scope": "Explicit correlated cross-thread result requests persist sender waiting and receiver answer duties independently of foreground completion. Jones-owned storage, transaction fences and event-driven local/remote observation preserve multiple dependencies and release semantics. Additive opt-in shell refreshes retain replay ordering, persistence and producer isolation for shared web, desktop and mobile consumers; no ordinary message or navigation link creates a wait. The existing shell-sync test harness is the upstream-test exception for actual subscription and persistence behavior. MCP registration and production reuse one memoized request watcher and dependency bus; existing core and peer fixtures add only their missing Orchestrator port. New Jones composition regressions cover standalone durable fences and EventSink/MCP bus identity and publication."
+    },
+    {
+      "id": "remote-owner-shell-retention",
+      "tests": [
+        "apps/server/src/jones/remoteDelegation/ShellRetention.test.ts",
+        "apps/server/src/jones/remoteDelegation/ShellRetention.diagnostic.test.ts",
+        "packages/shared/src/jones/threadAttention.test.ts",
+        "packages/client-runtime/src/jones/threadShellCompatibility.test.ts",
+        "apps/server/src/jones/remoteDelegation/ShellRetention.composition.test.ts",
+        "apps/web/src/jones/remoteDelegation/Sidebar.delegateRequests.browser.test.tsx",
+        "apps/mobile/src/jones/remoteDelegation/threadListV2.delegateRequests.test.ts",
+        "apps/mobile/src/jones/remoteDelegation/thread-order.delegateRequests.test.ts"
+      ],
+      "scope": "Reduced HTTP and WebSocket snapshots retain existing active owners of bound remote tasks in the snapshot reader transaction, preserving local ancestry and older-settled counts. A shared attention rule keeps asking remote delegates eligible for navigation when the loaded local parent chain is settled, incomplete, cyclic, or itself delegated. Existing orphan, environment, list placement and notification policies remain; no wire, schema, index or installed-runtime changes."
     }
   ]
 }
