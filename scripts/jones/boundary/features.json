@@ -12,9 +12,12 @@
         "apps/server/src/jones/workstreams/native/runtime/memberEnrollment.test.ts",
         "apps/server/src/jones/workstreams/native/store/memberEnrollmentStore.test.ts",
         "apps/server/src/jones/workstreams/native/runtime/memberSetup.test.ts",
-        "apps/server/src/jones/workstreams/native/runtime/memberPeerPinQualification.test.ts"
+        "apps/server/src/jones/workstreams/native/runtime/memberPeerPinQualification.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/homeBind.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/homePeerPinQualification.test.ts",
+        "apps/server/src/jones/workstreams/native/store/homeBindReceiptStore.test.ts"
       ],
-      "scope": "Separately versioned home-bind/2 wire, encrypted prepared/bound member enrollment, fixed home-bind/readback transport and local issuance acceptance; migration 129 owns the ledgers. Genuine root setup authentication, home composition, current caller admission and member routing remain separate integration gates."
+      "scope": "Separately versioned home-bind/2 wire, encrypted prepared/bound member enrollment, fixed home-bind/readback transport and local issuance acceptance; migration 129 owns the ledgers. Genuine root setup authentication, home composition, current caller admission and member routing remain separate integration gates. Home producer retains encrypted exact request/result, validates genuine invocation and atomically binds source/receipt/home pin. Genuine root qualification and fixed tool mounts remain required."
     },
     {
       "id": "workstreams-native-source-setup",
