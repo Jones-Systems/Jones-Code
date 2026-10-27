@@ -114,16 +114,13 @@ export function QueuedRunsControl({
   // Arm from the grip to prevent accidental text drags from reordering queued runs.
   const dragArmedRunIdRef = useRef<RunId | null>(null);
   const steerInFlightRef = useRef(false);
-  // Run-only acknowledgements can resurrect pending rows after cancellation or startup.
-  const acknowledgedMessageIds = new Set(
-    (projection?.runs ?? []).flatMap((run) =>
-      run.userMessageId &&
-      (run.status === "cancelled" ||
-        projection?.messages.some((message) => message.id === run.userMessageId))
-        ? [run.userMessageId]
-        : [],
+  // Queue messages hand off through their projection; cancellation also retires local rows.
+  const acknowledgedMessageIds = new Set([
+    ...(projection?.messages ?? []).map((message) => message.id),
+    ...(projection?.runs ?? []).flatMap((run) =>
+      run.userMessageId && run.status === "cancelled" ? [run.userMessageId] : [],
     ),
-  );
+  ]);
   const queuedImageAttachmentResources = queuedImageResources(projection);
   const queuedImageAttachmentUrls = useAssetUrls(
     props.environmentId,

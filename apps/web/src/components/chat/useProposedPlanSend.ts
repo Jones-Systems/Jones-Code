@@ -360,7 +360,7 @@ export function useImplementPlanInNewThread(input: ImplementPlanInNewThreadInput
           });
     let failure: AtomCommandResult<unknown, unknown> | null =
       startResult._tag === "Failure" ? startResult : null;
-    accepted ||= startResult._tag === "Success";
+    accepted = accepted || startResult._tag === "Success";
     if (createResult._tag === "Failure")
       pendingSends.failBeforeDispatch(environmentId, nextThreadId, messageId);
     if (failure === null) {
