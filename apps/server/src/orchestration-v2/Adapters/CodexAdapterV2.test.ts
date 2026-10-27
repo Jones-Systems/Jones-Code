@@ -5,6 +5,11 @@ import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import { findSteerFailure, verifyCodexProcessExit } from "../../jones/orchestration/LateSteer.ts";
 import * as ControlAdmission from "../../jones/orchestration/ControlAdmission.ts";
+import { ServerEnvironmentIdentity } from "../../environment/ServerEnvironment.ts";
+import type {
+  GoalContinuityContext,
+  RecoveryBoundary,
+} from "@t3tools/provider-core/server/jones/GoalContinuityContext";
 import { deliverWithHandoffRecovery } from "../../jones/provider/codex/ContextHandoffRecovery.ts";
 import * as ProcessAttribution from "../../jones/resourceTelemetry/ProcessAttribution.ts";
 import { materializeCodexReplayAppIdentity } from "../../jones/runtimeIdentity/CodexReplayIdentity.ts";
@@ -21,6 +26,10 @@ import {
   ContextHandoffId,
   CheckpointId,
   CodexSettings,
+  type ContinuityDeliveryReceipt,
+  type ContinuityDispatchPermit,
+  type ContinuityPreparedTicket,
+  type DeliveryGate,
   EnvironmentId,
   MessageId,
   type ModelSelection,
@@ -1605,6 +1614,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     readChildMetadata?: Parameters<typeof withCodexReplayChildMetadata>[2],
     options: Pick<CodexAdapterV2.CodexAdapterV2Options, "resolveRuntime" | "getModelCatalog"> & {
       readonly controlAdmission?: ControlAdmission.ControlAdmission["Service"];
+      readonly resumeProviderThread?: OrchestrationV2ProviderThread;
       readonly replayClientFactory?: CodexAdapterV2.CodexAppServerClientFactoryShape;
       readonly modelSelection?: ModelSelection;
       readonly runtimeLifecycle?: ProviderAdapter.ProviderRuntimeLifecycle;
@@ -1732,7 +1742,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             }).pipe(Effect.andThen(changes.notify)),
         },
       }).pipe(Effect.provideService(ControlAdmission.ControlAdmission, controlAdmission));
-      const threadId = ThreadId.make(`thread-${transcript.scenario}`);
+      const threadId = options.resumeProviderThread?.appThreadId ??
+        ThreadId.make(`thread-${transcript.scenario}`);
       const runtime = yield* adapter.openSession({
         threadId,
         providerSessionId: ProviderSessionId.make(`provider-session-${transcript.scenario}`),
@@ -1742,11 +1753,18 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           ? {}
           : { runtimeLifecycle: options.runtimeLifecycle }),
       });
-      const providerThread = yield* runtime.ensureThread({
-        threadId,
-        modelSelection: options.modelSelection ?? CODEX_TEST_MODEL_SELECTION,
-        runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
-      });
+      const providerThread = options.resumeProviderThread === undefined
+        ? yield* runtime.ensureThread({
+            threadId,
+            modelSelection: options.modelSelection ?? CODEX_TEST_MODEL_SELECTION,
+            runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+          })
+        : yield* runtime.resumeThread({
+            threadId,
+            providerThread: options.resumeProviderThread,
+            modelSelection: options.modelSelection ?? CODEX_TEST_MODEL_SELECTION,
+            runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+          });
       const events: Array<ProviderAdapter.ProviderAdapterV2Event> = [];
       const firstTerminal = yield* Deferred.make<void>();
       const eventsEnded = yield* Deferred.make<void>();
@@ -7712,6 +7730,168 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           Effect.provide(
             Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
           ),
+        ),
+      ),
+  );
+
+  it.effect.each([false, true])(
+    "binds fresh /compact continuity after reconstruction with previous run binding=%s",
+    (previousRun) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const nativeThreadId = `continuity-compact-${previousRun}`;
+          const preamble = codexReplayPreamble({
+            nativeThreadId, nativeTurnId: "unused", prompt: "unused",
+          }).slice(0, 5);
+          const original = yield* makeCodexReplayHarness(makeCodexReplayTranscript({
+            scenario: `continuity-before-reconstruction-${previousRun}`, entries: preamble,
+          }));
+          const attempts = previousRun ? ["previous", "current"] : ["current"];
+          const entries: Array<CodexReplay.CodexAppServerReplayEntry> = [
+            ...preamble.slice(0, 3),
+            { type: "expect_outbound", frame: { id: 2, method: "thread/resume", params: {
+              threadId: nativeThreadId, excludeTurns: true,
+              config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+            } } },
+            { type: "emit_inbound", frame: { id: 2, result: codexReplayThreadResult({
+              nativeThreadId, forkedFromId: null,
+            }) } },
+          ];
+          for (const [index, name] of attempts.entries()) {
+            const id = 3 + index * 2;
+            entries.push(
+              { type: "expect_outbound", frame: { id, method: "thread/compact/start",
+                params: { threadId: nativeThreadId } } },
+              { type: "emit_inbound", frame: { id, result: {} } },
+              { type: "expect_outbound", frame: { id: id + 1, method: "thread/inject_items",
+                params: { threadId: nativeThreadId, items: [{ type: "message", role: "user",
+                  content: [{ type: "input_text", text: `Fresh checkpoint for ${name}` }] }] } } },
+              { type: "emit_inbound", frame: { id: id + 1, result: {} } },
+            );
+          }
+          const notifications = new Map<string, (payload: unknown) => Effect.Effect<unknown>>();
+          const requests: string[] = [];
+          const harness = yield* makeCodexReplayHarness(
+            makeCodexReplayTranscript({ scenario: `continuity-reconstructed-${previousRun}`, entries }),
+            undefined,
+            (method) => Effect.sync(() => { requests.push(method); }),
+            undefined,
+            { resumeProviderThread: original.providerThread,
+              onNotification: (method, handler) => { notifications.set(method, handler); } },
+          );
+          assert.notEqual(harness.runtime.providerSessionId, original.runtime.providerSessionId);
+          assert.equal(harness.providerThread.nativeThreadRef?.nativeId, nativeThreadId);
+          const observed: Array<{ boundary: RecoveryBoundary; type: string }> = [];
+          const settlements = yield* Queue.unbounded<ContinuityDispatchPermit>();
+          const clear = { outcome: "clear", fenceRevision: "0" } as const;
+          const digest = "a".repeat(64);
+          let gate: DeliveryGate = clear;
+          let receipt: ContinuityDeliveryReceipt | undefined;
+          let text = "Stale checkpoint at binding time";
+          let generation = "1";
+          // Only the continuity port is substituted. The real adapter captures the producer,
+          // pairs notifications, dispatches recovery and consumes its RPC response.
+          const context: GoalContinuityContext = {
+            capability: { strongIdentity: true, turnStart: "fresh_context",
+              compaction: "fresh_context_injection", strictPreResumptionBarrier: "unsupported" },
+            recordRecoveryTransition: (boundary, transition) => Effect.sync(() => {
+              observed.push({ boundary, type: transition.type });
+              const witness = boundary.witness;
+              if (transition.type === "started") receipt = {
+                identity: { deliveryId: `delivery-${witness.attemptId}`,
+                  originalOwner: { environmentId: witness.environmentId, threadId: witness.threadId,
+                    providerInstanceId: witness.providerInstanceId, providerThreadId: witness.providerThreadId,
+                    driver: witness.driver, nativeThreadId: witness.nativeThreadId },
+                  goalId: "goal", revision: "1", generation, point: boundary.point,
+                  witness, producer: boundary.producer },
+                deliveryRevision: "1", fenceRevision: "1", phase: "pending", preparation: null,
+                events: [], dispositions: [],
+              };
+              assert.isDefined(receipt);
+              receipt = { ...receipt!, events: [...receipt!.events, {
+                eventId: transition.eventId, deliveryRevision: "1", fenceRevision: "1",
+                phase: "pending", transition, permit: null, evidence: null,
+              }] };
+              gate = { outcome: "hold", fenceRevision: "1", reason: "delivery_pending",
+                deliveryIds: [receipt.identity.deliveryId] };
+              return { outcome: "recorded", receipt, gate, pendingTicket: {
+                type: "pending_ticket", identity: receipt.identity,
+                deliveryRevision: receipt.deliveryRevision, fenceRevision: receipt.fenceRevision,
+              } } as const;
+            }),
+            prepareRecovery: () => Effect.sync(() => ({ outcome: "context" as const,
+              goalId: "goal", revision: "1", generation, snapshotDigest: digest, text })),
+            beginDelivery: ({ pendingTicket, projection }) => Effect.sync(() => {
+              const ticket: ContinuityPreparedTicket = { ...pendingTicket, type: "prepared_ticket",
+                preparation: { target: { owner: pendingTicket.identity.originalOwner,
+                  goalId: projection.goalId, revision: projection.revision,
+                  generation: projection.generation, snapshotDigest: projection.snapshotDigest },
+                  capsuleDigest: digest } };
+              return { outcome: "prepared", ticket, gate } as const;
+            }),
+            markDispatching: (ticket) => Effect.succeed({ outcome: "dispatching" as const, gate,
+              permit: { ...ticket, type: "dispatch_permit" as const,
+                permitId: `permit-${ticket.identity.deliveryId}`,
+                dispatchAttemptId: `dispatch-${ticket.identity.deliveryId}`,
+                rpcRequestId: `rpc-${ticket.identity.deliveryId}` } }),
+            settleDelivery: ({ permit, evidence }) => Effect.gen(function* () {
+              assert.equal(evidence.outcome, "acknowledged");
+              assert.isDefined(receipt);
+              receipt = { ...receipt!, preparation: permit.preparation, phase: evidence.outcome,
+                events: [...receipt!.events, { eventId: permit.rpcRequestId,
+                  deliveryRevision: "2", fenceRevision: "2", phase: evidence.outcome,
+                  transition: null, permit, evidence }] };
+              gate = clear;
+              yield* Queue.offer(settlements, permit);
+              return { outcome: "settled", receipt, gate } as const;
+            }),
+            checkContinuation: (boundary) => Effect.succeed({
+              currentOwner: boundary.witness,
+              requirement: { outcome: "required", owner: boundary.witness,
+                target: { goalId: "goal", revision: "1", generation, snapshotDigest: digest }, gate: clear },
+            }),
+          };
+          const now = yield* DateTime.now;
+          for (const [index, name] of attempts.entries()) {
+            const nativeTurnId = `compact-${name}`;
+            const attemptId = RunAttemptId.make(`continuity-compact-${name}-${previousRun}`);
+            const turnInput = { ...makeCodexTestTurnInput({
+              threadId: harness.threadId, providerThread: harness.providerThread,
+              now, attemptId, text: "/compact",
+            }), goalContinuityContext: context };
+            text = "Stale checkpoint at binding time";
+            generation = String(index + 1);
+            yield* harness.runtime.compactThread!(turnInput);
+            yield* notifications.get("turn/started")!({ threadId: nativeThreadId,
+              turn: makeCodexReplayTurn({ id: nativeTurnId, status: "inProgress" }) });
+            const payload = { threadId: nativeThreadId, turnId: nativeTurnId,
+              item: { type: "contextCompaction", id: `item-${name}` },
+              startedAtMs: 1782622440000, completedAtMs: 1782622450000 };
+            yield* notifications.get("item/started")!(payload);
+            text = `Fresh checkpoint for ${name}`;
+            yield* notifications.get("item/completed")!(payload);
+            const permit = yield* Queue.take(settlements);
+            assert.equal(permit.identity.witness.runId, turnInput.runId);
+            assert.equal(permit.identity.witness.attemptId, attemptId);
+            assert.equal(permit.identity.witness.providerSessionId, harness.runtime.providerSessionId);
+            assert.deepEqual(permit.identity.point, {
+              type: "compaction", nativeTurnId, itemId: `item-${name}`,
+            });
+            yield* notifications.get("turn/completed")!({ threadId: nativeThreadId,
+              turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }) });
+            yield* harness.awaitTerminal(index + 1);
+          }
+          assert.deepEqual(observed.map((event) => event.type),
+            attempts.flatMap(() => ["started", "completed"]));
+          assert.strictEqual(observed[0]!.boundary.producerOrigin, observed.at(-1)!.boundary.producerOrigin);
+          assert.equal(requests.filter((method) => method === "thread/compact/start").length, attempts.length);
+          assert.equal(requests.filter((method) => method === "thread/inject_items").length, attempts.length);
+          assert.notInclude(requests, "turn/start");
+        }).pipe(
+          Effect.provideService(ServerEnvironmentIdentity, {
+            getEnvironmentId: Effect.succeed(EnvironmentId.make("continuity-replay-environment")),
+          }),
+          Effect.provide(Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer)),
         ),
       ),
   );
@@ -15077,6 +15257,109 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
         ),
       ),
+    );
+
+    it.effect.each(["tracked", "queried"] as const)(
+      "allows the %s goal safety pause under an unknown control hold without admitting unsafe work",
+      (source) =>
+        Effect.gen(function* () {
+          const nativeTurnId = `goal-control-hold-${source}`;
+          const tracked = source === "tracked";
+          const pauseParams = { threadId: nativeThreadId, status: "paused" };
+          const requests: Array<{ method: string; params: unknown }> = [];
+          const harness = yield* makeCodexReplayHarness(
+            makeCodexReplayTranscript({
+              scenario: `goal-safety-pause-control-hold-${source}`,
+              entries: [
+                ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "Work" }),
+                ...(tracked ? [notification("goal active", "thread/goal/updated", {
+                  threadId: nativeThreadId, turnId: nativeTurnId, goal: codexGoal("active", 10),
+                })] : []),
+                ...(tracked ? request(4, "thread/goal/set", pauseParams,
+                  { goal: codexGoal("paused", 10) }) : []),
+                ...request(tracked ? 5 : 4, "turn/interrupt", {
+                  threadId: nativeThreadId, turnId: nativeTurnId,
+                }, {}),
+                notification("interrupted", "turn/completed", { threadId: nativeThreadId,
+                  turn: makeCodexReplayTurn({ id: nativeTurnId, status: "interrupted" }) }),
+                ...[0, 1, 2, 3].flatMap((offset) => request((tracked ? 6 : 5) + offset,
+                  "thread/goal/get", { threadId: nativeThreadId }, { goal: codexGoal("paused", 10) })),
+              ],
+            }),
+            undefined,
+            (method, params) => Effect.sync(() => { requests.push({ method, params }); }),
+            undefined,
+            {},
+            (method, params) => Effect.sync(() => {
+              requests.push({ method, params });
+              return { goal: codexGoal(method === "thread/goal/get" ? "active" : "paused", 10) };
+            }),
+          );
+          const input = yield* goalTurnInput(harness, "Work");
+          yield* harness.runtime.startTurn(input);
+          if (tracked) yield* harness.until(() => providerGoals(harness.events).includes("active"));
+          const dispatch = yield* harness.controlAdmission.begin({
+            instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
+            providerSessionId: harness.runtime.providerSessionId,
+            providerThreadId: harness.providerThread.id,
+            providerTurnId: "unresolved-control",
+            runtimeGeneration: harness.providerThread.runtimeIdentity!.runtimeGeneration,
+            nativeThreadId, nativeTurnId,
+          });
+          yield* harness.controlAdmission.markUnknown(dispatch);
+          const before = requests.length;
+          const start = yield* harness.runtime.startTurn({ ...input,
+            runId: RunId.make(`unsafe-control-hold-${source}`),
+            attemptId: RunAttemptId.make(`unsafe-control-hold-${source}`),
+          }).pipe(Effect.exit);
+          const inject = yield* harness.runtime.injectHistory!({
+            providerThread: harness.providerThread, context: "Unsafe history injection", messages: [],
+          }).pipe(Effect.exit);
+          assert.equal(start._tag, "Failure");
+          assert.equal(inject._tag, "Failure");
+          assert.equal(requests.length, before);
+          yield* harness.runtime.interruptTurn({
+            providerThread: harness.providerThread,
+            providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+              driver: CodexAdapterV2.CODEX_DRIVER_KIND, nativeTurnId,
+            }),
+          });
+          yield* harness.firstTerminal;
+          assert.deepEqual(requests.slice(before), [
+            ...(!tracked ? [{ method: "thread/goal/get", params: { threadId: nativeThreadId } }] : []),
+            { method: "thread/goal/set", params: pauseParams },
+            { method: "turn/interrupt", params: { threadId: nativeThreadId, turnId: nativeTurnId } },
+          ]);
+          assert.deepEqual(harness.terminalEvents().map((event) => event.status), ["interrupted"]);
+          assert.notInclude(harness.events.flatMap((event) =>
+            event.type === "turn_item.updated" && event.turnItem.type === "error"
+              ? [event.turnItem.failure.code] : []), "codex_goal_pause_unknown");
+          assert.equal((yield* harness.controlAdmission
+            .assertOpen(CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID).pipe(Effect.exit))._tag, "Failure");
+          assert.deepEqual(yield* harness.controlAdmission.snapshot(CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID),
+            [{ binding: dispatch.binding, unknown: true }]);
+          const afterStop = requests.length;
+          assert.equal((yield* harness.runtime.startTurn(input).pipe(Effect.exit))._tag, "Failure");
+          assert.equal(requests.length, afterStop);
+          for (const action of ["replace", "clear"] as const) {
+            const beforeControl = requests.length;
+            const result = yield* harness.runtime.controlGoal!({
+              providerThread: harness.providerThread, action,
+              ...(action === "replace" ? { objective: "Unsafe replacement objective" } : {}),
+              revalidate: Effect.succeed(true),
+            });
+            assert.equal(result.outcome, "unknown");
+            assert.deepEqual(requests.slice(beforeControl), [
+              { method: "thread/goal/get", params: { threadId: nativeThreadId } },
+              { method: "thread/goal/get", params: { threadId: nativeThreadId } },
+            ]);
+          }
+          assert.equal((yield* harness.controlAdmission
+            .assertOpen(CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID).pipe(Effect.exit))._tag, "Failure");
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer)),
+        ),
     );
 
     it.effect("pauses an active goal before Stop interrupts its turn", () =>

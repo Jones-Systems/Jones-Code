@@ -1,4 +1,7 @@
 import { nativeConversationMustBePreserved } from "../jones/goals/preserveGoalConversation.ts";
+import * as GoalContinuity from "../jones/goals/continuity/GoalContinuity.ts";
+import { continuityAdmissionRefusal, continuityRecoveryCapability } from "../jones/goals/continuity/admission.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as TaskContinuationStore from "../jones/taskContinuation/TaskContinuationStore.ts";
 import { requirementFor, loadedSessionMatches } from "../jones/taskContinuation/guard.ts";
 import { RequiredNativeSession } from "../jones/taskContinuation/requiredNativeSession.ts";
@@ -161,10 +164,14 @@ export const layer: Layer.Layer<
   | ServerSettings.ServerSettingsService
   | ProviderInstanceRegistry.ProviderInstanceRegistry
   | ProviderSwitchService.ProviderSwitchServiceV2
+  | GoalContinuity.GoalContinuity
+  | ServerEnvironment.ServerEnvironmentIdentity
 > = Layer.effect(
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
     const eventSink = yield* EventSink.EventSinkV2;
+    const goalContinuity = yield* GoalContinuity.GoalContinuity;
+    const environment = yield* ServerEnvironment.ServerEnvironmentIdentity;
     const selectionTransitions = yield* ProviderSwitchService.ProviderSwitchServiceV2;
     const restartPreparation = yield* RestartPreparation.RestartPreparation;
     const controlAdmission = yield* ControlAdmission.ControlAdmission;
@@ -485,6 +492,48 @@ export const layer: Layer.Layer<
           });
         },
       );
+      // Consult durable delivery history before opening a provider, including
+      // fences whose current continuity record has already been retired.
+      const environmentId = yield* environment.getEnvironmentId;
+      const continuityOwner = (candidate: OrchestrationV2ProviderThread) =>
+        candidate.nativeThreadRef == null ? null : {
+          environmentId,
+          threadId: projection.thread.id,
+          providerInstanceId: candidate.providerInstanceId,
+          providerThreadId: candidate.id,
+          driver: candidate.nativeThreadRef.driver,
+          nativeThreadId: candidate.nativeThreadRef.nativeId,
+        };
+      const continuityRequirement = yield* Effect.result(
+        goalContinuity.requirementFor(environmentId, projection.thread.id),
+      );
+      const continuityRefusal = continuityRequirement._tag === "Failure"
+        ? "unavailable"
+        : continuityAdmissionRefusal(
+            continuityRequirement.success,
+            continuityOwner(providerThread),
+            nativeForkTransfer !== undefined,
+          );
+      if (continuityRefusal !== undefined) {
+        yield* settleRunBeforeStart({
+          signal: "goal-continuity-held",
+          status: "failed",
+          now: yield* DateTime.now,
+          providerInstanceId: run.providerInstanceId,
+          itemProviderThreadId: providerThread.id,
+          item: {
+            type: "error",
+            title: "Goal continuity requires attention",
+            failure: makeProviderFailure({
+              class: "provider_error",
+              message: "The original conversation or a recovery delivery is held. No provider work was started.",
+            }),
+          },
+        });
+        return;
+      }
+      const continuityRequired = continuityRequirement._tag === "Success" &&
+        continuityRequirement.success.outcome === "required";
       const continuation = yield* Effect.result(
         requirementFor(Option.getOrUndefined(continuationStore), projection, run, attempt),
       );
@@ -942,7 +991,7 @@ export const layer: Layer.Layer<
             }),
           );
         }
-        if ((preserveNativeConversation || guarded) && providerThread.nativeThreadRef === null) {
+        if ((preserveNativeConversation || guarded || continuityRequired) && providerThread.nativeThreadRef === null) {
           return yield* loadFromProvider(
             Effect.fail(
               new ProviderAdapter.ProviderAdapterTurnStartError({
@@ -1006,6 +1055,7 @@ export const layer: Layer.Layer<
           keepWarm ||
           preserveNativeConversation ||
           guarded ||
+          continuityRequired ||
           findSteerFailure(resumed.failure) !== undefined ||
           hasUnknownRuntimeBinding(resumed.failure)
         ) {
@@ -1102,8 +1152,10 @@ export const layer: Layer.Layer<
       });
       if (loadedProviderThread === undefined) return;
       if (
-        (plannedWorkResume || preserveNativeConversation || guarded) &&
-        ((requiredNativeSession !== undefined &&
+        (plannedWorkResume || preserveNativeConversation || guarded || continuityRequired) &&
+        ((continuityRequired && continuityRequirement._tag === "Success" &&
+          continuityAdmissionRefusal(continuityRequirement.success, continuityOwner(loadedProviderThread)) !== undefined) ||
+          (requiredNativeSession !== undefined &&
           !loadedSessionMatches(requiredNativeSession, providerThread, loadedProviderThread)) ||
           loadedProviderThread.nativeThreadRef?.nativeId !==
             providerThread.nativeThreadRef?.nativeId ||
@@ -1460,6 +1512,28 @@ export const layer: Layer.Layer<
                 !coveredItemIds.has(item.id) &&
                 historicalMessage(item) !== null,
             );
+      const assertContinuity = Effect.fn("ProviderTurnStartService.checkGoalContinuity")(
+        function* () {
+          const requirement = yield* goalContinuity.requirementFor(environmentId, projection.thread.id);
+          if (continuityAdmissionRefusal(requirement, continuityOwner(runningProviderThread)) !== undefined)
+            return yield* new ProviderAdapterTurnStartError({
+              driver: session.driver,
+              threadId: projection.thread.id,
+              providerThreadId: runningProviderThread.id,
+              runId: run.id,
+              cause: "Goal continuity changed or recovery remains held before dispatch.",
+            });
+        },
+        Effect.mapError((cause) => cause._tag === "ProviderAdapterTurnStartError" ? cause :
+          new ProviderAdapterTurnStartError({
+            driver: session.driver,
+            threadId: projection.thread.id,
+            providerThreadId: runningProviderThread.id,
+            runId: run.id,
+            cause,
+          }),
+        ),
+      );
       const startWithConfiguredEffort = (
         turnInput: Parameters<typeof session.startTurn>[0],
         compact = false,
@@ -1564,6 +1638,7 @@ export const layer: Layer.Layer<
                   ? {}
                   : { runtimeGeneration: stopRuntimeGeneration }),
               });
+            yield* assertContinuity();
             yield* start(dispatchInput).pipe(
               Effect.provideService(RequiredNativeSession, requiredNativeSession),
             );
@@ -1767,6 +1842,10 @@ export const layer: Layer.Layer<
           ? makeDeliverySession(session, startWithConfiguredEffort)
           : makeDeliverySession(session, startWithHandoffs);
       return runExecution.startRootRun({
+        goalContinuityContext: goalContinuity.context(
+          continuityRecoveryCapability(session.driver, runningProviderThread.nativeThreadRef?.strength === "strong"),
+        ),
+        checkContinuity: assertContinuity,
         ...(input.nativeCreationGuard === undefined
           ? {}
           : { nativeCreationGuard: input.nativeCreationGuard }),

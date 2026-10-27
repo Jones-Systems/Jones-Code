@@ -16,6 +16,9 @@ import { handlers as userResponseRequestHandlers } from "../jones/mcp/userRespon
 import { UserResponseRequestToolkit } from "../jones/mcp/userResponseRequest/tools.ts";
 import * as GoalControl from "../jones/goals/GoalControl.ts";
 import * as GoalStartDispatch from "../jones/goals/GoalStartDispatch.ts";
+import * as GoalContinuityRuntime from "../jones/goals/continuity/RuntimeIntegration.ts";
+import * as DocumentSections from "../jones/documentSections/DocumentSections.ts";
+import * as DocumentRepositoryAccess from "../jones/documentSections/DocumentRepositoryAccess.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -1094,6 +1097,9 @@ export const layerOrchestratorToolkit = toolkitRegistration(
   OrchestratorToolkit,
   OrchestratorHandlers.layer,
 ).pipe(
+  Layer.provide(DocumentSections.layer),
+  Layer.provide(DocumentRepositoryAccess.layer),
+  Layer.provide(GoalContinuityRuntime.layer),
   Layer.provide(
     TaskContinuation.layer.pipe(
       Layer.provide(TaskContinuationStore.layer),

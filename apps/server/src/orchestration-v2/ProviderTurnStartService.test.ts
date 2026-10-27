@@ -1,6 +1,8 @@
 import * as ProviderSwitchService from "./ProviderSwitchService.ts";
 import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
 import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
+import * as ContinuityAdmissionTestkit from "../jones/goals/continuity/admission.testkit.ts";
+import type { ContinuityRequirement } from "@t3tools/provider-core/server/jones/GoalContinuityContext";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as PlannedUpdateContinuity from "../jones/updates/PlannedUpdateContinuity.ts";
 import { expect, it, vi } from "vite-plus/test";
@@ -142,6 +144,7 @@ function startWithMissingWorktree(
   const pruneWorktrees = vi.fn(() => Effect.void);
   const createWorktree = vi.fn(() => Effect.succeed({} as never));
   const layer = ProviderTurnStart.layer.pipe(
+    Layer.provide(ContinuityAdmissionTestkit.layerAbsent),
     Layer.provide(ControlAdmission.layer),
     Layer.provide(
       Layer.mock(RestartPreparation.RestartPreparation)({ assertThreadOpen: () => Effect.void }),
@@ -310,6 +313,7 @@ it.each([
 });
 
 function makeLocalCommandHarness(input: {
+  readonly continuityRequirement?: ContinuityRequirement;
   readonly text: string;
   readonly driver?: "codex" | "claudeAgent";
   readonly goal?: OrchestrationV2ThreadProjection["providerThreads"][number]["goal"];
@@ -865,6 +869,7 @@ function makeLocalCommandHarness(input: {
     }),
   );
   const layer = ProviderTurnStart.layer.pipe(
+    Layer.provide(ContinuityAdmissionTestkit.layerWithRequirement(input.continuityRequirement)),
     Layer.provide(ControlAdmission.layer),
     Layer.provide(
       Layer.mock(RestartPreparation.RestartPreparation)({ assertThreadOpen: () => Effect.void }),
@@ -1006,6 +1011,46 @@ function makeLocalCommandHarness(input: {
     }).pipe(Effect.provide(layer)),
   };
 }
+
+effectIt.effect.each(["delivery_pending", "delivery_unknown", "recovery_required"] as const)(
+  "keeps a historical continuity fence before provider loading (%s)",
+  (reason) => Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      continuityRequirement: {
+        outcome: "hold", reason, current: null,
+        gate: { outcome: "hold", reason, fenceRevision: "9", deliveryIds: ["historical-delivery"] },
+      },
+    });
+    yield* harness.start;
+    expect(harness.open).not.toHaveBeenCalled();
+    expect(harness.fallbackEnsure).not.toHaveBeenCalled();
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+  }),
+);
+
+effectIt.effect("refuses a missing continuity binding before a fresh native conversation is created", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      continuityRequirement: {
+        outcome: "required",
+        owner: {
+          environmentId: "environment:mcp-test", threadId: "thread-native-account-command",
+          providerInstanceId: "codex-personal", providerThreadId: "new-provider-thread",
+          driver: "codex", nativeThreadId: "original-continuity-native",
+        } as import("@t3tools/contracts").ContinuityOwner,
+        target: { goalId: "goal", revision: "1", generation: "1", snapshotDigest: "a".repeat(64) },
+        gate: { outcome: "clear", fenceRevision: "0" },
+      },
+    });
+    yield* harness.start;
+    expect(harness.open).not.toHaveBeenCalled();
+    expect(harness.fallbackEnsure).not.toHaveBeenCalled();
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+  }),
+);
 
 effectIt.effect.each(["Continue", "/goal resume"])(
   "holds provider start before opening a native session when registry invalidation is unknown: %s",

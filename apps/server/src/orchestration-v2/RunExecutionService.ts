@@ -1,4 +1,5 @@
 import type { NativeProviderExecutionGuard } from "../jones/nativeCreation/NativeCreationProviderGuard.ts";
+import type { GoalContinuityContext } from "@t3tools/provider-core/server/jones/GoalContinuityContext";
 import { makeAssistantStreamingFilter } from "./assistantStreaming.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
@@ -614,6 +615,8 @@ export const RunExecutionServiceV2Error = Schema.Union([
 export type RunExecutionServiceV2Error = typeof RunExecutionServiceV2Error.Type;
 
 export interface RunExecutionServiceV2StartRootRunInput {
+  readonly goalContinuityContext?: GoalContinuityContext;
+  readonly checkContinuity?: () => Effect.Effect<void, ProviderAdapter.ProviderAdapterTurnStartError>;
   readonly nativeCreationGuard?: NativeProviderExecutionGuard;
   readonly commandId: CommandId;
   readonly appThread: OrchestrationV2AppThread;
@@ -1700,6 +1703,9 @@ export const layer: Layer.Layer<
           text: entry.text,
         }));
         const turnInput = {
+          ...(input.goalContinuityContext === undefined
+            ? {}
+            : { goalContinuityContext: input.goalContinuityContext }),
           ...(input.nativeCreationGuard === undefined
             ? {}
             : { nativeCreationGuard: input.nativeCreationGuard }),
@@ -1750,7 +1756,10 @@ export const layer: Layer.Layer<
               }),
             ))
           : input.session.startTurn(turnInput);
-        yield* Effect.andThen(shouldStart, startTurn).pipe(
+        yield* Effect.andThen(
+          shouldStart,
+          Effect.andThen(input.checkContinuity?.() ?? Effect.void, startTurn),
+        ).pipe(
           // Wait for acceptance so abandoned startup cannot leave a refresher
           // on the already-detached ingestion fiber.
           Effect.tap(() =>

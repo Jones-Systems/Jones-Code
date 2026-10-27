@@ -7,6 +7,7 @@ import type {
   ProviderGoalControlResult,
 } from "./jones/runtimeTypes.ts";
 import type { ProviderEventProducerOrigin } from "./jones/ProviderEventOrigin.ts";
+import type { GoalContinuityContext } from "./jones/GoalContinuityContext.ts";
 import { classifyProviderRuntimeBindingFailure } from "./jones/ProviderRuntimeBindingDiagnostics.ts";
 import type { OrchestrationV2HistoricalMessage } from "@t3tools/contracts";
 import {
@@ -596,6 +597,8 @@ export interface ProviderAdapterV2TurnInput {
   readonly configuredReasoningEffort?: string;
   readonly runtimePolicy: ProviderAdapterV2RuntimePolicy;
   readonly appContext?: ReadonlyArray<{ readonly key: string; readonly text: string }>;
+  /** Jones-owned recovery callbacks; user checkpoint data remains untrusted context. */
+  readonly goalContinuityContext?: GoalContinuityContext;
 }
 
 export interface ProviderAdapterV2SteerInput {

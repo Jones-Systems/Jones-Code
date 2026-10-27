@@ -487,6 +487,10 @@
       "types": "./src/markdownPipeline.ts",
       "import": "./src/markdownPipeline.ts"
     },
+    "./jones/documentMarkdownAst": {
+      "types": "./src/jones/documentMarkdownAst.ts",
+      "import": "./src/jones/documentMarkdownAst.ts"
+    },
     "./threadFindText": {
       "types": "./src/threadFindText.ts",
       "import": "./src/threadFindText.ts"

@@ -4,6 +4,8 @@ import {
   ThreadHandoffTool,
 } from "../../../jones/linkedThreads/tools.ts";
 import { ThreadGoalTool } from "../../../jones/goals/tool.ts";
+import { GoalContinuityTool } from "../../../jones/goals/continuity/tool.ts";
+import { DocumentSectionsTool } from "../../../jones/documentSections/tool.ts";
 import { TaskContinueTool } from "../../../jones/taskContinuation/tool.ts";
 import {
   OrchestratorMcpCapabilitiesInput,
@@ -321,6 +323,8 @@ const EnvironmentLinksTool = Tool.make("t3_environment_links", {
 
 export const OrchestratorToolkit = Toolkit.make(
   ThreadGoalTool,
+  GoalContinuityTool,
+  DocumentSectionsTool,
   ThreadLinksTool,
   ThreadLinkTool,
   ThreadHandoffTool,

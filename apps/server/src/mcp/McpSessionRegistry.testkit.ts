@@ -3,8 +3,9 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 
-export const layer = Layer.succeed(
+export const layer = Layer.merge(Layer.succeed(
   McpSessionRegistry.McpSessionRegistry,
   McpSessionRegistry.McpSessionRegistry.of({
     issue: ({ threadId, providerInstanceId }) =>
@@ -25,4 +26,6 @@ export const layer = Layer.succeed(
     revokeThread: () => Effect.void,
     revokeAll: Effect.void,
   }),
-);
+), Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
+  getEnvironmentId: Effect.succeed(EnvironmentId.make("environment:mcp-test")),
+}));

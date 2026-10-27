@@ -111,6 +111,8 @@ export * from "./jones/workstreamsNativeOwner.ts";
 export * from "./jones/queuedSteerBatch.ts";
 
 export * from "./jones/threadGoal.ts";
+export * from "./jones/goalContinuity.ts";
+export * from "./jones/documentSections.ts";
 export * from "./jones/clientLaunch.ts";
 
 export * from "./jones/remoteAdmission.ts";

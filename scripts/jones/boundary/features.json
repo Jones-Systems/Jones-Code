@@ -4,6 +4,44 @@
   "baseline": "05b697f6a2012497ae790425e197fbd1fcef7de7",
   "features": [
     {
+      "id": "native-goal-continuity",
+      "tests": [
+        "apps/server/scripts/jones/currentFixtures.test.ts",
+        "apps/server/src/jones/goals/continuity/CodexRecovery.test.ts",
+        "apps/server/src/jones/goals/continuity/GoalContinuity.test.ts",
+        "apps/server/src/jones/goals/continuity/GoalContinuityStore.test.ts",
+        "apps/server/src/jones/goals/continuity/McpAccess.test.ts",
+        "apps/server/src/jones/goals/continuity/admission.test.ts",
+        "apps/server/src/jones/goals/continuity/capsule.test.ts",
+        "apps/server/src/jones/goals/continuity/model.test.ts",
+        "apps/server/src/jones/goals/continuity/selection.test.ts",
+        "apps/server/src/jones/goals/continuity/tool.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/src/jones/updates/migrationPlan.test.ts",
+        "apps/server/src/jones/workspaceLifecycle/NativeStart.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "packages/contracts/src/jones/goalContinuity.test.ts"
+      ],
+      "scope": "Jones-owned exact-conversation continuity stores immutable intent, preserve-by-default progress, append-only finish coverage and durable CAS receipts separately from native goal lifecycle. Authenticated owner administration is separate from live agent witnesses. Durable recovery delivery history fences startup and native successors, including retired records; only a committed one-use permit authorizes the captured producer. Fresh untrusted Codex context is asynchronous and makes no strict pre-token barrier claim. Other adapters advertise unsupported automatic recovery. Sparse Jones migration125 and narrow shared registration/admission hooks preserve existing task-continuation and native-conversation guards."
+    },
+    {
+      "id": "document-sections",
+      "tests": [
+        "apps/server/src/jones/documentSections/DocumentRepositoryAccess.test.ts",
+        "apps/server/src/jones/documentSections/DocumentSections.test.ts",
+        "apps/server/src/jones/documentSections/pure.test.ts",
+        "apps/server/src/jones/documentSections/rawGit.test.ts",
+        "apps/server/src/jones/documentSections/rawGitRunner.test.ts",
+        "packages/contracts/src/jones/documentSections.test.ts",
+        "packages/shared/src/jones/documentMarkdownAst.test.ts"
+      ],
+      "scope": "Independent native document extraction uses an authorized environment-local workspace, exact GitHub repository identity and locally available commit/blob, original byte digests, strict UTF-8 and bounded stable Markdown sections. A parse-only shared CommonMark helper supplies validated source positions without renderer transforms; original physical ATX lines and raw line slices retain section identity and bytes. Git subprocesses deny network and replacements and own bounded cancellation. Compact decision references and extracted text confer no authority. Shared contracts and MCP registration require no continuity record or external Python CLI."
+    },
+    {
       "id": "project-group-title",
       "tests": ["packages/client-runtime/src/jones/projectGroupTitle.test.ts"],
       "scope": "Shared saved project names take precedence over repository labels when every checkout agrees, including names equal to the repository short name. Mixed titles retain the repository fallback; group identity, environment membership and persistence stay unchanged. One shared-client hook covers web, desktop and mobile."
