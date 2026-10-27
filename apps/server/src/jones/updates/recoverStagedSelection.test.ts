@@ -47,7 +47,7 @@ async function fixture() {
     platform === "darwin"
       ? ".github/workflows/artifact-cli-mac.yml"
       : ".github/workflows/artifact-cli-linux.yml";
-  await NodeFSP.mkdir(NodePath.join(root, "userdata"));
+  await NodeFSP.mkdir(NodePath.join(root, "userdata"), { mode: 0o700 });
   await NodeFSP.writeFile(NodePath.join(root, "userdata", "statev2.sqlite"), "unchanged-state");
   await NodeFSP.writeFile(NodePath.join(root, "userdata", "environment-id"), "own-environment");
   const baseline = "0.0.0-preview.20261002.1.1",
@@ -58,7 +58,7 @@ async function fixture() {
     [version, "b"],
   ] as const) {
     const runtime = NodePath.join(root, "runtime", "versions", current);
-    await NodeFSP.mkdir(runtime, { recursive: true });
+    await NodeFSP.mkdir(runtime, { recursive: true, mode: 0o700 });
     await NodeFSP.writeFile(NodePath.join(runtime, "t3"), `#!/bin/sh\necho ${source}\n`, {
       mode: 0o700,
     });
@@ -93,7 +93,7 @@ async function fixture() {
     binding: await currentQualifiedRuntimeBinding(root, baseline),
     receipt: candidate!,
   };
-  await NodeFSP.mkdir(NodePath.join(root, "runtime", "staged-updates"));
+  await NodeFSP.mkdir(NodePath.join(root, "runtime", "staged-updates"), { mode: 0o700 });
   await NodeFSP.writeFile(
     NodePath.join(root, "runtime", "staged-updates", `${selection.stagedHandle}.json`),
     JSON.stringify(selection),
@@ -338,7 +338,7 @@ describe("orphan staged-selection recovery", () => {
     const f = await fixture();
     const operationId = "12345678-1234-4234-8234-123456789abc";
     const directory = NodePath.join(f.root, "runtime", "jones-update-revocations");
-    await NodeFSP.mkdir(directory);
+    await NodeFSP.mkdir(directory, { mode: 0o700 });
     await NodeFSP.writeFile(
       NodePath.join(directory, `${operationId}.json`),
       JSON.stringify({ schema: 1, operationId, binding: operationBinding(f.selection) }),
@@ -361,7 +361,7 @@ describe("orphan staged-selection recovery", () => {
         );
         await retainStagedSelection(other);
       } else {
-        await NodeFSP.mkdir(NodePath.dirname(path), { recursive: true });
+        await NodeFSP.mkdir(NodePath.dirname(path), { recursive: true, mode: 0o700 });
         if (kind === "symlink")
           await NodeFSP.symlink(NodePath.join(f.root, "userdata", "statev2.sqlite"), path);
         else
@@ -424,7 +424,7 @@ it("preserves partial pointer bytes after an ambiguous write", async () => {
     { ...f.input, apply: true },
     {
       retain: async () => {
-        await NodeFSP.mkdir(NodePath.dirname(path), { recursive: true });
+        await NodeFSP.mkdir(NodePath.dirname(path), { recursive: true, mode: 0o700 });
         await NodeFSP.writeFile(path, "{", { mode: 0o600 });
         throw new Error("injected partial write");
       },
@@ -447,7 +447,7 @@ it("restores the legacy binding key order and selection serialization", async ()
   };
   const key = NodeCrypto.createHash("sha256").update(JSON.stringify(binding)).digest("hex");
   const path = NodePath.join(f.root, "runtime", "jones-updates", "selections", `${key}.json`);
-  await NodeFSP.mkdir(NodePath.dirname(path), { recursive: true });
+  await NodeFSP.mkdir(NodePath.dirname(path), { recursive: true, mode: 0o700 });
   await NodeFSP.writeFile(
     path,
     JSON.stringify({

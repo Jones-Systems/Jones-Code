@@ -119,6 +119,7 @@ export type JonesSourceRelationKind = "ahead" | "behind" | "identical" | "diverg
 interface JonesActionsCheckInput {
   readonly installedSource: string;
   readonly targetSource?: string;
+  readonly desktopBundleIdentifier?: string;
   readonly platform: JonesActionsPlatform;
   readonly architecture: JonesActionsArchitecture;
 }
@@ -367,7 +368,30 @@ function digest(value: unknown): string {
   if (!HASH.test(result)) throw new JonesActionsError("unqualified");
   return result;
 }
-function spec(platform: JonesActionsPlatform, architecture: JonesActionsArchitecture) {
+const PRODUCTION_DESKTOP_ID = "com.jonessystems.jonescode";
+const PRODUCTION_DESKTOP_WORKFLOW = ".github/workflows/jones-desktop-signing.yml";
+
+function spec(
+  platform: JonesActionsPlatform,
+  architecture: JonesActionsArchitecture,
+  desktopBundleIdentifier?: string,
+) {
+  if (
+    desktopBundleIdentifier !== undefined &&
+    (platform !== "darwin" ||
+      !["com.t3tools.t3code", PRODUCTION_DESKTOP_ID].includes(desktopBundleIdentifier))
+  )
+    throw new JonesActionsError("unqualified");
+  if (
+    platform === "darwin" &&
+    architecture === "arm64" &&
+    desktopBundleIdentifier === PRODUCTION_DESKTOP_ID
+  )
+    return {
+      workflow: PRODUCTION_DESKTOP_WORKFLOW,
+      name: "desktop-mac-production-arm64",
+      events: ["push"],
+    };
   if (platform === "darwin" && architecture === "arm64")
     return {
       workflow: ".github/workflows/artifact-desktop-mac.yml",
@@ -663,7 +687,7 @@ export class JonesActionsClient {
       const targetSource =
         input.targetSource === undefined ? undefined : source(input.targetSource);
       if (targetSource !== undefined) scope.requestedSource = targetSource;
-      const approved = spec(input.platform, input.architecture);
+      const approved = spec(input.platform, input.architecture, input.desktopBundleIdentifier);
       const main = record(await read("main", `${API_ROOT}/commits/main`));
       const mainSource = source(main.sha);
       scope.mainSource = mainSource;
@@ -935,7 +959,7 @@ export class JonesActionsClient {
     const commit = record(await this.transport.api(`${API_ROOT}/git/commits/${candidate.source}`));
     const main = record(await this.transport.api(`${API_ROOT}/commits/main`));
     if (
-      !canonicalArtifactRun(run, spec(candidate.platform, candidate.architecture)) ||
+      !canonicalArtifactRun(run, candidateSpec(candidate)) ||
       run.status !== "completed" ||
       run.conclusion !== "success" ||
       run.head_sha !== candidate.source ||
@@ -1110,8 +1134,16 @@ export function jonesCandidateHandle(candidate: JonesActionsCandidate): string {
     .digest("hex");
 }
 
+function candidateSpec(candidate: JonesActionsCandidate) {
+  return spec(
+    candidate.platform,
+    candidate.architecture,
+    candidate.workflow === PRODUCTION_DESKTOP_WORKFLOW ? PRODUCTION_DESKTOP_ID : undefined,
+  );
+}
+
 function validateJonesActionsCandidate(candidate: JonesActionsCandidate): void {
-  const approved = spec(candidate.platform, candidate.architecture);
+  const approved = candidateSpec(candidate);
   if (
     candidate.schema !== 1 ||
     candidate.repository !== JONES_ACTIONS_REPOSITORY ||
@@ -1155,7 +1187,7 @@ function parseJonesArtifactReceipt(
     item.source !== candidate.source ||
     item.tree !== candidate.tree ||
     item.workflow !== candidate.workflow ||
-    !artifactEvent(spec(candidate.platform, candidate.architecture), item.event) ||
+    !artifactEvent(candidateSpec(candidate), item.event) ||
     item.ref !== "refs/heads/main" ||
     item.runId !== String(candidate.runId) ||
     item.runAttempt !== String(candidate.runAttempt) ||
@@ -1163,6 +1195,14 @@ function parseJonesArtifactReceipt(
     item.platform !== candidate.platform ||
     item.architecture !== candidate.architecture ||
     item.artifact !== expectedArtifact
+  )
+    throw new JonesActionsError("unqualified");
+  if (
+    candidate.workflow === PRODUCTION_DESKTOP_WORKFLOW &&
+    (item.signed !== true ||
+      item.notarized !== true ||
+      item.bundleIdentifier !== PRODUCTION_DESKTOP_ID ||
+      item.teamId !== "2CUPSQS986")
   )
     throw new JonesActionsError("unqualified");
   digest(item.sha256);

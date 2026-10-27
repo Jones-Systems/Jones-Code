@@ -4,6 +4,11 @@
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "features": [
     {
+      "id": "queue-removal",
+      "tests": ["apps/web/src/jones/queue/QueuedRunRemoval.browser.test.tsx"],
+      "scope": "Web and desktop queue header Clear All cancels the saved click snapshot through existing per-run commands. Independent removals reserve only their own IDs; failures retain authoritative rows and report unconfirmed removals. Send, steer, edit, reorder and imported-history review remain fenced during cancellation and until accepted cancellations leave the projection. Active queued drafts and unsaved optimistic rows disable Clear All. No server, wire, provider, mobile, MCP or scheduled-task behavior changes. QueuedRunsControl retains narrow presentation and safety hooks into Jones-owned removal logic."
+    },
+    {
       "id": "migration-order",
       "tests": [
         "scripts/jones/ci/jones-migration-order.node-test.cjs",
@@ -2133,6 +2138,37 @@
       "scope": "Focused browser acceptance of existing Pele integration: commit-only mounting, balanced cleanup through source changes, navigation and source toggle, unchanged rerenders, chunk-load retry, invalid-source recovery, and real SVG/MathML sanitization. The real components and DOMPurify run against a controlled Pele engine; navigation uses content replacement and native core-import rejection, parsing/layout, device behavior and live performance remain unqualified. No production behavior is changed."
     },
     {
+      "id": "macos-signing",
+      "tests": [
+        "scripts/jones/signing/cli.node-test.mjs",
+        "packages/shared/src/jones/jonesActions.test.ts",
+        "apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts",
+        "scripts/jones/signing/admission.node-test.mjs",
+        "scripts/jones/signing/policy.test.ts",
+        "scripts/jones/signing/profile.test.ts",
+        "scripts/jones/signing/sign.test.ts",
+        "apps/desktop/src/jones/updates/jonesSigningSource.test.ts",
+        "apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts",
+        "apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts",
+        "scripts/build-desktop-artifact.test.ts"
+      ],
+      "scope": "Explicit production Developer ID identities for desktop and CLI, component signing, protected default-branch workflow and credential lifecycle. CLI inventories all staged Mach-O files, preserves entitlements, requires full-distribution notarization acceptance and verifies unchanged payload bytes through tar packaging; optional native browser passkeys retain their configuration gates. Native swap and rollback enforce signatures without changing paired-state or provenance protocols. The production ID is owner-approved; the preview default remains unchanged and bootstrap activation remains held. Synthetic transaction signing commands are stubbed; actual signatures, notarization and permission continuity require trusted artifact qualification."
+    },
+    {
+      "id": "cli-archive-patched-dependencies",
+      "tests": [
+        "scripts/jones/packaging/cliArchiveDependencies.test.ts",
+        "scripts/build-desktop-artifact.test.ts",
+        "scripts/jones/packaging/cliArchiveLockfile.test.ts"
+      ],
+      "scope": "CLI archive and merged macOS/Linux desktop staging pin only patched external roots to the committed apps/server lock importer, preserving applicable patch mappings and all unpatched root specifications. Missing, stale, ambiguous or unsupported patch resolutions fail before installation. Thin builder hooks retain existing external selection, merge precedence, native platform packages, workspace policies and signing; Windows staging retains its existing projector. Pure planning fixtures and real-input desktop manifest regressions run in the existing scripts test route; platform installs, unsigned DMG completion and artifact smoke checks remain hosted qualification. Accepts the single workspace lock or the pnpm environment/workspace pair without merging bindings or falling back across malformed, ambiguous or stale documents."
+    },
+    {
+      "id": "workspace-content-search-slicing",
+      "tests": ["apps/server/src/jones/workspace/contentSearchPages.test.ts"],
+      "scope": "Enforced small native grep pages yield a cancellable Node macrotask between continuations, preserving zero-hit discovery, the original deadline after native hits, cursor/limit/truncation/fallback semantics and finder ownership. The Jones integration test imports the upstream service to prove its real mapping and typed error hook."
+    },
+    {
       "id": "thread-metadata-reads-efficiency",
       "tests": [
         "apps/server/src/jones/orchestration/threadMetadataReads.test.ts",
@@ -2157,16 +2193,6 @@
         "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts"
       ],
       "scope": "Narrow threads-only ID, metadata, count and watermark reads replace full-shell work for rename discovery, startup selection/counting and project deletion. Standalone rename/count reads select the reader; bootstrap/deletion retain writer read-your-writes. Rows and event watermark share a transaction, decode follows commit, deleted rows are excluded, and active-before-archived order is preserved. Existing integration harness exceptions retain production locking, cascade ordering and startup behavior; no database schema or installed-runtime change. PR discovery and single-thread refresh, relay catch-up, pin metadata, voice root IDs and thread listing use the existing narrow/read-only paths while retaining sequence guards, command shape, deletion filtering and ordering. Existing MCP, relay, voice and PR integration harness exceptions cover actual caller wiring; reader load still requires composed qualification."
-    },
-    {
-      "id": "queue-removal",
-      "tests": ["apps/web/src/jones/queue/QueuedRunRemoval.browser.test.tsx"],
-      "scope": "Web and desktop queue header Clear All cancels the saved click snapshot through existing per-run commands. Independent removals reserve only their own IDs; failures retain authoritative rows and report unconfirmed removals. Send, steer, edit, reorder and imported-history review remain fenced during cancellation and until accepted cancellations leave the projection. Active queued drafts and unsaved optimistic rows disable Clear All. No server, wire, provider, mobile, MCP or scheduled-task behavior changes. QueuedRunsControl retains narrow presentation and safety hooks into Jones-owned removal logic."
-    },
-    {
-      "id": "workspace-content-search-slicing",
-      "tests": ["apps/server/src/jones/workspace/contentSearchPages.test.ts"],
-      "scope": "Enforced small native grep pages yield a cancellable Node macrotask between continuations, preserving zero-hit discovery, the original deadline after native hits, cursor/limit/truncation/fallback semantics and finder ownership. The Jones integration test imports the upstream service to prove its real mapping and typed error hook."
     },
     {
       "id": "terminal-history-urgent-flush",
