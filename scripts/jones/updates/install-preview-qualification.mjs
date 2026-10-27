@@ -1311,10 +1311,7 @@ export function rendererSteps(origin, sourceSha, runId) {
 
   // The same production controls with the negotiated native plan bridge enabled.
   const panel = "[data-install-status]";
-  const panelButton = (name) =>
-    click(
-      `${panel} ${name.endsWith("details") || name === "Done with update plan" ? `button[aria-label="${name}"]` : `button:text-is("${name}")`}`,
-    );
+  const panelButton = (name) => click(`${panel} >> role=button[name="${name}"]`);
   const planCheck = (label, expression) => check(label, expression);
   begin("available", "install-plan", true);
   wait("available");
@@ -1361,7 +1358,7 @@ export function rendererSteps(origin, sourceSha, runId) {
   steps.push({ action: "wait", text: "Stop requested" });
   planCheck(
     "Plan Stop binds the exact running host operation and cannot complete on request alone",
-    `(() => { const op = s.installPlan.current.devices[0].operations.at(-1); const stop = s.calls.filter(c => c.action === 'fixture-host-operationStop').at(-1); return stop?.input.input.operationId === op.operationId && stop.input.input.stopId === op.stop.stopId && op.receipt.phase === 'stop-requested' && !s.installPlan.view.complete; })()`,
+    `(() => { const op = s.installPlan.current.devices[0].operations.at(-1); const stop = s.calls.filter(c => c.action === 'fixture-host-operationStop').at(-1); return stop?.input.input.operationId === op.operationId && typeof op.receipt.stop?.stopId === 'string' && stop.input.input.stopId === op.receipt.stop.stopId && op.receipt.phase === 'stop-requested' && !s.installPlan.view.complete; })()`,
   );
   control("host-VPS-stopped");
   steps.push({ action: "wait", text: "Stopped · nothing installed" });
@@ -1379,7 +1376,13 @@ export function rendererSteps(origin, sourceSha, runId) {
   steps.push({ action: "wait", text: "Last update" });
   planCheck(
     "Reopening completed plan is read only",
-    `s.installPlan.current === null && s.installPlan.last !== null && [...document.querySelectorAll('[data-install-status] button')].every(b => !/^(Edit|Download|Install|Stop|Done)/.test(b.textContent.trim()))`,
+    `(() => {
+      const panel = document.querySelector('[data-install-status]');
+      const done = panel?.querySelector('button[aria-label="Done with update plan"]');
+      return s.installPlan.current === null && s.installPlan.last !== null &&
+        panel !== null && done !== null && done !== undefined && done.closest('[inert][aria-hidden="true"]') !== null &&
+        [...panel.querySelectorAll('button')].every(b => b === done || !/^(Edit|Download|Install|Stop|Done)/.test(b.textContent.trim()));
+    })()`,
   );
   capture("plan-readonly-history", ["Last update", "Stopped · nothing installed"]);
 
@@ -1540,7 +1543,7 @@ export function rendererSteps(origin, sourceSha, runId) {
   const noExactButton = (label) =>
     check(
       label,
-      `!Array.from(document.querySelectorAll('${banners} button')).some(b => /^(Download|Install|Replace with) [0-9a-f]{7}$/.test(b.textContent))`,
+      `!Array.from(document.querySelectorAll('${banners} button')).some(b => /^(Download|Install|Replace with) [0-9a-f]{7}$/.test(b.textContent) && !b.disabled && b.getAttribute('aria-disabled') !== 'true')`,
     );
   const exactState = (text) => steps.push({ action: "wait", text });
   const exactReset = (scenario) => control(`exact-scenario-${scenario}`);
@@ -1592,7 +1595,7 @@ export function rendererSteps(origin, sourceSha, runId) {
   confirm();
   // The production presentation replaces the host message while the phase is "installing"
   // (jonesUpdatePresentation), so the fixture's own accepted-install message is never rendered.
-  exactState("Installing — server restarting. Waiting for the launcher outcome.");
+  exactState("Installing. Server restarting. Waiting for the launcher outcome.");
   noExactButton("No second install is offered while the host installs");
   exactCallsAre(
     "Installation binds the staged handle of the matching source",
@@ -1615,21 +1618,33 @@ export function rendererSteps(origin, sourceSha, runId) {
   control("exact-next-install-lost-not-started");
   click(exactButton(`Install ${shortSource}`));
   confirm();
-  exactState("will not be sent again");
+  exactState("The request may have been accepted.");
   noExactButton("A lost install response is never offered for resubmission");
-  capture("exact-source-lost-install", ["will not be sent again"], [`Install ${shortSource}`]);
+  capture("exact-source-lost-install", ["The request may have been accepted."]);
   control("exact-report-state");
-  exactState(`Install ${shortSource}`);
+  exactState("The request may have been accepted.");
+  noExactButton("A newer revision cannot release an install with no bound outcome");
   exactCallsAre("Reconciling never resent the install", "c.action", ["downloadExact", "install"]);
+  capture("exact-source-lost-install-new-revision", ["The request may have been accepted."]);
   noBridge();
 
   exactCase("wrong-source");
   exactState("Exact-source notices: 1");
   control("exact-next-download-wrong-source");
   click(exactButton(`Download ${shortSource}`));
-  exactState("will not be installed from this notice");
+  exactState("handle staged-wrong-source-handle");
   exactState(`Replace with ${shortSource}`);
-  capture("exact-source-wrong-source", ["will not be installed from this notice"]);
+  check(
+    "A wrong-source result cannot offer installation of the selected source",
+    `!Array.from(document.querySelectorAll('${banners} button')).some(b => b.textContent === ${JSON.stringify(`Install ${shortSource}`)})`,
+  );
+  exactCallsAre("A wrong-source result never dispatched installation", "c.action", [
+    "downloadExact",
+  ]);
+  capture("exact-source-wrong-source", [
+    "handle staged-wrong-source-handle",
+    `Replace with ${shortSource}`,
+  ]);
   noBridge();
 
   exactCase("refusal");
@@ -1693,13 +1708,13 @@ export function rendererSteps(origin, sourceSha, runId) {
   exactState(`Install ${shortSource}`);
   capture("connections-match-after", ["Downloaded", "Install"], ["Match laptop"]);
   click(`${connections} >> role=button[name="Install"]`);
-  steps.push({ action: "wait", text: "Install the downloaded build on Mac Mini?" });
+  steps.push({ action: "wait", text: `Install source ${shortSource} on Mac Mini?` });
   capture("connections-install-confirmation", ["Cancel", "Confirm", "disconnects briefly"]);
   click('role=alertdialog >> role=button[name="Cancel"]');
   exactCallsAre("Connections install cancellation sends nothing", "c.action", ["downloadExact"]);
   click(`${connections} >> role=button[name="Install"]`);
   confirm();
-  exactState("Installing — server restarting. Waiting for the launcher outcome.");
+  exactState("Installing. Server restarting. Waiting for the launcher outcome.");
   exactCallsAre(
     "Connections installs only after separate confirmation",
     "[c.action, c.input.stagedHandle ?? c.input.targetSource]",

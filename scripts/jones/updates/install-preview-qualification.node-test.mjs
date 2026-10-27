@@ -2516,8 +2516,7 @@ NodeTest.test(
               operations: [
                 {
                   operationId: "operation",
-                  stop: { stopId: "stop" },
-                  receipt: { phase: "stop-requested" },
+                  receipt: { phase: "stop-requested", stop: { stopId: "stop" } },
                 },
               ],
             },
@@ -2552,6 +2551,9 @@ NodeTest.test(
       },
       (s) => {
         s.calls = [];
+      },
+      (s) => {
+        delete s.installPlan.current.devices[0].operations[0].receipt.stop;
       },
     ]) {
       const s = sample();
