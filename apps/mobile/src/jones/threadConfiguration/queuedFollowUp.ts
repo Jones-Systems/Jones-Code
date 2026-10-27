@@ -9,6 +9,7 @@ import {
   uploadedComposerContext,
 } from "../../lib/composerContext";
 import type { QueuedThreadMessage, ThreadSettingsSnapshot } from "../../state/thread-outbox-model";
+import { outboxSelectionCommandFields } from "./outboxSelection";
 
 export function buildQueuedFollowUpStartTurnInput(input: {
   readonly message: QueuedThreadMessage;
@@ -32,9 +33,7 @@ export function buildQueuedFollowUpStartTurnInput(input: {
       attachments: input.attachments,
     },
     modelSelection: settings.modelSelection,
-    ...(message.modelSelectionExplicit === undefined
-      ? {}
-      : { modelSelectionExplicit: message.modelSelectionExplicit }),
+    ...outboxSelectionCommandFields(message),
     titleSeed: deriveThreadTitleSeed({ text: message.text, attachments: message.attachments }),
     runtimeMode: settings.runtimeMode,
     interactionMode: settings.interactionMode,

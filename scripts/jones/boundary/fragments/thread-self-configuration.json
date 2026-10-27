@@ -14,7 +14,15 @@
     "apps/web/src/jones/threadConfiguration/composerSelection.ts",
     "apps/web/src/jones/threadConfiguration/composerSelection.test.ts",
     "apps/server/src/jones/threadConfiguration/prepareExecutionSession.test.ts",
-    "apps/server/src/jones/threadConfiguration/CodexSelectionRestart.integration.test.ts"
+    "apps/server/src/jones/threadConfiguration/CodexSelectionRestart.integration.test.ts",
+    "apps/mobile/src/jones/threadConfiguration/outboxSelection.ts",
+    "apps/mobile/src/jones/threadConfiguration/outboxSelection.test.ts",
+    "apps/server/src/jones/threadConfiguration/ownerIngress.test.ts",
+    "apps/server/src/jones/threadConfiguration/ownerIngress.ts",
+    "apps/server/src/jones/threadConfiguration/ownerSelection.test.ts",
+    "apps/server/src/jones/threadConfiguration/ownerSelection.ts",
+    "apps/server/src/jones/threadConfiguration/ownerSelectionStore.test.ts",
+    "apps/server/src/jones/threadConfiguration/ownerSelectionStore.ts"
   ],
   "hookPaths": [
     "apps/server/src/mcp/threadAccess.ts",
@@ -74,6 +82,34 @@
     {
       "from": "apps/web/src/components/chat/useComposerSend.ts",
       "to": "apps/web/src/jones/threadConfiguration/composerSelection.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/use-composer-drafts.ts",
+      "to": "apps/mobile/src/jones/threadConfiguration/outboxSelection.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/use-thread-outbox-drain.ts",
+      "to": "apps/mobile/src/jones/threadConfiguration/outboxSelection.ts"
+    },
+    {
+      "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/jones/threadConfiguration/ownerIngress.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/threadConfiguration/ownerSelectionStore.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/threadConfiguration/ownerIngress.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/threadConfiguration/ownerSelection.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/threadConfiguration/ownerSelectionStore.ts"
     }
   ]
 }
