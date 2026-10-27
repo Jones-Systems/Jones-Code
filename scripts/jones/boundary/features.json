@@ -2328,6 +2328,10 @@
     {
       "id": "thread-result-dependencies",
       "tests": [
+        "apps/server/src/mcp/toolkits/core.test.ts",
+        "apps/server/src/peer/PeerForwarding.test.ts",
+        "apps/server/src/peer/RemoteDelegation.test.ts",
+        "apps/server/src/jones/threadResultDependencies/McpDependencies.test.ts",
         "apps/server/src/jones/threadResultDependencies/AdmissionObservation.integration.test.ts",
         "apps/server/src/jones/threadResultDependencies/DependencyReactor.test.ts",
         "apps/server/src/jones/threadResultDependencies/DependencyStore.test.ts",
@@ -2351,7 +2355,7 @@
         "apps/web/src/jones/threadResultDependencies/ChatView.integration.test.ts",
         "apps/mobile/src/jones/threadResultDependencies/presentation.test.ts"
       ],
-      "scope": "Explicit correlated cross-thread result requests persist sender waiting and receiver answer duties independently of foreground completion. Jones-owned storage, transaction fences and event-driven local/remote observation preserve multiple dependencies and release semantics. Additive opt-in shell refreshes retain replay ordering, persistence and producer isolation for shared web, desktop and mobile consumers; no ordinary message or navigation link creates a wait. The existing shell-sync test harness is the upstream-test exception for actual subscription and persistence behavior."
+      "scope": "Explicit correlated cross-thread result requests persist sender waiting and receiver answer duties independently of foreground completion. Jones-owned storage, transaction fences and event-driven local/remote observation preserve multiple dependencies and release semantics. Additive opt-in shell refreshes retain replay ordering, persistence and producer isolation for shared web, desktop and mobile consumers; no ordinary message or navigation link creates a wait. The existing shell-sync test harness is the upstream-test exception for actual subscription and persistence behavior. MCP registration and production reuse one memoized request watcher and dependency bus; existing core and peer fixtures add only their missing Orchestrator port. New Jones composition regressions cover standalone durable fences and EventSink/MCP bus identity and publication."
     }
   ]
 }

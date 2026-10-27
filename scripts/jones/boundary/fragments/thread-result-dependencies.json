@@ -104,7 +104,11 @@
     },
     {
       "from": "apps/server/src/server.ts",
-      "to": "apps/server/src/jones/threadResultDependencies/RequestWatch.ts"
+      "to": "apps/server/src/jones/threadResultDependencies/McpDependencies.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/threadResultDependencies/McpDependencies.ts"
     },
     {
       "from": "apps/server/src/ws.ts",

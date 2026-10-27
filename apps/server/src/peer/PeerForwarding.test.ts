@@ -36,10 +36,12 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as RemoteDelegation from "./RemoteDelegation.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 
 // Linked launches use the upstream receipt namespace, outside the client-launch service.
 const layerLaunchDependencies = Layer.mergeAll(
+  Layer.mock(Orchestrator.OrchestratorV2)({}),
   SqlitePersistence.layerMemory,
   DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
   Layer.mock(EventSink.EventSinkV2)({}),

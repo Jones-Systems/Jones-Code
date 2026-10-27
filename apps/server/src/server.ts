@@ -1,6 +1,6 @@
 import * as DependencyChanges from "./jones/threadResultDependencies/DependencyChanges.ts";
 import * as DependencyReactor from "./jones/threadResultDependencies/DependencyReactor.ts";
-import * as RequestWatch from "./jones/threadResultDependencies/RequestWatch.ts";
+import * as ThreadResultMcpDependencies from "./jones/threadResultDependencies/McpDependencies.ts";
 import * as ThreadMetadataReads from "./jones/orchestration/threadMetadataReads.ts";
 import * as HandoffLaunch from "./jones/linkedThreads/launchTransport.ts";
 import * as ThreadHandoff from "./jones/linkedThreads/handoff.ts";
@@ -817,7 +817,7 @@ const layerMakeRoutes = Layer.mergeAll(
 )
   .pipe(
     Layer.provide(DependencyReactor.layer),
-    Layer.provide(RequestWatch.layer),
+    Layer.provide(ThreadResultMcpDependencies.layer),
     Layer.provide(ShellMaterialization.layer),
     Layer.provide(
       PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
