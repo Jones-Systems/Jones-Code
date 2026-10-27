@@ -13,6 +13,10 @@ import { parseThreadKey, threadKey } from "@t3tools/client-runtime/state/entitie
 import { createMobileThreadVisitTracker } from "../../jones/threadVisits/tracker";
 import { useDescendantApproval } from "../../jones/descendantApproval/useDescendantApproval";
 import { DescendantApprovalCard } from "../../jones/descendantApproval/DescendantApprovalCard";
+import {
+  PendingApprovalStack,
+  descendantApprovalStackHeight,
+} from "../../jones/descendantApproval/PendingApprovalStack";
 import { useChildThreadInputs, useThreadReportedModelSelection } from "../../state/entities";
 import { UsageLimitRecoveryCard } from "./UsageLimitRecoveryCard";
 import { ChatGptUsageLimitNotice } from "./ChatGptUsageLimitNotice";
@@ -872,6 +876,14 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
       composerOverlapHeight,
     }),
   );
+  const pendingApprovalStackMaxHeight = useDerivedValue(() =>
+    descendantApprovalStackHeight({
+      windowHeight: screenAreaHeight,
+      keyboardHeight: keyboardStickyEnabled ? -keyboardTranslation.value : 0,
+      navigationHeaderHeight,
+      composerOverlapHeight,
+    }),
+  );
   // The usage panel stacks with the composer and any approval card, so it gets
   // whatever room they leave below the header. Measured only while it is open
   // so typing in the composer does not re-render the screen.
@@ -972,7 +984,8 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
     [floatingCoverageTarget],
   );
   // Android measures its expanded card in-flow; only iOS needs extra overlay coverage.
-  const userInputCoverageApplies = Platform.OS === "ios" && activeUserInputRequestId !== null;
+  const userInputCoverageApplies =
+    Platform.OS === "ios" && activeUserInputRequestId !== null && descendantApproval.state === null;
   const combinedContentInsetEndAdjustment = useSharedValue(
     Math.max(0, estimatedOverlayHeight - nativeInsetOvercount),
   );
@@ -1507,42 +1520,48 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
                       entering={FadeInDown.duration(220)}
                       exiting={FadeOut.duration(140)}
                     >
-                      {descendantApproval.state ? (
-                        <DescendantApprovalCard
-                          state={descendantApproval.state}
-                          onRespond={descendantApproval.onRespond}
-                          onNext={descendantApproval.onNext}
-                          onOpen={openLinkedThread}
-                        />
-                      ) : null}
-                      {props.activePendingApproval ? (
-                        <PendingApprovalCard
-                          canOperateThread={props.canOperateThread}
-                          approval={props.activePendingApproval}
-                          respondingApprovalId={props.respondingApprovalId}
-                          onRespond={props.onRespondToApproval}
-                        />
-                      ) : null}
-                      {props.activePendingUserInput ? (
-                        <PendingUserInputCard
-                          canOperateThread={props.canOperateThread}
-                          pendingUserInput={props.activePendingUserInput}
-                          maxHeight={pendingUserInputMaxHeight}
-                          collapsed={userInputCollapsed}
-                          onToggleCollapsed={handleToggleUserInputCollapsed}
-                          onStopThread={props.onStopThread}
-                          cardProgress={userInputCardProgress}
-                          cardCoverage={userInputCardCoverage}
-                          onInputFocusChange={handleOwnedInputFocusChange}
-                          drafts={props.activePendingUserInputDrafts}
-                          answers={props.activePendingUserInputAnswers}
-                          respondingUserInputId={props.respondingUserInputId}
-                          onSelectOption={props.onSelectUserInputOption}
-                          onChangeCustomAnswer={props.onChangeUserInputCustomAnswer}
-                          onSubmit={props.onSubmitUserInput}
-                          onDismiss={props.onDismissUserInput}
-                        />
-                      ) : null}
+                      <PendingApprovalStack
+                        enabled={descendantApproval.state !== null}
+                        maxHeight={pendingApprovalStackMaxHeight}
+                      >
+                        {descendantApproval.state ? (
+                          <DescendantApprovalCard
+                            state={descendantApproval.state}
+                            onRespond={descendantApproval.onRespond}
+                            onNext={descendantApproval.onNext}
+                            onOpen={openLinkedThread}
+                          />
+                        ) : null}
+                        {props.activePendingApproval ? (
+                          <PendingApprovalCard
+                            canOperateThread={props.canOperateThread}
+                            approval={props.activePendingApproval}
+                            respondingApprovalId={props.respondingApprovalId}
+                            onRespond={props.onRespondToApproval}
+                          />
+                        ) : null}
+                        {props.activePendingUserInput ? (
+                          <PendingUserInputCard
+                            canOperateThread={props.canOperateThread}
+                            pendingUserInput={props.activePendingUserInput}
+                            maxHeight={pendingUserInputMaxHeight}
+                            collapsed={userInputCollapsed}
+                            expandedInFlow={descendantApproval.state !== null}
+                            onToggleCollapsed={handleToggleUserInputCollapsed}
+                            onStopThread={props.onStopThread}
+                            cardProgress={userInputCardProgress}
+                            cardCoverage={userInputCardCoverage}
+                            onInputFocusChange={handleOwnedInputFocusChange}
+                            drafts={props.activePendingUserInputDrafts}
+                            answers={props.activePendingUserInputAnswers}
+                            respondingUserInputId={props.respondingUserInputId}
+                            onSelectOption={props.onSelectUserInputOption}
+                            onChangeCustomAnswer={props.onChangeUserInputCustomAnswer}
+                            onSubmit={props.onSubmitUserInput}
+                            onDismiss={props.onDismissUserInput}
+                          />
+                        ) : null}
+                      </PendingApprovalStack>
                     </Animated.View>
                   ) : null}
                 </View>

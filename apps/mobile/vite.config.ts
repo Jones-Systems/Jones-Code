@@ -5,6 +5,7 @@ import "vite-plus/test/config";
 
 const reactTests = [
   "src/jones/descendantApproval/DescendantApprovalCard.test.tsx",
+  "src/jones/descendantApproval/PendingApprovalStack.test.tsx",
   "src/state/use-selected-thread-git-state.test.tsx",
   "src/features/workstreams/Controls.operations.test.tsx",
   "src/features/workstreams/useWorkstreams.authorization.test.tsx",

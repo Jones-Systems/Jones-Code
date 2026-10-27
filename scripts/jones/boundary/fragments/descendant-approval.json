@@ -20,6 +20,10 @@
     {
       "from": "apps/mobile/src/features/threads/ThreadDetailScreen.tsx",
       "to": "apps/mobile/src/jones/descendantApproval/DescendantApprovalCard.tsx"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/ThreadDetailScreen.tsx",
+      "to": "apps/mobile/src/jones/descendantApproval/PendingApprovalStack.tsx"
     }
   ]
 }

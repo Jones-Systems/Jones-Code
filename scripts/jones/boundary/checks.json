@@ -3899,13 +3899,14 @@
         "apps/web/src/jones/descendantApproval/DescendantApprovalBanner.browser.test.tsx",
         "apps/web/src/components/chat/ThreadActivityBanners.browser.test.tsx",
         "apps/web/src/jones/threadMonitor/detail.test.ts",
-        "apps/mobile/src/jones/descendantApproval/DescendantApprovalCard.test.tsx"
+        "apps/mobile/src/jones/descendantApproval/DescendantApprovalCard.test.tsx",
+        "apps/mobile/src/jones/descendantApproval/PendingApprovalStack.test.tsx"
       ],
       "commands": [
         "vp test run packages/client-runtime/src/jones/descendantApproval/model.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run --root apps/web --config vite.config.ts --project browser src/jones/descendantApproval/DescendantApprovalBanner.browser.test.tsx src/components/chat/ThreadActivityBanners.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
         "vp test run --root apps/web --config vite.config.ts --project unit src/jones/threadMonitor/detail.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run --root apps/mobile --config vite.config.ts --project react src/jones/descendantApproval/DescendantApprovalCard.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/mobile --config vite.config.ts --project react src/jones/descendantApproval/DescendantApprovalCard.test.tsx src/jones/descendantApproval/PendingApprovalStack.test.tsx --maxWorkers=1 --no-file-parallelism",
         "vp test run --root apps/web --config vite.config.ts --project unit src/reactCompilerCoverage.test.ts -t \"compiles apps/web/src/(jones/descendantApproval/|components/chat/useThreadLifecycle|components/ChatView)\" --maxWorkers=1 --no-file-parallelism",
         "vp test run --root apps/mobile --config vite.config.ts --project unit src/reactCompilerCoverage.test.ts -t \"compiles src/jones/descendantApproval|compiles src/features/threads/ThreadDetailScreen.tsx\" --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/client-runtime typecheck",
