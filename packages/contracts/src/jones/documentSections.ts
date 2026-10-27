@@ -2,10 +2,9 @@ import { exactStruct } from "./exactStruct.ts";
 import * as Schema from "effect/Schema";
 import { ThreadId } from "../baseSchemas.ts";
 
-export const DOCUMENT_SECTIONS_MAX_DOCUMENT_BYTES = 1024 * 1024;
-export const DOCUMENT_SECTIONS_MAX_RESPONSE_BYTES = 64 * 1024;
-export const DOCUMENT_SECTIONS_MAX_REFERENCE_BYTES = 2048;
-export const DOCUMENT_SECTIONS_MAX_SUMMARY_BYTES = 512;
+const DOCUMENT_SECTIONS_MAX_DOCUMENT_BYTES = 1024 * 1024;
+const DOCUMENT_SECTIONS_MAX_REFERENCE_BYTES = 2048;
+const DOCUMENT_SECTIONS_MAX_SUMMARY_BYTES = 512;
 
 const utf8Bytes = (value: string) => new TextEncoder().encode(value).length;
 const exactText = (value: string) => value.isWellFormed() && !value.includes("\0");

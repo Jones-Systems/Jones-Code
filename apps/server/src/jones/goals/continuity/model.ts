@@ -127,7 +127,7 @@ function evidenceValid(values: readonly ContinuityEvidence[]): boolean {
   );
 }
 
-export function isStrongContinuityOwner(owner: ContinuityOwner): boolean {
+function isStrongContinuityOwner(owner: ContinuityOwner): boolean {
   // Server-owned entity IDs follow their existing contract, independently of
   // the shorter keys authored inside a checkpoint. Nested task IDs may grow.
   return (

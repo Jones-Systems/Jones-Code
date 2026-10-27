@@ -10,7 +10,7 @@ import type {
 } from "../../../../../packages/contracts/src/jones/documentSections.ts";
 
 export const MAX_DOCUMENT_BYTES = 1024 * 1024;
-export const MAX_RESPONSE_BYTES = 64 * 1024;
+const MAX_RESPONSE_BYTES = 64 * 1024;
 const oidPattern = /^[a-f0-9]{40}(?![\s\S])/;
 const digestPattern = /^[a-f0-9]{64}(?![\s\S])/;
 const idPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\s\S])/;
@@ -35,7 +35,7 @@ export class DocumentSectionRefusal extends Error {
 
 export const sha256 = (bytes: Uint8Array): string =>
   NodeCrypto.createHash("sha256").update(bytes).digest("hex");
-export const utf8Length = (value: string): number => Buffer.byteLength(value, "utf8");
+const utf8Length = (value: string): number => Buffer.byteLength(value, "utf8");
 export const canonicalJson = (value: unknown): string => {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (value !== null && typeof value === "object") {
