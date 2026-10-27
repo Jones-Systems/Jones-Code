@@ -1,10 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
-import {
-  EnvironmentId,
-  OrchestratorMcpFailure,
-  type OrchestrationV2Notification,
-} from "@t3tools/contracts";
+import { EnvironmentId, OrchestratorMcpFailure } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -20,10 +16,7 @@ import * as Fixture from "./testkit.ts";
 
 // Exercise the real follower, SQL facts and EventSink. The peer transport and
 // provider-launch boundary are ports; neither launches a process in this test.
-const ports = (
-  f: Effect.Success<typeof Fixture.seed>,
-  notifications: OrchestrationV2Notification[],
-) =>
+const ports = (f: Effect.Success<typeof Fixture.seed>) =>
   Layer.mock(Orchestrator.OrchestratorV2)({
     getThreadRecords: (threadId, fields, filter) =>
       f.projection
@@ -89,7 +82,6 @@ const ports = (
           ],
           effects: [],
         });
-        notifications.push(command.notification);
         return { sequence: committed.receipt.resultSequence, storedEvents: committed.storedEvents };
       }).pipe(
         Effect.mapError(
@@ -135,7 +127,6 @@ it.effect(
       const changes = yield* Changes.DependencyChanges;
       yield* prepare(f);
       const subscription = yield* changes.subscribe;
-      const notifications: OrchestrationV2Notification[] = [];
       const calls: string[] = [];
       const peer = Layer.mock(Forwarding.PeerForwarding)({
         call: (scope, tool, _environmentId, input) =>
@@ -162,11 +153,16 @@ it.effect(
         );
         assert.isTrue(Option.isSome(delivered));
         assert.deepEqual(calls, ["t3_thread_request_observe"]);
-        assert.lengthOf(notifications, 1);
-        assert.equal(notifications[0]?.source.kind, "background_task");
-        assert.equal(notifications[0]?.outcome, "unknown");
-        assert.include(notifications[0]?.detail, "Remote work may continue");
         const dependency = (yield* f.store.get("recovered-remote"))!;
+        // Delivery is committed before change publication. Reconciliation may
+        // interrupt the completed follower before its dispatch port returns.
+        const messages = (yield* f.projection.getThreadRecords(f.waiter.id, ["messages"]))
+          .messages;
+        assert.lengthOf(messages, 1);
+        assert.equal(messages[0]?.id, dependency.wakeMessageId);
+        assert.equal(messages[0]?.notification?.source.kind, "background_task");
+        assert.equal(messages[0]?.notification?.outcome, "unknown");
+        assert.include(messages[0]?.notification?.detail, "Remote work may continue");
         assert.equal(dependency.outcome, "unknown");
         assert.equal(dependency.forwardedRequestKey, "fwd:original-key");
         assert.equal((yield* f.store.duties(f.waiter.id)).outgoing, 1); // Result processing is still queued.
@@ -174,7 +170,7 @@ it.effect(
         Effect.provide(
           Reactor.layer.pipe(
             Layer.provide(Watch.layer),
-            Layer.provide(ports(f, notifications)),
+            Layer.provide(ports(f)),
             Layer.provide(peer),
             Layer.provide(NodeCrypto.layer),
           ),
@@ -191,7 +187,6 @@ it.effect(
       const changes = yield* Changes.DependencyChanges;
       yield* prepare(f);
       const subscription = yield* changes.subscribe;
-      const notifications: OrchestrationV2Notification[] = [];
       const calls: string[] = [];
       const peer = Layer.mock(Forwarding.PeerForwarding)({
         call: (_scope, tool) =>
@@ -211,7 +206,10 @@ it.effect(
           Stream.runHead,
         );
         assert.equal((yield* f.store.duties(f.waiter.id)).outgoing, 1);
-        assert.lengthOf(notifications, 0);
+        assert.deepEqual(
+          (yield* f.projection.getThreadRecords(f.waiter.id, ["messages"])).messages,
+          [],
+        );
         yield* makeCommit(
           f.sql,
           f.store,
@@ -223,7 +221,7 @@ it.effect(
         Effect.provide(
           Reactor.layer.pipe(
             Layer.provide(Watch.layer),
-            Layer.provide(ports(f, notifications)),
+            Layer.provide(ports(f)),
             Layer.provide(peer),
             Layer.provide(NodeCrypto.layer),
           ),
