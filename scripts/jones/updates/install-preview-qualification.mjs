@@ -1140,7 +1140,7 @@ export function rendererSteps(origin, sourceSha, runId) {
     click(`[data-testid="settings-updates"] >> role=button[name="${name}"]`);
   const sidebar = () =>
     click(
-      '[data-testid="sidebar-updates"] button[aria-label]:not([aria-label="Nightly update release notes"])',
+      '[data-testid="sidebar-updates"] ul button[aria-label]:not([aria-label="Nightly update release notes"])',
     );
   const wait = (phase) => steps.push({ action: "wait", text: `Production atom: ${phase}` });
   const check = (label, expression, expected = true) =>
@@ -1152,10 +1152,11 @@ export function rendererSteps(origin, sourceSha, runId) {
     });
   const capture = (name, contains, excludes = []) =>
     steps.push({ action: "capture", name, contains, excludes });
-  const begin = (scenario, suffix = scenario) => {
+  // Retain old-bridge coverage explicitly; plan-capable entrypoints are qualified separately.
+  const begin = (scenario, suffix = scenario, installPlans = false) => {
     steps.push({
       action: "navigate",
-      path: `${origin}/jones-install-fixture.html?run=${runId}-${suffix}&scenario=${scenario}`,
+      path: `${origin}/jones-install-fixture.html?run=${runId}-${suffix}&scenario=${scenario}${installPlans ? "" : "&installPlans=legacy"}`,
     });
     steps.push({ action: "wait", text: "Jones install renderer fixture" });
   };
@@ -1170,7 +1171,7 @@ export function rendererSteps(origin, sourceSha, runId) {
   const identity = () =>
     check(
       "Pre-bootstrap fixture and production atom bind the exact source",
-      `s.mounted && s.sourceSha === ${JSON.stringify(sourceSha)} && s.listenerCount > 0`,
+      `s.mounted && s.sourceSha === ${JSON.stringify(sourceSha)} && s.listenerCount > 0 && !s.installPlansSupported && window.desktopBridge.installPlan === undefined`,
     );
   const pendingDisabled = () =>
     check(
@@ -1178,7 +1179,7 @@ export function rendererSteps(origin, sourceSha, runId) {
       `(() => {
         const install = [...document.querySelectorAll('[data-testid="settings-updates"] button')]
           .filter(button => button.textContent?.trim() === 'Install');
-        const sidebar = document.querySelectorAll('[data-testid="sidebar-updates"] button[aria-label]:not([aria-label="Nightly update release notes"])');
+        const sidebar = document.querySelectorAll('[data-testid="sidebar-updates"] ul button[aria-label]:not([aria-label="Nightly update release notes"])');
         return install.length === 1 && install[0].disabled === true &&
           sidebar.length === 1 && sidebar[0].getAttribute('aria-disabled') === 'true';
       })()`,
@@ -1307,6 +1308,80 @@ export function rendererSteps(origin, sourceSha, runId) {
     `!s.initialReadPending && s.observed.jones.phase === 'staged' && s.observed.jones.revision === 2`,
   );
   capture("desktop-initial-read-race", ["Production atom: staged; revision 2", "Install"]);
+
+  // The same production controls with the negotiated native plan bridge enabled.
+  const panel = "[data-install-status]";
+  const panelButton = (name) =>
+    click(
+      `${panel} ${name.endsWith("details") || name === "Done with update plan" ? `button[aria-label="${name}"]` : `button:text-is("${name}")`}`,
+    );
+  const planCheck = (label, expression) => check(label, expression);
+  begin("available", "install-plan", true);
+  wait("available");
+  planCheck(
+    "Plan-capable fixture binds the exact source and native bridge",
+    `s.mounted && s.sourceSha === ${JSON.stringify(sourceSha)} && s.installPlansSupported && typeof window.desktopBridge.installPlan === 'function'`,
+  );
+  sidebar();
+  steps.push({ action: "wait", text: "After Laptop is verified" });
+  panelButton("Edit");
+  click(`${panel} >> role=checkbox[name="Include VPS"]`);
+  panelButton("Done");
+  panelButton("Download on Laptop");
+  wait("downloading");
+  planCheck(
+    "Plan download records one Laptop operation and no host dispatch",
+    `s.calls.filter(c => c.action === 'fixture-laptop-download').length === 1 && s.installPlan.current.devices.length === 1 && s.installPlan.current.devices[0].label === 'VPS' && !s.installPlan.current.laptop.gate && s.calls.every(c => c.action !== 'fixture-host-operationStart')`,
+  );
+  control("complete-download");
+  wait("staged");
+  panelButton("Install on Laptop");
+  steps.push({ action: "wait", text: "Confirm" });
+  click('role=alertdialog >> role=button[name="Cancel"]');
+  planCheck(
+    "Plan review cancellation never dispatches installation or opens the gate",
+    `s.calls.every(c => c.action !== 'fixture-laptop-install' && c.action !== 'fixture-host-operationStart') && !s.installPlan.current.laptop.gate`,
+  );
+  panelButton("Install on Laptop");
+  confirm();
+  wait("preparing");
+  planCheck(
+    "Accepted plan installation still holds followers until native commit verification",
+    `s.calls.filter(c => c.action === 'fixture-laptop-install').length === 1 && !s.installPlan.current.laptop.gate && s.calls.every(c => c.action !== 'fixture-host-operationStart')`,
+  );
+  control("commit-install");
+  wait("committed");
+  steps.push({ action: "wait", text: "Downloading…" });
+  planCheck(
+    "Only the selected host starts after the receipt-bound Laptop gate",
+    `s.installPlan.current.laptop.gate?.transactionId === 'fixture-native-commit' && s.calls.filter(c => c.action === 'fixture-host-operationStart').length === 1 && s.installPlan.current.devices[0].operations.at(-1).receipt.phase === 'running' && !s.installPlan.view.complete`,
+  );
+  panelButton("VPS update details");
+  panelButton("Stop download on VPS");
+  steps.push({ action: "wait", text: "Stop requested" });
+  planCheck(
+    "Plan Stop binds the exact running host operation and cannot complete on request alone",
+    `(() => { const op = s.installPlan.current.devices[0].operations.at(-1); const stop = s.calls.filter(c => c.action === 'fixture-host-operationStop').at(-1); return stop?.input.input.operationId === op.operationId && stop.input.input.stopId === op.stop.stopId && op.receipt.phase === 'stop-requested' && !s.installPlan.view.complete; })()`,
+  );
+  control("host-VPS-stopped");
+  steps.push({ action: "wait", text: "Stopped · nothing installed" });
+  planCheck(
+    "Only the exact settled Stop receipt enables header Done",
+    `s.installPlan.view.complete && s.installPlan.current.devices[0].operations.at(-1).receipt.phase === 'stopped' && document.querySelector('[data-install-done-slot]').getAttribute('aria-hidden') === 'false'`,
+  );
+  capture("plan-completed-footer", ["Install status", "Stopped · nothing installed", "Done"]);
+  panelButton("Done with update plan");
+  planCheck(
+    "Plan Done retains history and hides the completed panel",
+    `s.installPlan.current === null && s.installPlan.last !== null && document.querySelector('[data-install-status]') === null`,
+  );
+  sidebar();
+  steps.push({ action: "wait", text: "Last update" });
+  planCheck(
+    "Reopening completed plan is read only",
+    `s.installPlan.current === null && s.installPlan.last !== null && [...document.querySelectorAll('[data-install-status] button')].every(b => !/^(Edit|Download|Install|Stop|Done)/.test(b.textContent.trim()))`,
+  );
+  capture("plan-readonly-history", ["Last update", "Stopped · nothing installed"]);
 
   begin("available", "client-notices");
   wait("available");

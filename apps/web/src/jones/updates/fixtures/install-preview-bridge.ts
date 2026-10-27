@@ -93,11 +93,16 @@ function initialState(staged: boolean, blocked = false): DesktopUpdateState {
   });
 }
 
-export function installPreviewBridge(runId: string, scenario: string, sourceSha: string) {
+export function installPreviewBridge(
+  runId: string,
+  scenario: string,
+  sourceSha: string,
+  installPlansSupported = true,
+) {
   if (!/^[a-zA-Z0-9_-]{1,80}$/.test(runId))
     throw new Error("A bounded fixture run ID is required.");
   const selectedScenario = decodeScenario(scenario);
-  const key = `jones:install-preview:v1:${runId}:${selectedScenario}`;
+  const key = `jones:install-preview:v1:${runId}:${selectedScenario}${installPlansSupported ? "" : ":legacy"}`;
   const saved = sessionStorage.getItem(key);
   let stored: StoredFixture = saved
     ? decodeStoredFixture(JSON.parse(saved))
@@ -201,8 +206,9 @@ export function installPreviewBridge(runId: string, scenario: string, sourceSha:
   });
   const plan = planFixture;
   const bridge = {
-    installPlan: plan.request,
-    onInstallPlan: plan.onInstallPlan,
+    ...(installPlansSupported
+      ? { installPlan: plan.request, onInstallPlan: plan.onInstallPlan }
+      : {}),
     getAppBranding: () => ({
       baseName: "Jones Code",
       stageLabel: "Dev" as const,
@@ -344,6 +350,7 @@ export function installPreviewBridge(runId: string, scenario: string, sourceSha:
   const snapshot = () =>
     structuredClone({
       ...stored,
+      installPlansSupported,
       installPlan: plan.snapshot(),
       devices: plan.store.get().devices,
       mounted,

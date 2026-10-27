@@ -94,18 +94,19 @@ export function InstallStatusPanel({
     if (pending.has(key)) return;
     setPending((old) => new Set([...old, key]));
     store.update({ error: null });
-    try {
-      await work();
-    } catch (error) {
-      store.update({
-        error:
-          error instanceof Error
-            ? error.message
-            : "The request is not confirmed. Read status before continuing.",
+    await Promise.resolve()
+      .then(work)
+      .catch((error: unknown) => {
+        store.update({
+          error:
+            error instanceof Error
+              ? error.message
+              : "The request is not confirmed. Read status before continuing.",
+        });
+      })
+      .finally(() => {
+        setPending((old) => new Set([...old].filter((item) => item !== key)));
       });
-    } finally {
-      setPending((old) => new Set([...old].filter((item) => item !== key)));
-    }
   };
   const action = (environmentId: EnvironmentId | "laptop", value: PanelAction) =>
     void perform(`${environmentId}:${value}`, () => performPanelAction(environmentId, value));
