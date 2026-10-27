@@ -215,7 +215,7 @@ describe("goal continuity wire vocabulary", () => {
     ])
       expect(() => decode({ boundaries: operations })).toThrow();
     expect(() =>
-      Schema.decodeUnknownSync(ContinuityRequest)({
+      Schema.decodeSync(ContinuityRequest)({
         action: "checkpoint",
         clientRequestId: "req",
         expected: target,
@@ -414,7 +414,7 @@ describe("durable recovery delivery contracts", () => {
     expect(Schema.is(DeliveryGate)({ ...gate, deliveryIds: ["delivery", "delivery"] })).toBe(false);
     expect(Schema.is(ContinuityRecoveryTransitionResult)({ outcome: "absent", gate })).toBe(true);
     expect(
-      Schema.decodeUnknownSync(ContinuityRequest)({
+      Schema.decodeSync(ContinuityRequest)({
         action: "delivery_receipt",
         deliveryId: "delivery",
       }),
@@ -432,8 +432,10 @@ describe("durable recovery delivery contracts", () => {
       { authorized: true },
       { quiescent: true },
       { quiescence: { outcome: "confirmed" } },
-    ])
+    ]) {
       expect(() => decode({ ...reconcile, ...forged })).toThrow();
+      expect(Schema.is(ReconcileDeliveryRequest)({ ...reconcile, ...forged })).toBe(false);
+    }
     expect(() =>
       decode({
         ...reconcile,

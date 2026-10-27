@@ -10,6 +10,7 @@ import type {
   RecoveryBoundary,
 } from "@t3tools/provider-core/server/jones/GoalContinuityContext";
 import * as Effect from "effect/Effect";
+import * as Cause from "effect/Cause";
 import * as Fiber from "effect/Fiber";
 import type * as Scope from "effect/Scope";
 import { continuityDigest } from "./model.ts";
@@ -19,7 +20,7 @@ type CompactionPoint = Extract<RecoveryBoundary["point"], { type: "compaction" }
 /** One captured conversation/run/producer. This is recovery bookkeeping, never
  * a goal runner. The service owns durable matching, CAS and single-use permits.
  */
-export function makeCodexRecovery(input: {
+export function makeCodexRecovery<E>(input: {
   readonly context: GoalContinuityContext;
   readonly boundary: RecoveryBoundary;
   readonly scope: Scope.Scope;
@@ -33,7 +34,7 @@ export function makeCodexRecovery(input: {
         readonly outcome: "not_sent";
         readonly proof: Extract<ContinuityDeliveryEvidence, { outcome: "not_sent" }>["proof"];
       },
-    unknown
+    E
   >;
   readonly stop: (nativeTurnId: string | undefined) => Effect.Effect<void>;
 }) {
@@ -159,7 +160,7 @@ export function makeCodexRecovery(input: {
                     revocationRef: permit.dispatchAttemptId,
                   },
                 };
-              return yield* input.inject(capsule, permit);
+              return yield* input.inject(capsule, permit).pipe(Effect.mapError(() => fail()));
             }),
           ).pipe(
             Effect.flatMap((sent) =>
@@ -183,8 +184,9 @@ export function makeCodexRecovery(input: {
                 ? Effect.succeed(settled.receipt.phase === "acknowledged")
                 : Effect.fail(fail()),
             ),
-            Effect.onError(() => settleUnknown(permit, "lost_response")),
-            Effect.onInterrupt(() => settleUnknown(permit, "cancelled")),
+            Effect.onError((cause) =>
+              settleUnknown(permit, Cause.hasInterrupts(cause) ? "cancelled" : "lost_response"),
+            ),
             Effect.forkIn(input.scope, { startImmediately: true }),
           );
           const acknowledged = yield* restore(
@@ -201,11 +203,7 @@ export function makeCodexRecovery(input: {
       );
       if (!(yield* continuation())) return yield* fail();
     },
-    (effect, key) =>
-      effect.pipe(
-        Effect.onError(() => stop(JSON.parse(key)[0] as string)),
-        Effect.onInterrupt(() => stop(JSON.parse(key)[0] as string)),
-      ),
+    (effect, key) => effect.pipe(Effect.onError(() => stop(JSON.parse(key)[0] as string))),
   );
 
   return {
@@ -214,7 +212,7 @@ export function makeCodexRecovery(input: {
       return continuationHeld;
     },
     hold: stop,
-    checkContinuation: continuation().pipe(Effect.catch(() => Effect.succeed(false))),
+    checkContinuation: continuation().pipe(Effect.orElseSucceed(() => false)),
     turnStartContext: Effect.gen(function* () {
       if (!(yield* continuation())) return yield* fail();
       return yield* fresh(input.boundary);

@@ -28,7 +28,7 @@ export class DocumentSections extends Context.Service<
       selector: DocumentSectionsSelector,
     ) => Effect.Effect<DocumentSectionsResult, DocumentSectionError>;
   }
->()("jones/documentSections/DocumentSections") {}
+>()("t3/jones/documentSections/DocumentSections") {}
 
 const safeError = (error: unknown) =>
   new DocumentSectionError({

@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Mint opaque receipt identities synchronously inside the SQL transaction.
+import * as NodeCrypto from "node:crypto";
 import * as C from "@t3tools/contracts";
 import type {
   ContinuityRequirement,
@@ -83,7 +84,7 @@ export class GoalContinuity extends Context.Service<
     readonly settleDelivery: GoalContinuityContext["settleDelivery"];
     readonly checkContinuation: GoalContinuityContext["checkContinuation"];
   }
->()("jones/goals/continuity/GoalContinuity") {}
+>()("t3/jones/goals/continuity/GoalContinuity") {}
 
 const fail = (reason: C.ContinuityRefusalReason) => new C.GoalContinuityError({ reason });
 const authError = () => fail("forbidden");
@@ -128,7 +129,7 @@ const rowKey = (
   namespace,
 });
 const decode = <A>(schema: Schema.Codec<A, unknown>, row: Store.ContinuityStoredRow) =>
-  Schema.decodeUnknownEffect(Schema.fromJsonString(schema))(row.payload).pipe(
+  Schema.decodeEffect(Schema.fromJsonString(schema))(row.payload).pipe(
     Effect.mapError(() => fail("corrupt_snapshot")),
     Effect.tap((value) =>
       continuityDigest(value) === row.bodyDigest
@@ -263,7 +264,9 @@ const make = Effect.gen(function* () {
         if (shell === null || shell.deletedAt !== null) return yield* fail("unavailable");
         if (write) {
           yield* assertTargetWithinLimits(current.limits, shell).pipe(Effect.mapError(authError));
-          yield* assertSameLink(current, shell).pipe(Effect.mapError(authError));
+          yield* Effect.suspend<void, C.OrchestratorMcpFailure, never>(() =>
+            assertSameLink(current, shell),
+          ).pipe(Effect.mapError(authError));
         }
       });
       const origin = callerLinkOrigin(initial);
@@ -297,132 +300,134 @@ const make = Effect.gen(function* () {
     },
   );
 
-  // Covered by the enclosing operation span; these helpers perform only short SQL work.
-  const fence = (owner: Pick<C.ContinuityOwner, "environmentId" | "threadId">) =>
-    Effect.gen(function* () {
-      const row = yield* store.row(rowKey(owner, "fence", "current"));
-      return { row, revision: row === null ? "0" : (yield* decode(fenceSchema, row)).revision };
-    });
-  const advanceFence = (owner: C.ContinuityOwner) =>
-    Effect.gen(function* () {
-      const previous = yield* fence(owner);
-      const revision = yield* counter(previous.revision);
-      yield* store.writeRow(rowKey(owner, "fence", "current"), previous.row, { revision });
-      return revision;
-    });
-  const delivery = (owner: Pick<C.ContinuityOwner, "environmentId" | "threadId">, id: string) =>
-    Effect.gen(function* () {
-      const row = yield* store.row(rowKey(owner, "delivery", id));
-      if (row === null) return null;
+  const fence = Effect.fn("GoalContinuity.fence")(function* (
+    owner: Pick<C.ContinuityOwner, "environmentId" | "threadId">,
+  ) {
+    const row = yield* store.row(rowKey(owner, "fence", "current"));
+    return { row, revision: row === null ? "0" : (yield* decode(fenceSchema, row)).revision };
+  });
+  const advanceFence = Effect.fn("GoalContinuity.advanceFence")(function* (
+    owner: C.ContinuityOwner,
+  ) {
+    const previous = yield* fence(owner);
+    const revision = yield* counter(previous.revision);
+    yield* store.writeRow(rowKey(owner, "fence", "current"), previous.row, { revision });
+    return revision;
+  });
+  const delivery = Effect.fn("GoalContinuity.delivery")(function* (
+    owner: Pick<C.ContinuityOwner, "environmentId" | "threadId">,
+    id: string,
+  ) {
+    const row = yield* store.row(rowKey(owner, "delivery", id));
+    if (row === null) return null;
+    const receipt = yield* decode(C.ContinuityDeliveryReceipt, row);
+    if (
+      receipt.identity.deliveryId !== id ||
+      receipt.identity.originalOwner.environmentId !== owner.environmentId ||
+      receipt.identity.originalOwner.threadId !== owner.threadId
+    )
+      return yield* fail("corrupt_snapshot");
+    return { row, receipt };
+  });
+  const gateFor = Effect.fn("GoalContinuity.gateFor")(function* (
+    owner: Pick<C.ContinuityOwner, "environmentId" | "threadId">,
+    committingDispatch?: string,
+  ) {
+    const { revision } = yield* fence(owner);
+    const rows = yield* store.openDeliveries(owner.environmentId, owner.threadId);
+    const receipts: C.ContinuityDeliveryReceipt[] = [];
+    for (const row of rows) {
       const receipt = yield* decode(C.ContinuityDeliveryReceipt, row);
       if (
-        receipt.identity.deliveryId !== id ||
         receipt.identity.originalOwner.environmentId !== owner.environmentId ||
         receipt.identity.originalOwner.threadId !== owner.threadId
       )
         return yield* fail("corrupt_snapshot");
-      return { row, receipt };
-    });
-  const gateFor = (
-    owner: Pick<C.ContinuityOwner, "environmentId" | "threadId">,
-    committingDispatch?: string,
-  ) =>
-    Effect.gen(function* () {
-      const { revision } = yield* fence(owner);
-      const rows = yield* store.openDeliveries(owner.environmentId, owner.threadId);
-      const receipts: C.ContinuityDeliveryReceipt[] = [];
-      for (const row of rows) {
-        const receipt = yield* decode(C.ContinuityDeliveryReceipt, row);
-        if (
-          receipt.identity.originalOwner.environmentId !== owner.environmentId ||
-          receipt.identity.originalOwner.threadId !== owner.threadId
-        )
-          return yield* fail("corrupt_snapshot");
-        receipts.push(receipt);
-      }
-      if (receipts.length === 0) return { outcome: "clear", fenceRevision: revision } as const;
-      // A persisted dispatch with no original in-memory permit is unfinished work
-      // from reconstruction. It is uncertain even if its stored phase says dispatching.
-      const uncertain = receipts.some(
-        (item) =>
-          item.phase === "unknown" ||
-          (item.phase === "dispatching" &&
-            item.identity.deliveryId !== committingDispatch &&
-            !liveDeliveries.has(item.identity.deliveryId)),
-      );
-      return {
-        outcome: "hold",
-        fenceRevision: revision,
-        reason: uncertain
-          ? "delivery_unknown"
-          : receipts.some(
-                (item) =>
-                  item.phase === "pending" ||
-                  item.phase === "prepared" ||
-                  item.phase === "dispatching",
-              )
-            ? "delivery_pending"
-            : "recovery_required",
-        deliveryIds: receipts.map((item) => item.identity.deliveryId).sort(),
-      } satisfies C.DeliveryGate;
-    });
-  const appendPhase = (
+      receipts.push(receipt);
+    }
+    if (receipts.length === 0) return { outcome: "clear", fenceRevision: revision } as const;
+    // A persisted dispatch with no original in-memory permit is unfinished work
+    // from reconstruction. It is uncertain even if its stored phase says dispatching.
+    const uncertain = receipts.some(
+      (item) =>
+        item.phase === "unknown" ||
+        (item.phase === "dispatching" &&
+          item.identity.deliveryId !== committingDispatch &&
+          !liveDeliveries.has(item.identity.deliveryId)),
+    );
+    return {
+      outcome: "hold",
+      fenceRevision: revision,
+      reason: uncertain
+        ? "delivery_unknown"
+        : receipts.some(
+              (item) =>
+                item.phase === "pending" ||
+                item.phase === "prepared" ||
+                item.phase === "dispatching",
+            )
+          ? "delivery_pending"
+          : "recovery_required",
+      deliveryIds: receipts.map((item) => item.identity.deliveryId).sort(),
+    } satisfies C.DeliveryGate;
+  });
+  const appendPhase = Effect.fn("GoalContinuity.appendPhase")(function* (
     previous: { row: Store.ContinuityStoredRow; receipt: C.ContinuityDeliveryReceipt } | null,
     receipt: C.ContinuityDeliveryReceipt,
     event: C.ContinuityDeliveryPhaseEvent,
     open: boolean,
-  ) =>
-    Effect.gen(function* () {
-      const next = {
-        ...receipt,
-        phase: event.phase,
-        deliveryRevision: event.deliveryRevision,
-        fenceRevision: event.fenceRevision,
-        events: [...receipt.events, event],
-      };
-      yield* store.writeRow(
-        rowKey(
-          receipt.identity.originalOwner,
-          "phase",
-          `${receipt.identity.deliveryId}:${event.deliveryRevision}`,
-        ),
-        null,
-        event,
-      );
-      yield* store.writeRow(
-        rowKey(receipt.identity.originalOwner, "delivery", receipt.identity.deliveryId),
-        previous?.row ?? null,
-        next,
-        open,
-      );
-      return next;
-    });
-  const validateBoundary = (boundary: RecoveryBoundary) =>
-    Effect.gen(function* () {
-      const { witness, producer, producerOrigin } = boundary;
-      if (
-        !Schema.is(C.ContinuityRecoveryBoundary)(serialBoundary(boundary)) ||
-        producerOrigin.driver !== witness.driver ||
-        producerOrigin.instanceId !== witness.providerInstanceId ||
-        producerOrigin.providerSessionId !== witness.providerSessionId ||
-        producerOrigin.runtimeGeneration !== witness.runtimeGeneration ||
-        producer.driver !== witness.driver ||
-        producer.providerInstanceId !== witness.providerInstanceId ||
-        producer.providerSessionId !== witness.providerSessionId ||
-        producer.runtimeGeneration !== witness.runtimeGeneration
-      )
-        return yield* fail("binding_mismatch");
-      const captured = producers.get(producer.producerId);
-      if (
-        captured !== undefined &&
-        (captured.token !== producerOrigin.token ||
-          captured.revalidateCurrent !== producerOrigin.revalidateCurrent)
-      )
-        return yield* fail("binding_mismatch");
-      yield* producerOrigin.revalidateCurrent.pipe(Effect.mapError(() => fail("binding_mismatch")));
-      yield* store.validateBinding(ownerOf(witness), witness);
-      producers.set(producer.producerId, producerOrigin);
-    });
+  ) {
+    const next = {
+      ...receipt,
+      phase: event.phase,
+      deliveryRevision: event.deliveryRevision,
+      fenceRevision: event.fenceRevision,
+      events: [...receipt.events, event],
+    };
+    yield* store.writeRow(
+      rowKey(
+        receipt.identity.originalOwner,
+        "phase",
+        `${receipt.identity.deliveryId}:${event.deliveryRevision}`,
+      ),
+      null,
+      event,
+    );
+    yield* store.writeRow(
+      rowKey(receipt.identity.originalOwner, "delivery", receipt.identity.deliveryId),
+      previous?.row ?? null,
+      next,
+      open,
+    );
+    return next;
+  });
+  const validateBoundary = Effect.fn("GoalContinuity.validateBoundary")(function* (
+    boundary: RecoveryBoundary,
+  ) {
+    const { witness, producer, producerOrigin } = boundary;
+    if (
+      !Schema.is(C.ContinuityRecoveryBoundary)(serialBoundary(boundary)) ||
+      producerOrigin.driver !== witness.driver ||
+      producerOrigin.instanceId !== witness.providerInstanceId ||
+      producerOrigin.providerSessionId !== witness.providerSessionId ||
+      producerOrigin.runtimeGeneration !== witness.runtimeGeneration ||
+      producer.driver !== witness.driver ||
+      producer.providerInstanceId !== witness.providerInstanceId ||
+      producer.providerSessionId !== witness.providerSessionId ||
+      producer.runtimeGeneration !== witness.runtimeGeneration
+    )
+      return yield* fail("binding_mismatch");
+    const captured = producers.get(producer.producerId);
+    if (
+      captured !== undefined &&
+      (captured.token !== producerOrigin.token ||
+        captured.revalidateCurrent !== producerOrigin.revalidateCurrent)
+    )
+      return yield* fail("binding_mismatch");
+    yield* producerOrigin.revalidateCurrent.pipe(Effect.mapError(() => fail("binding_mismatch")));
+    yield* store.validateBinding(ownerOf(witness), witness);
+    producers.set(producer.producerId, producerOrigin);
+  });
   const reconstructUnfinished = Effect.fn("GoalContinuity.reconstructUnfinished")(function* (
     environmentId: C.EnvironmentId,
     threadId: C.ThreadId,
@@ -457,7 +462,7 @@ const make = Effect.gen(function* () {
               found,
               found.receipt,
               {
-                eventId: randomUUID(),
+                eventId: NodeCrypto.randomUUID(),
                 deliveryRevision,
                 fenceRevision,
                 phase: "unknown",
@@ -602,7 +607,7 @@ const make = Effect.gen(function* () {
               // This domain has no server-observed termination/pause-settlement proof
               // source. Owner assertions record a decision, never dispatch authority.
               const disposition: C.ContinuityDeliveryDisposition = {
-                dispositionId: randomUUID(),
+                dispositionId: NodeCrypto.randomUUID(),
                 request,
                 actorNamespace: caller.actorNamespace,
                 actorId: caller.actorId,
@@ -787,7 +792,7 @@ const make = Effect.gen(function* () {
       ).pipe(
         Effect.catchTags({
           GoalContinuityError: (error) =>
-            error.reason === "unavailable" && "clientRequestId" in request
+            error.reason === "unavailable" && typeof request.clientRequestId === "string"
               ? Effect.succeed({
                   outcome: "unknown",
                   clientRequestId: request.clientRequestId,
@@ -846,7 +851,7 @@ const make = Effect.gen(function* () {
                 pendingTicket:
                   found.receipt.phase === "pending" && complete
                     ? {
-                        type: "pending_ticket",
+                        type: "pending_ticket" as const,
                         identity: found.receipt.identity,
                         deliveryRevision: found.receipt.deliveryRevision,
                         fenceRevision: found.receipt.fenceRevision,
@@ -881,7 +886,7 @@ const make = Effect.gen(function* () {
               outcome: "recorded",
               receipt,
               pendingTicket: {
-                type: "pending_ticket",
+                type: "pending_ticket" as const,
                 identity: receipt.identity,
                 deliveryRevision,
                 fenceRevision,
@@ -935,7 +940,12 @@ const make = Effect.gen(function* () {
             receipt,
             pendingTicket:
               transition.type === "completed"
-                ? { type: "pending_ticket", identity, deliveryRevision: "0", fenceRevision }
+                ? {
+                    type: "pending_ticket" as const,
+                    identity,
+                    deliveryRevision: "0",
+                    fenceRevision,
+                  }
                 : null,
             gate: yield* gateFor(owner),
           } as const;
@@ -1032,7 +1042,7 @@ const make = Effect.gen(function* () {
             found,
             { ...found.receipt, preparation },
             {
-              eventId: randomUUID(),
+              eventId: NodeCrypto.randomUUID(),
               deliveryRevision,
               fenceRevision,
               phase: "prepared",
@@ -1116,15 +1126,15 @@ const make = Effect.gen(function* () {
               type: "dispatch_permit",
               deliveryRevision,
               fenceRevision,
-              permitId: randomUUID(),
-              dispatchAttemptId: randomUUID(),
-              rpcRequestId: randomUUID(),
+              permitId: NodeCrypto.randomUUID(),
+              dispatchAttemptId: NodeCrypto.randomUUID(),
+              rpcRequestId: NodeCrypto.randomUUID(),
             });
             yield* appendPhase(
               found,
               found.receipt,
               {
-                eventId: randomUUID(),
+                eventId: NodeCrypto.randomUUID(),
                 deliveryRevision,
                 fenceRevision,
                 phase: "dispatching",
@@ -1217,7 +1227,7 @@ const make = Effect.gen(function* () {
             found,
             found.receipt,
             {
-              eventId: randomUUID(),
+              eventId: NodeCrypto.randomUUID(),
               deliveryRevision,
               fenceRevision,
               phase: evidence.outcome,

@@ -15954,7 +15954,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             providerSessionId: harness.runtime.providerSessionId,
             providerThreadId: harness.providerThread.id,
             providerTurnId: "unresolved-control",
-            runtimeGeneration: harness.providerThread.runtimeIdentity!.runtimeGeneration,
+            runtimeGeneration: harness.providerThread.runtimeIdentity!.runtimeGeneration!,
             nativeThreadId,
             nativeTurnId,
           });

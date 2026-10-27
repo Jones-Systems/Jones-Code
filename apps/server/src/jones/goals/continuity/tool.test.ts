@@ -60,9 +60,12 @@ function harness(refuse = false) {
   const seen: { target?: C.ThreadId; request?: C.ContinuityRequest }[] = [];
   const caller = {} as Continuity.ContinuityCaller;
   const domain = Layer.mock(Continuity.GoalContinuity)({
+    context: () => {
+      throw new Error("Runtime recovery is outside the tool harness");
+    },
     authorize: (target) =>
       Effect.sync(() => {
-        seen.push({ ...(target === undefined ? {} : { target }) });
+        seen.push(target === undefined ? {} : { target });
         return caller;
       }),
     execute: (_caller, request) =>

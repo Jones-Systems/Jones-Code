@@ -5,17 +5,16 @@ import { nativeConversationMustBePreserved } from "./preserveGoalConversation.ts
 const codex = { driver: "codex", nativeThreadRef: null };
 const message = (text: string, attachments: ReadonlyArray<unknown> = []) => ({ text, attachments });
 
-it.each([undefined, null])(
-  "preserves established conversations with an unproved goal: %s",
-  (goal) => {
-    expect(
-      nativeConversationMustBePreserved(
-        { ...codex, nativeThreadRef: { nativeId: "existing" }, goal },
-        message("Continue", [{}]),
-      ),
-    ).toBe(true);
-  },
-);
+it.each(
+  [undefined, null].flatMap((goal) => ["existing", null].map((nativeId) => ({ goal, nativeId }))),
+)("preserves native conversation evidence with an unproved goal: %o", ({ goal, nativeId }) => {
+  expect(
+    nativeConversationMustBePreserved(
+      { ...codex, nativeThreadRef: { nativeId }, goal },
+      message("Continue", [{}]),
+    ),
+  ).toBe(true);
+});
 
 it.each(["active", "paused", "complete", "blocked", "usage_limited", "budget_limited"])(
   "retained %s goal requires its native conversation even with attachments",

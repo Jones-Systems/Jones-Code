@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Mint a sparse record identity synchronously inside the SQL transaction.
+import * as NodeCrypto from "node:crypto";
 import {
   ContinuitySnapshot,
   GoalContinuityError,
@@ -88,7 +89,7 @@ export class GoalContinuityStore extends Context.Service<
       threadId: ThreadId,
     ) => Effect.Effect<readonly ContinuityStoredRow[], GoalContinuityError>;
   }
->()("jones/goals/continuity/GoalContinuityStore") {}
+>()("t3/jones/goals/continuity/GoalContinuityStore") {}
 
 const storageError = (cause: unknown) =>
   Schema.is(GoalContinuityError)(cause)
@@ -192,7 +193,7 @@ const make = Effect.gen(function* () {
         previous.snapshot.intent.revision === next.intent.revision;
       // An explicit handoff back to an earlier conversation creates a new record;
       // it must neither overwrite nor collide with that conversation's history.
-      const recordId = sameRecord ? previous!.recordId : randomUUID();
+      const recordId = sameRecord ? previous!.recordId : NodeCrypto.randomUUID();
       if (previous !== null) {
         const changed = yield* sql`UPDATE jones_goal_continuity SET current_record=0
         WHERE record_id=${previous.recordId} AND current_record=1 AND snapshot_digest=${previous.digest} RETURNING record_id`;

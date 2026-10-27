@@ -1,8 +1,9 @@
+import * as HostProcess from "@t3tools/shared/HostProcess";
 // @effect-diagnostics nodeBuiltinImport:off globalTimers:off -- This byte-preserving Promise boundary owns its exact Git child, deadline, bounded pipes and cancellation cleanup.
-import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
-import { realpath } from "node:fs/promises";
-import { isAbsolute } from "node:path";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
 import {
   DocumentSectionRefusal,
   decodeUtf8,
@@ -27,7 +28,7 @@ export function boundedGitEnvironment(inherited: NodeJS.ProcessEnv): NodeJS.Proc
   for (const name of ["PATH", "SystemRoot", "WINDIR", "TMPDIR", "TMP", "TEMP"]) {
     if (inherited[name] !== undefined) env[name] = inherited[name];
   }
-  const nullDevice = process.platform === "win32" ? "NUL" : "/dev/null";
+  const nullDevice = HostProcess.Platform.defaultValue() === "win32" ? "NUL" : "/dev/null";
   return {
     ...env,
     GIT_CONFIG_GLOBAL: nullDevice,
@@ -52,7 +53,7 @@ export const runRawGit: RawGitRunner = (root, args, stdoutLimit, signal) =>
       reject(new DocumentSectionRefusal("cancelled"));
       return;
     }
-    const child = spawn(
+    const child = NodeChildProcess.spawn(
       "git",
       [
         "--no-pager",
@@ -159,7 +160,7 @@ export async function readCommittedDocument(
 ): Promise<{ readonly blobOid: string; readonly bytes: Uint8Array }> {
   const selector = validateSelector(input);
   if (
-    !isAbsolute(root) ||
+    !NodePath.isAbsolute(root) ||
     !root.isWellFormed() ||
     root.includes("\0") ||
     root.includes("\n") ||
@@ -168,7 +169,7 @@ export async function readCommittedDocument(
     throw new DocumentSectionRefusal("repository_refused");
   let canonical: string;
   try {
-    canonical = await realpath(root);
+    canonical = await NodeFSP.realpath(root);
   } catch {
     throw new DocumentSectionRefusal("repository_refused");
   }
@@ -183,7 +184,7 @@ export async function readCommittedDocument(
   const line = (bytes: Uint8Array) => decodeUtf8(bytes).replace(/\n$/, "");
   const topLevel = line(await git(["rev-parse", "--show-toplevel"]));
   try {
-    if (!isAbsolute(topLevel) || (await realpath(topLevel)) !== canonical)
+    if (!NodePath.isAbsolute(topLevel) || (await NodeFSP.realpath(topLevel)) !== canonical)
       throw new DocumentSectionRefusal("repository_refused");
   } catch {
     throw new DocumentSectionRefusal("repository_refused");
@@ -218,7 +219,7 @@ export async function readCommittedDocument(
     throw new DocumentSectionRefusal("document_too_large");
   const bytes = await git(["cat-file", "blob", blobOid], MAX_DOCUMENT_BYTES);
   if (bytes.byteLength !== Number(size)) throw new DocumentSectionRefusal("blob_refused");
-  const actualOid = createHash("sha1")
+  const actualOid = NodeCrypto.createHash("sha1")
     .update(`blob ${bytes.byteLength}\0`)
     .update(bytes)
     .digest("hex");

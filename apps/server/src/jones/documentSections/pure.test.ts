@@ -335,7 +335,6 @@ describe("exact Markdown sections", () => {
     { name: "ATX heading", previous: ["# Heading"] },
     { name: "thematic break", previous: ["***"] },
     { name: "closed code fence", previous: ["```md", "text", "```"] },
-    { name: "indented code", previous: ["    code"] },
   ])(
     "treats a dash after $name as an empty item rather than a Setext underline",
     ({ previous }) => {
@@ -354,6 +353,24 @@ describe("exact Markdown sections", () => {
       expect(() => extract(text, ["example"])).toThrow(
         new DocumentSectionRefusal("missing_section"),
       );
+    },
+  );
+  it.each(["", "\r\n"])(
+    "preserves the parser's fence after indented code and a dash, separator %j",
+    (separator) => {
+      const before = `    code\r\n${separator}-\r\n  \`\`\`md\r\n  ## [example] Decoy\r\n## [still-code] Still code\rbody\n  \`\`\`\n`;
+      const real = "## [real] Real section\rbody\n";
+      const text = before + real;
+      for (const id of ["example", "still-code"])
+        expect(() => extract(text, [id])).toThrow(new DocumentSectionRefusal("missing_section"));
+      expect(extract(text, ["real"]).sections[0]).toMatchObject({
+        title: "Real section",
+        startLine: separator === "" ? 8 : 9,
+        endLine: separator === "" ? 9 : 10,
+        text: real,
+        sha256: sha256(Buffer.from(real)),
+      });
+      expect(extract(text, ["real"]).document.sha256).toBe(sha256(Buffer.from(text)));
     },
   );
   it("ends an unclosed list fence on dedent without treating indented code as a list opener", () => {

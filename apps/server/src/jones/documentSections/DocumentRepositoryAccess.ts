@@ -26,7 +26,7 @@ export class DocumentRepositoryAccess extends Context.Service<
       Invocation.McpInvocationContext | Threads.ThreadManagementService
     >;
   }
->()("jones/documentSections/DocumentRepositoryAccess") {}
+>()("t3/jones/documentSections/DocumentRepositoryAccess") {}
 
 const make = Effect.gen(function* () {
   const projects = yield* Projects.ProjectService;
@@ -66,7 +66,7 @@ const make = Effect.gen(function* () {
     const project = yield* projects.getById(shell.projectId).pipe(Effect.mapError(unavailable));
     if (Option.isNone(project))
       return yield* new OrchestratorMcpFailure({
-        code: "project_not_found",
+        code: "thread_not_found",
         message: "The authorized workspace is unavailable.",
       });
     return AuthorizedRepository.fromAuthorizedWorkspace(

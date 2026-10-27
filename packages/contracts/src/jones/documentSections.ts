@@ -1,3 +1,4 @@
+import { exactStruct } from "./exactStruct.ts";
 import * as Schema from "effect/Schema";
 import { ThreadId } from "../baseSchemas.ts";
 
@@ -34,23 +35,23 @@ export const DocumentSectionIds = Schema.Array(DocumentSectionId).check(
   Schema.isMaxLength(32),
   Schema.makeFilter((ids) => new Set(ids).size === ids.length),
 );
-export const DocumentSectionsSelector = Schema.Struct({
+export const DocumentSectionsSelector = exactStruct({
   repositoryIdentity: DocumentRepositoryIdentity,
   commitOid: DocumentCommitOid,
   documentPath: DocumentMarkdownPath,
   documentSha256: DocumentSha256,
   sectionIds: DocumentSectionIds,
-}).annotate({ parseOptions: { onExcessProperty: "error" } });
+});
 export type DocumentSectionsSelector = typeof DocumentSectionsSelector.Type;
 
-export const DocumentSectionsInput = Schema.Struct({
-  ...DocumentSectionsSelector.fields,
+export const DocumentSectionsInput = exactStruct({
+  ...DocumentSectionsSelector.schema.fields,
   threadId: Schema.optional(ThreadId),
-}).annotate({ parseOptions: { onExcessProperty: "error" } });
+});
 export type DocumentSectionsInput = typeof DocumentSectionsInput.Type;
 
 const positiveLine = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1));
-export const DocumentSection = Schema.Struct({
+export const DocumentSection = exactStruct({
   id: DocumentSectionId,
   level: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(6)),
   title: Schema.String,
@@ -60,9 +61,9 @@ export const DocumentSection = Schema.Struct({
   text: Schema.String,
 });
 export type DocumentSection = typeof DocumentSection.Type;
-export const DocumentSectionsResult = Schema.Struct({
+export const DocumentSectionsResult = exactStruct({
   schema: Schema.Literal("jones.document-sections/v1"),
-  document: Schema.Struct({
+  document: exactStruct({
     repositoryIdentity: DocumentRepositoryIdentity,
     commitOid: DocumentCommitOid,
     path: DocumentMarkdownPath,
@@ -79,7 +80,7 @@ export const DocumentSectionsResult = Schema.Struct({
 });
 export type DocumentSectionsResult = typeof DocumentSectionsResult.Type;
 
-export const DocumentDecisionReference = Schema.Struct({
+export const DocumentDecisionReference = exactStruct({
   schema: Schema.Literal("jones.document-decision-ref/v1"),
   summary: Schema.String.check(
     Schema.makeFilter(
@@ -89,15 +90,13 @@ export const DocumentDecisionReference = Schema.Struct({
         utf8Bytes(value) <= DOCUMENT_SECTIONS_MAX_SUMMARY_BYTES,
     ),
   ),
-  ...DocumentSectionsSelector.fields,
+  ...DocumentSectionsSelector.schema.fields,
   authorityEffect: Schema.Literal("none"),
-})
-  .annotate({ parseOptions: { onExcessProperty: "error" } })
-  .check(
-    Schema.makeFilter(
-      (value) => utf8Bytes(JSON.stringify(value)) <= DOCUMENT_SECTIONS_MAX_REFERENCE_BYTES,
-    ),
-  );
+}).check(
+  Schema.makeFilter(
+    (value) => utf8Bytes(JSON.stringify(value)) <= DOCUMENT_SECTIONS_MAX_REFERENCE_BYTES,
+  ),
+);
 export type DocumentDecisionReference = typeof DocumentDecisionReference.Type;
 
 export const DocumentSectionErrorCode = Schema.Literals([

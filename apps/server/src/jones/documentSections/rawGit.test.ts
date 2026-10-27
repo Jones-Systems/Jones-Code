@@ -1,6 +1,7 @@
-import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+// @effect-diagnostics nodeBuiltinImport:off -- Verify raw original Git bytes and exact fixture filesystem changes outside the Effect runtime.
+import * as NodeCrypto from "node:crypto";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 import {
   boundedGitEnvironment,
@@ -15,23 +16,26 @@ describe("local exact Git blob reader", () => {
   it("reads literal paths and committed original bytes despite dirty worktree changes", async () => {
     await withRepository("## [one] Original\r\nα\r", async ({ root, selector, git }) => {
       const original = Buffer.from("## [one] Original\r\nα\r");
-      await writeFile(join(root, selector.documentPath), "## [one] Dirty\n");
+      await NodeFSP.writeFile(NodePath.join(root, selector.documentPath), "## [one] Dirty\n");
       const result = await readCommittedDocument(root, selector, new AbortController().signal);
       expect(Buffer.from(result.bytes)).toEqual(original);
       expect(result.blobOid).toBe(
         git("rev-parse", `${selector.commitOid}:${selector.documentPath}`),
       );
       expect(result.blobOid).toBe(
-        createHash("sha1").update(`blob ${original.byteLength}\0`).update(original).digest("hex"),
+        NodeCrypto.createHash("sha1")
+          .update(`blob ${original.byteLength}\0`)
+          .update(original)
+          .digest("hex"),
       );
     });
   });
   it("refuses subdirectories, multiple origins, foreign identity and commit/path ambiguity", async () => {
     await withRepository("## [one] A\n", async ({ root, selector, git }) => {
       const signal = new AbortController().signal;
-      await mkdir(join(root, "sub"));
+      await NodeFSP.mkdir(NodePath.join(root, "sub"));
       await expect(
-        readCommittedDocument(join(root, "sub"), selector, signal),
+        readCommittedDocument(NodePath.join(root, "sub"), selector, signal),
       ).rejects.toMatchObject({ code: "repository_refused" });
       await expect(
         readCommittedDocument(
@@ -54,7 +58,7 @@ describe("local exact Git blob reader", () => {
   });
   it("ignores replacement refs instead of reading a substitute commit or worktree", async () => {
     await withRepository("## [one] Original\n", async ({ root, selector, git }) => {
-      await writeFile(join(root, selector.documentPath), "## [one] Replacement\n");
+      await NodeFSP.writeFile(NodePath.join(root, selector.documentPath), "## [one] Replacement\n");
       git("add", "--", selector.documentPath);
       git("commit", "-m", "Synthetic replacement");
       git("replace", selector.commitOid, git("rev-parse", "HEAD"));
@@ -65,7 +69,10 @@ describe("local exact Git blob reader", () => {
   it("refuses unsupported formats, foreign paths, truncation, corrupt bytes and oversized metadata", async () => {
     await withRepository("## [one] A\n", async ({ root, selector }) => {
       const bytes = Buffer.from("## [one] A\n");
-      const blob = createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+      const blob = NodeCrypto.createHash("sha1")
+        .update(`blob ${bytes.length}\0`)
+        .update(bytes)
+        .digest("hex");
       const signal = new AbortController().signal;
       const runner =
         (overrides: Record<string, Uint8Array | string>): RawGitRunner =>

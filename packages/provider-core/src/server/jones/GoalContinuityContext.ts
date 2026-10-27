@@ -69,32 +69,9 @@ export interface ContinuityContinuationCheck {
   readonly currentOwner: ContinuityOwner | null;
 }
 
-/** Internal captured-producer callbacks, never an MCP authorization surface.
- * Agent writes require a service-derived live witness revalidated at commit;
- * authenticated owner administration uses a separate service authorization path
- * without loading a provider. No request may choose between those authorities.
- *
- * recordRecoveryTransition matches compaction started/completed by exact boundary
- * and deduplicates event IDs; turn_start is a completed-only boundary. The reader
- * may await this short durable operation, never injection or the stop RPC.
- * prepareRecovery remains a fresh read-only projection. beginDelivery binds it
- * under CAS and consumes any exact-target one-use recovery authorization.
- *
- * prepared grants no send authority. markDispatching commits dispatching before
- * issuing a permit ONCE, revalidating producer, snapshot, binding and fence. A
- * duplicate ticket must not yield another send permit. The adapter consumes the
- * permit once in its captured producer's scope; a failed/unknown commit sends
- * nothing. Reconstructed dispatching is unknown, never an automatic retry.
- *
- * settleDelivery authenticates evidence against the original permit/producer,
- * including late acknowledgements after retirement. It must not borrow current
- * producer identity, settle a successor or erase an owner disposition. Unknown
- * triggers the bound stop path; stop uncertainty is not quiescence evidence.
- *
- * checkContinuation is used immediately before ordinary dispatch and before each
- * held native successor's adoption. A hold uses the captured revalidated pause /
- * interrupt path. Acknowledgement never resumes work. These reactive gates do
- * not establish a strict post-compaction pre-token barrier.
+/** Captured-producer callbacks use durable dispatch-before-send permits once.
+ * Reconstruction stays unknown; late evidence settles only the original attempt.
+ * Holds never prove quiescence or a strict pre-token restoration barrier.
  */
 export interface GoalContinuityContext {
   readonly capability: ContinuityRecoveryCapability;

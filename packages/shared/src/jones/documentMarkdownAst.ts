@@ -21,7 +21,9 @@ export function markdownHeadingPositions(source: string): readonly MarkdownHeadi
     lineStarts.push(ending.index + ending[0].length);
   }
   lineEnds.push(source.length);
-  const point = (value: { readonly line: number; readonly offset?: number } | undefined) => {
+  const point = (
+    value: { readonly line: number; readonly offset?: number | undefined } | undefined,
+  ) => {
     if (
       value === undefined ||
       !Number.isInteger(value.line) ||

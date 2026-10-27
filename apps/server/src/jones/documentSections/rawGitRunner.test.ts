@@ -1,15 +1,16 @@
-import { EventEmitter } from "node:events";
-import { PassThrough } from "node:stream";
+// @effect-diagnostics nodeBuiltinImport:off -- Simulate the native subprocess byte streams at their owning boundary.
+import * as NodeEvents from "node:events";
+import * as NodeStream from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 const mocks = vi.hoisted(() => ({ spawn: vi.fn() }));
 vi.mock("node:child_process", () => ({ spawn: mocks.spawn }));
 import { runRawGit } from "./rawGit.ts";
 
 function fakeChild() {
-  const events = new EventEmitter();
+  const events = new NodeEvents.EventEmitter();
   const child = Object.assign(events, {
-    stdout: new PassThrough(),
-    stderr: new PassThrough(),
+    stdout: new NodeStream.PassThrough(),
+    stderr: new NodeStream.PassThrough(),
     pid: 123456,
     kill: vi.fn((_signal: string) => {
       queueMicrotask(() => events.emit("close", null, "SIGKILL"));

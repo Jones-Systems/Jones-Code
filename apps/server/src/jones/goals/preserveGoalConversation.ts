@@ -1,7 +1,7 @@
 export const nativeConversationMustBePreserved = (
   providerThread: {
     readonly driver: string;
-    readonly nativeThreadRef: { readonly nativeId: string } | null;
+    readonly nativeThreadRef: { readonly nativeId: string | null } | null;
     readonly goal?: unknown;
   },
   message: { readonly text: string; readonly attachments: ReadonlyArray<unknown> },

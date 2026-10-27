@@ -509,7 +509,7 @@ export const layer: Layer.Layer<
       // fences whose current continuity record has already been retired.
       const environmentId = yield* environment.getEnvironmentId;
       const continuityOwner = (candidate: OrchestrationV2ProviderThread) =>
-        candidate.nativeThreadRef == null
+        candidate.nativeThreadRef?.nativeId == null
           ? null
           : {
               environmentId,

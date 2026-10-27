@@ -167,10 +167,10 @@ const setup = Layer.effectDiscard(
     yield* sql`CREATE INDEX synthetic_runs_thread_status ON orchestration_v2_projection_runs(thread_id,status)`;
     yield* sql`CREATE TABLE orchestration_v2_projection_run_attempts(attempt_id TEXT PRIMARY KEY,thread_id TEXT,payload_json TEXT)`;
     yield* sql`CREATE TABLE orchestration_v2_projection_provider_sessions(provider_session_id TEXT PRIMARY KEY,provider_instance_id TEXT,driver TEXT,status TEXT)`;
-    yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES (${owner.threadId},${Schema.encodeSync(Schema.fromJsonString(RecordedAppThreadJson))(thread)})`;
-    yield* sql`INSERT INTO orchestration_v2_projection_provider_threads VALUES (${owner.providerThreadId},${owner.threadId},${Schema.encodeSync(Schema.fromJsonString(C.OrchestrationV2ProviderThreadJson))(provider)})`;
-    yield* sql`INSERT INTO orchestration_v2_projection_runs VALUES (${run.id},${owner.threadId},'running',1,${Schema.encodeSync(Schema.fromJsonString(RecordedRunJson))(run)})`;
-    yield* sql`INSERT INTO orchestration_v2_projection_run_attempts VALUES (${attempt.id},${owner.threadId},${Schema.encodeSync(Schema.fromJsonString(C.OrchestrationV2RunAttemptJson))(attempt)})`;
+    yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES (${owner.threadId},${yield* Schema.encodeEffect(Schema.fromJsonString(RecordedAppThreadJson))(thread)})`;
+    yield* sql`INSERT INTO orchestration_v2_projection_provider_threads VALUES (${owner.providerThreadId},${owner.threadId},${yield* Schema.encodeEffect(Schema.fromJsonString(C.OrchestrationV2ProviderThreadJson))(provider)})`;
+    yield* sql`INSERT INTO orchestration_v2_projection_runs VALUES (${run.id},${owner.threadId},'running',1,${yield* Schema.encodeEffect(Schema.fromJsonString(RecordedRunJson))(run)})`;
+    yield* sql`INSERT INTO orchestration_v2_projection_run_attempts VALUES (${attempt.id},${owner.threadId},${yield* Schema.encodeEffect(Schema.fromJsonString(C.OrchestrationV2RunAttemptJson))(attempt)})`;
     yield* sql`INSERT INTO orchestration_v2_projection_provider_sessions VALUES (${witness.providerSessionId},${owner.providerInstanceId},${owner.driver},'running')`;
   }),
 ).pipe(Layer.provideMerge(database));
@@ -255,7 +255,9 @@ it.effect(
       };
       const first = yield* service.execute(caller, checkpoint);
       expect(applied(first).generation).toBe("1");
-      const rebuilt = yield* Continuity.GoalContinuity.pipe(Effect.provide(Continuity.layer));
+      const rebuilt = yield* Continuity.GoalContinuity.pipe(
+        Effect.provide(Layer.fresh(Continuity.layer)),
+      );
       const nextCaller = yield* rebuilt.authorize(owner.threadId);
       const replay = yield* rebuilt.execute(nextCaller, initialize);
       expect(replay.outcome).toBe("receipt");
@@ -286,10 +288,14 @@ it.effect(
     Effect.gen(function* () {
       const service = yield* Continuity.GoalContinuity;
       let attachedCredential = "original-credential";
-      const manager = {
-        isMcpCallerAttached: ({ mcpCredentialId }: { mcpCredentialId: string }) =>
-          Effect.sync(() => mcpCredentialId === attachedCredential),
-      } as Sessions.ProviderSessionManagerV2["Service"];
+      const manager = yield* Sessions.ProviderSessionManagerV2.pipe(
+        Effect.provide(
+          Layer.mock(Sessions.ProviderSessionManagerV2)({
+            isMcpCallerAttached: ({ mcpCredentialId }: { mcpCredentialId: string }) =>
+              Effect.sync(() => mcpCredentialId === attachedCredential),
+          }),
+        ),
+      );
       const originalScope = agentScope(attachedCredential);
       const originalCaller = yield* service
         .authorize()
@@ -300,7 +306,9 @@ it.effect(
       // Commit succeeds, but the caller receives none of the reply or snapshot.
       yield* service.execute(originalCaller, initialize).pipe(Effect.asVoid);
       attachedCredential = "replacement-credential";
-      const rebuilt = yield* Continuity.GoalContinuity.pipe(Effect.provide(Continuity.layer));
+      const rebuilt = yield* Continuity.GoalContinuity.pipe(
+        Effect.provide(Layer.fresh(Continuity.layer)),
+      );
       const replacementCaller = yield* rebuilt
         .authorize()
         .pipe(
@@ -358,9 +366,13 @@ it.effect(
     Effect.gen(function* () {
       const service = yield* Continuity.GoalContinuity;
       let attached = true;
-      const manager = {
-        isMcpCallerAttached: () => Effect.sync(() => attached),
-      } as Sessions.ProviderSessionManagerV2["Service"];
+      const manager = yield* Sessions.ProviderSessionManagerV2.pipe(
+        Effect.provide(
+          Layer.mock(Sessions.ProviderSessionManagerV2)({
+            isMcpCallerAttached: () => Effect.sync(() => attached),
+          }),
+        ),
+      );
       const agent = yield* service
         .authorize()
         .pipe(
@@ -379,7 +391,9 @@ it.effect(
       const sql = yield* SqlClient.SqlClient;
       yield* sql`UPDATE orchestration_v2_projection_provider_threads SET payload_json=json_set(payload_json,'$.providerSessionId',NULL) WHERE provider_thread_id=${owner.providerThreadId}`;
       yield* sql`UPDATE orchestration_v2_projection_runs SET status='completed',payload_json=json_set(payload_json,'$.status','completed') WHERE run_id=${witness.runId}`;
-      const rebuilt = yield* Continuity.GoalContinuity.pipe(Effect.provide(Continuity.layer));
+      const rebuilt = yield* Continuity.GoalContinuity.pipe(
+        Effect.provide(Layer.fresh(Continuity.layer)),
+      );
       const ownerScope: Invocation.McpInvocationScope = {
         ...scope(),
         requestNamespace: "client:replacement-owner",
@@ -455,9 +469,13 @@ it.effect.each([false, true])(
   (changedBody) =>
     Effect.gen(function* () {
       const { service, caller: ownerCaller, snapshot } = yield* start;
-      const manager = {
-        isMcpCallerAttached: () => Effect.succeed(true),
-      } as Sessions.ProviderSessionManagerV2["Service"];
+      const manager = yield* Sessions.ProviderSessionManagerV2.pipe(
+        Effect.provide(
+          Layer.mock(Sessions.ProviderSessionManagerV2)({
+            isMcpCallerAttached: () => Effect.succeed(true),
+          }),
+        ),
+      );
       const agentCaller = yield* service
         .authorize()
         .pipe(
@@ -575,9 +593,13 @@ it.effect(
     Effect.gen(function* () {
       const service = yield* Continuity.GoalContinuity;
       let attached = true;
-      const manager = {
-        isMcpCallerAttached: () => Effect.sync(() => attached),
-      } as Sessions.ProviderSessionManagerV2["Service"];
+      const manager = yield* Sessions.ProviderSessionManagerV2.pipe(
+        Effect.provide(
+          Layer.mock(Sessions.ProviderSessionManagerV2)({
+            isMcpCallerAttached: () => Effect.sync(() => attached),
+          }),
+        ),
+      );
       const agent: Invocation.McpInvocationScope = {
         ...scope(),
         client: undefined,
@@ -769,7 +791,10 @@ it.effect(
       const { service } = yield* start;
       const captured = boundary();
       const { permit, ticket } = yield* dispatch(service, captured);
-      const rebuilt = yield* Continuity.GoalContinuity.pipe(Effect.provide(Continuity.layer));
+      const rebuilt = yield* Continuity.GoalContinuity.pipe(
+        Effect.provide(Layer.fresh(Continuity.layer)),
+      );
+      expect(rebuilt).not.toBe(service);
       const requirement = yield* rebuilt.requirementFor(owner.environmentId, owner.threadId);
       expect(requirement.outcome === "hold" && requirement.reason).toBe("delivery_unknown");
       expect(yield* rebuilt.markDispatching(ticket)).toEqual({

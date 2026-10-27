@@ -3,7 +3,8 @@
   "feature": "native-goal-continuity",
   "jonesOwnedPaths": [
     "apps/server/src/jones/goals/continuity/",
-    "packages/provider-core/src/server/jones/GoalContinuityContext.ts"
+    "packages/provider-core/src/server/jones/GoalContinuityContext.ts",
+    "packages/contracts/src/jones/exactStruct.ts"
   ],
   "hookPaths": [],
   "tombstones": [],

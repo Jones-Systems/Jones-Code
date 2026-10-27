@@ -1,4 +1,5 @@
-import { createHash } from "node:crypto";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Hash canonical snapshots synchronously for pure CAS and projection decisions.
+import * as NodeCrypto from "node:crypto";
 import type {
   ContinuityCounter,
   ContinuityEvidence,
@@ -80,7 +81,7 @@ export function canonicalJson(value: unknown): string {
 }
 
 export function continuityDigest(value: unknown): string {
-  return createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
+  return NodeCrypto.createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
 }
 
 export function isContinuityCounter(value: unknown): value is ContinuityCounter {

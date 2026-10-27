@@ -2230,7 +2230,8 @@
     "packages/provider-core/src/server/jones/GoalContinuityContext.ts": "jones-owned",
     "scripts/jones/boundary/fragments/document-sections.json": "jones-owned",
     "scripts/jones/boundary/fragments/native-goal-continuity.json": "jones-owned",
-    "apps/server/src/jones/goals/preserveGoalConversation.test.ts": "jones-owned"
+    "apps/server/src/jones/goals/preserveGoalConversation.test.ts": "jones-owned",
+    "packages/contracts/src/jones/exactStruct.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

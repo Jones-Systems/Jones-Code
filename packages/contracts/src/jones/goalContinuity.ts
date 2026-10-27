@@ -1,3 +1,4 @@
+import { exactStruct } from "./exactStruct.ts";
 import * as Schema from "effect/Schema";
 import {
   EnvironmentId,
@@ -133,11 +134,7 @@ const itemOperations = Schema.Struct({
 export const ContinuityPatch = Schema.Struct({
   focus: Schema.optionalKey(Schema.NullOr(text)),
   status: Schema.optionalKey(Schema.Literals(["active", "blocked"])),
-  boundaries: Schema.optionalKey(
-    Schema.Struct({ append: Schema.Array(ContinuityBoundary) }).annotate({
-      parseOptions: { onExcessProperty: "error" },
-    }),
-  ),
+  boundaries: Schema.optionalKey(exactStruct({ append: Schema.Array(ContinuityBoundary) })),
   decisions: Schema.optionalKey(itemOperations),
   blockers: Schema.optionalKey(itemOperations),
   evidence: Schema.optionalKey(
@@ -466,7 +463,7 @@ export const ContinuityDeliverySettlement = Schema.Struct({
 });
 export type ContinuityDeliverySettlement = typeof ContinuityDeliverySettlement.Type;
 
-export const ReconcileDeliveryRequest = Schema.Struct({
+export const ReconcileDeliveryRequest = exactStruct({
   action: Schema.Literal("reconcile_delivery"),
   clientRequestId: key,
   deliveryId: key,
@@ -480,17 +477,17 @@ export const ReconcileDeliveryRequest = Schema.Struct({
     Schema.makeFilter((refs) => new Set(refs).size === refs.length),
   ),
   disposition: Schema.Union([
-    Schema.Struct({
+    exactStruct({
       type: Schema.Literal("retry_proven_not_sent"),
       recoveryTarget: ExpectedRecoveryTarget,
     }),
-    Schema.Struct({
+    exactStruct({
       type: Schema.Literal("accept_unknown_for_one_recovery"),
       recoveryTarget: ExpectedRecoveryTarget,
     }),
-    Schema.Struct({ type: Schema.Literal("retire_without_redelivery") }),
+    exactStruct({ type: Schema.Literal("retire_without_redelivery") }),
   ]),
-}).annotate({ parseOptions: { onExcessProperty: "error" } });
+});
 export type ReconcileDeliveryRequest = typeof ReconcileDeliveryRequest.Type;
 
 // This handle must resolve to an unconsumed service-owned grant. Serialized
@@ -663,47 +660,47 @@ const mutation = {
   expected: ContinuityTarget,
 };
 export const ContinuityRequest = Schema.Union([
-  Schema.Struct({
+  exactStruct({
     action: Schema.Literal("initialize"),
     clientRequestId: key,
     expectedOwner: ContinuityOwner,
     expectedCurrent: Schema.NullOr(ContinuityGoalRef),
     intent: ContinuityIntent,
     initialization: Schema.Union([
-      Schema.Struct({ type: Schema.Literal("direct") }),
-      Schema.Struct({ type: Schema.Literal("propose"), proposalId: key }),
-      Schema.Struct({ type: Schema.Literal("confirm"), proposalId: key, confirmationId: key }),
+      exactStruct({ type: Schema.Literal("direct") }),
+      exactStruct({ type: Schema.Literal("propose"), proposalId: key }),
+      exactStruct({ type: Schema.Literal("confirm"), proposalId: key, confirmationId: key }),
     ]),
   }),
-  Schema.Struct({ action: Schema.Literal("read") }),
+  exactStruct({ action: Schema.Literal("read") }),
   ReconcileDeliveryRequest,
-  Schema.Struct({ action: Schema.Literal("checkpoint"), ...mutation, patch: ContinuityPatch }),
-  Schema.Struct({
+  exactStruct({ action: Schema.Literal("checkpoint"), ...mutation, patch: ContinuityPatch }),
+  exactStruct({
     action: Schema.Literal("close"),
     ...mutation,
     completionEvidenceIds: Schema.Array(key),
   }),
-  Schema.Struct({
+  exactStruct({
     action: Schema.Literal("abandon"),
     ...mutation,
     reason: text,
     evidenceIds: Schema.Array(key),
   }),
-  Schema.Struct({ action: Schema.Literal("detach"), ...mutation, reason: text }),
-  Schema.Struct({
+  exactStruct({ action: Schema.Literal("detach"), ...mutation, reason: text }),
+  exactStruct({
     action: Schema.Literal("handoff"),
     ...mutation,
     destination: ContinuityOwner,
     evidenceIds: Schema.Array(key),
   }),
-  Schema.Struct({
+  exactStruct({
     action: Schema.Literal("receipt"),
     clientRequestId: key,
     requestDigest: ContinuityDigest,
   }),
-  Schema.Struct({ action: Schema.Literal("delivery_receipt"), deliveryId: key }),
-  Schema.Struct({ action: Schema.Literal("selection"), selection: ContinuitySelectionRequest }),
-]).annotate({ parseOptions: { onExcessProperty: "error" } });
+  exactStruct({ action: Schema.Literal("delivery_receipt"), deliveryId: key }),
+  exactStruct({ action: Schema.Literal("selection"), selection: ContinuitySelectionRequest }),
+]);
 export type ContinuityRequest = typeof ContinuityRequest.Type;
 export type ContinuityMutationRequest = Exclude<
   ContinuityRequest,

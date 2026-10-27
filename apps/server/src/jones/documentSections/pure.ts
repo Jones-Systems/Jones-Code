@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off preferSchemaOverJson:off -- Hash original bytes with Node crypto; inspect original JSON key tokens before decoding. Markdown block positions come from the shared parse-only helper.
-import { createHash } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import { markdownHeadingPositions } from "@t3tools/shared/jones/documentMarkdownAst";
 import type {
   DocumentDecisionReference,
@@ -34,7 +34,7 @@ export class DocumentSectionRefusal extends Error {
 }
 
 export const sha256 = (bytes: Uint8Array): string =>
-  createHash("sha256").update(bytes).digest("hex");
+  NodeCrypto.createHash("sha256").update(bytes).digest("hex");
 export const utf8Length = (value: string): number => Buffer.byteLength(value, "utf8");
 export const canonicalJson = (value: unknown): string => {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -117,7 +117,7 @@ export function decodeDecisionReference(input: string | Uint8Array): DocumentDec
     const keys = new Set<string>();
     let depth = 0;
     let keyExpected = false;
-    for (const token of text.matchAll(/"(?:\\[\s\S]|[^"\\])*"|[{}\[\]:,]/g)) {
+    for (const token of text.matchAll(/"(?:\\[\s\S]|[^"\\])*"|[{}[\]:,]/g)) {
       const part = token[0];
       if (part === "{" || part === "[") {
         depth++;

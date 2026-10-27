@@ -1,6 +1,7 @@
 import { expect, it } from "@effect/vitest";
 import {
   ContinuityReceipt,
+  GoalContinuityError,
   type ContinuityOwner,
   type ContinuityIntent,
   type ContinuitySnapshot,
@@ -120,7 +121,7 @@ it.effect(
       yield* store.transaction(store.writeRow(key, null, receipt));
       const row = yield* store.readOnly(store.row(key));
       expect(
-        Schema.decodeUnknownSync(Schema.fromJsonString(ContinuityReceipt))(row!.payload),
+        yield* Schema.decodeEffect(Schema.fromJsonString(ContinuityReceipt))(row!.payload),
       ).toEqual(receipt);
       const current = yield* store.readOnly(store.current(owner.environmentId, owner.threadId));
       expect(canonicalJson(current!.snapshot)).toBe(canonicalJson(snapshot));
@@ -146,7 +147,7 @@ it.effect(
         .transaction(
           Effect.gen(function* () {
             yield* store.save(record, patch.snapshot);
-            return yield* Effect.fail(new Error("synthetic receipt failure"));
+            return yield* new GoalContinuityError({ reason: "unavailable" });
           }),
         )
         .pipe(Effect.flip);
@@ -230,7 +231,11 @@ it.effect("an aborted 134 transaction preserves migration124 witness rows and up
     ('attempt','message','command','root-run','run','thread','instance','provider-thread','native','generation','2026-01-01T00:00:00Z')`;
     const before = yield* sql`SELECT * FROM jones_task_continuation_witnesses`;
     yield* sql
-      .withTransaction(migration.pipe(Effect.andThen(Effect.fail(new Error("synthetic abort")))))
+      .withTransaction(
+        migration.pipe(
+          Effect.andThen(Effect.fail(new GoalContinuityError({ reason: "unavailable" }))),
+        ),
+      )
       .pipe(Effect.flip);
     expect(yield* sql`SELECT * FROM jones_task_continuation_witnesses`).toEqual(before);
     expect(yield* sql`SELECT payload FROM synthetic_upstream WHERE id='upstream'`).toEqual([

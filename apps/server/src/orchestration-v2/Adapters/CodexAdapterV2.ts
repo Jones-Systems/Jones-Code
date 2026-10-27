@@ -2466,51 +2466,50 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             },
             scope: producer.scope,
             revalidate,
-            inject: (text, permit) =>
-              Effect.gen(function* () {
-                const admission = yield* revalidate.pipe(
-                  Effect.andThen(requestAdmission("thread/inject_items", undefined)),
-                  Effect.andThen(revalidate),
-                  Effect.exit,
+            inject: Effect.fn("CodexAdapterV2.inject")(function* (text, permit) {
+              const admission = yield* revalidate.pipe(
+                Effect.andThen(requestAdmission("thread/inject_items", undefined)),
+                Effect.andThen(revalidate),
+                Effect.exit,
+              );
+              // The consumed executor returns before calling the client. Its
+              // original attempt ID identifies this proof of precluded dispatch.
+              if (admission._tag === "Failure")
+                return {
+                  outcome: "not_sent" as const,
+                  proof: {
+                    type: "dispatch_precluded" as const,
+                    revocationRef: permit.dispatchAttemptId,
+                  },
+                };
+              return yield* producer.client
+                .request("thread/inject_items", {
+                  threadId: nativeThreadId,
+                  items: [
+                    { type: "message", role: "user", content: [{ type: "input_text", text }] },
+                  ],
+                })
+                .pipe(
+                  Effect.as({ outcome: "acknowledged" as const }),
+                  Effect.catchTags({
+                    // JSON-RPC method-not-found proves the server rejected this
+                    // unsupported method before history could be mutated.
+                    CodexAppServerRequestError: (error) =>
+                      error.code === -32601
+                        ? Effect.succeed({
+                            outcome: "not_sent" as const,
+                            proof: {
+                              type: "protocol_no_effect" as const,
+                              rpcRequestId: permit.rpcRequestId,
+                              responseRef: `codex:method_not_found:${permit.rpcRequestId}`,
+                            },
+                          })
+                        : Effect.fail(error),
+                  }),
                 );
-                // The consumed executor returns before calling the client. Its
-                // original attempt ID identifies this proof of precluded dispatch.
-                if (admission._tag === "Failure")
-                  return {
-                    outcome: "not_sent" as const,
-                    proof: {
-                      type: "dispatch_precluded" as const,
-                      revocationRef: permit.dispatchAttemptId,
-                    },
-                  };
-                return yield* producer.client
-                  .request("thread/inject_items", {
-                    threadId: nativeThreadId,
-                    items: [
-                      { type: "message", role: "user", content: [{ type: "input_text", text }] },
-                    ],
-                  })
-                  .pipe(
-                    Effect.as({ outcome: "acknowledged" as const }),
-                    Effect.catchTags({
-                      // JSON-RPC method-not-found proves the server rejected this
-                      // unsupported method before history could be mutated.
-                      CodexAppServerRequestError: (error) =>
-                        error.code === -32601
-                          ? Effect.succeed({
-                              outcome: "not_sent" as const,
-                              proof: {
-                                type: "protocol_no_effect" as const,
-                                rpcRequestId: permit.rpcRequestId,
-                                responseRef: `codex:method_not_found:${permit.rpcRequestId}`,
-                              },
-                            })
-                          : Effect.fail(error),
-                    }),
-                  );
-              }),
-            stop: (nativeTurnId) =>
-              Effect.gen(function* () {
+            }),
+            stop: Effect.fn("CodexAdapterV2.stopContinuity")(
+              function* (nativeTurnId: string | undefined) {
                 yield* revalidate;
                 yield* emitInterruptWarning(
                   (yield* Ref.get(activeTurns)).get(nativeTurnId ?? "") ??
@@ -2530,11 +2529,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     turnId: nativeTurnId,
                   })
                   .pipe(Effect.timeout("1 second"));
-              }).pipe(
-                Effect.catch(() =>
-                  Effect.logWarning("Jones continuity bound stop is unconfirmed."),
-                ),
-              ),
+              },
+              Effect.catch(() => Effect.logWarning("Jones continuity bound stop is unconfirmed.")),
+            ),
           });
           continuityByThread.set(nativeThreadId, { producer, input: turnInput, recovery });
           return recovery;
