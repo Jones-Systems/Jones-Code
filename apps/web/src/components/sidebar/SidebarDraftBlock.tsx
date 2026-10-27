@@ -1,3 +1,4 @@
+import { usePendingSends } from "../../jones/pendingSends/hooks";
 import { discardComposerDraft } from "../../lib/discardComposerDraft";
 import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import { SquarePenIcon, XIcon } from "lucide-react";
@@ -146,6 +147,7 @@ export const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
   onNavigateToDraft: (draftId: DraftId) => void;
   onDraftContextMenu: (draftId: DraftId, position: { x: number; y: number }) => void;
 }) {
+  const pending = usePendingSends();
   const draftThreadsByThreadKey = useComposerDraftStore((store) => store.draftThreadsByThreadKey);
   const draftsByThreadKey = useComposerDraftStore((store) => store.draftsByThreadKey);
   const [frozenActive, setFrozenActive] = useState<{
@@ -168,7 +170,16 @@ export const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
   const drafts = (() => {
     const rows: SidebarDraftRowData[] = [];
     for (const [draftKey, session] of Object.entries(draftThreadsByThreadKey)) {
-      if (session.promotedTo != null || props.excludedEnvironmentIds?.has(session.environmentId)) {
+      if (
+        session.promotedTo != null ||
+        props.excludedEnvironmentIds?.has(session.environmentId) ||
+        pending.some(
+          (entry) =>
+            entry.sidebarThread &&
+            entry.environmentId === session.environmentId &&
+            entry.threadId === session.threadId,
+        )
+      ) {
         continue;
       }
       if (

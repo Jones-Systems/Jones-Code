@@ -76,31 +76,47 @@ export function draftSendState(routeKey: string) {
 export async function startFanoutThread(input: {
   readonly retryKey: string;
   readonly model: string;
+  readonly targetThreadId?: ThreadId;
+  readonly failureKnownUnsent?: () => boolean;
+  readonly whenAccepted?: (callback: () => void) => void;
   readonly uncertainSubmissions: Map<string, ThreadId>;
   readonly start: (threadId: ThreadId) => Promise<AtomCommandResult<unknown, unknown>>;
   readonly openThread: (threadId: ThreadId) => void;
 }): Promise<boolean> {
   const { retryKey, uncertainSubmissions } = input;
   const uncertainThreadId = uncertainSubmissions.get(retryKey);
-  const targetThreadId = uncertainThreadId ?? newThreadId();
+  const targetThreadId = uncertainThreadId ?? input.targetThreadId ?? newThreadId();
   let requestMayHaveStarted = false;
+  let accepted = false;
+  const accept = () => {
+    accepted = true;
+    if (uncertainSubmissions.get(retryKey) === targetThreadId)
+      uncertainSubmissions.delete(retryKey);
+  };
   try {
     if (uncertainThreadId) {
       throw new Error(
         "The previous request may have started. Open its thread to check before sending again.",
       );
     }
+    input.whenAccepted?.(accept);
     requestMayHaveStarted = true;
     const result = await input.start(targetThreadId);
     if (result._tag === "Failure") {
       const error = squashAtomCommandFailure(result);
-      if (wasBootstrapThreadDeleted(error) || wasBootstrapThreadNotCreated(error)) {
+      if (
+        input.failureKnownUnsent?.() ||
+        wasBootstrapThreadDeleted(error) ||
+        wasBootstrapThreadNotCreated(error)
+      ) {
         requestMayHaveStarted = false;
       }
       throw error;
     }
+    accept();
     return true;
   } catch (error) {
+    if (accepted) return true;
     if (requestMayHaveStarted && !uncertainSubmissions.has(retryKey)) {
       uncertainSubmissions.set(retryKey, targetThreadId);
     }

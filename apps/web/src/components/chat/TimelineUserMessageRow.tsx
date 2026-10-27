@@ -1,3 +1,5 @@
+import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
+import { PendingSendStatus } from "../../jones/pendingSends/PendingSendStatus";
 import { InlineAudioPreview } from "../files/InlineAudioPreview";
 import { filePreviewKind } from "@t3tools/shared/filePreview";
 import { findRevealRef } from "./markdownFindContext";
@@ -256,6 +258,15 @@ function FoldedMessageHeader(props: {
 }
 
 function UserMessageProjectedStatus({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
+  const ctx = use(TimelineRowCtx);
+  const deliveryThread = parseScopedThreadKey(ctx.routeThreadKey);
+  const delivery = deliveryThread ? (
+    <PendingSendStatus
+      environmentId={deliveryThread.environmentId}
+      threadId={deliveryThread.threadId}
+      messageId={row.message.id}
+    />
+  ) : null;
   const status = row.projectedItem?.item.status;
   if (
     status === undefined ||
@@ -263,7 +274,7 @@ function UserMessageProjectedStatus({ row }: { row: Extract<TimelineRow, { kind:
     status === "pending" ||
     status === "waiting"
   )
-    return null;
+    return delivery;
   return (
     <div className="me-1 flex items-center gap-1.5">
       <span className="rounded-full border border-destructive/25 bg-destructive/8 px-1.5 py-0.5 text-3xs font-medium text-destructive">
