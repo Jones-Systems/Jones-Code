@@ -2170,7 +2170,14 @@
     "apps/server/src/jones/workstreams/native/forwarding/peerReadAdmission.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/runtime/peerMcpAuthentication.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/forwarding/peerHomeReadClient.ts": "jones-owned",
-    "apps/server/src/jones/workstreams/native/forwarding/peerHomeReadClient.test.ts": "jones-owned"
+    "apps/server/src/jones/workstreams/native/forwarding/peerHomeReadClient.test.ts": "jones-owned",
+    "packages/contracts/src/jones/workstreamsHomeBind.ts": "jones-owned",
+    "packages/contracts/src/jones/workstreamsHomeBind.test.ts": "jones-owned",
+    "packages/contracts/src/jones/workstreamsMemberEnrollment.ts": "jones-owned",
+    "packages/contracts/src/jones/workstreamsMemberEnrollment.test.ts": "jones-owned",
+    "apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.ts": "jones-owned",
+    "apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/workstreams-member-binding-foundation.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

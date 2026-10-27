@@ -1,0 +1,8 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "workstreams-member-binding-foundation",
+  "jonesOwnedPaths": [],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": []
+}

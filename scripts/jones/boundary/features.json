@@ -4,6 +4,15 @@
   "baseline": "05b697f6a2012497ae790425e197fbd1fcef7de7",
   "features": [
     {
+      "id": "workstreams-member-binding-foundation",
+      "tests": [
+        "packages/contracts/src/jones/workstreamsHomeBind.test.ts",
+        "packages/contracts/src/jones/workstreamsMemberEnrollment.test.ts",
+        "apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.test.ts"
+      ],
+      "scope": "Separately versioned home-bind/2 wire and retained prepared/bound member proof; migration 129 creates two encrypted Jones ledgers. No service producer, verified authority, loader activation or capability advertisement is supplied by this foundation."
+    },
+    {
       "id": "workstreams-native-source-setup",
       "tests": [
         "apps/server/src/jones/persistence/Migrations/126_JonesWorkstreamsSourceEnrollments.test.ts",

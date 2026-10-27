@@ -2,6 +2,22 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-workstreams-member-binding-foundation",
+      "tests": [
+        "packages/contracts/src/jones/workstreamsHomeBind.test.ts",
+        "packages/contracts/src/jones/workstreamsMemberEnrollment.test.ts",
+        "apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/contracts/src/jones/workstreamsHomeBind.test.ts packages/contracts/src/jones/workstreamsMemberEnrollment.test.ts apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/contracts typecheck",
+        "vp run --filter t3 typecheck",
+        "vp lint --threads=1 --max-warnings=0 packages/contracts/src/jones/workstreamsHomeBind.ts packages/contracts/src/jones/workstreamsHomeBind.test.ts packages/contracts/src/jones/workstreamsMemberEnrollment.ts packages/contracts/src/jones/workstreamsMemberEnrollment.test.ts apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.ts apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.test.ts",
+        "vp fmt --check --threads=1 packages/contracts/src/jones/workstreamsHomeBind.ts packages/contracts/src/jones/workstreamsHomeBind.test.ts packages/contracts/src/jones/workstreamsMemberEnrollment.ts packages/contracts/src/jones/workstreamsMemberEnrollment.test.ts apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.ts apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.test.ts",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-workstreams-native-source-setup",
       "tests": [
         "apps/server/src/jones/persistence/Migrations/126_JonesWorkstreamsSourceEnrollments.test.ts",

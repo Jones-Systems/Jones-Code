@@ -122,6 +122,14 @@
     "./jones/workstreamsHomeReadResult": {
       "types": "./src/jones/workstreamsHomeReadResult.ts",
       "import": "./src/jones/workstreamsHomeReadResult.ts"
+    },
+    "./jones/workstreamsHomeBind": {
+      "types": "./src/jones/workstreamsHomeBind.ts",
+      "import": "./src/jones/workstreamsHomeBind.ts"
+    },
+    "./jones/workstreamsMemberEnrollment": {
+      "types": "./src/jones/workstreamsMemberEnrollment.ts",
+      "import": "./src/jones/workstreamsMemberEnrollment.ts"
     }
   },
   "scripts": {
