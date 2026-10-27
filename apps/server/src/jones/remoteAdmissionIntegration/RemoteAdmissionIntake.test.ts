@@ -7,6 +7,7 @@ import {
   EnvironmentId,
   ProviderInstanceId,
   RemoteAdmissionSnapshot,
+  publicRemoteAdmission,
   ThreadId,
   type AuthClientSession,
   type EnvironmentSessionPrincipalShape,
@@ -14,6 +15,7 @@ import {
   type OrchestrationV2ThreadShell,
   type Project,
   type RemoteAdmissionEnvelope,
+  type RemoteAdmissionRecord,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Deferred from "effect/Deferred";
@@ -108,6 +110,20 @@ const enable = (intake: Intake.RemoteAdmissionIntake["Service"]) =>
     modelSelection: { instanceId: ProviderInstanceId.make("claude"), model: "synthetic" },
   });
 const target = () => Effect.succeed({ project: "synthetic", model: "synthetic" });
+const rejectUnboundWithdrawal = (
+  intake: Intake.RemoteAdmissionIntake["Service"],
+  record: RemoteAdmissionRecord,
+) =>
+  Effect.gen(function* () {
+    const before = yield* bindings;
+    const wrongClient = yield* intake.withdraw(record, "another-client").pipe(Effect.flip);
+    expect(wrongClient.cause).toBeInstanceOf(Admission.RemoteAdmissionForbidden);
+    const wrongBinding = yield* intake
+      .withdraw({ ...record, bindingDigest: "0".repeat(64) }, "remote")
+      .pipe(Effect.flip);
+    expect(wrongBinding.cause).toBeInstanceOf(Admission.RemoteAdmissionBindingMismatch);
+    expect(yield* bindings).toEqual(before);
+  });
 const input = {
   clientRequestId: "launch-key",
   projectId: "project",
@@ -238,7 +254,13 @@ it.effect.each(["browser-session-cookie", "bearer-access-token"] as const)(
         .pipe(Effect.result);
       expect(forbidden._tag).toBe("Failure");
       expect(received).toHaveLength(0);
-      expect((yield* intake.decide(decision, { ...owner, method })).status).toBe("dispatched");
+      const completed = yield* intake.decide(decision, { ...owner, method });
+      expect(completed.status).toBe("dispatched");
+      yield* rejectUnboundWithdrawal(intake, completed);
+      const beforeWithdrawal = yield* bindings;
+      expect(yield* intake.withdraw(completed, "remote")).toEqual(publicRemoteAdmission(completed));
+      expect(yield* intake.withdraw(completed, "remote")).toEqual(publicRemoteAdmission(completed));
+      expect(yield* bindings).toEqual(beforeWithdrawal);
       yield* intake.decide(decision, { ...owner, method });
       expect(received).toHaveLength(1);
       expect(received[0]).toEqual({ params: input, scope: { ...invocation, issuedAt: 0 } });
@@ -304,11 +326,10 @@ it.effect(
       );
       yield* intake.invoke("t3_thread_launch", input, invocation).pipe(Effect.ignore);
       const record = (yield* intake.snapshot()).pending[0]!;
-      expect(
-        (yield* intake
-          .invoke("t3_thread_launch", { ...input, prompt: "Changed" }, invocation)
-          .pipe(Effect.result))._tag,
-      ).toBe("Failure");
+      const changed = yield* intake
+        .invoke("t3_thread_launch", { ...input, prompt: "Changed" }, invocation)
+        .pipe(Effect.asVoid, Effect.flip);
+      expect(changed.code).toBe("request_conflict");
       yield* intake.updatePolicy({
         expectedRevision: config.policy.revision,
         enabled: true,
@@ -322,10 +343,14 @@ it.effect(
           )
           .pipe(Effect.result))._tag,
       ).toBe("Failure");
-      yield* intake.decide(
+      const declined = yield* intake.decide(
         { id: record.id, bindingDigest: record.bindingDigest, decision: "deny" },
         owner,
       );
+      yield* rejectUnboundWithdrawal(intake, declined);
+      const beforeDenialWithdrawal = yield* bindings;
+      expect(yield* intake.withdraw(declined, "remote")).toEqual(publicRemoteAdmission(declined));
+      expect(yield* bindings).toEqual(beforeDenialWithdrawal);
       const denied = yield* intake
         .invoke("t3_thread_launch", input, invocation)
         .pipe(Effect.result);
@@ -335,12 +360,116 @@ it.effect(
         .invoke("t3_thread_launch", { ...input, clientRequestId: "cancel-me" }, invocation)
         .pipe(Effect.ignore);
       const cancel = (yield* intake.snapshot()).pending[0]!;
-      expect((yield* intake.withdraw(cancel, "another-client").pipe(Effect.result))._tag).toBe(
-        "Failure",
-      );
+      yield* rejectUnboundWithdrawal(intake, cancel);
+      const beforeCancellation = yield* bindings;
       expect((yield* intake.withdraw(cancel, "remote")).status).toBe("cancelled");
+      expect((yield* intake.withdraw(cancel, "remote")).status).toBe("cancelled");
+      expect(yield* bindings).toEqual(beforeCancellation);
+      const cancelled = yield* intake
+        .invoke("t3_thread_launch", { ...input, clientRequestId: "cancel-me" }, invocation)
+        .pipe(Effect.asVoid, Effect.flip);
+      expect(cancelled.code).toBe("remote_admission_denied");
+      expect(cancelled.remoteAdmission?.status).toBe("cancelled");
       expect(calls).toBe(0);
     }).pipe(Effect.provide(fixture(() => Effect.succeed(hold)))),
+);
+
+it.effect(
+  "cancellation racing owner approval reports the claimed dispatch and recovers its result once",
+  () =>
+    Effect.gen(function* () {
+      const intake = yield* Intake.RemoteAdmissionIntake;
+      const admissions = yield* Admission.RemoteAdmission;
+      const sql = yield* SqlClient.SqlClient;
+      yield* enable(intake);
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const receipt = { threadId: "original-child", launchKey: "original-launch" };
+      let calls = 0;
+      intake.register(
+        "t3_thread_launch",
+        () =>
+          Effect.gen(function* () {
+            calls++;
+            yield* Deferred.succeed(entered, undefined);
+            yield* Deferred.await(release);
+            return receipt;
+          }),
+        target,
+      );
+      yield* intake.invoke("t3_thread_launch", input, invocation).pipe(Effect.ignore);
+      const held = (yield* intake.snapshot()).pending[0]!;
+      const before = yield* bindings;
+      const [completed, withdrawal] = yield* Effect.all(
+        [
+          intake.decide({ ...held, decision: "approve" }, owner),
+          Effect.gen(function* () {
+            yield* Deferred.await(entered);
+            const claimed = (yield* admissions.get(held.id))!;
+            expect(claimed.status).toBe("dispatching");
+            yield* rejectUnboundWithdrawal(intake, claimed);
+            const status = yield* intake.withdraw(held, "remote");
+            expect(status).toEqual(publicRemoteAdmission(claimed));
+            expect(
+              yield* sql`SELECT admission_id FROM jones_remote_admission_results`,
+            ).toHaveLength(0);
+            expect(yield* bindings).toEqual(before);
+            return status;
+          }).pipe(Effect.ensuring(Deferred.succeed(release, undefined))),
+        ],
+        { concurrency: "unbounded" },
+      );
+      expect(withdrawal.status).toBe("dispatching");
+      expect(completed.status).toBe("dispatched");
+      expect(yield* intake.withdraw(held, "remote")).toEqual(publicRemoteAdmission(completed));
+      expect(yield* intake.invoke("t3_thread_launch", input, invocation)).toEqual(receipt);
+      yield* intake.resumeApproved();
+      expect(calls).toBe(1);
+      expect(yield* bindings).toEqual(before);
+      expect(yield* sql`SELECT admission_id FROM jones_remote_admission_results`).toHaveLength(1);
+    }).pipe(Effect.provide(fixture(() => Effect.succeed(hold)))),
+);
+
+it.effect("withdrawal after approval but before dispatch cancels the original request", () =>
+  Effect.gen(function* () {
+    const intake = yield* Intake.RemoteAdmissionIntake;
+    const admissions = yield* Admission.RemoteAdmission;
+    yield* enable(intake);
+    let calls = 0;
+    intake.register("t3_thread_launch", () => Effect.sync(() => calls++), target);
+    yield* intake.invoke("t3_thread_launch", input, invocation).pipe(Effect.ignore);
+    const held = (yield* intake.snapshot()).pending[0]!;
+    const approved = yield* admissions.resolve({
+      ...held,
+      decision: "approve",
+      principal: { kind: "human-owner", subject: "owner" },
+    });
+    expect(approved.status).toBe("approved");
+    yield* rejectUnboundWithdrawal(intake, approved);
+    const before = yield* bindings;
+    expect((yield* intake.withdraw(held, "remote")).status).toBe("cancelled");
+    yield* intake.resumeApproved();
+    const failure = yield* intake
+      .invoke("t3_thread_launch", input, invocation)
+      .pipe(Effect.asVoid, Effect.flip);
+    expect(failure.code).toBe("remote_admission_denied");
+    expect(failure.remoteAdmission?.status).toBe("cancelled");
+    expect(yield* bindings).toEqual(before);
+    expect(calls).toBe(0);
+  }).pipe(Effect.provide(fixture(() => Effect.succeed(hold)))),
+);
+
+it.effect("withdrawal preserves not-found and storage failures", () =>
+  Effect.gen(function* () {
+    const intake = yield* Intake.RemoteAdmissionIntake;
+    const sql = yield* SqlClient.SqlClient;
+    const bound = { id: "missing-admission", bindingDigest: "0".repeat(64) };
+    const missing = yield* intake.withdraw(bound, "remote").pipe(Effect.flip);
+    expect(missing.cause).toBeInstanceOf(Admission.RemoteAdmissionNotFound);
+    yield* sql`DROP TABLE jones_remote_admissions`;
+    const unavailable = yield* intake.withdraw(bound, "remote").pipe(Effect.flip);
+    expect(unavailable.cause).toBeInstanceOf(Admission.RemoteAdmissionPersistenceError);
+  }).pipe(Effect.provide(fixture(() => Effect.succeed(hold)))),
 );
 
 it.effect("restart resumes approved work with stored scope exactly once", () =>
@@ -494,8 +623,18 @@ it.effect("a handler interrupted after claiming is never blindly dispatched agai
     yield* intake.invoke("t3_thread_launch", input, invocation).pipe(Effect.exit);
     const record = (yield* intake.snapshot()).pending[0]!;
     expect(record.status).toBe("dispatching");
-    yield* intake.invoke("t3_thread_launch", input, invocation).pipe(Effect.ignore);
+    yield* rejectUnboundWithdrawal(intake, record);
+    const before = yield* bindings;
+    expect(yield* intake.withdraw(record, "remote")).toEqual(publicRemoteAdmission(record));
+    expect(yield* intake.withdraw(record, "remote")).toEqual(publicRemoteAdmission(record));
+    const unresolved = yield* intake
+      .invoke("t3_thread_launch", input, invocation)
+      .pipe(Effect.asVoid, Effect.flip);
+    expect(unresolved.code).toBe("remote_admission_pending");
+    expect(unresolved.remoteAdmission?.status).toBe("dispatching");
     yield* intake.resumeApproved();
+    expect(yield* bindings).toEqual(before);
+    expect((yield* intake.snapshot()).pending[0]).toEqual(record);
     expect(calls).toBe(1);
   }).pipe(Effect.provide(fixture(() => Effect.succeed(pass)))),
 );
@@ -713,24 +852,50 @@ it.effect.each([null, "", "Draft"])(
   },
 );
 
-it.effect("B1-4: changed body conflicts while display-only changes keep the original binding", () =>
-  Effect.gen(function* () {
-    const intake = yield* Intake.RemoteAdmissionIntake;
-    yield* enable(intake);
-    intake.register("t3_thread_launch", () => Effect.die("held"), target);
-    yield* withContext(intake).pipe(Effect.asVoid, Effect.flip);
-    const before = yield* bindings;
-    const changed = yield* withContext(intake, {
-      params: { ...input, prompt: "Different requested work" },
-    }).pipe(Effect.asVoid, Effect.flip);
-    expect(changed.code).toBe("orchestration_error");
-    const display = yield* withContext(intake, {
-      context: { ...firstContext, sentAt: "2026-10-27T12:00:00.000Z" },
-    }).pipe(Effect.asVoid, Effect.flip);
-    expect(display.code).toBe("remote_admission_pending");
-    expect(display.remoteAdmission?.id).toBe(before[0]!.id);
-    expect(yield* bindings).toEqual(before);
-  }).pipe(Effect.provide(fixture(() => Effect.succeed(hold)))),
+it.effect(
+  "B1-4: changed body conflicts while display-only changes keep the original binding",
+  () => {
+    let evaluations = 0;
+    let calls = 0;
+    return Effect.gen(function* () {
+      const intake = yield* Intake.RemoteAdmissionIntake;
+      yield* enable(intake);
+      intake.register(
+        "t3_thread_launch",
+        () => Effect.sync(() => calls++).pipe(Effect.andThen(Effect.die("held"))),
+        target,
+      );
+      yield* withContext(intake).pipe(Effect.asVoid, Effect.flip);
+      const before = yield* bindings;
+      expect(before).toHaveLength(1);
+      const record = (yield* intake.snapshot()).pending[0]!;
+      const changed = yield* withContext(intake, {
+        params: { ...input, prompt: "Different requested work" },
+      }).pipe(Effect.asVoid, Effect.flip);
+      expect(changed.code).toBe("request_conflict");
+      expect(changed.message).toBe(
+        "The same request key was used with different content. The original request is unchanged; the changed request was not executed.",
+      );
+      const display = yield* withContext(intake, {
+        context: { ...firstContext, sentAt: "2026-10-27T12:00:00.000Z" },
+      }).pipe(Effect.asVoid, Effect.flip);
+      expect(display.code).toBe("remote_admission_pending");
+      expect(display.remoteAdmission?.id).toBe(before[0]!.id);
+      expect(yield* bindings).toEqual(before);
+      expect((yield* intake.snapshot()).pending).toEqual([record]);
+      expect(evaluations).toBe(1);
+      expect(calls).toBe(0);
+    }).pipe(
+      Effect.provide(
+        fixture(() =>
+          Effect.sync(() => {
+            evaluations++;
+            return hold;
+          }),
+        ),
+      ),
+    );
+  },
 );
 
 const authorityChanges: ReadonlyArray<
@@ -799,26 +964,47 @@ const authorityChanges: ReadonlyArray<
     }),
   ],
 ];
-it.effect.each(authorityChanges)("B1-4b/c: changed %s still conflicts", ([, change]) =>
-  Effect.gen(function* () {
+it.effect.each(authorityChanges)("B1-4b/c: changed %s still conflicts", ([, change]) => {
+  let evaluations = 0;
+  let calls = 0;
+  return Effect.gen(function* () {
     const intake = yield* Intake.RemoteAdmissionIntake;
     yield* enable(intake);
-    intake.register("t3_thread_launch", () => Effect.die("held"), target);
+    intake.register(
+      "t3_thread_launch",
+      () => Effect.sync(() => calls++).pipe(Effect.andThen(Effect.die("held"))),
+      target,
+    );
     yield* withContext(intake).pipe(Effect.asVoid, Effect.flip);
     const before = yield* bindings;
+    expect(before).toHaveLength(1);
+    const record = (yield* intake.snapshot()).pending[0]!;
     const error = yield* withContext(intake, { scope: change(originInvocation()) }).pipe(
       Effect.asVoid,
       Effect.flip,
     );
-    expect(error.code).toBe("orchestration_error");
+    expect(error.code).toBe("request_conflict");
     expect(yield* bindings).toEqual(before);
-  }).pipe(Effect.provide(fixture(() => Effect.succeed(hold)))),
-);
+    expect((yield* intake.snapshot()).pending).toEqual([record]);
+    expect(evaluations).toBe(1);
+    expect(calls).toBe(0);
+  }).pipe(
+    Effect.provide(
+      fixture(() =>
+        Effect.sync(() => {
+          evaluations++;
+          return hold;
+        }),
+      ),
+    ),
+  );
+});
 
 it.effect.each([false, true])(
   "B1-5: simultaneous first writers pin display data once (body conflict: %s)",
   (bodyConflict) => {
     let evaluations = 0;
+    let calls = 0;
     return Effect.gen(function* () {
       const intake = yield* Intake.RemoteAdmissionIntake;
       yield* enable(intake);
@@ -826,7 +1012,7 @@ it.effect.each([false, true])(
       let arrivals = 0;
       intake.register(
         "t3_thread_launch",
-        () => Effect.die("held"),
+        () => Effect.sync(() => calls++).pipe(Effect.andThen(Effect.die("held"))),
         () =>
           Effect.gen(function* () {
             arrivals++;
@@ -853,8 +1039,8 @@ it.effect.each([false, true])(
       const record = (yield* intake.snapshot()).pending[0]!;
       if (bodyConflict) {
         expect(outcomes.map((outcome) => outcome.code).sort()).toEqual([
-          "orchestration_error",
           "remote_admission_pending",
+          "request_conflict",
         ]);
       } else {
         expect(outcomes.map((outcome) => outcome.code)).toEqual([
@@ -883,7 +1069,9 @@ it.effect.each([false, true])(
       }).pipe(Effect.asVoid, Effect.flip);
       expect(retry.code).toBe("remote_admission_pending");
       expect(yield* bindings).toEqual(before);
+      expect((yield* intake.snapshot()).pending).toEqual([record]);
       expect(evaluations).toBe(1);
+      expect(calls).toBe(0);
     }).pipe(
       Effect.provide(
         fixture(() =>

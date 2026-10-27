@@ -125,29 +125,42 @@ export const terminalRun = (run: Pick<OrchestrationV2Run, "status">): boolean =>
 const terminalTask = (task: OrchestrationV2Subagent): boolean =>
   ["completed", "failed", "cancelled", "interrupted"].includes(task.status);
 
+export function continuationAncestry(
+  runs: ReadonlyArray<OrchestrationV2Run>,
+  run: OrchestrationV2Run,
+): ReadonlyArray<OrchestrationV2Run> | TaskContinuationError {
+  const seen = new Set<RunId>();
+  const ancestry: Array<OrchestrationV2Run> = [];
+  let current = run;
+  for (let depth = 0; depth < 64; depth++) {
+    if (seen.has(current.id) || current.threadId !== run.threadId)
+      return new TaskContinuationError({ reason: "ancestry_invalid" });
+    seen.add(current.id);
+    ancestry.push(current);
+    if (current.restartContinuationOfRunId === undefined) return ancestry;
+    const parent = runs.find((candidate) => candidate.id === current.restartContinuationOfRunId);
+    if (parent === undefined) return new TaskContinuationError({ reason: "ancestry_invalid" });
+    current = parent;
+  }
+  return new TaskContinuationError({ reason: "ancestry_invalid" });
+}
+
 export function continuationRoot(
   runs: ReadonlyArray<OrchestrationV2Run>,
   run: OrchestrationV2Run,
 ): OrchestrationV2Run | TaskContinuationError {
-  const seen = new Set<RunId>();
-  let current = run;
-  for (let depth = 0; depth < 64; depth++) {
+  const ancestry = continuationAncestry(runs, run);
+  if (Schema.is(TaskContinuationError)(ancestry)) return ancestry;
+  for (const current of ancestry) {
     if (
-      seen.has(current.id) ||
-      current.threadId !== run.threadId ||
       current.delegatedTaskId !== run.delegatedTaskId ||
       current.providerInstanceId !== run.providerInstanceId ||
       current.providerThreadId !== run.providerThreadId ||
       !modelSelectionsEqual(current.modelSelection, run.modelSelection)
     )
       return new TaskContinuationError({ reason: "ancestry_invalid" });
-    seen.add(current.id);
-    if (current.restartContinuationOfRunId === undefined) return current;
-    const parent = runs.find((candidate) => candidate.id === current.restartContinuationOfRunId);
-    if (parent === undefined) return new TaskContinuationError({ reason: "ancestry_invalid" });
-    current = parent;
   }
-  return new TaskContinuationError({ reason: "ancestry_invalid" });
+  return ancestry[ancestry.length - 1]!;
 }
 
 type AdmissionRecords = Pick<

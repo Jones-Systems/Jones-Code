@@ -123,6 +123,13 @@ it.effect(
         expect(retry.status).toBe(200);
         expect(retry.text).toContain("remote_admission_pending");
         expect(retry.text).toContain(record.id);
+        const conflict = yield* probe.call(session, {
+          params: { ...params, message: "Different request using the original key" },
+          headers: headers("Final", firstContext),
+        });
+        expect(conflict.status).toBe(200);
+        expect(conflict.text).toContain("request_conflict");
+        expect(conflict.text).not.toContain("orchestration_error");
         const after =
           yield* sql`SELECT id, envelope_json, request_digest, binding_digest FROM jones_remote_admissions`;
         expect(after).toEqual(before);

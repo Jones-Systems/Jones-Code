@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
-// 125–130 are released or reserved for other Jones work; this migration is unreleased.
+// This unreleased migration follows the freshly fetched main manifest through 132.
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`CREATE TABLE jones_thread_result_dependencies (
