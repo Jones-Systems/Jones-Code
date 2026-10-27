@@ -8,9 +8,13 @@
       "tests": [
         "packages/contracts/src/jones/workstreamsHomeBind.test.ts",
         "packages/contracts/src/jones/workstreamsMemberEnrollment.test.ts",
-        "apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.test.ts"
+        "apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/memberEnrollment.test.ts",
+        "apps/server/src/jones/workstreams/native/store/memberEnrollmentStore.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/memberSetup.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/memberPeerPinQualification.test.ts"
       ],
-      "scope": "Separately versioned home-bind/2 wire and retained prepared/bound member proof; migration 129 creates two encrypted Jones ledgers. No service producer, verified authority, loader activation or capability advertisement is supplied by this foundation."
+      "scope": "Separately versioned home-bind/2 wire, encrypted prepared/bound member enrollment, fixed home-bind/readback transport and local issuance acceptance; migration 129 owns the ledgers. Genuine root setup authentication, home composition, current caller admission and member routing remain separate integration gates."
     },
     {
       "id": "workstreams-native-source-setup",

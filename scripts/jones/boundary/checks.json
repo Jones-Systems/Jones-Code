@@ -6,10 +6,15 @@
       "tests": [
         "packages/contracts/src/jones/workstreamsHomeBind.test.ts",
         "packages/contracts/src/jones/workstreamsMemberEnrollment.test.ts",
-        "apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.test.ts"
+        "apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/memberEnrollment.test.ts",
+        "apps/server/src/jones/workstreams/native/store/memberEnrollmentStore.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/memberSetup.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/memberPeerPinQualification.test.ts"
       ],
       "commands": [
         "vp test run packages/contracts/src/jones/workstreamsHomeBind.test.ts packages/contracts/src/jones/workstreamsMemberEnrollment.test.ts apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/jones/workstreams/native/runtime/memberEnrollment.test.ts apps/server/src/jones/workstreams/native/store/memberEnrollmentStore.test.ts apps/server/src/jones/workstreams/native/runtime/memberSetup.test.ts apps/server/src/jones/workstreams/native/runtime/memberPeerPinQualification.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/contracts typecheck",
         "vp run --filter t3 typecheck",
         "vp lint --threads=1 --max-warnings=0 packages/contracts/src/jones/workstreamsHomeBind.ts packages/contracts/src/jones/workstreamsHomeBind.test.ts packages/contracts/src/jones/workstreamsMemberEnrollment.ts packages/contracts/src/jones/workstreamsMemberEnrollment.test.ts apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.ts apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.test.ts",
