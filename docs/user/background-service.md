@@ -172,10 +172,10 @@ installation and the supported background launcher; **Setup required** means
 that initial host setup is still needed. Enrollment does not replace an existing
 system service or take over an upstream T3 Code installation.
 
-Download the offered laptop update, then choose Install. Enrolled hosts follow
-that exact source only after the laptop successfully switches to it, and never
-move past the laptop. A current host learns the laptop's installed build while
-the desktop app is open, downloads it in the background, and installs it by
+For builds outside an Install status plan, enrolled hosts follow the laptop's
+verified committed source and never move past it. A current host learns the
+laptop's installed build while the desktop app is open, downloads it in the
+background, and installs it by
 itself once no client has had input for 30 minutes and nothing a restart would
 interrupt is running: turns and delegated tasks, queued messages about to start,
 terminal commands, provider background tasks, and approvals waiting in a live
@@ -186,8 +186,18 @@ someone begins using the host. Because the host remembers the laptop's build,
 it can finish while the laptop sleeps. Older hosts wait for the desktop app to
 coordinate their rollout, and an offline host updates after it reconnects.
 
-On an enrolled host, Check, Download and Install offer only the laptop's
-installed build, from any client. Install stays off for any other downloaded
+**Install status** controls a plan's target separately. A new plan includes only
+Laptop; use Edit or the bulk update handoff to include supported hosts. Selection
+does not enroll or unenroll them. Selected hosts wait for Laptop to commit and
+pass native health verification before downloading or staging, and each Install
+requires review. Plan targets are withheld from ordinary following and legacy
+campaigns, including after Done or an app restart, so enrollment cannot silently
+install an excluded target. A participating host's manual-review directive also
+survives restart; ordinary following resumes for a later different published
+leader source. Builds outside a plan retain ordinary automatic following.
+
+Outside a plan's explicit review target, an enrolled host's Check, Download and
+Install offer only the laptop's installed build, from any client. Install stays off for any other downloaded
 build, including an older one, and a host waits until the laptop has reported
 its build. A laptop app too old to report its build cannot release a host:
 update the laptop app, or disable automatic updates for that host to choose its

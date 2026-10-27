@@ -31,7 +31,7 @@ export interface JonesStagingRoots {
   readonly apps: string;
 }
 
-export type JonesStagingJob =
+export type JonesStagingJob = { readonly token?: string } & (
   | {
       readonly kind: "prepare";
       readonly candidate: JonesActionsCandidate;
@@ -39,7 +39,7 @@ export type JonesStagingJob =
       readonly platform: NodeJS.Platform;
     }
   | { readonly kind: "validate-artifact"; readonly directory: string }
-  | { readonly kind: "reclaim"; readonly updatesRoot: string; readonly handle: string };
+  | { readonly kind: "reclaim"; readonly updatesRoot: string; readonly handle: string });
 
 export interface JonesPreparedStage {
   readonly artifact: JonesStagedArtifact;
@@ -59,6 +59,7 @@ export interface JonesStagingJobResults {
 
 export interface JonesStagingHooks {
   readonly onVerifying?: () => void | Promise<void>;
+  readonly admit?: () => Promise<void>;
   readonly actions?: Pick<JonesActionsClient, "stage">;
   readonly stageApp?: typeof stageJonesMacApp;
 }
@@ -74,6 +75,7 @@ export async function prepareJonesStage(
     candidate,
     roots.artifacts,
   );
+  await hooks.admit?.();
   await hooks.onVerifying?.();
   const app = await (hooks.stageApp ?? stageJonesMacApp)(artifact, roots.apps, platform);
   return { artifact, app };

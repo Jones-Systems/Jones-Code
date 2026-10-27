@@ -1,5 +1,8 @@
 import type { FleetFollowerBlocker } from "@t3tools/contracts/jones/fleet-updates";
-import type { JonesUpdatePolicy } from "@t3tools/contracts/jones/jonesUpdates";
+import { JonesUpdatePolicy } from "@t3tools/contracts/jones/jonesUpdates";
+import * as Schema from "effect/Schema";
+
+const isUpdatePolicy = Schema.is(JonesUpdatePolicy);
 
 /**
  * Provisional owner default. Input history is not persisted, so the window also starts no earlier
@@ -185,6 +188,14 @@ export function followerTargetRefusal(
   tree?: string,
 ): string | undefined {
   if (policy === undefined) return undefined;
+  if (
+    target !== undefined &&
+    policy.reviewTarget !== undefined &&
+    isUpdatePolicy(policy) &&
+    policy.reviewTarget.source === target &&
+    (tree === undefined || tree === policy.reviewTarget.tree)
+  )
+    return undefined;
   if (policy.leaderSource === null || policy.leaderTree === undefined)
     return "This host follows its laptop and waits for the laptop to report its installed build. A laptop app that predates following cannot report it; update the laptop app, or turn off fleet updates for this host to choose builds here.";
   if (target !== policy.leaderSource)

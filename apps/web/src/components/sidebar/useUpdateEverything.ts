@@ -1,3 +1,4 @@
+import { useJonesBulkUpdates } from "../../jones/installStatus/bulkUpdates";
 import { useAtomValue } from "@effect/atom-react";
 import { PROVIDER_DISPLAY_NAMES } from "@t3tools/contracts";
 
@@ -54,8 +55,9 @@ export function useUpdateEverything(localUpdateVersion: string | null) {
     canMaintain: canUpdateServer(sessionStates[index]!),
     updateState: updateStates[index]!,
   }));
+  const jones = useJonesBulkUpdates(machines, targetVersion, localUpdateVersion);
   const { targets: behindServers, skipped: unreachable } = collectServerUpdateTargets(
-    machines,
+    jones.other,
     targetVersion,
   );
   // Desktop-managed servers use their app feed; only npm installs need to wait for publication.
@@ -74,13 +76,14 @@ export function useUpdateEverything(localUpdateVersion: string | null) {
         reason: `t3@${targetVersion} is not on npm yet`,
       })),
   ];
-  const restarts = collectRestartingMachines(machines, servers, localUpdateVersion !== null);
+  const restarts = collectRestartingMachines(machines, servers, localUpdateVersion !== null && !jones.managesLocal);
   const providers = useProviderUpdates();
   const updateServer = useServerUpdate();
 
   const { summary, lines } = describeUpdateEverything({
-    localVersion: localUpdateVersion,
+    localVersion: jones.managesLocal ? null : localUpdateVersion,
     servers,
+    jonesMachines: jones.targets,
     providerMachines: providers.machines.map((machine) => ({
       environmentId: machine.environmentId,
       label: machine.label,
@@ -91,9 +94,9 @@ export function useUpdateEverything(localUpdateVersion: string | null) {
   });
 
   return {
-    hasUpdates: servers.length > 0 || providers.machines.length > 0,
+    hasUpdates: servers.length > 0 || providers.machines.length > 0 || jones.hasUpdates,
     summary,
-    lines,
+    lines: jones.managesLocal ? ["Laptop: Install status — Download first, review every Install", ...lines] : lines,
     restarts,
     skipped,
     run: async ({
@@ -136,7 +139,8 @@ export function useUpdateEverything(localUpdateVersion: string | null) {
           providerFailure: null,
         });
       }
-      const localVersion = installLocal ? localUpdateVersion : null;
+      const localVersion = !jones.managesLocal && installLocal ? localUpdateVersion : null;
+      const jonesResultsPromise = jones.handOff();
       setUpdateEverythingRun(() => ({
         localVersion,
         phase: "providers",
@@ -147,7 +151,7 @@ export function useUpdateEverything(localUpdateVersion: string | null) {
       const finishedServers: Array<{ label: string; outcome: ServerUpdateOutcome }> = [];
       try {
         const outcome = await runUpdateEverything({
-          ...(downloadLocal ? { downloadLocal: () => downloadLocal(reportLocalError) } : {}),
+          ...(!jones.managesLocal && downloadLocal ? { downloadLocal: () => downloadLocal(reportLocalError) } : {}),
           updateProviders: async () => {
             const runs = await providers.updateAll({ quiet: true });
             const outcomes = runs.map((run) => {
@@ -207,14 +211,15 @@ export function useUpdateEverything(localUpdateVersion: string | null) {
             return runs;
           },
         });
+        const jonesResults = await jonesResultsPromise;
         const result = (finished: ReadonlyArray<{ label: string; outcome: ServerUpdateOutcome }>) =>
-          collectUpdateEverythingResult({
+          ({ ...collectUpdateEverythingResult({
             localVersion: null,
             localFailures,
             servers: finished,
             providers: outcome.providers,
-          });
-        if (outcome.localReady && installLocal) {
+          }), jones: jonesResults });
+        if (!jones.managesLocal && outcome.localReady && installLocal) {
           if (await waitForUpdateRestart(UPDATE_RESTART_DELAY_MS)) {
             setUpdateEverythingRun(
               (run) => run && { ...run, phase: "installing", restartAt: null },

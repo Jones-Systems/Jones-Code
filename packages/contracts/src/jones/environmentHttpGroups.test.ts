@@ -4,6 +4,11 @@ import * as SchemaAST from "effect/SchemaAST";
 import { EnvironmentWorkstreamOperationConflictError } from "./environmentHttpGroups.ts";
 import { EnvironmentId, TrimmedNonEmptyString } from "../baseSchemas.ts";
 import { JonesBuildStartedAt } from "./fleetUpdates/source.ts";
+import {
+  JonesOperationReceipt,
+  JonesOperationReadResult,
+  JonesRecoveryPreflight,
+} from "./jonesOperations.ts";
 
 import { EnvironmentAuthenticatedAuth, EnvironmentHttpApi } from "../environmentHttp.ts";
 import v2Conformance from "../../contracts/workstreams-registration-context/v2/fixtures/conformance.json" with { type: "json" };
@@ -111,6 +116,11 @@ describe("Jones environment HTTP registration", () => {
       ["download", "POST", "/api/jones-updates/download"],
       ["downloadExact", "POST", "/api/jones-updates/download-exact"],
       ["install", "POST", "/api/jones-updates/install"],
+      ["operationStart", "POST", "/api/jones-updates/operations/start"],
+      ["operationStop", "POST", "/api/jones-updates/operations/stop"],
+      ["operationFence", "POST", "/api/jones-updates/operations/fence"],
+      ["operationRead", "POST", "/api/jones-updates/operations/read"],
+      ["recoveryPreflight", "POST", "/api/jones-updates/recovery-preflight"],
       ["ownerOperations", "POST", "/api/workstreams/native/owner/v1/operations"],
       ["context", "GET", "/api/workstreams/native/v1/context"],
       ["attestations", "POST", "/api/workstreams/native/v1/attestations"],
@@ -130,6 +140,21 @@ describe("Jones environment HTTP registration", () => {
       expect(endpoint.headers?.ast).toEqual(bearerHeaders.ast);
     }
   });
+});
+
+it("returns operation refusals as authenticated receipt successes, including read and preflight", () => {
+  const endpoints = EnvironmentHttpApi.groups.jonesUpdates.endpoints;
+  for (const endpoint of [endpoints.operationStart, endpoints.operationStop, endpoints.operationFence]) {
+    expect([...endpoint.success].map((schema) => schema.ast))
+      .toEqual([Schema.toCodecJson(JonesOperationReceipt).ast]);
+    expect([...endpoint.error].map((schema) => schema.ast)).toEqual(
+      [...endpoints.install.error].map((schema) => schema.ast),
+    );
+  }
+  expect([...endpoints.operationRead.success].map((schema) => schema.ast))
+    .toEqual([Schema.toCodecJson(JonesOperationReadResult).ast]);
+  expect([...endpoints.recoveryPreflight.success].map((schema) => schema.ast))
+    .toEqual([Schema.toCodecJson(JonesRecoveryPreflight).ast]);
 });
 
 it("requires a nonnegative integer count in quit preparation responses", () => {
@@ -362,6 +387,67 @@ const decodeBaseJonesUpdateState = Schema.decodeUnknownSync(BaseJonesUpdateState
 const decodeJonesUpdateState = Schema.decodeUnknownSync(JonesUpdateState);
 const decodeJonesUpdateReconcileInput = Schema.decodeUnknownSync(JonesUpdateReconcileInput);
 const decodeJonesUpdateRecordRetiredInput = Schema.decodeUnknownSync(JonesUpdateRecordRetiredInput);
+
+it("keeps install-plan details additive for legacy update decoders and missing capabilities", () => {
+  const operationId = "11111111-1111-4111-8111-111111111111";
+  const source = "a".repeat(40);
+  const tree = "b".repeat(40);
+  const checkedAt = "2026-10-27T04:00:00Z";
+  const base = {
+    source: "jones-actions",
+    channel: "jones-main",
+    phase: "available",
+    capability: { check: true, download: true, install: true },
+    policy: { role: "follower", leaderSource: null },
+    recovery: { method: "clone", bytes: 1024, completedAt: checkedAt },
+  };
+  const additive = {
+    ...base,
+    capability: { ...base.capability, operations: 1, recoveryPolicy: 1 },
+    policy: { ...base.policy, reviewTarget: { source, tree, directiveId: operationId } },
+    recovery: { ...base.recovery, requested: "clone-required" },
+    operation: { protocol: 1, operationId, environmentId: "synthetic-host",
+      action: { kind: "download-exact", targetSource: source }, expectedInstalledSource: tree,
+      phase: "held", updatedAt: checkedAt, code: "future-held-reason" },
+    checkClassification: { kind: "incomplete-discovery", checkedAt, discovery: {
+      termination: "window-ended", bounded: true, unresolvedLimits: ["ci-page"] },
+      pendingCount: 2, failedQualificationCount: 1 },
+  };
+  expect(decodeBaseJonesUpdateState(additive)).toEqual(base);
+  expect(decodeJonesUpdateState(base)).toEqual(base);
+  expect(decodeJonesUpdateState(additive)).toEqual(additive);
+  expect(decodeJonesUpdateState(base).capability.operations).toBeUndefined();
+  expect(decodeJonesUpdateState(base).capability.recoveryPolicy).toBeUndefined();
+  for (const phase of ["checking", "building", "no-new", "available", "downloading", "verifying",
+    "staged", "preparing", "installing", "committed", "rolled-back", "blocked", "error"]) {
+    expect(decodeJonesUpdateState({ ...additive, phase }).phase).toBe(phase);
+    expect(decodeBaseJonesUpdateState({ ...additive, phase })).toEqual({ ...base, phase });
+  }
+  for (const phase of ["stop-requested", "stopped", "held", "fenced"])
+    expect(() => decodeJonesUpdateState({ ...base, phase })).toThrow();
+  for (const capability of [{ ...base.capability, operations: true },
+    { ...base.capability, operations: 2 }, { ...base.capability, recoveryPolicy: 2 }])
+    expect(() => decodeJonesUpdateState({ ...base, capability })).toThrow();
+});
+
+it("keeps bounded discovery classification distinct from the existing update phase", () => {
+  const state = { source: "jones-actions", channel: "jones-main", phase: "no-new",
+    capability: { check: true, download: false, install: false } };
+  const classification = { kind: "no-eligible-package-in-window", checkedAt: "2026-10-27T04:00:00Z",
+    discovery: { termination: "window-ended", bounded: true,
+      unresolvedLimits: ["producer-pages", "ci-page", "artifact-page", "unknown-terminal-evidence"] } };
+  expect(decodeJonesUpdateState({ ...state, checkClassification: classification }).checkClassification)
+    .toEqual(classification);
+  for (const kind of ["available", "target-already-running", "qualification-pending",
+    "qualification-failed", "no-eligible-package-in-window", "incomplete-discovery", "failure"])
+    expect(decodeJonesUpdateState({ ...state, checkClassification: { ...classification, kind } })
+      .checkClassification?.kind).toBe(kind);
+  expect(() => decodeJonesUpdateState({ ...state, checkClassification: { ...classification,
+    discovery: { ...classification.discovery, unresolvedLimits: [...classification.discovery.unresolvedLimits,
+      "ci-page"] } } })).toThrow();
+  expect(() => decodeJonesUpdateState({ ...state, checkClassification: { ...classification,
+    kind: "exhaustive" } })).toThrow();
+});
 
 it("preserves old and new decoder compatibility without changing failed outcomes", () => {
   const oldState = {

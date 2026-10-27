@@ -114,10 +114,10 @@ function updateMember(state: FleetDesktopState, input: FleetUpdateMemberInput): 
   if (inFlight.has(member.phase) && !inFlight.has(input.phase) && !terminal.has(input.phase))
     throw new Error("An accepted operation must be reconciled before its state can change.");
   if (
-    ["dispatching", "install-blocked", "reconciling", "pending"].includes(input.phase) &&
+    ["staging", "dispatching", "install-blocked", "reconciling", "pending"].includes(input.phase) &&
     (campaign.phase !== "committed" || campaign.committedGeneration === undefined)
   ) {
-    throw new Error("The laptop update has not committed; remote activation is forbidden.");
+    throw new Error("The laptop update has not committed; remote preparation and activation are forbidden.");
   }
   if (input.phase === "staging" || input.phase === "dispatching") {
     const enrolled = state.enrollments.some(
@@ -186,6 +186,8 @@ function updateMember(state: FleetDesktopState, input: FleetUpdateMemberInput): 
 export function createDesktopFleetStore(options: {
   readonly home: string;
   readonly profile: string | undefined;
+  readonly isPlanManaged?: (targetSource: string) => Promise<boolean>;
+  readonly withUnmanagedTarget?: <A>(targetSource: string, work: () => Promise<A>) => Promise<A>;
 }): DesktopFleetStore {
   const runtime = NodePath.join(options.home, "runtime");
   const profileKey = NodeCrypto.createHash("sha256")
@@ -298,8 +300,10 @@ export function createDesktopFleetStore(options: {
     return result;
   };
   return {
-    request: (request) =>
-      transact((state) => {
+    request: async (request) => {
+      if (request.action === "prepare" && await options.isPlanManaged?.(request.input.targetSource))
+        throw new Error("This build is managed by the update plan.");
+      const perform = () => transact((state) => {
         if (!validRequest(request)) throw new Error("Invalid fleet request.");
         let next = state;
         switch (request.action) {
@@ -324,7 +328,11 @@ export function createDesktopFleetStore(options: {
             break;
         }
         return { state: next, result: next };
-      }),
+      });
+      return request.action === "prepare" && options.withUnmanagedTarget !== undefined
+        ? options.withUnmanagedTarget(request.input.targetSource, perform)
+        : perform();
+    },
     bindInstall: (binding) =>
       transact((state) => {
         const campaign = state.campaigns.find((entry) => entry.campaignId === binding.campaignId);

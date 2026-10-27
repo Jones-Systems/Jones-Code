@@ -4,15 +4,18 @@ import {
   jonesCandidatePresentation,
   jonesFollowerHold,
   jonesFollowerSummary,
-  jonesUpdateActionError,
   jonesUpdatePresentation,
 } from "@t3tools/client-runtime/jones/updates";
-import { useAtomValue } from "@effect/atom-react";
+import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId } from "@t3tools/contracts";
-import { useState } from "react";
+import { useContext, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import * as Schema from "effect/Schema";
+import { JonesOperationReceipt, JonesOperationReadResult, JonesRecoveryPreflight } from "@t3tools/contracts/jones/jonesOperations";
+import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
+import { jonesTargetStatus } from "@t3tools/client-runtime/jones/updates/target-status";
 import { View } from "react-native";
 import { AppText as Text } from "../../components/ui/AppText";
-import { jonesUpdates } from "./jonesUpdates";
+import { createMobileJonesActions, jonesUpdates, mobileJonesObservation, mobileJonesUpdateSession } from "./jonesUpdates";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsSection } from "../../features/settings/components/SettingsSection";
 import { SettingsActionRow } from "../../features/settings/components/SettingsActionRow";
@@ -24,31 +27,54 @@ export function JonesUpdateControls({
   readonly environmentId: EnvironmentId;
   readonly allowed: boolean;
 }) {
-  const observation = useAtomValue(jonesUpdates.observation(environmentId));
+  const observed = useAtomValue(jonesUpdates.observation(environmentId));
+  const registry = useContext(RegistryContext);
+  const action = useAtomCommand(jonesUpdates.action, { reportFailure: false, reportDefect: false });
+  const operation = useAtomCommand(jonesUpdates.operation, { reportFailure: false, reportDefect: false });
+  const stop = useAtomCommand(jonesUpdates.stop, { reportFailure: false, reportDefect: false });
+  const session = mobileJonesUpdateSession(environmentId);
+  const saved = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+  const authority = useRef({ environmentId, allowed, mounted: true });
+  authority.current.environmentId = environmentId;
+  authority.current.allowed = allowed;
+  useEffect(() => {
+    authority.current.mounted = true;
+    return () => { authority.current.mounted = false; };
+  }, []);
+  useEffect(() => {
+    const receipt = observed.state?.operation;
+    if (observed.freshness === "fresh" && receipt?.environmentId === environmentId) session.observe(receipt);
+  }, [observed, session, environmentId]);
+  const actions = useMemo(() => createMobileJonesActions({
+    environmentId,
+    readLatest: () => ({
+      observation: registry.get(jonesUpdates.observation(environmentId)),
+      canOperate: authority.current.mounted && authority.current.environmentId === environmentId && authority.current.allowed,
+    }),
+    transport: {
+      legacy: async (input) => commandValue(await action({ environmentId, input })),
+      start: async (input) => Schema.decodeUnknownSync(JonesOperationReceipt)(commandValue(await operation({ environmentId, input: { action: "operationStart", input } }))),
+      preflight: async (input) => Schema.decodeUnknownSync(JonesRecoveryPreflight)(commandValue(await operation({ environmentId, input: { action: "recoveryPreflight", input } }))),
+      read: async (operationId) => Schema.decodeUnknownSync(JonesOperationReadResult)(commandValue(await operation({ environmentId, input: { action: "operationRead", input: { environmentId, operationIds: [operationId] } } }))),
+      stop: async (input) => Schema.decodeUnknownSync(JonesOperationReceipt)(commandValue(await stop({ environmentId, input: { action: "operationStop", input } }))),
+    },
+  }), [environmentId, registry, action, operation, stop]);
+  const observation = mobileJonesObservation(observed, saved);
   const state = observation.state;
-  const action = useAtomCommand(jonesUpdates.action);
-  const [pending, setPending] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
-  if (state === null)
-    return observation.freshness === "stale" ? (
-      <Text className="p-4 text-sm text-foreground-muted">{observation.message}</Text>
-    ) : null;
-  const run = async (input: Parameters<typeof action>[0]["input"]) => {
-    setPending(true);
-    setActionError(null);
-    await (async () => {
-      setActionError(jonesUpdateActionError(await action({ environmentId, input })));
-    })().finally(() => setPending(false));
-  };
-  const presentation = jonesUpdatePresentation(state);
-  const busy = pending || presentation.busy || observation.freshness !== "fresh";
-  const provenance = state.provenance;
-  // A host that follows its laptop takes only the laptop's build; the host refuses others too.
-  const followerHold = jonesFollowerHold(state);
-  const followerSummary = jonesFollowerSummary(state);
-  const candidate = jonesCandidatePresentation(state);
+  const presentation = state === null ? undefined : jonesUpdatePresentation(state);
+  const status = jonesTargetStatus(observation, {
+    canOperate: allowed && state?.environmentId === environmentId,
+    targetSource: state?.provenance?.sourceSha,
+    capability: observation.freshness === "fresh" ? state?.capability ?? null : null,
+  });
+  const displayedOperation = state?.operation ?? saved.receipt;
+  const outstanding = status.operation !== undefined && ["accepted", "running", "stop-requested", "adopting", "handed-off", "held"].includes(status.operation.phase);
+  const busy = saved.busy || saved.uncertainty !== undefined || observation.freshness !== "fresh";
+  const followerHold = state === null ? undefined : jonesFollowerHold(state);
+  const followerSummary = state === null ? undefined : jonesFollowerSummary(state);
+  const candidate = state === null ? undefined : jonesCandidatePresentation(state);
   const builds: Array<{ title: string; build: JonesBuildRef }> = [];
-  if (state.currentVersion !== undefined)
+  if (state?.currentVersion !== undefined)
     builds.push({
       title: "Installed",
       build: {
@@ -73,7 +99,29 @@ export function JonesUpdateControls({
         {builds.map(({ title, build }, index) => (
           <JonesBuildVersion key={title} title={title} build={build} label={labels[index]!} />
         ))}
-        <Text className="text-sm text-foreground-muted">{presentation.message}</Text>
+        <Text className="text-sm text-foreground-muted">{status.headline}</Text>
+        {status.check !== undefined ? (
+          <Text className="text-sm text-foreground-muted">{status.check.text}</Text>
+        ) : null}
+        {displayedOperation !== undefined ? (
+          <>
+            <Text selectable className="text-sm text-foreground-muted">
+              Operation {displayedOperation.operationId} · {displayedOperation.phase}
+            </Text>
+            {displayedOperation.message ? <Text className="text-sm text-foreground-muted">{displayedOperation.message}</Text> : null}
+            {displayedOperation.stop !== undefined ? (
+              <Text className="text-sm text-foreground-muted">Stop: {displayedOperation.stop.result ?? "requested"}</Text>
+            ) : null}
+            {displayedOperation.correlation !== undefined ? (
+              <Text className="text-sm text-foreground-muted">Part of the Laptop’s update plan</Text>
+            ) : null}
+          </>
+        ) : null}
+        {saved.uncertainty !== undefined ? (
+          <Text accessibilityRole="alert" selectable className="text-sm text-foreground-muted">
+            Not confirmed · Operation {saved.request?.operationId ?? saved.receipt?.operationId ?? saved.operationId}. Nothing will be resent.
+          </Text>
+        ) : null}
         {followerSummary !== undefined ? (
           <Text className="text-sm text-foreground-muted">
             {followerHold === undefined ? followerSummary : followerHold}
@@ -82,82 +130,78 @@ export function JonesUpdateControls({
         {observation.freshness !== "fresh" ? (
           <Text className="text-sm text-foreground-muted">{observation.message}</Text>
         ) : null}
-        {actionError ? (
+        {saved.message ? (
           <Text accessibilityRole="alert" className="text-sm text-foreground-muted">
-            {actionError}
+            {saved.message}
           </Text>
         ) : null}
-        {state.updateId ? (
+        {state?.updateId ? (
           <Text className="text-sm text-foreground-muted">Update {state.updateId}</Text>
         ) : null}
-        {presentation.outcomeMessage ? (
+        {presentation?.outcomeMessage ? (
           <View className="gap-1">
             <Text className="text-sm text-foreground-muted">{presentation.outcomeMessage}</Text>
             <Text selectable className="text-sm text-foreground-muted">
-              {state.outcome?.fromVersion} → {state.outcome?.targetVersion}
+              {state?.outcome?.fromVersion} → {state?.outcome?.targetVersion}
             </Text>
           </View>
         ) : null}
-        {state.migrationPlan ? (
+        {state?.migrationPlan ? (
           <Text className="text-sm text-foreground-muted">
             Pending migrations: {state.migrationPlan.pendingUpstream.length} upstream,{" "}
             {state.migrationPlan.pendingJones.length} Jones
           </Text>
         ) : null}
-        {state.recovery ? (
+        {state?.recovery ? (
           <Text className="text-sm text-foreground-muted">
             Recovery {state.recovery.method} · {(state.recovery.bytes / 1024 ** 3).toFixed(2)} GiB
           </Text>
         ) : null}
       </View>
-      <SettingsActionRow
-        icon="arrow.clockwise"
-        label="Check for builds"
-        disabled={!allowed || busy || !state.capability.check}
-        onPress={() => void run({ action: "check" })}
-      />
-      {state.stagedHandle !== undefined ? (
+      {state !== null ? (
+        <SettingsActionRow
+          icon="arrow.clockwise"
+          label="Check for builds"
+          disabled={!allowed || busy || outstanding || presentation?.busy || !state.capability.check}
+          onPress={() => void actions.check()}
+        />
+      ) : null}
+      {state?.capability.operations === 1 && (saved.request !== undefined || state.operation !== undefined) ? (
+        <SettingsActionRow
+          icon="arrow.clockwise"
+          label="Read operation status"
+          disabled={observation.freshness !== "fresh" || saved.reading}
+          onPress={() => void actions.read()}
+        />
+      ) : null}
+      {state?.capability.operations === 1 && state.operation !== undefined && state.operation.action.kind !== "install" && outstanding ? (
+        <SettingsActionRow
+          icon="stop.circle"
+          label={state.operation.phase === "stop-requested" || saved.stopping ? "Stop requested…" : "Stop download"}
+          disabled={!status.actions.stop || saved.stopping || saved.stopId !== undefined || state.operation.stop !== undefined || saved.uncertainty !== undefined}
+          onPress={() => void actions.stop()}
+        />
+      ) : null}
+      {state?.stagedHandle !== undefined ? (
         <SettingsActionRow
           icon="arrow.up.circle"
           label="Install downloaded build"
-          disabled={
-            !allowed ||
-            busy ||
-            !state.capability.install ||
-            state.currentVersion === undefined ||
-            followerHold !== undefined
-          }
-          onPress={() => {
-            if (state.stagedHandle === undefined || state.currentVersion === undefined) return;
-            void run({
-              action: "install",
-              input: {
-                stagedHandle: state.stagedHandle,
-                environmentId,
-                currentVersion: state.currentVersion,
-              },
-            });
-          }}
+          disabled={busy || !status.actions.install || followerHold !== undefined}
+          onPress={() => void actions.run("install")}
         />
-      ) : provenance !== undefined ? (
+      ) : state?.provenance !== undefined ? (
         <SettingsActionRow
           icon="arrow.down.circle"
           label="Download"
-          disabled={
-            !allowed ||
-            busy ||
-            !state.capability.download ||
-            state.phase !== "available" ||
-            followerHold !== undefined
-          }
-          onPress={() =>
-            void run({
-              action: "download",
-              input: { artifactId: provenance.artifactId, sourceSha: provenance.sourceSha },
-            })
-          }
+          disabled={busy || !status.actions.download || followerHold !== undefined}
+          onPress={() => void actions.run("download")}
         />
       ) : null}
     </SettingsSection>
   );
+}
+
+function commandValue<A>(result: AtomCommandResult<A, unknown>): A {
+  if (result._tag !== "Success") throw new Error("Host request was not confirmed");
+  return result.value;
 }

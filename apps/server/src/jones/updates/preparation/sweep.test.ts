@@ -79,7 +79,9 @@ describe("preparation sweep", () => {
       }),
     );
 
-    expect(sweep).toEqual({ removed: 3, retained: 7, failed: 0 });
+    expect(sweep).toMatchObject({ removed: 3, retained: 7, failed: 0 });
+    expect(sweep.removedJobIds).toEqual([dead]);
+    expect(sweep.retainedJobIds).toEqual([live]);
     expect(await NodeFSP.readdir(jobs).then((names) => names.sort())).toEqual(
       [keep, live, "not-a-job"].sort(),
     );
@@ -127,7 +129,7 @@ describe("preparation sweep", () => {
       keepJob: NodeCrypto.randomUUID(),
     });
 
-    expect(sweep).toEqual({ removed: 2, retained: 2, failed: 0 });
+    expect(sweep).toMatchObject({ removed: 2, retained: 2, failed: 0 });
     expect(await exists(newest)).toBe(true);
     expect(await exists(newer)).toBe(true);
     expect(await exists(older)).toBe(false);
@@ -149,7 +151,7 @@ describe("preparation sweep", () => {
         keepJob: NodeCrypto.randomUUID(),
       }),
     );
-    expect(sweep).toEqual({ removed: 0, retained: 1, failed: 0 });
+    expect(sweep).toMatchObject({ removed: 0, retained: 1, failed: 0 });
     expect(await exists(scratch)).toBe(true);
   });
 });

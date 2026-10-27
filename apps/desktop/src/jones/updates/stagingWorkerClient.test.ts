@@ -17,6 +17,7 @@ import {
 } from "./stagingWorkerClient.ts";
 
 const handle = "a".repeat(64);
+const token = "11111111-1111-4111-8111-111111111111";
 const workerEntry = NodePath.join(import.meta.dirname, "jonesStagingWorker.ts");
 
 const fixtures = new Set<string>();
@@ -31,6 +32,7 @@ afterEach(async () => {
 function fakeChild() {
   const messageListeners: Array<(message: unknown) => void> = [];
   const exitListeners: Array<(code: number | null, signal: string | null) => void> = [];
+  const errorListeners: Array<(error: Error) => void> = [];
   const received = Promise.withResolvers<void>();
   const sent: unknown[] = [];
   const signals: string[] = [];
@@ -42,6 +44,7 @@ function fakeChild() {
     },
     onMessage: (listener) => messageListeners.push(listener),
     onExit: (listener) => exitListeners.push(listener),
+    onError: (listener) => errorListeners.push(listener),
     signal: (signal) => signals.push(signal),
   };
   return {
@@ -49,100 +52,115 @@ function fakeChild() {
     ready: received.promise,
     sent,
     signals,
-    reply: (message: unknown) => messageListeners.forEach((listener) => listener(message)),
+    reply: (message: Record<string, unknown>) => {
+      const job = (sent[0] as { job?: { token?: string } } | undefined)?.job;
+      messageListeners.forEach((listener) => listener({ jobId: job?.token, ...message }));
+    },
+    error: (error: Error) => errorListeners.forEach((listener) => listener(error)),
     exit: (code: number | null, signal: string | null = null) =>
       exitListeners.forEach((listener) => listener(code, signal)),
   };
 }
 
-const reclaim = { kind: "reclaim", updatesRoot: "/unused", handle } as const;
+const reclaim = { kind: "reclaim", token, updatesRoot: "/unused", handle } as const;
+const prepareJob = { kind: "prepare", token, platform: "darwin", roots: { artifacts: "/unused", apps: "/unused" }, candidate: {} } as unknown as Extract<import("./stagingJobs.ts").JonesStagingJob, { kind: "prepare" }>;
 
 describe("createJonesStagingWorker", () => {
-  it("runs one job at a time, each in its own child", async () => {
-    const scripts = [fakeChild(), fakeChild()] as const;
-    const children: Array<ReturnType<typeof fakeChild>> = [];
-    const worker = createJonesStagingWorker(() => {
-      const next = scripts[children.length]!;
-      children.push(next);
-      return next.child;
-    });
-    const first = worker.run(reclaim);
-    const second = worker.run(reclaim);
-    await scripts[0].ready;
-    expect(children).toHaveLength(1);
-    expect(children[0]!.sent).toEqual([{ protocol: 1, job: reclaim }]);
-
-    children[0]!.reply({ type: "result", value: { status: "absent" } });
-    children[0]!.exit(0);
-    await expect(first).resolves.toEqual({ status: "absent" });
-    await scripts[1].ready;
-    expect(children).toHaveLength(2);
-    children[1]!.exit(1);
+  it("keeps the queue occupied after a result until actual exit", async () => {
+    const scripts = [fakeChild(), fakeChild()]; let spawned = 0;
+    const worker = createJonesStagingWorker(() => scripts[spawned++]!.child);
+    const first = worker.run(reclaim), second = worker.run({ ...reclaim, token: "22222222-2222-4222-8222-222222222222" });
+    await scripts[0]!.ready;
+    expect(scripts[0]!.sent).toEqual([{ protocol: 2, job: reclaim }]);
+    scripts[0]!.reply({ type: "result", value: { status: "absent" } });
+    await Promise.resolve(); expect(spawned).toBe(1);
+    scripts[0]!.exit(0); await expect(first).resolves.toEqual({ status: "absent" });
+    await scripts[1]!.ready; scripts[1]!.exit(1);
     await expect(second).rejects.toThrow("exited before replying (code 1)");
   });
 
-  it("forwards the verifying phase and rebuilds typed failures", async () => {
-    const scripts = [fakeChild(), fakeChild()] as const;
-    const children: Array<ReturnType<typeof fakeChild>> = [];
-    const worker = createJonesStagingWorker(() => {
-      const next = scripts[children.length]!;
-      children.push(next);
-      return next.child;
-    });
-    const phases: string[] = [];
-    const prepare = worker.run(reclaim, () => {
-      phases.push("verifying");
-    });
-    await scripts[0].ready;
-    children[0]!.reply({ type: "phase", phase: "verifying" });
-    children[0]!.reply({
-      type: "error",
-      error: { name: "JonesActionsError", message: "blocked", reason: "integrity" },
-    });
-    const failure = await prepare.catch((cause: unknown) => cause);
-    expect(phases).toEqual(["verifying"]);
-    expect(failure).toBeInstanceOf(JonesActionsError);
-    expect((failure as JonesActionsError).reason).toBe("integrity");
-
-    const coded = worker.run(reclaim);
-    await scripts[1].ready;
-    children[1]!.reply({
-      type: "error",
-      error: { name: "Error", message: "missing", code: "ENOENT" },
-    });
-    await expect(coded).rejects.toMatchObject({ message: "missing", code: "ENOENT" });
-  });
-
-  it("terminates a timed-out job's process group, escalating after the grace period", async () => {
-    const child = fakeChild();
-    const worker = createJonesStagingWorker(() => child.child, { jobTimeoutMs: 10, graceMs: 10 });
-    vi.useFakeTimers();
-    try {
-      const timedOut = expect(worker.run(reclaim)).rejects.toThrow("timed out");
-      await child.ready;
-      await vi.advanceTimersByTimeAsync(10);
-      await timedOut;
-      expect(child.signals).toEqual(["SIGTERM"]);
-      await vi.advanceTimersByTimeAsync(30);
-      expect(child.signals).toEqual(["SIGTERM", "SIGKILL"]);
-    } finally {
-      child.exit(null, "SIGKILL");
-      await worker.close();
-      vi.useRealTimers();
-    }
-  });
-
-  it("stops the running job on close and refuses later jobs", async () => {
-    const child = fakeChild();
-    const worker = createJonesStagingWorker(() => child.child, { graceMs: 1000 });
-    const running = worker.run(reclaim);
+  it("does not treat an IPC error or a spawned child error as exit", async () => {
+    const child = fakeChild(); const worker = createJonesStagingWorker(() => child.child);
+    const pending = worker.run(reclaim); let settled = false;
+    void pending.then(() => { settled = true; }, () => { settled = true; });
     await child.ready;
-    const closing = worker.close();
-    expect(child.signals).toEqual(["SIGTERM"]);
-    child.exit(null, "SIGTERM");
-    await closing;
-    await expect(running).rejects.toThrow("exited before replying (SIGTERM)");
-    expect(child.signals).toEqual(["SIGTERM"]);
+    child.reply({ type: "error", error: { name: "JonesActionsError", message: "blocked", reason: "integrity" } });
+    await Promise.resolve(); expect(settled).toBe(false);
+    child.exit(1);
+    await expect(pending).rejects.toBeInstanceOf(JonesActionsError);
+    expect(worker.reaped(token)).toBe(true);
+  });
+
+  it("holds the slot on a child error with a PID and rejects only after that child exits", async () => {
+    const child = fakeChild(); const worker = createJonesStagingWorker(() => child.child);
+    const pending = worker.run(reclaim); await child.ready;
+    child.error(Object.assign(new Error("missing"), { code: "ENOENT" }));
+    expect(worker.reaped(token)).toBe(false);
+    child.exit(1); await expect(pending).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("stops before admission, escalates only the captured preparation group and holds an unproved exit", async () => {
+    vi.useFakeTimers();
+    const child = fakeChild(); const worker = createJonesStagingWorker(() => child.child, { stopGraceMs: 15, reapMs: 5 });
+    try {
+      const pending = worker.run(prepareJob); const failure = expect(pending).rejects.toMatchObject({ name: "JonesStagingExitUnproved" });
+      await child.ready;
+      expect(await worker.cancel("wrong-token")).toBe("not-running");
+      const stopping = worker.cancel(token);
+      expect(child.signals).toEqual(["SIGTERM"]);
+      child.reply({ type: "admit-request" });
+      expect(child.sent.at(-1)).toEqual({ type: "admit", jobId: token, decision: "stop" });
+      await vi.advanceTimersByTimeAsync(15); expect(child.signals).toEqual(["SIGTERM", "SIGKILL"]);
+      await vi.advanceTimersByTimeAsync(5); expect(await stopping).toBe("exit-unproved"); await failure;
+      expect(worker.heldWorker()).toEqual({ pid: 4242, processGroup: 4242 });
+      await expect(worker.run(reclaim)).rejects.toThrow("exit is unproved");
+      child.exit(null, "SIGKILL"); expect(worker.reaped(token)).toBe(true); expect(worker.heldWorker()).toBeUndefined();
+    } finally { child.exit(null, "SIGKILL"); await worker.close(); vi.useRealTimers(); }
+  });
+
+  it("grants mount/copy exactly once and rejects Stop after admission, including a delayed phase", async () => {
+    const child = fakeChild(); const worker = createJonesStagingWorker(() => child.child);
+    const verifying = vi.fn(); const pending = worker.run(prepareJob, verifying); await child.ready;
+    child.reply({ type: "phase", phase: "verifying", jobId: "stale" });
+    expect(verifying).not.toHaveBeenCalled();
+    child.reply({ type: "admit-request" });
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    expect(verifying).toHaveBeenCalledTimes(1);
+    expect(child.sent.at(-1)).toEqual({ type: "admit", jobId: token, decision: "continue" });
+    expect(await worker.cancel(token)).toBe("not-stoppable-phase"); expect(child.signals).toEqual([]);
+    child.reply({ type: "admit-request" }); expect(verifying).toHaveBeenCalledTimes(1);
+    child.reply({ type: "result", value: {} }); expect(await worker.cancel(token)).toBe("completed");
+    child.exit(0); await pending;
+  });
+
+  it("proves cooperative Stop only on exit and remembers cancellation before a queued spawn", async () => {
+    const first = fakeChild(); let spawned = 0;
+    const worker = createJonesStagingWorker(() => { spawned++; return first.child; });
+    const firstJob = worker.run(reclaim), secondJob = worker.run({ ...prepareJob, token: "22222222-2222-4222-8222-222222222222" });
+    const stopped = expect(secondJob).rejects.toMatchObject({ name: "JonesStagingStopped" });
+    await first.ready;
+    expect(await worker.cancel("22222222-2222-4222-8222-222222222222")).toBe("stopped");
+    first.reply({ type: "result", value: { status: "absent" } }); first.exit(0); await firstJob; await stopped;
+    expect(spawned).toBe(1);
+    expect(worker.reaped("22222222-2222-4222-8222-222222222222")).toBe(true);
+  });
+
+  it("bounds timeout termination without releasing the slot early", async () => {
+    vi.useFakeTimers(); const child = fakeChild(); const worker = createJonesStagingWorker(() => child.child, { jobTimeoutMs: 10, graceMs: 10, reapMs: 5 });
+    try {
+      const failure = expect(worker.run(reclaim)).rejects.toThrow("timed out"); await child.ready;
+      await vi.advanceTimersByTimeAsync(10); expect(child.signals).toEqual(["SIGTERM"]);
+      await vi.advanceTimersByTimeAsync(10); expect(child.signals).toEqual(["SIGTERM", "SIGKILL"]);
+      child.exit(null, "SIGKILL"); await failure;
+    } finally { child.exit(null, "SIGKILL"); await worker.close(); vi.useRealTimers(); }
+  });
+
+  it("keeps the existing close grace and refuses later jobs", async () => {
+    const child = fakeChild(); const worker = createJonesStagingWorker(() => child.child, { graceMs: 1000 });
+    const pending = worker.run(reclaim); await child.ready;
+    const closing = worker.close(); expect(child.signals).toEqual(["SIGTERM"]);
+    child.exit(null, "SIGTERM"); await closing;
+    await expect(pending).rejects.toThrow("exited before replying (SIGTERM)");
     await expect(worker.run(reclaim)).rejects.toThrow("closed");
   });
 });
@@ -189,4 +207,16 @@ describe("jonesStagingWorker process", () => {
       await worker.close();
     }
   });
+});
+
+it("keeps cooperative Stop pending until the captured child really exits", async () => {
+  const child = fakeChild(), worker = createJonesStagingWorker(() => child.child);
+  const pending = worker.run(prepareJob); const stopped = expect(pending).rejects.toMatchObject({ name: "JonesStagingStopped" });
+  await child.ready;
+  let settled = false;
+  const cancellation = worker.cancel(token).then((result) => { settled = true; return result; });
+  await Promise.resolve(); expect(settled).toBe(false); expect(worker.reaped(token)).toBe(false);
+  child.exit(null, "SIGTERM");
+  expect(await cancellation).toBe("stopped"); await stopped;
+  expect(child.signals).toEqual(["SIGTERM"]);
 });

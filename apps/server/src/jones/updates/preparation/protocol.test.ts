@@ -229,3 +229,11 @@ it("binds runtime-only verification to its worker home without changing existing
     ),
   ).toBeUndefined();
 });
+
+it("keeps old sweep results compatible and bounds exact job-release evidence", () => {
+  const removedJobIds = ["11111111-1111-4111-8111-111111111111"];
+  const outcome = { kind: "sweep", removed: 1, retained: 0, failed: 0, removedJobIds, retainedJobIds: [] };
+  expect(decodePreparationResult({ protocol: 1, jobId, ok: true, outcome }, jobId, "sweep")).toMatchObject({ outcome });
+  for (const bad of [["not-a-job"], Array.from({ length: 65 }, () => removedJobIds[0])])
+    expect(decodePreparationResult({ protocol: 1, jobId, ok: true, outcome: { ...outcome, removedJobIds: bad } }, jobId, "sweep")).toBeUndefined();
+});

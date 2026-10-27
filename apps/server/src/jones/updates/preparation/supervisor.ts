@@ -14,6 +14,7 @@ import {
   withQualifiedRuntimeLock,
 } from "../../cloud/qualifiedRuntime.ts";
 import {
+  isPreparationJobId,
   decodePreparationEvent,
   decodePreparationResult,
   PREPARATION_COMMAND,
@@ -140,7 +141,20 @@ export interface PreparationWorkerExit {
   readonly stderrTail: string;
 }
 
+export interface PreparationJoin {
+  readonly kind: "completed" | "stopped" | "failed" | "unreaped" | "not-started";
+  readonly jobId: string;
+  readonly reason?: string;
+}
+
 export interface PreparationSupervisor {
+  readonly start: <J extends PreparationJob>(job: J, options: {
+    readonly jobId: string;
+    readonly signal?: AbortSignal;
+    readonly onPhase?: (phase: PreparationPhase) => void;
+  }) => { readonly outcome: Promise<PreparationOutcomeFor<J["kind"]>>; readonly settled: Promise<PreparationJoin> };
+  readonly inspect: (jobId: string) => PreparationJoin | "running" | "unknown";
+
   readonly run: <J extends PreparationJob>(
     job: J,
     options?: {
@@ -314,16 +328,27 @@ function superviseWorker(input: {
         settle(true);
       }
     });
+    const groupAlive = () => {
+      if (pid === undefined) return false;
+      try { process.kill(-pid, 0); return true; }
+      catch (cause) { return (cause as NodeJS.ErrnoException).code !== "ESRCH"; }
+    };
     child.once("exit", (exitCode, signal) => {
       exited = true;
       code = exitCode;
       exitSignal = signal;
       // A member the worker left behind, such as a child that ignored SIGTERM, ends with it.
       signalGroup("SIGKILL");
-      later(input.limits.reapMs, () => settle(true));
+      const until = Date.now() + input.limits.reapMs;
+      const confirm = () => {
+        if (!groupAlive()) settle(true);
+        else if (Date.now() >= until) settle(false);
+        else later(25, confirm);
+      };
+      confirm();
     });
     child.once("close", () => {
-      if (exited) settle(true);
+      if (exited && !groupAlive()) settle(true);
     });
   });
 }
@@ -353,8 +378,11 @@ export function makePreparationSupervisor(options: {
     return next;
   };
 
+  const joins = new Map<string, PreparationJoin | "running">();
   const runOnce = async <J extends PreparationJob>(
     job: J,
+    jobId: string,
+    observed: { exit?: PreparationWorkerExit },
     signal: AbortSignal | undefined,
     onPhase: ((phase: PreparationPhase) => void) | undefined,
   ): Promise<PreparationOutcomeFor<J["kind"]>> => {
@@ -362,7 +390,6 @@ export function makePreparationSupervisor(options: {
     const baseDir = await NodeFSP.realpath(options.baseDir);
     const jobs = preparationJobsDirectory(baseDir);
     await NodeFSP.mkdir(jobs, { recursive: true, mode: 0o700 });
-    const jobId = NodeCrypto.randomUUID();
     const jobDir = NodePath.join(jobs, jobId);
     await NodeFSP.mkdir(jobDir, { mode: 0o700 });
     let retainJob = false;
@@ -388,6 +415,7 @@ export function makePreparationSupervisor(options: {
           request,
           PREPARATION_LIMITS.requestBytes,
         );
+        signal?.throwIfAborted();
         const exit = await superviseWorker({
           command: options.command,
           jobId,
@@ -398,6 +426,7 @@ export function makePreparationSupervisor(options: {
           ...(signal === undefined ? {} : { signal }),
           ...(onPhase === undefined ? {} : { onPhase }),
         });
+        observed.exit = exit;
         try {
           options.observe?.(exit);
         } catch {
@@ -427,33 +456,41 @@ export function makePreparationSupervisor(options: {
     }
   };
 
-  const sweep = () =>
-    enqueue(() => runOnce({ kind: "sweep", cacheRoot: options.cacheRoot }, undefined, undefined));
-
+  const start: PreparationSupervisor["start"] = (job, runOptions) => {
+    const { jobId, signal } = runOptions;
+    if (!isPreparationJobId(jobId) || joins.has(jobId)) throw new Error("Preparation job ID is invalid or already used.");
+    const observed: { exit?: PreparationWorkerExit } = {};
+    joins.set(jobId, "running");
+    const queued = enqueue(() => runOnce(job, jobId, observed, signal, runOptions.onPhase));
+    if (job.kind !== "sweep") void queued.catch(() => sweep().catch(() => undefined));
+    const settled = queued.then(
+      () => ({ jobId, kind: "completed" as const }),
+      () => ({ jobId, kind: observed.exit === undefined || observed.exit.stopped === "spawn-failed"
+        ? "not-started" as const : !observed.exit.reaped ? "unreaped" as const
+        : observed.exit.stopped === "cancelled" ? "stopped" as const : "failed" as const,
+        ...(observed.exit?.stopped === undefined ? {} : { reason: observed.exit.stopped }) }),
+    ).then((join) => { joins.set(jobId, join); return join; });
+    // Caller cancellation is not the worker join. Both promises are always observed.
+    const outcome = signal === undefined ? queued : new Promise<PreparationOutcomeFor<typeof job.kind>>((resolve, reject) => {
+      const onAbort = () => reject(signal.reason);
+      if (signal.aborted) reject(signal.reason);
+      else signal.addEventListener("abort", onAbort, { once: true });
+      queued.then(
+        (value) => { signal.removeEventListener("abort", onAbort); resolve(value); },
+        (cause: unknown) => { signal.removeEventListener("abort", onAbort); reject(cause); },
+      );
+    });
+    return { outcome, settled };
+  };
+  const sweep = async () => {
+    const result = await start({ kind: "sweep", cacheRoot: options.cacheRoot }, { jobId: NodeCrypto.randomUUID() }).outcome;
+    for (const jobId of result.removedJobIds ?? []) joins.set(jobId, { jobId, kind: "stopped" });
+    return result;
+  };
   return {
-    run: (job, runOptions) => {
-      const signal = runOptions?.signal;
-      const queued = enqueue(() => runOnce(job, signal, runOptions?.onPhase));
-      // Whatever a failed or killed job left behind is swept by the next worker.
-      if (job.kind !== "sweep") void queued.catch(() => sweep().catch(() => undefined));
-      if (signal === undefined) return queued;
-      // A cancelled caller is released at once; the queue still reaps the worker behind it.
-      return new Promise((resolve, reject) => {
-        const onAbort = () => reject(signal.reason);
-        if (signal.aborted) return onAbort();
-        signal.addEventListener("abort", onAbort, { once: true });
-        queued.then(
-          (outcome) => {
-            signal.removeEventListener("abort", onAbort);
-            resolve(outcome);
-          },
-          (cause: unknown) => {
-            signal.removeEventListener("abort", onAbort);
-            reject(cause);
-          },
-        );
-      });
-    },
+    start,
+    inspect: (jobId) => joins.get(jobId) ?? "unknown",
+    run: (job, runOptions) => start(job, { ...runOptions, jobId: NodeCrypto.randomUUID() }).outcome,
     sweep,
   };
 }

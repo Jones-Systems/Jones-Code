@@ -3694,6 +3694,139 @@
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-install-status-contracts",
+      "tests": [
+        "packages/contracts/src/ipc.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts",
+        "packages/contracts/src/jones/fleetUpdates/host.test.ts",
+        "packages/contracts/src/jones/installPlan.test.ts",
+        "packages/contracts/src/jones/jonesOperations.test.ts",
+        "packages/shared/src/jones/jonesActions.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/contracts/src/ipc.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts packages/contracts/src/jones/fleetUpdates/host.test.ts packages/contracts/src/jones/installPlan.test.ts packages/contracts/src/jones/jonesOperations.test.ts packages/shared/src/jones/jonesActions.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/contracts typecheck",
+        "vp run knip --workspace packages/contracts",
+        "vp run --filter @t3tools/shared typecheck",
+        "vp run knip --workspace packages/shared",
+        "vp lint packages/contracts/src/ipc.ts packages/contracts/src/jones/environmentHttpGroups.test.ts packages/contracts/src/jones/environmentHttpGroups.ts packages/contracts/src/jones/fleetUpdates/host.test.ts packages/contracts/src/jones/fleetUpdates/host.ts packages/contracts/src/jones/fleetUpdates/http.ts packages/contracts/src/jones/installPlan.test.ts packages/contracts/src/jones/installPlan.ts packages/contracts/src/jones/jonesOperations.test.ts packages/contracts/src/jones/jonesOperations.ts packages/contracts/src/jones/jonesUpdates.ts packages/shared/src/jones/jonesActions.test.ts packages/shared/src/jones/jonesActions.ts",
+        "vp fmt --check packages/contracts/package.json packages/contracts/src/ipc.ts packages/contracts/src/jones/environmentHttpGroups.test.ts packages/contracts/src/jones/environmentHttpGroups.ts packages/contracts/src/jones/fleetUpdates/host.test.ts packages/contracts/src/jones/fleetUpdates/host.ts packages/contracts/src/jones/fleetUpdates/http.ts packages/contracts/src/jones/installPlan.test.ts packages/contracts/src/jones/installPlan.ts packages/contracts/src/jones/jonesOperations.test.ts packages/contracts/src/jones/jonesOperations.ts packages/contracts/src/jones/jonesUpdates.ts packages/shared/src/jones/jonesActions.test.ts packages/shared/src/jones/jonesActions.ts"
+      ]
+    },
+    {
+      "id": "jones-install-status-client-runtime",
+      "tests": [
+        "packages/client-runtime/src/jones/fleetUpdates/campaignController.test.ts",
+        "packages/client-runtime/src/jones/fleetUpdates/hostBridge.test.ts",
+        "packages/client-runtime/src/jones/installPlan/model.test.ts",
+        "packages/client-runtime/src/jones/installPlan/presentation.test.ts",
+        "packages/client-runtime/src/jones/installPlan/runner.test.ts",
+        "packages/client-runtime/src/jones/updates/executor.test.ts",
+        "packages/client-runtime/src/jones/updates/jonesUpdates.test.ts",
+        "packages/client-runtime/src/jones/updates/targetStatus.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/client-runtime/src/jones/fleetUpdates/campaignController.test.ts packages/client-runtime/src/jones/fleetUpdates/hostBridge.test.ts packages/client-runtime/src/jones/installPlan/model.test.ts packages/client-runtime/src/jones/installPlan/presentation.test.ts packages/client-runtime/src/jones/installPlan/runner.test.ts packages/client-runtime/src/jones/updates/executor.test.ts packages/client-runtime/src/jones/updates/jonesUpdates.test.ts packages/client-runtime/src/jones/updates/targetStatus.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "vp run knip --workspace packages/client-runtime",
+        "vp lint packages/client-runtime/src/jones/fleetUpdates/campaignController.test.ts packages/client-runtime/src/jones/fleetUpdates/campaignController.ts packages/client-runtime/src/jones/fleetUpdates/hostBridge.test.ts packages/client-runtime/src/jones/fleetUpdates/hostBridge.ts packages/client-runtime/src/jones/installPlan/index.ts packages/client-runtime/src/jones/installPlan/model.test.ts packages/client-runtime/src/jones/installPlan/model.ts packages/client-runtime/src/jones/installPlan/presentation.test.ts packages/client-runtime/src/jones/installPlan/presentation.ts packages/client-runtime/src/jones/installPlan/runner.test.ts packages/client-runtime/src/jones/installPlan/runner.ts packages/client-runtime/src/jones/updates/executor.test.ts packages/client-runtime/src/jones/updates/executor.ts packages/client-runtime/src/jones/updates/jonesUpdates.test.ts packages/client-runtime/src/jones/updates/jonesUpdates.ts packages/client-runtime/src/jones/updates/targetStatus.test.ts packages/client-runtime/src/jones/updates/targetStatus.ts",
+        "vp fmt --check packages/client-runtime/package.json packages/client-runtime/src/jones/fleetUpdates/campaignController.test.ts packages/client-runtime/src/jones/fleetUpdates/campaignController.ts packages/client-runtime/src/jones/fleetUpdates/hostBridge.test.ts packages/client-runtime/src/jones/fleetUpdates/hostBridge.ts packages/client-runtime/src/jones/installPlan/index.ts packages/client-runtime/src/jones/installPlan/model.test.ts packages/client-runtime/src/jones/installPlan/model.ts packages/client-runtime/src/jones/installPlan/presentation.test.ts packages/client-runtime/src/jones/installPlan/presentation.ts packages/client-runtime/src/jones/installPlan/runner.test.ts packages/client-runtime/src/jones/installPlan/runner.ts packages/client-runtime/src/jones/updates/executor.test.ts packages/client-runtime/src/jones/updates/executor.ts packages/client-runtime/src/jones/updates/jonesUpdates.test.ts packages/client-runtime/src/jones/updates/jonesUpdates.ts packages/client-runtime/src/jones/updates/targetStatus.test.ts packages/client-runtime/src/jones/updates/targetStatus.ts"
+      ]
+    },
+    {
+      "id": "jones-install-status-server",
+      "tests": [
+        "apps/server/src/cloud/selfUpdate.test.ts",
+        "apps/server/src/cloud/serviceLauncherClient.test.ts",
+        "apps/server/src/jones/cloud/qualifiedBackup.test.ts",
+        "apps/server/src/jones/cloud/qualifiedLauncher.test.ts",
+        "apps/server/src/jones/fleetUpdates/service.test.ts",
+        "apps/server/src/jones/fleetUpdates/store.test.ts",
+        "apps/server/src/jones/updates/JonesUpdater.test.ts",
+        "apps/server/src/jones/updates/followerPolicy.test.ts",
+        "apps/server/src/jones/updates/http.test.ts",
+        "apps/server/src/jones/updates/operations/ledger.test.ts",
+        "apps/server/src/jones/updates/operations/operations.test.ts",
+        "apps/server/src/jones/updates/operations/recoveryPreflight.test.ts",
+        "apps/server/src/jones/updates/preparation/protocol.test.ts",
+        "apps/server/src/jones/updates/preparation/responsiveness.test.ts",
+        "apps/server/src/jones/updates/preparation/stage.test.ts",
+        "apps/server/src/jones/updates/preparation/supervisor.test.ts",
+        "apps/server/src/jones/updates/preparation/sweep.test.ts",
+        "apps/server/src/serviceLauncher.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/cloud/selfUpdate.test.ts apps/server/src/cloud/serviceLauncherClient.test.ts apps/server/src/jones/cloud/qualifiedBackup.test.ts apps/server/src/jones/cloud/qualifiedLauncher.test.ts apps/server/src/jones/fleetUpdates/service.test.ts apps/server/src/jones/fleetUpdates/store.test.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/followerPolicy.test.ts apps/server/src/jones/updates/http.test.ts apps/server/src/jones/updates/operations/ledger.test.ts apps/server/src/jones/updates/operations/operations.test.ts apps/server/src/jones/updates/operations/recoveryPreflight.test.ts apps/server/src/jones/updates/preparation/protocol.test.ts apps/server/src/jones/updates/preparation/responsiveness.test.ts apps/server/src/jones/updates/preparation/stage.test.ts apps/server/src/jones/updates/preparation/supervisor.test.ts apps/server/src/jones/updates/preparation/sweep.test.ts apps/server/src/serviceLauncher.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter t3 typecheck",
+        "vp run knip --workspace apps/server",
+        "vp lint apps/server/src/cloud/serviceLauncherClient.test.ts apps/server/src/cloud/serviceLauncherClient.ts apps/server/src/cloud/serviceProtocol.ts apps/server/src/jones/cloud/qualifiedBackup.test.ts apps/server/src/jones/cloud/qualifiedBackup.ts apps/server/src/jones/cloud/qualifiedLauncher.test.ts apps/server/src/jones/fleetUpdates/http.ts apps/server/src/jones/fleetUpdates/service.test.ts apps/server/src/jones/fleetUpdates/service.ts apps/server/src/jones/fleetUpdates/store.test.ts apps/server/src/jones/fleetUpdates/store.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/JonesUpdater.ts apps/server/src/jones/updates/followerPolicy.test.ts apps/server/src/jones/updates/followerPolicy.ts apps/server/src/jones/updates/http.test.ts apps/server/src/jones/updates/http.ts apps/server/src/jones/updates/operations/ledger.test.ts apps/server/src/jones/updates/operations/ledger.ts apps/server/src/jones/updates/operations/operations.test.ts apps/server/src/jones/updates/operations/operations.ts apps/server/src/jones/updates/operations/recoveryPreflight.test.ts apps/server/src/jones/updates/operations/recoveryPreflight.ts apps/server/src/jones/updates/preparation/protocol.test.ts apps/server/src/jones/updates/preparation/protocol.ts apps/server/src/jones/updates/preparation/supervisor.test.ts apps/server/src/jones/updates/preparation/supervisor.ts apps/server/src/jones/updates/preparation/sweep.test.ts apps/server/src/jones/updates/preparation/sweep.ts apps/server/src/jones/updates/service.ts apps/server/src/serviceLauncher.ts",
+        "vp fmt --check apps/server/src/cloud/serviceLauncherClient.test.ts apps/server/src/cloud/serviceLauncherClient.ts apps/server/src/cloud/serviceProtocol.ts apps/server/src/jones/cloud/qualifiedBackup.test.ts apps/server/src/jones/cloud/qualifiedBackup.ts apps/server/src/jones/cloud/qualifiedLauncher.test.ts apps/server/src/jones/fleetUpdates/http.ts apps/server/src/jones/fleetUpdates/service.test.ts apps/server/src/jones/fleetUpdates/service.ts apps/server/src/jones/fleetUpdates/store.test.ts apps/server/src/jones/fleetUpdates/store.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/JonesUpdater.ts apps/server/src/jones/updates/followerPolicy.test.ts apps/server/src/jones/updates/followerPolicy.ts apps/server/src/jones/updates/http.test.ts apps/server/src/jones/updates/http.ts apps/server/src/jones/updates/operations/ledger.test.ts apps/server/src/jones/updates/operations/ledger.ts apps/server/src/jones/updates/operations/operations.test.ts apps/server/src/jones/updates/operations/operations.ts apps/server/src/jones/updates/operations/recoveryPreflight.test.ts apps/server/src/jones/updates/operations/recoveryPreflight.ts apps/server/src/jones/updates/preparation/protocol.test.ts apps/server/src/jones/updates/preparation/protocol.ts apps/server/src/jones/updates/preparation/supervisor.test.ts apps/server/src/jones/updates/preparation/supervisor.ts apps/server/src/jones/updates/preparation/sweep.test.ts apps/server/src/jones/updates/preparation/sweep.ts apps/server/src/jones/updates/service.ts apps/server/src/serviceLauncher.ts"
+      ]
+    },
+    {
+      "id": "jones-install-status-desktop",
+      "tests": [
+        "apps/desktop/src/jones/fleetUpdates/store.test.ts",
+        "apps/desktop/src/jones/installPlan/coordinator.test.ts",
+        "apps/desktop/src/jones/installPlan/ipc.test.ts",
+        "apps/desktop/src/jones/installPlan/store.test.ts",
+        "apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts",
+        "apps/desktop/src/jones/updates/backgroundPreparation.test.ts",
+        "apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts",
+        "apps/desktop/src/jones/updates/jonesNativePreparation.test.ts",
+        "apps/desktop/src/jones/updates/jonesNativeRecovery.test.ts",
+        "apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts",
+        "apps/desktop/src/jones/updates/preloadInstall.test.ts",
+        "apps/desktop/src/jones/updates/recoveryPreflight.test.ts",
+        "apps/desktop/src/jones/updates/stagingAdmission.test.ts",
+        "apps/desktop/src/jones/updates/stagingJobs.test.ts",
+        "apps/desktop/src/jones/updates/stagingWorkerClient.test.ts",
+        "apps/desktop/src/updates/DesktopUpdates.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/desktop/src/jones/fleetUpdates/store.test.ts apps/desktop/src/jones/installPlan/coordinator.test.ts apps/desktop/src/jones/installPlan/ipc.test.ts apps/desktop/src/jones/installPlan/store.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts apps/desktop/src/jones/updates/backgroundPreparation.test.ts apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts apps/desktop/src/jones/updates/jonesNativePreparation.test.ts apps/desktop/src/jones/updates/jonesNativeRecovery.test.ts apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts apps/desktop/src/jones/updates/preloadInstall.test.ts apps/desktop/src/jones/updates/recoveryPreflight.test.ts apps/desktop/src/jones/updates/stagingAdmission.test.ts apps/desktop/src/jones/updates/stagingJobs.test.ts apps/desktop/src/jones/updates/stagingWorkerClient.test.ts apps/desktop/src/updates/DesktopUpdates.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/desktop typecheck",
+        "vp run knip --workspace apps/desktop",
+        "vp lint apps/desktop/src/ipc/DesktopIpcHandlers.ts apps/desktop/src/jones/fleetUpdates/store.test.ts apps/desktop/src/jones/fleetUpdates/store.ts apps/desktop/src/jones/installPlan/coordinator.test.ts apps/desktop/src/jones/installPlan/coordinator.ts apps/desktop/src/jones/installPlan/ipc.test.ts apps/desktop/src/jones/installPlan/ipc.ts apps/desktop/src/jones/installPlan/store.test.ts apps/desktop/src/jones/installPlan/store.ts apps/desktop/src/jones/storage/privateJsonStore.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.ts apps/desktop/src/jones/updates/backgroundPreparation.test.ts apps/desktop/src/jones/updates/backgroundPreparation.ts apps/desktop/src/jones/updates/desktopPreparationRuntime.ts apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts apps/desktop/src/jones/updates/jonesNativeHelperSource.ts apps/desktop/src/jones/updates/jonesNativeRecovery.test.ts apps/desktop/src/jones/updates/jonesPairedStateSource.ts apps/desktop/src/jones/updates/jonesStagingWorker.ts apps/desktop/src/jones/updates/preloadInstall.test.ts apps/desktop/src/jones/updates/recoveryPreflight.test.ts apps/desktop/src/jones/updates/recoveryPreflight.ts apps/desktop/src/jones/updates/stagingAdmission.test.ts apps/desktop/src/jones/updates/stagingJobs.ts apps/desktop/src/jones/updates/stagingWorkerClient.test.ts apps/desktop/src/jones/updates/stagingWorkerClient.ts apps/desktop/src/jones/updates/stagingWorkerProtocol.ts apps/desktop/src/preload.ts apps/desktop/src/updates/DesktopUpdates.ts",
+        "vp fmt --check apps/desktop/src/ipc/DesktopIpcHandlers.ts apps/desktop/src/jones/fleetUpdates/store.test.ts apps/desktop/src/jones/fleetUpdates/store.ts apps/desktop/src/jones/installPlan/coordinator.test.ts apps/desktop/src/jones/installPlan/coordinator.ts apps/desktop/src/jones/installPlan/ipc.test.ts apps/desktop/src/jones/installPlan/ipc.ts apps/desktop/src/jones/installPlan/store.test.ts apps/desktop/src/jones/installPlan/store.ts apps/desktop/src/jones/storage/privateJsonStore.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.ts apps/desktop/src/jones/updates/backgroundPreparation.test.ts apps/desktop/src/jones/updates/backgroundPreparation.ts apps/desktop/src/jones/updates/desktopPreparationRuntime.ts apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts apps/desktop/src/jones/updates/jonesNativeHelperSource.ts apps/desktop/src/jones/updates/jonesNativeRecovery.test.ts apps/desktop/src/jones/updates/jonesPairedStateSource.ts apps/desktop/src/jones/updates/jonesStagingWorker.ts apps/desktop/src/jones/updates/preloadInstall.test.ts apps/desktop/src/jones/updates/recoveryPreflight.test.ts apps/desktop/src/jones/updates/recoveryPreflight.ts apps/desktop/src/jones/updates/stagingAdmission.test.ts apps/desktop/src/jones/updates/stagingJobs.ts apps/desktop/src/jones/updates/stagingWorkerClient.test.ts apps/desktop/src/jones/updates/stagingWorkerClient.ts apps/desktop/src/jones/updates/stagingWorkerProtocol.ts apps/desktop/src/preload.ts apps/desktop/src/updates/DesktopUpdates.ts"
+      ]
+    },
+    {
+      "id": "jones-install-status-web",
+      "tests": [
+        "apps/web/src/components/sidebar/updateEverything.logic.test.ts",
+        "apps/web/src/jones/fleetUpdates/FleetController.test.tsx",
+        "apps/web/src/jones/installStatus/InstallStatusPanel.browser.test.tsx",
+        "apps/web/src/jones/installStatus/entrypoints.test.ts",
+        "apps/web/src/jones/installStatus/panelUi.test.ts",
+        "apps/web/src/jones/installStatus/recoveryReview.browser.test.tsx",
+        "apps/web/src/jones/updates/ExactSourceUpdateAction.browser.test.tsx",
+        "apps/web/src/jones/updates/SidebarUpdatePill.test.tsx",
+        "apps/web/src/jones/updates/localDesktopUpdate.test.ts"
+      ],
+      "commands": [
+        "vp test run --root apps/web --config vite.config.ts --project unit src/components/sidebar/updateEverything.logic.test.ts src/jones/fleetUpdates/FleetController.test.tsx src/jones/installStatus/entrypoints.test.ts src/jones/installStatus/panelUi.test.ts src/jones/updates/SidebarUpdatePill.test.tsx src/jones/updates/localDesktopUpdate.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/web --config vite.config.ts --project browser src/jones/installStatus/InstallStatusPanel.browser.test.tsx src/jones/installStatus/recoveryReview.browser.test.tsx src/jones/updates/ExactSourceUpdateAction.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run knip --workspace apps/web",
+        "vp lint apps/web/src/AppRoot.tsx apps/web/src/components/LegacySidebar.tsx apps/web/src/components/settings/SettingsPanels.tsx apps/web/src/components/sidebar/SidebarChrome.tsx apps/web/src/components/sidebar/SidebarUpdatePill.tsx apps/web/src/components/sidebar/updateEverything.logic.test.ts apps/web/src/components/sidebar/updateEverything.logic.ts apps/web/src/components/sidebar/updateEverythingRun.tsx apps/web/src/components/sidebar/useUpdateEverything.ts apps/web/src/jones/fleetUpdates/FleetController.test.tsx apps/web/src/jones/fleetUpdates/FleetController.tsx apps/web/src/jones/installStatus/InstallPlanController.tsx apps/web/src/jones/installStatus/InstallStatusPanel.browser.test.tsx apps/web/src/jones/installStatus/InstallStatusPanel.tsx apps/web/src/jones/installStatus/actions.ts apps/web/src/jones/installStatus/bulkUpdates.ts apps/web/src/jones/installStatus/checkFeedback.ts apps/web/src/jones/installStatus/connectionHost.ts apps/web/src/jones/installStatus/copy.ts apps/web/src/jones/installStatus/entrypoints.test.ts apps/web/src/jones/installStatus/entrypoints.ts apps/web/src/jones/installStatus/execution.ts apps/web/src/jones/installStatus/panelUi.test.ts apps/web/src/jones/installStatus/panelUi.ts apps/web/src/jones/installStatus/presentation.ts apps/web/src/jones/installStatus/production.ts apps/web/src/jones/installStatus/recoveryReview.browser.test.tsx apps/web/src/jones/installStatus/recoveryReview.tsx apps/web/src/jones/installStatus/services.ts apps/web/src/jones/installStatus/useInstallPlan.ts apps/web/src/jones/updates/ExactSourceUpdateAction.browser.test.tsx apps/web/src/jones/updates/ExactSourceUpdateAction.tsx apps/web/src/jones/updates/JonesUpdateControls.tsx apps/web/src/jones/updates/ProductionExactSourceUpdateAction.tsx apps/web/src/jones/updates/SidebarUpdatePill.test.tsx apps/web/src/jones/updates/fixtures/InstallPreview.tsx apps/web/src/jones/updates/fixtures/install-preview-bridge.ts apps/web/src/jones/updates/fixtures/install-preview-plan.ts apps/web/src/jones/updates/localDesktopUpdate.ts",
+        "vp fmt --check apps/web/src/AppRoot.tsx apps/web/src/components/LegacySidebar.tsx apps/web/src/components/settings/SettingsPanels.tsx apps/web/src/components/sidebar/SidebarChrome.tsx apps/web/src/components/sidebar/SidebarUpdatePill.tsx apps/web/src/components/sidebar/updateEverything.logic.test.ts apps/web/src/components/sidebar/updateEverything.logic.ts apps/web/src/components/sidebar/updateEverythingRun.tsx apps/web/src/components/sidebar/useUpdateEverything.ts apps/web/src/jones/fleetUpdates/FleetController.test.tsx apps/web/src/jones/fleetUpdates/FleetController.tsx apps/web/src/jones/installStatus/InstallPlanController.tsx apps/web/src/jones/installStatus/InstallStatusPanel.browser.test.tsx apps/web/src/jones/installStatus/InstallStatusPanel.tsx apps/web/src/jones/installStatus/actions.ts apps/web/src/jones/installStatus/bulkUpdates.ts apps/web/src/jones/installStatus/checkFeedback.ts apps/web/src/jones/installStatus/connectionHost.ts apps/web/src/jones/installStatus/copy.ts apps/web/src/jones/installStatus/entrypoints.test.ts apps/web/src/jones/installStatus/entrypoints.ts apps/web/src/jones/installStatus/execution.ts apps/web/src/jones/installStatus/panelUi.test.ts apps/web/src/jones/installStatus/panelUi.ts apps/web/src/jones/installStatus/presentation.ts apps/web/src/jones/installStatus/production.ts apps/web/src/jones/installStatus/recoveryReview.browser.test.tsx apps/web/src/jones/installStatus/recoveryReview.tsx apps/web/src/jones/installStatus/services.ts apps/web/src/jones/installStatus/useInstallPlan.ts apps/web/src/jones/updates/ExactSourceUpdateAction.browser.test.tsx apps/web/src/jones/updates/ExactSourceUpdateAction.tsx apps/web/src/jones/updates/JonesUpdateControls.tsx apps/web/src/jones/updates/ProductionExactSourceUpdateAction.tsx apps/web/src/jones/updates/SidebarUpdatePill.test.tsx apps/web/src/jones/updates/fixtures/InstallPreview.tsx apps/web/src/jones/updates/fixtures/install-preview-bridge.ts apps/web/src/jones/updates/fixtures/install-preview-plan.ts apps/web/src/jones/updates/localDesktopUpdate.ts"
+      ]
+    },
+    {
+      "id": "jones-install-status-mobile",
+      "tests": [
+        "apps/mobile/src/jones/updates/JonesUpdateControls.test.tsx"
+      ],
+      "commands": [
+        "vp test run --root apps/mobile --config vite.config.ts --project react src/jones/updates/JonesUpdateControls.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/mobile typecheck",
+        "vp run knip --workspace apps/mobile",
+        "vp lint apps/mobile/src/jones/updates/JonesUpdateControls.test.tsx apps/mobile/src/jones/updates/JonesUpdateControls.tsx apps/mobile/src/jones/updates/jonesUpdates.ts apps/mobile/vite.config.ts",
+        "vp fmt --check apps/mobile/src/jones/updates/JonesUpdateControls.test.tsx apps/mobile/src/jones/updates/JonesUpdateControls.tsx apps/mobile/src/jones/updates/jonesUpdates.ts apps/mobile/vite.config.ts"
+      ]
     }
   ]
 }

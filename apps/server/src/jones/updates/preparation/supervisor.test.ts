@@ -444,3 +444,44 @@ it("fully verifies a runtime-only cache miss in the same-build worker and cleans
   await readPreparedRuntimeReceipt(h.base, BASELINE, fixtureHost, supervisor);
   expect(observations).toHaveLength(1);
 });
+
+it("exposes a real settlement join independently of an aborted caller", async () => {
+  const fixture = await home();
+  const actions = await actionsFixture(fixture, { hang: true });
+  const exits: PreparationWorkerExit[] = [];
+  const supervisor = makePreparationSupervisor({
+    baseDir: fixture.base, cacheRoot: fixture.cacheRoot, command: sourceWorkerCommand,
+    env: actions.env, observe: (exit) => exits.push(exit),
+  });
+  const jobId = "77777777-7777-4777-8777-777777777777";
+  const controller = new AbortController();
+  const job = supervisor.start(stageJob(fixture, actions), { jobId, signal: controller.signal });
+  const { gh, worker } = await hangingGh(actions);
+  try {
+    expect(supervisor.inspect(jobId)).toBe("running");
+    controller.abort(new Error("receipt-bound stop"));
+    await expect(job.outcome).rejects.toThrow("receipt-bound stop");
+    const joined = await job.settled;
+    expect(joined).toMatchObject({ jobId, kind: "stopped" });
+    expect(exits[0]).toMatchObject({ jobId, reaped: true, stopped: "cancelled" });
+    expect(alive(worker)).toBe(false);
+    expect(alive(gh)).toBe(false);
+    await supervisor.sweep();
+  } finally {
+    controller.abort();
+    await job.settled;
+  }
+});
+
+it("reports a never-spawned cancelled job without starting a worker", async () => {
+  const fixture = await home();
+  const exits: PreparationWorkerExit[] = [];
+  const supervisor = makePreparationSupervisor({ baseDir: fixture.base, cacheRoot: fixture.cacheRoot,
+    command: sourceWorkerCommand, observe: (exit) => exits.push(exit) });
+  const controller = new AbortController(); controller.abort(new Error("before spawn"));
+  const jobId = "88888888-8888-4888-8888-888888888888";
+  const job = supervisor.start({ kind: "sweep", cacheRoot: fixture.cacheRoot }, { jobId, signal: controller.signal });
+  await expect(job.outcome).rejects.toThrow("before spawn");
+  expect(await job.settled).toEqual({ jobId, kind: "not-started" });
+  expect(exits).toEqual([]);
+});

@@ -3643,9 +3643,12 @@ export default function LegacySidebar({ routeReveal }: { routeReveal: SidebarRou
     if (desktopUpdateButtonAction === "install") {
       let confirmed = false;
       try {
-        confirmed = await ensureLocalApi().dialogs.confirm(
-          getDesktopUpdateInstallConfirmationMessage(desktopUpdateState),
-        );
+        // Native plans perform their own fresh install review.
+        confirmed = bridge.installPlan !== undefined && desktopUpdateState?.jones !== undefined
+          ? true
+          : await ensureLocalApi().dialogs.confirm(
+              getDesktopUpdateInstallConfirmationMessage(desktopUpdateState),
+            );
       } catch (error) {
         setDesktopUpdateActionPending(false);
         toastManager.add(

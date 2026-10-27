@@ -115,6 +115,8 @@ export async function sweepPreparationLeftovers(input: {
   let removed = 0;
   let retained = 0;
   let failed = 0;
+  const removedJobIds: string[] = [];
+  const retainedJobIds: string[] = [];
   const removeEach = async (paths: ReadonlyArray<string>) => {
     for (const path of paths) {
       try {
@@ -138,8 +140,12 @@ export async function sweepPreparationLeftovers(input: {
         remove(NodePath.join(jobs, name)),
       );
       removed += 1;
+      if (removedJobIds.length < 64) removedJobIds.push(name);
     } catch (cause) {
-      if (cause instanceof QualifiedRuntimeBlockedError && cause.reason === "busy") retained += 1;
+      if (cause instanceof QualifiedRuntimeBlockedError && cause.reason === "busy") {
+        retained += 1;
+        if (retainedJobIds.length < 64) retainedJobIds.push(name);
+      }
       // Its owner removed it first.
       else if ((cause as NodeJS.ErrnoException).code !== "ENOENT") failed += 1;
     }
@@ -175,5 +181,5 @@ export async function sweepPreparationLeftovers(input: {
 
   for (const name of await names(NodePath.join(baseDir, "runtime")))
     if (name.startsWith(".jones-dmg-mount-") || name.startsWith(".jones-extract-")) retained += 1;
-  return { removed, retained, failed };
+  return { removed, retained, failed, removedJobIds, retainedJobIds };
 }

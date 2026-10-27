@@ -109,6 +109,8 @@ export interface PreparationSweep {
   readonly removed: number;
   readonly retained: number;
   readonly failed: number;
+  readonly removedJobIds?: ReadonlyArray<string>;
+  readonly retainedJobIds?: ReadonlyArray<string>;
 }
 
 export type PreparationOutcome =
@@ -282,9 +284,14 @@ function decodeOutcome(
 ): PreparationOutcome | undefined {
   const r = record(value);
   if (r === undefined || r.kind !== kind) return undefined;
+  const jobIds = (value: unknown): value is string[] =>
+    Array.isArray(value) && value.length <= 64 && value.every((id) => typeof id === "string" && JOB_ID.test(id));
   if (r.kind === "sweep")
-    return count(r.removed) && count(r.retained) && count(r.failed)
-      ? { kind: "sweep", removed: r.removed, retained: r.retained, failed: r.failed }
+    return (r.removedJobIds === undefined || jobIds(r.removedJobIds)) &&
+      (r.retainedJobIds === undefined || jobIds(r.retainedJobIds)) && count(r.removed) && count(r.retained) && count(r.failed)
+      ? { kind: "sweep", removed: r.removed, retained: r.retained, failed: r.failed,
+        ...(jobIds(r.removedJobIds) ? { removedJobIds: r.removedJobIds } : {}),
+        ...(jobIds(r.retainedJobIds) ? { retainedJobIds: r.retainedJobIds } : {}) }
       : undefined;
   if (r.kind === "verify-runtime") {
     const receipt = decodeQualifiedRuntimeReceipt(r.receipt);

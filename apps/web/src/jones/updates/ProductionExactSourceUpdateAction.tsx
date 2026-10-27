@@ -1,3 +1,4 @@
+import { connectionExecutorHost } from "../installStatus/connectionHost";
 import { useAtomValue } from "@effect/atom-react";
 import {
   AuthOrchestrationOperateScope,
@@ -41,7 +42,12 @@ export function ProductionExactSourceUpdateAction(target: ExactSourceTarget) {
     // Without a dialog host the restart is not confirmed, so it is not sent.
     confirm: async (message) => (await requestConfirmDialog(message)) ?? false,
   };
+  const executor = connectionExecutorHost(environmentId, host.readLatest, async (input) => {
+    const result = await host.run(input);
+    if (result._tag !== "Success") throw new Error("The request has no acknowledged result.");
+    return result.value;
+  });
   return (
-    <ExactSourceUpdateAction {...target} allowReplace={target.allowReplace ?? true} host={host} />
+    <ExactSourceUpdateAction {...target} allowReplace={target.allowReplace ?? true} host={{ ...host, executor }} />
   );
 }

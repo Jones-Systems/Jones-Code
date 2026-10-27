@@ -16,7 +16,7 @@ import {
 import { layerRemoteHttpClient } from "../../rpc/http.ts";
 import { requestFleetHost } from "./hostBridge.ts";
 
-it.effect("authenticates relay status reads with and without an operation ID", () =>
+it.effect("authenticates relay status reads and target-bound plan directive PUTs", () =>
   Effect.gen(function* () {
     const target = new RelayConnectionTarget({
       environmentId: EnvironmentId.make("fleet-status-relay"),
@@ -85,12 +85,15 @@ it.effect("authenticates relay status reads with and without an operation ID", (
         }),
     });
     const calls: Array<{ url: string; method: string; authorization: string | null }> = [];
+    const directive = { directiveId: "33333333-3333-4333-8333-333333333333", enrollmentId: "44444444-4444-4444-8444-444444444444",
+      environmentId: target.environmentId, repository: "Jones-Systems/Jones-Code" as const, targetSource: "a".repeat(40), targetTree: "b".repeat(40), expectedDirectiveId: null };
     const fetchFn: typeof fetch = async (request, init) => {
       const url = String(request);
       const headers = new Headers(init?.headers);
       const proof = JSON.parse(headers.get("dpop")!);
       const method = init?.method ?? "GET";
       calls.push({ url, method, authorization: headers.get("authorization") });
+      if (method === "PUT") expect(JSON.parse(String(init?.body))).toEqual(directive);
       if (proof.htu !== normalizeDpopHtu(url) || proof.method !== method)
         return Response.json(
           {
@@ -123,6 +126,10 @@ it.effect("authenticates relay status reads with and without an operation ID", (
         ),
       ),
     );
+    yield* requestFleetHost(entry, { action: "planDirective", input: directive }).pipe(Effect.provide(Layer.mergeAll(
+      Layer.succeed(ConnectionResolver, resolver), Layer.succeed(RemoteEnvironmentAuthorization, remote),
+      Layer.succeed(ManagedRelayDpopSigner, signer), layerRemoteHttpClient(fetchFn),
+    )));
     expect(calls).toEqual([
       {
         url: "https://fleet.example.test/api/jones-fleet-updates",
@@ -134,14 +141,15 @@ it.effect("authenticates relay status reads with and without an operation ID", (
         method: "GET",
         authorization: "DPoP synthetic-relay-token",
       },
+      { url: "https://fleet.example.test/api/jones-fleet-updates/plan-directive", method: "PUT", authorization: "DPoP synthetic-relay-token" },
     ]);
     // The signer receives each exact request URL; its proof claim omits the operation query.
     expect(proofs).toEqual(
-      calls.map(({ url }) => ({ method: "GET", url, accessToken: "synthetic-relay-token" })),
+      calls.map(({ url, method }) => ({ method, url, accessToken: "synthetic-relay-token" })),
     );
     expect(proofs.map((proof) => normalizeDpopHtu(proof.url))).toEqual(
-      Array(2).fill("https://fleet.example.test/api/jones-fleet-updates"),
+      ["https://fleet.example.test/api/jones-fleet-updates", "https://fleet.example.test/api/jones-fleet-updates", "https://fleet.example.test/api/jones-fleet-updates/plan-directive"],
     );
-    expect(authorizations).toEqual(Array(2).fill({ expectedEnvironmentId: target.environmentId }));
+    expect(authorizations).toEqual(Array(3).fill({ expectedEnvironmentId: target.environmentId }));
   }),
 );

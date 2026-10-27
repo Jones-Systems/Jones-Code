@@ -27,8 +27,7 @@ export function FleetController() {
           host: fleetHost,
           cancelled: () => cancelled,
           // The native active install's provenance; the renderer only relays it.
-          committedSource: async () =>
-            (await window.desktopBridge?.getUpdateState())?.jones?.installedSource,
+          committedSource: readFleetPublicationSource,
         });
         if (!cancelled) await refreshFleetDesktopState();
       } catch {
@@ -47,4 +46,11 @@ export function FleetController() {
     };
   }, []);
   return null;
+}
+
+export async function readFleetPublicationSource() {
+  const bridge = window.desktopBridge;
+  if (bridge?.installPlan === undefined) return (await bridge?.getUpdateState())?.jones?.installedSource;
+  const result = await bridge.installPlan({ type: "publication" });
+  return result.publication?.kind === "committed" ? result.publication.source : undefined;
 }

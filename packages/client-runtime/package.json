@@ -582,6 +582,22 @@
     "./jones/thread-monitor": {
       "types": "./src/jones/threadMonitor/index.ts",
       "default": "./src/jones/threadMonitor/index.ts"
+    },
+    "./jones/install-plan": {
+      "types": "./src/jones/installPlan/index.ts",
+      "default": "./src/jones/installPlan/index.ts"
+    },
+    "./jones/install-plan/model": {
+      "types": "./src/jones/installPlan/model.ts",
+      "default": "./src/jones/installPlan/model.ts"
+    },
+    "./jones/updates/executor": {
+      "types": "./src/jones/updates/executor.ts",
+      "default": "./src/jones/updates/executor.ts"
+    },
+    "./jones/updates/target-status": {
+      "types": "./src/jones/updates/targetStatus.ts",
+      "default": "./src/jones/updates/targetStatus.ts"
     }
   },
   "scripts": {

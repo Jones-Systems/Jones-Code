@@ -1017,3 +1017,65 @@ it.effect(
       ).toBeUndefined();
     }),
 );
+
+it.effect("refuses strict state policy on old launchers before running install work, and scopes policy to the exact operation", () =>
+  Effect.gen(function* () {
+    const context = { protocol: SERVICE_LAUNCHER_PROTOCOL, childVersion: "1.0.0",
+      qualifiedUpdatesProtocol: 1, startupGateProtocol: 1, updateOperationsProtocol: 1 };
+    const input = { targetVersion: "1.1.0", dbPath: "/synthetic/statev2.sqlite", stagedHandle: "22345678-1234-4234-8234-123456789abc",
+      operationId: "12345678-1234-4234-8234-123456789abc" };
+    const oldHost = new FakeLauncherProcess(context);
+    const old = yield* makeClient(oldHost, "1.0.0");
+    let entered = false;
+    yield* old.withStateRecoveryPolicy!(input.operationId, "clone-required", Effect.sync(() => { entered = true; })).pipe(Effect.flip);
+    yield* old.requestUpdate({ ...input, stateRecovery: "clone-required" }).pipe(Effect.flip);
+    expect(entered).toBe(false);
+    expect(oldHost.sent).toEqual([]);
+    const host = new FakeLauncherProcess({ ...context, stateRecoveryPolicyProtocol: 1 });
+    const client = yield* makeClient(host, "1.0.0");
+    expect(client.stateRecoveryPolicy).toBe(true);
+    const request = yield* Effect.forkChild(client.withStateRecoveryPolicy!(input.operationId, "clone-required", client.requestUpdate(input)), { startImmediately: true });
+    yield* Effect.promise(() => host.sentSignal.promise);
+    expect(host.sent).toEqual([{ type: "request-update", ...input, stateRecovery: "clone-required" }]);
+    host.emit({ type: "update-accepted", updateId: input.operationId });
+    expect(yield* Fiber.join(request)).toBe(input.operationId);
+    // Success releases the scope: an ordinary legacy request retains its wire shape.
+    const legacy = yield* Effect.forkChild(client.requestUpdate(input), { startImmediately: true });
+    expect(host.sent.at(-1)).toEqual({ type: "request-update", ...input });
+    host.emit({ type: "update-accepted", updateId: input.operationId });
+    yield* Fiber.join(legacy);
+    yield* client.withStateRecoveryPolicy!(input.operationId, "clone-required", Effect.fail("synthetic failure")).pipe(Effect.flip);
+    // Failure releases the scope too, allowing a subsequent explicit policy.
+    yield* client.withStateRecoveryPolicy!(input.operationId, "clone-or-copy", Effect.void);
+  }),
+);
+
+it("decodes optional state policy capability and refuses malformed policy without weakening old requests", () => {
+  const context = { protocol: SERVICE_LAUNCHER_PROTOCOL, childVersion: "1.0.0" };
+  expect(decodeServiceLauncherContext(JSON.stringify(context))).toEqual(context);
+  expect(decodeServiceLauncherContext(JSON.stringify({ ...context, stateRecoveryPolicyProtocol: 1 }))).toEqual({ ...context, stateRecoveryPolicyProtocol: 1 });
+  for (const flag of [0, 2, null, "1", true])
+    expect(decodeServiceLauncherContext(JSON.stringify({ ...context, stateRecoveryPolicyProtocol: flag }))).toBeUndefined();
+  const request = { type: "request-update", targetVersion: "1.1.0", dbPath: "/synthetic/state.sqlite", stagedHandle: "stage" };
+  expect(decodeServiceLauncherChildMessage(request)).toEqual(request);
+  for (const stateRecovery of ["clone-required", "clone-or-copy"])
+    expect(decodeServiceLauncherChildMessage({ ...request, stateRecovery })).toEqual({ ...request, stateRecovery });
+  for (const stateRecovery of [null, "copy", "", 1, true])
+    expect(decodeServiceLauncherChildMessage({ ...request, stateRecovery })).toBeUndefined();
+  expect(decodeServiceLauncherChildMessage({ ...request, stagedHandle: undefined, stateRecovery: "clone-required" })).toBeUndefined();
+});
+
+it.effect("preserves the legacy default wire request for clone-or-copy on a launcher without the policy flag", () =>
+  Effect.gen(function* () {
+    const host = new FakeLauncherProcess({ protocol: SERVICE_LAUNCHER_PROTOCOL, childVersion: "1.0.0",
+      qualifiedUpdatesProtocol: 1, startupGateProtocol: 1, updateOperationsProtocol: 1 });
+    const client = yield* makeClient(host, "1.0.0");
+    const input = { targetVersion: "1.1.0", dbPath: "/synthetic/statev2.sqlite", stagedHandle: "22345678-1234-4234-8234-123456789abc",
+      operationId: "12345678-1234-4234-8234-123456789abc" };
+    const request = yield* Effect.forkChild(client.requestUpdate({ ...input, stateRecovery: "clone-or-copy" }), { startImmediately: true });
+    yield* Effect.promise(() => host.sentSignal.promise);
+    expect(host.sent).toEqual([{ type: "request-update", ...input }]);
+    host.emit({ type: "update-accepted", updateId: input.operationId });
+    expect(yield* Fiber.join(request)).toBe(input.operationId);
+  }),
+);

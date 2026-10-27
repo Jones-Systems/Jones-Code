@@ -75,6 +75,7 @@ async function runScenario(
   onLauncher?: (launcher: Launcher) => void,
   options: {
     readonly backupAdapter?: QualifiedBackupAdapter;
+    readonly stateRecovery?: "clone-required" | "clone-or-copy";
     readonly productionMain?: boolean;
     readonly startupGateProtocol?: 1 | "missing";
     readonly historicalReceipt?: "supported" | "missing-child" | "missing-target";
@@ -304,6 +305,7 @@ if (${JSON.stringify(options.settlementRequests !== undefined)}) {
   }});
   process.send({type:"request-update", targetVersion:${JSON.stringify(target)}, dbPath:${JSON.stringify(dbPath)}, stagedHandle:handle,
     ...(${JSON.stringify(options.historicalReceipt !== undefined && options.historicalReceipt !== "missing-child")} ? {qualifiedRecoveryProtocol:1} : {}),
+    ...(${JSON.stringify(options.stateRecovery !== undefined)} ? {stateRecovery:${JSON.stringify(options.stateRecovery ?? "clone-or-copy")}} : {}),
     ...(${JSON.stringify(options.operationFailure !== undefined || options.afterOperationReserve !== undefined)} ? {operationId:"12345678-1234-4234-8234-123456789abc"} : {})});
   setInterval(() => {}, 1000);
 } else {
@@ -2175,3 +2177,83 @@ it.each(["missing-child", "missing-target"] as const)(
     );
   },
 );
+
+
+it("strict clone preflight refuses unsupported native storage before quiescing the active server", async () => {
+  const flags: number[] = [];
+  await runScenario("commit", async (base) => {
+    const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+    assert.isUndefined(state.update);
+    assert.equal(state.activeVersion, baseline);
+    const refused = JSON.parse(await NodeFSP.readFile(NodePath.join(base, "runtime", "rejected.json"), "utf8"));
+    assert.match(refused.reason, /recovery-clone-unavailable/);
+    const survived = JSON.parse(await NodeFSP.readFile(NodePath.join(base, "runtime", "old-child-survived.json"), "utf8"));
+    assert.equal(survived.context.stateRecoveryPolicyProtocol, 1);
+    // The fixture's SIGTERM handler would change this value if shutdown had started.
+    assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
+    assert.deepEqual(await NodeFSP.readdir(NodePath.join(base, "runtime", "db-backup")), []);
+  }, undefined, { stateRecovery: "clone-required", delayedGracefulClose: true,
+    backupAdapter: { availableBytes: async () => 2 * 1024 * 1024,
+      copyFile: async (_source, _target, flag) => { flags.push(flag); throw Object.assign(new Error("synthetic unsupported"), { code: "ENOTSUP" }); } } });
+  assert.equal(flags.length, 1);
+  assert.isTrue(flags.every((flag) => !!(flag & NodeFS.constants.COPYFILE_FICLONE_FORCE)));
+});
+
+it("carries strict policy through the normal qualified trial and records the actual all-state clone method", async () => {
+  const copied: string[] = [];
+  await runScenario("commit", async (base) => {
+    const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+    assert.equal(state.update?.status, "committed");
+    assert.equal(state.update?.stateRecovery, "clone-required");
+    const receipt = await readQualifiedBackupReceipt(base, state.update!.id);
+    assert.equal(receipt?.method, "clone");
+    assert.isTrue(copied.includes("settings.json"));
+    assert.isTrue(copied.includes("environment-id"));
+    await assertRecoveryPayloadRemoved(base, state.update!.id);
+  }, undefined, { stateRecovery: "clone-required", backupAdapter: {
+    availableBytes: async () => 2 * 1024 * 1024,
+    copyFile: async (source, target, flag) => {
+      assert.isTrue(!!(flag & NodeFS.constants.COPYFILE_FICLONE_FORCE));
+      copied.push(NodePath.basename(source));
+      await NodeFSP.copyFile(source, target, NodeFS.constants.COPYFILE_EXCL);
+    },
+  } });
+});
+
+it("an ordinary reviewed clone-or-copy install records copy when the strict primitive is unsupported", async () => {
+  await runScenario("commit", async (base) => {
+    const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+    assert.equal(state.update?.status, "committed");
+    assert.equal(state.update?.stateRecovery, "clone-or-copy");
+    assert.equal((await readQualifiedBackupReceipt(base, state.update!.id))?.method, "copy");
+  }, undefined, { stateRecovery: "clone-or-copy", backupAdapter: {
+    availableBytes: async () => 1024 * 1024 * 1024,
+    copyFile: async (source, target, flag) => {
+      if (flag & NodeFS.constants.COPYFILE_FICLONE_FORCE)
+        throw Object.assign(new Error("synthetic unsupported clone"), { code: "ENOTSUP" });
+      await NodeFSP.copyFile(source, target, flag);
+    },
+  } });
+});
+
+it("a strict clone lost after preflight never copies state and preserves the previous binary/database pair", async () => {
+  const flags: number[] = [];
+  await runScenario("commit", async (base) => {
+    const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+    assert.equal(state.activeVersion, baseline);
+    assert.equal(state.update?.status, "failed");
+    assert.equal(state.update?.stateRecovery, "clone-required");
+    assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
+    assert.isUndefined(await readQualifiedBackupReceipt(base, state.update!.id));
+    assert.deepEqual(await NodeFSP.readdir(NodePath.join(base, "runtime", "db-backup")), []);
+  }, undefined, { stateRecovery: "clone-required", backupAdapter: {
+    availableBytes: async () => 2 * 1024 * 1024,
+    copyFile: async (source, target, flag) => {
+      flags.push(flag);
+      if (flags.length > 1) throw Object.assign(new Error("synthetic lost clone"), { code: "EXDEV" });
+      await NodeFSP.copyFile(source, target, NodeFS.constants.COPYFILE_EXCL);
+    },
+  } });
+  assert.equal(flags.length, 2);
+  assert.isTrue(flags.every((flag) => !!(flag & NodeFS.constants.COPYFILE_FICLONE_FORCE)));
+});

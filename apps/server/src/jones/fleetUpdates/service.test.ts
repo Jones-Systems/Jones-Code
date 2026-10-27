@@ -116,7 +116,17 @@ const fixture = (
     };
     const install = vi.fn<FleetHostUpdater["installForOperation"]>((request) =>
       Effect.sync(() => {
-        expect(operations.get(input.operationId)?.phase).toBe("dispatching");
+        expect(operations.get(request.operationId)).toMatchObject({
+          phase: "dispatching",
+          input: {
+            operationId: request.operationId,
+            environmentId: request.environmentId,
+            expectedInstalledSource: request.expectedInstalledSource,
+            targetSource: request.targetSource,
+          },
+          currentVersion: request.currentVersion,
+          stagedHandle: request.stagedHandle,
+        });
         native = { state: "pending", operationId: request.operationId, binding: request };
         return { ...update, phase: "installing" };
       }),
@@ -915,3 +925,82 @@ it.effect("backs off a refused retirement and retries it under the same identity
     expect(f.snapshot().provenance?.sourceSha).toBe(input.targetSource);
   }),
 );
+
+describe("plan-managed follower targets", () => {
+  const directive = {
+    directiveId: "55555555-5555-4555-8555-555555555555",
+    enrollmentId: enrollment.enrollmentId, environmentId, repository: "Jones-Systems/Jones-Code" as const,
+    targetSource: input.targetSource, targetTree: "c".repeat(40), expectedDirectiveId: null,
+  };
+  it.effect("persists an idempotent directive without changing enrollment and excludes both campaign paths", () => Effect.gen(function* () {
+    const f = yield* fixture();
+    yield* f.service.enroll({ enrollment, expectedEnrollmentId: null });
+    const stage = vi.spyOn(f.updates, "stageExact");
+    const first = yield* f.service.planDirective(directive);
+    expect(first.planDirectiveProtocol).toBe(1);
+    expect(first.enrollment).toEqual(enrollment);
+    expect(first.follower?.planDirective).toMatchObject({ directiveId: directive.directiveId, mode: "manual-review" });
+    expect((yield* f.service.planDirective(directive)).follower?.planDirective).toEqual(first.follower?.planDirective);
+    expect((yield* f.service.planDirective({ ...directive, targetSource: "d".repeat(40) }).pipe(Effect.flip)).reason).toBe("conflict");
+    expect((yield* f.service.planDirective({ ...directive, directiveId: "66666666-6666-4666-8666-666666666666", expectedDirectiveId: null }).pipe(Effect.flip)).reason).toBe("conflict");
+    expect((yield* f.service.stage(input).pipe(Effect.flip)).reason).toBe("conflict");
+    f.operations.set(input.operationId, { input, currentVersion: "old-version", continueRunningThreads: false, phase: "staged", stagedHandle: "stage" });
+    expect((yield* f.service.activate({ environmentId, enrollmentId: enrollment.enrollmentId, operationId: input.operationId }).pipe(Effect.flip)).reason).toBe("conflict");
+    yield* f.service.follow;
+    expect(stage).not.toHaveBeenCalled();
+    expect(f.install).not.toHaveBeenCalled();
+  }));
+  it.effect("survives restart and legacy leader publication, then resumes on a later different source", () => Effect.gen(function* () {
+    const f = yield* fixture();
+    yield* f.service.enroll({ enrollment, expectedEnrollmentId: null });
+    yield* f.service.leader({ environmentId, enrollmentId: enrollment.enrollmentId, committedSource: "d".repeat(40), committedTree: "e".repeat(40) });
+    yield* f.service.planDirective(directive);
+    const savedDirective = f.follower()?.directive;
+    const stage = vi.spyOn(f.updates, "stageExact");
+    const restarted = yield* f.create();
+    yield* restarted.follow;
+    expect(stage).not.toHaveBeenCalled();
+    expect(f.install).not.toHaveBeenCalled();
+    expect(f.operations.size).toBe(0);
+    yield* restarted.leader({ environmentId, enrollmentId: enrollment.enrollmentId, committedSource: directive.targetSource, committedTree: directive.targetTree });
+    yield* restarted.follow;
+    expect(stage).not.toHaveBeenCalled();
+    expect(f.install).not.toHaveBeenCalled();
+    expect(f.retireStaged).not.toHaveBeenCalled();
+    expect(f.operations.size).toBe(0);
+    expect(f.follower()?.directive).toEqual(savedDirective);
+    expect((yield* restarted.status()).follower).toMatchObject({ state: "waiting-for-leader", planDirective: { directiveId: directive.directiveId } });
+    yield* restarted.leader({ environmentId, enrollmentId: enrollment.enrollmentId, committedSource: "f".repeat(40), committedTree: "e".repeat(40) });
+    yield* restarted.follow;
+    const laterOperationId = "33333333-3333-4333-8333-000000000001";
+    expect(stage).toHaveBeenCalledTimes(1);
+    expect(stage).toHaveBeenCalledWith({ operationId: laterOperationId, targetSource: "f".repeat(40) });
+    expect(f.install).toHaveBeenCalledTimes(1);
+    expect(f.install).toHaveBeenCalledWith(expect.objectContaining({
+      operationId: laterOperationId,
+      environmentId,
+      currentVersion: "old-version",
+      stagedHandle: "staged-handle",
+      expectedInstalledSource: input.expectedInstalledSource,
+      targetSource: "f".repeat(40),
+    }));
+    expect(f.operations.get(laterOperationId)).toMatchObject({
+      phase: "pending",
+      input: { ...input, operationId: laterOperationId, targetSource: "f".repeat(40) },
+    });
+    expect(f.operations.has(input.operationId)).toBe(false);
+    expect(f.follower()?.operation?.operationId).toBe(laterOperationId);
+    expect(f.follower()?.directive).toEqual(savedDirective);
+    yield* restarted.follow;
+    expect(stage).toHaveBeenCalledTimes(1);
+    expect(f.install).toHaveBeenCalledTimes(1);
+  }));
+  it.effect("refuses a directive while native acceptance is uncertain", () => Effect.gen(function* () {
+    const f = yield* fixture();
+    yield* f.service.enroll({ enrollment, expectedEnrollmentId: null });
+    f.setFollower({ schema: 1, leader: null, operation: { operationId: input.operationId, targetSource: input.targetSource, expectedInstalledSource: input.expectedInstalledSource }, lastAutomaticActivationAt: null });
+    f.operations.set(input.operationId, { input, currentVersion: "old-version", continueRunningThreads: false, phase: "reconciling" });
+    expect((yield* f.service.planDirective(directive).pipe(Effect.flip)).reason).toBe("conflict");
+    expect(f.follower()?.directive).toBeUndefined();
+  }));
+});

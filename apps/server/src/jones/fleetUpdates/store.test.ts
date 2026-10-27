@@ -59,3 +59,19 @@ describe("fleet host receipt storage", () => {
       expect(JSON.parse(await NodeFSP.readFile(target, "utf8"))).toEqual(enrollment);
     }));
 });
+
+it("preserves a plan directive across store restart and leader-only writes without changing enrollment", async () => fixture(async (home) => {
+  const store = createFleetHostStore(home);
+  await store.editEnrollment(() => enrollment);
+  const directive = {
+    directiveId: "22222222-2222-4222-8222-222222222222", enrollmentId: enrollment.enrollmentId,
+    targetSource: "b".repeat(40), targetTree: "c".repeat(40), mode: "manual-review" as const,
+    issuedAt: "2026-10-27T00:00:00Z", leaderAtIssue: null,
+  };
+  await store.editFollower(() => ({ schema: 1, leader: null, operation: null, lastAutomaticActivationAt: null, directive }));
+  const restarted = createFleetHostStore(home);
+  await restarted.editFollower((old) => ({ ...old!, leader: { enrollmentId: enrollment.enrollmentId,
+    committedSource: directive.targetSource, committedTree: directive.targetTree, publishedAt: "2026-10-27T00:01:00Z" } }));
+  expect((await restarted.readFollower())?.directive).toEqual(directive);
+  expect(await restarted.readEnrollment()).toEqual(enrollment);
+}));

@@ -38,6 +38,15 @@ export const FleetFollowerRecord = Schema.Struct({
     }),
   ),
   lastAutomaticActivationAt: Schema.NullOr(Schema.String),
+  directive: Schema.optionalKey(Schema.Struct({
+    directiveId: FleetOperationId,
+    enrollmentId: FleetOperationId,
+    targetSource: FleetSourceSha,
+    targetTree: FleetSourceSha,
+    mode: Schema.Literal("manual-review"),
+    issuedAt: Schema.String,
+    leaderAtIssue: Schema.NullOr(Schema.Struct({ committedSource: FleetSourceSha, publishedAt: Schema.String })),
+  })),
 });
 export type FleetFollowerRecord = typeof FleetFollowerRecord.Type;
 
@@ -62,7 +71,7 @@ const isFollower = Schema.is(FleetFollowerRecord);
 const isOperation = Schema.is(FleetHostOperation);
 const isOperationId = Schema.is(FleetOperationId);
 
-async function ownedDirectory(path: string, privateMode: boolean) {
+export async function ownedDirectory(path: string, privateMode: boolean) {
   await NodeFSP.mkdir(path, { recursive: true, mode: 0o700 });
   const stat = await NodeFSP.lstat(path);
   if (
@@ -81,7 +90,7 @@ async function ownedDirectory(path: string, privateMode: boolean) {
   }
 }
 
-async function read<T>(path: string, valid: (value: unknown) => value is T): Promise<T | null> {
+export async function read<T>(path: string, valid: (value: unknown) => value is T, limit = 64 * 1024): Promise<T | null> {
   const file = await NodeFSP.open(
     path,
     NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,
@@ -95,13 +104,17 @@ async function read<T>(path: string, valid: (value: unknown) => value is T): Pro
     if (
       !stat.isFile() ||
       stat.nlink !== 1 ||
-      stat.size > 64 * 1024 ||
+      stat.size > limit ||
       (stat.mode & 0o077) !== 0 ||
       (typeof process.getuid === "function" && stat.uid !== process.getuid())
     ) {
       throw new Error("Fleet receipt ownership or size is invalid.");
     }
-    const value: unknown = JSON.parse(await file.readFile("utf8"));
+    const bytes = Buffer.alloc(stat.size);
+    const { bytesRead } = await file.read(bytes, 0, bytes.length, 0);
+    if (bytesRead !== stat.size || (await file.stat()).size !== stat.size)
+      throw new Error("Fleet receipt changed during its bounded read.");
+    const value: unknown = JSON.parse(bytes.toString("utf8"));
     if (!valid(value))
       throw new Error("Fleet receipt is invalid; it cannot be replaced automatically.");
     return value;
@@ -110,7 +123,7 @@ async function read<T>(path: string, valid: (value: unknown) => value is T): Pro
   }
 }
 
-async function replace(path: string, value: unknown) {
+export async function replace(path: string, value: unknown) {
   const temporary = `${path}.${NodeCrypto.randomUUID()}.tmp`;
   const file = await NodeFSP.open(temporary, "wx", 0o600);
   try {
@@ -139,7 +152,7 @@ async function replace(path: string, value: unknown) {
  * store for one home queues its own requests before taking the lock.
  */
 const queues = new Map<string, Promise<unknown>>();
-function serialized<T>(key: string, operation: () => Promise<T>): Promise<T> {
+export function serialized<T>(key: string, operation: () => Promise<T>): Promise<T> {
   const result = (queues.get(key) ?? Promise.resolve()).then(operation, operation);
   const settled = result.then(
     () => undefined,

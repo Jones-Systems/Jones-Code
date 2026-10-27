@@ -1,3 +1,8 @@
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off - Native plan adapter supplies UUIDs and its scheduling clock.
+import type { JonesInstallPlanRequest, JonesInstallPlanResult } from "@t3tools/contracts/jones/installPlan";
+import { createInstallPlanStore } from "../jones/installPlan/store.ts";
+import { createInstallPlanCoordinator } from "../jones/installPlan/coordinator.ts";
+import { randomUUID } from "node:crypto";
 import type {
   FleetDesktopRequest,
   FleetDesktopState,
@@ -215,6 +220,7 @@ export class DesktopUpdates extends Context.Service<
       handle: string,
       campaignId?: string,
     ) => Effect.Effect<DesktopUpdateActionResult>;
+    readonly installPlan?: (request: JonesInstallPlanRequest) => Effect.Effect<JonesInstallPlanResult>;
     readonly fleetUpdates?: (request: FleetDesktopRequest) => Effect.Effect<FleetDesktopState>;
     readonly installPrepared: (
       expectedVersion: string,
@@ -437,7 +443,15 @@ export const make = Effect.gen(function* () {
     const processEnv = yield* HostProcess.Environment;
     const executablePath = yield* HostProcess.ExecutablePath;
     const profile = yield* DesktopUserData.resolveUserDataPath(environment);
-    const fleet = createDesktopFleetStore({ home: environment.baseDir, profile });
+    let coordinator: ReturnType<typeof createInstallPlanCoordinator> | undefined;
+    const planStore = createInstallPlanStore({ home: environment.baseDir, profile });
+    const fleet = createDesktopFleetStore({ home: environment.baseDir, profile,
+      isPlanManaged: (source) => coordinator === undefined ? Promise.resolve(true) : coordinator.isPlanManaged(source),
+      withUnmanagedTarget: (source, work) => {
+        if (coordinator === undefined) return Promise.reject(new Error("Native plan persistence is unavailable."));
+        return coordinator.withUnmanagedTarget(source, work);
+      },
+    });
     const preparation = createJonesDesktopPreparation({
       bundleDirectory: environment.dirname,
       stateDirectory: environment.stateDir,
@@ -451,12 +465,32 @@ export const make = Effect.gen(function* () {
       executablePath,
       profile,
       fleet,
+      plan: {
+        bindLaptopInstall: (binding) => {
+          if (coordinator === undefined) return Promise.reject(new Error("Native plan persistence is unavailable."));
+          return coordinator.bindLaptopInstall(binding);
+        },
+        recordLaptopOutcome: (outcome) => coordinator?.recordLaptopOutcome(outcome) ?? Promise.resolve(),
+        preparationHeld: () => coordinator === undefined ? Promise.resolve(true) : coordinator.preparationHeld(),
+        recordLaptopAdmission: (operationId) => {
+          if (coordinator === undefined) return Promise.reject(new Error("Native plan persistence is unavailable."));
+          return coordinator.recordLaptopAdmission(operationId);
+        },
+        recordLaptopWorker: (input) => {
+          if (coordinator === undefined) return Promise.reject(new Error("Native plan persistence is unavailable."));
+          return coordinator.recordLaptopWorker(input);
+        },
+      },
       activeGeneration: processEnv.T3CODE_JONES_ACTIVE_GENERATION,
       architecture: environment.runtimeInfo.hostArch === "arm64" ? "arm64" : "x64",
       platform: environment.platform,
       initialState: yield* Ref.get(updateStateRef),
       disabledByEnv: config.disableAutoUpdate,
-      onState: (state) => Effect.runPromiseWith(context)(setState(state)),
+      onState: async (state) => {
+        await Effect.runPromiseWith(context)(setState(state));
+        // Native state changes wake all windows; no renderer observation is accepted as Laptop proof.
+        void coordinator?.request({ type: "read" });
+      },
       timestamp: () => Effect.runPromiseWith(context)(currentIsoTimestamp),
       prepareNative: async (handle, transactionId, active) => {
         const primary = await Effect.runPromiseWith(context)(pool.primary);
@@ -491,7 +525,13 @@ export const make = Effect.gen(function* () {
         return backend.value.httpBaseUrl.origin;
       },
     });
-    const background = preparation.attach(controller);
+    const background = preparation.attach(controller, (source) => coordinator === undefined ? Promise.resolve(true) : coordinator.backgroundSuppressed(source));
+    coordinator = createInstallPlanCoordinator({
+      store: planStore, controller,
+      localEnvironmentId: () => controller.state.jones?.environmentId,
+      track: (work) => background.track(work), now: Date.now, uuid: randomUUID,
+      broadcast: (state) => { void Effect.runPromiseWith(context)(electronWindow.sendAll("desktop:jones-install-plan-state", state)); },
+    });
     const check = Effect.promise(() => background.check());
     const install = (handle?: string, campaignId?: string) =>
       Effect.promise(() => background.track(() => controller.install(handle, campaignId))).pipe(
@@ -521,6 +561,7 @@ export const make = Effect.gen(function* () {
       configure: Effect.gen(function* () {
         yield* Effect.addFinalizer(() => Effect.promise(() => preparation.close()));
         yield* Effect.promise(() => controller.configure());
+        yield* Effect.promise(() => coordinator!.request({ type: "read" }));
         yield* Effect.promise(() => background.start());
         yield* Effect.sleep(AUTO_UPDATE_STARTUP_DELAY).pipe(
           Effect.andThen(check),
@@ -554,6 +595,7 @@ export const make = Effect.gen(function* () {
         Effect.promise(() => background.setEnabled(enabled)).pipe(
           Effect.map(() => controller.state),
         ),
+      installPlan: (request) => Effect.promise(() => coordinator!.request(request)),
       fleetUpdates: (request) => Effect.promise(() => fleet.request(request)),
       installStaged: (handle, campaignId) =>
         install(handle, campaignId).pipe(

@@ -142,3 +142,26 @@ describe("runUpdateEverything", () => {
     expect(result.localReady).toBe(false);
   });
 });
+
+describe("Jones Update Everything handoff result", () => {
+  it("keeps each Jones target in summaries beside provider and npm work", async () => {
+    const { describeUpdateEverything, getUpdateEverythingToastView } = await import("./updateEverything.logic");
+    const vps = EnvironmentId.make("jones-vps");
+    const mini = EnvironmentId.make("jones-mini");
+    const npm = EnvironmentId.make("upstream-npm");
+    const view = describeUpdateEverything({ localVersion: null,
+      jonesMachines: [{ environmentId: vps, label: "VPS" }, { environmentId: mini, label: "Mini" }],
+      servers: [{ environmentId: npm, serverLabel: "npm", selfUpdate: "respawn", targetVersion: "0.1.0" }],
+      providerMachines: [{ environmentId: vps, label: "VPS", providers: ["Codex"] }] });
+    expect(view.lines).toEqual([
+      "npm: server to 0.1.0",
+      "VPS: Install status after Laptop verification; every install needs review, Codex",
+      "Mini: Install status after Laptop verification; every install needs review",
+    ]);
+    const result = getUpdateEverythingToastView({ localVersion: null, updatedServers: 1, updatedProviders: 1, failures: [], restarting: [],
+      jones: [{ label: "VPS", message: "Handed to Install status" }, { label: "Mini", message: "Update from Connections after Laptop is verified — unsupported operations" }] }, "0.1.0");
+    expect(result?.description).toContain("VPS: Handed to Install status");
+    expect(result?.description).toContain("Mini: Update from Connections");
+    expect(result?.title).toBe("Updated 1 server and 1 provider");
+  });
+});

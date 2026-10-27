@@ -1,40 +1,68 @@
-# Updating T3 Code
+# Updating Jones Code
 
 The app you use and the server running your agents can be on different machines.
 When a server is behind your web or desktop app, an update notice appears in the
 conversation and **Settings → Connections**. Update the machine named in that
 notice.
 
+## Install status
+
+In the desktop app, open **Install status** in the sidebar footer, just above the
+machine filters. The update button also opens it while work is in progress.
+A new plan includes **Laptop** only. Choose **Edit** to include other available
+machines, then the small **Done** to apply your selection. Escape or collapsing
+the panel discards an unfinished edit. Selection applies to this plan and does
+not change host enrollment.
+
+Choose **Download on Laptop**, then **Install on Laptop** when ready. Downloading
+never installs. Other selected machines wait until the native Laptop installation
+has committed and passed its health verification before they download, stage or
+install. Their downloads can then begin; every installation still needs its own
+review and confirmation. A machine that cannot participate shows the reason.
+Enrolled hosts receive this plan's build only through plan selection; enrollment
+alone does not include them.
+
+Use **Remove from queue** before a machine starts. This removes planned work;
+it does not uninstall anything or roll back a completed update. Started work
+cannot be removed through Edit. **Stop update** on a staged host ends its plan
+work without installing the downloaded build.
+
+On Laptop, **Stop download** is available only during transfer. Once checking
+has entered mount or copy work, or installation has begun, it cannot be stopped
+from the panel. A Stop request on a supported host remains pending until its
+worker is proved stopped; a late Stop can leave a completed download ready to
+install. **Held** or **Not confirmed** means the result is unresolved. Keep the
+operation ID and use **Check again** to read fresh evidence; it does not retry
+the operation. Closing the panel or restarting the app does not clear a hold.
+
+The header's completion **Done** appears only when Laptop and every chosen device
+have settled and no operation is outstanding. A downloaded stage or unresolved
+result keeps it open. Done dismisses the plan. Reopening **Last update** is
+read-only. The next plan starts with Laptop only.
+
+### Recovery space
+
+The installation review uses storage measurements and recovery support from the
+machine being updated. If a full backup copy will not fit but a native clone is
+proved and fits, choose **Clone** or **Stop**. Clone requires that method and
+never falls back to a full copy. If the required method is unsupported or cannot
+be proved, only **Stop** is offered with the reason. A filesystem name or a
+successful copy command alone does not prove shared storage. Available-space
+measurements are not reservations; installation checks again. An initial install
+with no existing state has no existing-data backup to claim.
+
 ## Update everything at once
 
-The update button at the bottom of the sidebar updates every connected machine
-in one step. It updates outdated providers, then servers that are behind, then
-the desktop app you are using. Servers move to the
-version your desktop app is installing, or to your web app's version. A
-background service stays on its current release channel. A remote desktop app
-installs the latest release from its own channel. Hover the button to see what
-it will update.
+The sidebar update action lists the connected machines and providers it can
+update, with a reason for anything skipped. Jones machines are handed to
+**Install status**, where Laptop verification and each install review still
+apply. They remain visible in the confirmation and results. Provider updates
+and other supported server updates keep their existing flow; a Jones plan does
+not install Laptop from a bulk restart countdown.
 
-While it runs, the button widens to show progress. It names a machine that is
-taking longer than usual, and offers **Retry** for a server that failed. Click
-it to see every machine. The desktop app restarts once each server has started
-its own restart, after a short countdown. Choose **Later** to keep working and
-restart from the update button when you are ready. A server still restarting
-finishes on its own, and the button keeps showing it after the desktop app
-restarts.
-
-Server updates appear only after that version is published to npm. Remote
-desktop apps do not wait for npm. The confirmation lists each machine it skips
-and why, such as a machine that is offline or needs a manual update. Use the
-notice or **Settings → Connections** for those.
-
-If a desktop app restarts on its old version, T3 Code tells you the update did
-not apply. It does not install that version again on its own, even when another
-device asks. Use the update button on that machine to retry.
-
-The confirmation counts the running threads that the restarts will interrupt,
-and how many can resume afterwards. See **Continue threads after restarts**
-below.
+Server updates can interrupt running threads. The confirmation counts the
+threads a restart will interrupt and how many can resume afterwards. See
+**Before you update** below.
 
 ### Prepare Jones desktop builds in the background
 
@@ -44,9 +72,10 @@ default. The app never installs a build on its own. Choose **Install** when you 
 ready.
 
 A build is prepared after it has been the newest for about ten minutes, so a quick
-series of builds downloads only the last one. A newer build replaces a download you
-have not installed, but not one you are installing. A build you discard is not
-prepared again; the next newer build is.
+series of builds downloads only the last one. A newer build can replace an
+unclaimed download, but an active plan keeps its Laptop download pinned. Stopped, interrupted or held work does not restart in the
+background; use an explicit Download when it becomes safe to proceed. A build you
+discard is not prepared again; the next newer build is.
 
 ## Before you update
 
@@ -223,15 +252,17 @@ reconnects. Hosts that cannot update remotely show instructions for updating on
 the machine instead.
 
 The same page lets you refresh provider status and update supported providers.
-These controls require a connected environment and permission to operate it.
+These controls update the selected host and require a fresh connection, its
+advertised update capabilities, and permission to operate it. They do not install
+a phone binary.
 Provider update checks and restart continuation preferences are in
 **Settings → Maintenance**. If provider update checks are disabled, enable them
 there before refreshing to find newer versions. The same setting controls whether
 T3 Code downloads model catalog updates, so with it off new models may not appear
 until you enable it and refresh provider status.
 
-Install App Store or Google Play releases as usual. The mobile app can also
-download updates in the background and apply them when you next leave the app.
+Phone binaries remain managed by the App Store or Google Play. The mobile app
+can also download updates in the background and apply them when you next leave the app.
 It saves drafts and queued messages before restarting. If you keep the app open
 for a long time, it may ask to install immediately; choosing **Later** leaves the
 update queued for the next suitable moment.

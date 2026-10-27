@@ -1321,3 +1321,26 @@ describe("follower policy on the host updater", () => {
     expect((await f.updater.install(install)).phase).toBe("installing");
   });
 });
+
+it("publishes bounded discovery classification without claiming an exhaustive check", async () => {
+  const f = fixture();
+  const classification = {
+    kind: "incomplete-discovery" as const, checkedAt: "2026-10-27T00:00:00Z",
+    discovery: { termination: "window-ended" as const, bounded: false, unresolvedLimits: ["producer-pages" as const] },
+  };
+  f.setCheckResult({ state: "no-new", classification });
+  expect((await f.updater.check()).checkClassification).toEqual(classification);
+});
+
+it("blocks new work while an earlier job's exit is unproved and releases only that hold", async () => {
+  const f = fixture();
+  f.updater.setHeldJobs(["held-a", "held-b"]);
+  await f.updater.stageExact(candidate.source);
+  await f.updater.download({ artifactId: candidate.artifactId, sourceSha: candidate.source });
+  expect(f.effects).toEqual([]);
+  f.updater.releaseHeldJob("held-a");
+  expect(f.updater.admissionHeld()).toBe(true);
+  f.updater.releaseHeldJob("held-b");
+  expect(f.updater.admissionHeld()).toBe(false);
+  expect((await f.updater.check()).phase).toBe("available");
+});

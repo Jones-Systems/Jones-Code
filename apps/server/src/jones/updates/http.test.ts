@@ -4,6 +4,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import {
   AuthOrchestrationReadScope,
+  EnvironmentInternalError,
   AuthSessionId,
   EnvironmentAuthenticatedAuth,
   EnvironmentAuthenticatedPrincipal,
@@ -33,15 +34,18 @@ import * as Startup from "../../serverRuntimeStartup.ts";
 import * as DesktopReceiver from "../../resourceTelemetry/DesktopTelemetryReceiver.ts";
 import { jonesUpdatesHttpApiLayer } from "./http.ts";
 import * as JonesUpdates from "./service.ts";
+import { unsupportedTargetOperations } from "./operations/operations.ts";
 import * as UpdateAdmissionFence from "./UpdateAdmissionFence.ts";
 import * as SourceRelation from "./sourceRelation.ts";
 import { retainStagedSelection } from "./stagedSelection.ts";
 import {
   QUALIFIED_RUNTIME_RECEIPT,
+  decodeQualifiedRuntimeReceipt,
   qualifiedPayloadDigest,
   readQualifiedRuntimeReceipt,
   stageQualifiedRuntime,
   currentQualifiedRuntimeBinding,
+  type QualifiedRuntimeReceipt,
 } from "../cloud/qualifiedRuntime.ts";
 import {
   reserveUpdateOperation,
@@ -84,27 +88,30 @@ it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
           `${baseDir}/userdata/environment-id`,
           "synthetic-settlement-host",
         );
-        yield* fs.writeFileString(
-          `${active}/${QUALIFIED_RUNTIME_RECEIPT}`,
-          JSON.stringify({
-            protocol: 1,
-            repository: "Jones-Systems/Jones-Code",
-            channel: "jones-main",
-            version,
-            sourceSha: "a".repeat(40),
-            sourceTree: "b".repeat(40),
-            installedSourceSha: "c".repeat(40),
-            runId: 1,
-            runAttempt: 1,
-            artifactId: 2,
-            workflow: ".github/workflows/artifact-cli-linux.yml",
-            artifactDigest: `sha256:${"d".repeat(64)}`,
-            archiveSha256: "e".repeat(64),
-            platform: "linux",
-            architecture: "x64",
-            payloadSha256: yield* Effect.promise(() => qualifiedPayloadDigest(active)),
-          }),
-        );
+        const runtimeReceipt: QualifiedRuntimeReceipt = {
+          protocol: 1,
+          repository: "Jones-Systems/Jones-Code",
+          channel: "jones-main",
+          version,
+          sourceSha: "a".repeat(40),
+          sourceTree: "b".repeat(40),
+          installedSourceSha: "c".repeat(40),
+          runId: 1,
+          runAttempt: 1,
+          artifactId: 2,
+          workflow: ".github/workflows/artifact-cli-linux.yml",
+          artifactDigest: `sha256:${"d".repeat(64)}`,
+          archiveSha256: "e".repeat(64),
+          platform: "linux",
+          architecture: "x64",
+          payloadSha256: yield* Effect.promise(() => qualifiedPayloadDigest(active)),
+        };
+        const receiptPath = `${active}/${QUALIFIED_RUNTIME_RECEIPT}`;
+        yield* fs.writeFileString(receiptPath, JSON.stringify(runtimeReceipt), { mode: 0o600 });
+        expect((yield* fs.stat(receiptPath)).mode & 0o777).toBe(0o600);
+        expect(
+          decodeQualifiedRuntimeReceipt(JSON.parse(yield* fs.readFileString(receiptPath))),
+        ).toEqual(runtimeReceipt);
         const installedReceipt = yield* Effect.promise(() =>
           readQualifiedRuntimeReceipt(
             baseDir,
@@ -113,6 +120,7 @@ it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
             { retainVerification: true },
           ),
         );
+        expect(installedReceipt).toEqual(runtimeReceipt);
         const previousMigrationPlan = { pendingUpstream: [901], pendingJones: [902] };
         if (restoreStage) {
           const payloadDirectory = `${baseDir}/candidate`;
@@ -452,6 +460,14 @@ function fixture(scopes: ReadonlyArray<AuthEnvironmentScope>) {
       return state;
     });
   const service = Layer.succeed(JonesUpdates.JonesUpdates, {
+    operationStart: (input) => Effect.promise(() => { calls.push({ action: "operationStart", input }); return unsupportedTargetOperations.start(input); }),
+    operationStop: (input) => Effect.promise(() => { calls.push({ action: "operationStop", input }); return unsupportedTargetOperations.stop(input); }),
+    operationFence: (input) => Effect.promise(() => { calls.push({ action: "operationFence", input }); return unsupportedTargetOperations.fence(input); }),
+    operationRead: (input) => Effect.promise(() => { calls.push({ action: "operationRead", input }); return unsupportedTargetOperations.read(input); }),
+    recoveryPreflight: (input) => Effect.suspend(() => {
+      calls.push({ action: "recoveryPreflight", input });
+      return Effect.fail(new EnvironmentInternalError({ code: "internal_error", reason: "internal_error", traceId: "preflight-unsupported" }));
+    }),
     fleetOperationsSupported: false,
     refreshPolicy: Effect.undefined,
     retireStagedOperation: () => Effect.succeed({ retired: false }),
@@ -774,6 +790,97 @@ describe("qualified update HTTP authority and decoding", () => {
       expect(unscoped.calls).toEqual([]);
     } finally {
       await unscoped.dispose();
+    }
+  });
+});
+
+describe("durable operation HTTP scopes", () => {
+  const environmentId = EnvironmentId.make("synthetic-environment");
+  const operationId = "11111111-1111-4111-8111-111111111111";
+  const original = {
+    operationId,
+    environmentId,
+    expectedInstalledSource: "a".repeat(40),
+    action: { kind: "download-exact" as const, targetSource: "b".repeat(40) },
+    correlation: {
+      planId: "33333333-3333-4333-8333-333333333333",
+      deviceKey: "synthetic-service-host",
+    },
+  };
+
+  test("separates read from operate and returns no-store for all five endpoints", async () => {
+    for (const scopes of [[], ["orchestration:read"], ["orchestration:operate"]] as const) {
+      const app = fixture(scopes);
+      try {
+        for (const [path, action, payload, read] of [
+          ["operations/start", "operationStart", original, false],
+          ["operations/stop", "operationStop", { operationId, environmentId, stopId: "22222222-2222-4222-8222-222222222222" }, false],
+          ["operations/fence", "operationFence", original, false],
+          ["operations/read", "operationRead", { environmentId, operationIds: [operationId] }, true],
+          ["recovery-preflight", "recoveryPreflight", { environmentId, stagedHandle: "stage", currentVersion: "old", expectedInstalledSource: "a".repeat(40) }, false],
+        ] as const) {
+          const permitted = scopes.some((scope) => scope === (read ? "orchestration:read" : "orchestration:operate"));
+          const count = app.calls.length;
+          const response = await app.handler(new Request(`http://fixture/api/jones-updates/${path}`, {
+            method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+          }));
+          const unsupported = action === "recoveryPreflight" || action === "operationStop";
+          expect(response.status).toBe(permitted ? (unsupported ? 500 : 200) : 403);
+          expect(app.calls.slice(count)).toEqual(permitted ? [{ action, input: payload }] : []);
+          if (permitted) expect(response.headers.get("cache-control")).toBe("no-store");
+        }
+      } finally { await app.dispose(); }
+    }
+  });
+
+  test("rejects incomplete fence intents and preserves full binding in refused receipts", async () => {
+    const app = fixture(["orchestration:operate"]);
+    try {
+      const { expectedInstalledSource: _source, ...withoutSource } = original;
+      const { action: _action, ...withoutAction } = original;
+      for (const payload of [
+        { operationId, environmentId },
+        withoutSource,
+        withoutAction,
+        { ...original, expectedInstalledSource: "a".repeat(7) },
+      ]) {
+        const response = await app.handler(
+          new Request("http://fixture/api/jones-updates/operations/fence", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(payload),
+          }),
+        );
+        expect(response.status).toBe(400);
+      }
+      expect(app.calls).toEqual([]);
+      for (const action of [
+        original.action,
+        { kind: "download", artifactId: 101, sourceSha: "b".repeat(40) },
+        {
+          kind: "install",
+          stagedHandle: "synthetic-stage",
+          currentVersion: "old",
+          targetSource: "b".repeat(40),
+        },
+      ]) {
+        const payload = { ...original, action };
+        const response = await app.handler(
+          new Request("http://fixture/api/jones-updates/operations/fence", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(payload),
+          }),
+        );
+        expect(response.status).toBe(200);
+        expect(response.headers.get("cache-control")).toBe("no-store");
+        const receipt = await response.json();
+        expect(receipt).toMatchObject({ ...payload, phase: "refused", code: "unsupported" });
+        expect(receipt).not.toHaveProperty("acceptedAt");
+        expect(app.calls.at(-1)).toEqual({ action: "operationFence", input: payload });
+      }
+    } finally {
+      await app.dispose();
     }
   });
 });

@@ -131,6 +131,12 @@ export class ServiceLauncherClient extends Context.Service<
     readonly qualifiedUpdates?: boolean;
     readonly qualifiedStaging?: boolean;
     readonly qualifiedRecovery?: boolean;
+    readonly stateRecoveryPolicy?: boolean;
+    readonly withStateRecoveryPolicy?: <A, E, R>(
+      operationId: string,
+      policy: "clone-required" | "clone-or-copy",
+      effect: Effect.Effect<A, E, R>,
+    ) => Effect.Effect<A, E | ServiceLauncherRejectedError, R>;
     readonly qualifiedOperations?: boolean;
     readonly qualifiedRetirement?: boolean;
     /** The launcher reports how a handoff ended from its durable operation receipts. */
@@ -178,6 +184,7 @@ export class ServiceLauncherClient extends Context.Service<
       readonly stagedHandle?: string;
       readonly operationId?: string;
       readonly qualifiedRecoveryProtocol?: 1;
+      readonly stateRecovery?: "clone-required" | "clone-or-copy";
     }) => Effect.Effect<string, ServiceLauncherClientError | ServiceLauncherRejectedError>;
     readonly prepareTrial: Effect.Effect<
       ServerSelfUpdateOutcome | undefined,
@@ -330,14 +337,47 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
 
   let acceptedMigrationPlan: MigrationPlan | undefined = context?.update?.migrationPlan;
   let queries = 0;
+  // The legacy self-update service captures this client. Bind policy to its exact
+  // operation while that existing install runs, and release it on every exit.
+  const recoveryPolicies = new Map<string, "clone-required" | "clone-or-copy">();
+  const stateRecoveryPolicy = context?.protocol === SERVICE_LAUNCHER_PROTOCOL &&
+    context.stateRecoveryPolicyProtocol === 1 && context.qualifiedUpdatesProtocol === 1 &&
+    context.startupGateProtocol === 1 && context.updateOperationsProtocol === 1;
+  const withStateRecoveryPolicy = <A, E, R>(
+    operationId: string,
+    policy: "clone-required" | "clone-or-copy",
+    effect: Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, E | ServiceLauncherRejectedError, R> => Effect.acquireUseRelease(
+    Effect.suspend(() => {
+      if (!stateRecoveryPolicy || recoveryPolicies.has(operationId) ||
+        !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(operationId))
+        return Effect.fail(new ServiceLauncherRejectedError({ targetVersion: context?.childVersion ?? "unknown",
+          reason: "recovery-policy-unsupported: The launcher cannot bind this recovery policy." }));
+      recoveryPolicies.set(operationId, policy);
+      return Effect.void;
+    }),
+    () => effect,
+    () => Effect.sync(() => { recoveryPolicies.delete(operationId); }),
+  );
   const requestUpdate = (input: {
     readonly targetVersion: string;
     readonly dbPath: string;
     readonly stagedHandle?: string;
     readonly operationId?: string;
     readonly qualifiedRecoveryProtocol?: 1;
-  }) =>
-    input.qualifiedRecoveryProtocol !== undefined && context?.qualifiedRecoveryProtocol !== 1
+    readonly stateRecovery?: "clone-required" | "clone-or-copy";
+  }) => Effect.suspend(() => {
+    const scoped = input.operationId === undefined ? undefined : recoveryPolicies.get(input.operationId);
+    if (scoped !== undefined && input.stateRecovery !== undefined && scoped !== input.stateRecovery)
+      return Effect.fail(new ServiceLauncherRejectedError({ targetVersion: input.targetVersion,
+        reason: "recovery-policy-conflict: The operation recovery policy changed." }));
+    const stateRecovery = scoped ?? input.stateRecovery;
+    if ((stateRecovery === "clone-required" && !stateRecoveryPolicy) ||
+      (stateRecovery !== undefined && stateRecoveryPolicy && input.stagedHandle === undefined))
+      return Effect.fail(new ServiceLauncherRejectedError({ targetVersion: input.targetVersion,
+        reason: "recovery-policy-unsupported: Refresh the launcher before choosing a recovery policy." }));
+    const { stateRecovery: _requestedStateRecovery, ...legacyInput } = input;
+    return input.qualifiedRecoveryProtocol !== undefined && context?.qualifiedRecoveryProtocol !== 1
       ? Effect.fail(
           new ServiceLauncherRejectedError({
             targetVersion: input.targetVersion,
@@ -371,7 +411,8 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
                 }),
               )
             : exchange(
-                { type: "request-update", ...input },
+                { type: "request-update", ...legacyInput,
+                  ...(!stateRecoveryPolicy || stateRecovery === undefined ? {} : { stateRecovery }) },
                 (reply) =>
                   (reply.type === "update-accepted" &&
                     (input.operationId === undefined || reply.updateId === input.operationId)) ||
@@ -394,6 +435,7 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
                       : Effect.die("service launcher returned an impossible update response"),
                 ),
               );
+  });
 
   const pending = context?.update?.status === "pending" ? context.update : undefined;
   let outcome: ServerSelfUpdateOutcome | undefined =
@@ -514,6 +556,8 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
     qualifiedUpdates: context?.qualifiedUpdatesProtocol === 1 && context.startupGateProtocol === 1,
     qualifiedStaging: context?.qualifiedUpdatesProtocol === 1,
     qualifiedRecovery: context?.qualifiedRecoveryProtocol === 1,
+    stateRecoveryPolicy,
+    withStateRecoveryPolicy,
     qualifiedOperations: context?.updateOperationsProtocol === 1,
     qualifiedRetirement: context?.updateRetirementProtocol === 1,
     qualifiedOutcomes: context?.updateOutcomeProtocol === 1,

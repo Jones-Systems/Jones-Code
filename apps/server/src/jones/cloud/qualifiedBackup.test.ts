@@ -1312,3 +1312,59 @@ it("refuses unavailable pinned-directory access instead of treating it as a miss
     assert.equal(await NodeFSP.readFile(NodePath.join(generation, "database"), "utf8"), "recovery");
   });
 });
+
+it("strict recovery rejects unsupported and cross-volume clones without a copy fallback and cleans its probe", async () => {
+  await fixture(async (base, database) => {
+    for (const code of ["ENOTSUP", "EXDEV", "ENOSYS", "EIO"]) {
+      const flags: number[] = [];
+      const adapter: QualifiedBackupAdapter = {
+        availableBytes: async () => 1024 * 1024 * 1024,
+        copyFile: async (_source, _target, flag) => {
+          flags.push(flag);
+          throw Object.assign(new Error("synthetic strict failure"), { code });
+        },
+      };
+      await NodeAssert.rejects(preflightQualifiedBackup(base, database, adapter, { cloneRequired: true }), /recovery-clone-unavailable/);
+      await NodeAssert.rejects(copyQualifiedBackupFile(database, NodePath.join(base, `strict-${code}`), adapter, { cloneRequired: true }), /recovery-clone-unavailable/);
+      assert.equal(flags.length, 2);
+      assert.isTrue(flags.every((flag) => !!(flag & NodeFS.constants.COPYFILE_FICLONE_FORCE)));
+      assert.deepEqual(await NodeFSP.readdir(NodePath.join(base, "runtime", "db-backup")), []);
+      await NodeAssert.rejects(NodeFSP.access(NodePath.join(base, `strict-${code}`)));
+    }
+  });
+});
+
+it("recovery inspection counts only the database pair and required settings, without cloning the live files", async () => {
+  await fixture(async (base, database) => {
+    await NodeFSP.writeFile(`${database}-wal`, "wal");
+    await NodeFSP.writeFile(`${database}-shm`, "shm");
+    await NodeFSP.writeFile(NodePath.join(base, "userdata", "settings.json"), "{}");
+    await NodeFSP.writeFile(NodePath.join(base, "userdata", "browser-cache"), "excluded cache");
+    const { inspectQualifiedBackup } = await import("./qualifiedBackup.ts");
+    const m = await inspectQualifiedBackup(base, database, {
+      availableBytes: async () => 2 * 1024 * 1024,
+      copyFile: async (source, target, flags) => {
+        assert.equal(NodePath.basename(source), "source");
+        assert.isTrue(NodePath.dirname(source).startsWith(NodePath.join(base, "runtime", ".clone-probe-")));
+        assert.isTrue(!!(flags & NodeFS.constants.COPYFILE_FICLONE_FORCE));
+        await NodeFSP.copyFile(source, target, NodeFS.constants.COPYFILE_EXCL);
+      },
+    });
+    assert.equal(m.bytes, 23);
+    assert.equal(m.clone.status, "proved");
+    assert.isTrue(m.cloneRequiredBytes < m.copyRequiredBytes);
+    assert.isFalse(m.firstInstall);
+    assert.deepEqual(await NodeFSP.readdir(NodePath.join(base, "runtime")), []);
+    await NodeFSP.rm(database);
+    await NodeFSP.rm(`${database}-wal`);
+    await NodeFSP.rm(`${database}-shm`);
+    await NodeFSP.rm(NodePath.join(base, "userdata", "settings.json"));
+    const first = await inspectQualifiedBackup(base, database, {
+      availableBytes: async () => 2 * 1024 * 1024,
+      copyFile: async () => { throw new Error("No probe or backup for a first install."); },
+    });
+    assert.isTrue(first.firstInstall);
+    assert.equal(first.bytes, 0);
+    assert.equal(first.clone.status, "unknown");
+  });
+});
