@@ -11,6 +11,8 @@ import * as Dialog from "../../components/ui/Dialog";
 import { useAtomMount, useAtomValue } from "@effect/atom-react";
 import { parseThreadKey, threadKey } from "@t3tools/client-runtime/state/entities";
 import { createMobileThreadVisitTracker } from "../../jones/threadVisits/tracker";
+import { useDescendantApproval } from "../../jones/descendantApproval/useDescendantApproval";
+import { DescendantApprovalCard } from "../../jones/descendantApproval/DescendantApprovalCard";
 import { useChildThreadInputs, useThreadReportedModelSelection } from "../../state/entities";
 import { UsageLimitRecoveryCard } from "./UsageLimitRecoveryCard";
 import { ChatGptUsageLimitNotice } from "./ChatGptUsageLimitNotice";
@@ -444,6 +446,10 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
     environmentId: props.environmentId,
     threadId: props.selectedThread.id,
   });
+  const descendantApproval = useDescendantApproval(props.selectedThreadDetailRef);
+  const floatingChildThreadInputs = descendantApproval.state
+    ? childThreadInputs.filter((child) => !child.hasPendingApprovals)
+    : childThreadInputs;
   const composerError = useAtomValue(threadComposerErrorsAtom)[selectedThreadKey]?.message ?? null;
   const queuedCount = useThreadQueuedCount(props.selectedThreadDetailRef);
   const turnSubagents = useThreadTurnSubagents(props.selectedThreadDetailRef);
@@ -637,11 +643,11 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
     if (threadSyncLabel !== null) {
       return { kind: "syncing", label: threadSyncLabel };
     }
-    const childInput = childThreadInputs[0];
+    const childInput = floatingChildThreadInputs[0];
     if (childInput && contentPresentationKind === "ready") {
       return {
         kind: "child-input",
-        label: childThreadInputsTitle(childThreadInputs),
+        label: childThreadInputsTitle(floatingChildThreadInputs),
         accessibilityLabel: `Open ${childInput.hasPendingApprovals ? "approval" : "question"} from ${childInput.title}`,
         onPress: () => {
           Keyboard.dismiss();
@@ -1493,12 +1499,22 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
                       />
                     </Animated.View>
                   ) : null}
-                  {props.activePendingApproval || props.activePendingUserInput ? (
+                  {descendantApproval.state ||
+                  props.activePendingApproval ||
+                  props.activePendingUserInput ? (
                     <Animated.View
                       className="shrink-0 gap-3 px-4 pb-3"
                       entering={FadeInDown.duration(220)}
                       exiting={FadeOut.duration(140)}
                     >
+                      {descendantApproval.state ? (
+                        <DescendantApprovalCard
+                          state={descendantApproval.state}
+                          onRespond={descendantApproval.onRespond}
+                          onNext={descendantApproval.onNext}
+                          onOpen={openLinkedThread}
+                        />
+                      ) : null}
                       {props.activePendingApproval ? (
                         <PendingApprovalCard
                           canOperateThread={props.canOperateThread}

@@ -24,6 +24,15 @@ describe("orchestrator MCP tool guidance", () => {
   it("routes separate-session delegation to delegate_task and keeps launches standalone", () => {
     const delegateSchema = JSON.stringify(Tool.getJsonSchema(DelegateTaskTool));
     assert.include(delegateSchema, '"workspaceStrategy"');
+    assert.include(delegateSchema, '"supervisionRequestedByUser"');
+    assert.include(
+      DelegateTaskTool.description ?? "",
+      "Omit runtimeMode and interactionMode to inherit yours",
+    );
+    assert.include(
+      DelegateTaskTool.description ?? "",
+      "only when the user asked for a supervised child",
+    );
     assert.include(delegateSchema, '"existing_worktree"');
     assert.include(delegateSchema, '"worktreePath"');
     assert.notInclude(delegateSchema, '"root"');
