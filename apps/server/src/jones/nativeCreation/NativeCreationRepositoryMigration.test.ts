@@ -46,6 +46,7 @@ it.effect("records additive fork migration 3 without changing upstream migration
         { migration_id: 124, name: "TaskContinuations" },
         { migration_id: 129, name: "CodexFailover" },
         { migration_id: 130, name: "ThreadTitleRefinement" },
+        { migration_id: 132, name: "OwnerSelections" },
       ],
     );
     assert.deepEqual(
