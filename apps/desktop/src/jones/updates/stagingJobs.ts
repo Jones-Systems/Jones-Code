@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - Staging jobs run in the separate preparation process.
 import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import {
@@ -9,8 +10,14 @@ import {
   type JonesActionsCandidate,
   type JonesStagedArtifact,
 } from "@t3tools/shared/jones/jonesActions";
+import * as Schema from "effect/Schema";
 
-import type { JonesStagedMacApp } from "./jonesActivation.ts";
+import {
+  JonesActiveInstall,
+  JonesInstallIntent,
+  JonesStagedMacApp,
+  requireWarmJonesInstallIntent,
+} from "./jonesActivation.ts";
 import { bundleFileSystem, stageJonesMacApp } from "./jonesMacStaging.ts";
 
 const HANDLE = /^[a-f0-9]{64}$/;
@@ -99,23 +106,712 @@ async function boundedEntries(directory: string, device?: number): Promise<strin
   return names;
 }
 
-/** Transaction reserves and state copies are not records; every other entry is read. */
+// Match the controller's selection formats; unknown formats can only retain payloads.
+const decodeStageReference = Schema.decodeUnknownSync(
+  Schema.Struct({
+    schema: Schema.Literal(1),
+    source: Schema.Literal("jones-actions"),
+    home: Schema.String,
+    profile: Schema.NullOr(Schema.String),
+    currentVersion: Schema.String,
+    installedSource: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/)),
+    active: Schema.NullOr(JonesActiveInstall),
+    artifactDirectory: Schema.String,
+    app: JonesStagedMacApp,
+  }),
+);
+const decodeAttemptReference = Schema.decodeUnknownSync(
+  Schema.Struct({
+    protocol: Schema.Literal(1),
+    transactionId: Schema.String.check(Schema.isPattern(HANDLE)),
+    stagedHandle: Schema.String,
+    selectionPath: Schema.String,
+    selectionSha256: Schema.String,
+    expected: JonesActiveInstall,
+  }),
+);
+
+const ReferenceHash = Schema.String.check(Schema.isPattern(HANDLE));
+const ReferenceSource = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/));
+const ReferenceText = Schema.NonEmptyString.check(
+  Schema.makeFilter((value) => value.trim() !== ""),
+);
+const ReferencePath = Schema.NonEmptyString.check(Schema.makeFilter(NodePath.isAbsolute));
+const ReferencePid = Schema.Int.check(Schema.isGreaterThan(0));
+const LegacyProcessReference = Schema.Struct({
+  pid: ReferencePid,
+  identity: Schema.NonEmptyString,
+});
+const KernelProcessReference = Schema.Struct({
+  pid: ReferencePid,
+  startSec: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  startUsec: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 999999 })),
+  executable: ReferencePath,
+});
+const ProcessReferences = Schema.Union([
+  Schema.Array(LegacyProcessReference).check(Schema.isMinLength(1), Schema.isMaxLength(256)),
+  Schema.Array(KernelProcessReference).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(256),
+    Schema.makeFilter((proofs) => new Set(proofs.map((proof) => proof.pid)).size === proofs.length),
+  ),
+]);
+const ActivationProcesses = Schema.Union([
+  ProcessReferences,
+  Schema.Array(
+    Schema.Struct({ pid: ReferencePid, role: Schema.Literals(["main", "backend"]) }),
+  ).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(256),
+    Schema.makeFilter(
+      (proofs) =>
+        new Set(proofs.map((proof) => proof.pid)).size === proofs.length &&
+        proofs.filter((proof) => proof.role === "main").length === 1,
+    ),
+  ),
+]);
+const RetirementEvidence = Schema.Literals([
+  "backend-refused",
+  "requester-exited",
+  "writers-quiescent",
+  "withdrawn",
+]);
+
+// This is the bounded reference shape from qualifiedRuntime.ts's two decoders.
+// Keep it local: the desktop worker must not load the server implementation.
+const decodeServerReference = Schema.decodeUnknownSync(
+  Schema.Struct({
+    protocol: Schema.Literal(1),
+    stagedHandle: Schema.String.check(
+      Schema.isPattern(/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/),
+    ),
+    binding: Schema.Struct({
+      baseDir: ReferencePath,
+      dbPath: ReferencePath,
+      environmentId: ReferenceText,
+      activeVersion: ReferenceText,
+      activeSourceSha: ReferenceSource,
+    }),
+    receipt: Schema.Struct({
+      protocol: Schema.Literal(1),
+      repository: Schema.Literal("Jones-Systems/Jones-Code"),
+      channel: Schema.Literal("jones-main"),
+      platform: Schema.Literals(["linux", "darwin"]),
+      architecture: Schema.Literals(["x64", "arm64"]),
+      workflow: Schema.String,
+      version: Schema.String.check(
+        Schema.isPattern(
+          /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-preview\.[0-9]+\.[0-9]+(?:\.[0-9]+)?$/,
+        ),
+      ),
+      sourceSha: ReferenceSource,
+      sourceTree: ReferenceSource,
+      installedSourceSha: ReferenceSource,
+      archiveSha256: ReferenceHash,
+      payloadSha256: ReferenceHash,
+      artifactDigest: Schema.String.check(Schema.isPattern(/^sha256:[a-f0-9]{64}$/)),
+      runId: ReferencePid,
+      runAttempt: ReferencePid,
+      artifactId: ReferencePid,
+    }),
+  }),
+);
+
+function validateServerReference(value: unknown, file: string, updatesRoot: string): void {
+  const selection = decodeServerReference(value);
+  const { binding, receipt } = selection;
+  const key = NodeCrypto.createHash("sha256").update(JSON.stringify(binding)).digest("hex");
+  const workflows =
+    receipt.platform === "linux"
+      ? [".github/workflows/artifact-cli-linux.yml"]
+      : [".github/workflows/artifact-desktop-mac.yml", ".github/workflows/artifact-cli-mac.yml"];
+  if (
+    NodePath.join(binding.baseDir, "runtime", "jones-updates") !== updatesRoot ||
+    NodePath.basename(file) !== `${key}.json` ||
+    (receipt.platform === "darwin" && receipt.architecture !== "arm64") ||
+    !workflows.includes(receipt.workflow)
+  )
+    throw new Error("Unknown server selection binding; cleanup held.");
+}
+
+type NativeBindingFacts = {
+  readonly home: string;
+  readonly databasePath: string;
+  readonly profile: string;
+  readonly environmentId: string;
+};
+type NativeTrialFacts = {
+  readonly stagedHandle: string;
+  readonly version: string;
+  readonly sourceSha: string;
+  readonly sourceTree: string;
+  readonly listener: string;
+};
+type NativeReferenceContext = {
+  legacy: boolean;
+  implicitTrialHandle: boolean;
+  modernClaim: boolean;
+  consistent: boolean;
+  binding?: NativeBindingFacts;
+  trial?: NativeTrialFacts;
+  legacyClaim?: {
+    readonly variant: "unversioned" | "claim1";
+    readonly selectionPath?: string;
+    readonly selectionSha256?: string;
+  };
+  resumedJournal?: boolean;
+  legacyDescriptor?: boolean;
+};
+
+function nativeReferenceObject(value: unknown): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    throw new Error("Unknown native reference object; cleanup held.");
+  return value as Record<string, unknown>;
+}
+
+function rememberNativeBinding(context: NativeReferenceContext, value: NativeBindingFacts): void {
+  const binding = {
+    home: value.home,
+    databasePath: value.databasePath,
+    profile: value.profile,
+    environmentId: value.environmentId,
+  };
+  if (context.binding && JSON.stringify(context.binding) !== JSON.stringify(binding))
+    context.consistent = false;
+  context.binding = binding;
+}
+
+function rememberNativeTrial(context: NativeReferenceContext, value: NativeTrialFacts): void {
+  const trial = {
+    stagedHandle: value.stagedHandle,
+    version: value.version,
+    sourceSha: value.sourceSha,
+    sourceTree: value.sourceTree,
+    listener: value.listener,
+  };
+  if (context.trial && JSON.stringify(context.trial) !== JSON.stringify(trial))
+    context.consistent = false;
+  context.trial = trial;
+}
+
+function finalizeNativeReferences(
+  context: NativeReferenceContext,
+  directory: string,
+  updatesRoot: string,
+): void {
+  if (!context.legacy) return;
+  const transactionId = NodePath.basename(directory);
+  const home = NodePath.dirname(NodePath.dirname(updatesRoot));
+  const canonical = (path: string) =>
+    NodePath.isAbsolute(path) && NodePath.normalize(path) === path;
+  if (
+    updatesRoot !== NodePath.join(home, "runtime", "jones-updates") ||
+    directory !== NodePath.join(updatesRoot, "transactions", transactionId) ||
+    !context.resumedJournal ||
+    !context.consistent ||
+    context.modernClaim ||
+    context.trial?.stagedHandle !== transactionId ||
+    !context.binding ||
+    !canonical(context.binding.databasePath) ||
+    !canonical(context.binding.profile) ||
+    (context.implicitTrialHandle && !context.legacyDescriptor)
+  )
+    throw new Error("Unproved legacy native reference context; cleanup held.");
+}
+
+/** Validate reference identity, never grant activation or retirement authority. */
+function validateNativeReference(
+  value: unknown,
+  file: string,
+  updatesRoot: string,
+  context: NativeReferenceContext,
+): void {
+  const transactionId = NodePath.basename(NodePath.dirname(file));
+  if (!HANDLE.test(transactionId)) throw new Error("Unknown native transaction; cleanup held.");
+  const raw = nativeReferenceObject(value);
+  if (raw.preparationClaimProtocol === 2 || raw.preparationClaimProtocol === 3)
+    context.modernClaim = true;
+  const home = NodePath.dirname(NodePath.dirname(updatesRoot));
+  const tx = NodePath.join(updatesRoot, "transactions", transactionId);
+  const binding = {
+    protocol: Schema.Literal(1),
+    transactionId: Schema.Literal(transactionId),
+    home: Schema.Literal(home),
+    databasePath: ReferencePath,
+    profile: ReferencePath,
+    environmentId: Schema.NonEmptyString,
+  };
+  const trial = {
+    ...binding,
+    startupGateProtocol: Schema.Literal(1),
+    stagedHandle: ReferenceHash,
+    version: Schema.NonEmptyString,
+    sourceSha: ReferenceSource,
+    sourceTree: ReferenceSource,
+    listener: ReferenceText,
+  };
+  const trialReceipt = Schema.Struct({
+    ...trial,
+    resumeHeld: Schema.Literal(true),
+    backendProcess: LegacyProcessReference,
+  });
+  const trialValue = (original: unknown) => {
+    const raw = nativeReferenceObject(original);
+    if (Object.hasOwn(raw, "stagedHandle")) return original;
+    context.legacy = true;
+    context.implicitTrialHandle = true;
+    // Only a temporary validation value; the directory still needs its format/completion witnesses.
+    return { ...raw, stagedHandle: transactionId };
+  };
+  const rememberTrial = (record: NativeBindingFacts & NativeTrialFacts) => {
+    rememberNativeBinding(context, record);
+    rememberNativeTrial(context, record);
+  };
+  // preparation_claim / preparation_context in jonesNativeHelperSource.ts.
+  const claim = {
+    ...binding,
+    preparationClaimProtocol: Schema.Literals([2, 3]),
+    stagedHandle: ReferenceHash,
+    selectionPath: ReferencePath.check(
+      Schema.makeFilter((path) => NodePath.dirname(path) === NodePath.join(updatesRoot, "staging")),
+    ),
+    selectionSha256: ReferenceHash,
+  };
+  const intent = Schema.Struct({
+    ...JonesInstallIntent.fields,
+    transactionId: binding.transactionId,
+    staged: Schema.Struct({ ...JonesStagedMacApp.fields, handle: ReferenceHash }),
+    expected: Schema.Struct({ ...JonesActiveInstall.fields, home: binding.home }),
+    continuationReceipt: Schema.Literal(NodePath.join(tx, "continuation.json")),
+    processes: ActivationProcesses,
+    listener: Schema.NonEmptyString,
+  });
+  const rememberIntent = (record: typeof intent.Type) => {
+    rememberNativeBinding(context, record.expected);
+    rememberNativeTrial(context, {
+      stagedHandle: record.staged.handle,
+      version: record.staged.version,
+      sourceSha: record.staged.sourceSha,
+      sourceTree: record.staged.sourceTree,
+      listener: record.listener,
+    });
+  };
+  const plan = Schema.Struct({
+    protocol: binding.protocol,
+    transactionId: binding.transactionId,
+    activeBinding: Schema.Struct({ ...JonesActiveInstall.fields, home: binding.home }),
+    records: Schema.Record(Schema.String, ReferenceHash).check(
+      Schema.makeFilter(
+        (records) =>
+          !Array.isArray(records) &&
+          "prepare-intent.json" in records &&
+          Object.keys(records).every((name) =>
+            [
+              "prepare-intent.json",
+              "prepare-request.json",
+              "prepare-refused.json",
+              "prepare-failure.json",
+              "prepare-dispatched.json",
+              "continuation.json",
+              "activation-request.json",
+              "preparation-withdrawal.json",
+            ].includes(name),
+          ),
+      ),
+    ),
+    attemptSelection: ReferencePath.check(
+      Schema.makeFilter(
+        (path) => NodePath.dirname(path) === NodePath.join(updatesRoot, "attempt-selections"),
+      ),
+    ),
+    attemptSha256: ReferenceHash,
+    retiredPath: Schema.Literal(NodePath.join(updatesRoot, "retired-preparations", transactionId)),
+  });
+  // Match the native helper's named records, plus the server's trialGate.ts receipts.
+  switch (NodePath.basename(file)) {
+    case "intent.json":
+    case "activation-request.json":
+      requireWarmJonesInstallIntent(value);
+      rememberIntent(Schema.decodeUnknownSync(intent)(value));
+      return;
+    case "journal.json": {
+      // Inspect the original intent before decoding can strip future discriminators.
+      requireWarmJonesInstallIntent(raw.intent);
+      const natural = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+      const decimal = Schema.String.check(Schema.isPattern(/^[0-9]+$/));
+      const diagnostics = Schema.Record(
+        Schema.String,
+        Schema.Union([Schema.String, Schema.Number]),
+      );
+      const journal = Schema.decodeUnknownSync(
+        Schema.Struct({
+          intent,
+          phase: Schema.Literals(["resumed", "rolled-back"]),
+          message: Schema.optionalKey(Schema.String),
+          phaseBeforeBlock: Schema.optionalKey(Schema.String),
+          incomingBundle: Schema.optionalKey(ReferencePath),
+          previousBundle: Schema.optionalKey(ReferencePath),
+          pairedState: Schema.optionalKey(ReferencePath),
+          candidateWriter: Schema.optionalKey(
+            Schema.Union([KernelProcessReference, LegacyProcessReference]),
+          ),
+          backendWriter: Schema.optionalKey(
+            Schema.Union([KernelProcessReference, LegacyProcessReference]),
+          ),
+          trialReceipt: Schema.optionalKey(trialReceipt),
+          diagnostics: Schema.optionalKey(diagnostics),
+          recoveryDiagnostics: Schema.optionalKey(diagnostics),
+          relaunchDiagnostics: Schema.optionalKey(diagnostics),
+          relaunch: Schema.optionalKey(Schema.Literal("failed")),
+          recoveryReserveCleanup: Schema.optionalKey(Schema.Literal("held")),
+          recovery: Schema.optionalKey(
+            Schema.Struct({
+              method: Schema.Literals(["clone", "copy", "sqlite-backup"]),
+              bytes: Schema.Number,
+              startedAt: Schema.Number,
+              completedAt: Schema.Number,
+            }),
+          ),
+          storage: Schema.optionalKey(
+            Schema.Struct({
+              stateBytes: natural,
+              candidateBytes: natural,
+              requiredBytes: natural,
+              headroomBytesPerVolume: natural,
+              stateRecovery: Schema.optionalKey(Schema.Literal("clone-required")),
+              volumes: Schema.Array(
+                Schema.Struct({
+                  path: ReferencePath,
+                  device: decimal,
+                  requiredBytes: natural,
+                  availableBytes: natural,
+                }),
+              ),
+            }),
+          ),
+          recoveryReserves: Schema.optionalKey(
+            Schema.Array(
+              Schema.Struct({
+                path: ReferencePath,
+                bytes: natural,
+                device: decimal,
+                inode: decimal,
+                purpose: Schema.Literals(["journal", "recovery"]),
+              }),
+            ),
+          ),
+          preEffect: Schema.optionalKey(
+            Schema.Struct({
+              phase: Schema.Literals(["intent", "preparing", "quiescent"]),
+              step: Schema.Literals([
+                "storage",
+                "reserve",
+                "bundle",
+                "stop-processes",
+                "quiescence",
+                "pair",
+              ]),
+              reason: Schema.String,
+              diagnostics: Schema.optionalKey(diagnostics),
+              relaunch: Schema.Literals(["started", "skipped"]),
+            }),
+          ),
+          legacySettlement: Schema.optionalKey(
+            Schema.Struct({
+              basis: Schema.Literals(["interrupted-preparation", "unstarted-activation"]),
+              settledBy: Schema.Literal("startup"),
+              evidence: Schema.Record(Schema.String, Schema.Union([Schema.String, Schema.Boolean])),
+            }),
+          ),
+          preSwapPreparationRecovery: Schema.optionalKey(
+            Schema.Struct({
+              transactionId: binding.transactionId,
+              journalSha256: ReferenceHash,
+              intentSha256: ReferenceHash,
+            }),
+          ),
+        }),
+      )(
+        Object.hasOwn(raw, "trialReceipt")
+          ? { ...raw, trialReceipt: trialValue(raw.trialReceipt) }
+          : value,
+      );
+      context.resumedJournal = journal.phase === "resumed";
+      rememberIntent(journal.intent);
+      if (journal.trialReceipt) rememberTrial(journal.trialReceipt);
+      return;
+    }
+    case "prepare-intent.json":
+    case "prepare-dispatched.json":
+    case "continuation.json": {
+      const continuation = NodePath.basename(file) === "continuation.json";
+      const requirePrepared = () => {
+        if (continuation)
+          Schema.decodeUnknownSync(Schema.Struct({ prepared: Schema.Literal(true) }))(value);
+      };
+      let legacyClaim: NonNullable<NativeReferenceContext["legacyClaim"]>;
+      if (!Object.hasOwn(raw, "preparationClaimProtocol")) {
+        if (
+          NodePath.basename(file) === "prepare-dispatched.json" ||
+          ["stagedHandle", "selectionPath", "selectionSha256"].some((key) =>
+            Object.hasOwn(raw, key),
+          )
+        )
+          throw new Error("Unknown undiscriminated preparation reference; cleanup held.");
+        const record = Schema.decodeUnknownSync(
+          Schema.Struct({ ...binding, prepared: Schema.Literal(true) }),
+        )(value);
+        rememberNativeBinding(context, record);
+        legacyClaim = { variant: "unversioned" };
+      } else if (raw.preparationClaimProtocol === 1) {
+        if (Object.hasOwn(raw, "stagedHandle"))
+          throw new Error("Unknown legacy preparation handle; cleanup held.");
+        const record = Schema.decodeUnknownSync(
+          Schema.Struct({
+            ...binding,
+            preparationClaimProtocol: Schema.Literal(1),
+            selectionPath: claim.selectionPath.check(
+              Schema.makeFilter((path) => NodePath.normalize(path) === path),
+            ),
+            selectionSha256: ReferenceHash,
+          }),
+        )(value);
+        requirePrepared();
+        rememberNativeBinding(context, record);
+        legacyClaim = {
+          variant: "claim1",
+          selectionPath: record.selectionPath,
+          selectionSha256: record.selectionSha256,
+        };
+      } else {
+        // A present discriminator selects the strict current decoder; failure never falls back.
+        Schema.decodeUnknownSync(Schema.Struct(claim))(value);
+        requirePrepared();
+        context.modernClaim = true;
+        return;
+      }
+      context.legacy = true;
+      if (
+        context.legacyClaim &&
+        JSON.stringify(context.legacyClaim) !== JSON.stringify(legacyClaim)
+      )
+        context.consistent = false;
+      context.legacyClaim = legacyClaim;
+      return;
+    }
+    case "prepare-request.json":
+      Schema.decodeUnknownSync(
+        Schema.Struct({
+          protocol: binding.protocol,
+          transactionId: binding.transactionId,
+          stagedHandle: ReferenceHash,
+          claimSha256: ReferenceHash,
+          processes: ProcessReferences,
+        }),
+      )(value);
+      return;
+    case "prepare-refused.json":
+      Schema.decodeUnknownSync(
+        Schema.Struct({
+          protocol: binding.protocol,
+          transactionId: binding.transactionId,
+          stagedHandle: ReferenceHash,
+          claimSha256: ReferenceHash,
+          reason: Schema.String,
+        }),
+      )(value);
+      return;
+    case "prepare-failure.json":
+      Schema.decodeUnknownSync(
+        Schema.Struct({ protocol: binding.protocol, reason: Schema.String }),
+      )(value);
+      return;
+    case "preparation-withdrawal.json":
+      Schema.decodeUnknownSync(
+        Schema.Struct({
+          protocol: binding.protocol,
+          transactionId: binding.transactionId,
+          withdrawalProtocol: Schema.Literal(1),
+          claimSha256: ReferenceHash,
+          claim: Schema.Struct({ ...claim, preparationClaimProtocol: Schema.Literal(3) }),
+          expected: Schema.Struct({ ...JonesActiveInstall.fields, home: binding.home }),
+          evidence: Schema.Literal("withdrawal-protocol"),
+        }),
+      )(value);
+      context.modernClaim = true;
+      return;
+    case "preparation-retirement.json":
+      Schema.decodeUnknownSync(
+        Schema.Struct({
+          protocol: binding.protocol,
+          planSha256: ReferenceHash,
+          plan,
+          evidence: RetirementEvidence,
+        }),
+      )(value);
+      return;
+    case "preparation-retirement-receipt.json":
+      Schema.decodeUnknownSync(
+        Schema.Struct({
+          protocol: binding.protocol,
+          transactionId: binding.transactionId,
+          planSha256: ReferenceHash,
+          status: Schema.Literal("retired"),
+          evidence: RetirementEvidence,
+        }),
+      )(value);
+      return;
+    case "retirement-intent.json": {
+      const natural = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+      const decimal = Schema.String.check(Schema.isPattern(/^[0-9]+$/));
+      const kind = Schema.Literals(["file", "directory", "link"]);
+      // retirement_context's inventories are evidence only; this worker never executes them.
+      Schema.decodeUnknownSync(
+        Schema.Struct({
+          protocol: binding.protocol,
+          planSha256: ReferenceHash,
+          plan: Schema.Struct({
+            protocol: binding.protocol,
+            transactionId: binding.transactionId,
+            activeBinding: Schema.Struct({ ...JonesActiveInstall.fields, home: binding.home }),
+            journalSha256: ReferenceHash,
+            targets: Schema.Array(
+              Schema.Struct({
+                path: ReferencePath,
+                kind,
+                device: decimal,
+                inode: decimal,
+                bytes: natural,
+                parentDevice: decimal,
+                parentInode: decimal,
+                entries: Schema.Array(
+                  Schema.Struct({
+                    path: Schema.NonEmptyString,
+                    kind,
+                    device: decimal,
+                    inode: decimal,
+                    bytes: natural,
+                    mode: natural,
+                  }),
+                ),
+              }),
+            ),
+          }),
+        }),
+      )(value);
+      return;
+    }
+    case "retirement-receipt.json":
+      Schema.decodeUnknownSync(
+        Schema.Struct({
+          protocol: binding.protocol,
+          transactionId: binding.transactionId,
+          planSha256: ReferenceHash,
+          status: Schema.Literal("retired"),
+        }),
+      )(value);
+      return;
+    case "advanced-state-authority-guard.json":
+      Schema.decodeUnknownSync(
+        Schema.Struct({
+          protocol: binding.protocol,
+          guard: Schema.Union([
+            Schema.Struct({ kind: Schema.Literal("absent") }),
+            Schema.Struct({
+              kind: Schema.Literal("fenced"),
+              environmentId: Schema.NonEmptyString,
+              authorityNamespace: Schema.NonEmptyString,
+              storeGeneration: ReferencePid,
+              transitionId: Schema.NonEmptyString,
+              recordSha256: ReferenceHash,
+            }),
+          ]),
+        }),
+      )(value);
+      return;
+    case "attempt-selection.json": {
+      const attempt = decodeAttemptReference(value);
+      if (
+        attempt.transactionId !== transactionId ||
+        attempt.expected.home !== home ||
+        !HANDLE.test(attempt.stagedHandle) ||
+        !HANDLE.test(attempt.selectionSha256) ||
+        NodePath.dirname(attempt.selectionPath) !== NodePath.join(updatesRoot, "staging")
+      )
+        throw new Error("Unknown retired attempt binding; cleanup held.");
+      return;
+    }
+    default: {
+      switch (NodePath.basename(file)) {
+        case "trial-descriptor.json":
+          rememberTrial(
+            Schema.decodeUnknownSync(
+              Schema.Struct({
+                ...trial,
+                trialReceiptPath: Schema.Literal(NodePath.join(tx, "trial-receipt.json")),
+                commitGrantPath: Schema.Literal(NodePath.join(tx, "commit-grant.json")),
+              }),
+            )(trialValue(value)),
+          );
+          context.legacyDescriptor = !Object.hasOwn(raw, "stagedHandle");
+          return;
+        case "commit-grant.json":
+          rememberTrial(
+            Schema.decodeUnknownSync(
+              Schema.Struct({ ...trial, generation: binding.transactionId }),
+            )(trialValue(value)),
+          );
+          return;
+        case "trial-receipt.json":
+        case "resume-dispatched.json":
+          rememberTrial(Schema.decodeUnknownSync(trialReceipt)(trialValue(value)));
+          return;
+        default:
+          throw new Error("Unknown staging reference format; cleanup held.");
+      }
+    }
+  }
+}
+
+/** Only an interpretable record can prove that a handle is unrelated. */
 async function recordMentions(
   file: string,
   handle: string,
-  jsonOnly = false,
+  format: "stage" | "attempt" | "server" | "native",
+  updatesRoot: string,
   device?: number,
+  nativeContext?: NativeReferenceContext,
 ): Promise<boolean> {
-  if (jsonOnly && !file.endsWith(".json")) return false;
-  const info = await NodeFSP.lstat(file);
-  if (
-    !info.isFile() ||
-    info.uid !== process.getuid?.() ||
-    (device !== undefined && info.dev !== device) ||
-    info.size > MAX_RECORD_BYTES
-  )
-    throw new Error("A staging record is not a bounded regular file.");
-  return (await NodeFSP.readFile(file, "utf8")).includes(handle);
+  const requireRecord = (info: NodeFS.Stats) => {
+    if (
+      !info.isFile() ||
+      info.uid !== process.getuid?.() ||
+      (device !== undefined && info.dev !== device) ||
+      info.size > MAX_RECORD_BYTES
+    )
+      throw new Error("A staging record is not a bounded regular file.");
+  };
+  requireRecord(await NodeFSP.lstat(file));
+  const record = await NodeFSP.open(file, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW);
+  try {
+    requireRecord(await record.stat());
+    const raw = await record.readFile("utf8");
+    if (Buffer.byteLength(raw) > MAX_RECORD_BYTES)
+      throw new Error("A staging record is not a bounded regular file.");
+    const value: unknown = JSON.parse(raw);
+    // Normalize before matching so escaped keys and values still retain their handles.
+    if (JSON.stringify(value).includes(handle)) return true;
+    if (format === "stage") decodeStageReference(value);
+    else if (format === "attempt") decodeAttemptReference(value);
+    else if (format === "server") validateServerReference(value, file, updatesRoot);
+    else {
+      if (!nativeContext) throw new Error("Missing native reference context; cleanup held.");
+      validateNativeReference(value, file, updatesRoot, nativeContext);
+    }
+    return false;
+  } finally {
+    await record.close();
+  }
 }
 
 /**
@@ -125,14 +821,15 @@ async function recordMentions(
 async function handleReferenced(updatesRoot: string, handle: string): Promise<boolean> {
   const device = (await ownedDirectory(updatesRoot)).dev;
   // `selections` belongs to the bundled server's qualified runtime; a mention there still counts.
-  for (const [name, jsonOnly] of [
-    ["staging", false],
-    ["attempt-selections", false],
-    ["selections", true],
+  for (const [name, format] of [
+    ["staging", "stage"],
+    ["attempt-selections", "attempt"],
+    ["selections", "server"],
   ] as const) {
     const root = NodePath.join(updatesRoot, name);
     for (const entry of await boundedEntries(root, device))
-      if (await recordMentions(NodePath.join(root, entry), handle, jsonOnly, device)) return true;
+      if (await recordMentions(NodePath.join(root, entry), handle, format, updatesRoot, device))
+        return true;
   }
   for (const name of ["transactions", "retired-preparations"]) {
     const root = NodePath.join(updatesRoot, name);
@@ -140,9 +837,39 @@ async function handleReferenced(updatesRoot: string, handle: string): Promise<bo
       if (entry.includes(handle)) return true;
       const directory = NodePath.join(root, entry);
       await ownedDirectory(directory, device);
-      for (const record of await boundedEntries(directory, device))
-        if (await recordMentions(NodePath.join(directory, record), handle, true, device))
+      const context: NativeReferenceContext = {
+        legacy: false,
+        implicitTrialHandle: false,
+        modernClaim: false,
+        consistent: true,
+      };
+      for (const record of await boundedEntries(directory, device)) {
+        // Native recovery reserves and state-copy directories carry no reference records.
+        if (["previous-pair", "advanced-state"].includes(record)) {
+          await ownedDirectory(NodePath.join(directory, record), device);
+          continue;
+        }
+        if (
+          ["reserve.bin", "recovery-reserve.bin", "recovery-journal-reserve.bin"].includes(record)
+        ) {
+          const info = await NodeFSP.lstat(NodePath.join(directory, record));
+          if (!info.isFile() || info.uid !== process.getuid?.() || info.dev !== device)
+            throw new Error("Unknown staging reserve ownership or type.");
+          continue;
+        }
+        if (
+          await recordMentions(
+            NodePath.join(directory, record),
+            handle,
+            "native",
+            updatesRoot,
+            device,
+            context,
+          )
+        )
           return true;
+      }
+      finalizeNativeReferences(context, directory, updatesRoot);
     }
   }
   return false;
