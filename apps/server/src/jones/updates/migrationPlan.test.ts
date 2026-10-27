@@ -56,6 +56,85 @@ it("reads the candidate's pending IDs without changing database bytes or timesta
   });
 });
 
+// Released ff200fca manifest: later production additions must not move this fixture.
+const released130Identities = [
+  [1, "WorktreeOwnershipLeases"],
+  [2, "ProjectionThreadRuntimeIdentity"],
+  [3, "NativeCreationIntents"],
+  [4, "NativeCreationCommandIdentities"],
+  [5, "WorkstreamsNativeAttempts"],
+  [6, "WorkstreamsProviderEnrollments"],
+  [100, "NativeCreationExecution"],
+  [101, "NativeWorkspacePreparation"],
+  [102, "ImportedHistoryChoices"],
+  [103, "RuntimeStop"],
+  [104, "DeletionAdmission"],
+  [105, "UpstreamReferenceIsolation"],
+  [106, "PlannedUpdateContinuity"],
+  [107, "WorkstreamsSettlementProofs"],
+  [108, "PhysicalProcessEvidence"],
+  [109, "OrdinaryCheckoutLifecycle"],
+  [110, "ThreadLookupIndexes"],
+  [111, "ClientSettlementCommands"],
+  [112, "ClientLaunchRequests"],
+  [114, "SelfSettlementProjectItems"],
+  [115, "ScheduledWebhookPendingRuns"],
+  [116, "RemoteAdmission"],
+  [117, "RemoteDelegationIntents"],
+  [118, "RemoteAdmissionIntegration"],
+  [119, "PeerEnvironmentLinks"],
+  [120, "SettlementRestores"],
+  [121, "RemoteTaskObservations"],
+  [122, "ThreadLinks"],
+  [123, "WorkspaceLifecycle"],
+  [124, "TaskContinuations"],
+  [129, "CodexFailover"],
+  [130, "ThreadTitleRefinement"],
+] as const;
+
+it("preflights a fixed released 130 ledger: append pending, lower insertion refused, bytes unchanged", () => {
+  withDatabase((databasePath, root) => {
+    const writer = new NodeSqlite.DatabaseSync(databasePath);
+    try {
+      writer.exec(
+        "DELETE FROM jones_sql_migrations; CREATE TABLE jones_thread_title_refinement (thread_id TEXT PRIMARY KEY, state_json TEXT); INSERT INTO jones_thread_title_refinement VALUES ('retained', '{\"title\":\"Retained title\"}')",
+      );
+      const insert = writer.prepare("INSERT INTO jones_sql_migrations VALUES (?, ?)");
+      for (const [id, name] of released130Identities) insert.run(id, name);
+    } finally {
+      writer.close();
+    }
+    const before = NodeFS.readFileSync(databasePath);
+    const modified = NodeFS.statSync(databasePath).mtimeMs;
+    const files = NodeFS.readdirSync(root);
+    expect(
+      readMigrationPlan({
+        databasePath,
+        upstream: manifest.upstream,
+        jones: [...released130Identities, [131, "SyntheticAppend"]],
+      }),
+    ).toEqual({
+      status: "ready",
+      migrationPlan: { pendingUpstream: [2], pendingJones: [131] },
+    });
+    expect(NodeFS.readFileSync(databasePath)).toEqual(before);
+    expect(NodeFS.statSync(databasePath).mtimeMs).toBe(modified);
+    expect(NodeFS.readdirSync(root)).toEqual(files);
+    const lower: Array<readonly [number, string]> = [
+      ...released130Identities,
+      [125, "SyntheticLateAddition"],
+    ];
+    lower.sort(([a], [b]) => a - b);
+    expect(readMigrationPlan({ databasePath, upstream: manifest.upstream, jones: lower })).toEqual({
+      status: "blocked",
+      reason: "Jones migration history has a missing prefix.",
+    });
+    expect(NodeFS.readFileSync(databasePath)).toEqual(before);
+    expect(NodeFS.statSync(databasePath).mtimeMs).toBe(modified);
+    expect(NodeFS.readdirSync(root)).toEqual(files);
+  });
+});
+
 it("blocks a candidate older than the recorded Jones database", () => {
   withDatabase((databasePath) => {
     const database = new NodeSqlite.DatabaseSync(databasePath);
@@ -191,20 +270,26 @@ it.effect(
         );
         expect(readMigrationPlan({ databasePath, ...current })).toEqual({
           status: "ready",
-          migrationPlan: { pendingUpstream: [64, 65, 66, 67], pendingJones: [latestJones[0]] },
+          migrationPlan: {
+            pendingUpstream: [64, 65, 66, 67, 68, 69],
+            pendingJones: [latestJones[0]],
+          },
         });
         const beforePreflight = NodeFS.readFileSync(databasePath);
         const preflightMtime = NodeFS.statSync(databasePath).mtimeMs;
         const preflightFiles = NodeFS.readdirSync(root);
         expect(readMigrationPlan({ databasePath, ...current })).toEqual({
           status: "ready",
-          migrationPlan: { pendingUpstream: [64, 65, 66, 67], pendingJones: [latestJones[0]] },
+          migrationPlan: {
+            pendingUpstream: [64, 65, 66, 67, 68, 69],
+            pendingJones: [latestJones[0]],
+          },
         });
         expect(NodeFS.readFileSync(databasePath)).toEqual(beforePreflight);
         expect(NodeFS.statSync(databasePath).mtimeMs).toBe(preflightMtime);
         expect(NodeFS.readdirSync(root)).toEqual(preflightFiles);
-        expect(yield* run(runMigrations({ toMigrationInclusive: 67 }))).toEqual(
-          migrationManifest.filter(([id]) => id >= 64 && id <= 67),
+        expect(yield* run(runMigrations({ toMigrationInclusive: 69 }))).toEqual(
+          migrationManifest.filter(([id]) => id >= 64 && id <= 69),
         );
         expect(readMigrationPlan({ databasePath, ...current })).toEqual({
           status: "ready",

@@ -1,3 +1,5 @@
+import { isShellRunTerminal } from "@t3tools/contracts/jones/shellDestinationFence";
+import { TerminalContentsFrame } from "../jones/shellDestination/TerminalContentsFrame";
 import { useAtomValue } from "@effect/atom-react";
 import {
   isAtomCommandInterrupted,
@@ -89,6 +91,12 @@ import { openTerminalLinkInPreview } from "./preview/openTerminalLinkInPreview";
 import { useAtomCommand } from "../state/use-atom-command";
 import { preventTerminalCloseShortcut } from "../lib/terminalCloseShortcut";
 import { observeResize } from "../lib/observeResize";
+import {
+  consumePendingTerminalFocus,
+  focusTerminal,
+  focusTerminalViewport,
+  registerTerminalFocusTarget,
+} from "../lib/terminalFocus";
 import {
   resolveTerminalFontPreference,
   resolveTerminalFontSizePreference,
@@ -231,8 +239,7 @@ const TERMINAL_PALETTES = {
   ].map(hexToGhosttyColor),
 };
 
-// The surface reads `visible` once it finishes loading WASM, so it must see the value at
-// that moment rather than the one from when setup started.
+// Read visibility when WASM finishes loading, not when setup starts.
 function withLiveVisibility(
   visibleRef: { readonly current: boolean },
   options: Omit<GhosttyTerminalSurfaceOptions, "visible">,
@@ -386,11 +393,7 @@ function terminalContextMenuItems(options: {
   ];
 }
 
-/**
- * A popup already superseded by a right-click keeps its menu promise unsettled
- * for a moment; treating it as active would cancel the newer context-menu flow
- * instead.
- */
+/** A superseded popup's unsettled promise must not cancel the newer right-click flow. */
 export function shouldClearTerminalSelectionAction(options: {
   actionPending: boolean;
   openMenuRequestId: number | null;
@@ -422,13 +425,14 @@ interface TerminalViewportProps {
   cwd: string;
   /** Reattach a known run without creating or restarting a missing shell. */
   attachExistingOnly?: boolean;
+  showCopyButton?: boolean;
   worktreePath?: string | null;
   runtimeEnv?: Record<string, string>;
   providerInstanceId?: ProviderInstanceId;
   onSessionExited: () => void;
   onAddTerminalContext?: (selection: TerminalContextSelection) => void;
-  focusRequestId: number;
-  autoFocus: boolean;
+  /** Focuses the viewport when it mounts; otherwise focus arrives through `focusTerminal`. */
+  autoFocus?: boolean;
   visible: boolean;
   resizeEpoch: number;
   drawerHeight: number;
@@ -442,8 +446,6 @@ interface TerminalLaunchLocation {
 }
 
 export function TerminalViewport(props: TerminalViewportProps) {
-  // A different launch is a different session, so it gets a fresh surface and fresh
-  // session bookkeeping.
   const sessionKey = JSON.stringify([
     props.threadRef.environmentId,
     props.threadId,
@@ -464,19 +466,20 @@ function TerminalSessionViewport({
   terminalLabel,
   cwd,
   attachExistingOnly = false,
+  showCopyButton = false,
   worktreePath,
   runtimeEnv,
   providerInstanceId,
   onSessionExited,
   onAddTerminalContext,
-  focusRequestId,
-  autoFocus,
+  autoFocus = false,
   visible,
   resizeEpoch,
   drawerHeight,
   keybindings,
 }: TerminalViewportProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const autoFocusedRef = useRef(false);
   const terminalRef = useRef<GhosttyTerminalSurface | null>(null);
   const visibleRef = useRef(visible);
   const environmentId = threadRef.environmentId;
@@ -536,7 +539,9 @@ function TerminalSessionViewport({
     terminal: {
       threadId,
       terminalId,
-      ...(attachExistingOnly ? { restartIfNotRunning: false } : { cwd }),
+      ...(attachExistingOnly || isShellRunTerminal(threadId, terminalId)
+        ? { restartIfNotRunning: false }
+        : { cwd }),
       ...(worktreePath !== undefined ? { worktreePath } : {}),
       ...(runtimeEnv ? { env: runtimeEnv } : {}),
       ...(providerInstanceId ? { providerInstanceId } : {}),
@@ -602,7 +607,9 @@ function TerminalSessionViewport({
 
   useLayoutEffect(() => {
     if (terminalRef.current) terminalRef.current.input.readOnly = !canOperateTerminal;
-  }, [canOperateTerminal]);
+    if (canOperateTerminal && visibleRef.current)
+      consumePendingTerminalFocus(threadRef, terminalId);
+  }, [canOperateTerminal, terminalId, threadRef]);
 
   // Links re-read the grant on activation; only the hovered link's styling needs a nudge.
   const linkActivationScopeRef = useRef(canOpenHostEditor);
@@ -614,15 +621,17 @@ function TerminalSessionViewport({
 
   useEffect(() => {
     if (resizeSessionGeneration === null) return;
-    // The first fit can finish before authorization or the attach snapshot.
-    // Replay its grid once this writable session exists, including reconnects.
+    // The first fit can precede authorization/attach; replay the grid for each writable session, including
+    // reconnects.
     terminalRef.current?.resendSize();
   }, [resizeSessionGeneration]);
 
   useLayoutEffect(() => {
     visibleRef.current = visible;
     terminalRef.current?.setVisible(visible);
-  }, [visible]);
+    // A request made while this viewport was hidden could not focus it.
+    if (visible) consumePendingTerminalFocus(threadRef, terminalId);
+  }, [terminalId, threadRef, visible]);
 
   useEffect(() => {
     const current = terminalFontRef.current;
@@ -653,9 +662,7 @@ function TerminalSessionViewport({
         beforeKey: (event) => handleBeforeKey(event),
         onLinkActivate: (text, event) => handleLinkActivate(text, event),
         canActivateLink: (text) => canActivateTerminalLink(text),
-        // The surface listens from construction, so a right-click can land
-        // while `create` is still awaiting WASM — before the handler below it
-        // exists.
+        // Surface listeners start before WASM loading finishes and the terminal handler exists.
         onContextMenu: (event) => {
           if (terminalRef.current) void showTerminalContextMenu(event);
         },
@@ -666,15 +673,12 @@ function TerminalSessionViewport({
         return null;
       }
       terminal.setVisible(visibleRef.current);
-      // The theme observer is not installed yet, so re-read the theme in case
-      // the app toggled light/dark while the WASM surface was loading.
+      // Re-read theme changes during WASM loading, before the observer was installed.
       terminal.setTheme(terminalThemeFromApp(mount));
       setupTerminal = terminal;
       terminalRef.current = terminal;
       terminal.input.readOnly = !hasTerminalWriteAccess();
-      // Client settings hydrate asynchronously; a font preference that landed
-      // while the surface was loading found terminalRef null, so its setFont
-      // was dropped.
+      // Reapply font settings hydrated during loading, when terminalRef was null.
       const currentFont = terminalFontRef.current;
       if (currentFont.family !== setupFont.family || currentFont.size !== setupFont.size) {
         void terminal.setFont(terminalFontOptions(currentFont.family, currentFont.size));
@@ -785,9 +789,7 @@ function TerminalSessionViewport({
         const activeTerminal = terminalRef.current;
         if (!activeTerminal) return;
         try {
-          // The surface owns the read so it can claim the paste race before it
-          // starts: a paste shortcut fired while the menu read is in flight
-          // supersedes this paste instead of landing alongside it.
+          // Let the surface own clipboard reads so paste shortcuts can supersede an in-flight menu paste.
           await activeTerminal.pasteFromClipboard(
             () => readTextFromClipboard("terminal input"),
             () => requestId === selectionActionRequestIdRef.current,
@@ -801,9 +803,7 @@ function TerminalSessionViewport({
 
       const showTerminalContextMenu = async (event: MouseEvent) => {
         if (!localApi || !terminalRef.current) return;
-        // Own the gesture before anything async: leaving the default alive lets
-        // the browser (or Electron's editing menu) answer with a Paste entry
-        // that is permanently disabled over the terminal canvas.
+        // Prevent default before awaits; native menus offer a permanently disabled Paste over the canvas.
         event.preventDefault();
         clearSelectionAction();
         const selectionAction = readSelectionAction();
@@ -1072,7 +1072,7 @@ function TerminalSessionViewport({
         if (cancelled) return;
         const message =
           error instanceof Error ? error.message : "Unable to initialize libghostty-vt";
-        mount.textContent = `${message} — close and reopen the terminal to retry.`;
+        mount.textContent = `${message}. Close and reopen the terminal to retry.`;
       });
 
     return () => {
@@ -1113,22 +1113,13 @@ function TerminalSessionViewport({
     previousSessionRef.current = current;
   }, [terminalOutput, terminalError, terminalStatus, terminalVersion]);
 
-  // Each new request focuses again, even when nothing else changed.
-  const focusRequest = autoFocus && canOperateTerminal && visible ? focusRequestId : null;
-  useEffect(() => {
-    if (focusRequest === null) return;
-    (terminalRef.current ?? containerRef.current)?.focus();
-  }, [focusRequest]);
-
-  // The surface measures its mount, so each drawer resize or window resize refits it.
   // A hidden surface skips fitting, and showing it again fits through setVisible.
   const layoutRevision = visible ? `${drawerHeight}:${resizeEpoch}` : null;
   useEffect(() => {
     const terminal = terminalRef.current;
     if (!terminal || layoutRevision === null) return;
     const wasAtBottom = terminal.isAtBottom();
-    // The surface reports grid changes through onResize, which is the single
-    // channel for PTY resize RPCs; fitting here only refreshes the layout.
+    // onResize alone sends PTY resize RPCs; fitting here only refreshes layout.
     const frame = window.requestAnimationFrame(() => {
       if (!visibleRef.current) return;
       terminal.fit();
@@ -1140,12 +1131,49 @@ function TerminalSessionViewport({
       window.cancelAnimationFrame(frame);
     };
   }, [layoutRevision]);
-  return (
+
+  const attachContainer = (mount: HTMLDivElement) => {
+    containerRef.current = mount;
+    const focus = () =>
+      focusTerminalViewport({
+        mount,
+        surface: terminalRef.current,
+        canOperate: readEnvironmentScope(environmentId, AuthTerminalOperateScope),
+        visible: visibleRef.current,
+      });
+    // Once per viewport: a re-attached ref (a fresh callback identity) must not
+    // pull focus back on every render of a chatty terminal. As a request, it
+    // waits for the grant or for the viewport to show when it cannot focus yet.
+    if (autoFocus && !autoFocusedRef.current) {
+      autoFocusedRef.current = true;
+      focusTerminal(threadRef, terminalId);
+    }
+    const unregister = registerTerminalFocusTarget({
+      threadRef,
+      terminalId,
+      focus,
+    });
+    return () => {
+      unregister();
+      containerRef.current = null;
+    };
+  };
+  const viewport = (
     <div
-      ref={containerRef}
+      ref={attachContainer}
       tabIndex={-1}
-      className="relative h-full w-full overflow-hidden bg-(--terminal-background)"
+      className={cn(
+        "relative h-full w-full overflow-hidden bg-(--terminal-background)",
+        showCopyButton && "min-h-0 flex-1",
+      )}
     />
+  );
+  return showCopyButton ? (
+    <TerminalContentsFrame getText={() => terminalRef.current?.getText() ?? ""}>
+      {viewport}
+    </TerminalContentsFrame>
+  ) : (
+    viewport
   );
 }
 
@@ -1164,7 +1192,6 @@ interface ThreadTerminalDrawerProps {
   activeTerminalId: string;
   terminalGroups: ThreadTerminalGroup[];
   activeTerminalGroupId: string;
-  focusRequestId: number;
   onSplitTerminal: () => void;
   onSplitTerminalVertical: () => void;
   onNewTerminal: () => void;
@@ -1237,7 +1264,6 @@ function TerminalSplitPanes({
   threadRef,
   threadId,
   onAddTerminalContext,
-  focusRequestId,
   visible,
   resizeEpoch,
   drawerHeight,
@@ -1254,7 +1280,6 @@ function TerminalSplitPanes({
   threadRef: ScopedThreadRef;
   threadId: ThreadId;
   onAddTerminalContext: (selection: TerminalContextSelection) => void;
-  focusRequestId: number;
   visible: boolean;
   resizeEpoch: number;
   drawerHeight: number;
@@ -1305,8 +1330,6 @@ function TerminalSplitPanes({
                   : {})}
                 onSessionExited={() => onCloseTerminal(terminalId)}
                 onAddTerminalContext={onAddTerminalContext}
-                focusRequestId={focusRequestId}
-                autoFocus={terminalId === activeTerminalId}
                 visible={visible}
                 resizeEpoch={resizeEpoch}
                 drawerHeight={drawerHeight}
@@ -1431,7 +1454,6 @@ export default function ThreadTerminalDrawer({
   activeTerminalId,
   terminalGroups,
   activeTerminalGroupId,
-  focusRequestId,
   onSplitTerminal,
   onSplitTerminalVertical,
   onNewTerminal,
@@ -1904,7 +1926,6 @@ export default function ThreadTerminalDrawer({
               threadRef={threadRef}
               threadId={threadId}
               onAddTerminalContext={onAddTerminalContext}
-              focusRequestId={focusRequestId}
               visible={visible}
               resizeEpoch={resizeEpoch}
               drawerHeight={drawerHeight}

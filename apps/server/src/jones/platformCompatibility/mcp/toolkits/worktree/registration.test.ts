@@ -25,6 +25,7 @@ import * as ProjectService from "../../../../../project/ProjectService.ts";
 import * as PullRequestReviewGuideService from "../../../../../pullRequest/PullRequestReviewGuideService.ts";
 import * as ProjectSetupScriptRunner from "../../../../../project/ProjectSetupScriptRunner.ts";
 import * as ProviderRegistry from "../../../../../provider/ProviderRegistry.ts";
+import * as DocumentText from "../../../../../provider/DocumentText.ts";
 import * as ScheduledTaskService from "../../../../../scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "../../../../../secrets/SecretRequests.ts";
 import * as RemoteDelegation from "../../../../../peer/RemoteDelegation.ts";
@@ -67,6 +68,7 @@ const layerStubServices = Layer.mergeAll(
   Layer.mock(RemoteDelegation.RemoteDelegation)({}),
   Layer.mock(RemoteAdmissionIntake.RemoteAdmissionIntake)({ register: () => {} }),
   Layer.mock(ProjectService.ProjectService)({}),
+  Layer.succeed(DocumentText.DocumentText, { ensure: () => Effect.sync(() => undefined) }),
   Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
   ServerSettings.layerTest({}),
   Layer.mock(GitWorkflowService.GitWorkflowService)({}),

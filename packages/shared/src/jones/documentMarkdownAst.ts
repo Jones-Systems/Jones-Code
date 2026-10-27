@@ -22,8 +22,15 @@ export function markdownHeadingPositions(source: string): readonly MarkdownHeadi
   }
   lineEnds.push(source.length);
   const point = (value: { readonly line: number; readonly offset?: number } | undefined) => {
-    if (value === undefined || !Number.isInteger(value.line) || value.line < 1 || value.line > lineStarts.length ||
-      typeof value.offset !== "number" || !Number.isInteger(value.offset) || value.offset < 0) {
+    if (
+      value === undefined ||
+      !Number.isInteger(value.line) ||
+      value.line < 1 ||
+      value.line > lineStarts.length ||
+      typeof value.offset !== "number" ||
+      !Number.isInteger(value.offset) ||
+      value.offset < 0
+    ) {
       throw new Error("Invalid Markdown heading position.");
     }
     const offset = value.offset + initialBomOffset;
@@ -39,14 +46,21 @@ export function markdownHeadingPositions(source: string): readonly MarkdownHeadi
     if (node.type === "heading") {
       const start = point(node.position?.start);
       const end = point(node.position?.end);
-      if (!Number.isInteger(node.depth) || node.depth < 1 || node.depth > 6 || end.line < start.line ||
-        end.offset <= start.offset || (headings.length > 0 && start.offset < headings[headings.length - 1]!.end.offset)) {
+      if (
+        !Number.isInteger(node.depth) ||
+        node.depth < 1 ||
+        node.depth > 6 ||
+        end.line < start.line ||
+        end.offset <= start.offset ||
+        (headings.length > 0 && start.offset < headings[headings.length - 1]!.end.offset)
+      ) {
         throw new Error("Invalid Markdown heading position.");
       }
       headings.push({ depth: node.depth, start, end });
     }
     if ("children" in node) {
-      for (let index = node.children.length - 1; index >= 0; index--) pending.push(node.children[index]!);
+      for (let index = node.children.length - 1; index >= 0; index--)
+        pending.push(node.children[index]!);
     }
   }
   return headings;

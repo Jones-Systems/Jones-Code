@@ -17,7 +17,8 @@ export function continuityAdmissionRefusal(
     expected.providerThreadId === owner.providerThreadId &&
     expected.driver === owner.driver &&
     expected.nativeThreadId === owner.nativeThreadId
-    ? undefined : "binding_changed";
+    ? undefined
+    : "binding_changed";
 }
 
 export function continuityRecoveryCapability(

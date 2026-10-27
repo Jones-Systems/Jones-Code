@@ -1,6 +1,9 @@
 import { nativeConversationMustBePreserved } from "../jones/goals/preserveGoalConversation.ts";
 import * as GoalContinuity from "../jones/goals/continuity/GoalContinuity.ts";
-import { continuityAdmissionRefusal, continuityRecoveryCapability } from "../jones/goals/continuity/admission.ts";
+import {
+  continuityAdmissionRefusal,
+  continuityRecoveryCapability,
+} from "../jones/goals/continuity/admission.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as TaskContinuationStore from "../jones/taskContinuation/TaskContinuationStore.ts";
 import { requirementFor, loadedSessionMatches } from "../jones/taskContinuation/guard.ts";
@@ -77,9 +80,6 @@ import {
   runtimeBinding,
   identityForRequest,
   requestedRuntimeIdentity,
-  type ProviderAdapterV2Error,
-  type ProviderAdapterV2HistoricalContext,
-  type ProviderAdapterV2SessionRuntime,
 } from "@t3tools/provider-core/server/ProviderAdapter";
 
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -196,8 +196,7 @@ export const layer: Layer.Layer<
     const currentSettings = yield* ServerSettings.ServerSettingsService;
     const instanceRegistry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
 
-    // These callbacks outlive startup while a run drains background work. Build
-    // them outside start's scope so they cannot retain its full thread history.
+    // Build draining callbacks outside startup scope so they cannot retain full thread history.
     const makeRunControls = (input: {
       readonly threadId: ThreadId;
       readonly runId: RunId;
@@ -255,6 +254,20 @@ export const layer: Layer.Layer<
               }),
             )
             .pipe(Effect.catchCause(() => Effect.succeed(false))),
+        loadRunInterruptReason: () =>
+          projectionStore
+            .getThreadRecords(input.threadId, ["turnItems"], {
+              turnItemTypes: ["run_interrupt_request"],
+              turnItemRunIds: [input.runId],
+            })
+            .pipe(
+              Effect.map(({ turnItems }) => {
+                const request = turnItems.find((item) => item.type === "run_interrupt_request");
+                return request?.type === "run_interrupt_request" ? request.message : undefined;
+              }),
+              // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
+              Effect.catchCause(() => Effect.succeed(undefined)),
+            ),
       };
     };
 
@@ -496,24 +509,27 @@ export const layer: Layer.Layer<
       // fences whose current continuity record has already been retired.
       const environmentId = yield* environment.getEnvironmentId;
       const continuityOwner = (candidate: OrchestrationV2ProviderThread) =>
-        candidate.nativeThreadRef == null ? null : {
-          environmentId,
-          threadId: projection.thread.id,
-          providerInstanceId: candidate.providerInstanceId,
-          providerThreadId: candidate.id,
-          driver: candidate.nativeThreadRef.driver,
-          nativeThreadId: candidate.nativeThreadRef.nativeId,
-        };
+        candidate.nativeThreadRef == null
+          ? null
+          : {
+              environmentId,
+              threadId: projection.thread.id,
+              providerInstanceId: candidate.providerInstanceId,
+              providerThreadId: candidate.id,
+              driver: candidate.nativeThreadRef.driver,
+              nativeThreadId: candidate.nativeThreadRef.nativeId,
+            };
       const continuityRequirement = yield* Effect.result(
         goalContinuity.requirementFor(environmentId, projection.thread.id),
       );
-      const continuityRefusal = continuityRequirement._tag === "Failure"
-        ? "unavailable"
-        : continuityAdmissionRefusal(
-            continuityRequirement.success,
-            continuityOwner(providerThread),
-            nativeForkTransfer !== undefined,
-          );
+      const continuityRefusal =
+        continuityRequirement._tag === "Failure"
+          ? "unavailable"
+          : continuityAdmissionRefusal(
+              continuityRequirement.success,
+              continuityOwner(providerThread),
+              nativeForkTransfer !== undefined,
+            );
       if (continuityRefusal !== undefined) {
         yield* settleRunBeforeStart({
           signal: "goal-continuity-held",
@@ -526,13 +542,15 @@ export const layer: Layer.Layer<
             title: "Goal continuity requires attention",
             failure: makeProviderFailure({
               class: "provider_error",
-              message: "The original conversation or a recovery delivery is held. No provider work was started.",
+              message:
+                "The original conversation or a recovery delivery is held. No provider work was started.",
             }),
           },
         });
         return;
       }
-      const continuityRequired = continuityRequirement._tag === "Success" &&
+      const continuityRequired =
+        continuityRequirement._tag === "Success" &&
         continuityRequirement.success.outcome === "required";
       const continuation = yield* Effect.result(
         requirementFor(Option.getOrUndefined(continuationStore), projection, run, attempt),
@@ -591,8 +609,7 @@ export const layer: Layer.Layer<
       if (message.attachments.length === 0 && message.text.trimStart().startsWith("/")) {
         const isEmptyCompaction =
           message.text.trim().toLowerCase() === "/compact" && !projection.hasConversation;
-        // Preparing a run may already point the thread at a newly selected
-        // provider. Account commands still belong to its last native session.
+        // Preparation may select a new provider; account commands still target the last native session.
         const nativeThreads = new Map(
           projection.providerThreads
             .filter(
@@ -880,7 +897,7 @@ export const layer: Layer.Layer<
         Option.isSome(plannedContinuity) &&
         (yield* plannedContinuity.value
           .allowWorkStart(projection.thread.id, message.id)
-          .pipe(Effect.catch(() => Effect.succeed(false))));
+          .pipe(Effect.orElseSucceed(() => false)));
       const sessionResult = yield* Effect.result(
         keepWarm && !plannedWorkResume
           ? providerSessions.get(providerSessionId).pipe(
@@ -952,6 +969,7 @@ export const layer: Layer.Layer<
         return undefined;
       });
       let effectiveHandoffs = handoffs;
+      let resumeFellBack = false;
       const loadedProviderThread = yield* Effect.gen(function* () {
         if (nativeForkTransfer !== undefined) {
           const sourceProjection = yield* projectionStore.getThreadRecords(
@@ -991,7 +1009,10 @@ export const layer: Layer.Layer<
             }),
           );
         }
-        if ((preserveNativeConversation || guarded || continuityRequired) && providerThread.nativeThreadRef === null) {
+        if (
+          (preserveNativeConversation || guarded || continuityRequired) &&
+          providerThread.nativeThreadRef === null
+        ) {
           return yield* loadFromProvider(
             Effect.fail(
               new ProviderAdapter.ProviderAdapterTurnStartError({
@@ -1005,10 +1026,7 @@ export const layer: Layer.Layer<
           );
         }
         if (providerThread.nativeThreadRef === null) {
-          // Hand the run's provider thread to the adapter so it adopts this
-          // row's identity when attaching native state. An adapter that mints
-          // its own row instead leaves two live rows per app thread, and
-          // `activeProviderThreadId` then flaps between them on every update.
+          // Pass the stored provider row for adoption; adapter-minted duplicates make activeProviderThreadId flap.
           return yield* loadFromProvider(
             session.ensureThread({
               threadId: projection.thread.id,
@@ -1075,9 +1093,7 @@ export const layer: Layer.Layer<
             modelSelection: run.modelSelection,
             runtimePolicy: resolvedRuntimePolicy,
             providerSessionId,
-            // The native ref is dropped so the adapter binds a fresh native
-            // session instead of retrying the resume that just failed, while
-            // still adopting this row's identity.
+            // Clear the native ref to force a fresh session while preserving row identity.
             existingProviderThread: { ...providerThread, nativeThreadRef: null },
           }),
         );
@@ -1108,7 +1124,15 @@ export const layer: Layer.Layer<
           ),
           createdAt,
         });
-        effectiveHandoffs = [handoff, ...effectiveHandoffs];
+        // Delivery ranks later handoffs as newer history. Pending handoffs from
+        // earlier runs predate this summary; handoffs for this run (provider-switch
+        // delta, merge-back) are newer and must stay last.
+        effectiveHandoffs = [
+          ...effectiveHandoffs.filter((candidate) => candidate.targetRunId !== run.id),
+          handoff,
+          ...effectiveHandoffs.filter((candidate) => candidate.targetRunId === run.id),
+        ];
+        resumeFellBack = true;
         yield* eventSink.write({
           events: [
             {
@@ -1153,10 +1177,14 @@ export const layer: Layer.Layer<
       if (loadedProviderThread === undefined) return;
       if (
         (plannedWorkResume || preserveNativeConversation || guarded || continuityRequired) &&
-        ((continuityRequired && continuityRequirement._tag === "Success" &&
-          continuityAdmissionRefusal(continuityRequirement.success, continuityOwner(loadedProviderThread)) !== undefined) ||
+        ((continuityRequired &&
+          continuityRequirement._tag === "Success" &&
+          continuityAdmissionRefusal(
+            continuityRequirement.success,
+            continuityOwner(loadedProviderThread),
+          ) !== undefined) ||
           (requiredNativeSession !== undefined &&
-          !loadedSessionMatches(requiredNativeSession, providerThread, loadedProviderThread)) ||
+            !loadedSessionMatches(requiredNativeSession, providerThread, loadedProviderThread)) ||
           loadedProviderThread.nativeThreadRef?.nativeId !==
             providerThread.nativeThreadRef?.nativeId ||
           loadedProviderThread.nativeThreadRef?.driver !== providerThread.nativeThreadRef?.driver)
@@ -1455,8 +1483,7 @@ export const layer: Layer.Layer<
           )
           .map((source) => source.id),
       );
-      // Legacy attempts lack native identity; exclude their explicitly recovered history, whose
-      // attachments were not replayed into the replacement thread.
+      // Legacy attempts lack native ids; exclude recovered attachments absent from the replacement thread.
       const nativeContextEstimate = Effect.gen(function* () {
         return sameNativeThread
           ? (yield* projectionStore.getTurnStartHistory(input.threadId)).reduce((sum, item) => {
@@ -1494,8 +1521,11 @@ export const layer: Layer.Layer<
         ...runningProviderThread,
         contextUsage: handoffUsage,
       };
+      // The resume fallback summary already covers every earlier run in order. A
+      // retry copy after it would rank older missed requests as the newest history.
       const missedRuns = projection.runs.filter(
         (source) =>
+          !resumeFellBack &&
           source.ordinal < run.ordinal &&
           source.providerThreadId === providerThread.id &&
           (source.status === "failed" || source.status === "interrupted") &&
@@ -1514,8 +1544,14 @@ export const layer: Layer.Layer<
             );
       const assertContinuity = Effect.fn("ProviderTurnStartService.checkGoalContinuity")(
         function* () {
-          const requirement = yield* goalContinuity.requirementFor(environmentId, projection.thread.id);
-          if (continuityAdmissionRefusal(requirement, continuityOwner(runningProviderThread)) !== undefined)
+          const requirement = yield* goalContinuity.requirementFor(
+            environmentId,
+            projection.thread.id,
+          );
+          if (
+            continuityAdmissionRefusal(requirement, continuityOwner(runningProviderThread)) !==
+            undefined
+          )
             return yield* new ProviderAdapterTurnStartError({
               driver: session.driver,
               threadId: projection.thread.id,
@@ -1524,14 +1560,16 @@ export const layer: Layer.Layer<
               cause: "Goal continuity changed or recovery remains held before dispatch.",
             });
         },
-        Effect.mapError((cause) => cause._tag === "ProviderAdapterTurnStartError" ? cause :
-          new ProviderAdapterTurnStartError({
-            driver: session.driver,
-            threadId: projection.thread.id,
-            providerThreadId: runningProviderThread.id,
-            runId: run.id,
-            cause,
-          }),
+        Effect.mapError((cause) =>
+          cause._tag === "ProviderAdapterTurnStartError"
+            ? cause
+            : new ProviderAdapterTurnStartError({
+                driver: session.driver,
+                threadId: projection.thread.id,
+                providerThreadId: runningProviderThread.id,
+                runId: run.id,
+                cause,
+              }),
         ),
       );
       const startWithConfiguredEffort = (
@@ -1843,7 +1881,10 @@ export const layer: Layer.Layer<
           : makeDeliverySession(session, startWithHandoffs);
       return runExecution.startRootRun({
         goalContinuityContext: goalContinuity.context(
-          continuityRecoveryCapability(session.driver, runningProviderThread.nativeThreadRef?.strength === "strong"),
+          continuityRecoveryCapability(
+            session.driver,
+            runningProviderThread.nativeThreadRef?.strength === "strong",
+          ),
         ),
         checkContinuity: assertContinuity,
         ...(input.nativeCreationGuard === undefined
@@ -1882,6 +1923,7 @@ export const layer: Layer.Layer<
         shouldStartProviderTurn: runControls.shouldStartProviderTurn,
         shouldFinalizeRun: runControls.shouldFinalizeRun,
         hasUnpairedRunInterruptRequest: runControls.hasUnpairedRunInterruptRequest,
+        loadRunInterruptReason: runControls.loadRunInterruptReason,
         message: {
           messageId: message.id,
           text: userText,

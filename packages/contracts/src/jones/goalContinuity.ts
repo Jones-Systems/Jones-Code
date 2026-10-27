@@ -21,8 +21,9 @@ const text = Schema.String.check(
   Schema.makeFilter((value) => value.trim().length > 0),
 );
 export const ContinuityCounter = Schema.String.check(
-  Schema.makeFilter((value) =>
-    /^(0|[1-9][0-9]{0,18})(?![\s\S])/.test(value) && BigInt(value) <= 9223372036854775807n,
+  Schema.makeFilter(
+    (value) =>
+      /^(0|[1-9][0-9]{0,18})(?![\s\S])/.test(value) && BigInt(value) <= 9223372036854775807n,
   ),
 );
 export type ContinuityCounter = typeof ContinuityCounter.Type;
@@ -125,7 +126,10 @@ export const ContinuitySnapshot = Schema.Struct({
 });
 export type ContinuitySnapshot = typeof ContinuitySnapshot.Type;
 
-const itemOperations = Schema.Struct({ add: Schema.Array(ContinuityItem), remove: Schema.Array(key) });
+const itemOperations = Schema.Struct({
+  add: Schema.Array(ContinuityItem),
+  remove: Schema.Array(key),
+});
 export const ContinuityPatch = Schema.Struct({
   focus: Schema.optionalKey(Schema.NullOr(text)),
   status: Schema.optionalKey(Schema.Literals(["active", "blocked"])),
@@ -155,14 +159,43 @@ export const ContinuityPatch = Schema.Struct({
 export type ContinuityPatch = typeof ContinuityPatch.Type;
 
 export const ContinuityRefusalReason = Schema.Literals([
-  "invalid_request", "invalid_counter", "counter_exhausted", "corrupt_snapshot", "snapshot_too_large",
-  "stale", "binding_mismatch", "detached", "terminal", "duplicate", "unknown_removal",
-  "contradictory_patch", "no_change", "foreign_finish", "missing_evidence", "unresolved_effect",
-  "uncovered_finish", "blockers", "successor_required", "confirmation_required", "confirmation_mismatch",
-  "proposal_mismatch", "unsupported", "unavailable", "forbidden", "request_key_conflict",
-  "selection_bounds", "digest_mismatch", "projection_too_large", "delivery_unknown",
-  "delivery_pending", "recovery_required", "invalid_transition", "permit_consumed",
-  "permit_revoked", "quiescence_required", "no_effect_proof_required",
+  "invalid_request",
+  "invalid_counter",
+  "counter_exhausted",
+  "corrupt_snapshot",
+  "snapshot_too_large",
+  "stale",
+  "binding_mismatch",
+  "detached",
+  "terminal",
+  "duplicate",
+  "unknown_removal",
+  "contradictory_patch",
+  "no_change",
+  "foreign_finish",
+  "missing_evidence",
+  "unresolved_effect",
+  "uncovered_finish",
+  "blockers",
+  "successor_required",
+  "confirmation_required",
+  "confirmation_mismatch",
+  "proposal_mismatch",
+  "unsupported",
+  "unavailable",
+  "forbidden",
+  "request_key_conflict",
+  "selection_bounds",
+  "digest_mismatch",
+  "projection_too_large",
+  "delivery_unknown",
+  "delivery_pending",
+  "recovery_required",
+  "invalid_transition",
+  "permit_consumed",
+  "permit_revoked",
+  "quiescence_required",
+  "no_effect_proof_required",
 ]);
 export type ContinuityRefusalReason = typeof ContinuityRefusalReason.Type;
 export const ContinuityRefusal = Schema.Struct({
@@ -171,14 +204,30 @@ export const ContinuityRefusal = Schema.Struct({
 });
 export type ContinuityRefusal = typeof ContinuityRefusal.Type;
 export class GoalContinuityError extends Schema.TaggedError<GoalContinuityError>()(
-  "GoalContinuityError", { reason: ContinuityRefusalReason },
+  "GoalContinuityError",
+  { reason: ContinuityRefusalReason },
 ) {
-  override get message(): string { return `Goal continuity refused: ${this.reason}.`; }
+  override get message(): string {
+    return `Goal continuity refused: ${this.reason}.`;
+  }
 }
 
 export const ContinuitySelectionField = Schema.Literals([
-  "intent", "focus", "status", "attachment", "boundaries", "decisions", "blockers", "nextActions",
-  "evidence", "unresolvedEffect", "recentDispositions", "completionEvidenceIds", "finishItems", "preservedQualities", "startEvidence",
+  "intent",
+  "focus",
+  "status",
+  "attachment",
+  "boundaries",
+  "decisions",
+  "blockers",
+  "nextActions",
+  "evidence",
+  "unresolvedEffect",
+  "recentDispositions",
+  "completionEvidenceIds",
+  "finishItems",
+  "preservedQualities",
+  "startEvidence",
 ]);
 export type ContinuitySelectionField = typeof ContinuitySelectionField.Type;
 export const ContinuitySelectionCursor = Schema.Struct({
@@ -230,13 +279,15 @@ export const ContinuitySelectionResult = Schema.Union([
     revision: ContinuityCounter,
     generation: ContinuityCounter,
     snapshotDigest: ContinuityDigest,
-    fields: Schema.Array(Schema.Struct({
-      field: ContinuitySelectionField,
-      fieldDigest: ContinuityDigest,
-      totalItems: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-      value: ContinuitySelectedValue,
-      nextCursor: Schema.NullOr(ContinuitySelectionCursor),
-    })),
+    fields: Schema.Array(
+      Schema.Struct({
+        field: ContinuitySelectionField,
+        fieldDigest: ContinuityDigest,
+        totalItems: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+        value: ContinuitySelectedValue,
+        nextCursor: Schema.NullOr(ContinuitySelectionCursor),
+      }),
+    ),
   }),
 ]);
 export type ContinuitySelectionResult = typeof ContinuitySelectionResult.Type;
@@ -296,7 +347,12 @@ export const ExpectedRecoveryTarget = ExpectedContinuity;
 export type ExpectedRecoveryTarget = typeof ExpectedRecoveryTarget.Type;
 
 export const DeliveryPhase = Schema.Literals([
-  "pending", "prepared", "dispatching", "acknowledged", "not_sent", "unknown",
+  "pending",
+  "prepared",
+  "dispatching",
+  "acknowledged",
+  "not_sent",
+  "unknown",
 ]);
 export type DeliveryPhase = typeof DeliveryPhase.Type;
 export const DeliveryGate = Schema.Union([
@@ -305,7 +361,10 @@ export const DeliveryGate = Schema.Union([
     outcome: Schema.Literal("hold"),
     fenceRevision: ContinuityCounter,
     reason: Schema.Literals(["delivery_pending", "delivery_unknown", "recovery_required"]),
-    deliveryIds: Schema.Array(key).check(Schema.isMinLength(1), Schema.makeFilter((ids) => new Set(ids).size === ids.length)),
+    deliveryIds: Schema.Array(key).check(
+      Schema.isMinLength(1),
+      Schema.makeFilter((ids) => new Set(ids).size === ids.length),
+    ),
   }),
 ]);
 export type DeliveryGate = typeof DeliveryGate.Type;
@@ -388,7 +447,11 @@ export const ContinuityDeliveryEvidence = Schema.Union([
     outcome: Schema.Literal("not_sent"),
     proof: Schema.Union([
       Schema.Struct({ type: Schema.Literal("dispatch_precluded"), revocationRef: key }),
-      Schema.Struct({ type: Schema.Literal("protocol_no_effect"), rpcRequestId: key, responseRef: key }),
+      Schema.Struct({
+        type: Schema.Literal("protocol_no_effect"),
+        rpcRequestId: key,
+        responseRef: key,
+      }),
     ]),
   }),
   Schema.Struct({
@@ -412,10 +475,19 @@ export const ReconcileDeliveryRequest = Schema.Struct({
   expectedFenceRevision: ContinuityCounter,
   expectedCurrentRecord: Schema.NullOr(ExpectedContinuity),
   reason: text,
-  evidenceRefs: Schema.Array(key).check(Schema.isMinLength(1), Schema.makeFilter((refs) => new Set(refs).size === refs.length)),
+  evidenceRefs: Schema.Array(key).check(
+    Schema.isMinLength(1),
+    Schema.makeFilter((refs) => new Set(refs).size === refs.length),
+  ),
   disposition: Schema.Union([
-    Schema.Struct({ type: Schema.Literal("retry_proven_not_sent"), recoveryTarget: ExpectedRecoveryTarget }),
-    Schema.Struct({ type: Schema.Literal("accept_unknown_for_one_recovery"), recoveryTarget: ExpectedRecoveryTarget }),
+    Schema.Struct({
+      type: Schema.Literal("retry_proven_not_sent"),
+      recoveryTarget: ExpectedRecoveryTarget,
+    }),
+    Schema.Struct({
+      type: Schema.Literal("accept_unknown_for_one_recovery"),
+      recoveryTarget: ExpectedRecoveryTarget,
+    }),
     Schema.Struct({ type: Schema.Literal("retire_without_redelivery") }),
   ]),
 }).annotate({ parseOptions: { onExcessProperty: "error" } });
@@ -444,7 +516,11 @@ export const ContinuityQuiescence = Schema.Union([
     dispatchRevocationRef: key,
     nativeSource: Schema.Union([
       Schema.Struct({ type: Schema.Literal("terminated"), terminationRef: key }),
-      Schema.Struct({ type: Schema.Literal("paused_and_settled"), pauseRef: key, turnSettlementRef: key }),
+      Schema.Struct({
+        type: Schema.Literal("paused_and_settled"),
+        pauseRef: key,
+        turnSettlementRef: key,
+      }),
     ]),
   }),
 ]);
@@ -458,17 +534,32 @@ export const ContinuityDeliveryDisposition = Schema.Struct({
   fenceRevision: ContinuityCounter,
   quiescence: ContinuityQuiescence,
   effect: Schema.Union([
-    Schema.Struct({ type: Schema.Literal("held"), reason: Schema.Literals(["quiescence_required", "no_effect_proof_required", "recovery_required", "stale", "terminal"]) }),
-    Schema.Struct({ type: Schema.Literal("recovery_authorized"), authorization: ContinuityRecoveryAuthorization }),
+    Schema.Struct({
+      type: Schema.Literal("held"),
+      reason: Schema.Literals([
+        "quiescence_required",
+        "no_effect_proof_required",
+        "recovery_required",
+        "stale",
+        "terminal",
+      ]),
+    }),
+    Schema.Struct({
+      type: Schema.Literal("recovery_authorized"),
+      authorization: ContinuityRecoveryAuthorization,
+    }),
     Schema.Struct({ type: Schema.Literal("retired") }),
   ]),
-}).check(Schema.makeFilter((decision) =>
-  decision.effect.type === "held" ||
-  (decision.quiescence.outcome === "confirmed" &&
-    (decision.effect.type === "retired"
-      ? decision.request.disposition.type === "retire_without_redelivery"
-      : decision.request.disposition.type !== "retire_without_redelivery")),
-));
+}).check(
+  Schema.makeFilter(
+    (decision) =>
+      decision.effect.type === "held" ||
+      (decision.quiescence.outcome === "confirmed" &&
+        (decision.effect.type === "retired"
+          ? decision.request.disposition.type === "retire_without_redelivery"
+          : decision.request.disposition.type !== "retire_without_redelivery")),
+  ),
+);
 export type ContinuityDeliveryDisposition = typeof ContinuityDeliveryDisposition.Type;
 export const ReconcileDeliveryResult = Schema.Struct({
   outcome: Schema.Literal("delivery_reconciled"),
@@ -487,16 +578,28 @@ export const ContinuityDeliveryPhaseEvent = Schema.Struct({
   transition: Schema.NullOr(ContinuityRecoveryTransition),
   permit: Schema.NullOr(ContinuityDispatchPermit),
   evidence: Schema.NullOr(ContinuityDeliveryEvidence),
-}).check(Schema.makeFilter((event) => {
-  switch (event.phase) {
-    case "pending": return event.transition !== null && event.permit === null && event.evidence === null;
-    case "prepared": return event.transition === null && event.permit === null && event.evidence === null;
-    case "dispatching": return event.transition === null && event.permit !== null && event.evidence === null;
-    case "acknowledged": return event.transition === null && event.permit !== null && event.evidence?.outcome === "acknowledged";
-    case "not_sent": return event.transition === null && event.evidence?.outcome === "not_sent";
-    case "unknown": return event.transition === null && event.evidence?.outcome === "unknown";
-  }
-}));
+}).check(
+  Schema.makeFilter((event) => {
+    switch (event.phase) {
+      case "pending":
+        return event.transition !== null && event.permit === null && event.evidence === null;
+      case "prepared":
+        return event.transition === null && event.permit === null && event.evidence === null;
+      case "dispatching":
+        return event.transition === null && event.permit !== null && event.evidence === null;
+      case "acknowledged":
+        return (
+          event.transition === null &&
+          event.permit !== null &&
+          event.evidence?.outcome === "acknowledged"
+        );
+      case "not_sent":
+        return event.transition === null && event.evidence?.outcome === "not_sent";
+      case "unknown":
+        return event.transition === null && event.evidence?.outcome === "unknown";
+    }
+  }),
+);
 export type ContinuityDeliveryPhaseEvent = typeof ContinuityDeliveryPhaseEvent.Type;
 export const ContinuityDeliveryReceipt = Schema.Struct({
   ...deliveryVersion,
@@ -504,11 +607,15 @@ export const ContinuityDeliveryReceipt = Schema.Struct({
   preparation: Schema.NullOr(ContinuityDeliveryPreparation),
   events: Schema.Array(ContinuityDeliveryPhaseEvent).check(Schema.isMinLength(1)),
   dispositions: Schema.Array(ContinuityDeliveryDisposition),
-}).check(Schema.makeFilter((receipt) =>
-  receipt.events[receipt.events.length - 1]?.phase === receipt.phase &&
-  (receipt.phase !== "pending" || receipt.preparation === null) &&
-  (!["prepared", "dispatching", "acknowledged"].includes(receipt.phase) || receipt.preparation !== null),
-));
+}).check(
+  Schema.makeFilter(
+    (receipt) =>
+      receipt.events[receipt.events.length - 1]?.phase === receipt.phase &&
+      (receipt.phase !== "pending" || receipt.preparation === null) &&
+      (!["prepared", "dispatching", "acknowledged"].includes(receipt.phase) ||
+        receipt.preparation !== null),
+  ),
+);
 export type ContinuityDeliveryReceipt = typeof ContinuityDeliveryReceipt.Type;
 export const ContinuityRecoveryTransitionResult = Schema.Union([
   ContinuityRefusal,
@@ -523,10 +630,26 @@ export const ContinuityRecoveryTransitionResult = Schema.Union([
 export type ContinuityRecoveryTransitionResult = typeof ContinuityRecoveryTransitionResult.Type;
 export const ContinuityDeliveryResult = Schema.Union([
   ContinuityRefusal,
-  Schema.Struct({ outcome: Schema.Literal("prepared"), ticket: ContinuityPreparedTicket, gate: DeliveryGate }),
-  Schema.Struct({ outcome: Schema.Literal("dispatching"), permit: ContinuityDispatchPermit, gate: DeliveryGate }),
-  Schema.Struct({ outcome: Schema.Literal("settled"), receipt: ContinuityDeliveryReceipt, gate: DeliveryGate }),
-  Schema.Struct({ outcome: Schema.Literal("hold"), reason: ContinuityRefusalReason, gate: DeliveryGate }),
+  Schema.Struct({
+    outcome: Schema.Literal("prepared"),
+    ticket: ContinuityPreparedTicket,
+    gate: DeliveryGate,
+  }),
+  Schema.Struct({
+    outcome: Schema.Literal("dispatching"),
+    permit: ContinuityDispatchPermit,
+    gate: DeliveryGate,
+  }),
+  Schema.Struct({
+    outcome: Schema.Literal("settled"),
+    receipt: ContinuityDeliveryReceipt,
+    gate: DeliveryGate,
+  }),
+  Schema.Struct({
+    outcome: Schema.Literal("hold"),
+    reason: ContinuityRefusalReason,
+    gate: DeliveryGate,
+  }),
 ]);
 export type ContinuityDeliveryResult = typeof ContinuityDeliveryResult.Type;
 
@@ -555,16 +678,37 @@ export const ContinuityRequest = Schema.Union([
   Schema.Struct({ action: Schema.Literal("read") }),
   ReconcileDeliveryRequest,
   Schema.Struct({ action: Schema.Literal("checkpoint"), ...mutation, patch: ContinuityPatch }),
-  Schema.Struct({ action: Schema.Literal("close"), ...mutation, completionEvidenceIds: Schema.Array(key) }),
-  Schema.Struct({ action: Schema.Literal("abandon"), ...mutation, reason: text, evidenceIds: Schema.Array(key) }),
+  Schema.Struct({
+    action: Schema.Literal("close"),
+    ...mutation,
+    completionEvidenceIds: Schema.Array(key),
+  }),
+  Schema.Struct({
+    action: Schema.Literal("abandon"),
+    ...mutation,
+    reason: text,
+    evidenceIds: Schema.Array(key),
+  }),
   Schema.Struct({ action: Schema.Literal("detach"), ...mutation, reason: text }),
-  Schema.Struct({ action: Schema.Literal("handoff"), ...mutation, destination: ContinuityOwner, evidenceIds: Schema.Array(key) }),
-  Schema.Struct({ action: Schema.Literal("receipt"), clientRequestId: key, requestDigest: ContinuityDigest }),
+  Schema.Struct({
+    action: Schema.Literal("handoff"),
+    ...mutation,
+    destination: ContinuityOwner,
+    evidenceIds: Schema.Array(key),
+  }),
+  Schema.Struct({
+    action: Schema.Literal("receipt"),
+    clientRequestId: key,
+    requestDigest: ContinuityDigest,
+  }),
   Schema.Struct({ action: Schema.Literal("delivery_receipt"), deliveryId: key }),
   Schema.Struct({ action: Schema.Literal("selection"), selection: ContinuitySelectionRequest }),
 ]).annotate({ parseOptions: { onExcessProperty: "error" } });
 export type ContinuityRequest = typeof ContinuityRequest.Type;
-export type ContinuityMutationRequest = Exclude<ContinuityRequest, { action: "read" | "receipt" | "delivery_receipt" | "selection" }>;
+export type ContinuityMutationRequest = Exclude<
+  ContinuityRequest,
+  { action: "read" | "receipt" | "delivery_receipt" | "selection" }
+>;
 
 export const ContinuityMutationOutcome = Schema.Union([
   ContinuityRefusal,
@@ -591,10 +735,26 @@ export const ContinuityResult = Schema.Union([
   ContinuityMutationOutcome,
   ContinuitySelectionResult,
   Schema.Struct({ outcome: Schema.Literal("absent") }),
-  Schema.Struct({ outcome: Schema.Literal("snapshot"), snapshot: ContinuitySnapshot, snapshotDigest: ContinuityDigest }),
-  Schema.Struct({ outcome: Schema.Literal("receipt"), receipt: ContinuityReceipt, replayed: Schema.Boolean }),
-  Schema.Struct({ outcome: Schema.Literal("delivery_receipt"), receipt: ContinuityDeliveryReceipt, gate: DeliveryGate }),
-  Schema.Struct({ outcome: Schema.Literal("known_no_effect"), clientRequestId: key, requestDigest: ContinuityDigest }),
+  Schema.Struct({
+    outcome: Schema.Literal("snapshot"),
+    snapshot: ContinuitySnapshot,
+    snapshotDigest: ContinuityDigest,
+  }),
+  Schema.Struct({
+    outcome: Schema.Literal("receipt"),
+    receipt: ContinuityReceipt,
+    replayed: Schema.Boolean,
+  }),
+  Schema.Struct({
+    outcome: Schema.Literal("delivery_receipt"),
+    receipt: ContinuityDeliveryReceipt,
+    gate: DeliveryGate,
+  }),
+  Schema.Struct({
+    outcome: Schema.Literal("known_no_effect"),
+    clientRequestId: key,
+    requestDigest: ContinuityDigest,
+  }),
   Schema.Struct({
     outcome: Schema.Literal("unknown"),
     clientRequestId: key,
@@ -604,4 +764,3 @@ export const ContinuityResult = Schema.Union([
   }),
 ]);
 export type ContinuityResult = typeof ContinuityResult.Type;
-

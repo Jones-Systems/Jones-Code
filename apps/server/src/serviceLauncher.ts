@@ -27,6 +27,8 @@ import {
   readQualifiedRuntimeReceipt,
   withQualifiedRuntimeLock,
   QUALIFIED_UPDATES_PROTOCOL,
+  QUALIFIED_RECOVERY_PROTOCOL,
+  RECOVERED_QUALIFIED_STAGE_PROTOCOL,
   qualifiedStagingTiming,
   retainQualifiedAttemptTimings,
   type QualifiedDigestOptions,
@@ -113,7 +115,6 @@ const HANDOFF_DELAY_MS = 2_000;
  * take minutes. A missed window rolls back the database, so the next attempt pays the same cost.
  */
 export const PREPARED_TIMEOUT_MS = 30 * 60_000;
-const TERMINATE_GRACE_MS = 5_000;
 // Matches SERVER_EXIT_CODE_STATE_DIR_OWNED in contracts. The standalone
 // launcher stays independent of the Effect-backed contracts package.
 const STATE_DIR_OWNED_EXIT_CODE = 78;
@@ -182,7 +183,13 @@ const preflightQualifiedCandidate = async (
       );
     },
   );
-  const reason = qualifiedServicePreflightFailure({ ...result, version: staged.receipt.version });
+  const reason = qualifiedServicePreflightFailure({
+    ...result,
+    version: staged.receipt.version,
+    ...(staged.protocol === RECOVERED_QUALIFIED_STAGE_PROTOCOL
+      ? { requiredQualifiedRecoveryProtocol: QUALIFIED_RECOVERY_PROTOCOL }
+      : {}),
+  });
   if (reason !== undefined) throw new QualifiedCandidatePreflightError(reason);
   const preflight = decodeServicePreflightResult(JSON.parse(result.stdout.trim()) as unknown);
   return preflight?.status === "ready" ? preflight.migrationPlan : undefined;
@@ -206,7 +213,7 @@ const databaseBackupFile = (backupDir: string, suffix: (typeof DB_FILE_SUFFIXES)
 export const configuredDatabasePathForBaseDir = (baseDir: string): string =>
   NodePath.resolve(baseDir, "userdata", "statev2.sqlite");
 
-export const validateDatabasePathForBaseDir = (baseDir: string, databasePath: string): string => {
+const validateDatabasePathForBaseDir = (baseDir: string, databasePath: string): string => {
   const configuredPath = configuredDatabasePathForBaseDir(baseDir);
   if (NodePath.resolve(databasePath) !== configuredPath) {
     throw new Error("Service update database path must be the configured userdata/statev2.sqlite.");
@@ -991,12 +998,9 @@ export class Launcher {
   async stop(signal: NodeJS.Signals): Promise<void> {
     const alreadyRequested = this.#stopRequested;
     this.#stopRequested = true;
-    // This must happen synchronously at signal receipt. A queued update
-    // transition may already be terminating the active child, and that child
-    // needs to see the marker in its shutdown finalizer. KillMode=mixed also
-    // ensures systemd signals the launcher before the rest of the cgroup, and
-    // launchd signals only the job's main process (this launcher), so the
-    // marker lands before the child sees any signal on both platforms.
+    // Write the stop marker synchronously on signal receipt before the child's shutdown finalizer.
+    // A queued update may already be terminating that child. systemd KillMode=mixed signals the launcher
+    // first; launchd signals only its main process, so both platforms establish the marker before child signals.
     try {
       NodeFS.writeFileSync(stopMarkerPath(this.#baseDir), "", { mode: 0o600 });
     } catch {
@@ -1030,13 +1034,9 @@ export class Launcher {
   }
 
   async #recover(): Promise<void> {
-    // A fresh launcher means servers are running again: any stop marker from
-    // a previous explicit stop is stale and must not make a future update
-    // handoff release its tunnel. A restart deferred by `t3 update` is done
-    // no matter who restarted the service, but only once this launcher is
-    // the version the marker waits for: a launcher that came up between the
-    // CLI writing the marker and writing the new state still runs the old
-    // version, and the marker has to outlive it.
+    // A fresh launcher clears stale explicit-stop markers so later update handoffs retain their tunnel.
+    // A deferred t3 update restart completes only when the launcher reaches the marker's expected version.
+    // A launch between marker creation and new-state publication still runs the old version, so keep its marker.
     await NodeFSP.rm(stopMarkerPath(this.#baseDir), { force: true }).catch(() => undefined);
     // The launcher that reserved an operation it never recorded as pending is gone.
     await settleAbandonedUpdateOperations(this.#baseDir, this.#state.update).catch(
@@ -1305,6 +1305,7 @@ export class Launcher {
       childVersion: version,
       launcherVersion: packageJson.version,
       qualifiedUpdatesProtocol: QUALIFIED_UPDATES_PROTOCOL,
+      qualifiedRecoveryProtocol: QUALIFIED_RECOVERY_PROTOCOL,
       updateOperationsProtocol: 1,
       updateRetirementProtocol: 1,
       updateOutcomeProtocol: 1,
@@ -1709,6 +1710,13 @@ export class Launcher {
           throw new Error("Install target differs from its staged handle.");
         if (child.process.pid === undefined)
           throw new Error("The requesting child has no native process identity.");
+        if (
+          qualified.protocol === RECOVERED_QUALIFIED_STAGE_PROTOCOL &&
+          message.qualifiedRecoveryProtocol !== QUALIFIED_RECOVERY_PROTOCOL
+        )
+          throw new QualifiedCandidatePreflightError(
+            "qualified-recovery-unsupported: The current server cannot read historical enrollment receipts.",
+          );
         migrationPlan = await preflightQualifiedCandidate(this.#baseDir, qualified);
         await preflightQualifiedBackup(this.#baseDir, message.dbPath, this.#backupAdapter);
         if (this.#child !== child || this.#stopRequested || this.#stopping)

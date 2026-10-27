@@ -130,6 +130,7 @@ export class ServiceLauncherClient extends Context.Service<
     ) => Effect.Effect<ServerSelfUpdateOutcome, ServiceLauncherClientError>;
     readonly qualifiedUpdates?: boolean;
     readonly qualifiedStaging?: boolean;
+    readonly qualifiedRecovery?: boolean;
     readonly qualifiedOperations?: boolean;
     readonly qualifiedRetirement?: boolean;
     /** The launcher reports how a handoff ended from its durable operation receipts. */
@@ -176,6 +177,7 @@ export class ServiceLauncherClient extends Context.Service<
       readonly dbPath: string;
       readonly stagedHandle?: string;
       readonly operationId?: string;
+      readonly qualifiedRecoveryProtocol?: 1;
     }) => Effect.Effect<string, ServiceLauncherClientError | ServiceLauncherRejectedError>;
     readonly prepareTrial: Effect.Effect<
       ServerSelfUpdateOutcome | undefined,
@@ -221,9 +223,7 @@ const resolveStartup = Effect.fn("cloud.service_launcher_client.resolve_startup"
     const host = yield* ServiceLauncherHostProcess;
     const environment = yield* HostProcess.Environment;
     const currentVersion = options?.currentVersion ?? packageJson.version;
-    // The launcher always spawns its child with an IPC channel, and Node does
-    // not pass that channel on. Without one, the context was inherited from an
-    // ancestor (e.g. `t3 serve` run in a T3 terminal), so it describes someone else.
+    // IPC channels are not inherited; without one, launcher context belongs to an ancestor.
     const rawContext = host.connected ? environment[SERVICE_LAUNCHER_CONTEXT_ENV] : undefined;
     const context = rawContext === undefined ? undefined : decodeServiceLauncherContext(rawContext);
 
@@ -335,56 +335,65 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
     readonly dbPath: string;
     readonly stagedHandle?: string;
     readonly operationId?: string;
+    readonly qualifiedRecoveryProtocol?: 1;
   }) =>
-    input.operationId !== undefined && context?.updateOperationsProtocol !== 1
+    input.qualifiedRecoveryProtocol !== undefined && context?.qualifiedRecoveryProtocol !== 1
       ? Effect.fail(
           new ServiceLauncherRejectedError({
             targetVersion: input.targetVersion,
             reason:
-              "bootstrap-required: The launcher cannot retain caller-bound update operations.",
+              "bootstrap-required: The launcher cannot activate historical enrollment receipts. Refresh it on this host first.",
           }),
         )
-      : input.stagedHandle !== undefined &&
-          (context?.qualifiedUpdatesProtocol !== 1 || context.startupGateProtocol !== 1)
+      : input.operationId !== undefined && context?.updateOperationsProtocol !== 1
         ? Effect.fail(
             new ServiceLauncherRejectedError({
               targetVersion: input.targetVersion,
               reason:
-                "bootstrap-required: The installed launcher cannot activate qualified Jones artifacts. Upgrade it on this host first.",
+                "bootstrap-required: The launcher cannot retain caller-bound update operations.",
             }),
           )
-        : context !== undefined && context.protocol !== SERVICE_LAUNCHER_PROTOCOL
+        : input.stagedHandle !== undefined &&
+            (context?.qualifiedUpdatesProtocol !== 1 || context.startupGateProtocol !== 1)
           ? Effect.fail(
               new ServiceLauncherRejectedError({
                 targetVersion: input.targetVersion,
                 reason:
-                  "The installed service launcher must be upgraded before another remote update.",
+                  "bootstrap-required: The installed launcher cannot activate qualified Jones artifacts. Upgrade it on this host first.",
               }),
             )
-          : exchange(
-              { type: "request-update", ...input },
-              (reply) =>
-                (reply.type === "update-accepted" &&
-                  (input.operationId === undefined || reply.updateId === input.operationId)) ||
-                (reply.type === "update-rejected" &&
-                  (input.operationId === undefined || reply.operationId === input.operationId)),
-            ).pipe(
-              Effect.flatMap((reply) =>
-                reply.type === "update-accepted"
-                  ? Effect.sync(() => {
-                      acceptedMigrationPlan = reply.migrationPlan;
-                      return reply.updateId;
-                    })
-                  : reply.type === "update-rejected"
-                    ? Effect.fail(
-                        new ServiceLauncherRejectedError({
-                          targetVersion: input.targetVersion,
-                          reason: reply.reason,
-                        }),
-                      )
-                    : Effect.die("service launcher returned an impossible update response"),
-              ),
-            );
+          : context !== undefined && context.protocol !== SERVICE_LAUNCHER_PROTOCOL
+            ? Effect.fail(
+                new ServiceLauncherRejectedError({
+                  targetVersion: input.targetVersion,
+                  reason:
+                    "The installed service launcher must be upgraded before another remote update.",
+                }),
+              )
+            : exchange(
+                { type: "request-update", ...input },
+                (reply) =>
+                  (reply.type === "update-accepted" &&
+                    (input.operationId === undefined || reply.updateId === input.operationId)) ||
+                  (reply.type === "update-rejected" &&
+                    (input.operationId === undefined || reply.operationId === input.operationId)),
+              ).pipe(
+                Effect.flatMap((reply) =>
+                  reply.type === "update-accepted"
+                    ? Effect.sync(() => {
+                        acceptedMigrationPlan = reply.migrationPlan;
+                        return reply.updateId;
+                      })
+                    : reply.type === "update-rejected"
+                      ? Effect.fail(
+                          new ServiceLauncherRejectedError({
+                            targetVersion: input.targetVersion,
+                            reason: reply.reason,
+                          }),
+                        )
+                      : Effect.die("service launcher returned an impossible update response"),
+                ),
+              );
 
   const pending = context?.update?.status === "pending" ? context.update : undefined;
   let outcome: ServerSelfUpdateOutcome | undefined =
@@ -504,6 +513,7 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
     prepareQualifiedTrial,
     qualifiedUpdates: context?.qualifiedUpdatesProtocol === 1 && context.startupGateProtocol === 1,
     qualifiedStaging: context?.qualifiedUpdatesProtocol === 1,
+    qualifiedRecovery: context?.qualifiedRecoveryProtocol === 1,
     qualifiedOperations: context?.updateOperationsProtocol === 1,
     qualifiedRetirement: context?.updateRetirementProtocol === 1,
     qualifiedOutcomes: context?.updateOutcomeProtocol === 1,

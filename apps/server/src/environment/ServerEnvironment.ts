@@ -1,3 +1,4 @@
+import { THREAD_MONITOR_GUARDED_SETTLE_CAPABILITY } from "@t3tools/contracts/jones/guardedThreadSettlement";
 import { LINKED_THREADS_CAPABILITY } from "@t3tools/contracts/jones/linkedThreadsCapability";
 import { WORKSTREAM_OPERATIONS_CONTRACT } from "@t3tools/contracts/jones/workstreamOperations";
 import { QUEUED_STEER_BATCH_LIMITS } from "@t3tools/contracts";
@@ -209,9 +210,7 @@ export const make = Effect.gen(function* () {
     launcherManaged: launcher.managed,
   });
   const serverInstallation = serverSelfUpdate === null ? yield* resolveServerInstallation : null;
-  // Static is correct: the control fd is known at bootstrap, and the desktop
-  // app and its bundled server ship in one artifact, so a present fd means the
-  // app speaks the requestDesktopUpdate protocol.
+  // Desktop and server ship together; a control fd guarantees requestDesktopUpdate support.
 
   const desktopAppUpdate =
     serverSelfUpdate === "desktop-managed" && serverConfig.desktopTelemetryControlFd !== undefined;
@@ -240,6 +239,7 @@ export const make = Effect.gen(function* () {
       settlementOrigins: SETTLEMENT_ORIGINS_CAPABILITY,
       // Startup refuses to serve until Jones migrations, including the restore table, have run.
       settlementRestore: SETTLEMENT_RESTORE_CAPABILITY,
+      threadMonitorGuardedSettle: THREAD_MONITOR_GUARDED_SETTLE_CAPABILITY,
       currentRuntimeStop: {
         targetRequired: true,
         supportedDrivers: ["codex", "claudeAgent"],
@@ -307,9 +307,7 @@ export const make = Effect.gen(function* () {
 
   return ServerEnvironment.of({
     getEnvironmentId: Effect.succeed(environmentId),
-    // The publish opt-in and relay link change at runtime (`t3 connect
-    // publish`, the client settings toggle), so the capability is read per
-    // descriptor request rather than baked in at startup.
+    // Publishing opt-in and relay links change at runtime; read the capability per request.
     getDescriptor: readAgentActivityPublishingActive(secrets).pipe(
       Effect.map((agentActivityPublishing) => ({
         ...descriptor,

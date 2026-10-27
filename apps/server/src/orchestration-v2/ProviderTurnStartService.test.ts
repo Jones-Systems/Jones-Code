@@ -79,7 +79,6 @@ const layerWorktreeLocation = (worktreesDir = managedWorktreesDir) =>
     ServerSettings.layerTest(),
   );
 
-/** Starts a run on a thread whose worktree folder is missing, with routing reads failing after. */
 function startWithMissingWorktree(
   worktreePath: string,
   realPaths: Record<string, string> = {
@@ -172,7 +171,6 @@ function startWithMissingWorktree(
         IdAllocator.layer,
         Layer.succeed(FileSystem.FileSystem, {
           exists: () => Effect.succeed(false),
-          // Paths that exist on the fake disk, mapped to where their symlinks lead.
           realPath: (target: string) =>
             normalize(target) in realPaths
               ? Effect.succeed(realPaths[normalize(target)])
@@ -189,9 +187,7 @@ function startWithMissingWorktree(
         Layer.mock(GitWorkflow.GitWorkflowService)({ pruneWorktrees, createWorktree }),
         Layer.mock(ProjectService.ProjectService)({
           getById: () =>
-            Effect.succeed(
-              Option.some({ workspaceRoot: "/tmp/provider-turn-start-project" } as never),
-            ),
+            Effect.succeedSome({ workspaceRoot: "/tmp/provider-turn-start-project" } as never),
         }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getThreadRecords: () => {
@@ -911,7 +907,7 @@ function makeLocalCommandHarness(input: {
         }),
         Layer.mock(ProjectService.ProjectService)({
           getById: () =>
-            Effect.succeed(Option.some({ workspaceRoot: "/tmp/native-account-project" } as never)),
+            Effect.succeedSome({ workspaceRoot: "/tmp/native-account-project" } as never),
         }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getThreadRecords,
@@ -1014,42 +1010,60 @@ function makeLocalCommandHarness(input: {
 
 effectIt.effect.each(["delivery_pending", "delivery_unknown", "recovery_required"] as const)(
   "keeps a historical continuity fence before provider loading (%s)",
-  (reason) => Effect.gen(function* () {
-    const harness = makeLocalCommandHarness({
-      text: "Continue",
-      continuityRequirement: {
-        outcome: "hold", reason, current: null,
-        gate: { outcome: "hold", reason, fenceRevision: "9", deliveryIds: ["historical-delivery"] },
-      },
-    });
-    yield* harness.start;
-    expect(harness.open).not.toHaveBeenCalled();
-    expect(harness.fallbackEnsure).not.toHaveBeenCalled();
-    expect(harness.startRootRun).not.toHaveBeenCalled();
-    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
-  }),
+  (reason) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        continuityRequirement: {
+          outcome: "hold",
+          reason,
+          current: null,
+          gate: {
+            outcome: "hold",
+            reason,
+            fenceRevision: "9",
+            deliveryIds: ["historical-delivery"],
+          },
+        },
+      });
+      yield* harness.start;
+      expect(harness.open).not.toHaveBeenCalled();
+      expect(harness.fallbackEnsure).not.toHaveBeenCalled();
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+      expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+    }),
 );
 
-effectIt.effect("refuses a missing continuity binding before a fresh native conversation is created", () =>
-  Effect.gen(function* () {
-    const harness = makeLocalCommandHarness({
-      text: "Continue",
-      continuityRequirement: {
-        outcome: "required",
-        owner: {
-          environmentId: "environment:mcp-test", threadId: "thread-native-account-command",
-          providerInstanceId: "codex-personal", providerThreadId: "new-provider-thread",
-          driver: "codex", nativeThreadId: "original-continuity-native",
-        } as import("@t3tools/contracts").ContinuityOwner,
-        target: { goalId: "goal", revision: "1", generation: "1", snapshotDigest: "a".repeat(64) },
-        gate: { outcome: "clear", fenceRevision: "0" },
-      },
-    });
-    yield* harness.start;
-    expect(harness.open).not.toHaveBeenCalled();
-    expect(harness.fallbackEnsure).not.toHaveBeenCalled();
-    expect(harness.startRootRun).not.toHaveBeenCalled();
-  }),
+effectIt.effect(
+  "refuses a missing continuity binding before a fresh native conversation is created",
+  () =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        continuityRequirement: {
+          outcome: "required",
+          owner: {
+            environmentId: "environment:mcp-test",
+            threadId: "thread-native-account-command",
+            providerInstanceId: "codex-personal",
+            providerThreadId: "new-provider-thread",
+            driver: "codex",
+            nativeThreadId: "original-continuity-native",
+          } as import("@t3tools/contracts").ContinuityOwner,
+          target: {
+            goalId: "goal",
+            revision: "1",
+            generation: "1",
+            snapshotDigest: "a".repeat(64),
+          },
+          gate: { outcome: "clear", fenceRevision: "0" },
+        },
+      });
+      yield* harness.start;
+      expect(harness.open).not.toHaveBeenCalled();
+      expect(harness.fallbackEnsure).not.toHaveBeenCalled();
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+    }),
 );
 
 effectIt.effect.each(["Continue", "/goal resume"])(
@@ -1663,7 +1677,10 @@ effectIt.effect.each([undefined, null])(
       expect(harness.projection().providerThreads.at(-1)?.goal).toEqual(original?.goal);
       expect(harness.projection().runs.at(-1)?.status).toBe("failed");
       expect(harness.projection().turnItems).toMatchObject([
-        { type: "error", title: "Existing provider conversation was preserved; continuation failed" },
+        {
+          type: "error",
+          title: "Existing provider conversation was preserved; continuation failed",
+        },
       ]);
     }),
 );
@@ -1741,7 +1758,10 @@ for (const text of ["Continue", "/compact"]) {
 
 effectIt.effect("a new Codex conversation still creates its initial native thread", () =>
   Effect.gen(function* () {
-    const harness = makeLocalCommandHarness({ text: "Start a conversation", nativeResume: "missing" });
+    const harness = makeLocalCommandHarness({
+      text: "Start a conversation",
+      nativeResume: "missing",
+    });
     yield* harness.start;
     expect(harness.successEnsure).toHaveBeenCalledOnce();
     expect(harness.startRootRun).toHaveBeenCalledOnce();

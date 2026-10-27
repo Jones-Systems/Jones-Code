@@ -1,4 +1,5 @@
 import * as Effect from "effect/Effect";
+import { threadTitleVerdict } from "./jones/ThreadTitleAssessment.ts";
 import * as Schema from "effect/Schema";
 
 import { type ChatAttachment, type ModelSelection, TextGenerationError } from "@t3tools/contracts";
@@ -36,11 +37,7 @@ export interface Request<S extends Schema.Top> {
   readonly outputSchema: S;
   readonly modelSelection: ModelSelection;
   readonly attachments?: ReadonlyArray<ChatAttachment> | undefined;
-  /**
-   * Set when the model must investigate `cwd` before answering: it may read files and run
-   * read-only commands there, over as many turns as it needs, and must change nothing. A
-   * runner that cannot guarantee read-only tools fails rather than answering blind.
-   */
+  /** Investigate cwd with read-only tools across turns; fail if the runner cannot guarantee read-only access. */
   readonly investigate?: { readonly timeoutMs: number } | undefined;
 }
 
@@ -183,15 +180,19 @@ export function fromRunner(
       modelSelection: input.modelSelection,
       attachments: input.attachments,
       ...buildThreadTitlePrompt({
+        titleAssessment: input.titleAssessment,
         message: input.message,
         previousTitle: input.previousTitle,
+        forkSource: input.forkSource,
         linkedContext: input.linkedContext,
         attachments: input.attachments,
+        instructions: input.instructions,
       }),
     });
     return {
       title: sanitizeThreadTitle(generated.title),
-      ...(generated.needsRefinement ? { needsRefinement: true } : {}),
+      ...(generated.needsRefinement === true ? { needsRefinement: true } : {}),
+      ...(input.titleAssessment ? { assessment: threadTitleVerdict(generated) } : {}),
     };
   });
 

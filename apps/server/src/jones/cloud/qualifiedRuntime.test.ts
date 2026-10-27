@@ -14,6 +14,7 @@ import * as NodeUtil from "node:util";
 import * as NodeURL from "node:url";
 import {
   bundleFileSystem,
+  enrollQualifiedRuntime,
   currentQualifiedRuntimeBinding,
   decodeStagedQualifiedRuntime,
   QualifiedRuntimeBlockedError,
@@ -898,6 +899,137 @@ it("persists attempt timings exclusively and retains only the newest 64 owned re
     await NodeAssert.rejects(
       retainQualifiedAttemptTimings(base, "../escape", []),
       /Invalid bounded/,
+    );
+  });
+});
+
+it("reuses an enrolled immutable receipt while binding staging to the current source", async () => {
+  await fixture(async (base, payload, artifact) => {
+    const historical = await enrollQualifiedRuntime({
+      artifact: { ...artifact, installedSourceSha: "9".repeat(40) },
+      baseDir: base,
+      host: fixtureHost,
+      validate: async () => {},
+    });
+    const cache = NodePath.join(base, "runtime", "versions", artifact.version);
+    const receiptPath = NodePath.join(cache, QUALIFIED_RUNTIME_RECEIPT);
+    const before = await NodeFSP.readFile(receiptPath);
+    const inode = (await NodeFSP.stat(NodePath.join(cache, "t3"))).ino;
+    const binding = await currentQualifiedRuntimeBinding(base, baseline, fixtureHost);
+    const stagedHandle = NodeCrypto.randomUUID();
+    const staged = await stageQualifiedRuntime({
+      stagedHandle,
+      artifact: { ...artifact, payloadDirectory: cache },
+      binding,
+      host: fixtureHost,
+      validate: async () => {},
+    });
+    assert.equal(staged.protocol, 2);
+    assert.deepEqual(decodeStagedQualifiedRuntime(staged), staged);
+    assert.equal(decodeStagedQualifiedRuntime({ ...staged, protocol: 1 }), undefined);
+    assert.deepEqual(staged.receipt, historical);
+    await NodeAssert.rejects(
+      stageQualifiedRuntime({
+        stagedHandle,
+        artifact: { ...artifact, version: "0.0.0-preview.20261002.102.1", runId: 102 },
+        binding,
+        host: fixtureHost,
+        validate: async () => {},
+      }),
+      (cause: unknown) =>
+        cause instanceof QualifiedRuntimeBlockedError && cause.reason === "occupied-cache",
+    );
+
+    assert.deepEqual(
+      await stageQualifiedRuntime({
+        stagedHandle,
+        artifact: { ...artifact, payloadDirectory: cache },
+        binding,
+        host: fixtureHost,
+        validate: async () => {},
+      }),
+      staged,
+    );
+    assert.deepEqual(await NodeFSP.readFile(receiptPath), before);
+    assert.equal((await NodeFSP.stat(NodePath.join(cache, "t3"))).ino, inode);
+    assert.deepEqual(
+      await verifyStagedQualifiedRuntime(base, baseline, staged.stagedHandle, fixtureHost),
+      staged,
+    );
+    for (const changed of [
+      { artifactId: artifact.artifactId + 1 },
+      { installedSourceSha: "8".repeat(40) },
+    ]) {
+      await NodeAssert.rejects(
+        stageQualifiedRuntime({
+          artifact: { ...artifact, ...changed },
+          binding,
+          host: fixtureHost,
+          validate: async () => {},
+        }),
+      );
+    }
+    await NodeFSP.writeFile(NodePath.join(payload, "client", "index.html"), "changed input");
+    await NodeAssert.rejects(
+      stageQualifiedRuntime({ artifact, binding, host: fixtureHost, validate: async () => {} }),
+    );
+  });
+});
+
+it("rejects every changed immutable cache field and stale incoming binding", async () => {
+  await fixture(async (base, _payload, artifact) => {
+    await enrollQualifiedRuntime({
+      artifact: { ...artifact, installedSourceSha: "9".repeat(40) },
+      baseDir: base,
+      host: fixtureHost,
+      validate: async () => {},
+    });
+    const binding = await currentQualifiedRuntimeBinding(base, baseline, fixtureHost);
+    const changes: ReadonlyArray<Partial<QualifiedRuntimeArtifact>> = [
+      { repository: "foreign" as QualifiedRuntimeArtifact["repository"] },
+      { channel: "foreign" as QualifiedRuntimeArtifact["channel"] },
+      { sourceSha: "8".repeat(40) },
+      { sourceTree: "8".repeat(40) },
+      { runId: artifact.runId + 1 },
+      { runAttempt: artifact.runAttempt + 1 },
+      { artifactId: artifact.artifactId + 1 },
+      { workflow: ".github/workflows/artifact-desktop-mac.yml" },
+      { artifactDigest: `sha256:${"8".repeat(64)}` },
+      { archiveSha256: "8".repeat(64) },
+      { platform: "darwin" },
+      { architecture: artifact.architecture === "arm64" ? "x64" : "arm64" },
+    ];
+    for (const changed of changes) {
+      await NodeAssert.rejects(
+        stageQualifiedRuntime({
+          artifact: { ...artifact, ...changed },
+          binding,
+          host: fixtureHost,
+          validate: async () => {
+            throw new Error("invalid candidate reached validation");
+          },
+        }),
+        (cause: unknown) => cause instanceof QualifiedRuntimeBlockedError,
+      );
+    }
+    for (const changed of [{ environmentId: "stale" }, { activeSourceSha: "8".repeat(40) }]) {
+      await NodeAssert.rejects(
+        stageQualifiedRuntime({
+          artifact,
+          binding: { ...binding, ...changed },
+          host: fixtureHost,
+          validate: async () => {},
+        }),
+        (cause: unknown) =>
+          cause instanceof QualifiedRuntimeBlockedError && cause.reason === "binding-mismatch",
+      );
+    }
+    const cache = NodePath.join(base, "runtime", "versions", artifact.version);
+    await NodeFSP.writeFile(NodePath.join(cache, "client", "index.html"), "changed cached payload");
+    await NodeAssert.rejects(
+      stageQualifiedRuntime({ artifact, binding, host: fixtureHost, validate: async () => {} }),
+      (cause: unknown) =>
+        cause instanceof QualifiedRuntimeBlockedError && cause.reason === "occupied-cache",
     );
   });
 });

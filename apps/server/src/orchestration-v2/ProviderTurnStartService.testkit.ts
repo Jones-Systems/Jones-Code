@@ -3,7 +3,6 @@ import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
 import * as ContinuityAdmissionTestkit from "../jones/goals/continuity/admission.testkit.ts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -17,6 +16,6 @@ export const layer = Layer.mergeAll(
     createWorktree: () => Effect.succeed({} as never),
   }),
   Layer.mock(ProjectService.ProjectService)({
-    getById: () => Effect.succeed(Option.none()),
+    getById: () => Effect.succeedNone,
   }),
 );

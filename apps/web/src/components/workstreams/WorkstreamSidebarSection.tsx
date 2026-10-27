@@ -54,6 +54,8 @@ export const workstreamCommandId = () =>
 
 const bindingSuperseded = Symbol("binding superseded");
 
+const collapsedWorkstreamsSchema = Schema.Array(Schema.String);
+
 export function WorkstreamCreateForm({
   controller,
   open,
@@ -82,6 +84,7 @@ export function WorkstreamCreateForm({
     setError(null);
   }
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Retire the open editor when its registry binding changes and clear its session on unmount.
   useLayoutEffect(() => {
     if (bindingRef.current !== binding) onClose();
     bindingRef.current = binding;
@@ -91,6 +94,7 @@ export function WorkstreamCreateForm({
     };
   }, [binding, session, onClose]);
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own document dismissal listeners and focus only while this authorized editor is open.
   useLayoutEffect(() => {
     if (!open) return;
     if (!canWrite) {
@@ -227,7 +231,7 @@ export function WorkstreamSidebarSection(props: {
   const [collapsed, setCollapsed] = useLocalStorage<readonly string[], readonly string[]>(
     `t3:workstreams:collapsed:${data?.binding.registryId ?? "none"}:${data?.binding.ownerId ?? "none"}`,
     [],
-    Schema.Array(Schema.String),
+    collapsedWorkstreamsSchema,
   );
   const appearance = useWorkstreamAppearance(data);
   const [addingPr, setAddingPr] = useState<string | null>(null);
@@ -283,9 +287,11 @@ export function WorkstreamSidebarSection(props: {
     }
   }
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Publish committed PR authority to pending request callbacks before they can accept a result.
   useLayoutEffect(() => {
     prAuthorityKeyRef.current = prAuthorityKey;
   }, [prAuthorityKey]);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Abort detail and refresh requests when their registry binding retires or the panel unmounts.
   useLayoutEffect(() => {
     bindingKeyRef.current = bindingKey;
     detailRequest.current?.abort();
@@ -299,6 +305,7 @@ export function WorkstreamSidebarSection(props: {
       manualRefreshRequest.current = null;
     };
   }, [bindingKey]);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Focus the mounted detail panel after its selected workstream commits.
   useLayoutEffect(() => {
     if (selected) panelRef.current?.focus();
   }, [selected]);

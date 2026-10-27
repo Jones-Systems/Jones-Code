@@ -185,6 +185,7 @@ export interface ThreadLaunchPreparationInput {
 export interface ThreadLaunchResult {
   readonly threadId: ThreadId;
   readonly projection: OrchestrationV2ThreadProjection;
+  /** The launch's last write (the initial message, else the thread claim) was accepted before this call. */
   readonly resumed: boolean;
   readonly legacyReleaseSequence?: number;
 }
@@ -255,10 +256,7 @@ export class ThreadLaunchService extends Context.Service<
       ThreadLaunchResult,
       ThreadLaunchError | ThreadManagement.ThreadManagementProviderInstanceDisabledError
     >;
-    /**
-     * `launch` accepts such a launch and reports the failure inside the
-     * thread; a caller that needs it before a thread exists checks first.
-     */
+    /** Check before creation for early errors; launch otherwise accepts and reports base failures inside the thread. */
     readonly checkWorktreeBase: (
       input: Pick<ThreadLaunchInput, "projectId" | "workspaceStrategy">,
     ) => Effect.Effect<void, ThreadLaunchBaseRefError>;
@@ -573,7 +571,7 @@ const make = Effect.gen(function* () {
         "fail-run",
         threadId,
       )("Workspace-failure policy changed; retain the shell.");
-    const control = yield* Schema.decodeUnknownEffect(LegacyNoTerminalControl)({
+    const control = yield* Schema.decodeEffect(LegacyNoTerminalControl)({
       version: 1,
       type: "no_control",
       policy: receivingPolicy,
@@ -619,7 +617,7 @@ const make = Effect.gen(function* () {
     const validated =
       deletion === undefined
         ? undefined
-        : yield* Schema.decodeUnknownEffect(LegacyFailureDeletionProvenance)(deletion).pipe(
+        : yield* Schema.decodeEffect(LegacyFailureDeletionProvenance)(deletion).pipe(
             Effect.mapError(mapError(input, "fail-run", threadId)),
           );
     const { deletion: _oldDeletion, ...original } = decision;
@@ -926,6 +924,7 @@ const make = Effect.gen(function* () {
     input: PreparationInput,
     threadId: ThreadId,
     runId: RunId,
+    lifetime: Scope.Scope,
   ) {
     const journal = yield* legacyPreparationJournal(input, threadId, runId);
     const { bound, persist, intent, outcome } = journal;
@@ -950,6 +949,7 @@ const make = Effect.gen(function* () {
     };
     const captured = bound.setup.status === "resolved" ? bound.setup.definition : undefined;
     const hooks: ProjectSetupScriptRunner.LegacySetupPreparationHooks = {
+      lifetime,
       binding,
       ...(captured === undefined ? {} : { capturedDefinition: captured }),
       noScript: () =>
@@ -1146,8 +1146,7 @@ const make = Effect.gen(function* () {
         (yield* git.resolveWorktreeBaseRemote({ cwd, refName: baseRef })) !== null
       )
         return undefined;
-      // `git worktree add` also starts from a remote-tracking branch of that
-      // name; any ref carrying it is reason enough to let Git decide.
+      // git worktree add accepts remote-tracking branches; let Git decide when any matching ref exists.
       if (yield* git.hasRefNamed({ cwd, refName: baseRef })) return undefined;
       return (yield* git.hasCommit({ cwd, refName: "HEAD" })) ? project : undefined;
     }).pipe(Effect.orElseSucceed(() => undefined));
@@ -1166,6 +1165,7 @@ const make = Effect.gen(function* () {
     runId: RunId | null,
     observeExistingSetup = false,
   ) {
+    const lifetime = yield* Effect.scope;
     const project = yield* projects.getById(input.projectId).pipe(
       Effect.mapError(mapError(input, "resolve-project", threadId)),
       Effect.flatMap(
@@ -1288,8 +1288,7 @@ const make = Effect.gen(function* () {
     let setupTerminalId: string | null = null;
     let workspaceRecorded = false;
     let runReleased = false;
-    // The background branch rename records the worktree again when it lands,
-    // so cleanup stops it before forgetting a removed worktree.
+    // Stop background renames before forgetting worktrees; completed renames record them again.
     let branchRename: Fiber.Fiber<unknown> | null = null;
     if (input.workspaceStrategy.type === "worktree") {
       yield* setupTracker.begin({
@@ -1463,8 +1462,7 @@ const make = Effect.gen(function* () {
         yield* setupTracker.stageStatus(threadId, "checkout", "done");
       }
 
-      // A reused worktree is already recorded, and rewriting it could undo
-      // the first attempt's branch rename.
+      // Do not rewrite reused worktrees; that could undo the original branch rename.
       if (reused === undefined) {
         yield* threads
           .dispatch({
@@ -1523,8 +1521,7 @@ const make = Effect.gen(function* () {
                     }),
                   ),
                 );
-              // Updating the parent first makes later subagents inherit the new name.
-              // Re-read after each pass for children of subagents updated in that pass.
+              // Update parents first so children inherit names; reread each pass for newly updated descendants.
               const visited = new Set([threadId]);
               while (true) {
                 const matchingIds = yield* metadata
@@ -1581,7 +1578,7 @@ const make = Effect.gen(function* () {
       yield* setupTracker.stageStatus(threadId, "setup-script", "running");
       const legacyPreparation =
         input.legacyBootstrap !== undefined && runId !== null
-          ? yield* legacySetupHooks(input, threadId, runId)
+          ? yield* legacySetupHooks(input, threadId, runId, lifetime)
           : undefined;
       const cwd = worktreePath ?? project.workspaceRoot;
       const setup = yield* (
@@ -1622,7 +1619,7 @@ const make = Effect.gen(function* () {
               cause.operation !== "openTerminal" ||
               !isTerminalInputValidationError(cause.cause)
             )
-              return yield* Effect.fail(mapError(input, "run-setup-script", threadId)(cause));
+              return yield* mapError(input, "run-setup-script", threadId)(cause);
             const proof = cause.cause;
             const current = yield* threads
               .getThreadRecords(threadId, ["runs"], { runIds: [runId] })
@@ -1725,6 +1722,9 @@ const make = Effect.gen(function* () {
       let awaitAsyncSetup = Effect.void;
       if (setup.status === "started") {
         setupTerminalId = setup.terminalId;
+        yield* setup.writeCompletion.pipe(
+          Effect.mapError(mapError(input, "run-setup-script", threadId)),
+        );
         yield* setupTracker.update(threadId, (snapshot) => ({
           ...snapshot,
           setupScript: {
@@ -1916,9 +1916,7 @@ const make = Effect.gen(function* () {
           ) {
             if (branchRename !== null) yield* Fiber.interrupt(branchRename);
             const removedPath = createdWorktreePath;
-            // The thread forgets the worktree only once it is gone; a failed
-            // removal leaves the directory for the user to clean up rather than
-            // reusing a checkout that may be half written.
+            // Forget worktrees only after removal succeeds; failed removals must not reuse partially written checkouts.
             yield* git
               .removeWorktree({ cwd: project.workspaceRoot, path: removedPath, force: true })
               .pipe(
@@ -1946,7 +1944,7 @@ const make = Effect.gen(function* () {
         }),
       ),
     );
-  });
+  }, Effect.scoped);
 
   const failPreparedRun = (
     input: Pick<PreparationInput, "commandId">,
@@ -2335,10 +2333,7 @@ const make = Effect.gen(function* () {
         instanceId: input.modelSelection.instanceId,
       });
       return yield* Effect.gen(function* () {
-        // A retried launch has no client-supplied id to replay against, so
-        // recover the thread id its accepted create was recorded under before
-        // allocating another one; a fresh id would only collide with the
-        // recorded receipt.
+        // Recover ids from accepted launch receipts before allocating; retries have no client id and new ids collide with receipts.
         const reusableLaunchReceipt =
           input.threadId === undefined &&
           Option.isSome(launchReceipt) &&
@@ -2494,12 +2489,9 @@ const make = Effect.gen(function* () {
                 : { legacyBootstrap: input.legacyBootstrap }),
             })
             .pipe(
-              // An agent's launch may land on a thread a replay, or a
-              // concurrent launch with the same key, created with broader modes
-              // than it asks for. The orchestrator refuses the message under
-              // the thread's lock. Preserve a stricter caller limit and its
-              // refusal signal. The user's own clients launch into their
-              // own drafts, whatever modes those hold.
+              // Replay or concurrent launch can select a thread with broader modes than an agent requested.
+              // The orchestrator refuses under the thread lock; preserve the stricter caller limit and refusal signal.
+              // The user's own clients launch into their own drafts using those drafts' modes.
               input.createdBy === "agent"
                 ? Effect.provideService(DispatchModeLimit, {
                     runtimeMode:
@@ -2521,6 +2513,8 @@ const make = Effect.gen(function* () {
                 : (effect) => effect,
               Effect.mapError(mapError(input, "dispatch-message", threadId)),
             );
+          // A concurrent retry can read no receipt and still replay the dispatch.
+          messageWasAlreadyAccepted ||= dispatched.replayed === true;
           const runCreated = dispatched.storedEvents.find(
             (stored) => stored.event.type === "run.created",
           );
@@ -2712,7 +2706,12 @@ const make = Effect.gen(function* () {
         return {
           threadId,
           projection,
-          resumed: Option.isSome(launchReceipt) || messageWasAlreadyAccepted,
+          // An attempt that failed after claiming the thread recorded nothing, so
+          // only a repeat of the final write counts as resumed.
+          resumed:
+            input.initialMessage === undefined
+              ? Option.isSome(launchReceipt) || claimed.replayed === true
+              : messageWasAlreadyAccepted,
         };
       });
     },

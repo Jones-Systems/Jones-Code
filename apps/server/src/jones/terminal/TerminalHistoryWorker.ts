@@ -37,7 +37,9 @@ export const makeTerminalHistoryWorker = Effect.fn("TerminalHistoryWorker.make")
     yield* awaitPending;
     // This wait holds no write or queue item. A flush wakes it and is selected
     // before background keys; an already running write is never interrupted.
-    yield* Effect.raceFirst(Effect.sleep(options.debounceMs), awaitImmediate);
+    yield* awaitImmediate.pipe(
+      Effect.timeoutOrElse({ duration: options.debounceMs, orElse: () => Effect.void }),
+    );
     const [key, request] = yield* TxRef.modify(stateRef, (state) => {
       const entries = [...state.pending.entries()];
       const selected = entries.find(([, request]) => request.immediate) ?? entries[0]!;

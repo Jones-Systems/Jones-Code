@@ -94,3 +94,14 @@ describe("shell destination fence metadata", () => {
     }
   });
 });
+
+// Identity is shared without extending the terminal wire schema.
+describe("command terminal identities", () => {
+  it("recognizes legacy remote runs and new source command terminals only", async () => {
+    const { isShellRunTerminal } = await import("./shellDestinationFence.ts");
+    expect(isShellRunTerminal("jones-shell-run", "run-old")).toBe(true);
+    expect(isShellRunTerminal("thread", "jones-shell-run-new")).toBe(true);
+    expect(isShellRunTerminal("thread", "term-1")).toBe(false);
+    expect(isShellRunTerminal("jones-shell-run-other", "run-old")).toBe(false);
+  });
+});

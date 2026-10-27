@@ -12,21 +12,28 @@ import { DocumentSectionRefusal, extractDocumentSections, validateSelector } fro
 import { readCommittedDocument } from "./rawGit.ts";
 
 export class DocumentSectionError extends Schema.TaggedError<DocumentSectionError>()(
-  "DocumentSectionError", { code: DocumentSectionErrorCode },
+  "DocumentSectionError",
+  { code: DocumentSectionErrorCode },
 ) {
-  override get message(): string { return `Document section extraction refused (${this.code}).`; }
+  override get message(): string {
+    return `Document section extraction refused (${this.code}).`;
+  }
 }
 
 export class DocumentSections extends Context.Service<
   DocumentSections,
-  { readonly extract: (
-    repository: AuthorizedRepository, selector: DocumentSectionsSelector,
-  ) => Effect.Effect<DocumentSectionsResult, DocumentSectionError> }
+  {
+    readonly extract: (
+      repository: AuthorizedRepository,
+      selector: DocumentSectionsSelector,
+    ) => Effect.Effect<DocumentSectionsResult, DocumentSectionError>;
+  }
 >()("jones/documentSections/DocumentSections") {}
 
-const safeError = (error: unknown) => new DocumentSectionError({
-  code: error instanceof DocumentSectionRefusal ? error.code : "git_failed",
-});
+const safeError = (error: unknown) =>
+  new DocumentSectionError({
+    code: error instanceof DocumentSectionRefusal ? error.code : "git_failed",
+  });
 
 const extract: DocumentSections["Service"]["extract"] = Effect.fn("DocumentSections.extract")(
   function* (repository, selector) {
@@ -40,19 +47,27 @@ const extract: DocumentSections["Service"]["extract"] = Effect.fn("DocumentSecti
         const controller = new AbortController();
         const promise = readCommittedDocument(root, checked, controller.signal);
         // Register rejection immediately, even if interrupted before use begins.
-        const settled = promise.then(() => undefined, () => undefined);
+        const settled = promise.then(
+          () => undefined,
+          () => undefined,
+        );
         return { controller, promise, settled };
       }),
-      ({ promise }) => Effect.tryPromise({ try: () => promise, catch: safeError }).pipe(
-        Effect.flatMap(({ blobOid, bytes }) => Effect.try({
-          try: () => extractDocumentSections(checked, blobOid, bytes), catch: safeError,
-        })),
-      ),
-      ({ controller, settled }) => Effect.promise(async () => {
-        controller.abort();
-        // Await close/reap or an explicit bounded cleanup refusal.
-        await settled;
-      }),
+      ({ promise }) =>
+        Effect.tryPromise({ try: () => promise, catch: safeError }).pipe(
+          Effect.flatMap(({ blobOid, bytes }) =>
+            Effect.try({
+              try: () => extractDocumentSections(checked, blobOid, bytes),
+              catch: safeError,
+            }),
+          ),
+        ),
+      ({ controller, settled }) =>
+        Effect.promise(async () => {
+          controller.abort();
+          // Await close/reap or an explicit bounded cleanup refusal.
+          await settled;
+        }),
     );
   },
 );

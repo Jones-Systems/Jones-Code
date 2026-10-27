@@ -253,23 +253,23 @@ describe("frozen accepted Workstream v1 fixtures", () => {
 
   it("enforces registration state conditionals in both directions", () => {
     const quarantined = {
-      state: "quarantined",
+      state: "quarantined" as const,
       attestation_version: 0,
       attested_at: null,
       expires_at: null,
       evidence: null,
     };
     expect(() =>
-      Schema.decodeUnknownSync(WorkstreamRegistrationVerification)(quarantined, options),
+      Schema.decodeSync(WorkstreamRegistrationVerification)(quarantined, options),
     ).not.toThrow();
     expect(() =>
-      Schema.decodeUnknownSync(WorkstreamRegistrationVerification)(
+      Schema.decodeSync(WorkstreamRegistrationVerification)(
         { ...quarantined, attestation_version: 1 },
         options,
       ),
     ).toThrow();
     expect(() =>
-      Schema.decodeUnknownSync(WorkstreamRegistrationVerification)(
+      Schema.decodeSync(WorkstreamRegistrationVerification)(
         { ...quarantined, state: "attested" },
         options,
       ),

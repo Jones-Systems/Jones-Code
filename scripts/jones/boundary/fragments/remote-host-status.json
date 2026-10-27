@@ -3,7 +3,8 @@
   "feature": "remote-host-status",
   "jonesOwnedPaths": [
     "apps/web/src/jones/hostStatus/",
-    "packages/client-runtime/src/jones/hostStatus/"
+    "packages/client-runtime/src/jones/hostStatus/",
+    "apps/web/src/components/chat/HostStatusIndicators.tsx"
   ],
   "hookPaths": [],
   "tombstones": [],

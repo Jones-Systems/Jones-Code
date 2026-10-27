@@ -14,6 +14,7 @@ import * as IpcChannels from "./ipc/channels.ts";
 import * as CompanionChannels from "./jones/previewCompanion/channels.ts";
 import * as JonesUpdateChannels from "./jones/updates/ipcChannels.ts";
 import { mergeLegacyLocalStorage } from "./legacyLocalStorageMerge.ts";
+import { createThreadMonitorMainBridge } from "./jones/threadMonitor/mainBridge.ts";
 
 const SNAP_SHOT_EVENT_TYPES = new Set([
   "requested",
@@ -48,8 +49,7 @@ try {
 const clientPlatform = process.platform;
 
 if (clientPlatform === "darwin") {
-  // Native window buttons do not scale with Chromium zoom. Keep their reserved
-  // space in native points, including when a zoomed page is reloaded.
+  // Native buttons ignore Chromium zoom; reserve native points even after reload.
   const syncWindowControlInset = () => {
     document.documentElement.style.setProperty(
       "--desktop-window-controls-inset",
@@ -77,6 +77,9 @@ function unwrapEnsureSshEnvironmentResult(result: unknown) {
 }
 
 contextBridge.exposeInMainWorld("desktopBridge", {
+  ...(process.isMainFrame && process.argv.includes("--jones-thread-monitor-publisher")
+    ? { threadMonitor: createThreadMonitorMainBridge() }
+    : {}),
   previewCompanion: {
     getState: () => ipcRenderer.invoke(CompanionChannels.GET_STATE),
     configure: (input) => ipcRenderer.invoke(CompanionChannels.CONFIGURE, input),

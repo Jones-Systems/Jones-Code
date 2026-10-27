@@ -5,14 +5,17 @@ import { nativeConversationMustBePreserved } from "./preserveGoalConversation.ts
 const codex = { driver: "codex", nativeThreadRef: null };
 const message = (text: string, attachments: ReadonlyArray<unknown> = []) => ({ text, attachments });
 
-it.each([undefined, null])("preserves established conversations with an unproved goal: %s", (goal) => {
-  expect(
-    nativeConversationMustBePreserved(
-      { ...codex, nativeThreadRef: { nativeId: "existing" }, goal },
-      message("Continue", [{}]),
-    ),
-  ).toBe(true);
-});
+it.each([undefined, null])(
+  "preserves established conversations with an unproved goal: %s",
+  (goal) => {
+    expect(
+      nativeConversationMustBePreserved(
+        { ...codex, nativeThreadRef: { nativeId: "existing" }, goal },
+        message("Continue", [{}]),
+      ),
+    ).toBe(true);
+  },
+);
 
 it.each(["active", "paused", "complete", "blocked", "usage_limited", "budget_limited"])(
   "retained %s goal requires its native conversation even with attachments",
@@ -41,7 +44,11 @@ it("treats an attachment-bearing command as ordinary initial input", () => {
 it("leaves other providers' continuation policy unchanged", () => {
   expect(
     nativeConversationMustBePreserved(
-      { driver: "claudeAgent", nativeThreadRef: { nativeId: "existing" }, goal: { status: "active" } },
+      {
+        driver: "claudeAgent",
+        nativeThreadRef: { nativeId: "existing" },
+        goal: { status: "active" },
+      },
       message("/compact"),
     ),
   ).toBe(false);

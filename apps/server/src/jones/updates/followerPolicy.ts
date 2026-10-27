@@ -27,11 +27,9 @@ export interface HostWorkSnapshot {
 }
 
 /**
- * What a restart does to a pending request. A message-capable question stays answerable, so it
- * does not hold an update. An approval or question answered through a live provider callback is
- * cancelled by a restart, and so is a dynamic tool call or auth refresh in progress. Surviving
- * those would need the provider adapter to declare that a pending approval can be rebound to the
- * resumed session; no adapter declares it, so they hold automatic activation.
+ * Message-capable questions survive restart and do not hold updates. Live-callback questions/approvals,
+ * dynamic tool calls and auth refresh are cancelled by restart. They hold automatic activation unless
+ * an adapter declares pending-approval rebinding; none currently does.
  */
 export function pendingRequestObligation(request: HostWorkSnapshot["pendingRequests"][number]) {
   if (request.kind === "dynamic_tool_call" || request.kind === "auth_refresh")

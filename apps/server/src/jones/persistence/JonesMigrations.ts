@@ -50,7 +50,12 @@ import JonesMigration0122 from "./Migrations/122_JonesThreadLinks.ts";
 
 import JonesMigration0123 from "./Migrations/123_JonesWorkspaceLifecycle.ts";
 import JonesMigration0124 from "./Migrations/124_JonesTaskContinuations.ts";
-import JonesMigration0125 from "./Migrations/125_JonesGoalContinuity.ts";
+import JonesMigration0129 from "./Migrations/129_JonesCodexFailover.ts";
+
+import JonesMigration0130 from "./Migrations/130_JonesThreadTitleRefinement.ts";
+
+import JonesMigration0132 from "./Migrations/132_JonesOwnerSelections.ts";
+import JonesMigration0134 from "./Migrations/134_JonesGoalContinuity.ts";
 
 export const jonesMigrationEntries = [
   [1, "WorktreeOwnershipLeases", JonesMigration0001],
@@ -83,7 +88,10 @@ export const jonesMigrationEntries = [
   [122, "ThreadLinks", JonesMigration0122],
   [123, "WorkspaceLifecycle", JonesMigration0123],
   [124, "TaskContinuations", JonesMigration0124],
-  [125, "GoalContinuity", JonesMigration0125],
+  [129, "CodexFailover", JonesMigration0129],
+  [130, "ThreadTitleRefinement", JonesMigration0130],
+  [132, "OwnerSelections", JonesMigration0132],
+  [134, "GoalContinuity", JonesMigration0134],
 ] as const;
 
 export const runMigrations = Effect.fn("JonesMigrations.runMigrations")(function* () {

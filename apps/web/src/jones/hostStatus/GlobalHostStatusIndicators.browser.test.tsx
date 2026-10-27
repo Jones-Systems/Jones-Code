@@ -87,7 +87,7 @@ async function setupTest(): Promise<AsyncDisposable> {
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
       this: HTMLElement,
     ) {
-      return new DOMRect(0, 0, this.getAttribute("aria-label") === "Host status" ? 1000 : 100, 32);
+      return new DOMRect(0, 0, this.getAttribute("aria-label") === "Host status" ? 10000 : 100, 32);
     });
     connections.environmentIds = [];
     connections.connectedEnvironmentIds = [];

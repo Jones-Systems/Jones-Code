@@ -35,7 +35,6 @@ vi.mock(import("../state/server"), async (original) => {
     serverEnvironment: { ...actual.serverEnvironment, configValueAtom: (() => noConfig) as never },
   };
 });
-// A standard client session, so environment-owned file links can open.
 vi.mock(import("../state/session"), async (original) => {
   const { AuthStandardClientScopes } = await import("@t3tools/contracts");
   const granted = new Set<string>(AuthStandardClientScopes);
@@ -78,6 +77,29 @@ vi.mock(import("../hooks/useSettings"), async (original) => {
 });
 
 import ChatMarkdown from "./ChatMarkdown";
+import { AudioPreview } from "./files/AudioPreview";
+
+it("keeps compact audio playback loaded across signed URL renewals", async () => {
+  const original =
+    "data:audio/wav;base64,UklGRiUAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQEAAACA";
+  const renewed = `${original}#renewed`;
+  const preview = (src: string, revision = "clip-v1") => (
+    <AudioPreview compact name="clip.wav" src={src} revision={revision} />
+  );
+  await using screen = await render(preview(original));
+  const audio = screen.container.querySelector("audio")!;
+  await act(() => {
+    audio.dispatchEvent(new Event("loadedmetadata"));
+    audio.dispatchEvent(new Event("play"));
+  });
+  await screen.rerender(preview(renewed));
+  expect(screen.container.querySelector("audio")).toBe(audio);
+  expect(audio.getAttribute("src")).toBe(original);
+  await expect.element(screen.getByRole("button", { name: "Pause clip.wav" })).toBeEnabled();
+  await screen.rerender(preview(renewed, "clip-v2"));
+  expect(screen.container.querySelector("audio")).not.toBe(audio);
+  expect(screen.container.querySelector("audio")?.getAttribute("src")).toBe(renewed);
+});
 
 function setup() {
   using resources = new DisposableStack();
@@ -99,6 +121,37 @@ function buttonsLabelled(container: HTMLElement, label: string) {
     (button) => button.getAttribute("aria-label") === label,
   );
 }
+
+function observeCodeTokenization(
+  highlighter: Awaited<ReturnType<typeof getSyntaxHighlighterPromise>>,
+) {
+  const tokenize = vi.fn<(code: string) => void>();
+  const codeToTokens = highlighter.codeToTokens.bind(highlighter);
+  vi.spyOn(highlighter, "codeToTokens").mockImplementation((code, options) => {
+    // Empty input supplies theme metadata for the streaming renderer, not source tokens.
+    if (code !== "") tokenize(code);
+    return codeToTokens(code, options);
+  });
+  const createStreamTokenizer = highlighter.createStreamTokenizer.bind(highlighter);
+  vi.spyOn(highlighter, "createStreamTokenizer").mockImplementation((options) => {
+    const tokenizer = createStreamTokenizer(options);
+    const enqueue = tokenizer.enqueue.bind(tokenizer);
+    vi.spyOn(tokenizer, "enqueue").mockImplementation((chunk) => {
+      if (chunk !== "") tokenize(chunk);
+      return enqueue(chunk);
+    });
+    return tokenizer;
+  });
+  return tokenize;
+}
+
+it("shows unavailable audio when a workspace embed has no thread", async () => {
+  setup();
+  await using screen = await renderText("![recording](clip.wav)");
+  expect(screen.container.textContent).toContain("Audio unavailable");
+  expect(screen.container.textContent).not.toContain("Loading audio");
+  expect(screen.container.querySelector("audio")).toBeNull();
+});
 
 function fileOptions(container: HTMLElement) {
   return [...container.querySelectorAll("button")]
@@ -302,7 +355,7 @@ describe("ChatMarkdown streaming", () => {
   it("does not retokenize completed lines when streaming finishes", async () => {
     using _fixture = setup();
     const highlighter = await getSyntaxHighlighterPromise("typescript");
-    const highlight = vi.spyOn(highlighter, "codeToHast");
+    const highlight = observeCodeTokenization(highlighter);
     const text = "```typescript\nconst completed = 1;\nconst current = 2;";
     await using screen = await render(<ChatMarkdown cwd="/tmp/project" text={text} isStreaming />);
     const { rerender } = screen;
@@ -315,11 +368,11 @@ describe("ChatMarkdown streaming", () => {
   it("recovers highlighting after a failed fence changes without resetting its controls", async () => {
     using _fixture = setup();
     const highlighter = await getSyntaxHighlighterPromise("text");
-    const codeToHast = highlighter.codeToHast.bind(highlighter);
+    const codeToTokens = highlighter.codeToTokens.bind(highlighter);
     let fail = true;
-    vi.spyOn(highlighter, "codeToHast").mockImplementation((...args) => {
+    vi.spyOn(highlighter, "codeToTokens").mockImplementation((...args) => {
       if (fail) throw new Error("Temporary highlighter failure");
-      return codeToHast(...args);
+      return codeToTokens(...args);
     });
     vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -349,7 +402,7 @@ describe("ChatMarkdown streaming", () => {
   it("preserves code controls and details without highlighting an unchanged fence again", async () => {
     using _fixture = setup();
     const highlighter = await getSyntaxHighlighterPromise("text");
-    const highlight = vi.spyOn(highlighter, "codeToHast");
+    const highlight = observeCodeTokenization(highlighter);
     const writeText = vi
       .spyOn(navigator.clipboard, "writeText")
       .mockImplementation(async () => undefined);

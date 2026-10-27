@@ -17,7 +17,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
-import { McpSchema, McpServer } from "effect/ai";
+import { McpSchema, McpServer, Tool } from "effect/ai";
 
 import * as ServerConfig from "../config.ts";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
@@ -29,6 +29,7 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as DocumentText from "../provider/DocumentText.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -40,6 +41,7 @@ import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts
 // Linked launches use the upstream receipt namespace, outside the client-launch service.
 const layerLaunchDependencies = Layer.mergeAll(
   SqlitePersistence.layerMemory,
+  DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
   Layer.mock(EventSink.EventSinkV2)({}),
   Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({}),
 );
@@ -50,6 +52,7 @@ import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
 import { OrchestratorToolkit } from "../mcp/toolkits/orchestrator/tools.ts";
+import { ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
 import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
 
 const laptop = descriptorOf("environment-laptop", "Laptop");
@@ -425,6 +428,61 @@ it.effect(
         environmentId: laptop.environmentId,
         thread: { threadId: "thread:source" },
       });
+      const expectedOrigin = {
+        schemaVersion: "t3.linked-message-origin/v1",
+        environmentId: laptop.environmentId,
+        thread: { threadId: "thread:source", title: "thread:source" },
+      };
+      expect(sent[0]?.origin).toEqual(expectedOrigin);
+      expect(sent[0]?.context).toMatchObject({
+        thread: { threadId: "thread:source", title: "thread:source" },
+        project: { projectId: "project:mcp-test", title: "Source project" },
+      });
+      yield* forwarding.call(scope, ProjectToolkit.tools.t3_thread_launch, box.environmentId, {
+        title: "Remote task",
+        message: "Do the work.",
+      });
+      yield* forwarding.call(scope, OrchestratorToolkit.tools.t3_thread_link, box.environmentId, {
+        action: "accept",
+        from: { environmentId: laptop.environmentId, threadId: ThreadId.make("thread:source") },
+      });
+      yield* forwarding.call(scope, OrchestratorToolkit.tools.schedule_task, box.environmentId, {
+        prompt: "Check the work.",
+        schedule: { type: "interval", everyMs: 3_600_000 },
+      });
+      yield* forwarding.waitForThread(scope, box.environmentId, { threadId: boxThread });
+      const mutations = calls.filter((call) =>
+        ["t3_thread_send", "t3_thread_launch", "t3_thread_link", "schedule_task"].includes(
+          call.tool,
+        ),
+      );
+      expect(mutations).toHaveLength(5);
+      for (const call of mutations) {
+        expect(call.context).toMatchObject({
+          thread: { threadId: "thread:source", title: "thread:source" },
+          project: { projectId: "project:mcp-test", title: "Source project" },
+        });
+        expect(call.origin).toEqual(call.tool === "schedule_task" ? undefined : expectedOrigin);
+      }
+      expect(
+        calls
+          .filter((call) =>
+            ["t3_thread_read", "t3_thread_interrupt", "t3_thread_wait"].includes(call.tool),
+          )
+          .every((call) => call.context === undefined),
+      ).toBe(true);
+      yield* forwarding.call(scope, OrchestratorToolkit.tools.t3_thread_goal, box.environmentId, {
+        threadId: boxThread,
+        action: "pause",
+      });
+      expect(calls.at(-1)?.context).toBeUndefined();
+      yield* forwarding.call(
+        scope,
+        OrchestratorToolkit.tools.schedule_task.annotate(Tool.Readonly, true),
+        box.environmentId,
+        { prompt: "Read only.", schedule: { type: "interval", everyMs: 3_600_000 } },
+      );
+      expect(calls.at(-1)?.context).toBeUndefined();
       expect(
         calls
           .filter((call) => call.tool === "t3_thread_read")
@@ -436,6 +494,11 @@ it.effect(
           Layer.provide(NodeCrypto.layer),
           Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
           Layer.provide(
+            Layer.mock(ProjectService.ProjectService)({
+              getById: (id) => Effect.succeedSome({ id, title: "Source project" } as never),
+            }),
+          ),
+          Layer.provide(
             Layer.mock(ThreadManagement.ThreadManagementService)({
               getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),
             }),
@@ -446,15 +509,17 @@ it.effect(
                 Effect.sync(() => {
                   calls.push(input);
                   return (
-                    input.tool === "t3_thread_read" && supportsPolicy
-                      ? {
-                          remoteMessagePolicy: {
-                            schemaVersion: "t3.linked-message-policy/v1",
-                            authenticatedOrigin: true,
-                            incomingAcceptance: true,
-                          },
-                        }
-                      : {}
+                    input.tool === "t3_thread_wait"
+                      ? { timedOut: false }
+                      : input.tool === "t3_thread_read" && supportsPolicy
+                        ? {
+                            remoteMessagePolicy: {
+                              schemaVersion: "t3.linked-message-policy/v1",
+                              authenticatedOrigin: true,
+                              incomingAcceptance: true,
+                            },
+                          }
+                        : {}
                   ) as never;
                 }),
             }),

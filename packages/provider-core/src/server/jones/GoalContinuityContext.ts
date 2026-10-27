@@ -39,14 +39,20 @@ export type ContinuityRequirement =
       readonly outcome: "hold";
       readonly reason: "delivery_pending" | "delivery_unknown" | "recovery_required";
       readonly gate: Extract<DeliveryGate, { outcome: "hold" }>;
-      readonly current: { readonly owner: ContinuityOwner; readonly target: ContinuityGoalRef } | null;
+      readonly current: {
+        readonly owner: ContinuityOwner;
+        readonly target: ContinuityGoalRef;
+      } | null;
     }
   | {
       readonly outcome: "hold";
       readonly reason: "unavailable" | "corrupt_snapshot" | "detached" | "terminal";
       // null preserves unknown fence state when the durable lookup itself fails.
       readonly gate: DeliveryGate | null;
-      readonly current: { readonly owner: ContinuityOwner; readonly target: ContinuityGoalRef } | null;
+      readonly current: {
+        readonly owner: ContinuityOwner;
+        readonly target: ContinuityGoalRef;
+      } | null;
     };
 
 export interface ContinuityBeginDelivery {
@@ -96,9 +102,19 @@ export interface GoalContinuityContext {
     boundary: RecoveryBoundary,
     transition: ContinuityRecoveryTransition,
   ) => Effect.Effect<ContinuityRecoveryTransitionResult, GoalContinuityError>;
-  readonly prepareRecovery: (boundary: RecoveryBoundary) => Effect.Effect<RecoveryProjection, GoalContinuityError>;
-  readonly beginDelivery: (input: ContinuityBeginDelivery) => Effect.Effect<ContinuityDeliveryResult, GoalContinuityError>;
-  readonly markDispatching: (ticket: ContinuityPreparedTicket) => Effect.Effect<ContinuityDeliveryResult, GoalContinuityError>;
-  readonly settleDelivery: (input: ContinuitySettleDelivery) => Effect.Effect<ContinuityDeliveryResult, GoalContinuityError>;
-  readonly checkContinuation: (boundary: RecoveryBoundary) => Effect.Effect<ContinuityContinuationCheck, GoalContinuityError>;
+  readonly prepareRecovery: (
+    boundary: RecoveryBoundary,
+  ) => Effect.Effect<RecoveryProjection, GoalContinuityError>;
+  readonly beginDelivery: (
+    input: ContinuityBeginDelivery,
+  ) => Effect.Effect<ContinuityDeliveryResult, GoalContinuityError>;
+  readonly markDispatching: (
+    ticket: ContinuityPreparedTicket,
+  ) => Effect.Effect<ContinuityDeliveryResult, GoalContinuityError>;
+  readonly settleDelivery: (
+    input: ContinuitySettleDelivery,
+  ) => Effect.Effect<ContinuityDeliveryResult, GoalContinuityError>;
+  readonly checkContinuation: (
+    boundary: RecoveryBoundary,
+  ) => Effect.Effect<ContinuityContinuationCheck, GoalContinuityError>;
 }

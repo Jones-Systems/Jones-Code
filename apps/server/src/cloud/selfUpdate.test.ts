@@ -1,4 +1,3 @@
-import * as TestClock from "effect/testing/TestClock";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { ServerSelfUpdateError, ThreadId } from "@t3tools/contracts";
@@ -12,9 +11,11 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
+import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
 import * as DesktopAppUpdate from "../desktopUpdate/DesktopAppUpdate.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -24,6 +25,8 @@ import * as ServerSelfUpdate from "./selfUpdate.ts";
 
 interface HarnessOptions {
   readonly mode?: "web" | "desktop";
+  readonly qualified?: boolean;
+  readonly qualifiedRecovery?: boolean;
   readonly releaseBaseUrl?: string | null;
   readonly managed?: boolean;
   readonly preflight?: "ready" | "blocked";
@@ -87,8 +90,9 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
             ? { status: "blocked", version: "1.1.0", reason: "local update required" }
             : {
                 status: "ready",
-                version: "1.1.0",
+                version: options.qualified ? "0.0.0-preview.20261002.101.1" : "1.1.0",
                 launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+                ...(options.qualified ? { startupGateProtocol: 1 } : {}),
               };
         return {
           stdout: JSON.stringify(result),
@@ -104,6 +108,10 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
   });
   const launcher = ServiceLauncherClient.ServiceLauncherClient.of({
     managed: options.managed ?? true,
+    ...(options.qualified
+      ? { qualifiedUpdates: true, currentVersion: "0.0.0-preview.20261002.100" }
+      : {}),
+    ...(options.qualifiedRecovery ? { qualifiedRecovery: true } : {}),
     requiresQualifiedTrialGate: false,
     prepareQualifiedTrial: () => Effect.die("ordinary release must not use qualified startup"),
     requestUpdate:
@@ -148,10 +156,71 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
       ),
     ),
   );
-  return { selfUpdate, order };
+  return { selfUpdate, order, baseDir, dbPath: config.dbPath };
 });
 
 it.layer(NodeServices.layer)("server self update", (it) => {
+  it.effect("refuses old launcher or candidate recovery support before capture and handoff", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      for (const qualifiedRecovery of [false, true]) {
+        const { selfUpdate, order, baseDir, dbPath } = yield* makeHarness({
+          qualified: true,
+          qualifiedRecovery,
+        });
+        yield* fs.makeDirectory(path.dirname(dbPath), { recursive: true });
+        yield* fs.writeFileString(dbPath, "untouched database");
+        let captured = false;
+        const result = yield* selfUpdate.installQualified!(
+          {
+            stagedHandle: "12345678-1234-4234-8234-123456789abc",
+            verifyStaged: async () => ({
+              protocol: 2,
+              stagedHandle: "12345678-1234-4234-8234-123456789abc",
+              binding: {
+                baseDir,
+                dbPath,
+                environmentId: "synthetic",
+                activeVersion: "0.0.0-preview.20261002.100",
+                activeSourceSha: "a".repeat(40),
+              },
+              receipt: {
+                protocol: 1,
+                repository: "Jones-Systems/Jones-Code",
+                channel: "jones-main",
+                version: "0.0.0-preview.20261002.101.1",
+                sourceSha: "b".repeat(40),
+                sourceTree: "c".repeat(40),
+                installedSourceSha: "9".repeat(40),
+                workflow: ".github/workflows/artifact-cli-linux.yml",
+                runId: 101,
+                runAttempt: 1,
+                artifactId: 102,
+                artifactDigest: `sha256:${"d".repeat(64)}`,
+                archiveSha256: "e".repeat(64),
+                payloadSha256: "f".repeat(64),
+                platform: "linux",
+                architecture: "x64",
+              },
+            }),
+          },
+          () => Effect.die("unsupported reader reached handoff"),
+          () =>
+            Effect.sync(() => {
+              captured = true;
+            }),
+        ).pipe(Effect.flip);
+        expect(result.reason).toContain(
+          qualifiedRecovery ? "qualified-recovery-unsupported" : "bootstrap-required",
+        );
+        expect(captured).toBe(false);
+        expect(order).toEqual(qualifiedRecovery ? ["preflight"] : []);
+        expect(yield* fs.readFileString(dbPath)).toBe("untouched database");
+      }
+    }),
+  );
+
   it.effect("marks running threads at the boot-service handoff", () =>
     Effect.gen(function* () {
       const events: string[] = [];
@@ -403,19 +472,103 @@ it.layer(NodeServices.layer)("server self update", (it) => {
       );
 
       yield* Deferred.await(sawDownloading);
-      // The socket drop ends the stream. The download is still held.
       yield* Fiber.interrupt(consumed);
       expect((yield* selfUpdate.update({ targetVersion: "1.2.0" }).pipe(Effect.flip)).reason).toBe(
         "A server update is already in progress.",
       );
 
       yield* Deferred.succeed(releaseDownload, undefined);
-      // `installing` is offered only after the stream queue has shut down.
       yield* Deferred.await(accepted);
       expect(order).toEqual(["download", "extract", "preflight", "accept"]);
       expect((yield* selfUpdate.update({ targetVersion: "1.1.0" }).pipe(Effect.flip)).reason).toBe(
         "A server update is already in progress.",
       );
+    }),
+  );
+});
+
+it.layer(NodeServices.layer)("pruning runtimes on start", (it) => {
+  const staleVersion = "0.0.1";
+  const otherProcesses = ProcessRunner.ProcessRunner.of({
+    run: () =>
+      Effect.succeed({
+        stdout: "p42\nftxt\nn/bin/sh\n",
+        stderr: "",
+        code: ChildProcessSpawner.ExitCode(0),
+        timedOut: false,
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        stdoutInvalidUtf8: false,
+        stderrInvalidUtf8: false,
+      }),
+  });
+
+  const pruneOnStart = Effect.fn("test.prune_on_start")(function* (input: {
+    readonly executable: "own runtime" | "elsewhere";
+    readonly managed?: boolean;
+    readonly symlinkedHome?: boolean;
+  }) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-prune-on-start-" });
+    const realHome = path.join(tempDir, "home");
+    const baseDir = input.symlinkedHome ? path.join(tempDir, "linked-home") : realHome;
+    const versionsDir = path.join(baseDir, "runtime", "versions");
+    yield* TestClock.setTime(24 * 60 * 60 * 1000);
+    for (const version of [staleVersion, packageJson.version]) {
+      const directory = path.join(realHome, "runtime", "versions", version);
+      yield* fs.makeDirectory(directory, { recursive: true });
+      yield* fs.writeFileString(path.join(directory, "t3"), "");
+      const sentinel = path.join(directory, ".install-complete");
+      yield* fs.writeFileString(sentinel, `${version}\n`);
+      yield* fs.utimes(sentinel, 0, 0);
+    }
+    if (input.symlinkedHome) yield* fs.symlink(realHome, baseDir);
+    // Like `process.execPath`, the running runtime is reported by its real path.
+    const executablePath =
+      input.executable === "own runtime"
+        ? yield* fs.realPath(path.join(versionsDir, packageJson.version, "t3"))
+        : "/usr/local/bin/node";
+    const removed = yield* ServerSelfUpdate.pruneRuntimesOnStart({
+      baseDir,
+      managed: input.managed ?? false,
+    }).pipe(
+      Effect.provideService(HostProcess.ExecutablePath, executablePath),
+      Effect.provideService(HostProcess.Platform, "darwin"),
+      Effect.provideService(HostProcess.Environment, {}),
+      Effect.provideService(ProcessRunner.ProcessRunner, otherProcesses),
+    );
+    return { removed, remaining: (yield* fs.readDirectory(versionsDir)).toSorted() };
+  });
+
+  // The SSH launcher runs `t3 serve` straight from the pinned runtime, with no boot service.
+  it.effect("prunes for a server started from its home's pinned runtime", () =>
+    Effect.gen(function* () {
+      const { removed, remaining } = yield* pruneOnStart({ executable: "own runtime" });
+      expect(removed).toEqual([staleVersion]);
+      expect(remaining).toEqual([packageJson.version]);
+    }),
+  );
+
+  it.effect("recognizes its runtime through a symlinked T3 home", () =>
+    Effect.gen(function* () {
+      const { removed } = yield* pruneOnStart({ executable: "own runtime", symlinkedHome: true });
+      expect(removed).toEqual([staleVersion]);
+    }),
+  );
+
+  it.effect("prunes for a boot-service server wherever it runs from", () =>
+    Effect.gen(function* () {
+      const { removed } = yield* pruneOnStart({ executable: "elsewhere", managed: true });
+      expect(removed).toEqual([staleVersion]);
+    }),
+  );
+
+  it.effect("leaves runtimes alone for an unmanaged server started elsewhere", () =>
+    Effect.gen(function* () {
+      const { removed, remaining } = yield* pruneOnStart({ executable: "elsewhere" });
+      expect(removed).toEqual([]);
+      expect(remaining).toEqual([staleVersion, packageJson.version].toSorted());
     }),
   );
 });

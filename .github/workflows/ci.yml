@@ -108,6 +108,9 @@ jobs:
           cache: true
           run-install: true
 
+      - name: Check Jones migration order
+        run: node scripts/jones/ci/jones-migration-order.cjs
+
       # electron's install.js (run by ensure:electron) reads this cache before it
       # downloads from GitHub. The key changes only with the Electron version.
       - name: Cache Electron download
@@ -181,7 +184,12 @@ jobs:
         run: vp run --filter @t3tools/desktop ensure:electron
 
       - name: Typecheck
+        id: typecheck
         run: vpr typecheck
+
+      - name: Report typecheck task details
+        if: ${{ failure() && steps.typecheck.outcome == 'failure' }}
+        run: vp run --last-details
 
   build:
     needs: linux_changes
@@ -920,7 +928,7 @@ jobs:
         run: brew bundle install --file apps/mobile/Brewfile
 
       - name: Lint mobile native sources
-        run: vp run lint:mobile
+        run: node scripts/mobile-native-static-check.ts
 
   # The Linux and macOS legs run the same steps (shared through a YAML anchor)
   # and differ only in runner and expected platform. Only the macOS leg is
@@ -955,6 +963,11 @@ jobs:
           node-version: 26.12.1
           cache: true
           run-install: true
+
+      - name: Verify official Effect TSRS after the full install
+        run: |
+          node scripts/jones/tsrs/patch.ts --verify
+          node scripts/jones/tsrs/typecheck.ts --version
 
       - name: Setup the standalone CLI runtime
         uses: actions/setup-node@v6

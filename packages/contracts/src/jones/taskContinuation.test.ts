@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 import { TaskContinueInput, TaskContinuationEvidence } from "./taskContinuation.ts";
+import { OrchestratorMcpDelegateTaskResult } from "../orchestratorMcp.ts";
 
 describe("guarded task continuation contract", () => {
   const decode = Schema.decodeUnknownSync(TaskContinueInput);
@@ -39,9 +40,43 @@ describe("guarded task continuation contract", () => {
       account: "unavailable",
     };
     expect(Schema.is(TaskContinuationEvidence)(evidence)).toBe(true);
+    expect(Schema.is(TaskContinuationEvidence)({ ...evidence, sourceAttemptId: "attempt" })).toBe(
+      true,
+    );
     expect(
       Schema.is(TaskContinuationEvidence)({ ...evidence, sourceEvidence: "legacy_start_batch" }),
     ).toBe(false);
     expect(Schema.is(TaskContinuationEvidence)({ ...evidence, account: "verified" })).toBe(false);
+  });
+  it("decodes older task results and preserves optional captured session provenance", () => {
+    const legacy = {
+      taskId: "task",
+      childThreadId: "child",
+      childRunId: "run",
+      childNodeId: "task",
+      status: "completed",
+      workState: "result_available",
+      hasPendingChildRuns: false,
+      latestTerminalRunId: "run",
+      latestTerminalStatus: "completed",
+      latestTerminalSummary: null,
+      latestTerminalResultContextTransferId: null,
+      providerInstanceId: "claude",
+      model: "opus",
+      summary: "Done",
+      resultContextTransferId: null,
+      hasPendingQuestion: false,
+      pendingApproval: null,
+      waitTimedOut: false,
+    };
+    const decodeResult = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskResult);
+    expect(decodeResult(legacy)).toEqual(legacy);
+    const nativeSession = {
+      nativeSessionId: "native",
+      sourceRunId: "run",
+      sourceAttemptId: "attempt",
+      evidence: "attempt",
+    };
+    expect(decodeResult({ ...legacy, nativeSession })).toEqual({ ...legacy, nativeSession });
   });
 });

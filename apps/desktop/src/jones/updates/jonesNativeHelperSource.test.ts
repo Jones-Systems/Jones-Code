@@ -3,6 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import { jonesNativeHelperSource } from "./jonesNativeHelperSource.ts";
 import { hashMacApp } from "./jonesMacStaging.ts";
@@ -192,6 +193,8 @@ def synthetic_stop(proofs):
     if fault == 'state-grew': (home / 'desktop-settings.json').write_bytes(bytes(RECOVERY_HEADROOM))
     for proof in proofs:
         if proof.get('pid') == 654: alive(proof)
+    if fault == 'binding-recovery-eperm' and 'candidate-launch' in events:
+        raise KernelProcessError('process-inspection-failed', 'proc_pidpath', 1)
     if fault == 'candidate-stop' and proofs and proofs[0]['pid'] == 456:
         raise RuntimeError('Writer quiescence could not be proved.')
 stop_exact = synthetic_stop
@@ -209,7 +212,8 @@ def synthetic_launch(active, descriptor=None):
     if descriptor is None:
         events.append('restart-previous')
         if fault in ('restart-refused', 'snapshot-restart-refused'): raise RuntimeError('Synthetic relaunch refusal')
-        return {'pid': 789, 'identity': 'restored-native-app'}
+        if fault == 'relaunch-eperm': raise KernelProcessError('process-inspection-failed', 'proc_pidpath', 1)
+        return {'pid': 789, 'startSec': 102, 'startUsec': 0, 'executable': active['executablePath']}
     events.append('candidate-launch')
     assert (tx / 'previous-pair' / 'pair.json').exists()
     with sqlite3.connect(database) as db: db.execute("UPDATE identity SET value='advanced-state'")
@@ -229,12 +233,13 @@ def synthetic_launch(active, descriptor=None):
     if fault == 'version-mismatch': receipt['version'] = 'wrong-version'
     if fault == 'listener-mismatch': receipt['listener'] = 'http://127.0.0.1:4777'
     if fault == 'invalid-backend': receipt['backendProcess'] = {'pid': True, 'identity': 'unqualified-process'}
+    if fault == 'kernel-receipt': receipt['backendProcess'] = {'pid': 654, 'startSec': 101, 'startUsec': 0, 'executable': '/synthetic/backend'}
     if fault.startswith('missing-'): receipt.pop(fault.removeprefix('missing-'))
-    if fault in ('trial-mismatch', 'restart-refused', 'candidate-stop', 'resume-dispatched', 'reserve-release-failed', 'recovery-space-missing', 'recovery-lease-busy'): receipt['sourceSha'] = 'wrong-source'
+    if fault in ('trial-mismatch', 'restart-refused', 'relaunch-eperm', 'candidate-stop', 'resume-dispatched', 'reserve-release-failed', 'recovery-space-missing', 'recovery-lease-busy'): receipt['sourceSha'] = 'wrong-source'
     if fault.startswith('authority-'): receipt['sourceSha'] = 'wrong-source'
     if fault == 'resume-dispatched': durable(tx / 'resume-dispatched.json', {'uncertain': True}, True)
     durable(tx / 'trial-receipt.json', receipt, True)
-    return {'pid': 456, 'identity': 'tracked-native-app'}
+    return {'pid': 456, 'startSec': 100, 'startUsec': 0, 'executable': active['executablePath']}
 launch = synthetic_launch
 def synthetic_identity(pid, deadline=None):
     events.append('identity:' + str(pid))
@@ -246,6 +251,17 @@ def synthetic_identity(pid, deadline=None):
     return None
 process_identity = synthetic_identity
 process_start = lambda pid, deadline=None: ('S', '')
+def synthetic_kernel_sample(pid):
+    events.append('identity:' + str(pid))
+    if pid == 654:
+        if fault == 'dead-backend': raise KernelProcessError('process-exited', 'proc_pidinfo', 3)
+        if fault in ('binding-eperm', 'binding-recovery-eperm'): raise KernelProcessError('process-inspection-failed', 'proc_pidinfo', 1)
+        start = int(time.time()) + 100 if fault == 'changed-backend' else (99 if fault == 'backend-before-candidate' else 101)
+        return {'pid': pid, 'startSec': start, 'startUsec': 0, 'executable': '/synthetic/backend'}, 999 if fault == 'backend-parent' else 456
+    if pid == 456 and fault == 'candidate-gone': raise KernelProcessError('process-exited', 'proc_pidinfo', 3)
+    return {'pid': pid, 'startSec': 100, 'startUsec': 0, 'executable': expected['executablePath']}, 1
+kernel_process_sample = synthetic_kernel_sample
+kernel_process_identity = lambda pid: synthetic_kernel_sample(pid)[0]
 native_durable = durable
 syncing_marker = None
 def synthetic_durable(destination, value, exclusive=False):
@@ -313,8 +329,9 @@ else:
         assert read(manifest_path) == expected
         assert not (tx / 'commit-grant.json').exists()
         assert 'manifest-commit' not in events
-    if fault == 'dead-backend':
-        assert 'stop:2' in events
+    if fault in ('dead-backend', 'changed-backend'):
+        assert 'stop:1' in events
+        assert 'stop:2' not in events
         assert events.count('quiescence') >= 3
     if fault in ('invalid-backend', 'missing-backendProcess'):
         assert 'identity:654' not in events
@@ -473,7 +490,7 @@ def manual_launch(active, descriptor=None):
     for name, content in originals.items(): assert (pair / name).read_bytes() == content
     events.append('launched')
     if manual_fault == 'launch-unknown': raise RuntimeError('Synthetic unknown launch effect')
-    return {'pid': 456, 'identity': 'captured-new-process'}
+    return {'pid': 456, 'startSec': 100, 'startUsec': 0, 'executable': active['executablePath']}
 launch = manual_launch
 refused = ('flag-only', 'plan-only', 'unknown-policy', 'clonefile-unavailable', 'cross-volume')
 if manual_fault in refused:
@@ -1347,7 +1364,11 @@ def direct_launch(*args, **kwargs):
     return type('Child', (), {'pid': 456})()
 subprocess.run = capture
 subprocess.Popen = direct_launch
-process_identity = lambda pid: 'start ' + active['executablePath']
+proof = {'pid': 456, 'startSec': 100, 'startUsec': 2, 'executable': '/synthetic/ResolvedJonesImage'}
+kernel_process_sample = lambda pid: (dict(proof), 1)
+def forbidden_legacy(*args, **kwargs): raise AssertionError('New launch used legacy process inspection')
+process_identity = process_start = forbidden_legacy
+os.path.samefile = lambda left, right: left == proof['executable'] and right == active['executablePath']
 read = lambda path: {'listener': 'http://127.0.0.1:3777'}
 for descriptor in (None, pathlib.Path('/synthetic/trial.json')):
     calls.clear()
@@ -1366,7 +1387,7 @@ for descriptor in (None, pathlib.Path('/synthetic/trial.json')):
         **{name: os.environ[name] for name in ('HOME', 'TMPDIR', 'USER', 'LOGNAME') if name in os.environ})
     assert options['stdin'] == subprocess.DEVNULL and options['stdout'] == subprocess.PIPE
     assert options['stderr'] == subprocess.DEVNULL and options['timeout'] == 30
-    assert proof == {'pid': 456, 'identity': 'start ' + active['executablePath']}
+    assert proof == {'pid': 456, 'startSec': 100, 'startUsec': 2, 'executable': '/synthetic/ResolvedJonesImage'}
 del os.environ['T3CODE_NATIVE_AUTHORITY_STATE_DIR']
 launch(active)
 assert 'T3CODE_NATIVE_AUTHORITY_STATE_DIR' not in json.loads(calls[-1][0][5])['environment']
@@ -1377,6 +1398,118 @@ assert 'T3CODE_NATIVE_AUTHORITY_STATE_DIR' not in json.loads(calls[-1][0][5])['e
       timeout: 10000,
     });
   });
+
+  it("rolls back with homogeneous kernel candidate and backend proofs without legacy inspection", async () => {
+    const f = await fixture();
+    try {
+      const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const runtime = activationScenario.split("\nif fault in ('interrupted-trial'")[0];
+      const scenario = String.raw`
+candidate_proof = {'pid': 456, 'startSec': 100, 'startUsec': 0, 'executable': str(previous_app / 'Contents/MacOS/Jones')}
+backend_proof = {'pid': 654, 'startSec': 101, 'startUsec': 0, 'executable': '/synthetic/backend'}
+launch_fixture = launch
+def kernel_launch(active, descriptor=None):
+    launch_fixture(active, descriptor)
+    return dict(candidate_proof, pid=789) if descriptor is None else dict(candidate_proof)
+launch = kernel_launch
+def forbidden_legacy(*args, **kwargs): raise AssertionError('New candidate rollback used legacy inspection')
+process_identity = process_start = forbidden_legacy
+bound = False
+def sample(pid):
+    global bound
+    events.append('identity:' + str(pid))
+    if pid == 654: bound = True; return dict(backend_proof), 456
+    return dict(candidate_proof), 1
+kernel_process_sample = sample
+kernel_process_identity = lambda pid: sample(pid)[0]
+original_binding = same_binding
+same_binding = lambda left, right: False if bound and left == right == expected else original_binding(left, right)
+stopped = []
+def capture_stop(proofs):
+    if 'candidate-launch' in events:
+        assert valid_kernel_processes(proofs), proofs
+        stopped.append(proofs)
+    events.append('stop:' + str(len(proofs)))
+stop_exact = capture_stop
+activate(tx / 'intent.json')
+journal = read(tx / 'journal.json')
+assert journal['phase'] == 'rolled-back', journal
+assert 'Active manifest changed before commit' in journal['message']
+assert stopped == [[candidate_proof, backend_proof]], stopped
+assert journal['candidateWriter'] == candidate_proof and journal['backendWriter'] == backend_proof
+assert journal['trialReceipt']['backendProcess'] == {'pid': 654, 'identity': 'tracked-native-backend'}
+assert read(manifest_path) == expected
+`;
+      runPython(`${definitions}\n${runtime}\n${scenario}`, [f.directory, "success"], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      });
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it.each([
+    "backend-parent",
+    "backend-before-candidate",
+    "changed-backend",
+    "dead-backend",
+    "candidate-gone",
+    "invalid-backend",
+    "missing-backendProcess",
+    "kernel-receipt",
+    "binding-eperm",
+    "binding-recovery-eperm",
+    "relaunch-eperm",
+  ])(
+    "refuses unbound trial writers and retains separate kernel diagnostics for %s",
+    async (fault) => {
+      const f = await fixture();
+      try {
+        const definitions = jonesNativeHelperSource.split(
+          "\nparser = argparse.ArgumentParser()",
+        )[0];
+        const runtime = activationScenario.split("\nif fault in ('interrupted-trial'")[0];
+        const scenario = String.raw`
+stops = []
+fixture_stop = stop_exact
+def observed_stop(proofs):
+    if 'candidate-launch' in events: stops.extend(proofs)
+    return fixture_stop(proofs)
+stop_exact = observed_stop
+activate(tx / 'intent.json')
+journal = read(tx / 'journal.json')
+assert journal['phase'] == ('blocked' if fault == 'binding-recovery-eperm' else 'rolled-back'), journal
+assert all(proof['pid'] != 654 for proof in stops), stops
+assert 'backendWriter' not in journal
+assert not (tx / 'commit-grant.json').exists() and read(manifest_path) == expected
+if fault in ('invalid-backend', 'missing-backendProcess', 'kernel-receipt'):
+    assert 'identity:654' not in events
+if fault in ('backend-parent', 'backend-before-candidate', 'changed-backend', 'kernel-receipt'):
+    assert 'Candidate did not prove the exact backend process.' in journal['message']
+if fault == 'dead-backend': assert 'Candidate backend stopped before commit.' in journal['message']
+if fault == 'candidate-gone': assert 'Candidate app stopped.' in journal['message']
+if fault in ('binding-eperm', 'binding-recovery-eperm'):
+    assert journal['diagnostics'] == {'error': 'process-inspection-failed', 'call': 'proc_pidinfo', 'errno': 1}
+if fault == 'binding-recovery-eperm':
+    assert journal['recoveryDiagnostics'] == {'error': 'process-inspection-failed', 'call': 'proc_pidpath', 'errno': 1}
+    assert 'restart-previous' not in events
+if fault == 'relaunch-eperm':
+    assert journal['relaunch'] == 'failed'
+    assert journal['relaunchDiagnostics'] == {'error': 'process-inspection-failed', 'call': 'proc_pidpath', 'errno': 1}
+    assert 'Candidate trial identity does not match install intent.' in journal['message']
+`;
+        runPython(`${definitions}\n${runtime}\n${scenario}`, [f.directory, fault], {
+          encoding: "utf8",
+          maxBuffer: 1024 * 1024,
+          timeout: 10000,
+        });
+      } finally {
+        await f.cleanup();
+      }
+    },
+  );
 
   it("rejects unproved LaunchServices outcomes after one attempt without direct fallback", () => {
     const nativeFunctions = jonesNativeHelperSource.split(
@@ -1391,7 +1524,7 @@ good = {'protocol': 1, 'status': 'launched', 'pid': 456,
 cases = ['timeout', 'os-error', 'nonzero', 'oversized', 'non-ascii', 'malformed', 'list', 'protocol-missing',
          'protocol-wrong', 'protocol-boolean', 'failed', 'unavailable', 'pid-zero', 'pid-negative', 'pid-boolean',
          'pid-string', 'pid-missing', 'bundle-missing', 'bundle-wrong', 'executable-missing', 'executable-wrong',
-         'exited', 'identity-wrong', 'identity-prefix']
+         'exited', 'identity-wrong', 'identity-prefix', 'identity-io', 'identity-eperm']
 for fault in cases:
     calls, direct, observed = [], [], []
     def capture(command, **kwargs):
@@ -1420,17 +1553,22 @@ for fault in cases:
         raise AssertionError('Direct fallback attempted')
     def identity(pid):
         observed.append(pid)
-        if fault == 'exited': return None
-        if fault == 'identity-wrong': return 'start /some/other/app'
-        if fault == 'identity-prefix': return 'start ' + active['executablePath'] + '-substituted'
-        return 'start ' + active['executablePath']
-    subprocess.run, subprocess.Popen, process_identity = capture, direct_launch, identity
+        if fault == 'exited': raise KernelProcessError('process-exited', 'proc_pidinfo', 3)
+        if fault == 'identity-eperm': raise KernelProcessError('process-inspection-failed', 'proc_pidpath', 1)
+        path = '/some/other/app' if fault == 'identity-wrong' else active['executablePath'] + '-substituted'
+        return {'pid': pid, 'startSec': 100, 'startUsec': 0, 'executable': path}, 1
+    def samefile(left, right):
+        if fault == 'identity-io': raise FileNotFoundError('Synthetic image disappeared')
+        return left == right
+    os.path.samefile = samefile
+    subprocess.run, subprocess.Popen, kernel_process_sample = capture, direct_launch, identity
     try: launch(active)
     except RuntimeError as error:
         assert 'must-not-leak' not in str(error) and '/usr/bin/osascript' not in str(error)
+        if fault == 'identity-eperm': assert error.diagnostic == {'error': 'process-inspection-failed', 'call': 'proc_pidpath', 'errno': 1}
     else: raise AssertionError('Unproved launch accepted: ' + fault)
     assert len(calls) == 1 and direct == [], fault
-    assert observed == ([456] if fault in ('exited', 'identity-wrong', 'identity-prefix') else []), fault
+    assert observed == ([456] if fault in ('exited', 'identity-wrong', 'identity-prefix', 'identity-io', 'identity-eperm') else []), fault
 `;
     runPython(nativeFunctions + "\n" + scenario, [], {
       encoding: "utf8",
@@ -1617,7 +1755,7 @@ def manual_launch(active, descriptor=None):
         with sqlite3.connect(database) as db: db.execute("UPDATE identity SET value='advanced-state'")
         (profile / 'opaque').write_text('advanced-profile')
         raise RuntimeError('Synthetic unknown launch effect')
-    return {'pid': 456, 'identity': 'captured-new-process'}
+    return {'pid': 456, 'startSec': 100, 'startUsec': 0, 'executable': active['executablePath']}
 launch = manual_launch
 manual_root = manifest_path.parent / 'jones-manual-installs'
 if manual_fault in ('stale-admission', 'wrong-bundle', 'wrong-artifact', 'missing-bundle-identity', 'cold-state', 'launch-unavailable'):
@@ -1630,6 +1768,16 @@ if manual_fault in ('stale-admission', 'wrong-bundle', 'wrong-artifact', 'missin
     assert manifest_path.read_bytes() == original_manifest
     assert (previous_app / 'Contents/MacOS/Jones').read_text() == 'previous-executable'
 else:
+    if manual_fault == 'success':
+        # Public identity capture and the manual result use the same closed proof.
+        captured = {'pid': 123, 'startSec': 100, 'startUsec': 0, 'executable': expected['executablePath']}
+        kernel_process_identity = lambda pid: dict(captured)
+        kernel_plan = dict(plan, processes=[kernel_process_identity(123)])
+        kernel_path = root / 'kernel-manual-plan.json'
+        durable(kernel_path, kernel_plan, True)
+        original_kernel_plan = kernel_path.read_bytes()
+        assert manual_install(kernel_path, digest(kernel_path))['status'] == 'ready'
+        assert kernel_path.read_bytes() == original_kernel_plan and not manual_root.exists()
     inspected = manual_install(plan_path, plan_hash)
     assert inspected['status'] == 'ready' and not manual_root.exists()
     try: result = manual_install(plan_path, plan_hash, apply=True)
@@ -1639,11 +1787,13 @@ else:
         assert manual_fault == 'success'
         assert result['status'] == 'launched' and result['readinessVerified'] is False
         assert result['automaticContinuationRequested'] is False
+        assert valid_kernel_process(result['process']) and result['process']['pid'] == 456
     receipt = read(next(manual_root.glob('*/receipt.json')))
     assert receipt['originalManifest'].encode() == original_manifest
     assert receipt['installed']['sourceSha'] == '3' * 40
     assert receipt['phase'] == ('held' if manual_fault == 'launch-unknown' else 'launched')
     assert receipt['automaticContinuationRequested'] is False
+    if manual_fault == 'success': assert receipt['process'] == result['process']
     assert read(manifest_path)['sourceSha'] == candidate['sourceSha']
     assert read(manifest_path)['transactionId'].startswith('manual-')
     assert (pathlib.Path(receipt['previousBundle']) / 'Contents/MacOS/Jones').read_text() == 'previous-executable'
@@ -2699,7 +2849,7 @@ assert sorted(path.name for path in root.iterdir()) == ['jones-activation.lock',
     ["listener-mismatch", "rolled-back"],
     ["invalid-backend", "rolled-back"],
     ["dead-backend", "rolled-back"],
-    ["changed-backend", "blocked"],
+    ["changed-backend", "rolled-back"],
     ["missing-protocol", "rolled-back"],
     ["missing-startupGateProtocol", "blocked"],
     ["missing-transactionId", "rolled-back"],
@@ -3594,6 +3744,405 @@ assert (profile / 'opaque').read_text() == 'same-host-profile'
       [f.directory, "success", mode],
       { encoding: "utf8", timeout: 10000 },
     );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+const kernelLibprocFixture = String.raw`
+import ctypes, errno, contextlib, io
+from unittest.mock import patch
+class NativeCall:
+    def __init__(self, invoke): self.invoke = invoke
+    def __call__(self, *args):
+        assert self.restype is ctypes.c_int
+        assert self.argtypes is not None
+        assert ctypes.get_errno() == 0
+        return self.invoke(*args)
+class LibprocFixture:
+    def __init__(self, fault='live'):
+        self.fault, self.calls, self.samples = fault, [], 0
+        self.proc_pidinfo = NativeCall(self.bsd)
+        self.proc_pidpath = NativeCall(self.path)
+    def bsd(self, pid, flavor, arg, target, size):
+        self.calls.append('proc_pidinfo'); self.samples += 1
+        assert (pid, flavor, arg, size) == (4321, 3, 0, 136)
+        assert self.proc_pidinfo.argtypes == [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+        if self.fault in ('bsd-esrch', 'bsd-eperm', 'bsd-io', 'bsd-zero'):
+            ctypes.set_errno({'bsd-esrch':errno.ESRCH, 'bsd-eperm':errno.EPERM, 'bsd-io':errno.EIO, 'bsd-zero':0}[self.fault]); return 0
+        raw = bytearray(136)
+        # Independent header offsets, deliberately not derived from the ctypes type.
+        struct.pack_into('=I', raw, 4, 5 if self.fault == 'zombie' else 2)
+        struct.pack_into('=I', raw, 12, 99 if self.fault == 'wrong-pid' else pid)
+        struct.pack_into('=I', raw, 16, 3210)
+        struct.pack_into('=I', raw, 20, 501)
+        struct.pack_into('=Q', raw, 120, 1234567890 + (1 if self.fault == 'birth-race' and self.samples == 2 else 0))
+        struct.pack_into('=Q', raw, 128, 1000000 if self.fault == 'bad-usec' else 654321)
+        ctypes.memmove(target, bytes(raw), len(raw))
+        return 135 if self.fault == 'short-bsd' else 136
+    def path(self, pid, target, size):
+        self.calls.append('proc_pidpath')
+        assert pid == 4321 and size == 4096
+        assert self.proc_pidpath.argtypes == [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+        if self.fault in ('path-esrch', 'path-eperm'):
+            ctypes.set_errno(errno.ESRCH if self.fault == 'path-esrch' else errno.EPERM); return 0
+        raw = b'/Applications/Jones Code.app/Contents/MacOS/Jones'
+        if self.fault == 'relative': raw = b'relative/Jones'
+        if self.fault == 'utf8': raw = b'/bad-\xff'
+        if self.fault == 'empty': return 0
+        if self.fault == 'truncated': raw = b'/' + b'x' * 4095
+        if self.fault == 'exec-race' and self.calls.count('proc_pidpath') == 2: raw = b'/replacement'
+        ctypes.memmove(target, raw + (b'\0' if len(raw) < size else b''), min(size, len(raw) + 1))
+        return len(raw) + (1 if self.fault == 'wrong-path-size' else 0)
+def library(fault='live'):
+    value = LibprocFixture(fault)
+    def load(name, **kwargs):
+        assert name == '/usr/lib/libSystem.B.dylib' and kwargs == {'use_errno': True}
+        return value
+    return value, load
+`;
+
+function kernelScenario(body: string): string {
+  return `${jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0]}\n${kernelLibprocFixture}\n${body}`;
+}
+
+function kernelCliHarness(): string {
+  return kernelScenario(String.raw`
+parser_source = ${JSON.stringify(jonesNativeHelperSource.slice(jonesNativeHelperSource.indexOf("\nparser = argparse.ArgumentParser()")))}
+def invoke(argv, fault='live', platform='darwin'):
+    lib, load = library(fault)
+    out, err = io.StringIO(), io.StringIO()
+    def forbidden(*a, **kw): raise AssertionError('identity CLI crossed its read-only boundary')
+    with patch.object(sys, 'argv', ['helper.py'] + argv), patch.object(sys, 'platform', platform), patch.object(ctypes, 'CDLL', load), patch.object(pathlib.Path, 'resolve', forbidden), patch.object(os, 'open', forbidden), patch.object(subprocess, 'run', forbidden), patch.object(os, 'kill', forbidden), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try: exec(parser_source, globals().copy()); code = 0
+        except SystemExit as e: code = e.code
+    return code, out.getvalue(), err.getvalue(), lib.calls
+`);
+}
+
+describe("kernel process identity prerequisite", () => {
+  it("emits the closed read-only identity CLI without a manifest", () => {
+    const result = runPython(
+      `${kernelCliHarness()}\ncode, out, err, calls = invoke(['--process-identity', '4321'])\nassert code == 0, (code, err)\nassert not err\nassert out.endswith('\\n') and out.count('\\n') == 1\nassert json.loads(out) == {'pid':4321,'startSec':1234567890,'startUsec':654321,'executable':'/Applications/Jones Code.app/Contents/MacOS/Jones'}\nassert calls == ['proc_pidinfo','proc_pidpath','proc_pidinfo','proc_pidpath']\nprint('closed-kernel-identity')`,
+      [],
+      { encoding: "utf8", timeout: 10000 },
+    );
+    expect(result.trim()).toBe("closed-kernel-identity");
+  });
+
+  it("decodes the complete ABI and refuses errors, malformed buffers and races", () => {
+    const result = runPython(
+      kernelScenario(String.raw`
+for fault, error, call, number in [
+    ('bsd-esrch','process-exited','proc_pidinfo',errno.ESRCH),
+    ('zombie','process-exited','proc_pidinfo',None),
+    ('bsd-eperm','process-inspection-failed','proc_pidinfo',errno.EPERM),
+    ('bsd-io','process-inspection-failed','proc_pidinfo',errno.EIO),
+    ('bsd-zero','process-inspection-failed','proc_pidinfo',None),
+    ('short-bsd','process-inspection-failed','proc_pidinfo',None),
+    ('wrong-pid','process-inspection-failed','proc_pidinfo',None),
+    ('bad-usec','process-inspection-failed','proc_pidinfo',None),
+    ('path-esrch','process-exited','proc_pidpath',errno.ESRCH),
+    ('path-eperm','process-inspection-failed','proc_pidpath',errno.EPERM),
+    ('relative','process-inspection-failed','proc_pidpath',None),
+    ('utf8','process-inspection-failed','proc_pidpath',None),
+    ('empty','process-inspection-failed','proc_pidpath',None),
+    ('truncated','process-inspection-failed','proc_pidpath',None),
+    ('wrong-path-size','process-inspection-failed','proc_pidpath',None),
+    ('birth-race','process-inspection-failed','proc_pidinfo',None),
+    ('exec-race','process-inspection-failed','proc_pidpath',None),
+]:
+    lib, load = library(fault)
+    with patch.object(sys, 'platform', 'darwin'), patch.object(ctypes, 'CDLL', load):
+        try: kernel_process_identity(4321)
+        except KernelProcessError as e: assert e.diagnostic == {'error':error,'call':call,'errno':number}, (fault, e.diagnostic)
+        else: raise AssertionError(fault)
+    assert len(lib.calls) <= 4
+for pid in [True, False, 0, -1, 2147483648, '4321', 1.0, None]:
+    with patch.object(ctypes, 'CDLL', side_effect=AssertionError('invalid pid loaded a library')):
+        try: kernel_process_identity(pid)
+        except KernelProcessError: pass
+        else: raise AssertionError(pid)
+native_sizeof = ctypes.sizeof
+def invalid_process_layout(value):
+    # ctypes itself uses sizeof while creating fields; only corrupt the completed ABI check.
+    return 128 if isinstance(value, type) and value.__name__ == 'ProcBsdinfo' else native_sizeof(value)
+with patch.object(sys, 'platform', 'darwin'), patch.object(ctypes, 'sizeof', side_effect=invalid_process_layout), patch.object(ctypes, 'CDLL', side_effect=AssertionError('invalid ABI loaded a library')):
+    try: kernel_process_identity(4321)
+    except KernelProcessError as e: assert e.diagnostic['call'] == 'proc_bsdinfo-layout'
+    else: raise AssertionError('invalid ABI accepted')
+print('kernel-errors-and-races')
+`),
+      [],
+      { encoding: "utf8", timeout: 10000 },
+    );
+    expect(result.trim()).toBe("kernel-errors-and-races");
+  });
+
+  it("rejects mixed and invalid CLI input before library or state access", () => {
+    const result = runPython(
+      `${kernelCliHarness()}\n` +
+        String.raw`
+for argv in [
+    ['--process-identity','0'], ['--process-identity','-1'], ['--process-identity','2147483648'],
+    ['--process-identity','1.0'], ['--process-identity','+1'], ['--process-identity','１２'],
+    ['--process-identity','4321','--manifest','/unread'], ['--process-identity','4321','--launch'],
+    ['--process-identity','4321','--withdrawable'], ['--process-identity','4321','--quiescent'],
+    ['--process-identity','4321','--transaction','x'], ['--process-identity','4321','--claim-sha256',''],
+    ['--process-identity','4321','--staged-handle','x'], ['--process-identity','4321','--selection','x'],
+    ['--process-identity','4321','--selection-sha256','x'], ['--process-identity','4321','--plan-sha256','x'],
+    ['--process-identity','4321','--require-clone'], ['--process-identity','4321','--','extra'],
+    ['--launch'], ['--activate','/unread'], ['--settle-interrupted-activation','x'],
+]:
+    code, out, err, calls = invoke(argv)
+    assert code == 2 and not out and err and not calls, (argv, code, out, err, calls)
+for fault, platform, error in [('bsd-eperm','darwin','process-inspection-failed'), ('bsd-esrch','darwin','process-exited'), ('live','linux','unsupported-platform')]:
+    code, out, err, calls = invoke(['--process-identity','4321'], fault, platform)
+    assert code == 1 and not out and len(err.encode()) <= 1024
+    diagnostic = json.loads(err)
+    assert set(diagnostic) == {'error','call','errno'} and diagnostic['error'] == error
+    if platform != 'darwin': assert not calls
+print('kernel-cli-refusals')
+`,
+      [],
+      { encoding: "utf8", timeout: 10000 },
+    );
+    expect(result.trim()).toBe("kernel-cli-refusals");
+  });
+
+  it.skipIf(HostProcess.Platform.defaultValue() !== "darwin")(
+    "reads an owned Darwin child through live, zombie and reaped states (libproc requires macOS)",
+    () => {
+      const result = runPython(
+        `${jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0]}\n` +
+          String.raw`
+# Framework Python's launcher can differ from its loaded Mach-O image.
+# The owned child reports dyld's image independently of the libproc helper.
+child_source = '''
+import ctypes, json, os, sys
+image_path = ctypes.CDLL(None)._NSGetExecutablePath
+image_path.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+image_path.restype = ctypes.c_int
+size = ctypes.c_uint32(4096)
+image = ctypes.create_string_buffer(size.value)
+result = image_path(image, ctypes.byref(size))
+if result == -1:
+    assert 4096 < size.value <= 1048576, size.value
+    image = ctypes.create_string_buffer(size.value)
+    result = image_path(image, ctypes.byref(size))
+assert result == 0 and image.value, result
+print(json.dumps({'pid': os.getpid(), 'executable': os.path.realpath(os.fsdecode(image.value))}), flush=True)
+sys.stdin.buffer.read(1)
+'''
+child = subprocess.Popen([sys.executable, '-c', child_source], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+try:
+    ready = json.loads(child.stdout.readline())
+    assert set(ready) == {'pid', 'executable'} and ready['pid'] == child.pid, ready
+    expected_executable = ready['executable']
+    assert os.path.isabs(expected_executable) and os.path.isfile(expected_executable), ready
+    proof = kernel_process_identity(child.pid)
+    assert proof['pid'] == child.pid and proof['startSec'] > 0 and 0 <= proof['startUsec'] < 1000000
+    assert os.path.isabs(proof['executable']) and os.path.samefile(proof['executable'], expected_executable), {'launcherExecutable': sys.executable, 'expectedImage': expected_executable, 'observedExecutable': proof['executable'], 'observedResolved': os.path.realpath(proof['executable'])}
+    assert kernel_process_identity(child.pid) == proof
+    child.stdin.close()
+    deadline = time.monotonic() + 3
+    while True:
+        try: kernel_process_identity(child.pid)
+        except KernelProcessError as e:
+            assert e.diagnostic['error'] == 'process-exited'; break
+        if time.monotonic() >= deadline: raise AssertionError('owned child did not become exited')
+        time.sleep(0.01)
+    assert child.wait(timeout=1) == 0
+    try: kernel_process_identity(child.pid)
+    except KernelProcessError as e: assert e.diagnostic['error'] == 'process-exited'
+    else: raise AssertionError('reaped child remained live')
+finally:
+    if child.stdin and not child.stdin.closed: child.stdin.close()
+    if child.poll() is None: child.kill()
+    child.wait(timeout=1)
+    child.stdout.close()
+print('darwin-owned-child')
+`,
+        [],
+        { encoding: "utf8", timeout: 10000 },
+      );
+      expect(result.trim()).toBe("darwin-owned-child");
+    },
+  );
+});
+
+it("retains original kernel proofs when checking exited or replaced writers", () => {
+  runPython(
+    kernelScenario(String.raw`
+proof = {'pid':4321, 'startSec':1234567890, 'startUsec':654321, 'executable':'/Applications/Jones Code.app/Contents/MacOS/Jones'}
+def forbidden(*args, **kwargs): raise AssertionError('kernel proof reached legacy inspection or signaling')
+process_identity = process_start = forbidden
+with patch('sys.platform', 'darwin'):
+    lib, load = library()
+    with patch('ctypes.CDLL', load): assert alive(proof)
+    for field, replacement in [('startSec', 1), ('startUsec', 1), ('executable', '/replacement')]:
+        changed = dict(proof, **{field:replacement})
+        lib, load = library()
+        with patch('ctypes.CDLL', load), patch.object(os, 'kill', forbidden):
+            assert not alive(changed)
+            assert process_exited(changed)
+            stop_exact([changed])
+    for fault in ['bsd-esrch', 'path-esrch', 'zombie']:
+        lib, load = library(fault)
+        with patch('ctypes.CDLL', load), patch.object(os, 'kill', forbidden):
+            assert not alive(proof)
+            assert process_exited(proof)
+            stop_exact([proof])
+    for fault in ['bsd-eperm', 'bsd-io', 'path-eperm', 'birth-race', 'exec-race']:
+        lib, load = library(fault)
+        with patch('ctypes.CDLL', load), patch.object(os, 'kill', forbidden):
+            try: stop_exact([proof])
+            except KernelProcessError as error: assert error.diagnostic['error'] == 'process-inspection-failed'
+            else: raise AssertionError('inspection failure permitted signaling')
+assert proof == {'pid':4321, 'startSec':1234567890, 'startUsec':654321, 'executable':'/Applications/Jones Code.app/Contents/MacOS/Jones'}
+print('original-kernel-proof-preserved')
+`),
+    [],
+    { encoding: "utf8", timeout: 10000 },
+  );
+});
+
+it("joins original kernel requesters to closed roles and proves the complete helper parentage", () => {
+  runPython(
+    kernelScenario(String.raw`
+main = {'pid': 4321, 'startSec': 12, 'startUsec': 34, 'executable': '/Jones'}
+backend = dict(main, pid=8765, executable='/node')
+roles = [{'pid': 4321, 'role': 'main'}, {'pid': 8765, 'role': 'backend'}]
+prepare = {'processes': [backend, main]}
+originals = original_role_proofs(roles, prepare)
+assert originals == [main, backend] and prepare['processes'] == [backend, main]
+assert valid_process_proofs([main, backend]) and valid_process_proofs([{'pid': 1, 'identity': 'legacy'}])
+assert not valid_process_proofs([main, {'pid': 1, 'identity': 'legacy'}])
+for invalid in ([], roles + [roles[0]], [{'pid': True, 'role': 'main'}], [{'pid': 4321, 'role': 'backend'}], [dict(roles[0], extra=True)], [roles[0], backend]):
+    assert not valid_process_roles(invalid), invalid
+    try: original_role_proofs(invalid, prepare)
+    except SelectionRefused: pass
+    else: raise AssertionError('Invalid roles accepted')
+for invalid in ([dict(main, pid=True)], [dict(main, startUsec=1000000)], [dict(main, startSec=-1)], [dict(main, executable='relative')], [dict(main, extra=1)], [main, main]):
+    assert not valid_kernel_processes(invalid), invalid
+os.getppid = lambda: 4321
+seen = []
+def sample(pid):
+    seen.append(pid)
+    return (main, 1) if pid == 4321 else (backend, 4321)
+kernel_process_sample = sample
+assert capture_activation_processes({'processes': roles}, originals) == originals
+assert seen == [4321, 8765]
+for fault in ('backend-exited', 'backend-reused', 'backend-parent', 'main-reused', 'main-exited', 'inspection'):
+    def observation(pid):
+        if pid == 4321:
+            if fault == 'main-exited': raise KernelProcessError('process-exited', 'proc_pidinfo')
+            return (dict(main, startUsec=35) if fault == 'main-reused' else main), 1
+        if fault == 'backend-exited': raise KernelProcessError('process-exited', 'proc_pidinfo')
+        if fault == 'inspection': raise KernelProcessError('process-inspection-failed', 'proc_pidpath', 1)
+        return (dict(backend, executable='/replacement') if fault == 'backend-reused' else backend), (9 if fault == 'backend-parent' else 4321)
+    kernel_process_sample = observation
+    try: captured = capture_activation_processes({'processes': roles}, originals)
+    except KernelProcessError: assert fault in ('backend-parent', 'main-reused', 'main-exited', 'inspection')
+    else: assert fault in ('backend-exited', 'backend-reused') and captured == originals
+os.getppid = lambda: 999
+try: capture_activation_processes({'processes': roles}, originals)
+except KernelProcessError as error: assert error.diagnostic['call'] == 'helper-parent'
+else: raise AssertionError('Foreign helper parent accepted')
+`),
+    [],
+    { encoding: "utf8", timeout: 10000 },
+  );
+});
+
+it.each(["parent", "main-reused", "inspection"])(
+  "terminalizes kernel capture failure before storage or signals: %s",
+  async (fault) => {
+    const f = await fixture();
+    try {
+      const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const setup = activationScenario.split("\nevents = []")[0];
+      const scenario = String.raw`
+mode = sys.argv[3]
+originals = [{'pid': 123, 'startSec': 10, 'startUsec': 20, 'executable': '/Jones'}, {'pid': 124, 'startSec': 30, 'startUsec': 40, 'executable': '/node'}]
+intent['processes'] = [{'pid': 123, 'role': 'main'}, {'pid': 124, 'role': 'backend'}]
+seed_record(tx / 'intent.json', intent)
+seed_record(tx / 'prepare-request.json', {'protocol': 1, 'transactionId': transaction_id, 'stagedHandle': staged['handle'], 'claimSha256': digest(tx / 'prepare-intent.json'), 'processes': originals}, True)
+intent_raw = (tx / 'intent.json').read_bytes()
+prepare_raw = (tx / 'prepare-request.json').read_bytes()
+os.getppid = lambda: 123
+def observe(pid):
+    if mode == 'inspection': raise KernelProcessError('process-inspection-failed', 'proc_pidinfo', 1)
+    if pid == 123: return dict(originals[0], startUsec=21) if mode == 'main-reused' else originals[0], 1
+    return originals[1], 999
+kernel_process_sample = observe
+def forbidden(*args): raise AssertionError('Incomplete ownership reached native effect')
+storage_preflight = stop_exact = os.kill = launch = forbidden
+activate(tx / 'intent.json')
+journal = read(tx / 'journal.json')
+assert journal['phase'] == 'rolled-back' and journal['intent'] == intent
+assert journal['preEffect']['step'] == 'stop-processes' and journal['preEffect']['relaunch'] == 'skipped'
+assert journal['preEffect']['diagnostics']['error'] == 'process-inspection-failed'
+assert journal['preEffect']['diagnostics']['call'] in ('backend-parent', 'main-identity', 'proc_pidinfo')
+assert 'capturedProcesses' not in journal and not (tx / 'previous-pair').exists()
+assert (tx / 'intent.json').read_bytes() == intent_raw and (tx / 'prepare-request.json').read_bytes() == prepare_raw
+assert read(manifest_path) == expected
+`;
+      runPython(definitions + "\n" + setup + "\n" + scenario, [f.directory, "success", fault], {
+        encoding: "utf8",
+        timeout: 10000,
+      });
+    } finally {
+      await f.cleanup();
+    }
+  },
+);
+
+it("keeps role recovery joined to the original request bytes without recapturing historical PIDs", async () => {
+  const f = await fixture();
+  try {
+    const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+    const setup = activationScenario.split("\nevents = []")[0];
+    const scenario = String.raw`
+originals = [{'pid': 123, 'startSec': 10, 'startUsec': 20, 'executable': '/Jones'}]
+intent['processes'] = [{'pid': 123, 'role': 'main'}]
+(tx / 'intent.json').unlink()
+seed_record(tx / 'activation-request.json', intent, True)
+prepare = {'protocol': 1, 'transactionId': transaction_id, 'stagedHandle': staged['handle'], 'claimSha256': digest(tx / 'prepare-intent.json'), 'processes': originals}
+seed_record(tx / 'prepare-request.json', prepare, True)
+raw = (tx / 'prepare-request.json').read_bytes()
+def forbidden(*args): raise AssertionError('Historical role was recaptured or signaled')
+kernel_process_sample = process_identity = process_start = os.kill = forbidden
+assert original_activation_proofs(intent, tx, claim) == originals
+_, plan, records, evidence = preparation_context(expected, transaction_id, True)
+assert records['prepare-request.json'][1] == raw and plan['records']['prepare-request.json'] == hashlib.sha256(raw).hexdigest()
+assert records['activation-request.json'][0] == intent and evidence is None
+for field, changed in [('claimSha256', '0' * 64), ('processes', [dict(originals[0], pid=999)]), ('processes', [{'pid': 123, 'identity': 'legacy'}])]:
+    seed_record(tx / 'prepare-request.json', dict(prepare, **{field: changed}))
+    try: original_activation_proofs(intent, tx, claim)
+    except SelectionRefused: pass
+    else: raise AssertionError('Role recovered without its original binding')
+seed_record(tx / 'prepare-request.json', prepare)
+for name in ('prepare-dispatched.json', 'continuation.json', 'activation-request.json'): (tx / name).unlink()
+seen = []
+def exited(pid):
+    seen.append(pid)
+    raise KernelProcessError('process-exited', 'proc_pidinfo')
+kernel_process_identity = exited
+_, plan, records, evidence = preparation_context(expected, transaction_id)
+assert evidence == 'requester-exited' and seen == [123]
+assert (tx / 'prepare-request.json').read_bytes() == raw
+seed_record(tx / 'intent.json', intent, True)
+seed_record(tx / 'journal.json', {'intent': intent, 'phase': 'preparing'}, True)
+result = settle_interrupted_activation(transaction_id)
+assert result == {'protocol': 1, 'status': 'settled'}, result
+assert read(tx / 'journal.json')['intent'] == intent and seen == [123]
+assert (tx / 'prepare-request.json').read_bytes() == raw
+`;
+    runPython(definitions + "\n" + setup + "\n" + scenario, [f.directory, "success"], {
+      encoding: "utf8",
+      timeout: 10000,
+    });
   } finally {
     await f.cleanup();
   }

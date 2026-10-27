@@ -34,6 +34,7 @@ import {
 } from "../updates/launcherOperation.ts";
 import {
   currentQualifiedRuntimeBinding,
+  enrollQualifiedRuntime,
   qualifiedPayloadDigest,
   stageQualifiedRuntime,
   QUALIFIED_RUNTIME_RECEIPT,
@@ -76,6 +77,7 @@ async function runScenario(
     readonly backupAdapter?: QualifiedBackupAdapter;
     readonly productionMain?: boolean;
     readonly startupGateProtocol?: 1 | "missing";
+    readonly historicalReceipt?: "supported" | "missing-child" | "missing-target";
     readonly operationFailure?: "archive" | "reserve";
     readonly afterOperationReserve?: (baseDir: string) => void | Promise<void>;
     readonly retryWithDifferentOperation?: boolean;
@@ -128,6 +130,7 @@ import * as NodeNet from "node:net";
 import { currentQualifiedRuntimeBinding, stageQualifiedRuntime } from "${NodePath.join(import.meta.dirname, "qualifiedRuntime.ts")}";
 import { retainStagedSelection } from "${NodePath.join(import.meta.dirname, "../updates/stagedSelection.ts")}";
 import * as NodeSqlite from "node:sqlite";
+import { decodeServiceLauncherContext } from "${NodePath.join(import.meta.dirname, "../../cloud/serviceProtocol.ts")}";
 import { makeQualifiedTrialReceipt, reserveQualifiedResume, sameQualifiedTrialIdentity } from "${NodePath.join(import.meta.dirname, "qualifiedStartup.ts")}";
 if (process.argv.includes("__service-preflight")) {
   if (${JSON.stringify(mode)} === "blocked-candidate") {
@@ -135,12 +138,15 @@ if (process.argv.includes("__service-preflight")) {
     process.exit(1);
   }
   console.log(JSON.stringify({status:"ready",version:${JSON.stringify(target)},launcherProtocol:4,
+    ...(${JSON.stringify(options.historicalReceipt !== undefined && options.historicalReceipt !== "missing-target")} ? {qualifiedRecoveryProtocol:1} : {}),
     ...(${JSON.stringify(mode)} === "missing-gate" ? {} : {startupGateProtocol:${JSON.stringify(mode)} === "wrong-gate" ? 2 : 1})}));
   process.exit(0);
 }
 const ownership = new NodeSqlite.DatabaseSync(${JSON.stringify(NodePath.join(userdata, "server-owner.sqlite"))});
 ownership.exec("PRAGMA busy_timeout=0; BEGIN EXCLUSIVE;");
-const context = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
+const rawContext = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
+const context = ${JSON.stringify(options.historicalReceipt !== undefined)} ? decodeServiceLauncherContext(process.env.T3_SERVICE_LAUNCHER_CONTEXT) : rawContext;
+if (context === undefined) throw new Error("Historical stage rejected by child context decoder");
 if (${JSON.stringify(options.settlementRequests !== undefined)}) {
   const requests = ${JSON.stringify(options.settlementRequests ?? [])};
   const replies = [];
@@ -297,6 +303,7 @@ if (${JSON.stringify(options.settlementRequests !== undefined)}) {
     });
   }});
   process.send({type:"request-update", targetVersion:${JSON.stringify(target)}, dbPath:${JSON.stringify(dbPath)}, stagedHandle:handle,
+    ...(${JSON.stringify(options.historicalReceipt !== undefined && options.historicalReceipt !== "missing-child")} ? {qualifiedRecoveryProtocol:1} : {}),
     ...(${JSON.stringify(options.operationFailure !== undefined || options.afterOperationReserve !== undefined)} ? {operationId:"12345678-1234-4234-8234-123456789abc"} : {})});
   setInterval(() => {}, 1000);
 } else {
@@ -347,15 +354,23 @@ if (${JSON.stringify(options.settlementRequests !== undefined)}) {
     );
     await NodeFSP.writeFile(NodePath.join(active, ".install-complete"), baseline);
     const { protocol: _protocol, ...candidate } = metadata;
+    const artifact = {
+      ...candidate,
+      version: target,
+      sourceSha: "a".repeat(40),
+      installedSourceSha: metadata.sourceSha,
+      runId: 101,
+      payloadDirectory: payload,
+    };
+    if (options.historicalReceipt !== undefined)
+      await enrollQualifiedRuntime({
+        artifact: { ...artifact, installedSourceSha: "9".repeat(40) },
+        baseDir: base,
+        host: { platform: metadata.platform, architecture: metadata.architecture },
+        validate: async () => {},
+      });
     const staged = await stageQualifiedRuntime({
-      artifact: {
-        ...candidate,
-        version: target,
-        sourceSha: "a".repeat(40),
-        installedSourceSha: metadata.sourceSha,
-        runId: 101,
-        payloadDirectory: payload,
-      },
+      artifact,
       binding: await currentQualifiedRuntimeBinding(base, baseline),
       validate: async () => {},
     });
@@ -2108,3 +2123,55 @@ it("does not clean a terminal generation during launcher startup", async () => {
     { previous: "committed", recoveryOnly: true },
   );
 });
+
+it.each(["commit", "rollback"] as const)(
+  "preserves historical enrollment through supported %s",
+  async (mode) => {
+    await runScenario(
+      mode,
+      async (base) => {
+        const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+        assert.equal(state.activeVersion, mode === "commit" ? target : baseline);
+        assert.equal(state.update?.status, mode === "commit" ? "committed" : "rolled-back");
+        assert.equal(state.update?.qualified?.protocol, 2);
+        const cached = JSON.parse(
+          await NodeFSP.readFile(
+            NodePath.join(base, "runtime", "versions", target, QUALIFIED_RUNTIME_RECEIPT),
+            "utf8",
+          ),
+        );
+        assert.equal(cached.installedSourceSha, "9".repeat(40));
+        assert.deepEqual(state.update?.qualified?.receipt, cached);
+        assert.equal(
+          readMarker(NodePath.join(base, "userdata", "statev2.sqlite")),
+          mode === "commit" ? "after" : "before",
+        );
+      },
+      undefined,
+      { historicalReceipt: "supported" },
+    );
+  },
+);
+
+it.each(["missing-child", "missing-target"] as const)(
+  "refuses %s historical support before admission or child stop",
+  async (historicalReceipt) => {
+    await runScenario(
+      "commit",
+      async (base) => {
+        const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+        assert.equal(state.activeVersion, baseline);
+        assert.equal(state.update, undefined);
+        const rejected = JSON.parse(
+          await NodeFSP.readFile(NodePath.join(base, "runtime", "rejected.json"), "utf8"),
+        );
+        assert.match(rejected.reason, /qualified-recovery-unsupported/);
+        await NodeFSP.access(NodePath.join(base, "runtime", "old-child-survived.json"));
+        assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
+        await NodeAssert.rejects(NodeFSP.access(NodePath.join(base, "runtime", "db-backup")));
+      },
+      undefined,
+      { historicalReceipt },
+    );
+  },
+);

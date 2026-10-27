@@ -1,3 +1,4 @@
+import { typecheckTask } from "../../scripts/jones/tsrs/task-cache.ts";
 import "vite-plus/test/config";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Vite resolves the fixed custody artifact synchronously outside an Effect runtime.
 import * as NodePath from "node:path";
@@ -8,9 +9,7 @@ import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
 
 const repoEnv = loadRepoEnv();
 
-// The packaged app then installs just those externals, instead of a full
-// production install of apps/desktop's dependency tree next to a server bundle
-// that already carries its own copy of the same libraries.
+// Install only bundle externals; the server bundle already carries its dependency tree.
 const isMainProcessExternal = (id: string) =>
   id === "electron" || id.startsWith("electron/") || isDesktopRuntimeExternalDependency(id);
 // Both independently bundled entry points must use Node's one module cache entry.
@@ -65,11 +64,7 @@ export default defineConfig({
         dependsOn: ["t3#build"],
         cache: false,
       },
-      // tsc-rs rewrites the tsbuildinfo it reads, which keeps a task out of the cache.
-      typecheck: {
-        command: "tsc-rs --noEmit",
-        cache: { input: [{ auto: true }, "!*.tsbuildinfo"] },
-      },
+      typecheck: typecheckTask("node ../../scripts/jones/tsrs/typecheck.ts --noEmit"),
     },
   },
   pack: [
@@ -146,11 +141,34 @@ export default defineConfig({
       outExtensions: () => ({ js: ".cjs" }),
       define: publicConfigDefine,
       entry: ["src/preload.ts"],
+      // Electron's sandbox wrapper already binds setImmediate/clearImmediate.
+      // Keep bundled Effect internals inside a separate lexical scope.
+      outputOptions: { codeSplitting: false, banner: "(() => {", footer: "})();" },
       deps: {
         // Sandboxed Electron preloads cannot reliably resolve package imports
         // from inside the packaged ASAR. Bundle Clerk's preload bridge into the
         // preload artifact instead of leaving a runtime require() behind.
-        alwaysBundle: (id) => id === "@clerk/electron" || id.startsWith("@clerk/electron/"),
+        alwaysBundle: (id) =>
+          id === "@clerk/electron" ||
+          id.startsWith("@clerk/electron/") ||
+          id === "effect" ||
+          id.startsWith("effect/") ||
+          id.startsWith("@t3tools/contracts"),
+      },
+    },
+    {
+      // The isolated peer gets no Clerk or application bridge; keep its sandbox preload self-contained.
+      format: "cjs",
+      outDir: "dist-electron",
+      dts: false,
+      sourcemap: true,
+      outExtensions: () => ({ js: ".cjs" }),
+      entry: { "jones/threadMonitor/preload": "src/jones/threadMonitor/preload.ts" },
+      clean: false,
+      outputOptions: { codeSplitting: false, banner: "(() => {", footer: "})();" },
+      deps: {
+        alwaysBundle: (id) => id !== "electron" && !id.startsWith("node:"),
+        neverBundle: (id) => id === "electron" || id.startsWith("node:"),
       },
     },
     {

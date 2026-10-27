@@ -12,6 +12,8 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   hasUnseenCompletion,
   pendingSubagentRequestsByThread,
+  pendingSubagentGuestAttentionByThread,
+  hasPendingGuestMessages,
   resolveThreadAttentionPill,
   resolveThreadAttentionStatus,
   shellAttentionInput,
@@ -327,5 +329,77 @@ describe("shared native thread attention", () => {
     const plain: ThreadAttentionInput = shellAttentionInput(shell());
     expect(resolveThreadAttentionStatus(plain)).toBe("ready");
     expect(resolveThreadAttentionPill({ thread: plain })).toBeNull();
+  });
+});
+
+describe("completed child guest attention", () => {
+  const guest = (id = "guest", parent = "parent") =>
+    child(id, "user_input", {
+      status: "completed",
+      activityRunStatus: null,
+      pendingRuntimeRequest: null,
+      pendingGuestMessageCount: 1,
+      lineage: {
+        rootThreadId: ThreadId.make("parent"),
+        parentThreadId: ThreadId.make(parent),
+        relationshipToParent: "subagent",
+      },
+    });
+
+  it("retains guest-only attention through completed ancestors independent of provider requests", () => {
+    const parent = shell();
+    const middle = { ...guest("middle"), pendingGuestMessageCount: 0 };
+    const leaf = guest("leaf", "middle");
+    for (const threads of [
+      [parent, middle, leaf],
+      [leaf, middle, parent],
+    ]) {
+      expect(pendingSubagentGuestAttentionByThread(threads)).toEqual(
+        new Set([parent.id, middle.id]),
+      );
+      expect(pendingSubagentRequestsByThread(threads).size).toBe(0);
+      expect(subagentRequest(leaf)).toBeNull();
+    }
+  });
+
+  it("bounds cycles and missing ancestors, stops at fork boundaries and deduplicates children", () => {
+    const first = guest("first", "second");
+    const second = guest("second", "first");
+    expect(pendingSubagentGuestAttentionByThread([first, second])).toEqual(
+      new Set([first.id, second.id]),
+    );
+    expect(pendingSubagentGuestAttentionByThread([guest("orphan", "missing")]).size).toBe(0);
+    const fork = shell({
+      id: ThreadId.make("fork"),
+      lineage: {
+        rootThreadId: ThreadId.make("parent"),
+        parentThreadId: ThreadId.make("parent"),
+        relationshipToParent: "fork",
+      },
+    });
+    expect(
+      pendingSubagentGuestAttentionByThread([
+        shell(),
+        fork,
+        guest("leaf", "fork"),
+        guest("leaf", "fork"),
+      ]),
+    ).toEqual(new Set([fork.id]));
+  });
+
+  it("keeps optional counts and provider-native requests separate from actual guest attention", () => {
+    const parent = shell();
+    for (const count of [undefined, 0]) {
+      const resolved = { ...guest(), pendingGuestMessageCount: count };
+      expect(hasPendingGuestMessages(resolved)).toBe(false);
+      expect(pendingSubagentGuestAttentionByThread([parent, resolved]).size).toBe(0);
+    }
+    const native = {
+      ...guest(),
+      creationSource: "provider" as const,
+      pendingRuntimeRequest: request("permission"),
+    };
+    expect(pendingSubagentRequestsByThread([parent, native]).size).toBe(0);
+    expect(pendingSubagentGuestAttentionByThread([parent, native])).toEqual(new Set([parent.id]));
   });
 });

@@ -8,13 +8,9 @@ export function toSortableTimestamp(iso: string | undefined): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
-// ── Pinned reorder: fractional index keys ──────────────────────────────
-// Pinned threads carry an optional pinOrderKey (a base-26 string). The
-// pinned block sorts keyed threads by plain string comparison, so a drag
-// (web) or Move up/down (mobile) writes ONE key to ONE thread on that
-// thread's own server — neighbors, possibly living on other servers, are
-// never touched, and every client connected to the same servers converges
-// on the same order.
+// Optional base-26 pinOrderKey values sort by plain string comparison. Web drag/mobile Move writes
+// one key on the moved thread's own server, never neighbors on other servers.
+// Clients connected to the same servers therefore converge on the same pinned order.
 const PIN_ORDER_DIGITS = "abcdefghijklmnopqrstuvwxyz";
 
 function isValidPinOrderKey(key: string): boolean {
@@ -88,12 +84,9 @@ export function generateSpreadPinOrderKeys(count: number): string[] {
 }
 
 /**
- * Assignments needed to realize a new pinned order. When the moved thread
- * sits between two keyed (or absent) neighbors, this is a single write to
- * the moved thread. When a neighbor is keyless (threads pinned before
- * reordering shipped), the whole section gets fresh spread keys — a
- * one-time materialization; every move after that is single-write. Active
- * reordering uses the same planner with activeOrderKey values.
+ * Keyed/absent neighbors require one write to the moved thread. A keyless legacy neighbor triggers
+ * one-time section-wide materialization of spread keys; later moves are single-write.
+ * Active ordering uses this planner with activeOrderKey values.
  */
 export function planPinnedReorder(input: {
   /** Thread ids in the desired visual order (after the move). */

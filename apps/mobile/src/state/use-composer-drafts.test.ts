@@ -3,6 +3,7 @@ import { createEnvironmentThreadShellAtoms } from "@t3tools/client-runtime/state
 import {
   applyShellStreamEvent,
   createEnvironmentSnapshotAtom,
+  EMPTY_SHELL_STATE,
   type EnvironmentShellState,
   type EnvironmentShellStatus,
 } from "@t3tools/client-runtime/state/shell";
@@ -179,6 +180,7 @@ import {
   archiveCloudComposerDrafts,
   clearComposerDraftContent,
   clearComposerDraftContentState,
+  consumeSubmittedComposerModelPick,
   subscribeComposerDraftModelReconciliation,
   clearComposerDraftsEnvironment,
   ComposerDraftPersistenceError,
@@ -284,9 +286,9 @@ function modelReconciliationHarness(
     ],
   };
   const shellStateAtom = Atom.make<EnvironmentShellState>({
+    ...EMPTY_SHELL_STATE,
     snapshot: Option.some(initialSnapshot),
     status: initialStatus,
-    error: Option.none(),
   });
   const shellResultAtom = Atom.map(shellStateAtom, AsyncResult.success);
   const snapshotAtom = createEnvironmentSnapshotAtom(() => shellResultAtom)(environmentId);
@@ -470,6 +472,43 @@ describe("mobile composer drafts", () => {
       }
       await releaseUnusedComposerAttachmentFiles([file]);
       expect(composerAttachmentCleanupMocks.remove).toHaveBeenCalledWith(file.fileUri);
+    },
+  );
+
+  it("consumes the submitted pick after enqueue while preserving new draft content and settings", async () => {
+    const key = "environment-1:thread-1";
+    const pick = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.5" };
+    updateComposerDraftSettings(key, { modelSelection: pick });
+    clearComposerDraftContent(key, { deferAttachmentCleanup: true });
+    setComposerDraftText(key, "next unsent message");
+    updateComposerDraftSettings(key, { runtimeMode: "approval-required", interactionMode: "plan" });
+    consumeSubmittedComposerModelPick(key, pick);
+    expect(getComposerDraftSnapshot(key)).toMatchObject({
+      text: "next unsent message",
+      runtimeMode: "approval-required",
+      interactionMode: "plan",
+    });
+    expect(getComposerDraftSnapshot(key).modelSelection).toBeUndefined();
+    await flushComposerDrafts();
+    const persisted = decodePersistedComposerState(
+      JSON.parse(composerDraftFileMocks.getDocument()),
+    );
+    expect(persisted.drafts[key]?.modelSelection).toBeUndefined();
+  });
+
+  it.each(["same", "different"])(
+    "preserves a later %s picker edit when the submitted pick is consumed",
+    (choice) => {
+      const key = "environment-1:thread-1";
+      const submitted = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.5" };
+      updateComposerDraftSettings(key, { modelSelection: submitted });
+      clearComposerDraftContent(key, { deferAttachmentCleanup: true });
+      const later = { ...submitted, model: choice === "same" ? submitted.model : "other-model" };
+      updateComposerDraftSettings(key, { modelSelection: later });
+      consumeSubmittedComposerModelPick(key, submitted);
+      expect(getComposerDraftSnapshot(key).modelSelection).toBe(later);
+      consumeSubmittedComposerModelPick(key, undefined);
+      expect(getComposerDraftSnapshot(key).modelSelection).toBe(later);
     },
   );
 

@@ -1,8 +1,15 @@
+import * as TitleStore from "../jones/threadTitle/store.ts";
+import { automaticTitleContext } from "../jones/threadTitle/evidence.ts";
+import { ThreadTitleAssessment } from "../jones/threadTitle/commitContext.ts";
+import type { ThreadTitleVerdict } from "@t3tools/provider-core/server/jones/ThreadTitleAssessment";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   CommandId,
   type ChatAttachment,
   type MessageId,
+  type OrchestrationV2AppThread,
+  type OrchestrationV2ConversationMessage,
+  type RunId,
   type ServerSettingsError,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -33,6 +40,7 @@ export class ThreadTitleRegenerationService extends Context.Service<
         | { readonly type: "regenerate" };
     }) => Effect.Effect<
       void,
+      | TitleStore.ThreadTitleStateError
       | OrchestratorV2Error
       | ProjectStore.ProjectStoreV2Error
       | ServerSettingsError
@@ -43,6 +51,7 @@ export class ThreadTitleRegenerationService extends Context.Service<
 
 const make = Effect.gen(function* () {
   const threads = yield* ThreadManagementService.ThreadManagementService;
+  const titleStore = yield* TitleStore.AutomaticTitleState;
   const projects = yield* ProjectStore.ProjectStoreV2;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const textGeneration = yield* TextGeneration.TextGeneration;
@@ -62,18 +71,68 @@ const make = Effect.gen(function* () {
       })
       .pipe(Effect.asVoid);
 
+  const messagesThroughRun = Effect.fn("ThreadTitleRegenerationService.messagesThroughRun")(
+    function* (threadId: ThreadId, runId: RunId) {
+      const source = yield* threads.getThreadRecords(threadId, ["messages", "runs"], {
+        messageRoles: ["user", "assistant"],
+      });
+      const ordinals = new Map(
+        source.runs
+          .filter((run) => run.status !== "rolled_back")
+          .map((run) => [run.id, run.ordinal]),
+      );
+      const forkOrdinal = ordinals.get(runId) ?? -1;
+      const messages = source.messages.filter((message) => {
+        if (message.streaming) return false;
+        if (message.runId === null) return source.thread.historyOrigin === "v1_import";
+        return (ordinals.get(message.runId) ?? Infinity) <= forkOrdinal;
+      });
+      return { thread: source.thread, messages };
+    },
+  );
+
+  // A fork starts with no messages of its own, so its subject lives in the history it inherited.
+  const forkSource = Effect.fn("ThreadTitleRegenerationService.forkSource")(function* (
+    thread: OrchestrationV2AppThread,
+  ) {
+    let title: string | undefined;
+    let history: Array<OrchestrationV2ConversationMessage> = [];
+    let forkedFrom = thread.forkedFrom;
+    while (forkedFrom?.type === "run") {
+      const source = yield* messagesThroughRun(forkedFrom.threadId, forkedFrom.runId);
+      history = [...source.messages, ...history];
+      title ??= source.thread.title;
+      forkedFrom = source.thread.forkedFrom;
+    }
+    const context = formatThreadTitleContext(history);
+    return title === undefined || context.message.length === 0
+      ? undefined
+      : { title, history: context.message };
+  });
+
   const execute: ThreadTitleRegenerationService["Service"]["execute"] = Effect.fn(
     "ThreadTitleRegenerationService.execute",
   )(function* (input) {
+    const state = titleStore === undefined ? null : yield* titleStore.read(input.threadId);
+    const automatic =
+      state?.status === "active" && state.pending?.requestId === input.requestId
+        ? state.pending
+        : undefined;
     const outcome:
       | { readonly type: "stale" }
-      | { readonly type: "complete"; readonly title?: string } = yield* Effect.gen(function* () {
+      | {
+          readonly type: "complete";
+          readonly title?: string;
+          readonly assessment?: ThreadTitleVerdict | undefined;
+        } = yield* Effect.gen(function* () {
       const projection = yield* threads.getThreadRecords(
         input.threadId,
-        ["messages"],
-        input.kind.type === "initial"
-          ? { messageIds: [input.kind.messageId] }
-          : { messageRoles: ["user", "assistant"] },
+        automatic ? ["messages", "runs", "nodes", "turnItems"] : ["messages"],
+        automatic
+          ? { messageRoles: ["user", "assistant"] }
+          : input.kind.type === "initial"
+            ? { messageIds: [input.kind.messageId] }
+            : { messageRoles: ["user", "assistant"] },
       );
       if (projection.thread.titleRegeneration?.requestId !== input.requestId) {
         return { type: "stale" as const };
@@ -88,7 +147,9 @@ const make = Effect.gen(function* () {
         readonly message: string;
         readonly attachments: ReadonlyArray<ChatAttachment>;
       };
-      if (input.kind.type === "initial") {
+      if (automatic) {
+        context = automaticTitleContext(projection, automatic.evidence);
+      } else if (input.kind.type === "initial") {
         const messageId = input.kind.messageId;
         const message = projection.messages.find(
           (candidate) => candidate.id === messageId && !candidate.streaming,
@@ -106,25 +167,37 @@ const make = Effect.gen(function* () {
         return { type: "complete" as const };
       }
 
+      // A deleted source should not cost the fork its title.
+      const inherited = automatic
+        ? undefined
+        : yield* forkSource(projection.thread).pipe(Effect.orElseSucceed(() => undefined));
       const settings = resolveProjectSettings(
         yield* serverSettings.getSettings,
         projection.thread.projectId,
       ).settings;
       const result = yield* textGeneration.generateThreadTitle({
+        ...(automatic ? { titleAssessment: true, linkedContext: "" } : {}),
         cwd: projection.thread.worktreePath ?? project.value.workspaceRoot,
         message: context.message,
         attachments: context.attachments,
         ...(input.kind.type === "regenerate" ? { previousTitle: projection.thread.title } : {}),
+        ...(inherited === undefined ? {} : { forkSource: inherited }),
+        instructions: settings.threadTitleInstructions,
         modelSelection: settings.textGenerationModelSelection,
       });
       const generatedTitle = result.title.trim();
+      const assessment = automatic
+        ? result.needsRefinement === true
+          ? "insufficient"
+          : (result.assessment ?? "unknown")
+        : undefined;
       return generatedTitle === "New thread" ||
         (input.kind.type === "regenerate" && generatedTitle === projection.thread.title.trim())
-        ? { type: "complete" as const }
-        : { type: "complete" as const, title: result.title };
+        ? { type: "complete" as const, assessment }
+        : { type: "complete" as const, title: result.title, assessment };
     }).pipe(
       Effect.retry({
-        times: input.kind.type === "initial" ? 2 : 0,
+        times: !automatic && input.kind.type === "initial" ? 2 : 0,
         schedule: Schedule.exponential("2 seconds"),
       }),
       Effect.catchCause((cause) =>
@@ -144,7 +217,14 @@ const make = Effect.gen(function* () {
     yield* complete({
       ...input,
       ...(outcome.title === undefined ? {} : { title: outcome.title }),
-    });
+    }).pipe(
+      Effect.provideService(
+        ThreadTitleAssessment,
+        automatic
+          ? { requestId: input.requestId, verdict: outcome.assessment ?? "unknown" }
+          : undefined,
+      ),
+    );
   });
 
   return ThreadTitleRegenerationService.of({ execute });

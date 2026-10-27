@@ -192,11 +192,11 @@ const observeWorker = (worker: NodeWorkerThreads.Worker) => {
   const exited = receipt<number>();
   const onMessage = (message: unknown) => {
     messages.push(message);
-    for (const wake of [...waiters]) wake();
+    for (const wake of Array.from(waiters)) wake();
   };
   const onError = (error: Error) => {
     terminal = error;
-    for (const wake of [...waiters]) wake();
+    for (const wake of Array.from(waiters)) wake();
   };
   const onExit = (code: number) => {
     exitCode = code;

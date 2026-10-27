@@ -9,27 +9,29 @@ export const DOCUMENT_SECTIONS_MAX_SUMMARY_BYTES = 512;
 const utf8Bytes = (value: string) => new TextEncoder().encode(value).length;
 const exactText = (value: string) => value.isWellFormed() && !value.includes("\0");
 export const DocumentRepositoryIdentity = Schema.String.check(
-  Schema.isPattern(/^github:[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9._-]{1,100}(?![\s\S])/),
+  Schema.isPattern(
+    /^github:[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9._-]{1,100}(?![\s\S])/,
+  ),
 );
-export const DocumentCommitOid = Schema.String.check(
-  Schema.isPattern(/^[a-f0-9]{40}(?![\s\S])/),
-);
-export const DocumentSha256 = Schema.String.check(
-  Schema.isPattern(/^[a-f0-9]{64}(?![\s\S])/),
-);
+export const DocumentCommitOid = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}(?![\s\S])/));
+export const DocumentSha256 = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}(?![\s\S])/));
 export const DocumentSectionId = Schema.String.check(
   Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}(?![\s\S])/),
 );
 export const DocumentMarkdownPath = Schema.String.check(
-  Schema.makeFilter((value) =>
-    exactText(value) && utf8Bytes(value) <= 2048 && !value.includes("\\") &&
-    !/^[A-Za-z]:/.test(value) &&
-    value.split("/").every((part) => part !== "" && part !== "." && part !== "..") &&
-    /\.(md|markdown)(?![\s\S])/i.test(value),
+  Schema.makeFilter(
+    (value) =>
+      exactText(value) &&
+      utf8Bytes(value) <= 2048 &&
+      !value.includes("\\") &&
+      !/^[A-Za-z]:/.test(value) &&
+      value.split("/").every((part) => part !== "" && part !== "." && part !== "..") &&
+      /\.(md|markdown)(?![\s\S])/i.test(value),
   ),
 );
 export const DocumentSectionIds = Schema.Array(DocumentSectionId).check(
-  Schema.isMinLength(1), Schema.isMaxLength(32),
+  Schema.isMinLength(1),
+  Schema.isMaxLength(32),
   Schema.makeFilter((ids) => new Set(ids).size === ids.length),
 );
 export const DocumentSectionsSelector = Schema.Struct({
@@ -67,7 +69,8 @@ export const DocumentSectionsResult = Schema.Struct({
     blobOid: DocumentCommitOid,
     sha256: DocumentSha256,
     sizeBytes: Schema.Int.check(
-      Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(DOCUMENT_SECTIONS_MAX_DOCUMENT_BYTES),
+      Schema.isGreaterThanOrEqualTo(0),
+      Schema.isLessThanOrEqualTo(DOCUMENT_SECTIONS_MAX_DOCUMENT_BYTES),
     ),
   }),
   requestedIds: DocumentSectionIds,
@@ -78,21 +81,46 @@ export type DocumentSectionsResult = typeof DocumentSectionsResult.Type;
 
 export const DocumentDecisionReference = Schema.Struct({
   schema: Schema.Literal("jones.document-decision-ref/v1"),
-  summary: Schema.String.check(Schema.makeFilter((value) =>
-    exactText(value) && value.trim().length > 0 && utf8Bytes(value) <= DOCUMENT_SECTIONS_MAX_SUMMARY_BYTES,
-  )),
+  summary: Schema.String.check(
+    Schema.makeFilter(
+      (value) =>
+        exactText(value) &&
+        value.trim().length > 0 &&
+        utf8Bytes(value) <= DOCUMENT_SECTIONS_MAX_SUMMARY_BYTES,
+    ),
+  ),
   ...DocumentSectionsSelector.fields,
   authorityEffect: Schema.Literal("none"),
-}).annotate({ parseOptions: { onExcessProperty: "error" } }).check(
-  Schema.makeFilter((value) => utf8Bytes(JSON.stringify(value)) <= DOCUMENT_SECTIONS_MAX_REFERENCE_BYTES),
-);
+})
+  .annotate({ parseOptions: { onExcessProperty: "error" } })
+  .check(
+    Schema.makeFilter(
+      (value) => utf8Bytes(JSON.stringify(value)) <= DOCUMENT_SECTIONS_MAX_REFERENCE_BYTES,
+    ),
+  );
 export type DocumentDecisionReference = typeof DocumentDecisionReference.Type;
 
 export const DocumentSectionErrorCode = Schema.Literals([
-  "invalid_selector", "invalid_reference", "repository_refused", "origin_refused",
-  "identity_mismatch", "unsupported_object_format", "commit_refused", "path_refused",
-  "blob_refused", "digest_mismatch", "invalid_utf8", "missing_section", "ambiguous_section",
-  "document_too_large", "response_too_large", "git_unavailable", "git_failed",
-  "git_timeout", "git_output_overflow", "git_cleanup_failed", "cancelled",
+  "invalid_selector",
+  "invalid_reference",
+  "repository_refused",
+  "origin_refused",
+  "identity_mismatch",
+  "unsupported_object_format",
+  "commit_refused",
+  "path_refused",
+  "blob_refused",
+  "digest_mismatch",
+  "invalid_utf8",
+  "missing_section",
+  "ambiguous_section",
+  "document_too_large",
+  "response_too_large",
+  "git_unavailable",
+  "git_failed",
+  "git_timeout",
+  "git_output_overflow",
+  "git_cleanup_failed",
+  "cancelled",
 ]);
 export type DocumentSectionErrorCode = typeof DocumentSectionErrorCode.Type;
