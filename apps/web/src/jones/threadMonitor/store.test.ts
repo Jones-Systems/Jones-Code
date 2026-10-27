@@ -2,6 +2,8 @@ import { CommandId, MessageId, RuntimeRequestId, ThreadId } from "@t3tools/contr
 import { monitorDraftKey } from "@t3tools/client-runtime/jones/thread-monitor";
 import { describe, expect, it } from "vite-plus/test";
 import { MonitorStore, emptyCounts, refOf } from "./store";
+import { MonitorPeerStore } from "./peerStore";
+import { monitorSnapshot } from "./snapshots";
 import { testEnvironment, testRow } from "./fixtures.test-support";
 
 function setup() {
@@ -12,6 +14,64 @@ function setup() {
   return { store, row };
 }
 describe("main-owned monitor lifetime and drafts", () => {
+  it("replays an unresolved input draft when an approval takes selection, then prunes only resolved requests", async () => {
+    const { store, row } = setup();
+    const input = RuntimeRequestId.make("input-a");
+    const approval = RuntimeRequestId.make("approval-b");
+    const selection = { ...refOf(row), selectionId: "selected" };
+    store.select(selection);
+    const detail = {
+      ...selection,
+      revision: 1,
+      entries: [],
+      request: null,
+      plan: null,
+      unavailableReason: null,
+    };
+    const draft = {
+      ...store.draft(row, input),
+      revision: 1,
+      answers: { note: "unsent independent answer" },
+    };
+    store.setDetail(detail, new Set([input]));
+    expect(store.edit(draft)).toBe(true);
+    store.setDetail(
+      {
+        ...detail,
+        revision: 2,
+        request: {
+          kind: "approval",
+          requestId: approval,
+          prompt: "Approve B?",
+          options: [],
+          availability: { available: true, reason: null },
+        },
+      },
+      new Set([input, approval]),
+    );
+    const peer = new MonitorPeerStore(async () => undefined);
+    peer.receive({ type: "reset", publisherGeneration: "generation" });
+    for (const frame of monitorSnapshot({
+      publisherGeneration: "generation",
+      revision: 1,
+      environments: store.environments,
+      rows: store.visibleRows(),
+      counts: store.counts,
+    }))
+      peer.receive(frame);
+    for (const retained of store.drafts.values()) peer.receive({ type: "draft", draft: retained });
+    expect(peer.draft(row, input).answers).toEqual(draft.answers);
+    store.setDetail({ ...detail, revision: 3 }, new Set([input]));
+    expect(store.draft(row, input).answers).toEqual(draft.answers);
+    store.setDetail({ ...detail, revision: 4, unavailableReason: "Disconnected" });
+    expect(store.draft(row, input).answers).toEqual(draft.answers);
+    store.setDetail({ ...detail, revision: 5 }, new Set());
+    expect(store.drafts.has(monitorDraftKey(row, input))).toBe(false);
+    expect(store.edit({ ...draft, revision: 2 })).toBe(false);
+    await store.retire(row.environmentId);
+    store.setDetail({ ...detail, revision: 6 }, new Set([input]));
+    expect(store.edit({ ...draft, revision: 3 })).toBe(false);
+  });
   it("keeps both drafts across hide/disconnect and clears only the submitted revision", () => {
     const { store, row } = setup();
     const first = { ...store.draft(row), revision: 1, text: "submitted" };

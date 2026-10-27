@@ -339,9 +339,20 @@ function NativeMonitorPublisher({ router }: { readonly router: AppRouter }) {
           monitorStore.rows.find((row) => monitorThreadKey(row) === monitorThreadKey(selection))
             ?.pendingChildAttention != null,
       });
-      monitorStore.setDetail(detail);
+      const pendingRequests =
+        projection && reason === null ? derivePendingThreadRequests(projection) : null;
+      monitorStore.setDetail(
+        detail,
+        pendingRequests
+          ? new Set(
+              [...pendingRequests.approvals, ...pendingRequests.userInputs].map(
+                (request) => request.requestId,
+              ),
+            )
+          : undefined,
+      );
       if (projection && reason === null) {
-        const request = derivePendingThreadRequests(projection).userInputs[0];
+        const request = pendingRequests?.userInputs[0];
         if (
           request &&
           !monitorStore.drafts.has(

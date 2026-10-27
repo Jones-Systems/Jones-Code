@@ -20,6 +20,7 @@ export const fixture = {
   once: "MONITOR_NATIVE_APPROVE_ONCE",
   deny: "MONITOR_NATIVE_DENY",
   questions: "MONITOR_NATIVE_QUESTIONS",
+  overlap: "MONITOR_NATIVE_OVERLAPPING_REQUESTS",
   plan: "MONITOR_NATIVE_PLAN",
   markdown:
     "# Synthetic monitor plan\n\nKeep the synthetic fixture isolated and report its completion.",
@@ -65,6 +66,7 @@ export function createMonitorProtocol({ write, trace, id, now }, spec) {
   let nativeThreadId,
     turn,
     pending,
+    suspendedInput,
     held = false,
     requestSequence = 10000;
   const admitted = new Set();
@@ -128,7 +130,8 @@ export function createMonitorProtocol({ write, trace, id, now }, spec) {
           }),
     });
   const complete = () => {
-    if (!turn || pending) throw new Error("Synthetic completion without a resolved turn");
+    if (!turn || pending || suspendedInput)
+      throw new Error("Synthetic completion without a resolved turn");
     const text = "ACK " + turn.marker;
     const item = {
       type: "agentMessage",
@@ -233,8 +236,9 @@ export function createMonitorProtocol({ write, trace, id, now }, spec) {
         method: pending.method,
         result: pending.expected,
       });
-      pending = null;
-      complete();
+      pending = suspendedInput;
+      suspendedInput = null;
+      if (!pending) complete();
       return;
     }
     const { method, params = {}, id: rpcId } = message;
@@ -373,7 +377,11 @@ export function createMonitorProtocol({ write, trace, id, now }, spec) {
       spec.plan,
       "MONITOR_NATIVE_IMPLEMENTATION",
     ];
-    if (marker !== expectedOrder[admitted.size] || admitted.has(marker))
+    if (
+      (marker !== expectedOrder[admitted.size] &&
+        !(marker === spec.overlap && admitted.size === 0)) ||
+      admitted.has(marker)
+    )
       throw new Error("Unexpected or duplicate synthetic input");
     if (
       (params.model != null && params.model !== model) ||
@@ -422,12 +430,12 @@ export function createMonitorProtocol({ write, trace, id, now }, spec) {
           decision: marker === spec.once ? "accept" : "decline",
         },
       );
-    } else if (marker === spec.questions) {
+    } else if (marker === spec.questions || marker === spec.overlap) {
       request(
         "item/tool/requestUserInput",
         id(),
         {
-          isBlocking: true,
+          isBlocking: marker !== spec.overlap,
           questions: spec.questionsPayload,
         },
         {
@@ -469,6 +477,17 @@ export function createMonitorProtocol({ write, trace, id, now }, spec) {
   }
   return {
     handle,
+    startApproval() {
+      if (turn?.marker !== spec.overlap || pending?.method !== "item/tool/requestUserInput")
+        throw new Error("Synthetic overlap requires its unanswered input");
+      suspendedInput = pending;
+      request(
+        "item/commandExecution/requestApproval",
+        id(),
+        { command: "synthetic-monitor-noop", reason: "Approval alongside unanswered input", cwd },
+        { decision: "accept" },
+      );
+    },
     release() {
       if (!held) throw new Error("Synthetic release without held implementation");
       complete();
@@ -540,10 +559,15 @@ export async function runMonitorPeer(makeProtocol, spec) {
     });
     finish("failure", 1);
   };
-  let released = false;
+  let released = false,
+    approvalStarted = false;
   const timer = setInterval(() => {
     try {
       if (fs.existsSync(root + "/monitor-shutdown")) return finish("shutdown");
+      if (!approvalStarted && fs.existsSync(root + "/monitor-overlap-approval")) {
+        approvalStarted = true;
+        protocol.startApproval();
+      }
       if (!released && fs.existsSync(root + "/monitor-release")) {
         released = true;
         protocol.release();

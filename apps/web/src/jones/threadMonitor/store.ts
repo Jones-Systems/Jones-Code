@@ -1,5 +1,5 @@
 import { randomUUID } from "../../lib/utils";
-import type { EnvironmentId, MessageId, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId, MessageId, RuntimeRequestId, ThreadId } from "@t3tools/contracts";
 import {
   MonitorActionLedger,
   MonitorLifetimeFence,
@@ -76,6 +76,7 @@ export class MonitorStore {
   private detailRelease: (() => void) | null = null;
   private retiredAwaitingCatalog = new Set<EnvironmentId>();
   private clearedRevisions = new Map<string, number>();
+  private pendingDecisionRequests = new Map<string, ReadonlySet<RuntimeRequestId>>();
   private invalidations = new Map<EnvironmentId, Promise<void>>();
   constructor(generation: string) {
     this.fence = new MonitorLifetimeFence(generation);
@@ -223,6 +224,8 @@ export class MonitorStore {
   edit(draft: ThreadMonitorDraft): boolean {
     if (!this.fence.accepts(draft) || !this.hasThread(draft)) return false;
     if ((draft.kind === "reply") !== (draft.requestId === null)) return false;
+    const pending = this.pendingDecisionRequests.get(monitorThreadKey(draft));
+    if (draft.requestId !== null && pending && !pending.has(draft.requestId)) return false;
     const current = this.drafts.get(draftKey(draft));
     if (draft.revision < (current?.revision ?? 0)) return false;
     if (
@@ -260,7 +263,7 @@ export class MonitorStore {
       release();
     };
   }
-  setDetail(detail: ThreadMonitorDetail) {
+  setDetail(detail: ThreadMonitorDetail, pendingRequestIds?: ReadonlySet<RuntimeRequestId>) {
     if (
       !this.fence.accepts(detail) ||
       this.selection?.selectionId !== detail.selectionId ||
@@ -268,15 +271,19 @@ export class MonitorStore {
     )
       return;
     this.detail = detail;
-    const pendingId = detail.request?.requestId;
-    for (const [key, draft] of this.drafts) {
-      if (
-        draft.kind === "decision" &&
-        monitorThreadKey(draft) === monitorThreadKey(detail) &&
-        draft.requestId !== pendingId &&
-        detail.unavailableReason === null
-      )
-        this.drafts.delete(key);
+    if (pendingRequestIds && detail.unavailableReason === null) {
+      const threadKey = monitorThreadKey(detail);
+      this.pendingDecisionRequests.set(threadKey, new Set(pendingRequestIds));
+      for (const [key, draft] of this.drafts) {
+        if (
+          draft.requestId !== null &&
+          monitorThreadKey(draft) === threadKey &&
+          !pendingRequestIds.has(draft.requestId)
+        ) {
+          this.drafts.delete(key);
+          this.clearedRevisions.delete(key);
+        }
+      }
     }
     this.changed();
   }
@@ -347,6 +354,9 @@ export class MonitorStore {
       if (result.environmentId === environmentId) this.results.delete(key);
     for (const [key, identity] of this.identities)
       if (identity.environmentId === environmentId) this.identities.delete(key);
+    for (const key of this.pendingDecisionRequests.keys())
+      if ((JSON.parse(key) as string[])[0] === environmentId)
+        this.pendingDecisionRequests.delete(key);
     for (const key of this.materialized)
       if ((JSON.parse(key) as string[])[0] === environmentId) this.materialized.delete(key);
     if (this.selection?.environmentId === environmentId) this.select(null);
