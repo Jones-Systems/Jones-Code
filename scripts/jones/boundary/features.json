@@ -2342,6 +2342,38 @@
         "apps/server/src/orchestration-v2/ThreadTitleRegenerationService.test.ts"
       ],
       "scope": "Bounded automatic title and quality assessment in one provider call using at most the first three accepted owner messages and one bounded completed root-provider reply. Jones-owned policy, provenance, context and sparse migration 130 state commit through a narrow EventSink hook with the existing title completion command and outbox effect. Manual rename/regenerate/cancel permanently stops automation, including same-text and pre-first-message edits. Common and Muse paths share the assessment verdict; unassessed manual prompts/schema and legacy retry behavior remain unchanged. The title worker and prompt builder are narrow hooks. Existing EventSink and Muse accepted-shared classifications remain; their private transaction/runner integration cannot be extracted without duplicating machinery. Existing title-worker and Muse tests retain small integration cases because those harnesses own the worker and SDK fixtures. Provider-core package metadata adds one private helper subpath. No wire/schema, upstream-table, CLI lifecycle, client UI, ancestor lookup or installed-runtime changes."
+    },
+    {
+      "id": "thread-result-dependencies",
+      "tests": [
+        "apps/server/src/mcp/toolkits/core.test.ts",
+        "apps/server/src/peer/PeerForwarding.test.ts",
+        "apps/server/src/peer/RemoteDelegation.test.ts",
+        "apps/server/src/jones/threadResultDependencies/McpDependencies.test.ts",
+        "apps/server/src/jones/threadResultDependencies/AdmissionObservation.integration.test.ts",
+        "apps/server/src/jones/threadResultDependencies/DependencyReactor.test.ts",
+        "apps/server/src/jones/threadResultDependencies/DependencyStore.test.ts",
+        "apps/server/src/jones/threadResultDependencies/Orchestrator.integration.test.ts",
+        "apps/server/src/jones/threadResultDependencies/PeerForwarding.test.ts",
+        "apps/server/src/jones/threadResultDependencies/Refresh.integration.test.ts",
+        "apps/server/src/jones/threadResultDependencies/RemoteRequestProtocol.test.ts",
+        "apps/server/src/jones/threadResultDependencies/RequestWatch.test.ts",
+        "apps/server/src/jones/threadResultDependencies/Settlement.test.ts",
+        "packages/contracts/src/jones/threadResultDependency.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/src/jones/persistence/Migrations/115_JonesScheduledWebhookPendingRuns.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts",
+        "apps/server/scripts/jones/currentFixtures.test.ts",
+        "packages/shared/src/jones/threadResultDependencies/pendingTasks.test.ts",
+        "packages/client-runtime/src/jones/threadResultDependencies/shellRefresh.test.ts",
+        "packages/client-runtime/src/jones/threadResultDependencies/shellPublication.test.ts",
+        "packages/client-runtime/src/state/shell-sync.test.ts",
+        "apps/web/src/jones/threadResultDependencies/bannerTasks.test.ts",
+        "apps/web/src/jones/threadResultDependencies/ChatView.integration.test.ts",
+        "apps/mobile/src/jones/threadResultDependencies/presentation.test.ts"
+      ],
+      "scope": "Explicit correlated cross-thread result requests persist sender waiting and receiver answer duties independently of foreground completion. Jones-owned storage, transaction fences and event-driven local/remote observation preserve multiple dependencies and release semantics. Additive opt-in shell refreshes retain replay ordering, persistence and producer isolation for shared web, desktop and mobile consumers; no ordinary message or navigation link creates a wait. The existing shell-sync test harness is the upstream-test exception for actual subscription and persistence behavior. MCP registration and production reuse one memoized request watcher and dependency bus; existing core and peer fixtures add only their missing Orchestrator port. New Jones composition regressions cover standalone durable fences and EventSink/MCP bus identity and publication."
     }
   ]
 }
