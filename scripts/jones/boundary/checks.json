@@ -3677,6 +3677,23 @@
         "vp lint apps/server/src/jones/threadTitle packages/provider-core/src/server/jones/ThreadTitleAssessment.ts packages/provider-core/src/server/jones/ThreadTitleAssessment.test.ts apps/server/src/orchestration-v2/ThreadTitleRegenerationService.ts packages/provider-core/src/server/textGeneration.ts packages/provider-core/src/server/textGenerationOperations.ts packages/provider-core/src/server/textGenerationPrompts.ts packages/provider-muse/src/server/textGeneration.ts packages/provider-muse/src/server/textGeneration.test.ts",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-qualified-stage-recovery",
+      "tests": [
+        "apps/server/src/jones/cloud/qualifiedRuntime.test.ts",
+        "apps/server/src/jones/updates/recoverQualifiedStage.test.ts",
+        "apps/server/src/jones/updates/stagedSelection.test.ts",
+        "apps/server/src/jones/updates/JonesUpdater.test.ts",
+        "apps/server/src/jones/updates/qualification.test.ts",
+        "scripts/jones/updates/recover-qualified-stage.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/cloud/qualifiedRuntime.test.ts apps/server/src/jones/updates/recoverQualifiedStage.test.ts apps/server/src/jones/updates/stagedSelection.test.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/qualification.test.ts scripts/jones/updates/recover-qualified-stage.test.ts --maxWorkers=1",
+        "vp lint apps/server/src/jones/cloud/qualifiedRuntime.ts apps/server/src/jones/cloud/qualifiedRuntime.test.ts apps/server/src/jones/updates/recoverQualifiedStage.ts apps/server/src/jones/updates/recoverQualifiedStage.test.ts apps/server/src/jones/updates/stagedSelection.ts apps/server/src/jones/updates/stagedSelection.test.ts scripts/jones/updates/recover-qualified-stage.ts scripts/jones/updates/recover-qualified-stage.test.ts",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }

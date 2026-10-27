@@ -287,6 +287,50 @@ describe("off-process stage job", () => {
     ).rejects.toSatisfy(blocked("invalid-artifact", /verified a different handle/));
   });
 
+  it("round-trips historical enrollment through the worker and rebinds to the current source", async () => {
+    const fixture = await home();
+    const actions = await actionsFixture(fixture);
+    const supervisor = makePreparationSupervisor({
+      baseDir: fixture.base,
+      cacheRoot: fixture.cacheRoot,
+      command: sourceWorkerCommand,
+      env: actions.env,
+    });
+    const first = await supervisor.run(stageJob(fixture, actions));
+    if (first.kind !== "stage") throw new Error("Expected initial stage.");
+    const receiptPath = NodePath.join(
+      fixture.base,
+      "runtime",
+      "versions",
+      VERSION,
+      ".jones-runtime-receipt.json",
+    );
+    const historical = JSON.stringify({
+      ...first.staged.receipt,
+      installedSourceSha: "9".repeat(40),
+    });
+    await NodeFSP.writeFile(receiptPath, historical);
+    const recovered = await supervisor.run(stageJob(fixture, actions));
+    if (recovered.kind !== "stage") throw new Error("Expected recovered stage.");
+    expect(recovered.staged.protocol).toBe(2);
+    const adoption = {
+      baseDir: fixture.base,
+      dbPath: fixture.dbPath,
+      activeVersion: BASELINE,
+      candidate: actions.candidate,
+      host: fixtureHost,
+      staged: recovered.staged,
+    };
+    await expect(adoptPreparedStage(adoption)).resolves.toEqual(recovered.staged);
+    await expect(
+      adoptPreparedStage({
+        ...adoption,
+        candidate: { ...actions.candidate, installedSource: "9".repeat(40) },
+      }),
+    ).rejects.toSatisfy(blocked("invalid-artifact", /selected candidate's provenance/));
+    expect(await NodeFSP.readFile(receiptPath, "utf8")).toBe(historical);
+  });
+
   it("refuses a candidate whose packaged preparation worker cannot start and stages nothing", async () => {
     const fixture = await home();
     const actions = await actionsFixture(fixture, { worker: false });

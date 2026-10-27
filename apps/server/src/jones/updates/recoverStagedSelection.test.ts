@@ -154,6 +154,28 @@ describe("orphan staged-selection recovery", () => {
     expect(await snapshot(f.root)).toEqual(after);
   });
 
+  it("refuses historical receipts in the narrower orphan flow without changing retained evidence", async () => {
+    const f = await fixture();
+    const receipt = { ...f.selection.receipt, installedSourceSha: "9".repeat(40) };
+    const staged = { ...f.selection, protocol: 2, receipt };
+    await NodeFSP.writeFile(
+      NodePath.join(f.root, "runtime", "versions", receipt.version, ".jones-runtime-receipt.json"),
+      JSON.stringify(receipt),
+    );
+    await NodeFSP.writeFile(
+      NodePath.join(f.root, "runtime", "staged-updates", `${staged.stagedHandle}.json`),
+      JSON.stringify(staged),
+    );
+    const before = await snapshot(f.root);
+    for (const apply of [false, true])
+      expect(await recoverStagedSelection({ ...f.input, apply })).toMatchObject({
+        status: "refused",
+        reason: "expected-binding-mismatch",
+      });
+    expect(await snapshot(f.root)).toEqual(before);
+    expect(await restoreStagedSelection(f.root, f.baseline)).toBeUndefined();
+  });
+
   it.each([
     ["activeVersion", "0.0.0-preview.20261001.1.1"],
     ["expectedActiveSource", "f".repeat(40)],

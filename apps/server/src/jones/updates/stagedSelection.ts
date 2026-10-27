@@ -46,7 +46,10 @@ async function readSelection(path: string): Promise<StagedQualifiedRuntime | und
   }
 }
 
-export async function retainStagedSelection(selection: StagedQualifiedRuntime): Promise<void> {
+export async function retainStagedSelection(
+  selection: StagedQualifiedRuntime,
+  syncDirectory: (directory: string) => Promise<void> = syncSelectionDirectory,
+): Promise<void> {
   const path = selectionPath(selection.binding);
   await NodeFSP.mkdir(NodePath.dirname(path), { recursive: true, mode: 0o700 });
   const prior = await readSelection(path);
@@ -55,6 +58,14 @@ export async function retainStagedSelection(selection: StagedQualifiedRuntime): 
       throw new Error(
         "This native binding already retains a different staged handle; it was preserved.",
       );
+    // Replay may follow publication whose fsync reply was lost. Establish durability again.
+    const file = await NodeFSP.open(path, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW);
+    try {
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    await syncDirectory(NodePath.dirname(path));
     return;
   }
   const file = await NodeFSP.open(path, "wx", 0o600);
@@ -64,12 +75,7 @@ export async function retainStagedSelection(selection: StagedQualifiedRuntime): 
   } finally {
     await file.close();
   }
-  const parent = await NodeFSP.open(NodePath.dirname(path), "r");
-  try {
-    await parent.sync();
-  } finally {
-    await parent.close();
-  }
+  await syncDirectory(NodePath.dirname(path));
 }
 
 export async function restoreStagedSelection(
