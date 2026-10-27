@@ -21,7 +21,10 @@ export const jonesPairedStateSource = Object.freeze({
     return function
 
 def clone_file(source, target, required=False):
-    if source.is_symlink() or not source.is_file(): raise RuntimeError('Unexpected recovery file type.')
+    original = source.lstat()
+    if not stat.S_ISREG(original.st_mode) or original.st_uid != os.getuid() or original.st_nlink != 1:
+        raise RuntimeError('Unexpected recovery file type or ownership.')
+    if target.exists() or target.is_symlink(): raise FileExistsError(17, 'Occupied recovery destination.', str(target))
     if required:
         # clonefile shares blocks or fails; cp -c may copy. CLONE_NOFOLLOW (1)
         # clones a raced-in link as a link, refused by the regular-file check.
@@ -30,9 +33,15 @@ def clone_file(source, target, required=False):
             code = ctypes.get_errno()
             raise OSError(code, os.strerror(code) + '; required recovery clone made no copy', str(target))
         before, cloned = source.lstat(), target.lstat()
-        if not stat.S_ISREG(cloned.st_mode) or cloned.st_nlink != 1 or cloned.st_size != before.st_size or cloned.st_dev != before.st_dev:
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (original.st_dev, original.st_ino, original.st_size, original.st_mtime_ns) or not stat.S_ISREG(cloned.st_mode) or cloned.st_uid != os.getuid() or cloned.st_nlink != 1 or cloned.st_ino == before.st_ino or cloned.st_size != before.st_size or cloned.st_dev != before.st_dev:
             raise RuntimeError('Required recovery clone is not an exact regular file.')
-        os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
+        descriptor = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            opened = os.fstat(descriptor)
+            if (opened.st_dev, opened.st_ino) != (cloned.st_dev, cloned.st_ino):
+                raise RuntimeError('Required recovery clone identity changed.')
+            os.utime(descriptor, ns=(before.st_atime_ns, before.st_mtime_ns))
+        finally: os.close(descriptor)
         return True
     result = subprocess.run(['/bin/cp', '-c', '-p', str(source), str(target)], capture_output=True, text=True)
     return result.returncode == 0
@@ -80,9 +89,15 @@ def recovery_topology(expected, transaction, legacy_profile=False):
     database = pathlib.Path(expected['databasePath'])
     state_bytes = 0
     for path in [pathlib.Path(str(database) + suffix) for suffix in ('', '-wal', '-shm')] + [database.parent / name for name in SETTINGS]:
-        if path.exists():
-            if path.is_symlink() or not path.is_file(): raise RuntimeError('Native recovery file type is unknown.')
-            state_bytes += path.stat().st_size
+        try: descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError: continue
+        except OSError as error: raise RuntimeError('Native recovery file type or access is unknown.') from error
+        try:
+            info, current = os.fstat(descriptor), path.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1 or (info.st_dev, info.st_ino) != (current.st_dev, current.st_ino):
+                raise RuntimeError('Native recovery file type, ownership or identity is unknown.')
+            state_bytes += info.st_size
+        finally: os.close(descriptor)
     return state_bytes
 
 def storage_preflight(expected, staged, transaction, clone_required=False):
@@ -186,16 +201,22 @@ def recovery_capacity_before_restore(expected, pair):
 
 def pair_state(expected, directory, clone_required=False):
     def clone(source, target):
-        return clone_file(source, target, required=True) if clone_required else clone_file(source, target)
+        if clone_required:
+            if clone_file(source, target, required=True) is not True:
+                raise RuntimeError('Required recovery clone did not prove success; no copy was attempted.')
+            return True
+        return clone_file(source, target)
     directory.mkdir(mode=0o700)
     sync_parent(directory)
     database = pathlib.Path(expected['databasePath'])
     started = time.time()
-    copied = clone(database, directory / 'state.sqlite')
+    copied = clone(database, directory / 'state.sqlite') if database.exists() else True
     for suffix in ('-wal', '-shm'):
         source = pathlib.Path(str(database) + suffix)
         if source.exists(): copied = clone(source, directory / ('state.sqlite' + suffix)) and copied
-    method = 'clone'
+    # cp -c success is not evidence of shared blocks. Only strict clonefile is proof.
+    method = 'clone' if clone_required else 'copy'
+    copy_fallback = not copied
     if not copied:
         # Writers are stopped before this snapshot; preserve the exact DB/WAL/SHM pair.
         shutil.copy2(database, directory / 'state.sqlite')
@@ -203,32 +224,38 @@ def pair_state(expected, directory, clone_required=False):
             source = pathlib.Path(str(database) + suffix)
             if source.exists(): shutil.copy2(source, directory / ('state.sqlite' + suffix))
         method = 'copy'
-    os.chmod(directory / 'state.sqlite', database.stat().st_mode & 0o777)
+    if database.exists(): os.chmod(directory / 'state.sqlite', database.stat().st_mode & 0o777)
     presence = {}
     for name in SETTINGS:
         source = database.parent / name
         presence[name] = source.exists()
         if source.exists():
-            if not clone(source, directory / name): shutil.copy2(source, directory / name)
+            if not clone(source, directory / name):
+                shutil.copy2(source, directory / name)
+                copy_fallback = True
     files = {suffix: (directory / ('state.sqlite' + suffix)).exists() for suffix in ('', '-wal', '-shm')}
     sync_tree(directory)
-    durable(directory / 'pair.json', {'expected': expected, 'stateScope': 'database-settings', 'files': files, 'settings': presence,
-            'recovery': {'method': method, 'bytes': sum((directory / ('state.sqlite' + suffix)).stat().st_size for suffix in ('', '-wal', '-shm') if (directory / ('state.sqlite' + suffix)).exists()),
-                         'startedAt': started, 'completedAt': time.time()}}, True)
+    snapshot = {'expected': expected, 'stateScope': 'database-settings', 'files': files, 'settings': presence}
+    if any(files.values()) or any(presence.values()):
+        snapshot['recovery'] = {'method': method, 'strictClone': clone_required, 'copyFallback': copy_fallback,
+            'bytes': sum(path.stat().st_size for path in directory.iterdir()), 'startedAt': started, 'completedAt': time.time()}
+    durable(directory / 'pair.json', snapshot, True)
 
 def restore_pair(expected, directory, advanced, candidate):
     pair = read(directory / 'pair.json')
     database_settings = pair.get('stateScope') == 'database-settings'
-    if pair.get('stateScope') not in (None, 'database-settings') or pair['expected'] != expected or not (directory / 'state.sqlite').is_file() or (not database_settings and not (directory / 'profile').is_dir()):
+    if pair.get('stateScope') not in (None, 'database-settings') or pair['expected'] != expected or (not database_settings and not (directory / 'state.sqlite').is_file()) or (not database_settings and not (directory / 'profile').is_dir()):
         raise RuntimeError('Recovery pair no longer binds the previous app and state.')
     if set(pair['settings']) != set(SETTINGS) or any(type(value) is not bool for value in pair['settings'].values()): raise RuntimeError('Recovery settings presence is unknown.')
     recovery_topology(expected, advanced.parent, legacy_profile=not database_settings)
     if database_settings:
         files = pair.get('files')
-        if not isinstance(files, dict) or set(files) != {'', '-wal', '-shm'} or files[''] is not True or any(type(value) is not bool for value in files.values()):
+        if not isinstance(files, dict) or set(files) != {'', '-wal', '-shm'} or any(type(value) is not bool for value in files.values()):
             raise RuntimeError('Recovery database inventory is unknown.')
         names = {('state.sqlite' + suffix) for suffix, exists in files.items() if exists}
         names.update(name for name, exists in pair['settings'].items() if exists)
+        if files[''] is False and (files['-wal'] or files['-shm']):
+            raise RuntimeError('Partial first-install recovery inventory is unknown.')
         if {path.name for path in directory.iterdir()} != names | {'pair.json'}:
             raise RuntimeError('Recovery file inventory changed; restore held before state mutation.')
         device = pathlib.Path(expected['databasePath']).parent.stat().st_dev

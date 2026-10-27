@@ -18,6 +18,7 @@ async function start() {
     parameters.get("run") ?? "",
     parameters.get("scenario") ?? "available",
     import.meta.env.JONES_INSTALL_FIXTURE_SOURCE_SHA,
+    parameters.get("installPlans") !== "legacy",
   );
   // env.ts captures bridge presence at module evaluation, before any component renders.
   const { mountInstallPreview } = await import("./InstallPreview");

@@ -100,7 +100,7 @@ export interface JonesStagedArtifact {
   readonly payloadPath: string;
 }
 
-export type JonesActionsCheckResult =
+export type JonesActionsCheckResult = { readonly classification?: JonesCheckClassification } & (
   | {
       readonly state: "available";
       readonly candidate: JonesActionsCandidate;
@@ -112,7 +112,8 @@ export type JonesActionsCheckResult =
       readonly state: "blocked";
       readonly reason: JonesActionsBlockedReason;
       readonly retryAfterMs: number;
-    };
+    }
+);
 
 export type JonesSourceRelationKind = "ahead" | "behind" | "identical" | "diverged";
 
@@ -237,6 +238,38 @@ type JonesActionsCheckObservation = CheckEvidence &
         };
       }
   );
+
+/** Additive display evidence; the established selector and legacy phase projection stay intact. */
+export interface JonesCheckClassification {
+  readonly kind: JonesActionsCheckObservation["kind"];
+  readonly checkedAt: string;
+  readonly discovery: {
+    readonly termination: CheckDiscovery["termination"];
+    readonly bounded: boolean;
+    readonly unresolvedLimits: readonly DiscoveryLimit[];
+  };
+  readonly pendingCount: number;
+  readonly failedQualificationCount: number;
+}
+
+export function classifyJonesActionsCheck(
+  observation: JonesActionsCheckObservation,
+): JonesCheckClassification {
+  return {
+    kind: observation.kind,
+    checkedAt: observation.checkedAt,
+    discovery: {
+      termination: observation.discovery.termination,
+      bounded: observation.discovery.frontierWithinBudgetSatisfied,
+      unresolvedLimits: [...observation.discovery.unresolvedLimits],
+    },
+    pendingCount: Object.values(observation.pending).reduce(
+      (sum, witness) => sum + witness.count,
+      0,
+    ),
+    failedQualificationCount: observation.failedQualification.count,
+  };
+}
 
 function hasPending(evidence: Pick<CheckEvidence, "pending">): boolean {
   return Object.values(evidence.pending).some((witness) => witness.count > 0);
@@ -612,7 +645,11 @@ export class JonesActionsClient {
   }
 
   async check(input: JonesActionsCheckInput): Promise<JonesActionsCheckResult> {
-    return projectJonesActionsCheck(await this.observeCheck(input));
+    const observation = await this.observeCheck(input);
+    return {
+      ...projectJonesActionsCheck(observation),
+      classification: classifyJonesActionsCheck(observation),
+    };
   }
 
   async observeCheck(input: JonesActionsCheckInput): Promise<JonesActionsCheckObservation> {

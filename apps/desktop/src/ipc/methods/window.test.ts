@@ -18,7 +18,7 @@ vi.mock("electron", () => ({
   webContents: { getFocusedWebContents: focusedWebContents },
   BrowserWindow: { fromWebContents: ownerWindow },
   contextBridge: { exposeInMainWorld },
-  ipcRenderer: { invoke },
+  ipcRenderer: { invoke, sendSync: vi.fn(() => false) },
   webFrame: {},
   webUtils: {},
 }));
@@ -374,6 +374,7 @@ describe("getPreviewAutomationRuntimeIdentity", () => {
       const bridge = exposeInMainWorld.mock.calls.find(
         ([name]) => name === "desktopBridge",
       )?.[1] as DesktopBridge;
+      assert.equal(bridge.installPlan, undefined);
       invoke.mockResolvedValueOnce(descriptor);
       assert.deepEqual(await bridge.getPreviewAutomationRuntimeIdentity!(), descriptor);
       assert.deepEqual(invoke.mock.calls.at(-1), [

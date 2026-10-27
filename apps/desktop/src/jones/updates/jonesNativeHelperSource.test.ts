@@ -156,12 +156,12 @@ def observed_state_rename(source, target):
     return native_state_rename(source, target)
 os.rename = observed_state_rename
 native_storage_preflight = storage_preflight
-def synthetic_storage_preflight(active, candidate, transaction):
+def synthetic_storage_preflight(active, candidate, transaction, clone_required=False):
     events.append('storage-preflight')
     if fault == 'storage-refused': raise RuntimeError('Insufficient recovery capacity.')
     native_space = os.statvfs
     os.statvfs = lambda path: type('Space', (), {'f_bavail': 1 << 50, 'f_frsize': 1})()
-    try: return native_storage_preflight(active, candidate, transaction)
+    try: return native_storage_preflight(active, candidate, transaction, clone_required)
     finally: os.statvfs = native_space
 storage_preflight = synthetic_storage_preflight
 if fault == 'reserve-denied':
@@ -210,10 +210,10 @@ if fault == 'old-quiescence':
     def fail_quiescence(active): raise RuntimeError('Old native writers remain.')
     prove_quiescence = fail_quiescence
 native_pair = pair_state
-def synthetic_pair(active, directory):
+def synthetic_pair(active, directory, clone_required=False):
     events.append('pair')
     if fault in ('snapshot-failed', 'snapshot-restart-refused'): raise RuntimeError('Profile snapshot did not complete.')
-    return native_pair(active, directory)
+    return native_pair(active, directory, clone_required)
 pair_state = synthetic_pair
 def synthetic_launch(active, descriptor=None):
     if descriptor is None:

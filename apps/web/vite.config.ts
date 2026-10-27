@@ -55,8 +55,10 @@ const configuredBuildStartedAt =
   serverPackage.version === configuredAppVersion
     ? readJonesBuildStartedAt(serverPackage)
     : undefined;
-const configuredSource =
-  serverPackage.version === configuredAppVersion ? readJonesBuildSource(serverPackage) : undefined;
+const configuredSource: string | undefined =
+  serverPackage.version === configuredAppVersion
+    ? readJonesBuildSource(serverPackage)?.sha
+    : undefined;
 const configuredDesktopUpdateRepository =
   process.env.T3CODE_DESKTOP_UPDATE_REPOSITORY?.trim() ||
   process.env.GITHUB_REPOSITORY?.trim() ||

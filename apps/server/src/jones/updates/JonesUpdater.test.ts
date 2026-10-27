@@ -9,6 +9,7 @@ import {
   JonesUpdater,
   readCurrentJonesBuildStartedAt,
   type JonesUpdaterHost,
+  type JonesInstallBeforeDispatchRefusal,
 } from "./JonesUpdater.ts";
 import { AutomaticActivationWithdrawn } from "./followerPolicy.ts";
 
@@ -101,6 +102,7 @@ describe("failed native attempt settlement", () => {
       const f = fixture({
         startupOutcome: () => ({ ...terminal, settlement, cause: "backup refused" }),
       });
+      f.updater.setPolicy({ role: "follower", leaderSource: null });
       expect(f.updater.snapshot()).toMatchObject({
         updateId: terminal.id,
         phase: "error",
@@ -121,6 +123,55 @@ describe("failed native attempt settlement", () => {
       message: "Previous attempt needs reconciliation",
       outcome: { status: "blocked" },
     });
+  });
+
+  it("retains a startup refusal through follower policy changes and later settlement", () => {
+    let noEffectProved = false;
+    const publications: JonesUpdateState[] = [];
+    const f = fixture({
+      initialState: {
+        ...fixture().updater.snapshot(),
+        phase: "error",
+        message: "Native installation requires reconciliation.",
+      },
+      startupOutcome: () => ({
+        ...terminal,
+        settlement: noEffectProved ? "legacy-reconciled" : "none",
+        cause: "backup refused",
+      }),
+      stateChanged: (state) => publications.push(state),
+    });
+    expect(f.updater.setPolicy({ role: "follower", leaderSource: null })).toMatchObject({
+      phase: "error",
+      updateId: terminal.id,
+      settlement: "none",
+      message: "Previous attempt needs reconciliation",
+      outcome: { status: "blocked", reason: "launcher-restarted" },
+      policy: { role: "follower", leaderSource: null },
+    });
+    noEffectProved = true;
+    expect(f.updater.refreshStartupOutcome()).toMatchObject({
+      phase: "error",
+      updateId: terminal.id,
+      settlement: "legacy-reconciled",
+      cause: "backup refused",
+      message: "Update did not start: backup refused. Nothing changed.",
+      outcome: { status: "blocked", reason: "launcher-restarted" },
+    });
+    f.updater.setPolicy({
+      role: "follower",
+      leaderSource: candidate.source,
+      leaderTree: candidate.tree,
+    });
+    const waiting = f.updater.setPolicy({ role: "follower", leaderSource: null });
+    expect(waiting).toMatchObject({
+      phase: "error",
+      settlement: "legacy-reconciled",
+      message: "Update did not start: backup refused. Nothing changed.",
+      policy: { role: "follower", leaderSource: null },
+    });
+    expect(publications.at(-1)).toEqual(waiting);
+    expect(f.effects).toEqual([]);
   });
 });
 
@@ -1320,4 +1371,70 @@ describe("follower policy on the host updater", () => {
     expect(withdrawn.outcome).toBeUndefined();
     expect((await f.updater.install(install)).phase).toBe("installing");
   });
+});
+
+it("publishes bounded discovery classification without claiming an exhaustive check", async () => {
+  const f = fixture();
+  const classification = {
+    kind: "incomplete-discovery" as const,
+    checkedAt: "2026-10-27T00:00:00Z",
+    pendingCount: 0,
+    failedQualificationCount: 0,
+    discovery: {
+      termination: "window-ended" as const,
+      bounded: false,
+      unresolvedLimits: ["producer-pages" as const],
+    },
+  };
+  f.setCheckResult({ state: "no-new", classification });
+  expect((await f.updater.check()).checkClassification).toEqual(classification);
+});
+
+it("blocks new work while an earlier job's exit is unproved and releases only that hold", async () => {
+  const f = fixture();
+  f.updater.setHeldJobs(["held-a", "held-b"]);
+  await f.updater.stageExact(candidate.source);
+  await f.updater.download({ artifactId: candidate.artifactId, sourceSha: candidate.source });
+  expect(f.effects).toEqual([]);
+  f.updater.releaseHeldJob("held-a");
+  expect(f.updater.admissionHeld()).toBe(true);
+  f.updater.releaseHeldJob("held-b");
+  expect(f.updater.admissionHeld()).toBe(false);
+  expect((await f.updater.check()).phase).toBe("available");
+});
+
+it("reports a typed exact refusal only before invoking the install adapter", async () => {
+  const native = vi.fn(async () => {
+    throw new Error("Synthetic lost native reply after possible dispatch.");
+  });
+  const f = fixture({ install: native });
+  await f.updater.check();
+  await f.updater.download({ artifactId: candidate.artifactId, sourceSha: candidate.source });
+  const proof = vi.fn<(refusal: JonesInstallBeforeDispatchRefusal) => void>();
+  const request = {
+    operationId: "11111111-1111-4111-8111-111111111111",
+    stagedHandle: "fixed-handle",
+    environmentId: EnvironmentId.make("fixture"),
+    currentVersion: "0.0.0-preview.20261002.1",
+    expectedInstalledSource: "a".repeat(40),
+    targetSource: candidate.source,
+    onBeforeDispatchRefusal: proof,
+  };
+  f.updater.setHeldJobs(["earlier-job"]);
+  await f.updater.install(request);
+  expect(proof).toHaveBeenCalledExactlyOnceWith({
+    kind: "before-dispatch",
+    operationId: request.operationId,
+    environmentId: request.environmentId,
+    currentVersion: request.currentVersion,
+    stagedHandle: request.stagedHandle,
+    expectedInstalledSource: request.expectedInstalledSource,
+    targetSource: request.targetSource,
+  });
+  expect(native).not.toHaveBeenCalled();
+  proof.mockClear();
+  f.updater.releaseHeldJob("earlier-job");
+  expect((await f.updater.install(request)).phase).toBe("blocked");
+  expect(native).toHaveBeenCalledOnce();
+  expect(proof).not.toHaveBeenCalled();
 });

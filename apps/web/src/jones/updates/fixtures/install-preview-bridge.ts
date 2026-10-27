@@ -1,3 +1,5 @@
+import { createScriptedInstallPlan } from "./install-preview-plan";
+import { installStatusStore } from "../../installStatus/panelUi";
 import {
   DesktopUpdateActionResultSchema,
   DesktopUpdateStateSchema,
@@ -33,6 +35,8 @@ const StoredFixture = Schema.Struct({
   ),
 });
 type StoredFixture = typeof StoredFixture.Type;
+const decodeScenario = Schema.decodeUnknownSync(Schema.Literals(SCENARIOS));
+const decodeStoredFixture = Schema.decodeUnknownSync(StoredFixture);
 
 function initialState(staged: boolean, blocked = false): DesktopUpdateState {
   return decodeState({
@@ -61,6 +65,7 @@ function initialState(staged: boolean, blocked = false): DesktopUpdateState {
         check: true,
         download: true,
         install: !blocked,
+        operations: 1,
         ...(blocked ? { reason: "bootstrap-required" } : {}),
       },
       installedSource: {
@@ -88,14 +93,19 @@ function initialState(staged: boolean, blocked = false): DesktopUpdateState {
   });
 }
 
-export function installPreviewBridge(runId: string, scenario: string, sourceSha: string) {
+export function installPreviewBridge(
+  runId: string,
+  scenario: string,
+  sourceSha: string,
+  installPlansSupported = true,
+) {
   if (!/^[a-zA-Z0-9_-]{1,80}$/.test(runId))
     throw new Error("A bounded fixture run ID is required.");
-  const selectedScenario = Schema.decodeUnknownSync(Schema.Literals(SCENARIOS))(scenario);
-  const key = `jones:install-preview:v1:${runId}:${selectedScenario}`;
+  const selectedScenario = decodeScenario(scenario);
+  const key = `jones:install-preview:v1:${runId}:${selectedScenario}${installPlansSupported ? "" : ":legacy"}`;
   const saved = sessionStorage.getItem(key);
   let stored: StoredFixture = saved
-    ? Schema.decodeUnknownSync(StoredFixture)(JSON.parse(saved))
+    ? decodeStoredFixture(JSON.parse(saved))
     : {
         schema: 1,
         runId,
@@ -135,6 +145,7 @@ export function installPreviewBridge(runId: string, scenario: string, sourceSha:
     };
     persist();
   };
+  let planFixture: ReturnType<typeof createScriptedInstallPlan> | undefined;
   const publish = (state: DesktopUpdateState) => {
     stored = {
       ...stored,
@@ -148,6 +159,7 @@ export function installPreviewBridge(runId: string, scenario: string, sourceSha:
       revision: stored.state.jones?.revision,
     });
     for (const listener of updateListeners) listener(structuredClone(stored.state));
+    planFixture?.laptopChanged();
   };
   const result = (
     action: string,
@@ -175,7 +187,28 @@ export function installPreviewBridge(runId: string, scenario: string, sourceSha:
     }
     return result(action, false, false);
   };
+  planFixture = createScriptedInstallPlan({
+    readDesktop: () => stored.state,
+    publishDesktop: publish,
+    record,
+    storageKey: `${key}:plan`,
+    store: installStatusStore,
+    nextLaptopOutcome: (action) => {
+      const outcome = action === "download" ? stored.nextDownload : stored.nextInstall;
+      stored = {
+        ...stored,
+        ...(action === "download"
+          ? { nextDownload: "accept" as const }
+          : { nextInstall: "accept" as const }),
+      };
+      return outcome;
+    },
+  });
+  const plan = planFixture;
   const bridge = {
+    ...(installPlansSupported
+      ? { installPlan: plan.request, onInstallPlan: plan.onInstallPlan }
+      : {}),
     getAppBranding: () => ({
       baseName: "Jones Code",
       stageLabel: "Dev" as const,
@@ -238,7 +271,7 @@ export function installPreviewBridge(runId: string, scenario: string, sourceSha:
       publish({
         ...initialState(false),
         status: "downloading",
-        downloadPercent: 25,
+        downloadPercent: null,
         jones: {
           ...initialState(false).jones!,
           phase: "downloading",
@@ -288,6 +321,8 @@ export function installPreviewBridge(runId: string, scenario: string, sourceSha:
     },
   } satisfies Pick<
     DesktopBridge,
+    | "installPlan"
+    | "onInstallPlan"
     | "getAppBranding"
     | "getClientPlatform"
     | "getLocalEnvironmentEnabled"
@@ -315,6 +350,9 @@ export function installPreviewBridge(runId: string, scenario: string, sourceSha:
   const snapshot = () =>
     structuredClone({
       ...stored,
+      installPlansSupported,
+      installPlan: plan.snapshot(),
+      devices: plan.store.get().devices,
       mounted,
       observed,
       initialReadPending,
@@ -326,6 +364,8 @@ export function installPreviewBridge(runId: string, scenario: string, sourceSha:
   });
   persist();
   return {
+    plan,
+    bridge,
     subscribe: (listener: () => void) => {
       subscribers.add(listener);
       return () => {
@@ -349,10 +389,37 @@ export function installPreviewBridge(runId: string, scenario: string, sourceSha:
       };
       record("configure-next-result", { action, outcome });
     },
+    newerBuild: () => {
+      const state = stored.state;
+      const { stagedHandle: _stage, outcome: _outcome, ...jones } = state.jones!;
+      publish({
+        ...state,
+        status: "available",
+        availableVersion: `${TARGET_VERSION}.newer`,
+        downloadedVersion: null,
+        jones: {
+          ...jones,
+          phase: "available",
+          provenance: {
+            ...jones.provenance!,
+            sourceSha: "9".repeat(40),
+            sourceTree: "8".repeat(40),
+            version: `${TARGET_VERSION}.newer`,
+          },
+        },
+      });
+      record("fixture-newer-build", { fixtureOnly: true });
+    },
     completeDownload: () => {
       if (stored.state.jones?.phase !== "downloading")
         throw new Error("No synthetic download is pending.");
-      publish(initialState(true));
+      publish({
+        ...stored.state,
+        status: "downloaded",
+        downloadedVersion: stored.state.availableVersion,
+        downloadPercent: null,
+        jones: { ...stored.state.jones!, phase: "staged", stagedHandle: STAGED_HANDLE },
+      });
     },
     publishRaceEvent: () => {
       if (!initialReadPending) throw new Error("No initial state read is held.");

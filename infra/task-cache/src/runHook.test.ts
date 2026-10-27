@@ -9,6 +9,8 @@ import { expect, it } from "vite-plus/test";
 it("uses one machine hook across fresh worktrees without modifying Vite+", async () => {
   const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "task-cache-hook-"));
   const unrelated = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "unrelated-project-"));
+  const flusherPids = NodePath.join(root, "flusher-pids");
+  const trackedPreload = NodePath.join(root, "tracked-preload.mjs");
   const reports: { authorization: string | undefined; body: string }[] = [];
   let firstExit!: () => void;
   const firstExited = new Promise<void>((resolve) => {
@@ -41,6 +43,26 @@ it("uses one machine hook across fresh worktrees without modifying Vite+", async
     notified = undefined;
   });
   try {
+    // The hook intentionally detaches telemetry from the CLI. Capture its exact spawned PIDs
+    // without making the CLI wait, then join their absence before removing the fixture home.
+    await NodeFSP.writeFile(
+      trackedPreload,
+      `
+      import childProcess from 'node:child_process';
+      import fs from 'node:fs';
+      import { syncBuiltinESMExports } from 'node:module';
+      const spawn = childProcess.spawn;
+      childProcess.spawn = function(file, args, options) {
+        const child = spawn.call(this, file, args, options);
+        if (args?.[0] === ${JSON.stringify(NodePath.join(import.meta.dirname, "flush.ts"))} && child.pid !== undefined) {
+          fs.appendFileSync(${JSON.stringify(flusherPids)}, child.pid + '\\n');
+        }
+        return child;
+      };
+      syncBuiltinESMExports();
+      await import(${JSON.stringify(new URL("./preload.mjs", import.meta.url).href)});
+    `,
+    );
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Missing HTTP address");
@@ -126,7 +148,7 @@ it("uses one machine hook across fresh worktrees without modifying Vite+", async
               VITE_CACHE_PATH: undefined,
               ACTIONS_ID_TOKEN_REQUEST_URL: undefined,
               ACTIONS_ID_TOKEN_REQUEST_TOKEN: undefined,
-              NODE_OPTIONS: `--import=${new URL("./preload.mjs", import.meta.url).href}`,
+              NODE_OPTIONS: `--import=${trackedPreload}`,
               VP_REMOTE_CACHE: undefined,
               VP_REMOTE_CACHE_URL: undefined,
             },
@@ -182,6 +204,28 @@ it("uses one machine hook across fresh worktrees without modifying Vite+", async
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
     );
+    const captured = await NodeFSP.readFile(flusherPids, "utf8").catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+      throw error;
+    });
+    const pids = [...new Set(captured.trim().split("\n").filter(Boolean).map(Number))];
+    if (completedReports > 0) expect(pids.length).toBeGreaterThan(0);
+    await expect
+      .poll(
+        () =>
+          pids.every((pid) => {
+            if (!Number.isSafeInteger(pid) || pid <= 1)
+              throw new Error("Invalid captured flusher PID");
+            try {
+              process.kill(pid, 0);
+              return false;
+            } catch (error) {
+              return (error as NodeJS.ErrnoException).code === "ESRCH";
+            }
+          }),
+        { timeout: 5000, interval: 25 },
+      )
+      .toBe(true);
     await NodeFSP.rm(root, { recursive: true, force: true });
     await NodeFSP.rm(unrelated, { recursive: true, force: true });
   }

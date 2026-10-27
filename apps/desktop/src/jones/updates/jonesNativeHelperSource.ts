@@ -68,6 +68,13 @@ def app_digest(root, opaque_profile=False):
 
 ${jonesPairedStateSource.syncTree}
 
+def warm_intent_shape(value):
+    keys = {'protocol', 'transactionId', 'expected', 'staged', 'continuationReceipt', 'processes', 'listener'}
+    if 'stateRecovery' in value:
+        if value['stateRecovery'] != 'clone-required': return False
+        keys.add('stateRecovery')
+    return set(value) == keys
+
 def same_binding(left, right):
     return left == right and left.get('protocol') == PROTOCOL and left.get('owner') == 'desktop'
 
@@ -655,7 +662,7 @@ def pre_swap_preparation_recovery(request, request_path, request_sha256, active,
         keys = {'intent', 'phase', 'message', 'storage', 'recoveryReserves', 'incomingBundle', 'previousBundle'} | ({'preSwapPreparationRecovery'} if terminal else set())
         if not set(journal) <= keys or (not terminal and (journal.get('phase') != 'blocked' or hashlib.sha256(journal_raw).hexdigest() != approval['journalSha256'])):
             raise SelectionRefused('activation-incomplete')
-        if set(intent) != {'protocol', 'transactionId', 'expected', 'staged', 'continuationReceipt', 'processes', 'listener'} or type(intent['protocol']) is not int or intent['protocol'] != PROTOCOL or intent['transactionId'] != tx.name or intent['expected'] != active or journal['intent'] != intent or intent['continuationReceipt'] != str(tx / 'continuation.json') or not valid_activation_processes(intent['processes']) or not isinstance(intent['listener'], str) or not intent['listener'].strip():
+        if not warm_intent_shape(intent) or type(intent['protocol']) is not int or intent['protocol'] != PROTOCOL or intent['transactionId'] != tx.name or intent['expected'] != active or journal['intent'] != intent or intent['continuationReceipt'] != str(tx / 'continuation.json') or not valid_activation_processes(intent['processes']) or not isinstance(intent['listener'], str) or not intent['listener'].strip():
             raise SelectionRefused('unknown-transaction')
         staged = intent['staged']
         claim, claim_raw, _ = records['prepare-intent.json']
@@ -968,7 +975,7 @@ def preparation_context(active, transaction_id, allow_dispatched=False):
         if 'continuation.json' in records and 'prepare-dispatched.json' not in records: raise SelectionRefused('unknown-state')
         if 'activation-request.json' in records:
             request = records['activation-request.json'][0]
-            if set(request) != {'protocol', 'transactionId', 'expected', 'staged', 'continuationReceipt', 'processes', 'listener'} or type(request['protocol']) is not int or request['protocol'] != PROTOCOL or request['transactionId'] != transaction_id or request['expected'] != active or request['staged'] != selection['app'] or request['continuationReceipt'] != str(tx / 'continuation.json') or not valid_activation_processes(request['processes']) or not isinstance(request['listener'], str) or not request['listener'].strip():
+            if not warm_intent_shape(request) or type(request['protocol']) is not int or request['protocol'] != PROTOCOL or request['transactionId'] != transaction_id or request['expected'] != active or request['staged'] != selection['app'] or request['continuationReceipt'] != str(tx / 'continuation.json') or not valid_activation_processes(request['processes']) or not isinstance(request['listener'], str) or not request['listener'].strip():
                 raise SelectionRefused('claim-mismatch')
         if 'prepare-failure.json' in records:
             failure = records['prepare-failure.json'][0]
@@ -1319,7 +1326,7 @@ def selection_command(operation, active, handle, selection_path, expected_digest
             if request != transaction / 'activation-request.json' or request.resolve(strict=True) != request:
                 raise SelectionRefused('selection-mismatch')
             intent, _, _ = bounded_native_json(request)
-            if type(intent.get('protocol')) is not int or intent['protocol'] != PROTOCOL or intent.get('transactionId') != transaction_id or intent.get('expected') != active or intent.get('staged') != selection['app'] or intent.get('continuationReceipt') != str(transaction / 'continuation.json'):
+            if not warm_intent_shape(intent) or type(intent.get('protocol')) is not int or intent['protocol'] != PROTOCOL or intent.get('transactionId') != transaction_id or intent.get('expected') != active or intent.get('staged') != selection['app'] or intent.get('continuationReceipt') != str(transaction / 'continuation.json'):
                 raise SelectionRefused('selection-mismatch')
             verify_app(intent['staged'], active)
             continuation, _, _ = bounded_native_json(transaction / 'continuation.json')
@@ -1411,7 +1418,7 @@ def settle_interrupted_activation(transaction_id):
                    'recovery-reserve.bin', 'recovery-journal-reserve.bin', 'previous-pair'}
         if not names <= allowed: raise SelectionRefused('unknown-state')
         intent, intent_raw, intent_info = bounded_native_json(tx / 'intent.json')
-        if set(intent) != {'protocol', 'transactionId', 'expected', 'staged', 'continuationReceipt', 'processes', 'listener'} or type(intent['protocol']) is not int or intent['protocol'] != PROTOCOL or intent['transactionId'] != transaction_id or intent['continuationReceipt'] != str(tx / 'continuation.json') or not valid_activation_processes(intent['processes']) or not isinstance(intent['staged'], dict) or not isinstance(intent['listener'], str) or not intent['listener'].strip():
+        if not warm_intent_shape(intent) or type(intent['protocol']) is not int or intent['protocol'] != PROTOCOL or intent['transactionId'] != transaction_id or intent['continuationReceipt'] != str(tx / 'continuation.json') or not valid_activation_processes(intent['processes']) or not isinstance(intent['staged'], dict) or not isinstance(intent['listener'], str) or not intent['listener'].strip():
             raise SelectionRefused('unknown-state')
         active, manifest_raw, manifest_info = bounded_native_json(manifest_path)
         if not same_binding(active, intent['expected']): raise SelectionRefused('manifest-changed')
@@ -1452,8 +1459,116 @@ def settle_interrupted_activation(transaction_id):
     except Exception:
         return {'protocol': PROTOCOL, 'status': 'uncertain'}
 
+def recovery_directory(path):
+    path = pathlib.Path(path)
+    if not path.is_absolute() or path.resolve(strict=True) != path:
+        raise RuntimeError('Recovery path is not a confined real directory.')
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY)
+    info = os.fstat(descriptor)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+        os.close(descriptor)
+        raise RuntimeError('Recovery directory ownership or permissions are unknown.')
+    return descriptor, (info.st_dev, info.st_ino)
+
+def strict_recovery_probe(state, recovery):
+    import ctypes, errno, tempfile
+    descriptors, directories, files = [], [], []
+    try:
+        for parent in (state, recovery):
+            descriptor, identity = recovery_directory(parent)
+            descriptors.append((descriptor, pathlib.Path(parent), identity))
+            directory = pathlib.Path(tempfile.mkdtemp(prefix='.jones-recovery-probe-', dir=parent))
+            info = directory.lstat()
+            directories.append((directory, (info.st_dev, info.st_ino)))
+        source, target = directories[0][0] / 'source', directories[1][0] / 'clone'
+        descriptor = os.open(source, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            info = os.fstat(descriptor)
+            files.append((source, (info.st_dev, info.st_ino)))
+            payload = b'jones-strict-clone-probe-v1\n'
+            if os.write(descriptor, payload) != len(payload):
+                raise RuntimeError('Recovery probe write was incomplete.')
+            os.fsync(descriptor)
+        finally: os.close(descriptor)
+        if source.stat().st_dev != recovery.stat().st_dev:
+            return {'status': 'unsupported', 'reason': 'State and recovery require the same volume. Stop; free space before retrying.'}
+        function = darwin_clonefile()
+        if function(os.fsencode(source), os.fsencode(target), 1) != 0:
+            code = ctypes.get_errno()
+            if code in (errno.ENOTSUP, errno.EOPNOTSUPP, errno.EXDEV, errno.ENOSYS):
+                return {'status': 'unsupported', 'reason': 'Strict clonefile is unsupported in the actual recovery topology. Stop; free space before retrying.'}
+            return {'status': 'unknown', 'reason': 'Strict clonefile did not prove recovery capability. Stop; free space before retrying.'}
+        cloned, original = target.lstat(), source.lstat()
+        files.append((target, (cloned.st_dev, cloned.st_ino)))
+        if not stat.S_ISREG(cloned.st_mode) or cloned.st_nlink != 1 or cloned.st_uid != os.getuid() or cloned.st_size != original.st_size or cloned.st_dev != original.st_dev or cloned.st_ino == original.st_ino:
+            raise RuntimeError('Strict clonefile probe identity is unknown.')
+        for descriptor, path, identity in descriptors:
+            info = path.lstat()
+            if (info.st_dev, info.st_ino) != identity: raise RuntimeError('Recovery topology changed during the probe.')
+        return {'status': 'proved'}
+    except (AttributeError, OSError, RuntimeError):
+        return {'status': 'unknown', 'reason': 'Strict clonefile capability or topology is unknown. Stop; free space before retrying.'}
+    finally:
+        # Exact inode checks never consume retained state or an unexpected file.
+        cleanup_failed = False
+        for path, identity in reversed(files):
+            try:
+                info = path.lstat()
+                if not stat.S_ISREG(info.st_mode) or (info.st_dev, info.st_ino) != identity or info.st_nlink != 1:
+                    raise RuntimeError('Recovery probe file ownership changed.')
+                path.unlink()
+            except (OSError, RuntimeError): cleanup_failed = True
+        for path, identity in reversed(directories):
+            try:
+                info = path.lstat()
+                if not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino) != identity:
+                    raise RuntimeError('Recovery probe directory ownership changed.')
+                path.rmdir()
+            except (OSError, RuntimeError): cleanup_failed = True
+        for descriptor, _, _ in descriptors: os.close(descriptor)
+        if cleanup_failed: raise RuntimeError('Recovery probe cleanup ownership could not be proved; Stop.')
+
+def inspect_recovery(active, handle, selection_path, selection_sha256):
+    _, selection, raw, _ = selection_binding(active, handle, selection_path, selection_sha256)
+    inspect_selection_transactions(active, staged_handle=handle)
+    staged = selection['app']
+    verify_app(staged, active)
+    state = pathlib.Path(active['databasePath']).parent
+    if not state.is_relative_to(pathlib.Path(active['home'])):
+        raise RuntimeError('Recovery state escapes the native home.')
+    recovery = manifest_path.parent / 'jones-updates' / 'transactions'
+    # A not-yet-created transaction inherits this exact, checked ancestor volume.
+    while not recovery.exists() and not recovery.is_symlink(): recovery = recovery.parent
+    app_parent = pathlib.Path(active['appPath']).parent
+    descriptors = []
+    try:
+        for path in (state, recovery): descriptors.append(recovery_directory(path)[0])
+        if state.stat().st_dev != recovery.stat().st_dev:
+            raise RuntimeError('Native state and recovery require the same volume; installation is unsupported in this topology. Stop.')
+        if app_parent.resolve(strict=True) != app_parent or not app_parent.is_dir():
+            raise RuntimeError('Candidate destination topology is unknown.')
+        state_bytes = recovery_state_bytes(active)
+        database = pathlib.Path(active['databasePath'])
+        first_install = not any(path.exists() or path.is_symlink() for path in [pathlib.Path(str(database) + suffix) for suffix in ('', '-wal', '-shm')] + [state / name for name in SETTINGS])
+        candidate_bytes = tree_storage_size(staged['appPath'])
+        requirements = {}
+        for path, role, copy_bytes, clone_bytes in ((recovery, 'state', state_bytes, 0), (app_parent, 'candidate', candidate_bytes, candidate_bytes)):
+            device = path.stat().st_dev
+            if device not in requirements: requirements[device] = {'role': role, 'availableBytes': os.statvfs(path).f_bavail * os.statvfs(path).f_frsize, 'copyRequiredBytes': RECOVERY_HEADROOM, 'cloneRequiredBytes': RECOVERY_HEADROOM}
+            requirements[device]['copyRequiredBytes'] += copy_bytes
+            requirements[device]['cloneRequiredBytes'] += clone_bytes
+        clone = {'status': 'unsupported', 'reason': 'No existing state to back up; no clone choice is available.'} if first_install else strict_recovery_probe(state, recovery)
+        if read(manifest_path) != active or selection_binding(active, handle, selection_path, selection_sha256)[2] != raw:
+            raise RuntimeError('Native selection or generation changed during recovery inspection.')
+        return {'protocol': 1, 'firstInstall': first_install, 'stateBytes': state_bytes, 'candidateBytes': candidate_bytes, 'volumes': list(requirements.values()), 'clone': clone}
+    finally:
+        for descriptor in descriptors: os.close(descriptor)
+
 def activate(intent_file):
     intent = read(intent_file)
+    if 'stateRecovery' in intent and intent['stateRecovery'] != 'clone-required':
+        raise RuntimeError('Unknown recovery policy; activation refused before effects.')
+    clone_required = intent.get('stateRecovery') == 'clone-required'
     expected, staged = intent['expected'], intent['staged']
     tx = pathlib.Path(intent_file).parent
     transaction_id = intent.get('transactionId')
@@ -1509,7 +1624,9 @@ def activate(intent_file):
     try:
         captured_processes = capture_activation_processes(intent, original_activation_proofs(intent, tx, claim))
         preparation_step = 'storage'
-        storage = storage_preflight(expected, staged, tx)
+        storage = storage_preflight(expected, staged, tx, clone_required)
+        if clone_required and strict_recovery_probe(pathlib.Path(expected['databasePath']).parent, tx)['status'] != 'proved':
+            raise RuntimeError('Strict recovery cloning is no longer proved; installation held before shutdown.')
         record('preparing', storage=storage)
         preparation_step = 'reserve'
         recovery_reserves = reserve_recovery_capacity(expected, tx, storage)
@@ -1527,8 +1644,9 @@ def activate(intent_file):
         if recovery_state_bytes(expected) > storage['stateBytes'] + RECOVERY_HEADROOM // 2:
             raise RuntimeError('Native state grew beyond reserved recovery capacity before shutdown.')
         preparation_step = 'pair'
-        pair_state(expected, tx / 'previous-pair')
-        record('paired', pairedState=str(tx / 'previous-pair'), recovery=read(tx / 'previous-pair' / 'pair.json')['recovery'])
+        pair_state(expected, tx / 'previous-pair', clone_required)
+        pair = read(tx / 'previous-pair' / 'pair.json')
+        record('paired', pairedState=str(tx / 'previous-pair'), **({'recovery': pair['recovery']} if 'recovery' in pair else {}))
         record('swap-intent')
         swap_bundle(expected, incoming, previous)
         record('swapped')
@@ -1760,7 +1878,8 @@ def manual_install(plan_path, plan_sha256, apply=False, clone_required=False):
         if manifest_path.read_bytes() != manifest_raw or app_digest(plan['installed']['appPath']) != plan['installed']['appDigest']:
             raise RuntimeError('Manual installation preimage changed after shutdown.')
         pair_state(expected, directory / 'previous-pair', clone_required)
-        record('paired', pairedState=str(directory / 'previous-pair'), recovery=read(directory / 'previous-pair' / 'pair.json')['recovery'])
+        pair = read(directory / 'previous-pair' / 'pair.json')
+        record('paired', pairedState=str(directory / 'previous-pair'), **({'recovery': pair['recovery']} if 'recovery' in pair else {}))
         incoming, previous = prepare_bundle(expected, plan['candidate'], transaction_id)
         record('swap-intent', incomingBundle=str(incoming), previousBundle=str(previous))
         if manifest_path.read_bytes() != manifest_raw:
@@ -1808,6 +1927,7 @@ parser.add_argument('--manifest')
 action = parser.add_mutually_exclusive_group(required=True)
 action.add_argument('--process-identity', type=kernel_process_pid)
 action.add_argument('--activate')
+action.add_argument('--inspect-recovery')
 action.add_argument('--settle-interrupted-activation')
 action.add_argument('--reconcile-running')
 action.add_argument('--inspect-manual-install')
@@ -1847,7 +1967,17 @@ if args.manifest is None: parser.error('--manifest is required for this action')
 if args.require_clone and not (args.inspect_manual_install or args.manual_install): parser.error('--require-clone requires a manual installation action')
 if args.arguments and args.arguments[0] == '--': args.arguments = args.arguments[1:]
 manifest_path = pathlib.Path(args.manifest).resolve(strict=True)
+if args.inspect_recovery and pathlib.Path(args.manifest) != manifest_path:
+    raise SystemExit('Recovery manifest must be an exact confined native path.')
 if sys.platform != 'darwin': raise SystemExit('The Jones native helper requires macOS.')
+if args.inspect_recovery:
+    active, manifest_raw, _ = bounded_native_json(manifest_path)
+    if active.get('protocol') != PROTOCOL or active.get('owner') != 'desktop':
+        raise SystemExit('Native recovery binding is unavailable.')
+    result = inspect_recovery(active, args.inspect_recovery, args.selection, args.selection_sha256)
+    if manifest_path.read_bytes() != manifest_raw: raise SystemExit('Native recovery generation changed.')
+    print(json.dumps(result))
+    raise SystemExit(0)
 lock_path = manifest_path.with_name('jones-activation.lock')
 try:
     descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_NOFOLLOW, 0o600)

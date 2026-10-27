@@ -76,6 +76,18 @@ this rollback boundary. Qualified at-most-once resume reservations remain at
 existing candidates reserve resume after commit; the guard still blocks replay
 after recovery payload cleanup. Launcher, qualified-update and startup-gate protocols remain 4, 1 and 1.
 
+Recovery policy is negotiated independently of staging and operation support.
+The target measures its own database, WAL, SHM and required startup settings,
+with distinct copy and strict-clone capacity budgets. A short-lived preflight
+binds the environment, installed source, current version and staged handle;
+capacity is a snapshot, not a reservation. Both the install adapter and native
+launcher/helper revalidate before handoff. Clone proof must come from the native
+primitive on the target volume, never from APFS naming or `cp -c` success. A
+`clone-required` request cannot fall back to copying if that proof or syscall
+later fails. First installation with no existing state claims no backup. The
+requested policy remains separate from the method observed in the bound recovery
+receipt; neither the policy nor a platform label proves that a clone occurred.
+
 ## Client acknowledgement
 
 An accepted update is still pending. Clients correlate the launcher's update ID
@@ -182,32 +194,81 @@ pending record for the next server.
 
 ## Following hosts
 
-An enrolled service host follows the laptop's committed source. The desktop
-renderer relays the repository, commit and tree of the laptop's native active
-install; the host checks that tree against the one the repository records for the
-commit. It stores the report under `runtime/jones-fleet`, bound to the enrollment
-ID, so re-enrolling discards it and the host can still install while the laptop
-sleeps. A source without its tree is not proof: a record written before the laptop
-sent one counts as no report. The ceiling is enforced in `JonesUpdater`, the one
-path behind HTTP check, download, exact download, Install, fleet staging and fleet
-activation; hiding a button is not the control. Until the laptop reports, every
-path holds, including an older laptop's campaign. A host already installed ahead of
-the laptop holds instead of going back.
+An enrolled service host follows the laptop's committed source. The renderer
+relays the repository, commit and tree only from native committed publication;
+the host verifies the tree against the repository's commit. Its report is bound
+to the enrollment ID under `runtime/jones-fleet`, so re-enrollment discards it
+and an ordinary follower can finish while the laptop sleeps. Missing tree or
+native commit evidence holds publication. `JonesUpdater` enforces the follower
+ceiling behind HTTP check, download, exact download, Install, fleet staging and
+activation; hiding a button is not the control. A host ahead of the laptop holds
+rather than downgrading.
 
-The host prepares the laptop's source itself and retires any other unaccepted
-stage first. It does not prefetch an uncommitted laptop build: every retirement
-adds a permanent launcher revocation receipt. Revocation checks validate the full
-history with bounded per-entry memory; retained history still costs linear file work.
-Campaigns still stage the laptop's next build early on hosts that do not follow,
-but preparing it does not supersede hosts still catching up to the committed
-build; the next commit retires them. Automatic activation, including a campaign
-activation from an older laptop, waits for 30 minutes without client input, at
-least 15 minutes since the previous automatic activation, and no work a restart
-would cut. The activation time is recorded before dispatch, and the final check
-runs under the admission fence. A pending request answerable by message survives a
-restart; a live or non-resumable approval does not, and holds activation until a
-provider adapter can declare that a pending approval rebinds to its resumed
-session.
+The host retires an unrelated unaccepted stage before preparing the committed
+source. Each retirement adds a permanent launcher revocation receipt; validating
+that history uses bounded per-entry memory but still visits the retained history.
+Both the campaign driver and native fleet store now require a committed Laptop
+campaign with its committed generation before staging **or** activation, including
+on non-followers. A prepared campaign is insufficient. Install plans additionally
+require the native health proof described below before any selected host download.
+
+Plan targets are excluded from legacy campaigns and leader publication by durable
+native dispositions, retained after Done and restart. Enrollment is unchanged.
+Before a selected enrolled host downloads, a target-owned, enrollment-bound
+manual-review directive must be confirmed. Legacy leader writes preserve it;
+it suppresses ordinary following of the leader at issue and of the plan target.
+A later different published leader source restores ordinary following. An
+unselected enrolled host is not implicitly a plan member. Builds outside a plan
+retain the ordinary follower path.
+
+Ordinary automatic activation waits for 30 minutes without client input, at least
+15 minutes since the previous automatic activation, and no work a restart would
+cut. Its time is recorded before dispatch and its final check runs under the
+admission fence. A message-answerable request survives restart; a live or
+non-resumable approval holds activation until its provider adapter can establish
+that it rebinds to the resumed session. These automatic rules do not authorize a
+plan-target Install, which is separately reviewed.
+
+## Install plans and durable operations
+
+The [native coordinator](../../apps/desktop/src/jones/installPlan/coordinator.ts)
+owns plan persistence, CAS edits, leases, grants and target dispositions. The
+renderer relays requests and target evidence; it cannot set a Laptop outcome or
+open the gate. Before each grant, native reconciliation must bind the active
+resumed transaction to the exact source, tree, artifact, generation and runtime,
+with a committed healthy result and no activation block. Source equality,
+renderer observations, a descriptor match or an adopted installation do not
+establish that proof. The pure shared model validates transitions and projects
+status without creating native authority.
+
+A target's [operation ledger](../../apps/server/src/jones/updates/operations/ledger.ts)
+records acceptance before effects and retains the original environment, action,
+installed-source and plan correlation. A relayed receipt must match that original
+intent and the previous receipt's legal transition; it can establish that host's
+outcome, never Laptop health. Launcher handoff acceptance, target receipt
+completion and a fresh host observation are distinct evidence. Current capability
+and freshness govern dispatch even when an older receipt remains visible. Each
+Install reviews the exact current stage and revalidates it before dispatch;
+Download and the automatic runner never install.
+
+An expired grant with no receipt is fenced with the full original start intent.
+If never accepted, its tombstone preserves the real action, source and correlation,
+has no `acceptedAt`, and authorizes no effect. A fence cannot overwrite an accepted
+operation. A timeout, missing receipt, missing payload or absent job does not
+prove no effect; unknown and held work stays unresolved until exact native or
+target evidence settles it. Check again reads evidence and never turns absence
+into Retry or completion. Directive expiry likewise requires matching target
+proof; it is not a synthetic operation fence.
+
+Stop records a request separately from actual worker closure. The preparation
+outcome promise can settle before the captured worker and process group have
+joined; release also requires proof that any native effects were cleaned up.
+A completed download
+can win a late Stop, and an admitted copy without a validated stage remains held.
+Completion covers Laptop and every chosen device with no outstanding operation;
+staging, supersession, handoff and unknown results do not settle a plan. Dismissing
+it retains a read-only last result and the dispositions that prevent legacy work
+from restarting the target.
 
 ## Off-process preparation
 
@@ -236,14 +297,20 @@ its next update without it. Darwin candidates are never launched while staging, 
 only the desktop artifact smoke proves their packaged worker.
 
 Each job lives in `runtime/jones-preparation/jobs/<id>` on the home's own disk.
-That directory holds the worker's `TMPDIR` and extraction scratch, and the parent
-holds the job's owner lock while the worker runs. Cancellation, a deadline, a
-missed heartbeat or an output bound stops the worker's whole process group. A
-worker whose parent exits sees end-of-file on stdin and stops itself. A sweep job
-at startup and after every failed job removes what a killed worker left. It takes
-a job directory only when its owner lock is free, and it also removes unpublished
-Actions attempts and abandoned `.jones-stage-*` runtime copies. It keeps only the
-two newest completed downloads, so failing candidates do not accumulate.
+That directory holds the worker's `TMPDIR` and extraction scratch. The parent
+holds a retained `job-owner-<id>.sqlite` lock outside that directory. Cancellation,
+a deadline, a missed heartbeat or an output bound requests termination of the
+captured worker process group. Outcome and settled/join are separate: leader exit
+alone does not release admission. A worker whose parent exits sees end-of-file on
+stdin and stops itself.
+
+Parent launch records and worker effect records in `runtime/jones-preparation/lifecycle`
+survive scratch deletion and restart. A sweep removes scratch only after positive
+process-group and effect-release evidence; a free lock, deleted directory or
+removed-job list is not release proof. Unknown exit or mount cleanup retains the
+admission hold and defers shared cleanup. Once release is proved, sweep can remove
+unpublished Actions attempts and abandoned `.jones-stage-*` runtime copies, keeping
+the two newest completed downloads.
 
 ### Verification cost evidence
 
@@ -265,10 +332,13 @@ change database backup receipts.
 The desktop can prepare its own stage while the user works. The opt-in lives in a
 Jones-owned file beside the desktop settings, whose writer drops unknown keys, and
 is off by default. Preparation only stages: Install remains a renderer action, so a
-background download starts no fleet campaign, and a claimed install pins its stage
-until commit or rollback. Downloads, startup artifact validation and payload removal
-run one at a time in a forked low-priority process group. Main trusts its reply only
-after binding it to the on-disk receipts. Niceness lowers scheduling priority; it is
+background download starts no fleet campaign, and a current plan pins its Laptop
+stage against replacement. Durable stopped, interrupted and held target
+dispositions prevent automatic restart; an explicit Download clears a stop only
+through native admission. A claimed install pins its stage until commit or rollback.
+Downloads, startup artifact validation and payload removal run one at a time in a
+forked low-priority process group. Main trusts its reply only after binding it to
+the on-disk receipts. Niceness lowers scheduling priority; it is
 not a CPU cap.
 
 A newer build replaces an unaccepted stage only through the helper's validated
@@ -285,7 +355,34 @@ unindexed attempt installable. Background cleanup retains its handle until both 
 and artifact roots are proved reclaimed or absent. Unknown or conflicting evidence
 still holds replacement.
 
+## Client update uncertainty
+
+Web and mobile controls persist bounded operation bindings before sending an update
+mutation. Stop records include the exact Stop ID; only a matching monotone receipt
+can settle that request. Unknown legacy results survive client restart, and source
+or revision equality cannot clear them. Storage failures and unresolved capacity
+limits block new mutations rather than discard pending evidence.
+
+A native handoff additionally binds a client command ID to the canonical request
+body digest. Native main reserves that command in the existing plan CAS document
+before effects and reports its own result; changed-body replay is refused. A
+reservation alone is not completion. Each web review is revoked when its initiating
+control changes target, loses permission or unmounts. Legacy staged reviews remain
+available through negotiated legacy paths without supplying invented installed
+source evidence or weakening native review requirements.
+
 ## Desktop activation and startup refusal
+
+Desktop preparation uses an admission handshake after transfer and hashing but
+before mount/copy. Main records admission durably before permitting the worker to
+continue. User Stop is limited to transfer and signals only that disposable
+captured group, never the app, backend or installer. A result, IPC error or PID
+alone does not establish exit. On restart, a validated retained stage or positive
+captured-worker absence can reconcile transfer; admitted copy work without a
+validated stage remains held even after worker exit. Recovery review is bound to
+native target-owned preflight and negotiated helper support before quiescing.
+A cold staged Laptop can obtain this bound preflight without creating a plan or
+reservation; only a later reviewed start authorizes installation.
 
 A helper failure proved to precede state pairing and app swap can return
 `rolled-back` with `preEffect` evidence: the original app and state are unchanged.
