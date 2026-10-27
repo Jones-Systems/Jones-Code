@@ -122,7 +122,7 @@ describe("host status metrics", () => {
       health: "warning",
     });
     expect(metrics.detail).toContain("CPU 23% of total cores");
-    expect(metrics.detail).toContain("Available RAM 4 GiB");
+    expect(metrics.detail).toContain("RAM 4 GiB available of 16 GiB");
     expect(hostStatusMetrics({ ...available, logicalCpuCount: 128 }).cpu).toBe("23%");
   });
   it.each([
@@ -181,8 +181,8 @@ describe("host status metrics", () => {
         ramHealth: "healthy",
         health: "healthy",
       });
-      expect(hostStatusMetrics(mac).detail).toContain("Available RAM 0.0 GiB");
-      expect(hostStatusMetrics(mac).detail).toContain("10-second average");
+      expect(hostStatusMetrics(mac).tooltipLines).toContain("RAM 0 GiB available of 16 GiB");
+      expect(hostStatusMetrics(mac).tooltipLines).toContain("Swap I/O 0.0 MiB/s");
       expect(hostStatusMetrics({ ...mac, swapIoBytesPerSecond: 10 * 1024 ** 2 })).toMatchObject({
         ramHealth: "healthy",
       });
@@ -205,6 +205,59 @@ describe("host status metrics", () => {
       expect(hostStatusMetrics(olderMac).detail).toContain("Swap I/O unavailable");
     },
   );
+  it.each(["vps", "test", "mini", "home"] as const)(
+    "provides one concise line per metric on %s, with swap only on Macs",
+    (id) => {
+      const metrics = hostStatusMetrics({
+        ...available,
+        id,
+        cpuUsagePercent: 18,
+        availableMemoryBytes: 46 * gib,
+        totalMemoryBytes: 64 * gib,
+        swapIoBytesPerSecond: 0.3 * 1024 ** 2,
+        availableStorageBytes: 220 * gib,
+        totalStorageBytes: 500 * gib,
+        storageMountPoint: "/",
+      });
+      expect(metrics.tooltipLines).toEqual([
+        "CPU 18% of total cores",
+        "RAM 46 GiB available of 64 GiB",
+        ...(id === "mini" || id === "home" ? ["Swap I/O 0.3 MiB/s"] : []),
+        "Storage 220 GiB free of 500 GiB",
+      ]);
+      expect(metrics.detail).toBe(metrics.tooltipLines.join(". "));
+    },
+  );
+  it("identifies a non-root filesystem and preserves zero and fractional capacities", () => {
+    expect(
+      hostStatusMetrics({
+        ...available,
+        availableStorageBytes: 0,
+        totalStorageBytes: 500.5 * gib,
+        storageMountPoint: "/srv/data",
+      }).tooltipLines,
+    ).toContain("Storage (/srv/data) 0 GiB free of 500.5 GiB");
+  });
+  it("keeps CPU available with missing optional readings from older servers", () => {
+    const { availableMemoryBytes: _memory, ...olderSample } = available;
+    expect(hostStatusMetrics(olderSample).tooltipLines).toEqual([
+      "CPU 23% of total cores",
+      "RAM unavailable",
+      "Storage unavailable",
+    ]);
+    expect(hostStatusMetrics({ ...olderSample, id: "home" }).tooltipLines).toEqual([
+      "CPU 23% of total cores",
+      "RAM unavailable",
+      "Swap I/O unavailable",
+      "Storage unavailable",
+    ]);
+    expect(hostStatusMetrics({ ...available, availableStorageBytes: 0 }).tooltipLines).toContain(
+      "Storage unavailable",
+    );
+    expect(
+      hostStatusMetrics({ ...available, totalStorageBytes: 500 * gib }).tooltipLines,
+    ).toContain("Storage unavailable");
+  });
   it("hides values at the thirty-second source freshness boundary", () => {
     vi.advanceTimersByTime(29_999);
     expect(hostStatusMetrics(available).cpu).toBe("23%");
@@ -214,6 +267,7 @@ describe("host status metrics", () => {
       ram: "—",
       health: "unavailable",
       detail: "Host status sample is stale",
+      tooltipLines: ["Host status sample is stale"],
     });
     expect(hostStatusMetrics({ id: "home", status: "unavailable", reason: "stale" }).health).toBe(
       "unavailable",

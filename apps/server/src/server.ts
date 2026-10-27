@@ -1,3 +1,6 @@
+import * as DependencyChanges from "./jones/threadResultDependencies/DependencyChanges.ts";
+import * as DependencyReactor from "./jones/threadResultDependencies/DependencyReactor.ts";
+import * as ThreadResultMcpDependencies from "./jones/threadResultDependencies/McpDependencies.ts";
 import * as ThreadMetadataReads from "./jones/orchestration/threadMetadataReads.ts";
 import * as HandoffLaunch from "./jones/linkedThreads/launchTransport.ts";
 import * as ThreadHandoff from "./jones/linkedThreads/handoff.ts";
@@ -804,12 +807,17 @@ const layerMakeRoutes = Layer.mergeAll(
     Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
     Layer.provide(McpOAuth.layerMcpClientAuthenticator),
   ),
+  Layer.effectDiscard(
+    DependencyReactor.DependencyReactor.pipe(Effect.flatMap((reactor) => reactor.start())),
+  ),
   // Follows delegated tasks running in linked environments, including after a restart.
   Layer.effectDiscard(
     RemoteDelegation.RemoteDelegation.pipe(Effect.flatMap((remote) => remote.start())),
   ),
 )
   .pipe(
+    Layer.provide(DependencyReactor.layer),
+    Layer.provide(ThreadResultMcpDependencies.layer),
     Layer.provide(ShellMaterialization.layer),
     Layer.provide(
       PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
@@ -1181,6 +1189,7 @@ const layerMakeServer = Layer.unwrap(
     return layerServerApplication.pipe(
       Layer.provide(CloudLink.layer.pipe(Layer.provideMerge(ConnectReachability.layer))),
       Layer.provideMerge(layerRuntimeServices),
+      Layer.provide(DependencyChanges.layer),
       Layer.provideMerge(
         McpSessionRegistry.layer.pipe(
           Layer.provide(ServerEnvironment.layer.pipe(Layer.provide(ServerSecretStore.layer))),
