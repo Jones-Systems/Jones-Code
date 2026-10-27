@@ -327,6 +327,88 @@ it.effect.each([
   }).pipe(Effect.provide(memory)),
 );
 
+// Released ff200fca manifest: later production additions must not move this fixture.
+const released130Identities = [
+  [1, "WorktreeOwnershipLeases"],
+  [2, "ProjectionThreadRuntimeIdentity"],
+  [3, "NativeCreationIntents"],
+  [4, "NativeCreationCommandIdentities"],
+  [5, "WorkstreamsNativeAttempts"],
+  [6, "WorkstreamsProviderEnrollments"],
+  [100, "NativeCreationExecution"],
+  [101, "NativeWorkspacePreparation"],
+  [102, "ImportedHistoryChoices"],
+  [103, "RuntimeStop"],
+  [104, "DeletionAdmission"],
+  [105, "UpstreamReferenceIsolation"],
+  [106, "PlannedUpdateContinuity"],
+  [107, "WorkstreamsSettlementProofs"],
+  [108, "PhysicalProcessEvidence"],
+  [109, "OrdinaryCheckoutLifecycle"],
+  [110, "ThreadLookupIndexes"],
+  [111, "ClientSettlementCommands"],
+  [112, "ClientLaunchRequests"],
+  [114, "SelfSettlementProjectItems"],
+  [115, "ScheduledWebhookPendingRuns"],
+  [116, "RemoteAdmission"],
+  [117, "RemoteDelegationIntents"],
+  [118, "RemoteAdmissionIntegration"],
+  [119, "PeerEnvironmentLinks"],
+  [120, "SettlementRestores"],
+  [121, "RemoteTaskObservations"],
+  [122, "ThreadLinks"],
+  [123, "WorkspaceLifecycle"],
+  [124, "TaskContinuations"],
+  [129, "CodexFailover"],
+  [130, "ThreadTitleRefinement"],
+] as const;
+
+it.effect("a released 130 database refuses late 125 and applies appended 131 exactly once", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const released130Entries = released130Identities.map(([id, name]) => {
+      const entry = jonesMigrationEntries.find(
+        ([currentId, currentName]) => currentId === id && currentName === name,
+      );
+      assert.isDefined(entry, `Released identity ${id}_${name} must remain registered`);
+      return entry!;
+    });
+    yield* runMigrations({ toMigrationInclusive: latestUpstreamMigration });
+    assert.deepStrictEqual(yield* runJonesMigrations(released130Entries), released130Identities);
+    const retainedAt = "2026-09-01T00:00:00.000Z";
+    yield* sql`INSERT INTO orchestration_v2_projection_threads (
+      thread_id, project_id, title, default_provider, runtime_mode, interaction_mode,
+      created_at, updated_at, payload_json
+    ) VALUES ('retained-title', 'synthetic-project', 'Retained title', 'codex', 'full-access',
+      'default', ${retainedAt}, ${retainedAt}, '{}')`;
+    yield* sql`INSERT INTO jones_thread_title_refinement VALUES ('retained-title', '{"status":"sufficient","title":"Retained title"}')`;
+    const ledger = yield* readLedger;
+    const schema = yield* readSchema;
+    const title = yield* sql`SELECT * FROM orchestration_v2_projection_threads`;
+    const refinement = yield* sql`SELECT * FROM jones_thread_title_refinement`;
+    const late = yield* Effect.exit(
+      runJonesMigrations([...released130Entries, [125, "SyntheticLateAddition", futureMigration]]),
+    );
+    assert.isTrue(Exit.isFailure(late));
+    if (Exit.isFailure(late))
+      assert.include(Cause.pretty(late.cause), "missing rebuild migration 125 before 129");
+    assert.deepStrictEqual(yield* readLedger, ledger);
+    assert.deepStrictEqual(yield* readSchema, schema);
+    assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_projection_threads`, title);
+    assert.deepStrictEqual(yield* sql`SELECT * FROM jones_thread_title_refinement`, refinement);
+    const appended = [...released130Entries, [131, "SyntheticAppend", futureMigration] as const];
+    assert.deepStrictEqual(yield* runJonesMigrations(appended), [[131, "SyntheticAppend"]]);
+    const after = yield* readLedger;
+    assert.deepStrictEqual(after.slice(0, ledger.length), ledger);
+    assert.strictEqual(after.length, ledger.length + 1);
+    assert.deepStrictEqual(yield* runJonesMigrations(appended), []);
+    assert.deepStrictEqual(yield* readLedger, after);
+    assert.deepStrictEqual(yield* sql`SELECT * FROM jones_future_probe`, [{ value: "applied" }]);
+    assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_projection_threads`, title);
+    assert.deepStrictEqual(yield* sql`SELECT * FROM jones_thread_title_refinement`, refinement);
+  }).pipe(Effect.provide(memory)),
+);
+
 it.effect("rejects a future ledger gap instead of skipping a pending lower registered ID", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
