@@ -219,6 +219,13 @@ describe("host status metrics", () => {
       "unavailable",
     );
   });
+  it.each([
+    [5_000, "23%"],
+    [5_001, "—"],
+  ] as const)("applies the gateway clock-skew boundary at %s ms ahead", (offset, cpu) => {
+    const sampledAt = new Date(vi.getMockedSystemTime()!.getTime() + offset).toISOString();
+    expect(hostStatusMetrics({ ...available, sampledAt }).cpu).toBe(cpu);
+  });
 });
 
 describe("visible host-status polling", () => {
@@ -268,20 +275,69 @@ describe("visible host-status polling", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(receive).not.toHaveBeenCalled();
   });
-  it("clears old healthy values when a request fails and recovers on the next poll", async () => {
-    vi.useFakeTimers();
+  it("retains all fresh hosts after refresh failures, expires them at source age, and recovers", async () => {
+    const hosts = (["vps", "test", "mini", "home"] as const).map((id) => ({ ...available, id }));
+    const fullSnapshot: HostStatusSnapshot = { hosts };
+    const cache: HostStatusCache = { snapshot: null, settledAt: -Infinity };
+    const receive = vi.fn();
+    let resolve!: (value: HostStatusSnapshot) => void;
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(fullSnapshot)
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockRejectedValueOnce(new Error("still offline"))
+      .mockImplementation(
+        () =>
+          new Promise<HostStatusSnapshot>((done) => {
+            resolve = done;
+          }),
+      );
+    const stop = observeHostStatus(new Visibility(), receive, request, cache);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(receive).toHaveBeenLastCalledWith(fullSnapshot);
+    expect(cache.snapshot).toEqual(fullSnapshot);
+    expect(request).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(receive).toHaveBeenLastCalledWith(fullSnapshot);
+    expect(request).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(receive).toHaveBeenLastCalledWith(fullSnapshot);
+    await vi.advanceTimersByTimeAsync(1);
+    const expired = {
+      hosts: hosts.map(({ id }) => ({ id, status: "unavailable", reason: "stale" })),
+    };
+    expect(receive).toHaveBeenLastCalledWith(expired);
+    expect(cache.snapshot).toEqual(expired);
+    expect(request).toHaveBeenCalledTimes(4);
+    const recovered = {
+      hosts: hosts.map((host) => ({
+        ...host,
+        sampledAt: new Date(vi.getMockedSystemTime()!.getTime()).toISOString(),
+      })),
+    };
+    resolve(recovered);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(receive).toHaveBeenLastCalledWith(recovered);
+    stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("replaces a fresh host with an explicit unavailable response while preserving other hosts", async () => {
+    const mini = { ...available, id: "mini" as const };
+    const unavailableSnapshot: HostStatusSnapshot = {
+      hosts: [{ id: "vps", status: "unavailable", reason: "upstream_unavailable" }, mini],
+    };
     const receive = vi.fn();
     const request = vi
       .fn()
-      .mockResolvedValueOnce(snapshot)
-      .mockRejectedValueOnce(new Error("offline"))
-      .mockResolvedValue(snapshot);
+      .mockResolvedValueOnce({ hosts: [available, mini] })
+      .mockResolvedValue(unavailableSnapshot);
     const stop = observeHostStatus(new Visibility(), receive, request);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(receive).toHaveBeenLastCalledWith({ hosts: [available, mini] });
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(receive).toHaveBeenLastCalledWith(null);
-    await vi.advanceTimersByTimeAsync(10_000);
-    expect(receive).toHaveBeenLastCalledWith(snapshot);
+    expect(receive).toHaveBeenLastCalledWith(unavailableSnapshot);
     stop();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 
@@ -448,7 +504,7 @@ describe("typed selected-environment gateway request", () => {
       { status, token: "synthetic-remote-token" },
     ]),
   )(
-    "treats HTTP $status with token $token as unavailable rather than retaining healthy data",
+    "rejects HTTP $status with token $token as a failed gateway request",
     async ({ status, token }) => {
       prepare("https://remote.example", token);
       vi.stubGlobal("window", {
@@ -533,8 +589,38 @@ describe("retained host-status cache", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it.each(["invalid", "2026-09-29T12:00:01.000Z", "2026-09-29T11:59:30.000Z"])(
-    "rejects a retained invalid, future, or expired source timestamp: %s",
+  it("accepts retained samples five seconds ahead and expires from their original timestamp", async () => {
+    const futureSnapshot: HostStatusSnapshot = {
+      hosts: [
+        {
+          ...available,
+          sampledAt: new Date(vi.getMockedSystemTime()!.getTime() + 5_000).toISOString(),
+        },
+      ],
+    };
+    const cache: HostStatusCache = {
+      snapshot: futureSnapshot,
+      settledAt: vi.getMockedSystemTime()!.getTime(),
+    };
+    const receive = vi.fn();
+    const request = vi.fn();
+    const visibility = new Visibility();
+    visibility.set("hidden");
+    const stop = observeHostStatus(visibility, receive, request, cache);
+    expect(receive).toHaveBeenLastCalledWith(futureSnapshot);
+    await vi.advanceTimersByTimeAsync(34_999);
+    expect(receive).toHaveBeenLastCalledWith(futureSnapshot);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(receive).toHaveBeenLastCalledWith({
+      hosts: [{ id: "vps", status: "unavailable", reason: "stale" }],
+    });
+    expect(request).not.toHaveBeenCalled();
+    stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["invalid", "2026-09-29T12:00:05.001Z", "2026-09-29T11:59:30.000Z"])(
+    "rejects a retained invalid, excessively future, or expired source timestamp: %s",
     (sampledAt) => {
       const cache: HostStatusCache = {
         snapshot: { hosts: [{ ...available, sampledAt }] },
