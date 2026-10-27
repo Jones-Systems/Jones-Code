@@ -325,6 +325,9 @@ export function layerWithRegistryAndServices<Error>(
     readonly runContinuationWorker?: boolean;
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
+    readonly onSessionDetached?: (
+      input: Parameters<ProviderSessionManager.ProviderSessionManagerV2["Service"]["detach"]>[0],
+    ) => Effect.Effect<void>;
   } = {},
 ): Layer.Layer<
   | ProjectionStore.ProjectionStoreV2
@@ -423,7 +426,7 @@ export function layerWithRegistryAndServices<Error>(
   const layerCommandOutputHubProvided = CommandOutputRecorder.layer.pipe(
     Layer.provide(Layer.merge(layerEventSinkProvided, layerStores)),
   );
-  const layerProviderSessionManagerProvided = ProviderSessionManager.layerWithOptions({
+  const layerProviderSessionManagerBase = ProviderSessionManager.layerWithOptions({
     configureMcp: options.configureMcp ?? false,
   }).pipe(
     Layer.provide(
@@ -440,6 +443,21 @@ export function layerWithRegistryAndServices<Error>(
       ),
     ),
   );
+  const onSessionDetached = options.onSessionDetached;
+  const layerProviderSessionManagerProvided =
+    onSessionDetached === undefined
+      ? layerProviderSessionManagerBase
+      : Layer.effect(
+          ProviderSessionManager.ProviderSessionManagerV2,
+          Effect.gen(function* () {
+            const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+            return ProviderSessionManager.ProviderSessionManagerV2.of({
+              ...sessions,
+              detach: (input) =>
+                sessions.detach(input).pipe(Effect.tap(() => onSessionDetached(input))),
+            });
+          }),
+        ).pipe(Layer.provide(layerProviderSessionManagerBase));
   const layerProviderSwitchServiceProvided = ProviderSwitchService.layer.pipe(
     Layer.provide(layerProvidedRegistry),
   );
@@ -556,6 +574,16 @@ export function layerWithRegistryAndServices<Error>(
         getThreadProjection: orchestrator.getThreadProjection,
         recoverDelegatedTask: orchestrator.recoverDelegatedTask,
         delegatedTaskResultPending: orchestrator.delegatedTaskResultPending,
+        stopDelegatedTasks: ({ threadId }) =>
+          orchestrator
+            .getThreadRecords(threadId, ["subagents"])
+            .pipe(
+              Effect.flatMap(({ subagents }) =>
+                subagents.length === 0
+                  ? Effect.void
+                  : Effect.die("Replay stop fixture requires explicit delegated-child handling"),
+              ),
+            ),
       });
     }),
   ).pipe(Layer.provide(layerOrchestratorProvided));

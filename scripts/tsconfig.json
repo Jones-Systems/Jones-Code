@@ -20,6 +20,7 @@
     "../apps/server/src/jones/updates/launcherOperation.ts",
     "../apps/server/src/jones/updates/stageRevocation.ts",
     "../apps/server/src/jones/updates/stagedSelection.ts",
-    "../apps/server/src/jones/updates/recoverStagedSelection.ts"
+    "../apps/server/src/jones/updates/recoverStagedSelection.ts",
+    "../apps/server/src/jones/updates/recoverQualifiedStage.ts"
   ]
 }

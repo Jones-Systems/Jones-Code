@@ -1,3 +1,4 @@
+import { threadTitleVerdict } from "@t3tools/provider-core/server/jones/ThreadTitleAssessment";
 import {
   DEFAULT_TEXT_GENERATION_REASONING_EFFORT,
   MUSE_DEFAULT_MODEL,
@@ -341,7 +342,15 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
       ...buildThreadTitlePrompt(input),
       modelSelection: input.modelSelection,
     });
-    return { title: sanitizeThreadTitle(generated.title) };
+    return {
+      title: sanitizeThreadTitle(generated.title),
+      ...(input.titleAssessment
+        ? {
+            assessment: threadTitleVerdict(generated),
+            ...(generated.needsRefinement === true ? { needsRefinement: true } : {}),
+          }
+        : {}),
+    };
   });
   const generateReviewGuide: ProviderTextGeneration["generateReviewGuide"] = () =>
     Effect.fail(investigationUnsupported("generateReviewGuide", "Muse Code"));

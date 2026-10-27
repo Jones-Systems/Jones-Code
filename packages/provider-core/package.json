@@ -195,6 +195,10 @@
       "types": "./src/server/jones/runtimeTypes.ts",
       "import": "./src/server/jones/runtimeTypes.ts"
     },
+    "./server/jones/ThreadTitleAssessment": {
+      "types": "./src/server/jones/ThreadTitleAssessment.ts",
+      "import": "./src/server/jones/ThreadTitleAssessment.ts"
+    },
     "./server/jones/AppIdentity": {
       "types": "./src/server/jones/AppIdentity.ts",
       "import": "./src/server/jones/AppIdentity.ts"

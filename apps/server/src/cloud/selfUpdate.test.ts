@@ -25,6 +25,8 @@ import * as ServerSelfUpdate from "./selfUpdate.ts";
 
 interface HarnessOptions {
   readonly mode?: "web" | "desktop";
+  readonly qualified?: boolean;
+  readonly qualifiedRecovery?: boolean;
   readonly releaseBaseUrl?: string | null;
   readonly managed?: boolean;
   readonly preflight?: "ready" | "blocked";
@@ -88,8 +90,9 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
             ? { status: "blocked", version: "1.1.0", reason: "local update required" }
             : {
                 status: "ready",
-                version: "1.1.0",
+                version: options.qualified ? "0.0.0-preview.20261002.101.1" : "1.1.0",
                 launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+                ...(options.qualified ? { startupGateProtocol: 1 } : {}),
               };
         return {
           stdout: JSON.stringify(result),
@@ -105,6 +108,10 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
   });
   const launcher = ServiceLauncherClient.ServiceLauncherClient.of({
     managed: options.managed ?? true,
+    ...(options.qualified
+      ? { qualifiedUpdates: true, currentVersion: "0.0.0-preview.20261002.100" }
+      : {}),
+    ...(options.qualifiedRecovery ? { qualifiedRecovery: true } : {}),
     requiresQualifiedTrialGate: false,
     prepareQualifiedTrial: () => Effect.die("ordinary release must not use qualified startup"),
     requestUpdate:
@@ -149,10 +156,71 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
       ),
     ),
   );
-  return { selfUpdate, order };
+  return { selfUpdate, order, baseDir, dbPath: config.dbPath };
 });
 
 it.layer(NodeServices.layer)("server self update", (it) => {
+  it.effect("refuses old launcher or candidate recovery support before capture and handoff", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      for (const qualifiedRecovery of [false, true]) {
+        const { selfUpdate, order, baseDir, dbPath } = yield* makeHarness({
+          qualified: true,
+          qualifiedRecovery,
+        });
+        yield* fs.makeDirectory(path.dirname(dbPath), { recursive: true });
+        yield* fs.writeFileString(dbPath, "untouched database");
+        let captured = false;
+        const result = yield* selfUpdate.installQualified!(
+          {
+            stagedHandle: "12345678-1234-4234-8234-123456789abc",
+            verifyStaged: async () => ({
+              protocol: 2,
+              stagedHandle: "12345678-1234-4234-8234-123456789abc",
+              binding: {
+                baseDir,
+                dbPath,
+                environmentId: "synthetic",
+                activeVersion: "0.0.0-preview.20261002.100",
+                activeSourceSha: "a".repeat(40),
+              },
+              receipt: {
+                protocol: 1,
+                repository: "Jones-Systems/Jones-Code",
+                channel: "jones-main",
+                version: "0.0.0-preview.20261002.101.1",
+                sourceSha: "b".repeat(40),
+                sourceTree: "c".repeat(40),
+                installedSourceSha: "9".repeat(40),
+                workflow: ".github/workflows/artifact-cli-linux.yml",
+                runId: 101,
+                runAttempt: 1,
+                artifactId: 102,
+                artifactDigest: `sha256:${"d".repeat(64)}`,
+                archiveSha256: "e".repeat(64),
+                payloadSha256: "f".repeat(64),
+                platform: "linux",
+                architecture: "x64",
+              },
+            }),
+          },
+          () => Effect.die("unsupported reader reached handoff"),
+          () =>
+            Effect.sync(() => {
+              captured = true;
+            }),
+        ).pipe(Effect.flip);
+        expect(result.reason).toContain(
+          qualifiedRecovery ? "qualified-recovery-unsupported" : "bootstrap-required",
+        );
+        expect(captured).toBe(false);
+        expect(order).toEqual(qualifiedRecovery ? ["preflight"] : []);
+        expect(yield* fs.readFileString(dbPath)).toBe("untouched database");
+      }
+    }),
+  );
+
   it.effect("marks running threads at the boot-service handoff", () =>
     Effect.gen(function* () {
       const events: string[] = [];

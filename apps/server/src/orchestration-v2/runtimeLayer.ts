@@ -1,3 +1,4 @@
+import * as TitleStore from "../jones/threadTitle/store.ts";
 import * as GuestShareService from "../guest/GuestShareService.ts";
 import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
 import * as ThreadSelfConfiguration from "../jones/threadConfiguration/ThreadSelfConfiguration.ts";
@@ -391,6 +392,7 @@ const layerProviderContinuationWorkerProvided = ProviderContinuationService.laye
   ),
 );
 const layerThreadTitleRegenerationProvided = ThreadTitleRegenerationService.layer.pipe(
+  Layer.provide(TitleStore.layer),
   Layer.provide(
     Layer.mergeAll(layerThreadManagementProvided, ProjectStore.layer, TextGeneration.layer),
   ),

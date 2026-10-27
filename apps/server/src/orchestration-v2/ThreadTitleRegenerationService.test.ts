@@ -1,3 +1,4 @@
+import * as TitleStore from "../jones/threadTitle/store.ts";
 import { assert, describe, it, vi } from "@effect/vitest";
 import {
   CommandId,
@@ -87,9 +88,11 @@ function makeHarness(
       ),
   });
   const layerTitleRegeneration = ThreadTitleRegeneration.layer.pipe(
+    Layer.provide(TitleStore.layer.pipe(Layer.provide(layerDatabase))),
     Layer.provide(
       Layer.mergeAll(
         layerThreadManagement,
+        layerDatabase,
         layerProjectedProjects,
         Layer.mock(TextGeneration.TextGeneration)({ generateThreadTitle }),
         layerServerSettings,
@@ -374,7 +377,7 @@ describe("ThreadTitleRegenerationService", () => {
     }),
   );
 
-  it.effect("titles a fork's first message with the source history up to the fork point", () =>
+  it.effect("titles a fork's first message using bounded own history without ancestor lookup", () =>
     Effect.gen(function* () {
       const harness = makeHarness();
       yield* Effect.gen(function* () {
@@ -440,12 +443,13 @@ describe("ThreadTitleRegenerationService", () => {
         });
 
         const call = harness.generateThreadTitle.mock.calls[0]?.[0];
-        assert.equal(call?.message, "Try SQLite instead");
-        assert.equal(call?.forkSource?.title, "Seed title");
-        assert.include(call?.forkSource?.history, "Move session storage from Redis to Postgres");
-        assert.include(call?.forkSource?.history, "Sessions now persist in the Postgres");
-        assert.notInclude(call?.forkSource?.history, "Later work the fork never saw");
-        assert.notInclude(call?.forkSource?.history, "Rolled back attempt");
+        assert.include(call?.message, "Try SQLite instead");
+        assert.isTrue(call?.titleAssessment);
+        assert.equal(call?.linkedContext, "");
+        assert.isUndefined(call?.forkSource);
+        assert.notInclude(call?.message, "Move session storage");
+        assert.notInclude(call?.message, "Later work the fork never saw");
+        assert.notInclude(call?.message, "Rolled back attempt");
         const fork = yield* threads.getThreadProjection(forkThreadId);
         assert.equal(fork.thread.title, "Generated title");
       }).pipe(Effect.provide(harness.layer));

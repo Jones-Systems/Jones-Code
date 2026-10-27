@@ -116,6 +116,218 @@ export type JonesActionsCheckResult =
 
 export type JonesSourceRelationKind = "ahead" | "behind" | "identical" | "diverged";
 
+interface JonesActionsCheckInput {
+  readonly installedSource: string;
+  readonly targetSource?: string;
+  readonly desktopBundleIdentifier?: string;
+  readonly platform: JonesActionsPlatform;
+  readonly architecture: JonesActionsArchitecture;
+}
+
+type CheckOperation =
+  | "input"
+  | "main"
+  | "ancestry"
+  | "producer-list"
+  | "producer-detail"
+  | "ci-list"
+  | "artifact-list"
+  | "commit";
+type PendingBasis = "producer-not-completed" | "ci-not-completed" | "ci-not-observed";
+type SourceAssurance = "listed-main-only" | "ancestry-proved";
+type PendingStatus = "queued" | "in_progress" | "requested" | "waiting" | "pending" | "unknown";
+type FailedConclusion =
+  | "failure"
+  | "cancelled"
+  | "timed_out"
+  | "action_required"
+  | "neutral"
+  | "skipped"
+  | "stale"
+  | "startup_failure";
+interface CheckWitness {
+  readonly sourceSha?: string;
+  readonly runId?: number;
+  readonly sourceAssurance: SourceAssurance;
+}
+interface PendingWitness extends CheckWitness {
+  readonly reportedStatus?: PendingStatus;
+}
+interface FailedWitness extends CheckWitness {
+  readonly stage: "producer-list" | "producer-detail" | "ci-list";
+  readonly conclusion: FailedConclusion;
+}
+interface WitnessCount<Witness> {
+  count: number;
+  first?: Witness;
+}
+interface RunFrontier {
+  readonly runId: number;
+  readonly createdAt?: string;
+}
+interface DiscoveryStream {
+  readonly event: string;
+  pagesRead: number;
+  lastRawRowCount?: number;
+  end: "not-read" | "more-possible" | "short-page" | "page-limit" | "error";
+  bufferedRunCount: number;
+  lastYielded?: RunFrontier;
+  nextBuffered?: RunFrontier;
+}
+type DiscoveryLimit = "producer-pages" | "ci-page" | "artifact-page" | "unknown-terminal-evidence";
+interface CheckDiscovery {
+  termination:
+    | "not-started"
+    | "target-proved"
+    | "candidate-selected"
+    | "window-ended"
+    | "interrupted";
+  frontierWithinBudgetSatisfied: boolean;
+  unresolvedLimits: DiscoveryLimit[];
+  streams: DiscoveryStream[];
+}
+interface CheckEvidence {
+  readonly scope: {
+    readonly platform: JonesActionsPlatform;
+    readonly architecture: JonesActionsArchitecture;
+    readonly selection: "latest" | "exact";
+    installedSource?: string;
+    requestedSource?: string;
+    mainSource?: string;
+  };
+  readonly checkedAt: string;
+  readonly mainObservedAt?: string;
+  readonly pending: Record<PendingBasis, WitnessCount<PendingWitness>>;
+  readonly failedQualification: WitnessCount<FailedWitness>;
+  readonly rejections: {
+    installedSource: number;
+    noncanonicalOrWrongTarget: number;
+    noMatchingArtifact: number;
+    expiredArtifact: number;
+    bindingMismatch: number;
+  };
+  readonly discovery: CheckDiscovery;
+}
+interface CheckFailureContext {
+  operation: CheckOperation;
+  origin: "request" | "validation" | "unknown";
+}
+
+type JonesActionsCheckObservation = CheckEvidence &
+  (
+    | {
+        readonly kind: "available";
+        readonly candidate: JonesActionsCandidate;
+        readonly buildStartedAt?: string;
+      }
+    | {
+        readonly kind:
+          | "target-already-running"
+          | "qualification-pending"
+          | "qualification-failed"
+          | "no-eligible-package-in-window"
+          | "incomplete-discovery";
+      }
+    | {
+        readonly kind: "failure";
+        readonly failure: {
+          readonly reason: JonesActionsBlockedReason;
+          readonly operation: CheckOperation;
+          readonly origin: "request" | "validation" | "unknown";
+        };
+      }
+  );
+
+function hasPending(evidence: Pick<CheckEvidence, "pending">): boolean {
+  return Object.values(evidence.pending).some((witness) => witness.count > 0);
+}
+
+function projectJonesActionsCheck(
+  observation: JonesActionsCheckObservation,
+): JonesActionsCheckResult {
+  switch (observation.kind) {
+    case "available":
+      return {
+        state: "available",
+        candidate: observation.candidate,
+        ...(observation.buildStartedAt === undefined
+          ? {}
+          : { buildStartedAt: observation.buildStartedAt }),
+      };
+    case "target-already-running":
+      return { state: "no-new" };
+    case "qualification-pending":
+      return { state: "building", retryAfterMs: 240000 };
+    case "incomplete-discovery":
+      if (hasPending(observation)) return { state: "building", retryAfterMs: 240000 };
+      return { state: "blocked", reason: "unavailable", retryAfterMs: 240000 };
+    case "qualification-failed":
+    case "no-eligible-package-in-window":
+      return { state: "blocked", reason: "unavailable", retryAfterMs: 240000 };
+    case "failure":
+      return { state: "blocked", reason: observation.failure.reason, retryAfterMs: 240000 };
+    default: {
+      const unreachable: never = observation;
+      return unreachable;
+    }
+  }
+}
+
+function addWitness<Witness>(bucket: WitnessCount<Witness>, witness: Witness): void {
+  bucket.count++;
+  bucket.first ??= witness;
+}
+function addLimit(discovery: CheckDiscovery, limit: DiscoveryLimit): void {
+  if (!discovery.unresolvedLimits.includes(limit)) discovery.unresolvedLimits.push(limit);
+}
+function checkWitness(
+  run: Record<string, unknown>,
+  sourceAssurance: SourceAssurance,
+): CheckWitness {
+  return {
+    sourceAssurance,
+    ...(typeof run.head_sha === "string" && SHA.test(run.head_sha)
+      ? { sourceSha: run.head_sha }
+      : {}),
+    ...(typeof run.id === "number" && Number.isSafeInteger(run.id) && run.id > 0
+      ? { runId: run.id }
+      : {}),
+  };
+}
+function pendingStatus(value: unknown): PendingStatus {
+  switch (value) {
+    case "queued":
+    case "in_progress":
+    case "requested":
+    case "waiting":
+    case "pending":
+      return value;
+    default:
+      return "unknown";
+  }
+}
+function failedConclusion(value: unknown): FailedConclusion | undefined {
+  switch (value) {
+    case "failure":
+    case "cancelled":
+    case "timed_out":
+    case "action_required":
+    case "neutral":
+    case "skipped":
+    case "stale":
+    case "startup_failure":
+      return value;
+    default:
+      return undefined;
+  }
+}
+function runFrontier(run: Record<string, unknown>): RunFrontier | undefined {
+  const witness = checkWitness(run, "listed-main-only");
+  if (witness.runId === undefined) return undefined;
+  const createdAt = parseJonesBuildStartedAt(run.created_at);
+  return { runId: witness.runId, ...(createdAt === undefined ? {} : { createdAt }) };
+}
+
 /** Adapters own authentication and redirect following; neither enters the updater model. */
 export interface JonesActionsTransport {
   api(endpoint: string): Promise<unknown>;
@@ -224,32 +436,66 @@ async function* discoverArtifactRuns(
   transport: JonesActionsTransport,
   approved: ReturnType<typeof spec>,
   targetSource: string | undefined,
+  evidence: Pick<CheckEvidence, "discovery" | "rejections">,
+  context: CheckFailureContext,
 ): AsyncGenerator<Record<string, unknown>> {
-  const streams = approved.events.map((event) => ({
-    event,
-    page: 0,
-    complete: false,
-    runs: [] as Array<Record<string, unknown>>,
-  }));
+  const streams = approved.events.map((event) => {
+    const observation: DiscoveryStream = {
+      event,
+      pagesRead: 0,
+      end: "not-read",
+      bufferedRunCount: 0,
+    };
+    evidence.discovery.streams.push(observation);
+    return {
+      event,
+      page: 0,
+      complete: false,
+      runs: [] as Array<Record<string, unknown>>,
+      observation,
+    };
+  });
+  const updateBuffer = (stream: (typeof streams)[number]) => {
+    stream.observation.bufferedRunCount = stream.runs.length;
+    const next = stream.runs[0];
+    const pointer = next === undefined ? undefined : runFrontier(next);
+    if (pointer === undefined) delete stream.observation.nextBuffered;
+    else stream.observation.nextBuffered = pointer;
+  };
   const seen = new Set<number>();
   while (true) {
+    context.operation = "producer-list";
+    context.origin = "validation";
     for (const stream of streams) {
       if (stream.runs.length > 0 || stream.complete) continue;
-      const runs = rows(
-        await transport.api(
+      try {
+        context.origin = "request";
+        const response = await transport.api(
           `${API_ROOT}/actions/workflows/${NodePath.posix.basename(approved.workflow)}/runs?branch=main&event=${stream.event}${targetSource === undefined ? "" : `&head_sha=${targetSource}`}&per_page=50&page=${++stream.page}`,
-        ),
-        "workflow_runs",
-      );
-      stream.complete = runs.length < 50 || stream.page === 3;
-      stream.runs = runs
-        .filter(
-          (run) =>
-            canonicalArtifactRun(run, approved) &&
-            run.event === stream.event &&
-            (targetSource === undefined || run.head_sha === targetSource),
-        )
-        .sort(newestArtifactRun);
+        );
+        context.origin = "validation";
+        const runs = rows(response, "workflow_runs");
+        stream.observation.pagesRead++;
+        stream.observation.lastRawRowCount = runs.length;
+        stream.observation.end =
+          runs.length < 50 ? "short-page" : stream.page === 3 ? "page-limit" : "more-possible";
+        if (stream.observation.end === "page-limit") addLimit(evidence.discovery, "producer-pages");
+        stream.complete = runs.length < 50 || stream.page === 3;
+        stream.runs = runs
+          .filter((run) => {
+            const accepted =
+              canonicalArtifactRun(run, approved) &&
+              run.event === stream.event &&
+              (targetSource === undefined || run.head_sha === targetSource);
+            if (!accepted) evidence.rejections.noncanonicalOrWrongTarget++;
+            return accepted;
+          })
+          .sort(newestArtifactRun);
+        updateBuffer(stream);
+      } catch (error) {
+        stream.observation.end = "error";
+        throw error;
+      }
     }
     // Refill every drained frontier before choosing: its next page may precede another stream.
     if (streams.some((stream) => stream.runs.length === 0 && !stream.complete)) continue;
@@ -258,9 +504,19 @@ async function* discoverArtifactRuns(
       .sort((left, right) => newestArtifactRun(left.runs[0]!, right.runs[0]!))[0];
     if (frontier === undefined) return;
     const run = frontier.runs.shift()!;
-    const id = positive(run.id);
+    updateBuffer(frontier);
+    let id: number;
+    try {
+      id = positive(run.id);
+    } catch (error) {
+      frontier.observation.end = "error";
+      throw error;
+    }
     if (seen.has(id)) continue;
     seen.add(id);
+    const yielded = runFrontier(run);
+    if (yielded !== undefined) frontier.observation.lastYielded = yielded;
+    evidence.discovery.frontierWithinBudgetSatisfied = true;
     yield run;
   }
 }
@@ -355,59 +611,150 @@ export class JonesActionsClient {
     this.now = options.now ?? Date.now;
   }
 
-  async check(input: {
-    readonly installedSource: string;
-    readonly targetSource?: string;
-    readonly desktopBundleIdentifier?: string;
-    readonly platform: JonesActionsPlatform;
-    readonly architecture: JonesActionsArchitecture;
-  }): Promise<JonesActionsCheckResult> {
+  async check(input: JonesActionsCheckInput): Promise<JonesActionsCheckResult> {
+    return projectJonesActionsCheck(await this.observeCheck(input));
+  }
+
+  async observeCheck(input: JonesActionsCheckInput): Promise<JonesActionsCheckObservation> {
+    const scope: CheckEvidence["scope"] = {
+      platform: input.platform,
+      architecture: input.architecture,
+      selection: input.targetSource === undefined ? "latest" : "exact",
+    };
+    const pending: CheckEvidence["pending"] = {
+      "producer-not-completed": { count: 0 },
+      "ci-not-completed": { count: 0 },
+      "ci-not-observed": { count: 0 },
+    };
+    const failedQualification: CheckEvidence["failedQualification"] = { count: 0 };
+    const rejections: CheckEvidence["rejections"] = {
+      installedSource: 0,
+      noncanonicalOrWrongTarget: 0,
+      noMatchingArtifact: 0,
+      expiredArtifact: 0,
+      bindingMismatch: 0,
+    };
+    const discovery: CheckDiscovery = {
+      termination: "not-started",
+      frontierWithinBudgetSatisfied: false,
+      unresolvedLimits: [],
+      streams: [],
+    };
+    let mainObservedAt: string | undefined;
+    const completedEvidence = (): CheckEvidence => ({
+      scope,
+      pending,
+      failedQualification,
+      rejections,
+      discovery,
+      checkedAt: new Date(this.now()).toISOString(),
+      ...(mainObservedAt === undefined ? {} : { mainObservedAt }),
+    });
+    const context: CheckFailureContext = { operation: "input", origin: "validation" };
+    const read = async (operation: CheckOperation, endpoint: string): Promise<unknown> => {
+      context.operation = operation;
+      context.origin = "request";
+      const response = await this.transport.api(endpoint);
+      context.origin = "validation";
+      return response;
+    };
+    const descends = async (base: string, head: string): Promise<boolean> => {
+      context.operation = "ancestry";
+      context.origin = "unknown";
+      const proven = await this.descends(base, head);
+      context.origin = "validation";
+      return proven;
+    };
+    const observeTerminal = (
+      run: Record<string, unknown>,
+      stage: FailedWitness["stage"],
+      sourceAssurance: SourceAssurance,
+      unresolved = true,
+    ) => {
+      if (run.status !== "completed" || run.conclusion === "success") return;
+      const conclusion = failedConclusion(run.conclusion);
+      if (conclusion === undefined) {
+        if (unresolved) addLimit(discovery, "unknown-terminal-evidence");
+      } else
+        addWitness(failedQualification, {
+          ...checkWitness(run, sourceAssurance),
+          stage,
+          conclusion,
+        });
+    };
     try {
-      source(input.installedSource);
+      scope.installedSource = source(input.installedSource);
       const targetSource =
         input.targetSource === undefined ? undefined : source(input.targetSource);
+      if (targetSource !== undefined) scope.requestedSource = targetSource;
       const approved = spec(input.platform, input.architecture, input.desktopBundleIdentifier);
-      const main = record(await this.transport.api(`${API_ROOT}/commits/main`));
+      const main = record(await read("main", `${API_ROOT}/commits/main`));
       const mainSource = source(main.sha);
+      scope.mainSource = mainSource;
+      mainObservedAt = new Date(this.now()).toISOString();
       // Installed source must itself be on canonical main, including after a force rewrite.
-      if (!(await this.descends(input.installedSource, mainSource)))
+      if (!(await descends(input.installedSource, mainSource)))
         throw new JonesActionsError("unqualified");
       if (
         targetSource !== undefined &&
-        (!(await this.descends(input.installedSource, targetSource)) ||
-          !(await this.descends(targetSource, mainSource)))
+        (!(await descends(input.installedSource, targetSource)) ||
+          !(await descends(targetSource, mainSource)))
       )
         throw new JonesActionsError("unqualified");
-      if ((targetSource ?? mainSource) === input.installedSource) return { state: "no-new" };
-      let building = false;
+      if ((targetSource ?? mainSource) === input.installedSource) {
+        discovery.termination = "target-proved";
+        return { ...completedEvidence(), kind: "target-already-running" };
+      }
       const ciObservations = new Map<string, Array<Record<string, unknown>>>();
-      for await (const listed of discoverArtifactRuns(this.transport, approved, targetSource)) {
+      for await (const listed of discoverArtifactRuns(
+        this.transport,
+        approved,
+        targetSource,
+        { discovery, rejections },
+        context,
+      )) {
         if (listed.status !== "completed") {
-          building = true;
+          addWitness(pending["producer-not-completed"], {
+            ...checkWitness(listed, "listed-main-only"),
+            reportedStatus: pendingStatus(listed.status),
+          });
           continue;
         }
-        if (listed.conclusion !== "success" || listed.head_sha === input.installedSource) continue;
-        const run = record(
-          await this.transport.api(`${API_ROOT}/actions/runs/${positive(listed.id)}`),
-        );
-        if (
-          !canonicalArtifactRun(run, approved) ||
-          run.status !== "completed" ||
-          run.conclusion !== "success"
-        )
+        observeTerminal(listed, "producer-list", "listed-main-only");
+        if (listed.conclusion !== "success") continue;
+        if (listed.head_sha === input.installedSource) {
+          rejections.installedSource++;
           continue;
+        }
+        context.operation = "producer-detail";
+        const run = record(
+          await read("producer-detail", `${API_ROOT}/actions/runs/${positive(listed.id)}`),
+        );
+        if (!canonicalArtifactRun(run, approved)) {
+          rejections.noncanonicalOrWrongTarget++;
+          continue;
+        }
+        if (targetSource === undefined || run.head_sha === targetSource) {
+          observeTerminal(run, "producer-detail", "listed-main-only");
+        }
+        if (run.status !== "completed" || run.conclusion !== "success") continue;
         const candidateSource = source(run.head_sha);
         if (
           (targetSource !== undefined && candidateSource !== targetSource) ||
           candidateSource === input.installedSource ||
-          !(await this.descends(input.installedSource, candidateSource)) ||
-          !(await this.descends(candidateSource, mainSource))
-        )
+          !(await descends(input.installedSource, candidateSource)) ||
+          !(await descends(candidateSource, mainSource))
+        ) {
+          rejections.noncanonicalOrWrongTarget++;
           continue;
+        }
         const ciEndpoint = `${API_ROOT}/actions/workflows/ci.yml/runs?branch=main&event=push&head_sha=${candidateSource}&per_page=100&page=1`;
+        context.operation = "ci-list";
+        context.origin = "validation";
         let ciRuns = ciObservations.get(ciEndpoint);
+        const freshCi = ciRuns === undefined;
         if (ciRuns === undefined) {
-          ciRuns = rows(await this.transport.api(ciEndpoint), "workflow_runs");
+          ciRuns = rows(await read("ci-list", ciEndpoint), "workflow_runs");
           ciObservations.set(ciEndpoint, ciRuns);
         }
         const sourceCi = ciRuns.filter(
@@ -416,33 +763,61 @@ export class JonesActionsClient {
         const ci = sourceCi.find(
           (item) => item.status === "completed" && item.conclusion === "success",
         );
+        if (freshCi) {
+          for (const item of sourceCi)
+            observeTerminal(item, "ci-list", "ancestry-proved", ci === undefined);
+        }
         if (!ci) {
-          // Unlisted or unfinished main CI can still qualify this build; a completed failure cannot.
-          if (sourceCi.length === 0 || sourceCi.some((item) => item.status !== "completed"))
-            building = true;
+          if (ciRuns.length === 100) addLimit(discovery, "ci-page");
+          // Count each inspected CI row once, even when several producers share its source.
+          if (freshCi) {
+            if (sourceCi.length === 0)
+              addWitness(pending["ci-not-observed"], {
+                sourceSha: candidateSource,
+                sourceAssurance: "ancestry-proved",
+              });
+            for (const item of sourceCi) {
+              if (item.status !== "completed")
+                addWitness(pending["ci-not-completed"], {
+                  ...checkWitness(item, "ancestry-proved"),
+                  reportedStatus: pendingStatus(item.status),
+                });
+            }
+          }
           continue;
         }
+        context.operation = "artifact-list";
         const runId = positive(run.id),
           runAttempt = positive(run.run_attempt);
         const artifacts = rows(
-          await this.transport.api(
+          await read(
+            "artifact-list",
             `${API_ROOT}/actions/runs/${runId}/artifacts?per_page=100&page=1`,
           ),
           "artifacts",
         );
+        if (artifacts.length === 0) rejections.noMatchingArtifact++;
         for (const artifact of artifacts) {
           const name = text(artifact.name);
           const prefix = `${approved.name}-${runId}-${runAttempt}--`;
-          if (!name.startsWith(prefix)) continue;
+          if (!name.startsWith(prefix)) {
+            rejections.noMatchingArtifact++;
+            continue;
+          }
           const version = name.slice(prefix.length);
-          if (!PREVIEW.test(version) || !version.endsWith(`.${runId}.${runAttempt}`)) continue;
+          if (!PREVIEW.test(version) || !version.endsWith(`.${runId}.${runAttempt}`)) {
+            rejections.noMatchingArtifact++;
+            continue;
+          }
           const expiresAt = text(artifact.expires_at);
           if (
             artifact.expired !== false ||
             !Number.isFinite(Date.parse(expiresAt)) ||
             Date.parse(expiresAt) <= this.now()
-          )
+          ) {
+            rejections.expiredArtifact++;
             continue;
+          }
           const artifactRun = record(artifact.workflow_run);
           if (
             artifactRun.id !== runId ||
@@ -450,46 +825,64 @@ export class JonesActionsClient {
             artifactRun.head_branch !== "main" ||
             artifactRun.repository_id !== record(run.repository).id ||
             artifactRun.head_repository_id !== record(run.repository).id
-          )
+          ) {
+            rejections.bindingMismatch++;
             continue;
-          const commit = record(
-            await this.transport.api(`${API_ROOT}/git/commits/${candidateSource}`),
-          );
+          }
+          const commit = record(await read("commit", `${API_ROOT}/git/commits/${candidateSource}`));
           if (commit.sha !== candidateSource) throw new JonesActionsError("unqualified");
+          context.operation = "artifact-list";
           const artifactBytes = positive(artifact.size_in_bytes);
           if (artifactBytes > MAX_ARCHIVE_BYTES) throw new JonesActionsError("integrity");
           const buildStartedAt = parseJonesBuildStartedAt(run.run_started_at);
+          context.operation = "commit";
+          const candidate: JonesActionsCandidate = {
+            schema: 1,
+            repository: JONES_ACTIONS_REPOSITORY,
+            source: candidateSource,
+            tree: source(record(commit.tree).sha),
+            installedSource: input.installedSource,
+            workflow: approved.workflow,
+            workflowId: positive(run.workflow_id),
+            runId,
+            runAttempt,
+            ciRunId: positive(ci.id),
+            artifactId: positive(artifact.id),
+            artifactName: name,
+            artifactDigest: digest(artifact.digest),
+            artifactBytes,
+            expiresAt,
+            version,
+            platform: input.platform,
+            architecture: input.architecture,
+          };
+          discovery.termination = "candidate-selected";
           return {
-            state: "available",
+            ...completedEvidence(),
+            kind: "available",
+            candidate,
             ...(buildStartedAt === undefined ? {} : { buildStartedAt }),
-            candidate: {
-              schema: 1,
-              repository: JONES_ACTIONS_REPOSITORY,
-              source: candidateSource,
-              tree: source(record(commit.tree).sha),
-              installedSource: input.installedSource,
-              workflow: approved.workflow,
-              workflowId: positive(run.workflow_id),
-              runId,
-              runAttempt,
-              ciRunId: positive(ci.id),
-              artifactId: positive(artifact.id),
-              artifactName: name,
-              artifactDigest: digest(artifact.digest),
-              artifactBytes,
-              expiresAt,
-              version,
-              platform: input.platform,
-              architecture: input.architecture,
-            },
           };
         }
+        if (artifacts.length === 100) addLimit(discovery, "artifact-page");
       }
-      return building
-        ? { state: "building", retryAfterMs: 240000 }
-        : { state: "blocked", reason: "unavailable", retryAfterMs: 240000 };
+      discovery.termination = "window-ended";
+      const kind =
+        discovery.unresolvedLimits.length > 0
+          ? "incomplete-discovery"
+          : hasPending({ pending })
+            ? "qualification-pending"
+            : failedQualification.count > 0
+              ? "qualification-failed"
+              : "no-eligible-package-in-window";
+      return { ...completedEvidence(), kind };
     } catch (error) {
-      return { state: "blocked", reason: safeTransportError(error).reason, retryAfterMs: 240000 };
+      discovery.termination = "interrupted";
+      return {
+        ...completedEvidence(),
+        kind: "failure",
+        failure: { reason: safeTransportError(error).reason, ...context },
+      };
     }
   }
 

@@ -27,6 +27,8 @@ import {
   readQualifiedRuntimeReceipt,
   withQualifiedRuntimeLock,
   QUALIFIED_UPDATES_PROTOCOL,
+  QUALIFIED_RECOVERY_PROTOCOL,
+  RECOVERED_QUALIFIED_STAGE_PROTOCOL,
   qualifiedStagingTiming,
   retainQualifiedAttemptTimings,
   type QualifiedDigestOptions,
@@ -181,7 +183,13 @@ const preflightQualifiedCandidate = async (
       );
     },
   );
-  const reason = qualifiedServicePreflightFailure({ ...result, version: staged.receipt.version });
+  const reason = qualifiedServicePreflightFailure({
+    ...result,
+    version: staged.receipt.version,
+    ...(staged.protocol === RECOVERED_QUALIFIED_STAGE_PROTOCOL
+      ? { requiredQualifiedRecoveryProtocol: QUALIFIED_RECOVERY_PROTOCOL }
+      : {}),
+  });
   if (reason !== undefined) throw new QualifiedCandidatePreflightError(reason);
   const preflight = decodeServicePreflightResult(JSON.parse(result.stdout.trim()) as unknown);
   return preflight?.status === "ready" ? preflight.migrationPlan : undefined;
@@ -1297,6 +1305,7 @@ export class Launcher {
       childVersion: version,
       launcherVersion: packageJson.version,
       qualifiedUpdatesProtocol: QUALIFIED_UPDATES_PROTOCOL,
+      qualifiedRecoveryProtocol: QUALIFIED_RECOVERY_PROTOCOL,
       updateOperationsProtocol: 1,
       updateRetirementProtocol: 1,
       updateOutcomeProtocol: 1,
@@ -1701,6 +1710,13 @@ export class Launcher {
           throw new Error("Install target differs from its staged handle.");
         if (child.process.pid === undefined)
           throw new Error("The requesting child has no native process identity.");
+        if (
+          qualified.protocol === RECOVERED_QUALIFIED_STAGE_PROTOCOL &&
+          message.qualifiedRecoveryProtocol !== QUALIFIED_RECOVERY_PROTOCOL
+        )
+          throw new QualifiedCandidatePreflightError(
+            "qualified-recovery-unsupported: The current server cannot read historical enrollment receipts.",
+          );
         migrationPlan = await preflightQualifiedCandidate(this.#baseDir, qualified);
         await preflightQualifiedBackup(this.#baseDir, message.dbPath, this.#backupAdapter);
         if (this.#child !== child || this.#stopRequested || this.#stopping)
