@@ -13,7 +13,8 @@
         "apps/server/src/jones/workstreams/native/runtime/memberPeerPinQualification.test.ts",
         "apps/server/src/jones/workstreams/native/runtime/homeBind.test.ts",
         "apps/server/src/jones/workstreams/native/runtime/homePeerPinQualification.test.ts",
-        "apps/server/src/jones/workstreams/native/store/homeBindReceiptStore.test.ts"
+        "apps/server/src/jones/workstreams/native/store/homeBindReceiptStore.test.ts",
+        "apps/server/src/jones/mcp/workstreams/nativeBinds.test.ts"
       ],
       "commands": [
         "vp test run packages/contracts/src/jones/workstreamsHomeBind.test.ts packages/contracts/src/jones/workstreamsMemberEnrollment.test.ts apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.test.ts --maxWorkers=1 --no-file-parallelism",

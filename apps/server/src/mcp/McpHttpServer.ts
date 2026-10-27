@@ -1,5 +1,7 @@
 import * as NativePeerMcpAuthentication from "../jones/workstreams/native/runtime/peerMcpAuthentication.ts";
 import * as NativeReadMcp from "../jones/mcp/workstreams/nativeReads.ts";
+import * as NativeBindMcp from "../jones/mcp/workstreams/nativeBinds.ts";
+import * as NativeHomeBind from "../jones/workstreams/native/runtime/homeBind.ts";
 import * as NativeReadProtocol from "../jones/workstreams/native/forwarding/homeReadProtocol.ts";
 import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
 import { WorkstreamToolkit } from "../jones/mcp/workstreams/tools.ts";
@@ -1202,7 +1204,19 @@ export const layerNativeHomeReadToolkit = // Register only when selected native 
     ),
   );
 
+/** Only a qualified application composition may supply this producer. No default is installed. */
+export const layerNativeHomeBindToolkit = Layer.unwrap(
+  Effect.map(Effect.serviceOption(NativeHomeBind.HomeBind), (producer) =>
+    Option.isNone(producer)
+      ? Layer.empty
+      : toolkitRegistration(NativeBindMcp.toolkit, NativeBindMcp.handlers).pipe(
+          Layer.provide(Layer.succeed(NativeHomeBind.HomeBind, producer.value)),
+        ),
+  ),
+);
+
 export const layer = Layer.mergeAll(
+  layerNativeHomeBindToolkit,
   layerNativeHomeReadToolkit,
   layerWorkstreamToolkit,
   toolkitRegistration(UserResponseRequestToolkit, userResponseRequestHandlers).pipe(

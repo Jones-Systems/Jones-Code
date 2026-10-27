@@ -2177,7 +2177,9 @@
     "packages/contracts/src/jones/workstreamsMemberEnrollment.test.ts": "jones-owned",
     "apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.ts": "jones-owned",
     "apps/server/src/jones/persistence/Migrations/129_JonesWorkstreamsMemberBindings.test.ts": "jones-owned",
-    "scripts/jones/boundary/fragments/workstreams-member-binding-foundation.json": "jones-owned"
+    "scripts/jones/boundary/fragments/workstreams-member-binding-foundation.json": "jones-owned",
+    "apps/server/src/jones/mcp/workstreams/nativeBinds.ts": "jones-owned",
+    "apps/server/src/jones/mcp/workstreams/nativeBinds.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -2913,6 +2915,14 @@
     {
       "from": "apps/server/src/server.ts",
       "to": "apps/server/src/jones/workstreams/native/runtime/peerMcpAuthentication.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/workstreams/nativeBinds.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/workstreams/native/runtime/homeBind.ts"
     }
   ]
 }
