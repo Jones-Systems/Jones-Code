@@ -7,6 +7,25 @@
   },
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "paths": {
+    "packages/client-runtime/src/operations/jonesPreparedTurn.ts": "jones-owned",
+    "apps/web/src/jones/pendingSends/usePendingTurn.ts": "jones-owned",
+    "apps/web/src/jones/pendingSends/newThread.ts": "jones-owned",
+    "apps/web/src/jones/pendingSends/PendingSendStatus.browser.test.tsx": "jones-owned",
+    "apps/web/src/jones/pendingSends/PendingSendStatus.tsx": "jones-owned",
+    "apps/web/src/jones/pendingSends/send.test.ts": "jones-owned",
+    "apps/web/src/jones/pendingSends/sidebar.ts": "jones-owned",
+    "apps/web/src/jones/pendingSends/sidebar.test.ts": "jones-owned",
+    "apps/web/src/jones/pendingSends/send.ts": "jones-owned",
+    "apps/web/src/jones/pendingSends/PendingSendsCoordinator.tsx": "jones-owned",
+    "apps/web/src/jones/pendingSends/hooks.ts": "jones-owned",
+    "apps/web/src/jones/pendingSends/store.ts": "jones-owned",
+    "apps/web/src/jones/pendingSends/store.test.ts": "jones-owned",
+    "apps/web/src/jones/pendingSends/app.browser.test.tsx": "jones-owned",
+    "apps/web/src/jones/pendingSends/previews.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/optimistic-send-feedback.json": "jones-owned",
+    "apps/web/src/components/chat/useAttachmentPreviewHandoff.ts": "accepted-shared",
+    "apps/web/src/components/chat/chatViewSend.ts": "accepted-shared",
+    "apps/web/test/fakeEnvironment.ts": "accepted-shared",
     "apps/web/src/jones/composer/ComposerQuickControls.tsx": "jones-owned",
     "apps/web/src/jones/composer/ComposerQuickControls.browser.test.tsx": "jones-owned",
     "scripts/jones/boundary/fragments/composer-quick-controls.json": "jones-owned",
@@ -1673,7 +1692,7 @@
     "apps/web/src/components/chat/useComposerCommandKey.ts": "upstream-deleted",
     "apps/web/src/components/chat/useComposerContextImport.ts": "hook",
     "apps/web/src/components/chat/useComposerProviderModel.ts": "accepted-shared",
-    "apps/web/src/components/chat/useComposerResume.ts": "accepted-shared",
+    "apps/web/src/components/chat/useComposerResume.ts": "hook",
     "apps/web/src/components/chat/useComposerSelection.ts": "hook",
     "apps/web/src/components/chat/useComposerSend.ts": "hook",
     "apps/web/src/components/chat/useComposerStash.ts": "hook",
@@ -2171,7 +2190,8 @@
     "apps/server/src/orchestration-v2/ThreadTitleRegenerationService.ts": "hook",
     "packages/provider-core/src/server/textGenerationPrompts.ts": "hook",
     "apps/server/src/orchestration-v2/ThreadTitleRegenerationService.test.ts": "jones-tests-in-upstream",
-    "packages/provider-muse/src/server/textGeneration.test.ts": "jones-tests-in-upstream"
+    "packages/provider-muse/src/server/textGeneration.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/components/ThreadRouteView.tsx": "hook"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -2925,6 +2945,14 @@
     {
       "from": "apps/server/src/storageCleanup.test.ts",
       "to": "apps/server/src/jones/cleanup/DeletionAdmission.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useComposerResume.ts",
+      "to": "apps/web/src/jones/pendingSends/store.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useComposerResume.ts",
+      "to": "apps/web/src/jones/pendingSends/usePendingTurn.ts"
     }
   ]
 }

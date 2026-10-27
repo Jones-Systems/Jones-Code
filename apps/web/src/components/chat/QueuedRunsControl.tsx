@@ -1,3 +1,4 @@
+import { PendingSendStatus } from "../../jones/pendingSends/PendingSendStatus";
 import { QueuedClearAction } from "../../jones/queue/QueuedClearAction";
 import { useQueuedRunRemoval } from "../../jones/queue/useQueuedRunRemoval";
 import { canDispatchQueuedRun } from "../../jones/queue/queuedRunAdmission";
@@ -23,13 +24,7 @@ import type {
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
-import {
-  Clock3Icon,
-  CornerUpRightIcon,
-  GripVerticalIcon,
-  ListOrderedIcon,
-  PencilIcon,
-} from "lucide-react";
+import { CornerUpRightIcon, GripVerticalIcon, ListOrderedIcon, PencilIcon } from "lucide-react";
 import { useId, useImperativeHandle, useLayoutEffect, useRef, useState, type Ref } from "react";
 
 import { useAssetUrls } from "../../assets/assetUrls";
@@ -120,7 +115,15 @@ export function QueuedRunsControl({
   const dragArmedRunIdRef = useRef<RunId | null>(null);
   const steerInFlightRef = useRef(false);
   // Run-only acknowledgements can resurrect pending rows after cancellation or startup.
-  const acknowledgedMessageIds = new Set((projection?.messages ?? []).map((message) => message.id));
+  const acknowledgedMessageIds = new Set(
+    (projection?.runs ?? []).flatMap((run) =>
+      run.userMessageId &&
+      (run.status === "cancelled" ||
+        projection?.messages.some((message) => message.id === run.userMessageId))
+        ? [run.userMessageId]
+        : [],
+    ),
+  );
   const queuedImageAttachmentResources = queuedImageResources(projection);
   const queuedImageAttachmentUrls = useAssetUrls(
     props.environmentId,
@@ -269,7 +272,7 @@ export function QueuedRunsControl({
     ...optimisticQueued.map((message) => ({
       key: message.id,
       runId: null,
-      messageId: null,
+      messageId: message.id,
       serverIndex: null,
       text: message.text,
       editable: true,
@@ -513,10 +516,11 @@ export function QueuedRunsControl({
                     </ComposerBanner.Icon>
                     <ComposerBanner.Content className="text-foreground/80">
                       {isEditing ? <span className="sr-only">Editing queued message: </span> : null}
-                      {item.pending ? (
-                        <Clock3Icon
-                          aria-label="Saving queued message"
-                          className="size-3 shrink-0 text-muted-foreground/60"
+                      {item.pending && item.messageId ? (
+                        <PendingSendStatus
+                          environmentId={props.environmentId}
+                          threadId={props.threadId}
+                          messageId={item.messageId}
                         />
                       ) : null}
                       {item.thumbnails.length > 0 ? (

@@ -1,3 +1,8 @@
+import { threadEnvironment } from "../../state/threads";
+import { useOrchestrationCommand } from "../../state/use-orchestration-command";
+import { pendingNewThread } from "../../jones/pendingSends/newThread";
+import { pendingSends } from "../../jones/pendingSends/store";
+import { usePendingTurn } from "../../jones/pendingSends/usePendingTurn";
 import {
   AuthOrchestrationOperateScope,
   type EnvironmentId,
@@ -30,8 +35,6 @@ import {
 } from "../../proposedPlan";
 import type { LatestProposedPlanState } from "../../session-logic";
 import { readEnvironmentScope } from "../../state/session";
-import { threadEnvironment } from "../../state/threads";
-import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import type { ChatMessage } from "../../types";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import {
@@ -98,9 +101,7 @@ export function usePlanFollowUpSend(input: PlanFollowUpSendInput) {
     anchorNewTurn,
     persistThreadSettingsForNextTurn,
   } = input;
-  const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
-    reportFailure: false,
-  });
+  const startThreadTurn = usePendingTurn();
   const setComposerDraftInteractionMode = useComposerDraftStore(
     (store) => store.setInteractionMode,
   );
@@ -215,9 +216,7 @@ export function usePlanFollowUpSend(input: PlanFollowUpSendInput) {
       return true;
     }
 
-    setOptimisticUserMessages((existing) =>
-      existing.filter((message) => message.id !== messageIdForSend),
-    );
+    pendingSends.failBeforeDispatch(environmentId, threadIdForSend, messageIdForSend);
     if (!isAtomCommandInterrupted(failure)) {
       const error = squashAtomCommandFailure(failure);
       setThreadError(
@@ -238,8 +237,8 @@ interface ImplementPlanInNewThreadInput extends PlanSendBase {
 }
 
 /**
- * Starts a fresh thread that implements the active proposed plan, then opens it. The new
- * thread is deleted again if it cannot be started or opened.
+ * Starts a fresh thread that implements the active proposed plan, then opens it.
+ * Navigation failure leaves the accepted thread intact.
  */
 export function useImplementPlanInNewThread(input: ImplementPlanInNewThreadInput) {
   const {
@@ -260,10 +259,7 @@ export function useImplementPlanInNewThread(input: ImplementPlanInNewThreadInput
   } = input;
   const navigate = useNavigate();
   const createThread = useOrchestrationCommand(threadEnvironment.create, { reportFailure: false });
-  const deleteThread = useOrchestrationCommand(threadEnvironment.delete, { reportFailure: false });
-  const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
-    reportFailure: false,
-  });
+  const startThreadTurn = usePendingTurn();
   const { sendInFlight: sendInFlightRef } = draftSendState(routeThreadKey);
 
   return async () => {
@@ -302,6 +298,27 @@ export function useImplementPlanInNewThread(input: ImplementPlanInNewThreadInput
     sendInFlightRef.current = true;
     beginLocalDispatch({ preparingWorktree: false });
 
+    const messageId = newMessageId();
+    pendingSends.admit(environmentId, nextThreadId, {
+      id: messageId,
+      role: "user",
+      text: outgoingImplementationPrompt,
+      runId: null,
+      createdAt,
+      updatedAt: createdAt,
+      streaming: false,
+    });
+    pendingSends.attachThread(
+      environmentId,
+      nextThreadId,
+      pendingNewThread(
+        activeThread,
+        nextThreadId,
+        nextThreadTitle,
+        nextThreadModelSelection,
+        createdAt,
+      ),
+    );
     const createResult = await createThread({
       environmentId,
       input: {
@@ -316,34 +333,36 @@ export function useImplementPlanInNewThread(input: ImplementPlanInNewThreadInput
         createdAt,
       },
     });
+    let accepted = false;
+    pendingSends.whenAccepted(environmentId, nextThreadId, messageId, () => {
+      accepted = true;
+    });
+    const startResult =
+      createResult._tag === "Failure"
+        ? createResult
+        : await startThreadTurn({
+            environmentId,
+            input: {
+              threadId: nextThreadId,
+              message: {
+                messageId,
+                role: "user",
+                text: outgoingImplementationPrompt,
+                attachments: [],
+              },
+              modelSelection: nextThreadModelSelection,
+              titleSeed: nextThreadTitle,
+              runtimeMode: defaultRuntimeMode,
+              interactionMode: "default",
+              sourceProposedPlan: { threadId: activeThread.id, planId: activeProposedPlan.id },
+              createdAt,
+            },
+          });
     let failure: AtomCommandResult<unknown, unknown> | null =
-      createResult._tag === "Failure" ? createResult : null;
-
-    if (failure === null) {
-      const startResult = await startThreadTurn({
-        environmentId,
-        input: {
-          threadId: nextThreadId,
-          message: {
-            messageId: newMessageId(),
-            role: "user",
-            text: outgoingImplementationPrompt,
-            attachments: [],
-          },
-          modelSelection: nextThreadModelSelection,
-          titleSeed: nextThreadTitle,
-          runtimeMode: defaultRuntimeMode,
-          interactionMode: "default",
-          sourceProposedPlan: {
-            threadId: activeThread.id,
-            planId: activeProposedPlan.id,
-          },
-          createdAt,
-        },
-      });
-      failure = startResult._tag === "Failure" ? startResult : null;
-    }
-
+      startResult._tag === "Failure" ? startResult : null;
+    accepted ||= startResult._tag === "Success";
+    if (createResult._tag === "Failure")
+      pendingSends.failBeforeDispatch(environmentId, nextThreadId, messageId);
     if (failure === null) {
       const startedResult = await settlePromise(() =>
         waitForStartedServerThread(scopeThreadRef(activeThread.environmentId, nextThreadId)),
@@ -365,24 +384,14 @@ export function useImplementPlanInNewThread(input: ImplementPlanInNewThreadInput
     }
 
     if (failure !== null) {
-      const cleanupResult = await deleteThread({
-        environmentId,
-        input: {
-          threadId: nextThreadId,
-        },
-      });
-      if (cleanupResult._tag === "Failure" && !isAtomCommandInterrupted(cleanupResult)) {
-        console.warn(
-          "Failed to clean up implementation thread after start failure.",
-          squashAtomCommandFailure(cleanupResult),
-        );
-      }
       if (!isAtomCommandInterrupted(failure)) {
         const error = squashAtomCommandFailure(failure);
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: "Could not start implementation thread",
+            title: accepted
+              ? "Thread started; could not open it"
+              : "Thread delivery needs confirmation",
             description:
               error instanceof Error
                 ? error.message

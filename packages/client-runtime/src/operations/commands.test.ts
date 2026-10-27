@@ -1,4 +1,5 @@
 import {
+  ChatAttachmentId,
   CheckpointId,
   CheckpointRef,
   CheckpointScopeId,
@@ -25,6 +26,7 @@ import {
   type OrchestrationV2ThreadLaunchInput,
   type OrchestrationV2ThreadProjection,
   type ProjectMutation,
+  type PersistChatAttachmentsResult,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Crypto from "effect/Crypto";
@@ -52,6 +54,8 @@ import {
   revertThreadCheckpoint,
   resumeThreadQueue,
   startThreadTurn,
+  prepareThreadTurn,
+  dispatchPreparedThreadTurn,
   prepareImportedHistoryMessage,
 } from "./commands.ts";
 
@@ -74,7 +78,9 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
   readonly listRefs?: (
     input: VcsListRefsInput,
   ) => Effect.Effect<VcsListRefsResult, EnvironmentRpcFailure<typeof WS_METHODS.vcsListRefs>>;
-  readonly onLaunch?: () => Effect.Effect<void>;
+  readonly onLaunch?: () => Effect.Effect<void, OrchestrationDispatchCommandError>;
+  readonly onDispatch?: () => Effect.Effect<void, OrchestrationDispatchCommandError>;
+  readonly persistAttachments?: () => Effect.Effect<PersistChatAttachmentsResult>;
   readonly commands: OrchestrationV2Command[];
   readonly projects: ProjectMutation[];
   readonly launches?: OrchestrationV2ThreadLaunchInput[];
@@ -86,10 +92,12 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
   readonly advertiseQueuedToolBoundaryDelivery?: boolean;
 }) {
   const client = {
+    [WS_METHODS.assetsPersistChatAttachments]: input.persistAttachments ?? (() => Effect.never),
     [WS_METHODS.vcsListRefs]: input.listRefs ?? (() => Effect.never),
     [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command: OrchestrationV2Command) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         input.commands.push(command);
+        yield* input.onDispatch?.() ?? Effect.void;
         return { sequence: input.commands.length };
       }),
     [ORCHESTRATION_V2_WS_METHODS.getThreadProjection]: (requestInput: {
@@ -1043,6 +1051,176 @@ const refsResult = (refs: VcsListRefsResult["refs"], isRepo = true): VcsListRefs
 const withBaseRef = (baseRef: string) => ({
   ...automaticWorktreeLaunch,
   workspaceStrategy: { ...automaticWorktreeLaunch.workspaceStrategy, baseRef },
+});
+
+describe("prepared thread turns", () => {
+  it.effect.each([false, true])(
+    "retries identical wire bytes after input, projection, defaults and capabilities change (launch=%s)",
+    (launch) =>
+      Effect.gen(function* () {
+        const commands: OrchestrationV2Command[] = [];
+        const launches: OrchestrationV2ThreadLaunchInput[] = [];
+        const projectionRequests: ThreadId[] = [];
+        const projection = {
+          ...v2Projection,
+          thread: {
+            ...v2Projection.thread,
+            modelSelection: { ...v2Projection.thread.modelSelection },
+          },
+          messages: [],
+          runs: [
+            {
+              id: RunId.make("captured-active-run"),
+              threadId: v2ThreadId,
+              ordinal: 1,
+              providerInstanceId: v2Projection.thread.providerInstanceId,
+              modelSelection: v2Projection.thread.modelSelection,
+              providerThreadId: null,
+              userMessageId: MessageId.make("active-message"),
+              rootNodeId: null,
+              activeAttemptId: null,
+              status: "running" as const,
+              requestedAt: v2Now,
+              startedAt: v2Now,
+              completedAt: null,
+              checkpointId: null,
+              contextHandoffId: null,
+            },
+          ],
+        };
+        const uploadStarted = yield* Deferred.make<void>();
+        const uploadReply = yield* Deferred.make<void>();
+        let uploads = 0;
+        let refLookups = 0;
+        const persisted = {
+          type: "image" as const,
+          id: ChatAttachmentId.make("persisted-image"),
+          name: "original.png",
+          mimeType: "image/png",
+          sizeBytes: 1,
+        };
+        const supervisor = yield* makeSupervisor({
+          commands,
+          launches,
+          projects: [],
+          projection,
+          projectionRequests,
+          advertiseServerResolvedCommandContext: false,
+          advertiseQueuedToolBoundaryDelivery: true,
+          onDispatch: () =>
+            Effect.fail(
+              new OrchestrationDispatchCommandError({ message: "Response lost after issuance" }),
+            ),
+          onLaunch: () =>
+            Effect.fail(
+              new OrchestrationDispatchCommandError({ message: "Response lost after issuance" }),
+            ),
+          persistAttachments: () =>
+            Effect.gen(function* () {
+              uploads++;
+              yield* Deferred.succeed(uploadStarted, undefined);
+              yield* Deferred.await(uploadReply);
+              return { attachments: [persisted] };
+            }),
+          listRefs: () =>
+            Effect.sync(() => {
+              refLookups++;
+              return refsResult([
+                { name: "original-base", current: true, isDefault: true, worktreePath: null },
+              ]);
+            }),
+        });
+        const input = {
+          threadId: v2ThreadId,
+          message: {
+            messageId: MessageId.make("captured-message"),
+            role: "user" as const,
+            text: "original text",
+            attachments: [
+              {
+                type: "image" as const,
+                name: "original.png",
+                mimeType: "image/png",
+                sizeBytes: 1,
+                dataUrl: "data:image/png;base64,AA==",
+              },
+            ],
+          },
+          ...(launch ? {} : { titleSeed: "original title" }),
+          runtimeMode: "full-access" as const,
+          interactionMode: "default" as const,
+          dispatchMode: "steer" as const,
+          ...(launch
+            ? {
+                bootstrap: {
+                  prepareWorktree: { projectCwd: "/original", branch: "original-branch" },
+                },
+              }
+            : {}),
+        };
+        const preparation = yield* prepareThreadTurn(input).pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          Effect.forkChild,
+        );
+        yield* Deferred.await(uploadStarted);
+        input.message.text = "changed during upload";
+        input.message.attachments[0]!.name = "changed.png";
+        yield* Deferred.succeed(uploadReply, undefined);
+        const prepared = yield* Fiber.join(preparation);
+        const originalBytes = JSON.stringify(prepared.payload);
+        expect(commands).toEqual([]);
+        expect(launches).toEqual([]);
+        expect(Object.isFrozen(prepared.payload)).toBe(true);
+        if (prepared.method === ORCHESTRATION_V2_WS_METHODS.launchThread) {
+          expect(prepared.payload.initialMessage.text).toBe("original text");
+          expect(prepared.payload.title).toBe(projection.thread.title);
+          expect(prepared.payload.modelSelection).toEqual(projection.thread.modelSelection);
+          expect(prepared.payload.workspaceStrategy).toMatchObject({ baseRef: "original-base" });
+          expect(Object.isFrozen(prepared.payload.initialMessage.attachments[0])).toBe(true);
+        } else {
+          expect(prepared.payload.text).toBe("original text");
+          expect(prepared.payload.dispatchMode).toEqual({
+            type: "steer_active",
+            targetRunId: RunId.make("captured-active-run"),
+          });
+          expect(Object.isFrozen(prepared.payload.attachments[0])).toBe(true);
+        }
+        const first = yield* dispatchPreparedThreadTurn(prepared).pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          Effect.exit,
+        );
+        expect(first._tag).toBe("Failure");
+        projection.thread.title = "changed projected title";
+        projection.thread.modelSelection.model = "changed-default-model";
+        projection.runs[0]!.id = RunId.make("different-active-run");
+        input.titleSeed = "changed title";
+        if (input.bootstrap) input.bootstrap.prepareWorktree.branch = "different-branch";
+        persisted.name = "changed-server-attachment.png";
+        const replacement = yield* makeSupervisor({
+          commands,
+          launches,
+          projects: [],
+          projection,
+          projectionRequests,
+        });
+        yield* SubscriptionRef.set(
+          supervisor.session,
+          yield* SubscriptionRef.get(replacement.session),
+        );
+        yield* dispatchPreparedThreadTurn(prepared).pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        );
+        const attempts = launch ? launches : commands;
+        expect(attempts).toHaveLength(2);
+        expect(attempts.map((payload) => JSON.stringify(payload))).toEqual([
+          originalBytes,
+          originalBytes,
+        ]);
+        expect(uploads).toBe(1);
+        expect(refLookups).toBe(launch ? 1 : 0);
+        expect(projectionRequests).toEqual([v2ThreadId]);
+      }).pipe(Effect.provide(layerTestCrypto), Effect.scoped),
+  );
 });
 
 describe("v2 worktree start compatibility", () => {
