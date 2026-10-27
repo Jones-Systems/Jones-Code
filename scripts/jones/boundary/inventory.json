@@ -2186,7 +2186,6 @@
     "scripts/jones/ci/codex-failover.node-test.mjs": "jones-owned",
     "apps/mobile/src/jones/threadConfiguration/modelSelection.ts": "jones-owned",
     "apps/mobile/src/jones/threadConfiguration/queuedFollowUp.ts": "jones-owned",
-    "apps/mobile/src/state/use-composer-drafts.ts": "hook",
     "apps/mobile/src/state/use-composer-drafts.test.ts": "jones-tests-in-upstream",
     "apps/server/src/jones/codexFailover/CodexFailoverLineage.ts": "jones-owned",
     "apps/server/src/jones/taskContinuation/provenance.ts": "jones-owned",
@@ -2211,7 +2210,9 @@
     "apps/server/src/jones/updates/recoverQualifiedStage.ts": "jones-owned",
     "apps/server/src/jones/updates/recoverQualifiedStage.test.ts": "jones-owned",
     "scripts/jones/updates/recover-qualified-stage.ts": "jones-owned",
-    "scripts/jones/updates/recover-qualified-stage.test.ts": "jones-owned"
+    "scripts/jones/updates/recover-qualified-stage.test.ts": "jones-owned",
+    "apps/server/src/jones/cloud/launcherPointer.ts": "jones-owned",
+    "apps/server/src/jones/cloud/launcherPointer.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
