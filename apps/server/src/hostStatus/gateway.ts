@@ -6,7 +6,12 @@ const MAX_AGE_MS = 30_000;
 const TIMEOUT_MS = 3_000;
 const MAX_BODY_BYTES = 256 * 1024;
 
-type HostConfig = { readonly url: string; readonly token?: string; readonly node?: string };
+type HostConfig = {
+  readonly url: string;
+  readonly token?: string;
+  readonly node?: string;
+  readonly storageMountPoint?: string;
+};
 export type HostStatusConfig = Partial<Record<HostStatusId, HostConfig>>;
 
 // Shared collector slots require an explicit _NODE so one local node cannot fill every host.
@@ -21,7 +26,8 @@ export function hostStatusConfigFromEnv(
       const node = env[`${prefix}_NODE`]?.trim() || undefined;
       const url = overrideUrl || (node ? env.T3CODE_NETDATA_URL : undefined);
       const token = env[`${prefix}_TOKEN`] ?? (overrideUrl ? undefined : env.T3CODE_NETDATA_TOKEN);
-      return url ? [[id, { url, token, node }]] : [];
+      const storageMountPoint = env[`${prefix}_STORAGE_MOUNT_POINT`]?.trim() || undefined;
+      return url ? [[id, { url, token, node, storageMountPoint }]] : [];
     }),
   );
 }
@@ -133,6 +139,59 @@ function cpuUsage(values: ReadonlyMap<string, number>) {
   return busy;
 }
 
+function storageCapacity(payload: unknown, guid: string, mountPoint: string, now: number) {
+  const root = record(payload);
+  // Detailed API metadata proves the result comes from one filesystem on the selected node.
+  const nodes = record(record(root.detailed).nodes);
+  if (Object.keys(nodes).length !== 1 || !Object.hasOwn(nodes, guid)) throw new InvalidResponse();
+  const contexts = record(record(nodes[guid]).contexts);
+  if (Object.keys(contexts).length !== 1 || !Object.hasOwn(contexts, "disk.space"))
+    throw new InvalidResponse();
+  const instances = Object.values(record(record(contexts["disk.space"]).instances));
+  if (instances.length !== 1) throw new InvalidResponse();
+  const instance = record(instances[0]);
+  if (record(instance.labels).mount_point !== mountPoint) throw new InvalidResponse();
+  const dimensions = record(instance.dimensions);
+  const expected = ["avail", "used", "reserved_for_root"];
+  if (Object.keys(dimensions).length !== expected.length) throw new InvalidResponse();
+  let sampledAt = now;
+  for (const name of expected) {
+    const dimension = record(dimensions[name]);
+    if (dimension.qr !== 1) throw new InvalidResponse();
+    const lastEntry = finiteNonnegative(dimension.le) * 1000;
+    if (!Number.isSafeInteger(lastEntry) || lastEntry > now + 5_000) throw new InvalidResponse();
+    if (now - lastEntry > MAX_AGE_MS) throw new StaleResponse();
+    sampledAt = Math.min(sampledAt, lastEntry);
+  }
+  const storage = metric(payload, "GiB", now);
+  const available = storage.values.get("avail");
+  const used = storage.values.get("used");
+  // Netdata's group_by=dimension uses the display name for reserved_for_root.
+  const reserved = storage.values.get("reserved for root");
+  if (
+    storage.values.size !== 3 ||
+    available === undefined ||
+    used === undefined ||
+    reserved === undefined
+  )
+    throw new InvalidResponse();
+  const availableStorageBytes = Math.round(available * 1024 ** 3);
+  const totalStorageBytes = Math.round((available + used + reserved) * 1024 ** 3);
+  if (
+    !Number.isSafeInteger(availableStorageBytes) ||
+    !Number.isSafeInteger(totalStorageBytes) ||
+    totalStorageBytes <= 0 ||
+    availableStorageBytes > totalStorageBytes
+  )
+    throw new InvalidResponse();
+  return {
+    availableStorageBytes,
+    totalStorageBytes,
+    storageMountPoint: mountPoint,
+    sampledAt: Math.min(sampledAt, storage.sampledAt),
+  };
+}
+
 async function readJson(response: Response): Promise<unknown> {
   if (!response.ok) throw new Error("upstream");
   const reader = response.body?.getReader();
@@ -212,8 +271,50 @@ async function readHost(
         options: "jsonwrap",
         group_by: "dimension",
       });
+    const cpuRequest = getMetric("system.cpu", "*");
+    // Start optional storage as soon as CPU identifies the platform, alongside the RAM reads.
+    // Every attempt shares the existing host deadline; unavailable storage cannot reject CPU.
+    const storageRequest = cpuRequest
+      .then(async (payload) => {
+        const isMac = !metric(payload, "percentage", now()).values.has("irq");
+        const mountPoints = config.storageMountPoint
+          ? [config.storageMountPoint]
+          : isMac
+            ? ["/System/Volumes/Data", "/"]
+            : ["/"];
+        for (const mountPoint of mountPoints) {
+          // Netdata label selectors are patterns. Reject syntax that could broaden a mount.
+          if (!/^\/[a-zA-Z0-9_./-]*$/.test(mountPoint)) return undefined;
+          try {
+            return storageCapacity(
+              await request("data", {
+                scope_nodes: node.guid,
+                nodes: node.guid,
+                scope_contexts: "disk.space",
+                contexts: "disk.space",
+                scope_labels: `mount_point:${mountPoint}`,
+                labels: `mount_point:${mountPoint}`,
+                dimensions: "*",
+                after: "-5",
+                points: "1",
+                format: "json",
+                options: "jsonwrap,details",
+                group_by: "dimension",
+              }),
+              node.guid,
+              mountPoint,
+              now(),
+            );
+          } catch {
+            // A Mac without a valid Data chart can use its exact root chart, never other mounts.
+            if (controller.signal.aborted) break;
+          }
+        }
+        return undefined;
+      })
+      .catch(() => undefined);
     const [cpuPayload, memoryPayload] = await Promise.all([
-      getMetric("system.cpu", "*"),
+      cpuRequest,
       getMetric("system.ram", "*"),
     ]);
     const at = now();
@@ -270,6 +371,8 @@ async function readHost(
         // Missing or invalid optional swap data must not turn an unknown rate into zero.
       }
     }
+    const storage = await storageRequest;
+    if (storage) availableSampledAt = Math.min(availableSampledAt, storage.sampledAt);
     return {
       id,
       status: "available",
@@ -277,6 +380,13 @@ async function readHost(
       logicalCpuCount: node.logicalCpuCount,
       occupiedMemoryBytes: node.totalMemoryBytes - freeMemoryBytes,
       ...(availableMemoryBytes === undefined ? {} : { availableMemoryBytes }),
+      ...(storage === undefined
+        ? {}
+        : {
+            availableStorageBytes: storage.availableStorageBytes,
+            totalStorageBytes: storage.totalStorageBytes,
+            storageMountPoint: storage.storageMountPoint,
+          }),
       ...(swapIoBytesPerSecond === undefined ? {} : { swapIoBytesPerSecond }),
       totalMemoryBytes: node.totalMemoryBytes,
       sampledAt: DateTime.formatIso(DateTime.makeUnsafe(availableSampledAt)),
