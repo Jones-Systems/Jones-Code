@@ -4,6 +4,17 @@
   "baseline": "05b697f6a2012497ae790425e197fbd1fcef7de7",
   "features": [
     {
+      "id": "workstreams-native-member-admission",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/runtime/memberAdmission.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/memberRecordedCaller.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/memberHomeReadRouting.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/memberSourceReadAdmission.test.ts",
+        "apps/server/src/jones/workstreams/native/read/memberReadAdmission.test.ts"
+      ],
+      "scope": "Original local caller/run/credential ceilings, validated source-owned member association, request-local coherent home read permission and exact-own-thread private placement proof. Separate retained source lookup is lookup-only. Selected member startup, authenticated recovery storage and actual endpoint mounts remain integration gates. No home registry/grants or general forwarding exceptions are created on members."
+    },
+    {
       "id": "workstreams-member-binding-foundation",
       "tests": [
         "packages/contracts/src/jones/workstreamsHomeBind.test.ts",

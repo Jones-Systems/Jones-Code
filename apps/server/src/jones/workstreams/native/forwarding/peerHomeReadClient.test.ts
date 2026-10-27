@@ -1,4 +1,7 @@
 import { expect, it } from "@effect/vitest";
+import * as MemberAdmission from "../runtime/memberAdmission.ts";
+import * as CurrentMemberRead from "../read/memberReadAdmission.ts";
+import * as MemberRouting from "./memberHomeReadRouting.ts";
 import {
   EnvironmentId,
   OrchestratorMcpFailure,
@@ -380,3 +383,142 @@ it.effect("rejects a non-closed request instead of stripping fields or forwardin
     expect(f.calls).toHaveLength(0);
   }).pipe(Effect.provide(f.layer));
 });
+
+const originalMemberRecord: MemberAdmission.MemberRecordedCallerV1 = {
+  schema: "jones-workstreams-member-recorded-caller/1",
+  local: {
+    schema: "jones-workstreams-member-local-caller/1",
+    auth: { kind: "bearer", session_id: "local", subject: "owner", method: "bearer-access-token" },
+    origin: { kind: "app" },
+    ceiling: {
+      permissions: ["workstreams:read"],
+      scopes: ["orchestration:read"],
+      capabilities: [],
+      limits: { runtimeMode: "approval-required", interactionMode: "default" },
+    },
+    session: { issued_at: 0, expires_at: 10000 },
+    environment_id: "member:test",
+    request_namespace: null,
+    invocation_issued_at: null,
+    link_origin: null,
+    link_session: null,
+    captured_at: 0,
+  },
+  association: {
+    enrollment_id: "enrollment",
+    enrollment_session_id: "session",
+    intent_sha256: "a".repeat(64),
+    home,
+    canonical_origin: "https://home.invalid",
+    principal_id: "principal",
+    singleton_binding_version: 1,
+    pin_bound_revision: 2,
+    source_binding_version: 1,
+    source: {
+      environment_id: "member:test",
+      authority_namespace: "namespace",
+      store_generation: 1,
+    },
+    link_generation: "opaque-original",
+  },
+};
+
+it.effect.each(["own-thread", "generic-metadata", "revoked-before-dispatch"] as const)(
+  "fixed client private placement proof permits only %s",
+  (kind) => {
+    let revoked = false;
+    const calls: Array<Parameters<Peer.PeerMcpClient["Service"]["call"]>[0]> = [];
+    const ownScope: Mcp.McpInvocationScope = {
+      ...scope,
+      thread: {
+        threadId: ThreadId.make("own-thread"),
+        providerSessionId: "credential",
+        providerInstanceId: ProviderInstanceId.make("codex"),
+      },
+    };
+    const record: MemberAdmission.MemberRecordedCallerV1 = {
+      ...originalMemberRecord,
+      local: {
+        ...originalMemberRecord.local,
+        auth: {
+          kind: "agent",
+          calling_thread_id: "own-thread",
+          provider_instance_id: "codex",
+          mcp_credential_id: "credential",
+          run_id: "original-run",
+          provider_thread_id: "original-provider-thread",
+          provider_session_id: "original-session",
+        },
+        session: null,
+        link_origin: "original-link",
+      },
+    };
+    const limits = record.local.ceiling.limits!;
+    const admitted = {
+      record,
+      limits,
+      checkCurrent: () =>
+        revoked ? Effect.fail(new RegistryError({ code: "forbidden" })) : Effect.succeed(limits),
+    };
+    // The local admission and peer endpoint are synthetic. This exercises the real private
+    // own-placement service, routing service and fixed outbound client's refusal boundary.
+    const ports = Layer.mergeAll(
+      Layer.mock(MemberAdmission.MemberAdmission)({
+        captureOwnPlacement: () => Effect.succeed(record),
+        readmitOwnPlacement: () => Effect.succeed(admitted),
+        current: () => Effect.succeed(admitted),
+      }),
+      Layer.succeed(Peer.PeerMcpClient, {
+        call: (input) =>
+          Effect.gen(function* () {
+            calls.push(input);
+            return yield* new OrchestratorMcpFailure({
+              code: "capability_denied",
+              message: "Synthetic peer reached after private-proof validation.",
+            });
+          }),
+      }),
+      Layer.mock(Threads.ThreadManagementService)({
+        getThreadShell: () =>
+          Effect.sync(() => {
+            if (kind === "revoked-before-dispatch") revoked = true;
+            return {
+              ...liveThreadShell(ThreadId.make("own-thread")),
+              linkOrigin: { sessionId: "original-link", label: "attribution", access: "read-only" },
+            };
+          }),
+      }),
+    );
+    const client = Client.layer.pipe(
+      Layer.provideMerge(MemberRouting.layer.pipe(Layer.provideMerge(ports))),
+    );
+    return Effect.gen(function* () {
+      const failure =
+        kind === "generic-metadata"
+          ? yield* (yield* Protocol.HomeReadResultClient).read(home, counts).pipe(refused)
+          : yield* (yield* CurrentMemberRead.MemberOwnThreadPlacements).read().pipe(refused);
+      expect(failure.code).toBe(
+        kind === "own-thread" ? "capability_denied" : "home_route_required",
+      );
+      expect(calls).toHaveLength(kind === "own-thread" ? 1 : 0);
+      if (kind === "own-thread") {
+        expect(calls[0]?.tool).toBe("jones_workstreams_home_read_result");
+        expect(calls[0]?.environmentId).toBe("home:test");
+        expect(calls[0]?.expectedGeneration).toBe(record.association.link_generation);
+        expect(calls[0]?.limits).toEqual(limits);
+        expect(calls[0]?.arguments).toMatchObject({
+          request: {
+            route: "placements",
+            params: {
+              identities: [{ source_instance_id: "member:test", native_thread_id: "own-thread" }],
+            },
+          },
+          placement_contract: "workstreams-t3-placement/2.0.0",
+        });
+      }
+    }).pipe(
+      Effect.provide(CurrentMemberRead.ownPlacementLayer.pipe(Layer.provideMerge(client))),
+      Effect.provideService(Mcp.McpInvocationContext, ownScope),
+    );
+  },
+);

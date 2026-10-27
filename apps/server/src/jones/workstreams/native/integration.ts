@@ -1,3 +1,11 @@
+import * as MemberEnrollments from "./runtime/memberEnrollment.ts";
+import * as MemberLocalCallers from "./runtime/memberRecordedCaller.ts";
+import * as MemberAdmission from "./runtime/memberAdmission.ts";
+import * as MemberHomeReadRouting from "./forwarding/memberHomeReadRouting.ts";
+import * as PeerHomeReadClient from "./forwarding/peerHomeReadClient.ts";
+import * as HomeReadProtocol from "./forwarding/homeReadProtocol.ts";
+import * as MemberReadAdmission from "./read/memberReadAdmission.ts";
+import * as MemberReads from "./read/memberRead.ts";
 import * as PeerReadBoundary from "./forwarding/peerReadAdmission.ts";
 import * as PeerGuard from "./forwarding/guard.ts";
 import * as PeerPins from "./runtime/peerSessionPins.ts";
@@ -195,5 +203,62 @@ export const nativeHomeRuntimeLayer = Layer.unwrap(
       Layer.provideMerge(NativeReadProjection.layer),
       Layer.provideMerge(nativeLocalRuntimeLayer),
     ),
+  ),
+);
+
+/** Source-owned local association and caller evidence; no home registry or grant is acquired. */
+const nativeMemberEvidenceLayer = Layer.unwrap(
+  Effect.sync(() =>
+    MemberAdmission.layer.pipe(
+      Layer.provideMerge(MemberLocalCallers.layer),
+      Layer.provideMerge(
+        MemberEnrollments.layer.pipe(
+          Layer.provide(
+            Layer.effect(
+              SourceEnrollments.SourceIssuer,
+              Effect.map(SourceAuthority.NativeStoreAuthority, (authority) => ({
+                authority,
+                build: readNativeProviderBuild,
+              })),
+            ),
+          ),
+          Layer.provideMerge(nativePersistenceLayer),
+        ),
+      ),
+    ),
+  ),
+);
+const nativeMemberFixedClientLayer = Layer.unwrap(
+  Effect.sync(() =>
+    PeerHomeReadClient.layer.pipe(
+      Layer.provideMerge(
+        MemberHomeReadRouting.layer.pipe(Layer.provideMerge(nativeMemberEvidenceLayer)),
+      ),
+    ),
+  ),
+);
+
+/** @public Construct in the authenticated request, after genuine selected native-member Startup. */
+export const nativeMemberReadRequestLayer = Layer.unwrap(
+  Effect.sync(() => {
+    const permission = MemberReadAdmission.layer.pipe(
+      Layer.provideMerge(
+        HomeReadProtocol.homeReadPortLayer.pipe(Layer.provideMerge(nativeMemberFixedClientLayer)),
+      ),
+    );
+    return MemberReads.layer.pipe(
+      Layer.provideMerge(
+        Layer.mergeAll(MemberReadAdmission.admissionLayer, MemberReadAdmission.portLayer).pipe(
+          Layer.provideMerge(permission),
+        ),
+      ),
+    );
+  }),
+);
+
+/** @public Separate exact-own-thread read; requires the private-proof fixed-client hook. */
+export const nativeMemberOwnPlacementRequestLayer = Layer.unwrap(
+  Effect.sync(() =>
+    MemberReadAdmission.ownPlacementLayer.pipe(Layer.provideMerge(nativeMemberFixedClientLayer)),
   ),
 );

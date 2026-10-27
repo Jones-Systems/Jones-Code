@@ -13,9 +13,10 @@ import * as Threads from "../../../../orchestration-v2/ThreadManagementService.t
 import * as Peer from "../../../../peer/PeerMcpClient.ts";
 import { RegistryError } from "../registry/session.ts";
 import * as Protocol from "./homeReadProtocol.ts";
+import { checkOwnPlacementForwarding } from "../read/memberReadAdmission.ts";
 
 /** Request-local SOURCE admission, never a default, cache or copied home grant.
- * No production producer exists yet; member enrollment and original-caller admission own it.
+ * Member enrollment and original-caller admission produce this only in an authenticated request.
  */
 export class MemberHomeReadRouting extends Context.Service<
   MemberHomeReadRouting,
@@ -40,7 +41,10 @@ const decodeLimits = Schema.decodeUnknownEffect(
 );
 
 // This check supplies no admission. Non-MCP callers still require the routing producer.
-const refuseRecursiveCaller = Effect.fn("PeerHomeReadClient.refuseRecursiveCaller")(function* () {
+const refuseRecursiveCaller = Effect.fn("PeerHomeReadClient.refuseRecursiveCaller")(function* (
+  home: WorkstreamsNativeHomeTarget,
+  request: WorkstreamsHomeReadResultRequest,
+) {
   const invocation = yield* Effect.serviceOption(Mcp.McpInvocationContext);
   if (Option.isNone(invocation)) return;
   const scope = invocation.value;
@@ -54,9 +58,11 @@ const refuseRecursiveCaller = Effect.fn("PeerHomeReadClient.refuseRecursiveCalle
     Effect.provideService(Threads.ThreadManagementService, threads.value),
     Effect.mapError((cause) => new RegistryError({ code: "caller_unavailable", cause })),
   );
-  // Unlike the generic full-access exemption, native reads never recursively forward.
+  // Generic linked reads stay refused; the private original-thread placement proof is request-local.
   if (callerLinkOrigin(caller) !== undefined)
-    return yield* new RegistryError({ code: "home_route_required" });
+    yield* checkOwnPlacementForwarding(home, request).pipe(
+      Effect.mapError(() => new RegistryError({ code: "home_route_required" })),
+    );
 });
 
 /** Fixed-tool invocation plus strict downstream decoding is invocation negotiation only.
@@ -69,7 +75,7 @@ export const layer = Layer.effect(
     const routing = yield* MemberHomeReadRouting;
     return Protocol.HomeReadResultClient.of({
       read: Effect.fn("PeerHomeReadClient.read")(function* (home, request) {
-        yield* refuseRecursiveCaller();
+        yield* refuseRecursiveCaller(home, request);
         const admitted = yield* routing.current();
         const target = yield* decodeHome(admitted.home, { onExcessProperty: "error" }).pipe(
           Effect.mapError((cause) => new RegistryError({ code: "registry_mismatch", cause })),
