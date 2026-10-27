@@ -2345,7 +2345,8 @@
     "apps/server/src/jones/remoteDelegation/ShellRetention.composition.test.ts": "jones-owned",
     "apps/web/src/jones/remoteDelegation/Sidebar.delegateRequests.browser.test.tsx": "jones-owned",
     "apps/mobile/src/jones/remoteDelegation/threadListV2.delegateRequests.test.ts": "jones-owned",
-    "apps/mobile/src/jones/remoteDelegation/thread-order.delegateRequests.test.ts": "jones-owned"
+    "apps/mobile/src/jones/remoteDelegation/thread-order.delegateRequests.test.ts": "jones-owned",
+    "infra/task-cache/src/runHook.test.ts": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

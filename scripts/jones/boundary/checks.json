@@ -4072,6 +4072,15 @@
         "vp test run apps/server/src/jones/remoteDelegation/ShellRetention.diagnostic.test.ts --maxWorkers=1 --no-file-parallelism",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-install-qualification-fixture-lifecycle",
+      "tests": ["infra/task-cache/src/runHook.test.ts"],
+      "commands": [
+        "vp test run infra/task-cache/src/runHook.test.ts -t \"uses one machine hook across fresh worktrees\" --maxWorkers=1 --no-file-parallelism",
+        "node --test --test-concurrency=1 scripts/jones/updates/install-preview-qualification.node-test.mjs",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }

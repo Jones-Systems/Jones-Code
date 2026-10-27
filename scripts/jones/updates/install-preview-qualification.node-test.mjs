@@ -23,6 +23,7 @@ import {
   readAcknowledgedMilestone,
   runScenario,
   scenarioSecrets,
+  sanitizeFailurePageState,
 } from "./install-preview-agent.mjs";
 import {
   hashTree,
@@ -1339,8 +1340,9 @@ NodeTest.test(
       ),
       (error) => error === failure,
     );
-    NodeAssert.deepEqual(calls.slice(-3), [
+    NodeAssert.deepEqual(calls.slice(-4), [
       "preview_wait_for",
+      "preview_evaluate",
       "preview_snapshot",
       "t3_preview_close",
     ]);
@@ -1453,6 +1455,23 @@ NodeTest.test(
         const client = {
           callTool: async ({ name, arguments: args }) => {
             if (name === "preview_wait_for" && ++waits === 2) throw failure;
+            if (name === "preview_evaluate")
+              return {
+                structuredContent: {
+                  value: {
+                    readyState: "complete",
+                    rootChildren: 1,
+                    rootHtmlLength: 100,
+                    bodyTextLength: 1,
+                    dialogs: 0,
+                    onConnectionsRoute: true,
+                    ui: { loading: true },
+                    text: code,
+                    url: pairingUrl,
+                    screenshot: imageBytes,
+                  },
+                },
+              };
             if (name === "preview_snapshot") {
               snapshotCalls.push(args);
               return {
@@ -1514,6 +1533,8 @@ NodeTest.test(
         NodeAssert.equal(readback.failureReconciliation.ui.addFailed, true);
         NodeAssert.equal(readback.failureReconciliation.ui.fetchFailed, true);
         NodeAssert.equal(readback.failureReconciliation.ui.sourceMatches, false);
+        NodeAssert.equal(readback.failurePageState.onConnectionsRoute, true);
+        NodeAssert.equal(readback.failurePageState.ui.loading, true);
         NodeAssert.ok(
           Object.values(readback.failureReconciliation.ui).every(
             (value) => typeof value === "boolean",
@@ -1524,6 +1545,35 @@ NodeTest.test(
     });
   },
 );
+
+NodeTest.test("failure page state retains only bounded counts, enum and fixed UI booleans", () => {
+  const secret = "NEVER-PUBLISH-PAIRING-CODE";
+  for (const value of [
+    null,
+    secret,
+    {
+      readyState: secret,
+      rootChildren: -1,
+      rootHtmlLength: Infinity,
+      bodyTextLength: secret,
+      dialogs: 10_000_001,
+      onConnectionsRoute: secret,
+      ui: { loading: secret, rootError: true, secret },
+      url: secret,
+      text: secret,
+    },
+  ]) {
+    const result = sanitizeFailurePageState(value);
+    NodeAssert.equal(result.readyState, "unknown");
+    NodeAssert.equal(result.rootChildren, null);
+    NodeAssert.equal(result.rootHtmlLength, null);
+    NodeAssert.equal(result.bodyTextLength, null);
+    NodeAssert.equal(result.dialogs, null);
+    NodeAssert.equal(result.onConnectionsRoute, false);
+    NodeAssert.equal(result.ui.loading, false);
+    NodeAssert.equal(JSON.stringify(result).includes(secret), false);
+  }
+});
 
 NodeTest.test(
   "disabled-browser qualification requires the native preview capability refusal",
