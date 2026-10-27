@@ -2211,6 +2211,8 @@
     "apps/server/src/jones/updates/recoverQualifiedStage.test.ts": "jones-owned",
     "scripts/jones/updates/recover-qualified-stage.ts": "jones-owned",
     "scripts/jones/updates/recover-qualified-stage.test.ts": "jones-owned",
+    "apps/server/src/jones/cloud/launcherPointer.ts": "jones-owned",
+    "apps/server/src/jones/cloud/launcherPointer.test.ts": "jones-owned",
     "apps/server/src/mcp/McpSessionRegistry.testkit.ts": "accepted-shared",
     "packages/shared/src/jones/documentMarkdownAst.ts": "jones-owned",
     "packages/shared/src/jones/documentMarkdownAst.test.ts": "jones-owned",
@@ -2369,6 +2371,14 @@
     "scripts/jones/boundary/fragments/experimental-typecheck.json"
   ],
   "allowedImports": [
+    {
+      "from": "apps/server/src/cloud/bootService.test.ts",
+      "to": "apps/server/src/jones/cloud/launcherPointer.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/bootService.ts",
+      "to": "apps/server/src/jones/cloud/launcherPointer.ts"
+    },
     {
       "from": "apps/server/src/device/LocalDeviceHost.ts",
       "to": "apps/server/src/jones/device/xcodeReadiness.ts"
