@@ -1,3 +1,5 @@
+import * as DependencyChanges from "../threadResultDependencies/DependencyChanges.ts";
+import * as Stream from "effect/Stream";
 import type { OrchestrationV2ThreadShell, ThreadId } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
@@ -30,6 +32,7 @@ class ShellMaterializationVersionError extends Schema.TaggedError<ShellMateriali
 type ReadError = Orchestrator.OrchestratorV2Error | ShellMaterializationVersionError;
 type Materialization = {
   readonly version: number;
+  readonly generation: number;
   readonly shell: OrchestrationV2ThreadShell | null;
 };
 
@@ -53,6 +56,27 @@ const make = Effect.gen(function* () {
   const newest = new Map<ThreadId, Materialization>();
   const inFlight = new Map<ThreadId, Deferred.Deferred<Materialization | undefined, ReadError>>();
   const pendingReads = new Set<Deferred.Deferred<Materialization | undefined, ReadError>>();
+  const generations = new Map<ThreadId, number>();
+  const dependencyChanges = yield* Effect.serviceOption(DependencyChanges.DependencyChanges);
+  if (Option.isSome(dependencyChanges)) {
+    const subscription = yield* dependencyChanges.value.subscribe;
+    yield* Stream.fromSubscription(subscription).pipe(
+      Stream.runForEach((change) =>
+        Effect.sync(() => {
+          for (const threadId of change.threadIds) {
+            generations.set(threadId, (generations.get(threadId) ?? 0) + 1);
+            newest.delete(threadId);
+            inFlight.delete(threadId);
+          }
+        }),
+      ),
+      Effect.forkScoped,
+    );
+  }
+  const generationOf = (threadId: ThreadId) =>
+    Option.isSome(dependencyChanges)
+      ? dependencyChanges.value.generation(threadId)
+      : (generations.get(threadId) ?? 0);
   let closed = false;
   yield* Effect.addFinalizer(() =>
     Effect.gen(function* () {
@@ -68,7 +92,12 @@ const make = Effect.gen(function* () {
   );
 
   const remember = (threadId: ThreadId, result: Materialization) => {
-    if (closed || (newest.get(threadId)?.version ?? -1) > result.version) return;
+    if (
+      closed ||
+      result.generation !== generationOf(threadId) ||
+      (newest.get(threadId)?.version ?? -1) > result.version
+    )
+      return;
     newest.delete(threadId);
     newest.set(threadId, result);
     if (newest.size > 512) {
@@ -86,7 +115,7 @@ const make = Effect.gen(function* () {
           const version = yield* events.latestApplicationSequence.pipe(Effect.option);
           if (Option.isNone(version)) return undefined;
           const shell = yield* threads.getThreadShell(threadId);
-          return { version: version.value, shell };
+          return { version: version.value, shell, generation: generationOf(threadId) };
         }),
       )
       .pipe(
@@ -108,7 +137,11 @@ const make = Effect.gen(function* () {
           if (closed) return yield* Effect.interrupt;
           if (!independent) {
             const cached = newest.get(threadId);
-            if (cached !== undefined && cached.version >= minimum) {
+            if (
+              cached !== undefined &&
+              cached.version >= minimum &&
+              cached.generation === generationOf(threadId)
+            ) {
               remember(threadId, cached);
               return { kind: "cached", result: cached } as const;
             }
@@ -116,12 +149,20 @@ const make = Effect.gen(function* () {
             if (pending !== undefined) return { kind: "pending", pending, started: false } as const;
           }
 
+          const generation = generationOf(threadId);
           const pending = Deferred.makeUnsafe<Materialization | undefined, ReadError>();
           pendingReads.add(pending);
           if (!independent) inFlight.set(threadId, pending);
           // Only the environment's scope owns this fiber. Canceling a waiter
           // must not cancel another subscription's read or leave an orphan.
           yield* readVersioned(threadId).pipe(
+            // Keep invalidation distinct from an unavailable event watermark:
+            // the former must retry, while only the latter uses the unshared fallback.
+            Effect.map((result) =>
+              generationOf(threadId) === generation
+                ? result
+                : { version: -1, generation, shell: null },
+            ),
             Effect.onExit((exit) =>
               Effect.sync(() => {
                 pendingReads.delete(pending);
@@ -143,6 +184,7 @@ const make = Effect.gen(function* () {
       );
       if (selected.kind === "cached") return selected.result;
       const result = yield* Deferred.await(selected.pending);
+      if (result !== undefined && result.generation !== generationOf(threadId)) continue;
       if (result === undefined || result.version >= minimum) return result;
       // A read already in flight can predate this event. Wait for it, then
       // retry against a fresh snapshot; never label its result with the event.

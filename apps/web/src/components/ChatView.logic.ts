@@ -4,11 +4,11 @@ import {
   deriveLatestThreadRun,
   deriveThreadRuntime,
 } from "@t3tools/client-runtime/state/thread-execution";
-import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import {
   latestUnheldRun,
   usageLimitRunPresentedAsLatest,
 } from "@t3tools/shared/orchestrationV2ThreadError";
+import { deriveDependencyBannerTasks } from "../jones/threadResultDependencies/bannerTasks";
 import * as Option from "effect/Option";
 import type { SetStateAction } from "react";
 import { applyClaudePromptEffortPrefix, resolvePromptInjectedEffort } from "@t3tools/shared/model";
@@ -1666,8 +1666,11 @@ export function presentThreadShellFromProjection(
   };
 }
 
-/** Background work the provider still runs after the latest run ended. */
-export function deriveThreadPendingBackgroundTasks(projection: ThreadStructure | null) {
+/** Background duties after foreground work ends, including shell-only result waits. */
+export function deriveThreadPendingBackgroundTasks(
+  projection: ThreadStructure | null,
+  shell?: Parameters<typeof deriveDependencyBannerTasks>[0]["shell"],
+) {
   if (projection === null) return [];
   const sessionError =
     projection.providerSessions.findLast(
@@ -1677,7 +1680,9 @@ export function deriveThreadPendingBackgroundTasks(projection: ThreadStructure |
     usageLimitRunPresentedAsLatest(projection.runs, projection.turnItems, sessionError) ??
     latestUnheldRun(projection.runs);
   return [
-    ...derivePendingBackgroundWork({
+    ...deriveDependencyBannerTasks({
+      threadId: projection.thread.id,
+      shell,
       latestRun,
       providerThreads: projection.providerThreads,
       turnItems: projection.turnItems,

@@ -1,0 +1,33 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "document-sections",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/documentSections/",
+    "packages/shared/src/jones/documentMarkdownAst.ts",
+    "packages/shared/src/jones/documentMarkdownAst.test.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/documentSections.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/documentSections/DocumentSections.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/documentSections/DocumentRepositoryAccess.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
+      "to": "apps/server/src/jones/documentSections/tool.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/orchestrator/handlers.ts",
+      "to": "apps/server/src/jones/documentSections/tool.ts"
+    }
+  ]
+}

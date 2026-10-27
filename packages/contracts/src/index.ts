@@ -114,6 +114,8 @@ export * from "./jones/workstreamsNativeOwner.ts";
 export * from "./jones/queuedSteerBatch.ts";
 
 export * from "./jones/threadGoal.ts";
+export * from "./jones/goalContinuity.ts";
+export * from "./jones/documentSections.ts";
 export * from "./jones/clientLaunch.ts";
 
 export * from "./jones/remoteAdmission.ts";
@@ -128,3 +130,5 @@ export * from "./jones/linkedThreads.ts";
 
 export * from "./jones/desktopThreadMonitor.ts";
 export * from "./jones/guardedThreadSettlement.ts";
+
+export * from "./jones/threadResultDependency.ts";

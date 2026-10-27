@@ -11,7 +11,8 @@
     "apps/server/src/jones/goals/GoalStartDispatch.test.ts",
     "apps/server/src/jones/goals/GoalNotificationDelivery.ts",
     "apps/server/src/jones/goals/GoalResumeCorrelation.ts",
-    "apps/server/src/jones/goals/preserveGoalConversation.ts"
+    "apps/server/src/jones/goals/preserveGoalConversation.ts",
+    "apps/server/src/jones/goals/preserveGoalConversation.test.ts"
   ],
   "hookPaths": [
     "apps/server/src/mcp/toolkits/orchestrator/tools.ts",

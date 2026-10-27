@@ -135,11 +135,18 @@ completion times cannot include those completions in the recent Done view.
 
 Threads that are working or waiting on work they will resume from move into a collapsed
 **Working** section below the active list.
-That includes subagents, watched pull requests, and background commands or monitors the agent
+That includes subagents, watched pull requests, requested responses from other threads,
+and background commands or monitors the agent
 says it is waiting on. A dev server or other process an agent leaves running does not keep a thread
 there. A thread returns to the top of the active list when it finishes, fails, or needs an approval or
 answer. The Working section lists the thread you last sent work to first. Pinned threads stay in
 the pinned section.
+
+When an agent explicitly requests a result from another thread, **Waiting** remains
+visible after its turn ends. The pending-work description identifies the expected
+response. The other thread finishing a turn does not count as answering; the
+request stays pending until it is answered or released. Sending an ordinary message
+or linking a thread does not create this wait.
 
 This is on by default. Turn it off with **Settings → Beta → Working section** on web and desktop,
 or **Settings → Thread behavior → Working section** on iOS and Android. Each device keeps its own
