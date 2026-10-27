@@ -24,7 +24,7 @@ import { RadioGroup } from "../ui/radio-group";
 import { Spinner } from "../ui/spinner";
 import { AuthSurfaceShell } from "./AuthSurfaceShell";
 
-const accessConfig: Record<
+export const accessConfig: Record<
   AuthMcpClientAccess,
   { readonly label: string; readonly description: string; readonly icon: LucideIcon }
 > = {
@@ -80,9 +80,7 @@ function readAuthorizationRequest(): AuthMcpAuthorizationRequest {
   return Object.fromEntries(new URL(window.location.href).searchParams);
 }
 
-/**
- * A session may only grant access whose scopes it holds itself.
- */
+/** Sessions can grant only scopes they hold. */
 function oneClickApproves(details: AuthMcpApprovalDetails, access: AuthMcpClientAccess) {
   return details.csrfToken !== undefined && (details.oneClickAccess ?? []).includes(access);
 }
@@ -281,7 +279,8 @@ function ConnectAgentHeading({
   );
 }
 
-function AccessOption({
+/** One choice in a picker of what an outside agent, or a linked environment, may do. */
+export function AccessOption({
   access,
   selected,
 }: {

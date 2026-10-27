@@ -3,6 +3,8 @@ import type {
   PhysicalProcessLease,
   ProviderRuntimeObservation,
   ProviderGoalReadResult,
+  ProviderGoalControlInput,
+  ProviderGoalControlResult,
 } from "./jones/runtimeTypes.ts";
 import type { ProviderEventProducerOrigin } from "./jones/ProviderEventOrigin.ts";
 import { classifyProviderRuntimeBindingFailure } from "./jones/ProviderRuntimeBindingDiagnostics.ts";
@@ -102,6 +104,7 @@ export const ProviderAdapterV2Event = Schema.Union([
     driver: ProviderDriverKind,
     runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     appThread: OrchestrationV2AppThread,
+    createOnly: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({
     type: Schema.Literal("provider_session.updated"),
@@ -147,11 +150,7 @@ export const ProviderAdapterV2Event = Schema.Union([
     runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     turnItem: OrchestrationV2TurnItem,
   }),
-  /**
-   * Raw output from a running command. Never persisted: the session manager
-   * hands it to the command output hub, which only clients showing the row see.
-   * The item's final output still arrives in its `turn_item.updated`.
-   */
+  /** Unpersisted deltas go only to clients showing the row; final output arrives in turn_item.updated. */
   Schema.Struct({
     type: Schema.Literal("command_output.delta"),
     driver: ProviderDriverKind,
@@ -205,6 +204,8 @@ export const ProviderAdapterV2Event = Schema.Union([
     retry: Schema.optional(OrchestrationV2ProviderRetry),
     retryStartedAt: Schema.optional(Schema.DateTimeUtc),
     threadDisposition: Schema.Literals(["reusable", "broken"]),
+    /** Child turns outlive root failure and report their own terminals; otherwise open children settle. */
+    childTurnsContinue: Schema.optional(Schema.Literal(true)),
   }),
 ]);
 export type ProviderAdapterV2Event = typeof ProviderAdapterV2Event.Type;
@@ -395,11 +396,19 @@ export class ProviderAdapterEventStreamError extends Schema.TaggedError<Provider
   }
 }
 
+// Only fixed reasons reach failure messages; detail can contain private configuration.
+const ProviderAdapterFailureReason = Schema.Literals([
+  "previous_turn_active",
+  "attachment_unreadable",
+]);
+export type ProviderAdapterFailureReason = typeof ProviderAdapterFailureReason.Type;
+
 export class ProviderAdapterProtocolError extends Schema.TaggedError<ProviderAdapterProtocolError>()(
   "ProviderAdapterProtocolError",
   {
     driver: ProviderDriverKind,
     detail: Schema.String,
+    reason: Schema.optional(ProviderAdapterFailureReason),
     cause: Schema.optional(Schema.Defect()),
     payload: Schema.optional(Schema.Unknown),
   },
@@ -593,11 +602,14 @@ export interface ProviderAdapterV2InterruptInput {
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly providerTurnId: ProviderTurnId;
   readonly requestRuntimeRestart?: boolean;
+  /** Internal recovery preserves the native goal; user Stop pauses it before interruption. */
+  readonly preserveGoal?: boolean;
 }
 
 export interface ProviderAdapterV2RuntimeRequestResponseInput {
   readonly requestId: RuntimeRequestId;
   readonly decision?: ProviderApprovalDecision;
+  readonly feedback?: string;
   readonly answers?: ProviderUserInputAnswers;
   readonly response?: unknown;
 }
@@ -707,30 +719,17 @@ export interface ProviderAdapterV2SessionRuntime {
   readonly providerSessionId: ProviderSessionId;
   readonly providerSession: OrchestrationV2ProviderSession;
   readonly events: Stream.Stream<ProviderAdapterV2Event, ProviderAdapterV2Error>;
-  /**
-   * Manager-owned runtimes expose a synchronous subscription so concurrent
-   * provider threads receive independent copies of the process event stream.
-   * Adapter runtimes may omit this and expose only their single-consumer event stream.
-   */
+  /** Manager runtimes broadcast independent subscriptions; adapters may expose only a single-consumer stream. */
   readonly subscribeEvents?: Effect.Effect<ProviderAdapterV2EventSubscription>;
   readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
   readonly readThreadActivity?: (
     providerThread: OrchestrationV2ProviderThread,
   ) => Effect.Effect<ProviderRuntimeObservation>;
-  /**
-   * When present, RunExecutionService uses only this probe (never the
-   * session-wide hasPendingBackgroundWork) so sibling native threads cannot pin
-   * an unrelated root subscription open.
-   */
+  /** Overrides the session-wide probe so sibling threads cannot keep this root subscription open. */
   readonly hasPendingBackgroundWorkForThread?: (
     providerThread: OrchestrationV2ProviderThread,
   ) => Effect.Effect<boolean>;
-  /**
-   * Set when every background task this session lists on its provider threads
-   * runs inside the session's own process and ends when it closes. Leave unset
-   * when a task can outlive the session, for example on a shared server, so its
-   * thread keeps showing Waiting.
-   */
+  /** Set only if all session background tasks end with its process; otherwise threads must keep Waiting. */
   readonly backgroundTasksEndWithProcess?: true;
   readonly getModelContextWindow?: (
     modelSelection: ModelSelection,
@@ -755,6 +754,14 @@ export interface ProviderAdapterV2SessionRuntime {
   readonly startTurn: (
     input: ProviderAdapterV2TurnInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
+  /** Confirmed maintenance only; must not attribute a provider turn to the pending input. */
+  readonly compactForContextHandoff?: (
+    input: ProviderAdapterV2TurnInput,
+  ) => Effect.Effect<
+    NonNullable<OrchestrationV2ProviderThread["contextUsage"]>,
+    ProviderAdapterV2Error,
+    Scope.Scope
+  >;
   readonly compactThread?: (
     input: ProviderAdapterV2TurnInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
@@ -765,6 +772,15 @@ export interface ProviderAdapterV2SessionRuntime {
     readonly providerThread: OrchestrationV2ProviderThread;
     readonly taskId: string;
   }) => Effect.Effect<void, ProviderAdapterV2Error>;
+  /**
+   * Marks or unmarks background tasks the agent will resume from, using the ids the agent saw.
+   * Ids not running on this provider thread come back unmatched and change nothing.
+   */
+  readonly awaitBackgroundTasks?: (input: {
+    readonly providerThread: OrchestrationV2ProviderThread;
+    readonly taskIds: ReadonlyArray<string>;
+    readonly awaited: boolean;
+  }) => Effect.Effect<{ readonly matched: ReadonlyArray<string> }, ProviderAdapterV2Error>;
   readonly interruptTurn: (
     input: ProviderAdapterV2InterruptInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
@@ -780,6 +796,9 @@ export interface ProviderAdapterV2SessionRuntime {
   readonly respondToRuntimeRequest: (
     input: ProviderAdapterV2RuntimeRequestResponseInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
+  readonly controlGoal?: (
+    input: ProviderGoalControlInput,
+  ) => Effect.Effect<ProviderGoalControlResult>;
   readonly readGoalState?: (
     providerThread: OrchestrationV2ProviderThread,
   ) => Effect.Effect<ProviderGoalReadResult>;
@@ -790,10 +809,7 @@ export interface ProviderAdapterV2SessionRuntime {
     readonly providerThread: OrchestrationV2ProviderThread;
     readonly reason?: string;
   }) => Effect.Effect<{ readonly feedbackId: string }, ProviderAdapterV2Error>;
-  /**
-   * Absent means apps from this provider are not interactive and their tool
-   * calls stay plain tool rows.
-   */
+  /** Absent means non-interactive apps with plain tool rows. */
   readonly mcpApps?: ProviderAdapterV2McpApps;
   readonly rollbackThread: (
     input: ProviderAdapterV2RollbackThreadInput,

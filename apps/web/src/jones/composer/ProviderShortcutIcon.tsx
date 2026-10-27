@@ -2,14 +2,39 @@ import { useId } from "react";
 import { providerInstanceInitials } from "@t3tools/client-runtime/state/provider-instance-display";
 import type { ProviderInstanceEntry } from "../../providerInstances";
 import { ProviderInstanceIcon } from "../../components/chat/ProviderInstanceIcon";
+import { providerShortcutLabelColor } from "./providerShortcutLabelColor";
 
 export function ProviderShortcutIcon({
   entry,
 }: {
-  entry: Pick<ProviderInstanceEntry, "driverKind" | "displayName" | "accentColor">;
+  entry: Pick<ProviderInstanceEntry, "driverKind" | "displayName" | "accentColor" | "snapshot">;
+}) {
+  return (
+    <ProviderAccountGlyph
+      driverKind={entry.driverKind}
+      displayName={entry.displayName}
+      accentColor={entry.accentColor}
+      labelColor={providerShortcutLabelColor(entry.snapshot.usageLimits)}
+    />
+  );
+}
+
+export function ProviderAccountGlyph({
+  driverKind,
+  displayName,
+  accentColor,
+  acpRegistryIconUrl,
+  labelColor = "white",
+  labelSize = "default",
+}: Pick<
+  ProviderInstanceEntry,
+  "driverKind" | "displayName" | "accentColor" | "acpRegistryIconUrl"
+> & {
+  labelColor?: string;
+  labelSize?: "default" | "compact";
 }) {
   const labelId = useId();
-  const initials = Array.from(providerInstanceInitials(entry.displayName));
+  const initials = Array.from(providerInstanceInitials(displayName));
   const letters =
     initials.length === 1 ? (
       <text x={0} y={0} textAnchor="middle">
@@ -29,13 +54,12 @@ export function ProviderShortcutIcon({
   return (
     <span className="relative inline-flex size-4 shrink-0 items-center justify-center">
       <ProviderInstanceIcon
-        driverKind={entry.driverKind}
-        displayName={entry.displayName}
-        accentColor={entry.accentColor}
+        driverKind={driverKind}
+        displayName={displayName}
+        accentColor={accentColor}
+        acpRegistryIconUrl={acpRegistryIconUrl}
         className="size-4"
-        iconClassName={
-          entry.driverKind === "codex" || entry.driverKind === "claudeAgent" ? "size-5" : "size-4"
-        }
+        iconClassName={driverKind === "codex" || driverKind === "claudeAgent" ? "size-5" : "size-4"}
       />
       <svg
         data-composer-control-icon
@@ -47,7 +71,7 @@ export function ProviderShortcutIcon({
           width: 36,
           height: 26,
           fontFamily: "system-ui, sans-serif",
-          fontSize: 9,
+          fontSize: labelSize === "compact" ? 6 : 9,
           fontWeight: 600,
         }}
         dominantBaseline="central"
@@ -58,10 +82,10 @@ export function ProviderShortcutIcon({
         <use
           href={`#${labelId}`}
           className="stroke-black fill-black"
-          strokeWidth={6.25}
+          strokeWidth={labelSize === "compact" ? 3 : 6.25}
           strokeLinejoin="round"
         />
-        <use href={`#${labelId}`} className="fill-white" />
+        <use href={`#${labelId}`} fill={labelColor} />
       </svg>
     </span>
   );

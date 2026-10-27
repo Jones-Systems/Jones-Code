@@ -92,13 +92,18 @@ async function boundDocument(path: string, digest: string): Promise<Record<strin
   return object(JSON.parse(bytes.toString("utf8")));
 }
 
-function canonicalRun(value: unknown, workflow: string, source: string): Record<string, unknown> {
+function canonicalRun(
+  value: unknown,
+  workflow: string,
+  source: string,
+  event: "push" | "schedule" = "push",
+): Record<string, unknown> {
   const run = object(value);
   if (
     run.path !== workflow ||
     run.head_sha !== source ||
     run.head_branch !== "main" ||
-    run.event !== "push" ||
+    run.event !== event ||
     run.status !== "completed" ||
     run.conclusion !== "success" ||
     object(run.repository).full_name !== repository ||
@@ -235,6 +240,7 @@ async function inspect(input: RecoveryInput, api: RecoveryApi): Promise<Recovery
     await get(`actions/runs/${input.runId}/attempts/${input.runAttempt}`),
     receipt.workflow,
     receipt.sourceSha,
+    staged.receipt.event,
   );
   if (
     run.id !== input.runId ||

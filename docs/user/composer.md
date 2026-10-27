@@ -57,12 +57,17 @@ On web and desktop, choose **Settings → General → Follow-up behavior** to qu
 new messages for the next safe tool boundary or steer the running turn immediately.
 The setting applies to this client; already queued messages keep their place. Queued messages
 are saved on the server and can be edited, reordered, or removed above the composer.
-`Cmd+Enter` on macOS or `Ctrl+Enter` on Windows and Linux uses the opposite action:
-it steers when your default is Queue and queues when your default is Steer.
+When Enter sends, `Cmd+Enter` on macOS or `Ctrl+Enter` on Windows and Linux uses
+the opposite action: it steers when your default is Queue and queues when your
+default is Steer.
+If your **Send shortcut** requires `Cmd+Enter` or `Ctrl+Enter`, that shortcut uses
+your default follow-up behavior; add **Shift** to use the opposite action. This
+applies only to multiline messages when you choose the multiline send option.
 
 Use `Cmd+Shift+Enter` on macOS or `Ctrl+Shift+Enter` on Windows and Linux to send
 the oldest queued message as a steer. This leaves the current draft intact and
-requires an active turn that supports steering. Change
+requires an active turn that supports steering. If that shortcut sends the opposite
+action for your draft, move focus outside the composer to steer the queued message. Change
 `thread.steerQueuedMessage` in **Settings → Keybindings** to use another shortcut.
 
 Press `Option+Up` on macOS or `Alt+Up` on Windows and Linux with the cursor at the
@@ -146,7 +151,8 @@ into a normal draft.
 
 On web and desktop, choose **Edit from here** beneath a sent message to rewind
 the conversation to before that message. Choose **Revert and keep changes** to
-leave workspace files as they are, or **Revert files too** to restore them as well.
+leave workspace files as they are, or **Revert files too** to put the workspace back
+to its checkpoint from before that message. That also undoes edits you made yourself.
 File restore is only offered for threads running in a worktree, and it is
 refused when another thread or agent session also uses that directory, a folder
 inside it, or a folder that contains it, since
@@ -194,10 +200,12 @@ transcription or cancellation; only the message text is sent when you submit.
 ## Queued messages
 
 On web and desktop, the composer shows **Interrupt** while the agent is working and the draft is
-empty. Adding text or attachments replaces it with a steer arrow. Click it to send a message into
-the active turn, or press `Enter` on desktop. Hold `Cmd` on macOS or `Ctrl` on Windows and Linux to
-switch the button to a queue icon. Click while holding that key, or press `Cmd+Enter` or
-`Ctrl+Enter` on desktop, to queue the message for the next safe tool boundary on supporting servers.
+empty. Adding text or attachments replaces it with a send button that shows your
+[Follow-up behavior](#send-while-the-agent-is-working): a queue icon for Queue or a steer arrow for
+Steer. Click it or press your send shortcut to use that action. Hold `Cmd` on macOS or `Ctrl` on
+Windows and Linux to switch the button to the opposite action, then click, or use the opposite-action
+shortcut described above.
+
 Older servers keep queued messages for the next turn.
 
 On supporting servers, Queue sends compatible messages after the current foreground tool calls finish,
@@ -206,6 +214,11 @@ approval or answer. Providers that cannot accept input without restarting, comma
 `/compact`, and messages that change the provider, model, or modes wait for a later turn instead.
 At a tool boundary, messages follow their selected queue order. Later messages wait for earlier
 delivery to succeed, including any retries.
+On servers that support batch steering, compatible queued messages are delivered together in one
+provider input, within the server's message-size limits. Queued messages from other agents can use
+the same safe tool-boundary delivery. Agents that need a separate turn can explicitly request
+`separate_turn` instead. Scheduled wakes still wait for a separate turn; repeated fires of the
+same task keep at most one pending wake in that thread.
 Failed or interrupted tools do not release the queue on their own; it waits for the next
 qualifying tool completion or the end of the turn. Stopping the thread keeps its queue held.
 
@@ -213,9 +226,23 @@ Queued messages appear above the composer. Rows show a thumbnail of any attached
 the text. Drag a row by its handle to reorder it, use the handle's arrow keys, promote the message
 to a steer, or remove it.
 
-If the server restarts, saved queued messages keep their order and are held. Press
-**Resume** in an empty composer on web or desktop, or **Resume queue** in the queue
-sheet on mobile, to continue. You can edit, reorder, or remove held messages without starting them.
+On supporting servers, **Steer all** in the queue header sends compatible queued messages together
+to the active agent. Its count shows how many messages will be sent. If the queue exceeds the
+server's text or attachment limits, the action sends the fitting prefix and leaves the remaining
+messages queued. It preserves each message's sender and timeline entry. Editing, pending questions
+or approvals, and providers that require a restart can make the batch action unavailable. Older
+servers retain the individual row controls.
+
+Choosing **Steer all** sends one combined input to the currently running agent, including messages
+queued before you changed accounts or models. The separate timeline cards preserve the original
+messages; they do not mean each message started a separate turn. If the active turn finishes before
+delivery, the messages are preserved for follow-up delivery. Automatic delivery at a tool boundary
+still requires the queued messages to match the active provider and model.
+
+If you stop the agent or the server restarts, queued messages keep their order and are held.
+Press **Resume** in an empty composer on web and desktop, or **Resume queue** on mobile, to
+continue. Sending a new message also resumes the queue, unless it steers a turn that is already
+running. You can edit, reorder, or remove held messages without starting them.
 
 The pencil on a queued row opens that message in the composer for editing. The original message
 stays in the queue until you save, and its row is highlighted while you edit. The message's
@@ -258,6 +285,9 @@ Provider commands must start the message to run. T3 Code commands such as
 Send `/compact` in an existing conversation to reduce context usage when the
 provider supports it. Web and desktop also offer compaction from the context meter.
 
+Claude instances can also compact idle threads for you. See
+[compact long conversations](./providers-claude.md#compact-long-conversations).
+
 ## Goals
 
 With Codex and Claude, send `/goal` followed by what "done" means, for example
@@ -270,6 +300,18 @@ row above the composer shows the goal and its progress.
   pauses it.
 - Stopping Claude ends the current turn, but the goal stays set. Claude checks it
   again at the end of your next message.
+
+Agents can use `t3_thread_goal` to read a goal or control Codex without queuing
+behind its active run. Read first and reuse the returned control token with a
+stable request ID. Pause and clear let the current turn finish normally;
+replace edits only the objective, preserving status and usage without starting
+a turn. Resume on an idle thread starts an owned run; accepted dispatch still
+needs native readback. Request receipts are kept for the current server and
+session binding. Restart or a binding change expires old control tokens: read
+again and reconcile state before issuing another operation. An unknown result
+blocks further mutations until readback resolves it. Claude reads are transcript observations;
+its SDK does not expose these controls. Thread read/list goal fields are cached
+provider projections; use the goal tool for a fresh Codex observation.
 
 ## Context in your message
 
@@ -292,15 +334,29 @@ the repository by text. Choose a result to insert it as a chip.
 Another thread can be context too. Type `@` followed by part of its title to pick one from
 the same server, or on web and desktop drag a thread out of the sidebar and drop it on the
 composer; a multi-selection drops together. The chip shows the thread's current title and
-opens it when selected. Your prompt only carries a reference: the agent reads the thread's
-history on demand, so attaching a long thread costs nothing until the agent looks. Attaching a
-thread does not change it, and the agent cannot send messages to it unless you ask.
+opens it when selected, including threads from another connected environment. Your prompt
+carries the title, thread ID, and source environment. On web and desktop, adding a thread also
+captures a bounded excerpt of its recent conversation: up to three recent exchanges with tool
+activity, plus up to six earlier exchanges containing only the incoming message and last
+recorded assistant reply, presented chronologically. Historical replies are labeled as recorded
+replies because the source does not retain final-channel metadata. Incoming messages can come
+from you, another agent, or a scheduled task.
 
-Dropping a thread from another environment attaches a saved transcript file. The source
-environment must be connected and up to date. The transcript includes the visible history and
-saved text context at the time of the drop; later messages and the contents of attached files
-are not copied. The agent can read the saved transcript after the source disconnects. Normal
-file attachment limits apply.
+The excerpt is extracted automatically, without a model-generated summary or a transcript file.
+Long messages and tool results are shortened, with omissions marked. Each thread excerpt is
+limited to 16,000 characters; excerpts across a message share a 32,000-character budget and may
+be omitted when the rest of the prompt leaves too little room. Reasoning and attached file
+contents are excluded. Selected text and tool output are copied into the receiving conversation.
+
+The excerpt reflects the source when you attach it. Adding the same reference again does not
+refresh it. If the source is disconnected or cannot provide an excerpt, the identity reference
+still works and the missing context is identified. The agent can read more history on demand.
+Reading another environment requires a tool that supports its environment ID and an accessible
+linked source; attaching a reference does not grant that access.
+Attaching a thread does not change it or authorize the agent to message it.
+
+Dropping or pasting a thread reference preserves its source environment. Existing transcript
+files you attached previously remain ordinary file attachments; this does not remove them.
 
 Images keep their thumbnail shelf above the text and also get a chip at your cursor, so you can
 say exactly which image you mean. Deleting an image chip leaves the image on the shelf; removing

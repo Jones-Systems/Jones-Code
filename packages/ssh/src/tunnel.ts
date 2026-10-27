@@ -2,10 +2,7 @@ import type {
   DesktopSshEnvironmentBootstrap,
   DesktopSshEnvironmentTarget,
 } from "@t3tools/contracts";
-import {
-  describeReadinessCause,
-  waitForHttpReady as waitForHttpReadyShared,
-} from "@t3tools/shared/httpReadiness";
+import { waitForHttpReady as waitForHttpReadyShared } from "@t3tools/shared/httpReadiness";
 import { cliReleaseDownloadBaseUrl } from "@t3tools/shared/cliRelease";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as NetService from "@t3tools/shared/Net";
@@ -15,6 +12,7 @@ import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -28,7 +26,6 @@ import * as SshAuth from "./auth.ts";
 import {
   baseSshArgs,
   buildSshHostSpecEffect,
-  collectProcessOutput,
   getLastNonEmptyOutputLine,
   remoteStateKey,
   resolveSshCommand,
@@ -60,14 +57,12 @@ const REMOTE_PORT_SCAN_WINDOW = 200;
 const SSH_READY_TIMEOUT_MS = 20_000;
 const SSH_READY_PROBE_TIMEOUT_MS = 1_000;
 const TUNNEL_SHUTDOWN_TIMEOUT_MS = 2_000;
+const TUNNEL_STDERR_TAIL_CHARS = 16_384;
 const REMOTE_READY_TIMEOUT_MS = 60_000;
 const REMOTE_LAUNCH_TIMEOUT_MS = 90_000;
-// A cold archive launch also downloads and unpacks a ~70 MB release archive
-// and may wait on another installer's lock. The budgets nest: the checksum
-// file is tiny and the archive download is bounded; a waiter outlasts both
-// downloads plus extraction so it can reuse the result; and the SSH command
-// outlasts an install (own or waited-for) plus readiness, with slack for
-// verification and extraction, which have no timeout of their own.
+// Cold archive launches download and extract ~70 MB and may wait on an install lock.
+// Lock waits must outlast both downloads and extraction; SSH must outlast install or wait plus readiness.
+// Leave slack for verification and extraction, which have no timeout.
 const REMOTE_ARCHIVE_CHECKSUMS_SECONDS = 30;
 const REMOTE_ARCHIVE_DOWNLOAD_SECONDS = 240;
 const REMOTE_ARCHIVE_LOCK_WAIT_SECONDS = 360;
@@ -249,9 +244,7 @@ function applyScriptPlaceholders(
   return result;
 }
 
-export { describeReadinessCause };
-
-export const REMOTE_PICK_PORT_SCRIPT = `const fs = require("node:fs");
+const REMOTE_PICK_PORT_SCRIPT = `const fs = require("node:fs");
 const net = require("node:net");
 const filePath = process.argv[2] ?? "";
 const defaultPort = Number.parseInt(process.argv[3] ?? "", 10);
@@ -472,21 +465,13 @@ t3_runtime_ready() {
 }
 if ! t3_runtime_ready; then
   mkdir -p "$HOME/.t3/runtime/versions"
-  # Concurrent launches (two clients, a retry racing a slow first run) must
-  # not both install: mkdir is the atomic lock and the ready check repeats
-  # under it.
   T3_LOCK="$HOME/.t3/runtime/versions/.$T3_ARCHIVE_VERSION.install.lock"
-  # mkdir is the only portable atomic exclusive create (mv would silently
-  # nest a candidate inside an existing lock). The owner publishes its pid
-  # right after, so a lock with a live owner is never reclaimed however
-  # slow its download is, and a lock whose owner is dead is reclaimed at
-  # once. A lock with no pid at all is a crash between mkdir and the pid
-  # write; it is reclaimed after a short grace so a live owner has time to
-  # publish.
+  # uutils mkdir can report success on EEXIST, so use shell noclobber.
+  # An empty lock gets a short grace period for its owner to publish a PID.
   T3_LOCK_WAITED=0
   T3_LOCK_UNOWNED=0
-  while ! mkdir "$T3_LOCK" 2>/dev/null; do
-    T3_LOCK_OWNER="$(cat "$T3_LOCK/pid" 2>/dev/null || true)"
+  while ! (set -C; printf '%s\\n' "$$" > "$T3_LOCK") 2>/dev/null; do
+    T3_LOCK_OWNER="$(cat "$T3_LOCK" 2>/dev/null || true)"
     if [ -n "$T3_LOCK_OWNER" ]; then
       T3_LOCK_UNOWNED=0
       if ! kill -0 "$T3_LOCK_OWNER" 2>/dev/null; then
@@ -507,7 +492,6 @@ if ! t3_runtime_ready; then
     sleep 1
     T3_LOCK_WAITED=$((T3_LOCK_WAITED + 1))
   done
-  printf '%s\\n' "$$" > "$T3_LOCK/pid.tmp" && mv "$T3_LOCK/pid.tmp" "$T3_LOCK/pid"
   trap 'rm -rf "$T3_LOCK"' EXIT
 fi
 if ! t3_runtime_ready; then
@@ -708,29 +692,6 @@ PAIRING_BASE_DIR="$DEFAULT_SERVER_HOME"
 "$RUNNER_FILE" auth pairing create --base-dir "$PAIRING_BASE_DIR" --json
 `;
 
-const REMOTE_STOP_SCRIPT = `set -eu
-STATE_DIR="$HOME/.t3/ssh-launch/@@T3_STATE_KEY@@"
-PID_FILE="$STATE_DIR/pid"
-PORT_FILE="$STATE_DIR/port"
-MANAGED_FILE="$STATE_DIR/managed"
-REMOTE_MANAGED="$(cat "$MANAGED_FILE" 2>/dev/null || true)"
-REMOTE_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
-if [ "$REMOTE_MANAGED" != "external" ] && [ -n "$REMOTE_PID" ] && kill -0 "$REMOTE_PID" 2>/dev/null; then
-  kill "$REMOTE_PID" 2>/dev/null || true
-  WAIT_COUNT=0
-  while kill -0 "$REMOTE_PID" 2>/dev/null && [ "$WAIT_COUNT" -lt 20 ]; do
-    WAIT_COUNT=$((WAIT_COUNT + 1))
-    sleep 0.1
-  done
-  if kill -0 "$REMOTE_PID" 2>/dev/null; then
-    printf 'Remote T3 server with PID %s did not stop within 2 seconds. Its ownership files were kept.\\n' "$REMOTE_PID" >&2
-    exit 1
-  fi
-fi
-rm -f "$PID_FILE" "$PORT_FILE" "$MANAGED_FILE"
-printf '{"stopped":true}\\n'
-`;
-
 const REMOTE_LOG_TAIL_SCRIPT = `set -eu
 STATE_DIR="$HOME/.t3/ssh-launch/@@T3_STATE_KEY@@"
 LOG_FILE="$STATE_DIR/server.log"
@@ -820,12 +781,6 @@ export function buildRemotePairingScript(stateKey: string, input?: RemoteT3Runne
   return applyScriptPlaceholders(REMOTE_PAIRING_SCRIPT, {
     T3_STATE_KEY: stateKey,
     T3_RUNNER_SCRIPT: stripTrailingNewlines(buildRemoteT3RunnerScript(input)),
-  });
-}
-
-export function buildRemoteStopScript(stateKey: string): string {
-  return applyScriptPlaceholders(REMOTE_STOP_SCRIPT, {
-    T3_STATE_KEY: stateKey,
   });
 }
 
@@ -971,7 +926,7 @@ const readRemoteServerLogTail = Effect.fn("ssh/tunnel.readRemoteServerLogTail")(
   return result.stdout.trim();
 });
 
-export const waitForHttpReady = (input: {
+const waitForHttpReady = (input: {
   readonly baseUrl: string;
   readonly timeoutMs?: number;
   readonly intervalMs?: number;
@@ -1168,8 +1123,21 @@ const startSshTunnel = Effect.fn("ssh/tunnel.startSshTunnel")(function* (input: 
     process: child,
     scope,
   };
+  // Readiness cancels the exit waiter, but diagnostics must drain until the tunnel closes.
+  let stderrTail = "";
+  const stderrDrain = yield* child.stderr.pipe(
+    Stream.decodeText(),
+    Stream.runForEach((chunk) =>
+      Effect.sync(() => {
+        stderrTail = (stderrTail + chunk).slice(-TUNNEL_STDERR_TAIL_CHARS);
+      }),
+    ),
+    // Diagnostics are best-effort: a failed read must not hide the real exit.
+    Effect.ignore,
+    Effect.forkIn(scope),
+  );
   const exitFailure = Effect.all(
-    [collectProcessOutput(child.stderr), child.exitCode.pipe(Effect.map(Number))],
+    [Fiber.join(stderrDrain), child.exitCode.pipe(Effect.map(Number))],
     { concurrency: "unbounded" },
   ).pipe(
     Effect.mapError(
@@ -1185,7 +1153,8 @@ const startSshTunnel = Effect.fn("ssh/tunnel.startSshTunnel")(function* (input: 
           cause,
         }),
     ),
-    Effect.flatMap(([stderr, exitCode]) => {
+    Effect.flatMap(([, exitCode]) => {
+      const stderr = stderrTail;
       const error = new SshCommandError({
         command: tunnelCommand,
         exitCode,
@@ -1350,7 +1319,7 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
       attempt,
       destination: target.alias.trim() || target.hostname.trim(),
       username: target.username,
-      prompt: `Enter the SSH password for ${hostSpec}.`,
+      prompt: `Enter the SSH password or verification code for ${hostSpec}.`,
     });
     if (password === null) {
       yield* Effect.logWarning("ssh.auth.passwordPrompt.cancelled", {

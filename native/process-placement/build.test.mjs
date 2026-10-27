@@ -4,6 +4,8 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 import * as NodeCrypto from "node:crypto";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeOS from "node:os";
 import { buildPlacement } from "./build.mjs";
 
 async function fixture(action) {
@@ -111,4 +113,66 @@ NodeTest.test("cleanup failure fails success and does not hide an original compi
       (cause) => cause.exitCode === 23 && cause.cleanupError === cleanupFailure,
     );
   }),
+);
+
+NodeTest.test(
+  "native descendant walk rejects escapes and symlinks without placement writes",
+  {
+    // oxlint-disable-next-line t3code/no-global-process-runtime -- Plain MJS native compiler test has no Effect runtime.
+    skip: NodeOS.platform() !== "linux",
+  },
+  async () =>
+    fixture(async ({ root }) => {
+      const native = NodeURL.fileURLToPath(new URL("./placement.c", import.meta.url));
+      const harness = NodePath.join(root, "descendant-test.c");
+      const binary = NodePath.join(root, "descendant-test");
+      NodeFS.writeFileSync(
+        harness,
+        `#define main placement_main
+#include ${JSON.stringify(native)}
+#undef main
+int main(int argc, char **argv) {
+  if (argc != 3) return 2;
+  const char *suffix = descendant_suffix(argv[1], argv[2]);
+  int parent = open_directory(argv[1]);
+  int member = open_descendant(parent, suffix);
+  close(member); close(parent); return 0;
+}
+`,
+      );
+      const compiled = NodeChildProcess.spawnSync(
+        "cc",
+        ["-O2", "-std=c11", "-Wall", "-Wextra", "-Werror", harness, "-o", binary],
+        {
+          encoding: "utf8",
+          timeout: 30000,
+          env: { ...process.env, TMPDIR: root },
+        },
+      );
+      NodeAssert.equal(compiled.status, 0, compiled.stderr);
+      const parent = NodePath.join(root, "workload");
+      NodeFS.mkdirSync(NodePath.join(parent, "owned", "session.scope"), { recursive: true });
+      NodeFS.symlinkSync(NodePath.join(parent, "owned"), NodePath.join(parent, "linked"));
+      const procs = NodePath.join(parent, "cgroup.procs");
+      NodeFS.writeFileSync(procs, "untouched fixture\n");
+      const run = (member) =>
+        NodeChildProcess.spawnSync(binary, [parent, member], {
+          encoding: "utf8",
+          timeout: 5000,
+        });
+      NodeAssert.equal(run(NodePath.join(parent, "owned", "session.scope")).status, 0);
+      for (const member of [
+        parent,
+        parent + "-x/child",
+        parent + "/../workload/owned",
+        parent + "/owned/",
+        parent + "/owned//session.scope",
+        parent + "/missing",
+        parent + "/linked/session.scope",
+      ]) {
+        const result = run(member);
+        NodeAssert.equal(result.status, 125, member + ": " + result.stderr);
+      }
+      NodeAssert.equal(NodeFS.readFileSync(procs, "utf8"), "untouched fixture\n");
+    }),
 );

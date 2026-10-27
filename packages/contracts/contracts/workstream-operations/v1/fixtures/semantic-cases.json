@@ -1,0 +1,582 @@
+{
+  "contract_family": "workstream-operations",
+  "contract_version": "1.0.0",
+  "cases": [
+    {
+      "name": "queue-any",
+      "schema": "#/$defs/Request",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "queue",
+          "request_id": "request-1"
+        },
+        "kind": "set_primary",
+        "thread": {
+          "environment_id": "env-1",
+          "thread_id": "thread-1"
+        },
+        "target": {
+          "kind": "workstream",
+          "registry_id": "registry-1",
+          "owner_id": "owner-1",
+          "workstream_id": "ws-1"
+        },
+        "expected": {
+          "kind": "any"
+        }
+      }
+    },
+    {
+      "name": "queue-primary",
+      "schema": "#/$defs/Request",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "queue",
+          "request_id": "request-1"
+        },
+        "kind": "set_primary",
+        "thread": {
+          "environment_id": "env-1",
+          "thread_id": "thread-1"
+        },
+        "target": {
+          "kind": "workstream",
+          "registry_id": "registry-1",
+          "owner_id": "owner-1",
+          "workstream_id": "ws-1"
+        },
+        "expected": {
+          "kind": "primary",
+          "workstream_id": "ws-1"
+        }
+      }
+    },
+    {
+      "name": "create-with-membership",
+      "schema": "#/$defs/Result",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "create_workstream",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state": "committed",
+        "reason": null,
+        "detail": null,
+        "observed": null,
+        "result": {
+          "workstream_id": "ws-1",
+          "membership_id": "membership-1",
+          "registry_version": 4
+        },
+        "poll_after_ms": null,
+        "children": [],
+        "accepted_at": "2026-10-23T09:00:00Z",
+        "updated_at": "2026-10-23T09:00:00Z"
+      }
+    },
+    {
+      "name": "create-without-workstream",
+      "schema": "#/$defs/Result",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "create_workstream",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state": "committed",
+        "reason": null,
+        "detail": null,
+        "observed": null,
+        "result": {
+          "workstream_id": null,
+          "membership_id": null,
+          "registry_version": 4
+        },
+        "poll_after_ms": null,
+        "children": [],
+        "accepted_at": "2026-10-23T09:00:00Z",
+        "updated_at": "2026-10-23T09:00:00Z"
+      }
+    },
+    {
+      "name": "assignment-without-membership",
+      "schema": "#/$defs/Result",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state": "committed",
+        "reason": null,
+        "detail": null,
+        "observed": null,
+        "result": {
+          "workstream_id": "ws-1",
+          "membership_id": null,
+          "registry_version": 4
+        },
+        "poll_after_ms": null,
+        "children": [],
+        "accepted_at": "2026-10-23T09:00:00Z",
+        "updated_at": "2026-10-23T09:00:00Z"
+      }
+    },
+    {
+      "name": "create-observed-thread",
+      "schema": "#/$defs/Result",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "create_workstream",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state": "in_progress",
+        "reason": null,
+        "detail": null,
+        "observed": {
+          "kind": "unassigned"
+        },
+        "result": null,
+        "poll_after_ms": 250,
+        "children": [],
+        "accepted_at": "2026-10-23T09:00:00Z",
+        "updated_at": "2026-10-23T09:00:00Z"
+      }
+    },
+    {
+      "name": "wrong-reconciliation-kind",
+      "schema": "#/$defs/Result",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state": "reconciling",
+        "reason": "create_effect_unknown",
+        "detail": null,
+        "observed": null,
+        "result": null,
+        "poll_after_ms": 250,
+        "children": [],
+        "accepted_at": "2026-10-23T09:00:00Z",
+        "updated_at": "2026-10-23T09:00:00Z"
+      }
+    },
+    {
+      "name": "updated-before-accepted",
+      "schema": "#/$defs/Result",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state": "in_progress",
+        "reason": null,
+        "detail": null,
+        "observed": null,
+        "result": null,
+        "poll_after_ms": 250,
+        "children": [],
+        "accepted_at": "2026-10-23T09:00:00Z",
+        "updated_at": "2026-10-22T09:00:00Z"
+      }
+    },
+    {
+      "name": "invalid-calendar-date",
+      "schema": "#/$defs/Result",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state": "in_progress",
+        "reason": null,
+        "detail": null,
+        "observed": null,
+        "result": null,
+        "poll_after_ms": 250,
+        "children": [],
+        "accepted_at": "2026-02-30T09:00:00Z",
+        "updated_at": "2026-10-23T09:00:00Z"
+      }
+    },
+    {
+      "name": "duplicate-child-id",
+      "schema": "#/$defs/Result",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state": "in_progress",
+        "reason": null,
+        "detail": null,
+        "observed": null,
+        "result": null,
+        "poll_after_ms": 250,
+        "children": [
+          {
+            "command_id": "child-command-0001",
+            "operation": "attach_primary",
+            "outcome": "unknown"
+          },
+          {
+            "command_id": "child-command-0001",
+            "operation": "attach_primary",
+            "outcome": "committed"
+          }
+        ],
+        "accepted_at": "2026-10-23T09:00:00Z",
+        "updated_at": "2026-10-23T09:00:00Z"
+      }
+    },
+    {
+      "name": "duplicate-open-id",
+      "schema": "#/$defs/ReadResponse",
+      "value": {
+        "operations": [
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000001",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 250,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          },
+          {
+            "contract": "workstream-operations/1.0.0",
+            "operation_id": "operation-000001",
+            "origin": {
+              "kind": "app"
+            },
+            "kind": "set_primary",
+            "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "state": "in_progress",
+            "reason": null,
+            "detail": null,
+            "observed": null,
+            "result": null,
+            "poll_after_ms": 500,
+            "children": [],
+            "accepted_at": "2026-10-23T09:00:00Z",
+            "updated_at": "2026-10-23T09:00:00Z"
+          }
+        ]
+      }
+    },
+    {
+      "name": "enabled-with-missing-key",
+      "schema": "#/$defs/SetupStatus",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "environment_id": "env-1",
+        "observed_at": "2026-10-23T09:00:00Z",
+        "authority_effect": "none",
+        "activation": {
+          "state": "enabled",
+          "missing_keys": ["T3_WORKSTREAM_OWNER_ID"]
+        },
+        "registry": {
+          "state": "ready",
+          "registry_id": "registry-1",
+          "owner_id": "owner-1",
+          "can_write": true
+        },
+        "t3_source": {
+          "state": "ready",
+          "reason": null
+        },
+        "placements": {
+          "readiness": "ready"
+        },
+        "operations": {
+          "open": 0
+        },
+        "next_steps": []
+      }
+    },
+    {
+      "name": "duplicate-missing-key",
+      "schema": "#/$defs/SetupStatus",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "environment_id": "env-1",
+        "observed_at": "2026-10-23T09:00:00Z",
+        "authority_effect": "none",
+        "activation": {
+          "state": "invalid",
+          "missing_keys": ["T3_WORKSTREAM_OWNER_ID", "T3_WORKSTREAM_OWNER_ID"]
+        },
+        "registry": {
+          "state": "ready",
+          "registry_id": "registry-1",
+          "owner_id": "owner-1",
+          "can_write": true
+        },
+        "t3_source": {
+          "state": "ready",
+          "reason": null
+        },
+        "placements": {
+          "readiness": "ready"
+        },
+        "operations": {
+          "open": 0
+        },
+        "next_steps": []
+      }
+    },
+    {
+      "name": "duplicate-next-step",
+      "schema": "#/$defs/SetupStatus",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "environment_id": "env-1",
+        "observed_at": "2026-10-23T09:00:00Z",
+        "authority_effect": "none",
+        "activation": {
+          "state": "enabled",
+          "missing_keys": []
+        },
+        "registry": {
+          "state": "ready",
+          "registry_id": "registry-1",
+          "owner_id": "owner-1",
+          "can_write": true
+        },
+        "t3_source": {
+          "state": "ready",
+          "reason": null
+        },
+        "placements": {
+          "readiness": "ready"
+        },
+        "operations": {
+          "open": 0
+        },
+        "next_steps": [
+          {
+            "code": "configure_activation",
+            "doc": "docs/operations/workstreams-activation.md"
+          },
+          {
+            "code": "configure_activation",
+            "doc": "docs/operations/workstreams-activation.md"
+          }
+        ]
+      }
+    },
+    {
+      "name": "thread-open-create",
+      "schema": "#/$defs/ReadResponse",
+      "value": {
+        "assignment": {
+          "kind": "unverified"
+        },
+        "open_operation": {
+          "contract": "workstream-operations/1.0.0",
+          "operation_id": "operation-000001",
+          "origin": {
+            "kind": "app"
+          },
+          "kind": "create_workstream",
+          "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "state": "in_progress",
+          "reason": null,
+          "detail": null,
+          "observed": null,
+          "result": null,
+          "poll_after_ms": 250,
+          "children": [],
+          "accepted_at": "2026-10-23T09:00:00Z",
+          "updated_at": "2026-10-23T09:00:00Z"
+        }
+      }
+    },
+    {
+      "name": "updated-before-accepted-microseconds",
+      "schema": "#/$defs/Result",
+      "value": {
+        "contract": "workstream-operations/1.0.0",
+        "operation_id": "operation-000001",
+        "origin": {
+          "kind": "app"
+        },
+        "kind": "set_primary",
+        "request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state": "in_progress",
+        "reason": null,
+        "detail": null,
+        "observed": null,
+        "result": null,
+        "poll_after_ms": 250,
+        "children": [],
+        "accepted_at": "2026-10-23T09:00:00.000002Z",
+        "updated_at": "2026-10-23T09:00:00.000001Z"
+      }
+    }
+  ],
+  "behavioral_requirements": {
+    "validation_scope": "Documented algorithm requirements only. The cases array above contains executable decoder rejection fixtures. These requirements and behavioral_scenarios below are not JSON-decoder conformance tests and do not demonstrate runner or queue correctness.",
+    "result_classes": [
+      {
+        "class": "settled",
+        "results": ["committed", "already_satisfied", "conflict"],
+        "same_operation_submit": "Replay while retained. After eviction or restart, recover committed from the receipt scan; decide already_satisfied or conflict again.",
+        "binding": "May release or start a new operation after already_satisfied or conflict; committed satisfies assignment."
+      },
+      {
+        "class": "CONFIG (unsealed)",
+        "results": [
+          "rejected(foreign_thread)",
+          "rejected(registry_mismatch)",
+          "rejected(permission_denied)",
+          "unavailable(offline)",
+          "unavailable(not_configured)",
+          "unavailable(registration_unavailable)"
+        ],
+        "same_operation_submit": "Run again; do not replay the cached failure. Skip the seal check but adopt a committed receipt when CP is readable.",
+        "binding": "Keep target and operation ID; retry the same request bytes.",
+        "guarantee": "Only no commit seen at the closing scan, if one ran."
+      },
+      {
+        "class": "sealed",
+        "results": ["Every other rejected or unavailable result"],
+        "same_operation_submit": "Run again; do not replay the cached failure.",
+        "binding": "May release or start a new operation; contention requires a new operation.",
+        "guarantee": "Return only with a seal: no membership/create attempt of this request from any process has committed or can commit. reg/ver may have committed."
+      },
+      {
+        "class": "open",
+        "results": ["in_progress", "reconciling"],
+        "same_operation_submit": "Join an active run for at most wait_ms; a sealing operation runs again.",
+        "binding": "Keep target and operation ID."
+      }
+    ],
+    "seal": {
+      "required": [
+        "Closing scan reads witness version V_c, then receipts through first absent index n*.",
+        "No child sent by this process for this operation is unresolved.",
+        "At least one of S1, S2 or S3 holds."
+      ],
+      "S1": "n* exceeds the first absent index on this process's first scan of the operation, or no index is absent.",
+      "S2": "V_c > V_epoch from this process's first fresh gateway read.",
+      "S3": "set_primary only: this process has seen this operation's reg-1 absent by verified not_found; the closing scan reads it when needed.",
+      "unproven": "Return reconciling(membership_effect_unknown|create_effect_unknown) according to operation kind, with poll_after_ms 30000.",
+      "phase": "Every 30 seconds rerun only closing scan and seal check, without a new attempt. Adopt committed, or return the already-decided failure when sealed. Retain as open without the R8 thread lock.",
+      "R8": "New process first reads CP only after prior process exits. Overlap preserves at-most-one state-changing commit per operation but voids seals.",
+      "children": "Record unresolved before send. First-absent allocation also applies to reg/ver; their receipts never finish the operation. Send mem only while holding this operation's reg receipt."
+    },
+    "retention_and_read": "Keep finished results 24 hours, at most the newest 1,000; keep open/sealing until finished. Read memory only: latest run or null. A retained failure describes only its closing scan; only submit refreshes it.",
+    "settled_guarantee": "committed is final and sticky. For already_satisfied and conflict, no membership/create attempt of this request from any process has committed or can; reg/ver may have committed. The INV-6-prime proof is over actions possible for this request, with E <= V under R8 and V-prime = V.",
+    "queue_binding": "Bind target thread, operation ID and identical request bytes rebuilt from sealed intent. Change binding only after settled/sealed; raise attempt only for operation n+1. Fence request and thread until then. Owner cancel stops submits and releases fence; a late commit stands, and reuse requires a new expected-unassigned operation.",
+    "inline_create": "Keep operation ID per (registry, name) until settled or sealed."
+  },
+  "behavioral_scenarios": [
+    {
+      "name": "exited-process-gap-is-sealing",
+      "verification": "Documented behavioral scenario; requires a scripted fake CP and queue harness, not a JSON decoder.",
+      "setup": "A has mem-1 attach at version V held in flight, then exits. B sees reg-1 present, a quiet registry and pending verification.",
+      "steps": [
+        "Run B and inspect the queue binding.",
+        "Release mem-1 and resubmit the same operation."
+      ],
+      "expected": [
+        "B returns reconciling, not unavailable; queue keeps its binding.",
+        "Next resubmit returns committed; exactly one membership exists and queue attempt is unchanged."
+      ]
+    },
+    {
+      "name": "sealed-failure-does-not-trap-cache",
+      "verification": "Documented behavioral scenario; requires a scripted fake CP and runner harness, not a JSON decoder.",
+      "setup": "A fresh operation returns sealed unavailable(verification_pending) through S3.",
+      "steps": [
+        "Resubmit the same operation after verification can succeed.",
+        "Resubmit again while committed is retained.",
+        "Evict the retained result, restart and resubmit."
+      ],
+      "expected": [
+        "The first retry runs again and commits.",
+        "The next retry replays committed with zero CP calls.",
+        "After eviction and restart, the receipt scan returns committed."
+      ]
+    },
+    {
+      "name": "request-specific-inv-6-prime",
+      "verification": "Documented behavioral property and interleaving; requires a loopback CP/planner harness, not a JSON decoder.",
+      "setup": "Enumerate every combination of expected, target, membership state and Acts(request). Acts includes attach/reattach for expected unassigned or any, plus move/remove from the expected source or any source for expected any.",
+      "steps": [
+        "Check CP preconditions for each possible action whenever the planner returns conflict or already_satisfied, with E <= V and V-prime = V.",
+        "Hold queue attach(G) at E = V in flight; return conflict, release the slot, then deliver the late attach."
+      ],
+      "expected": [
+        "Every action possible for that request fails its CP preconditions in those decision states: attach/reattach need no open primary, remove needs its observed membership open, move needs it an open primary.",
+        "Conflict permits slot release; late attach receives membership_conflict."
+      ]
+    },
+    {
+      "name": "queue-retry-table-preserves-binding",
+      "verification": "Documented behavioral scenario; requires a queue harness and scripted operation responses, not a JSON decoder.",
+      "setup": "A queue has a durable binding with target, operation ID and request bytes reconstructed from sealed intent.",
+      "steps": [
+        "Return CONFIG offline, reconciling and HTTP 404 in separate runs.",
+        "Return sealed thread_not_found for a flexible slot, then contention in a separate run.",
+        "Restart the queue and retry an unresolved binding."
+      ],
+      "expected": [
+        "CONFIG offline, reconciling and 404 never release, reselect or increment attempt.",
+        "thread_not_found selects another slot; contention backs off and starts operation n+1.",
+        "Restart resubmits identical bytes with the same operation ID."
+      ]
+    },
+    {
+      "name": "leave-sealing-on-registry-write-and-retry-config-create",
+      "verification": "Documented behavioral scenarios; require a scripted fake CP, runner and controlled clock, not a JSON decoder.",
+      "setup": "An exited process leaves an operation that cannot yet be sealed. Separately, create is denied permission.",
+      "steps": [
+        "Keep the registry quiet, then commit an unrelated registry write and run the 30-second seal check.",
+        "Run create with permission_denied, fix permission, then retry the same operation."
+      ],
+      "expected": [
+        "The first operation remains reconciling until the unrelated write; the 30-second check returns the decided failure without a submit.",
+        "Create returns CONFIG permission_denied immediately; retry after the fix creates exactly one workstream."
+      ]
+    }
+  ]
+}

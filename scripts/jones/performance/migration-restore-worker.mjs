@@ -270,7 +270,7 @@ async function runtimePhase(record, source, current, binding, signal, mode, use)
   } finally {
     open = false;
     cancellation.abort();
-    await Promise.allSettled([...pending]);
+    await Promise.allSettled(pending);
     if (runtime) {
       await observeSyntheticClose(record.owner, {
         permit,

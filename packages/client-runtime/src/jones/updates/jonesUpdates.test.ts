@@ -2,7 +2,7 @@ import type {
   JonesUpdateProvenance,
   JonesUpdateState,
 } from "@t3tools/contracts/jones/jonesUpdates";
-import { expect, it } from "@effect/vitest";
+import { describe, expect, it } from "@effect/vitest";
 import { EnvironmentId } from "@t3tools/contracts";
 import { normalizeDpopHtu } from "@t3tools/shared/dpopCommon";
 import * as Deferred from "effect/Deferred";
@@ -18,11 +18,18 @@ import { JonesUpdateState as JonesUpdateStateSchema } from "@t3tools/contracts/j
 import {
   compareJonesSource,
   createJonesUpdateAtoms,
+  jonesExactSourceResultError,
+  jonesInstallRefusal,
+  jonesFollowerHold,
+  jonesFollowerSummary,
   jonesUpdateActionError,
   jonesCandidatePresentation,
   jonesUpdatePresentation,
   observeJonesUpdateSnapshot,
   observeJonesUpdateState,
+  resolveJonesExactSourceAction,
+  type JonesExactSourceInput,
+  type JonesUpdateObservation,
 } from "./jonesUpdates.ts";
 import { EnvironmentRegistry } from "../../connection/registry.ts";
 import { EnvironmentSupervisor } from "../../connection/supervisor.ts";
@@ -49,6 +56,46 @@ const staged: JonesUpdateState = {
   capability: { check: true, download: true, install: true },
   stagedHandle: "fixed-stage",
 };
+
+it("projects settlement only from reported evidence and preserves old-server status", () => {
+  expect(jonesUpdatePresentation(staged)).toMatchObject({
+    canReconcile: false,
+    settled: false,
+    settlementMessage: undefined,
+  });
+  const failed = {
+    ...staged,
+    phase: "error" as const,
+    updateId: "11111111-1111-4111-8111-111111111111",
+    settlement: "none" as const,
+    launcherSettlement: "supported" as const,
+  };
+  expect(jonesUpdatePresentation(failed)).toMatchObject({
+    canReconcile: true,
+    settled: false,
+    settlementMessage: "Previous attempt needs reconciliation",
+  });
+  expect(
+    jonesUpdatePresentation({ ...failed, launcherSettlement: "unsupported" }).canReconcile,
+  ).toBe(false);
+  for (const settlement of ["launcher-recorded", "legacy-reconciled"] as const) {
+    const state = { ...failed, settlement, cause: "backup refused" };
+    expect(jonesUpdatePresentation(state)).toMatchObject({
+      canReconcile: false,
+      settled: true,
+      settlementMessage: "Update did not start: backup refused. Nothing changed.",
+    });
+    expect(jonesUpdateActionError(AsyncResult.success(state))).toBeNull();
+    expect(
+      jonesUpdateActionError(
+        AsyncResult.success({ ...state, phase: "blocked", message: "Build lookup failed." }),
+      ),
+    ).toBe("Build lookup failed.");
+  }
+  const refused = { ...failed, settlementRefusal: "restore-pending" as const };
+  expect(jonesUpdatePresentation(refused).refusalMessage).toBe("Recovery is still pending.");
+  expect(jonesUpdateActionError(AsyncResult.success(refused))).toBe("Recovery is still pending.");
+});
 it.effect(
   "keeps relay update polling authenticated while transmitting zero and later revision cursors",
   () =>
@@ -118,6 +165,8 @@ it.effect(
           }),
       });
       const calls: Array<{ url: string; proofHtu: string; method: string }> = [];
+      const posts: Array<{ url: string; input: unknown }> = [];
+      let loseReply = false;
       const polled = yield* Deferred.make<void>();
       const observedRevision = yield* Deferred.make<void>();
       let releaseFetch = () => {};
@@ -127,6 +176,12 @@ it.effect(
       const fetchFn: typeof fetch = async (request, init) => {
         const url = String(request);
         const proof = JSON.parse(new Headers(init?.headers).get("dpop")!);
+        if (init?.method === "POST") {
+          expect(proof).toEqual({ method: "POST", htu: normalizeDpopHtu(url) });
+          posts.push({ url, input: JSON.parse(String(init.body)) });
+          if (loseReply) throw new TypeError("Synthetic lost reconciliation response");
+          return Response.json({ ...staged, settlementRefusal: "restore-pending" });
+        }
         calls.push({ url, proofHtu: proof.htu, method: init?.method ?? "GET" });
         if (calls.length === 3) Deferred.doneUnsafe(polled, Effect.void);
         if (proof.htu !== normalizeDpopHtu(url) || proof.method !== (init?.method ?? "GET"))
@@ -154,7 +209,8 @@ it.effect(
         ),
       );
       const registry = AtomRegistry.make();
-      const value = createJonesUpdateAtoms(runtime).value(target.environmentId);
+      const updates = createJonesUpdateAtoms(runtime);
+      const value = updates.value(target.environmentId);
       const observed: Array<number> = [];
       let unsubscribe = () => {};
       let unmount = () => {};
@@ -193,6 +249,31 @@ it.effect(
       yield* Deferred.await(observedRevision);
       expect(observed).toEqual([0, 7]);
       expect(registry.get(value)?.revision).toBe(7);
+      const input = {
+        operationId: "11111111-1111-4111-8111-111111111111",
+        requestId: "22222222-2222-4222-8222-222222222222",
+      };
+      const result = yield* Effect.promise(() =>
+        updates.action.run(registry, {
+          environmentId: target.environmentId,
+          input: { action: "reconcile", input },
+        }),
+      );
+      expect(result).toMatchObject({
+        _tag: "Success",
+        value: { settlementRefusal: "restore-pending" },
+      });
+      expect(posts).toEqual([{ url: `${origin}/api/jones-updates/reconcile`, input }]);
+      loseReply = true;
+      expect(
+        yield* Effect.promise(() =>
+          updates.action.run(registry, {
+            environmentId: target.environmentId,
+            input: { action: "reconcile", input },
+          }),
+        ),
+      ).toMatchObject({ _tag: "Failure" });
+      expect(posts).toHaveLength(2);
     }).pipe(Effect.scoped),
 );
 it.effect("starts observation after an initially disconnected mount prepares its connection", () =>
@@ -304,7 +385,7 @@ it("keeps restart pending until a host outcome arrives and presents rollback rea
     jonesUpdatePresentation({ ...staged, phase: "installing", updateId: "native-id" }),
   ).toMatchObject({
     busy: true,
-    message: "Installing — server restarting. Waiting for the launcher outcome.",
+    message: "Installing. Server restarting. Waiting for the launcher outcome.",
     outcomeMessage: undefined,
   });
   expect(
@@ -474,12 +555,14 @@ it("presents an offered build's version before download and leaves an older host
   expect(jonesCandidatePresentation({ ...available, provenance: offered })).toEqual({
     label: "Available",
     version: offered.version,
+    buildStartedAt: undefined,
     sourceSha: offered.sourceSha,
   });
   const { version: _version, ...older } = offered;
   expect(jonesCandidatePresentation({ ...available, provenance: older })).toEqual({
     label: "Available",
     version: undefined,
+    buildStartedAt: undefined,
     sourceSha: offered.sourceSha,
   });
   expect(jonesCandidatePresentation({ ...staged, provenance: offered })?.label).toBe("Downloaded");
@@ -516,4 +599,431 @@ it("keeps the comparison unavailable without both full source identities", () =>
   expect(compareJonesSource({ ...laptop, repository: "pingdotgg/t3code" }, offered)).toBe(
     "unavailable",
   );
+});
+
+describe("exact-source action resolution", () => {
+  const environmentId = EnvironmentId.make("exact-source-host");
+  // The running app's own source; the host's installed and offered builds differ from it.
+  const target = "a".repeat(40);
+  const installed = {
+    repository: "Jones-Systems/Jones-Code" as const,
+    sha: "e".repeat(40),
+    tree: "f".repeat(40),
+  };
+  const hostState = (overrides: Partial<JonesUpdateState> = {}): JonesUpdateState => ({
+    source: "jones-actions",
+    channel: "jones-main",
+    phase: "no-new",
+    revision: 4,
+    capability: { check: true, download: true, install: true, exactSource: true },
+    currentVersion: "0.1.0-preview.20261019.39341000929.1",
+    installedSource: installed,
+    ...overrides,
+  });
+  const targetBuild: JonesUpdateProvenance = { ...offered, sourceSha: target };
+  const resolve = (
+    state: JonesUpdateState | null,
+    overrides: Partial<JonesExactSourceInput> & {
+      freshness?: JonesUpdateObservation["freshness"];
+    } = {},
+  ) => {
+    const { freshness = "fresh", ...rest } = overrides;
+    return resolveJonesExactSourceAction({
+      environmentId,
+      observation: { state, freshness },
+      targetSource: target,
+      canOperate: true,
+      ...rest,
+    });
+  };
+  const unavailable = (decision: ReturnType<typeof resolve>) =>
+    decision.status === "unavailable" ? decision.reason : decision.step.kind;
+
+  it("lets a host that follows its laptop take only the laptop's installed source", () => {
+    const leader = { role: "follower" as const, leaderSource: target };
+    expect(resolve(hostState({ policy: leader }))).toMatchObject({ status: "ready" });
+    const other = resolve(
+      hostState({ policy: { role: "follower", leaderSource: "b".repeat(40) } }),
+    );
+    expect(unavailable(other)).toBe("follows-laptop");
+    expect(other.status === "unavailable" ? other.message : "").toContain("bbbbbbb");
+    expect(
+      unavailable(resolve(hostState({ policy: { role: "follower", leaderSource: null } }))),
+    ).toBe("follows-laptop");
+    const staged = hostState({
+      phase: "staged",
+      stagedHandle: "handle-1",
+      provenance: { ...offered, sourceSha: "c".repeat(40) },
+      policy: leader,
+    });
+    expect(jonesFollowerHold(staged)).toContain("aaaaaaa");
+    expect(jonesFollowerHold({ ...staged, provenance: targetBuild })).toBeUndefined();
+    const { policy: _policy, ...standalone } = staged;
+    expect(jonesFollowerHold(standalone)).toBeUndefined();
+    expect(jonesFollowerSummary(staged)).toBe("Follows its laptop · takes only source aaaaaaa");
+  });
+
+  it("downloads the target by source when the host advertises exact selection, whatever it offers", () => {
+    // The host's own latest offer must never decide the target.
+    const decision = resolve(hostState({ phase: "available", provenance: offered }));
+    expect(decision).toEqual({
+      status: "ready",
+      step: { kind: "download-exact", targetSource: target },
+    });
+  });
+
+  it("ignores version strings: another platform's version for the same source is allowed", () => {
+    const decision = resolve(
+      hostState({
+        phase: "available",
+        provenance: {
+          ...targetBuild,
+          platform: "darwin",
+          version: "0.1.0-preview.20261019.39341000901.1",
+        },
+        capability: { check: true, download: true, install: true },
+      }),
+    );
+    expect(decision).toMatchObject({ status: "ready", step: { kind: "download" } });
+  });
+
+  it("installs only a staged build whose source is the target, bound to its handle", () => {
+    const decision = resolve(
+      hostState({ phase: "staged", stagedHandle: "handle-1", provenance: targetBuild }),
+    );
+    expect(decision).toEqual({
+      status: "ready",
+      step: {
+        kind: "install",
+        input: {
+          stagedHandle: "handle-1",
+          environmentId,
+          currentVersion: "0.1.0-preview.20261019.39341000929.1",
+        },
+      },
+    });
+    expect(
+      unavailable(
+        resolve(hostState({ phase: "staged", stagedHandle: "handle-1", provenance: offered })),
+      ),
+    ).toBe("staged-other");
+    expect(unavailable(resolve(hostState({ phase: "staged", stagedHandle: "handle-1" })))).toBe(
+      "staged-other",
+    );
+  });
+
+  it("offers replacement only with explicit opt-in, native capability and a complete host binding", () => {
+    const staged = hostState({
+      environmentId,
+      phase: "staged",
+      stagedHandle: "old-handle",
+      provenance: offered,
+      capability: {
+        check: true,
+        download: true,
+        install: true,
+        exactSource: true,
+        replaceStaged: true,
+      },
+    });
+    expect(unavailable(resolve(staged))).toBe("staged-other");
+    expect(resolve(staged, { allowReplace: true, subject: "this laptop" })).toEqual({
+      status: "ready",
+      step: {
+        kind: "replace-exact",
+        targetSource: target,
+        replace: {
+          environmentId,
+          currentVersion: staged.currentVersion,
+          expectedInstalledSource: installed.sha,
+          stagedHandle: "old-handle",
+          sourceSha: offered.sourceSha,
+        },
+      },
+    });
+    const { installedSource: _installedSource, ...withoutInstalled } = staged;
+    const { provenance: _provenance, ...withoutProvenance } = staged;
+    for (const changed of [
+      { ...staged, capability: { ...staged.capability, replaceStaged: false } },
+      { ...staged, environmentId: EnvironmentId.make("another-host") },
+      withoutInstalled,
+      withoutProvenance,
+    ])
+      expect(unavailable(resolve(changed, { allowReplace: true }))).toBe("staged-other");
+    expect(unavailable(resolve(staged, { allowReplace: true, freshness: "stale" }))).toBe(
+      "waiting",
+    );
+    expect(
+      unavailable(resolve({ ...staged, provenance: targetBuild }, { allowInstall: false })),
+    ).toBe("already-downloaded");
+  });
+
+  it("rejects missing or competing target provenance throughout preparation", () => {
+    const step = { kind: "download-exact", targetSource: target } as const;
+    for (const phase of ["downloading", "verifying", "staged"] as const) {
+      expect(
+        jonesExactSourceResultError(
+          step,
+          AsyncResult.success(hostState({ phase, provenance: offered })),
+          target,
+        ),
+      ).toContain(offered.sourceSha.slice(0, 7));
+      expect(
+        jonesExactSourceResultError(step, AsyncResult.success(hostState({ phase })), target),
+      ).toContain("did not report");
+      expect(
+        jonesExactSourceResultError(
+          step,
+          AsyncResult.success(hostState({ phase, provenance: targetBuild })),
+          target,
+        ),
+      ).toBeNull();
+    }
+  });
+
+  it("revalidates the complete install selection and follower policy after confirmation", () => {
+    const state = hostState({
+      environmentId,
+      phase: "staged",
+      stagedHandle: "handle-1",
+      provenance: targetBuild,
+    });
+    const input = {
+      environmentId,
+      currentVersion: state.currentVersion!,
+      stagedHandle: "handle-1",
+    };
+    expect(jonesInstallRefusal(input, { state, freshness: "fresh" })).toBeUndefined();
+    for (const changed of [
+      { ...state, stagedHandle: "competing-handle" },
+      { ...state, currentVersion: "changed" },
+      { ...state, environmentId: EnvironmentId.make("another-host") },
+      { ...state, phase: "installing" as const },
+      { ...state, capability: { ...state.capability, install: false } },
+      { ...state, policy: { role: "follower" as const, leaderSource: "b".repeat(40) } },
+    ])
+      expect(jonesInstallRefusal(input, { state: changed, freshness: "fresh" })).toBeDefined();
+    expect(jonesInstallRefusal(input, { state, freshness: "stale" })).toBeDefined();
+  });
+
+  it("names the other staged source and offers nothing for it", () => {
+    const decision = resolve(
+      hostState({ phase: "staged", stagedHandle: "handle-1", provenance: offered }),
+    );
+    expect(decision).toMatchObject({
+      status: "unavailable",
+      reason: "staged-other",
+      message: expect.stringContaining(offered.sourceSha.slice(0, 7)),
+    });
+    if (decision.status !== "unavailable") throw new Error("Expected a source refusal");
+    expect(decision.message).toContain(`this app needs ${target.slice(0, 7)}`);
+    expect(decision.message).toContain("will not be installed from this notice");
+    expect(decision.message).toContain("Settings → Connections");
+    expect(decision.message).toContain("review this host's downloaded update");
+    expect(decision.message).toContain("Installing it there will not match this app");
+  });
+
+  it("directs an unknown staged source to review without claiming it matches the app", () => {
+    const decision = resolve(hostState({ phase: "staged", stagedHandle: "handle-1" }));
+    expect(decision).toMatchObject({ status: "unavailable", reason: "staged-other" });
+    if (decision.status !== "unavailable") throw new Error("Expected a source refusal");
+    expect(decision.message).toContain("no reported source");
+    expect(decision.message).toContain("will not be installed from this notice");
+    expect(decision.message).toContain("Settings → Connections");
+    expect(decision.message).toContain("review this host's downloaded update");
+    expect(decision.message).toContain("cannot confirm it matches this app");
+  });
+
+  it("lets an older host download only an offer that already is the target", () => {
+    const legacy = { check: true, download: true, install: true };
+    expect(
+      unavailable(
+        resolve(hostState({ phase: "available", provenance: offered, capability: legacy })),
+      ),
+    ).toBe("offered-other");
+    expect(unavailable(resolve(hostState({ capability: legacy })))).toBe("offered-other");
+    expect(
+      resolve(hostState({ phase: "available", provenance: targetBuild, capability: legacy })),
+    ).toEqual({
+      status: "ready",
+      step: {
+        kind: "download",
+        input: { artifactId: targetBuild.artifactId, sourceSha: target },
+      },
+    });
+    // A retained offer after another check is not a download binding.
+    expect(
+      unavailable(
+        resolve(hostState({ phase: "no-new", provenance: targetBuild, capability: legacy })),
+      ),
+    ).toBe("offered-other");
+  });
+
+  it("offers nothing without a fresh, supported, permitted observation", () => {
+    const live = hostState({ phase: "available", provenance: offered });
+    expect(unavailable(resolve(live, { freshness: "stale" }))).toBe("waiting");
+    expect(unavailable(resolve(live, { freshness: "loading" }))).toBe("waiting");
+    expect(unavailable(resolve(null, { freshness: "unsupported" }))).toBe("unsupported");
+    expect(unavailable(resolve(null))).toBe("unsupported");
+    expect(unavailable(resolve(live, { canOperate: false }))).toBe("no-permission");
+    expect(unavailable(resolve(live, { targetSource: undefined }))).toBe("invalid-target");
+    expect(unavailable(resolve(live, { targetSource: "a".repeat(7) }))).toBe("invalid-target");
+    expect(
+      resolveJonesExactSourceAction({
+        environmentId,
+        observation: {
+          state: live,
+          freshness: "stale",
+          message: "Update status is temporarily unavailable; retrying.",
+        },
+        targetSource: target,
+        canOperate: true,
+      }),
+    ).toMatchObject({ message: "Update status is temporarily unavailable; retrying." });
+  });
+
+  it("offers nothing once the host runs the source, or while it is working", () => {
+    expect(
+      unavailable(resolve(hostState({ installedSource: { ...installed, sha: target } }))),
+    ).toBe("already-installed");
+    for (const phase of [
+      "checking",
+      "downloading",
+      "verifying",
+      "preparing",
+      "installing",
+    ] as const)
+      expect(
+        unavailable(
+          resolve(hostState({ phase, stagedHandle: "handle-1", provenance: targetBuild })),
+        ),
+      ).toBe("busy");
+  });
+
+  it("explains a host that cannot download or install", () => {
+    expect(
+      unavailable(
+        resolve(hostState({ capability: { check: true, download: false, install: false } })),
+      ),
+    ).toBe("unavailable");
+    expect(
+      resolve(
+        hostState({
+          phase: "staged",
+          stagedHandle: "handle-1",
+          provenance: targetBuild,
+          capability: { check: true, download: true, install: false, reason: "bootstrap-required" },
+        }),
+      ),
+    ).toMatchObject({
+      status: "unavailable",
+      message: "Installing needs a qualified launcher on this host first.",
+    });
+    const { currentVersion: _unreported, ...unversioned } = hostState({
+      phase: "staged",
+      stagedHandle: "handle-1",
+      provenance: targetBuild,
+    });
+    expect(unavailable(resolve(unversioned))).toBe("unavailable");
+  });
+
+  it("holds an install whose response was lost until the host reports movement", () => {
+    const stagedHost = hostState({
+      phase: "staged",
+      stagedHandle: "handle-1",
+      provenance: targetBuild,
+    });
+    const unresolvedInstall = { stagedHandle: "handle-1", revision: stagedHost.revision };
+    expect(unavailable(resolve(stagedHost, { unresolvedInstall }))).toBe("reconciling");
+    // A new revision with the staged build still present means the host did not start it.
+    expect(unavailable(resolve({ ...stagedHost, revision: 5 }, { unresolvedInstall }))).toBe(
+      "install",
+    );
+    // The committed outcome ends the question.
+    expect(
+      unavailable(
+        resolve(hostState({ phase: "committed", installedSource: { ...installed, sha: target } }), {
+          unresolvedInstall,
+        }),
+      ),
+    ).toBe("already-installed");
+  });
+
+  it("refuses a host that stages another source than the target", () => {
+    const step = { kind: "download-exact", targetSource: target } as const;
+    const elsewhere = AsyncResult.success(
+      hostState({ phase: "staged", stagedHandle: "handle-1", provenance: offered }),
+    );
+    expect(jonesExactSourceResultError(step, elsewhere, target)).toContain(
+      offered.sourceSha.slice(0, 7),
+    );
+    expect(
+      jonesExactSourceResultError(
+        step,
+        AsyncResult.success(
+          hostState({ phase: "staged", stagedHandle: "handle-1", provenance: targetBuild }),
+        ),
+        target,
+      ),
+    ).toBeNull();
+    expect(
+      jonesExactSourceResultError(
+        step,
+        AsyncResult.success(hostState({ phase: "blocked", message: "Candidate is not newer." })),
+        target,
+      ),
+    ).toBe("Candidate is not newer.");
+    expect(jonesExactSourceResultError(step, AsyncResult.success(null), target)).toBe(
+      "This host does not support Jones updates.",
+    );
+    // A download the host did not take is not success, even without an error phase.
+    expect(
+      jonesExactSourceResultError(
+        step,
+        AsyncResult.success(
+          hostState({ phase: "no-new", message: "This host already runs the requested source." }),
+        ),
+        target,
+      ),
+    ).toBe("This host already runs the requested source.");
+    expect(
+      jonesExactSourceResultError(
+        step,
+        AsyncResult.success(hostState({ phase: "downloading", provenance: targetBuild })),
+        target,
+      ),
+    ).toBeNull();
+  });
+});
+
+it("presents same-minute outcomes with exact-version stamps without changing identity", () => {
+  const fromVersion = "0.0.45-preview.20261020.100.1";
+  const targetVersion = "0.0.45-preview.20261020.101.1";
+  const state: JonesUpdateState = {
+    ...staged,
+    currentVersion: fromVersion,
+    currentBuildStartedAt: "2026-10-20T21:13:43Z",
+    provenance: { ...offered, version: targetVersion, buildStartedAt: "2026-10-20T21:13:47Z" },
+    outcome: { status: "committed", fromVersion, targetVersion },
+  };
+  const original = JSON.stringify(state);
+  expect(jonesUpdatePresentation(state).outcomeMessage).toBe(
+    "Installed: 1020·1713:43 → 1020·1713:47",
+  );
+  expect(JSON.stringify(state)).toBe(original);
+  expect(jonesCandidatePresentation(state)).toMatchObject({
+    version: targetVersion,
+    buildStartedAt: "2026-10-20T21:13:47Z",
+    sourceSha: offered.sourceSha,
+  });
+  expect(
+    jonesUpdatePresentation({
+      ...state,
+      outcome: {
+        status: "blocked",
+        fromVersion: `${fromVersion}0`,
+        targetVersion: `${targetVersion}0`,
+      },
+    }).outcomeMessage,
+  ).toBe(`Blocked: ${fromVersion}0 → ${targetVersion}0`);
 });

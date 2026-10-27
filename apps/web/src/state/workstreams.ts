@@ -1,3 +1,5 @@
+import { useWorkstreamOperations } from "../jones/workstreams/useWorkstreamOperations";
+import type { RetainedOperation } from "@t3tools/client-runtime/jones/workstreams/operations";
 import type {
   T3PlacementResult,
   T3WorkstreamListResult,
@@ -15,6 +17,7 @@ import type {
   WorkstreamsRegistrationContextAcceptedResponse,
 } from "@t3tools/contracts";
 import {
+  EnvironmentId,
   EnvironmentHttpConflictError,
   EnvironmentInternalError,
   T3_PLACEMENT_MAX_IDENTITIES,
@@ -44,12 +47,15 @@ import {
   assertWorkstreamActionSnapshot,
   assertWorkstreamReadContext,
   WorkstreamActionError,
+  workstreamCommandNoEffect,
+  workstreamOperationFailure,
   type WorkstreamActionSnapshot,
 } from "../jones/workstreams/workstreamActionSnapshot";
 import {
   assignNativeThread,
   type NativeThreadAssignmentOptions,
   type NativeThreadAssignmentSnapshot,
+  nativeThreadSourceAvailable,
 } from "../jones/workstreams/nativeThreadAssignment";
 
 import { requestEnvironmentWorkstreams } from "../jones/workstreams/environmentWorkstreamsRequest";
@@ -60,7 +66,12 @@ import {
   ownerRegistryKey,
   reconcileRemoteWorkstreamCommands,
   type RemoteWorkstreamCommandLedger,
+  RemoteWorkstreamAssignmentError,
 } from "../jones/workstreams/remoteThreadAssignment";
+import {
+  registrationContextWithAvailability,
+  type AssignmentAvailability,
+} from "../jones/workstreams/registrationAvailability";
 import { useWorkstreamsReconnectRefresh } from "../jones/workstreams/useWorkstreamsReconnectRefresh";
 import {
   classifyWorkstreamReadFailure,
@@ -75,6 +86,19 @@ type PrimaryClient = Effect.Success<typeof PrimaryEnvironmentHttpClient>;
 
 const request = <A, E>(run: (client: PrimaryClient) => Effect.Effect<A, E>, signal?: AbortSignal) =>
   runPrimaryHttp(PrimaryEnvironmentHttpClient.pipe(Effect.flatMap(run)), { signal });
+
+function refreshWorkstreamSessions(ids: ReadonlySet<string>): void {
+  void import("./session")
+    .then(async ({ refreshEnvironmentSession, readPreparedConnection }) => {
+      await Promise.allSettled(
+        [...ids].map(async (id) => {
+          const environmentId = EnvironmentId.make(id);
+          if (readPreparedConnection(environmentId)) await refreshEnvironmentSession(environmentId);
+        }),
+      );
+    })
+    .catch(() => undefined);
+}
 
 const metadataCache = new LiveWorkstreamMetadataCache();
 const isHttpConflict = Schema.is(EnvironmentHttpConflictError);
@@ -312,6 +336,19 @@ export async function loadCompleteWorkstreamDetail(
 }
 
 export interface WorkstreamListView {
+  readonly operationEntries?: readonly RetainedOperation[];
+  readonly operationsError?: string | null;
+  readonly supportsOperations?: (environmentId: string) => boolean;
+  readonly createWorkstream?: (
+    name: string,
+    options: NativeThreadAssignmentOptions,
+  ) => Promise<string>;
+
+  readonly primaryAssignmentAvailability?: AssignmentAvailability;
+  readonly assignmentAvailability?: (thread: {
+    readonly environmentId: string;
+    readonly id: string;
+  }) => AssignmentAvailability;
   /**
    * True for a thread whose own environment server, rather than the primary's, registers and
    * assigns it. That server's fences still decide whether the change is possible.
@@ -320,7 +357,7 @@ export interface WorkstreamListView {
   readonly assignNativeThread?: (
     thread: { readonly environmentId: string; readonly id: string },
     destination: string | null,
-    options: NativeThreadAssignmentOptions,
+    options: NativeThreadAssignmentOptions & { readonly retry?: boolean },
   ) => Promise<void>;
   readonly registrationContext?: WorkstreamsRegistrationContextAcceptedResponse | null;
   readonly loadActionSnapshot?: (options?: {
@@ -628,6 +665,11 @@ export function useWorkstreams(
   const preferredThreadRef = useRef(preferredThread);
   const [registrationContext, setRegistrationContext] =
     useState<WorkstreamsRegistrationContextAcceptedResponse | null>(null);
+  const [registrationContextAvailability, setRegistrationContextAvailability] =
+    useState<AssignmentAvailability>({ state: "unknown", reason: null });
+  const [remoteRefusals, setRemoteRefusals] = useState(
+    new Map<string, { readonly binding: string; readonly reason: string }>(),
+  );
   const unresolvedCommands = useRef(new Map<string, string>());
   const remoteCommands = useRef<RemoteWorkstreamCommandLedger>(new Map());
   const primaryEnvironmentId = useAtomValue(primaryEnvironmentIdAtom);
@@ -656,6 +698,7 @@ export function useWorkstreams(
   const commandRequests = useRef(new Set<BindingOperationRequest>());
   const currentBindingKey = data ? workstreamBindingKey(data.binding) : null;
   const currentBindingKeyRef = useRef(currentBindingKey);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Publish committed snapshots and authority to asynchronous workstream operations before accepting results.
   useLayoutEffect(() => {
     nativeThreadsSnapshot.current = stableNativeThreads;
     preferredThreadRef.current = preferredThread;
@@ -671,7 +714,18 @@ export function useWorkstreams(
     // The last good snapshot stays visible until the reload replaces it as a whole.
     setRevision((value) => value + 1);
   });
+  const operations = useWorkstreamOperations({ data, primaryEnvironmentId, refresh });
   useWorkstreamsReconnectRefresh(refresh);
+  const refreshAccess = useStableCallback(() => {
+    setRemoteRefusals(new Map());
+    const ids = new Set(nativeThreadsSnapshot.current.map((thread) => thread.environmentId));
+    if (primaryEnvironmentId !== null) ids.add(primaryEnvironmentId);
+    refreshWorkstreamSessions(ids);
+  });
+  const refreshFromUser = useStableCallback(() => {
+    refreshAccess();
+    refresh();
+  });
 
   /** Authorization, session or availability loss hides every previously authorized read. */
   const purgeAuthorizedState = useStableCallback(() => {
@@ -681,6 +735,8 @@ export function useWorkstreams(
     setPlacements(null);
     setPlacementInventory(EMPTY_PLACEMENT_INVENTORY);
     setRegistrationContext(null);
+    setRegistrationContextAvailability({ state: "unknown", reason: null });
+    setRemoteRefusals(new Map());
     setStale(false);
   });
 
@@ -691,6 +747,7 @@ export function useWorkstreams(
     setStale(true);
   });
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Abort operations whose accepted registry authority no longer matches the committed binding.
   useEffect(() => {
     for (const operation of commandRequests.current) {
       if (
@@ -701,6 +758,7 @@ export function useWorkstreams(
     }
   }, [currentBindingKey]);
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Abort and clear all owned command requests when the workstream controller unmounts.
   useEffect(() => {
     const requests = commandRequests.current;
     return () => {
@@ -723,6 +781,7 @@ export function useWorkstreams(
       ),
   );
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Load the current registry and assignment index, aborting superseded reads on dependency changes.
   useEffect(() => {
     listRequest.current?.abort();
     proofRequest.current?.abort();
@@ -793,26 +852,42 @@ export function useWorkstreams(
         // A server without the endpoint keeps its pre-context behavior: no context, no error.
         // Every other failure rejects this load, so no snapshot publishes without its context.
         const loaded = await request(
-          (client) => client.workstreams.registrationContext({ headers: {} }),
+          (client) =>
+            client.workstreams.registrationContext({
+              headers: {},
+              responseMode: "decoded-and-response",
+            }),
           controller.signal,
-        ).catch((cause: unknown) => {
-          if (classifyWorkstreamReadFailure(cause) === "unsupported") return null;
-          throw cause;
-        });
-        if (loaded === null) return { value: null, required: false };
+        )
+          .then(registrationContextWithAvailability)
+          .catch((cause: unknown) => {
+            if (classifyWorkstreamReadFailure(cause) === "unsupported") return null;
+            throw cause;
+          });
+        if (loaded === null)
+          return {
+            value: null,
+            required: false,
+            availability: { state: "unknown", reason: null } as AssignmentAvailability,
+          };
+        const context = loaded.context;
         // A different authority is binding loss: fail closed and never retry into it.
-        if (!sameContextAuthority(loaded, core.list.binding))
+        if (!sameContextAuthority(context, core.list.binding))
           throw new WorkstreamAuthorityChanged();
-        if (loaded.registry_version !== core.list.binding.registryVersion) {
+        if (context.registry_version !== core.list.binding.registryVersion) {
           // Refresh both reads within this budget.
           reloadList = true;
           throw new WorkstreamRegistryVersionChanged();
         }
-        return { value: loaded, required: true };
+        return { value: context, required: true, availability: loaded.availability };
       }, controller.signal).catch((cause: unknown) => {
         // Same-authority churn outlasted its budget: the coherent list publishes display-only.
         if (cause instanceof WorkstreamRegistryVersionChanged)
-          return { value: null, required: true };
+          return {
+            value: null,
+            required: true,
+            availability: { state: "unknown", reason: null } as AssignmentAvailability,
+          };
         throw cause;
       });
       if (superseded()) return;
@@ -830,12 +905,15 @@ export function useWorkstreams(
       // Commit the whole snapshot at once so no render mixes versions or clears groups.
       if (listRequest.current === controller) listRequest.current = null;
       const previous = dataRef.current?.binding;
+      if (previous && workstreamBindingKey(previous) !== workstreamBindingKey(core.list.binding))
+        setRemoteRefusals(new Map());
       if (previous && actionAuthorityKey(previous) !== actionAuthorityKey(core.list.binding))
         metadataCache.purgeAuthorization();
       metadataCache.write(core.list);
       requestedProofKey.current = proofs?.key ?? null;
       setData(metadataCache.read(core.list.binding));
       setRegistrationContext(context.value);
+      setRegistrationContextAvailability(context.availability);
       setAssignmentIndex(core.index);
       setPlacements(proofs?.placements ?? null);
       setPlacementInventory(proofs?.inventory ?? EMPTY_PLACEMENT_INVENTORY);
@@ -877,6 +955,7 @@ export function useWorkstreams(
   ]);
 
   // Native identity changes only refresh proofs for the committed snapshot; they never clear it.
+  // oxlint-disable-next-line t3code/react-effect-budget -- Refresh live placement proof when native identities change without clearing the committed registry snapshot.
   useEffect(() => {
     if (!placementsEnabled || data === null || assignmentIndex === null) return;
     if (listRequest.current !== null) return;
@@ -940,6 +1019,7 @@ export function useWorkstreams(
   ]);
 
   // Expiry downgrades verified proof to recorded; it never removes a stored assignment.
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own the next proof-expiry timer so expired verification is downgraded without dropping stored assignments.
   useEffect(() => {
     const nowMs = Date.parse(verificationNow);
     let next = Number.POSITIVE_INFINITY;
@@ -1009,12 +1089,26 @@ export function useWorkstreams(
         hasUnresolvedRemoteCommand(remoteCommands.current, startedBinding)
       )
         throw new WorkstreamActionError("unknown");
+      const previouslyAttempted = commandAttempted;
+      const newlyPending = !unresolvedCommands.current.has(command.command_id);
       commandAttempted = true;
       unresolvedCommands.current.set(command.command_id, authority);
-      let receipt = await request(
-        (client) => client.workstreams.submit({ headers: {}, payload: { command } }),
-        controller.signal,
-      );
+      let receipt: WorkstreamReceipt;
+      try {
+        receipt = await request(
+          (client) => client.workstreams.submit({ headers: {}, payload: { command } }),
+          controller.signal,
+        );
+      } catch (cause) {
+        const noEffect = workstreamCommandNoEffect(cause);
+        if (noEffect && newlyPending) {
+          unresolvedCommands.current.delete(command.command_id);
+          commandAttempted = previouslyAttempted;
+          refreshAfterOperation = noEffect === "stale";
+          throw new WorkstreamActionError(noEffect);
+        }
+        throw cause;
+      }
       acceptReceiptBinding(receipt);
       assertCurrentBinding();
       // Pending effects reconcile through the exact GET route; commands are never resubmitted.
@@ -1055,9 +1149,9 @@ export function useWorkstreams(
           if (classifyWorkstreamReadFailure(cause) === "unauthenticated") purgeAuthorizedState();
           else markStale();
           setError("Workstreams changed or are unavailable. Retry to reload current access.");
-          refreshAfterOperation = commandAttempted;
+          refreshAfterOperation = refreshAfterOperation || commandAttempted;
         }
-        throw cause;
+        throw workstreamOperationFailure(cause, commandAttempted);
       }
     })().finally(() => {
       commandRequests.current.delete(operationRequest);
@@ -1071,7 +1165,7 @@ export function useWorkstreams(
   const assignThread = async (
     thread: { readonly environmentId: string; readonly id: string },
     destination: string | null,
-    options: NativeThreadAssignmentOptions,
+    options: NativeThreadAssignmentOptions & { readonly retry?: boolean },
   ) => {
     const started = dataRef.current;
     // Stale stored assignments are display evidence only and never plan a change.
@@ -1082,6 +1176,33 @@ export function useWorkstreams(
     const threadKey = nativeWorkstreamThreadKey(thread.environmentId, thread.id);
     const stored = assignmentIndexRef.current?.entries.get(threadKey);
     if (stored?.state === "conflict") throw new WorkstreamActionError("ambiguous");
+    if (operations.supports(thread.environmentId)) {
+      const previous = operations.entries.find(
+        (entry) =>
+          entry.request?.kind === "set_primary" &&
+          entry.request.thread.environment_id === thread.environmentId &&
+          entry.request.thread.thread_id === thread.id,
+      );
+      const observed =
+        options.retry && previous?.result?.state === "conflict" ? previous.result.observed : null;
+      const primary = stored?.primary;
+      await operations.assign(
+        thread,
+        destination,
+        observed?.kind === "primary"
+          ? { kind: "primary", workstream_id: observed.workstream_id }
+          : observed?.kind === "unassigned"
+            ? { kind: "unassigned" }
+            : primary
+              ? { kind: "primary", workstream_id: primary.workstreamId }
+              : assignmentIndexRef.current?.complete
+                ? { kind: "unassigned" }
+                : { kind: "any" },
+        options,
+      );
+      return;
+    }
+
     const check = () => {
       options.signal?.throwIfAborted();
       if (
@@ -1096,6 +1217,12 @@ export function useWorkstreams(
         throw new WorkstreamActionError("unknown");
       // Only the thread's own server can register its native threads; the primary snapshot
       // still has to stay current, live and unconflicted for the whole operation.
+      const refusal = remoteRefusals.get(thread.environmentId);
+      if (refusal?.binding === workstreamBindingKey(started.binding)) {
+        const error = new WorkstreamActionError("activation");
+        error.message = refusal.reason;
+        throw error;
+      }
       await assignRemoteNativeThread({
         ...options,
         primary: started,
@@ -1124,6 +1251,20 @@ export function useWorkstreams(
           markStale();
           setError("Workstreams changed or are unavailable. Retry to reload current access.");
         },
+      }).catch((cause: unknown) => {
+        if (
+          cause instanceof RemoteWorkstreamAssignmentError &&
+          dataRef.current &&
+          workstreamBindingKey(dataRef.current.binding) === workstreamBindingKey(started.binding)
+        ) {
+          setRemoteRefusals((previous) =>
+            new Map(previous).set(thread.environmentId, {
+              binding: workstreamBindingKey(started.binding),
+              reason: cause.message,
+            }),
+          );
+        }
+        throw cause;
       });
       options.signal?.throwIfAborted();
       return;
@@ -1374,10 +1515,11 @@ export function useWorkstreams(
     return snapshot;
   };
   const retry = async () => {
+    refreshAccess();
     const started = dataRef.current?.binding;
     if (!started) throw new WorkstreamActionError("stale");
     const authority = actionAuthorityKey(started);
-    await loadActionSnapshot();
+    const reconciliationFailures: unknown[] = [];
     await reconcileWorkstreamCommands({
       commandIds: [...unresolvedCommands.current]
         .filter(([, key]) => key === authority)
@@ -1393,6 +1535,8 @@ export function useWorkstreams(
         return receipt;
       },
       resolved: (id) => unresolvedCommands.current.delete(id),
+    }).catch((cause: unknown) => {
+      reconciliationFailures.push(cause);
     });
     // Commands sent to another environment are observed on that environment only.
     await reconcileRemoteWorkstreamCommands({
@@ -1400,9 +1544,15 @@ export function useWorkstreams(
       ownerRegistry: ownerRegistryKey(started),
       routesFor: (environmentId) =>
         environmentWorkstreamsRoutes(environmentId, requestEnvironmentWorkstreams),
+    }).catch((cause: unknown) => {
+      reconciliationFailures.push(cause);
     });
-    // Reload through the coherent path so list, context, index and proofs install together.
-    refresh();
+    if (reconciliationFailures.length > 0)
+      throw workstreamOperationFailure(reconciliationFailures[0], true);
+    // Receipt reads precede metadata: an outage must not prevent exact-command reconciliation.
+    await loadActionSnapshot().finally(() => {
+      refresh();
+    });
   };
 
   // Edit gates read `data`; a stale snapshot must not look current to them.
@@ -1411,7 +1561,33 @@ export function useWorkstreams(
   const assignsThroughOwnEnvironment = (environmentId: string) =>
     primaryEnvironmentId !== null && environmentId !== primaryEnvironmentId;
 
+  const assignmentAvailability = (thread: {
+    readonly environmentId: string;
+    readonly id: string;
+  }): AssignmentAvailability => {
+    if (operations.supports(thread.environmentId)) return { state: "ready", reason: null };
+    if (assignsThroughOwnEnvironment(thread.environmentId)) {
+      const refusal = remoteRefusals.get(thread.environmentId);
+      return refusal && currentBindingKey === refusal.binding
+        ? { state: "unavailable", reason: refusal.reason }
+        : { state: "unknown", reason: null };
+    }
+    if (nativeThreadSourceAvailable(registrationContext, thread))
+      return registrationContextAvailability;
+    return registrationContextAvailability.state === "unavailable"
+      ? registrationContextAvailability
+      : { state: "unavailable", reason: "source unavailable" };
+  };
+
   return {
+    operationEntries: operations.entries,
+    operationsError: operations.error,
+    supportsOperations: operations.supports,
+    ...(primaryEnvironmentId && operations.supports(primaryEnvironmentId)
+      ? { createWorkstream: operations.create }
+      : {}),
+    primaryAssignmentAvailability: registrationContextAvailability,
+    assignmentAvailability,
     assignsThroughOwnEnvironment,
     assignNativeThread: assignThread,
     registrationContext,
@@ -1425,7 +1601,7 @@ export function useWorkstreams(
     data: view,
     error,
     loading,
-    refresh,
+    refresh: refreshFromUser,
     submit,
     runBindingOperation,
     loadDetail,

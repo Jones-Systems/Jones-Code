@@ -9,8 +9,37 @@ import {
   FleetEnrollment,
   FleetHostOperation,
   FleetOperationId,
+  FleetSourceSha,
 } from "@t3tools/contracts/jones/fleet-updates";
 import { withQualifiedRuntimeLock } from "../cloud/qualifiedRuntime.ts";
+
+/**
+ * What this host knows about following its laptop. The leader is bound to the enrollment that
+ * published it, so re-enrolling discards it. The automatic-activation time is host-wide and
+ * survives the restart that the activation itself causes.
+ */
+export const FleetFollowerRecord = Schema.Struct({
+  schema: Schema.Literal(1),
+  leader: Schema.NullOr(
+    Schema.Struct({
+      enrollmentId: FleetOperationId,
+      committedSource: FleetSourceSha,
+      /** Absent on a record written before the laptop sent provenance; it waits for a new one. */
+      committedTree: Schema.optionalKey(FleetSourceSha),
+      publishedAt: Schema.String,
+    }),
+  ),
+  /** The follower's own operation, reused until it settles so a retry never mints another install. */
+  operation: Schema.NullOr(
+    Schema.Struct({
+      operationId: FleetOperationId,
+      targetSource: FleetSourceSha,
+      expectedInstalledSource: FleetSourceSha,
+    }),
+  ),
+  lastAutomaticActivationAt: Schema.NullOr(Schema.String),
+});
+export type FleetFollowerRecord = typeof FleetFollowerRecord.Type;
 
 export interface FleetHostStore {
   readonly readEnrollment: () => Promise<FleetEnrollment | null>;
@@ -22,9 +51,14 @@ export interface FleetHostStore {
     id: string,
     change: (old: FleetHostOperation | null) => FleetHostOperation,
   ) => Promise<FleetHostOperation>;
+  readonly readFollower: () => Promise<FleetFollowerRecord | null>;
+  readonly editFollower: (
+    change: (old: FleetFollowerRecord | null) => FleetFollowerRecord,
+  ) => Promise<FleetFollowerRecord>;
 }
 
 const isEnrollment = Schema.is(FleetEnrollment);
+const isFollower = Schema.is(FleetFollowerRecord);
 const isOperation = Schema.is(FleetHostOperation);
 const isOperationId = Schema.is(FleetOperationId);
 
@@ -100,19 +134,39 @@ async function replace(path: string, value: unknown) {
   }
 }
 
+/**
+ * The runtime lock refuses a second holder in this process instead of waiting for it, so every
+ * store for one home queues its own requests before taking the lock.
+ */
+const queues = new Map<string, Promise<unknown>>();
+function serialized<T>(key: string, operation: () => Promise<T>): Promise<T> {
+  const result = (queues.get(key) ?? Promise.resolve()).then(operation, operation);
+  const settled = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  queues.set(key, settled);
+  void settled.then(() => {
+    if (queues.get(key) === settled) queues.delete(key);
+  });
+  return result;
+}
+
 export function createFleetHostStore(baseDir: string): FleetHostStore {
   const runtime = NodePath.join(baseDir, "runtime");
   const directory = NodePath.join(runtime, "jones-fleet");
   const enrollment = NodePath.join(directory, "enrollment.json");
+  const follower = NodePath.join(directory, "follower.json");
   const operationPath = (id: string) => {
     if (!isOperationId(id)) throw new Error("Invalid fleet operation identifier.");
     return NodePath.join(directory, `${id}.json`);
   };
-  const locked = async <T>(operation: () => Promise<T>) => {
-    await ownedDirectory(runtime, false);
-    await ownedDirectory(directory, true);
-    return withQualifiedRuntimeLock(baseDir, "jones-fleet", operation);
-  };
+  const locked = <T>(operation: () => Promise<T>) =>
+    serialized(directory, async () => {
+      await ownedDirectory(runtime, false);
+      await ownedDirectory(directory, true);
+      return withQualifiedRuntimeLock(baseDir, "jones-fleet", operation);
+    });
   return {
     readEnrollment: () => locked(() => read(enrollment, isEnrollment)),
     editEnrollment: (change) =>
@@ -130,6 +184,14 @@ export function createFleetHostStore(baseDir: string): FleetHostStore {
         if (!isOperation(next) || next.input.operationId !== id)
           throw new Error("Invalid fleet operation.");
         await replace(path, next);
+        return next;
+      }),
+    readFollower: () => locked(() => read(follower, isFollower)),
+    editFollower: (change) =>
+      locked(async () => {
+        const next = change(await read(follower, isFollower));
+        if (!isFollower(next)) throw new Error("Invalid fleet follower record.");
+        await replace(follower, next);
         return next;
       }),
   };

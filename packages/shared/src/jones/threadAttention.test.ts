@@ -1,4 +1,5 @@
 import {
+  EnvironmentId,
   ProjectId,
   ProviderInstanceId,
   RunId,
@@ -11,9 +12,12 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   hasUnseenCompletion,
   pendingSubagentRequestsByThread,
+  pendingSubagentGuestAttentionByThread,
+  hasPendingGuestMessages,
   resolveThreadAttentionPill,
   resolveThreadAttentionStatus,
   shellAttentionInput,
+  subagentRequest,
   type ThreadAttentionInput,
 } from "./threadAttention.ts";
 
@@ -84,6 +88,26 @@ const completed = () =>
   );
 
 describe("shared native thread attention", () => {
+  it.each(["preparing", "starting", "running", "waiting", "completed"] as const)(
+    "preserves upstream nonblocking input semantics while %s",
+    (status) => {
+      const thread = shell({
+        latestRunId: RunId.make("run"),
+        status,
+        pendingRuntimeRequest: { ...request("user_input"), blocking: false },
+      });
+      expect(shellAttentionInput(thread).hasPendingUserInput).toBe(
+        status === "waiting" || status === "completed",
+      );
+      expect(
+        shellAttentionInput({
+          ...thread,
+          pendingRuntimeRequest: { ...request("user_input"), blocking: true },
+        }).hasPendingUserInput,
+      ).toBe(true);
+    },
+  );
+
   it("prioritizes own or child approvals, then input, then runtime status", () => {
     const base = shellAttentionInput(shell({ latestRunId: RunId.make("run"), status: "running" }));
     for (const [override, status, pill] of [
@@ -140,7 +164,7 @@ describe("shared native thread attention", () => {
         }),
       ).toBe("limited");
   });
-  it("keeps background waits ahead of plan readiness and excludes persistent commands", () => {
+  it("keeps background waits visible and excludes persistent commands", () => {
     const base = shell({
       latestRunId: RunId.make("run"),
       status: "completed",
@@ -160,12 +184,35 @@ describe("shared native thread attention", () => {
       pendingBackgroundTasks: [{ taskId: "task", kind: "command" }],
     });
     expect(resolveThreadAttentionStatus(plan)).toBe("ready");
-    expect(resolveThreadAttentionPill({ thread: plan })).toBe("Plan Ready");
+    expect(resolveThreadAttentionPill({ thread: plan })).toBeNull();
     expect(
       resolveThreadAttentionPill({
         thread: { ...plan, runtime: { ...plan.runtime!, activeRunId: base.latestRunId } },
       }),
     ).toBeNull();
+  });
+  it("does not turn a stale proposed plan into a request for attention", () => {
+    const stalePlan = {
+      ...completed(),
+      interactionMode: "plan" as const,
+      hasActionableProposedPlan: true,
+    };
+    for (const lastVisitedAt of [undefined, null, "2026-10-18T12:00:00.000Z"]) {
+      expect(resolveThreadAttentionPill({ thread: { ...stalePlan, lastVisitedAt } })).toBeNull();
+    }
+    expect(
+      resolveThreadAttentionPill({
+        thread: { ...stalePlan, lastVisitedAt: "2026-10-17T12:00:00.000Z" },
+      }),
+    ).toBe("Completed");
+    for (const [request, pill] of [
+      [{ hasPendingUserInput: true }, "Awaiting Input"],
+      [{ hasPendingApprovals: true }, "Pending Approval"],
+      [{ pendingSubagentRequest: "user_input" }, "Awaiting Input"],
+      [{ pendingSubagentRequest: "approval" }, "Pending Approval"],
+    ] as const) {
+      expect(resolveThreadAttentionPill({ thread: { ...stalePlan, ...request } })).toBe(pill);
+    }
   });
   it("preserves null/unavailable visits, malformed visits and unseen completion separately", () => {
     const base = completed();
@@ -208,6 +255,50 @@ describe("shared native thread attention", () => {
     const cycle = { ...input, lineage: { ...input.lineage, parentThreadId: nested.id } };
     expect(pendingSubagentRequestsByThread([cycle, nested]).size).toBe(2);
   });
+  it("projects a linked task question onto its source thread with Jones attention parity", () => {
+    const parent = shell();
+    const remote = shell({
+      id: ThreadId.make("remote-task"),
+      creationSource: "mcp",
+      status: "running",
+      activityRunStatus: "running",
+      delegatedFrom: {
+        environmentId: EnvironmentId.make("source"),
+        threadId: parent.id,
+        title: parent.title,
+      },
+      pendingRuntimeRequest: request("user_input"),
+    });
+    expect(subagentRequest(remote)).toBe("user_input");
+    const pending = pendingSubagentRequestsByThread(
+      [parent],
+      [{ parentThreadId: parent.id, request: "user_input" }],
+    );
+    const state = shellAttentionInput(parent, pending.get(parent.id));
+    expect(resolveThreadAttentionStatus(state)).toBe("input");
+    expect(resolveThreadAttentionPill({ thread: state })).toBe("Awaiting Input");
+    expect(pendingSubagentRequestsByThread([remote]).size).toBe(0);
+    expect(subagentRequest({ ...remote, activityRunStatus: null })).toBeNull();
+    expect(
+      subagentRequest({ ...remote, pendingRuntimeRequest: request("auth_refresh") }),
+    ).toBeNull();
+  });
+  it("combines delegated requests with local descendants without losing approval priority", () => {
+    const parent = shell();
+    const local = child("local-child", "permission");
+    const delegated = [
+      { parentThreadId: local.id, request: "user_input" as const },
+      { parentThreadId: parent.id, request: "user_input" as const },
+    ];
+    for (const threads of [
+      [parent, local],
+      [local, parent],
+    ]) {
+      const pending = pendingSubagentRequestsByThread(threads, delegated);
+      expect(pending.get(parent.id)).toBe("approval");
+      expect(pending.get(local.id)).toBe("user_input");
+    }
+  });
   it("excludes ended, auth-refresh, fork and provider-native children", () => {
     const children = [
       child("ended", "user_input", { activityRunStatus: null }),
@@ -238,5 +329,77 @@ describe("shared native thread attention", () => {
     const plain: ThreadAttentionInput = shellAttentionInput(shell());
     expect(resolveThreadAttentionStatus(plain)).toBe("ready");
     expect(resolveThreadAttentionPill({ thread: plain })).toBeNull();
+  });
+});
+
+describe("completed child guest attention", () => {
+  const guest = (id = "guest", parent = "parent") =>
+    child(id, "user_input", {
+      status: "completed",
+      activityRunStatus: null,
+      pendingRuntimeRequest: null,
+      pendingGuestMessageCount: 1,
+      lineage: {
+        rootThreadId: ThreadId.make("parent"),
+        parentThreadId: ThreadId.make(parent),
+        relationshipToParent: "subagent",
+      },
+    });
+
+  it("retains guest-only attention through completed ancestors independent of provider requests", () => {
+    const parent = shell();
+    const middle = { ...guest("middle"), pendingGuestMessageCount: 0 };
+    const leaf = guest("leaf", "middle");
+    for (const threads of [
+      [parent, middle, leaf],
+      [leaf, middle, parent],
+    ]) {
+      expect(pendingSubagentGuestAttentionByThread(threads)).toEqual(
+        new Set([parent.id, middle.id]),
+      );
+      expect(pendingSubagentRequestsByThread(threads).size).toBe(0);
+      expect(subagentRequest(leaf)).toBeNull();
+    }
+  });
+
+  it("bounds cycles and missing ancestors, stops at fork boundaries and deduplicates children", () => {
+    const first = guest("first", "second");
+    const second = guest("second", "first");
+    expect(pendingSubagentGuestAttentionByThread([first, second])).toEqual(
+      new Set([first.id, second.id]),
+    );
+    expect(pendingSubagentGuestAttentionByThread([guest("orphan", "missing")]).size).toBe(0);
+    const fork = shell({
+      id: ThreadId.make("fork"),
+      lineage: {
+        rootThreadId: ThreadId.make("parent"),
+        parentThreadId: ThreadId.make("parent"),
+        relationshipToParent: "fork",
+      },
+    });
+    expect(
+      pendingSubagentGuestAttentionByThread([
+        shell(),
+        fork,
+        guest("leaf", "fork"),
+        guest("leaf", "fork"),
+      ]),
+    ).toEqual(new Set([fork.id]));
+  });
+
+  it("keeps optional counts and provider-native requests separate from actual guest attention", () => {
+    const parent = shell();
+    for (const count of [undefined, 0]) {
+      const resolved = { ...guest(), pendingGuestMessageCount: count };
+      expect(hasPendingGuestMessages(resolved)).toBe(false);
+      expect(pendingSubagentGuestAttentionByThread([parent, resolved]).size).toBe(0);
+    }
+    const native = {
+      ...guest(),
+      creationSource: "provider" as const,
+      pendingRuntimeRequest: request("permission"),
+    };
+    expect(pendingSubagentRequestsByThread([parent, native]).size).toBe(0);
+    expect(pendingSubagentGuestAttentionByThread([parent, native])).toEqual(new Set([parent.id]));
   });
 });

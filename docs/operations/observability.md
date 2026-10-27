@@ -1,8 +1,8 @@
 # Observability
 
-> For maintainers. Using T3 Code? See [docs/user](../user/).
+> For maintainers. Using Jones Code? See [docs/user](../user/).
 
-T3 Code has one server-side observability model:
+Jones Code has one server-side observability model:
 
 - pretty logs go to stdout for humans
 - completed spans go to a local NDJSON trace file
@@ -84,6 +84,51 @@ It reads `T3CODE_TRACE_FILE` if set, else `<home>/userdata/logs/server.trace.ndj
 a copied file, set `T3CODE_TRACE_FILE`. `--since 30m` keeps spans that ended in the last 30
 minutes. The rate is per minute between the first and last span end.
 
+### Separate lifetimes from request latency
+
+A long-lived socket or subscription is not a slow request. The `/ws` upgrade's
+server span is named `GET` and lasts until the socket closes. Streaming RPC
+server spans (methods with `rpc.stream: true`)
+also last for the stream. The `t3_rpc_request_duration` metric includes those
+lifetimes; exclude them before calculating request latency. The stream tag is
+an attribute on server spans, not a new metric label.
+
+Renderer traces arrive as `otlp-span` records from service `t3code-web` through
+`/api/observability/v1/traces` at the primary environment's server, even when the
+request targets another environment. Effect 4.0.5 names client RPC spans by the
+bare method name; streaming methods are lifetimes too. HTTP client spans use
+names such as `GET` and `POST`, so a name alone cannot identify their role. Use
+span kind, parentage and attributes; the Diagnostics page does not currently
+show span kind.
+
+For a foreground delay, identify both the target environment and the server
+receiving the renderer's traces:
+
+- Thread open: cold opens normally use HTTP. Follow renderer
+  `environment.orchestration.threadBoundedSnapshot` to server
+  `http.orchestration.loadThreadSnapshotWindow`; older history uses
+  `environment.orchestration.threadHistoryPage`. Inspect child `db.connection`
+  and `db.lock_wait_ms`. Socket resume and fallback use
+  `ws.orchestrationV2.subscribeThread` and `threadSnapshotThenLive`, which measure
+  setup; `ws.rpc.orchestration.subscribeThread` measures the stream lifetime.
+- Send: pair server `ws.rpc.orchestration.dispatchCommand` with renderer
+  `orchestration.dispatchCommand` by method and time. WebSocket client and server
+  spans do not share a trace. Their elapsed-time difference can include client,
+  network and event-loop delay.
+- Git: checkpoint capture uses `VcsProcess.run`; compare it with
+  `VcsProcess.runUnbounded` to see time outside subprocess execution, including
+  permit wait, `gh` wait and retries. For `GitVcsDriverCore`, compare the enclosing
+  operation with its `runGitCommand` child. Neither difference isolates only
+  semaphore wait.
+- Whole-server pauses: correlate nearby operation spans with
+  `event-loop-stalls.ndjson`, using the interpretation below.
+
+Trace files can contain request URLs and query strings, workspace paths,
+thread identifiers and failure causes. Share only
+fields needed for the investigation, rather than raw files. WebSocket tickets
+are redacted by the shared HTTP observability layer; this does not sanitize
+historical traces or every other sensitive attribute.
+
 ### Metrics
 
 Metrics are not written to a local file.
@@ -142,7 +187,16 @@ There are two useful modes:
 - local-only: stdout + local `server.trace.ndjson`
 - full local observability: stdout + local trace file + OTLP export to Grafana/Tempo/Prometheus
 
-The local trace file is always on. OTLP export is opt-in.
+The local trace file is always on. OTLP export is opt-in. It sends diagnostics
+to a collector for analysis; it does not accelerate requests. Start with local
+diagnostics. Enabling export needs an approved receiver and agreement on the
+data sent, and changing startup configuration requires its own operational scope.
+
+Use the installed Jones build, not `npx t3`: the npm package belongs to upstream
+T3 Code. The current `t3 triage` playbook also targets upstream source and its
+issue tracker, so it is not the Jones investigation route. Use bounded local
+trace summaries and this guide instead; see
+[`triagePrompt.ts`](../../apps/server/src/cli/triagePrompt.ts).
 
 ### Option 1: Local Traces Only
 
@@ -151,15 +205,15 @@ You do not need any extra env vars. Just run the app normally and inspect `serve
 Examples:
 
 ```bash
-npx t3
+t3 # Use the verified installed Jones build, which retains this command name.
 ```
 
 ```bash
-node --run dev
+vp run dev
 ```
 
 ```bash
-node --run dev:desktop
+vp run dev:desktop
 ```
 
 ### Option 2: Run With A Local LGTM Stack
@@ -186,7 +240,7 @@ Default Grafana login:
 
 For endpoint settings and startup precedence, see the
 [user telemetry guide](../user/telemetry.md#export-diagnostics-to-your-own-receiver).
-In a worktree, use `vp run dev` instead of `npx t3` to keep state isolated.
+In a worktree, use `vp run dev` to keep state isolated.
 
 ```bash
 export T3CODE_OTLP_TRACES_URL=http://localhost:4318/v1/traces
@@ -207,19 +261,19 @@ export T3CODE_TRACE_TIMING_ENABLED=true
 CLI:
 
 ```bash
-npx t3
+t3 # Use the verified installed Jones build, which retains this command name.
 ```
 
 Monorepo web/server dev:
 
 ```bash
-node --run dev
+vp run dev
 ```
 
 Monorepo desktop dev:
 
 ```bash
-node --run dev:desktop
+vp run dev:desktop
 ```
 
 Packaged desktop app:
@@ -232,7 +286,7 @@ macOS app bundle example:
 T3CODE_OTLP_TRACES_URL=http://localhost:4318/v1/traces \
 T3CODE_OTLP_METRICS_URL=http://localhost:4318/v1/metrics \
 T3CODE_OTLP_LOGS_URL=http://localhost:4318/v1/logs \
-"/Applications/T3 Code.app/Contents/MacOS/T3 Code"
+"/Applications/Jones Code.app/Contents/MacOS/Jones Code"
 ```
 
 Direct binary example:
@@ -393,12 +447,14 @@ Traces are best for one request. Metrics are best for trends.
 Good metric families to watch:
 
 - `t3_rpc_request_duration`
+- `t3_orchestration_command_duration`
 - `t3_provider_turn_duration` (how long the provider adapter takes to start a turn, not the turn's run time)
 - `t3_git_command_duration`
 
 Counters tell you volume and failure rate:
 
 - `t3_rpc_requests_total`
+- `t3_orchestration_commands_total`
 - `t3_provider_turns_total`
 - `t3_git_commands_total`
 
@@ -406,8 +462,9 @@ Webhooks have their own families:
 
 - `t3_webhook_deliveries_total` by `outcome` and `source` (`relay` or `direct`). Beyond what the
   sender sees, `queue_full` means a task already had its limit of deliveries waiting,
-  `prompt_too_long` means the filled-in prompt passed the provider limit, and `duplicate` means
-  the relay delivered a request this environment had already run.
+  `prompt_too_long` means the filled-in prompt passed the provider limit, `duplicate` means
+  the relay delivered a request this environment had already run, and `unavailable` means the
+  environment could not record the request, answered 503 and ran nothing.
 - `t3_webhook_runs_total` by `outcome` (`started`, `skipped`, `failed`) for the runs those
   deliveries start, which happen after the sender has its answer.
 - `t3_webhook_held_delay` for how long requests the relay held waited before arriving.
@@ -445,7 +502,8 @@ Use traces when the question is:
 
 ### "Why is the UI feeling slow?"
 
-1. Search for slow top-level spans in the trace file or Tempo.
+1. Exclude socket and subscription lifetimes, then inspect foreground spans as
+   described in [Separate lifetimes from request latency](#separate-lifetimes-from-request-latency).
 2. Check child spans for sqlite, git, provider, or terminal work.
 3. Look at the matching duration metrics to see whether the slowness is systemic.
 
@@ -625,7 +683,30 @@ with a startup warning, rather than sending it to the Settings endpoint.
 Service names are fixed: `t3code-server` for the backend and `t3code-desktop` for the desktop main
 process, both in `service.namespace` `t3code`. `OTEL_SERVICE_NAME` and a `service.name` or
 `service.namespace` in `OTEL_RESOURCE_ATTRIBUTES` are ignored. Tell installations apart with other
-resource attributes, such as `OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=development`.
+resource attributes, such as `OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=staging`.
+
+Each process reports its own build, not the one it talks to: the server, the desktop main process,
+the UI, and the mobile app each carry `t3code.release.channel` (`dev`, `stable`, `nightly`, or
+`preview`, from their own version; desktop PR builds count as `preview`, and a server not built by a
+release workflow reports `dev`) and `deployment.environment.name` (`development`, `production`, or
+`staging` for `preview`). On the server and the desktop main process either key in
+`OTEL_RESOURCE_ATTRIBUTES` wins. The UI and mobile app never read that variable: Vercel PR previews
+set `VITE_RELEASE_CHANNEL=preview` because their `APP_VERSION` must stay comparable with the
+server's, and the mobile app maps its build variant (`development`, `preview`, `production`), or
+reports `dev` from a development bundle.
+
+Attributes specific to T3 Code use the `t3code.` prefix. The UI runs as `t3code-web` in both a
+browser and the desktop window, since it is the same code, and `t3code.client.surface` is `desktop`
+or `web`. The server's `t3code.server.managed_by` is `desktop` when the desktop app launched it and
+`standalone` otherwise. The desktop main process reports `t3code.desktop.mode` as `development` or
+`packaged` (formerly `service.mode`; dashboards filtering on that key must switch). Node processes
+also report the semantic `process.runtime.name`, `process.runtime.version`, and
+`process.runtime.description`, and UI traces report `browser.language`, `user_agent.original`, and,
+in Chromium, `browser.platform`, `browser.mobile`, and `browser.brands`.
+
+Every resource also carries a `service.instance.id`: random per process for the server and desktop,
+per page load for the UI, and the Expo session on mobile. A `service.instance.id` in
+`OTEL_RESOURCE_ATTRIBUTES` replaces the generated one on the server and desktop.
 
 If the OTLP URLs are unset, local tracing still works, metrics stay in-process only, and logs stay
 on stdout only.
@@ -671,7 +752,7 @@ Current high-value span and metric boundaries include:
 ## Heap Snapshots
 
 To see what a long-running server holds in memory, send it `SIGUSR2`. The server writes a V8 heap
-snapshot to its logs dir and logs the path. This works for desktop, `npx t3`, and service installs
+snapshot to its logs dir and logs the path. This works for desktop, a `t3` server started from a terminal, and service installs
 on macOS and Linux. Windows has no `SIGUSR2`.
 
 Send the signal to the server pid in `server-runtime.json`, which sits in the server's state dir
@@ -716,7 +797,9 @@ gateway for the app session until its registration is removed, independently of
 the active thread. Disconnects and request failures leave its values unavailable
 without selecting another gateway. Requests use the selected environment's
 existing HTTP authorization; the client does not receive collector URLs or
-tokens or substitute its own machine's resources.
+tokens or substitute its own machine's resources. Header remounts and tab visibility
+changes retain the selected gateway's sample and ten-second polling cadence,
+while source samples still expire after thirty seconds.
 
 A shared parent collector can serve all mapped nodes. Each shared slot requires
 an explicit machine GUID from `/api/v3/nodes`; unmapped slots stay unavailable.

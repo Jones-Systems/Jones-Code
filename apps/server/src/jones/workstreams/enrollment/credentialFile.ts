@@ -94,7 +94,7 @@ const readCredential = async (location: CredentialLocation): Promise<CredentialF
       return fail("unsafe_credential");
     const bytes = await handle.readFile();
     if (bytes.byteLength > 4096) return fail("unsafe_credential");
-    const parsed = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))(
+    const parsed = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown))(
       new TextDecoder("utf-8", { fatal: true }).decode(bytes),
     );
     if (
@@ -122,8 +122,8 @@ export const makeNativeCredentialWriter = (
   location: CredentialLocation,
 ): NativeCredentialWriter => ({
   observe: () => Effect.tryPromise({ try: () => readCredential(location), catch: mapFileError }),
-  publish: (token, expectedBeforeSha256) =>
-    Effect.gen(function* () {
+  publish: Effect.fn("NativeEnrollmentCredentialFile.publish")(
+    function* (token, expectedBeforeSha256) {
       if (
         !/^[A-Za-z0-9._~-]+$/.test(token) ||
         (expectedBeforeSha256 !== null && !/^[a-f0-9]{64}$/.test(expectedBeforeSha256))
@@ -209,5 +209,7 @@ export const makeNativeCredentialWriter = (
         },
         catch: mapFileError,
       });
-    }).pipe(Effect.uninterruptible),
+    },
+    (effect) => effect.pipe(Effect.uninterruptible),
+  ),
 });

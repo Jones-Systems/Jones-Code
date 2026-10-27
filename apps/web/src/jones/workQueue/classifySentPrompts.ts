@@ -34,7 +34,8 @@ export function classifySentPrompts(
   }
   if (
     snapshot?.schema === "codex.t3-work-queue-metadata/v2" ||
-    snapshot?.schema === "codex.t3-work-queue-metadata/v3"
+    snapshot?.schema === "codex.t3-work-queue-metadata/v3" ||
+    snapshot?.schema === "codex.t3-work-queue-metadata/v4"
   ) {
     for (const item of snapshot.items) {
       const proof = item.native_handoff;
@@ -46,7 +47,8 @@ export function classifySentPrompts(
         proof.command_status !== "accepted" ||
         (proof.correlation_status === "exact"
           ? !proof.turn_id
-          : snapshot.schema !== "codex.t3-work-queue-metadata/v3" ||
+          : (snapshot.schema !== "codex.t3-work-queue-metadata/v3" &&
+              snapshot.schema !== "codex.t3-work-queue-metadata/v4") ||
             proof.correlation_status !== "pending" ||
             proof.turn_id !== null ||
             (proof.turn_state !== "pending" &&

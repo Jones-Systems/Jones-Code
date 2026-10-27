@@ -1,3 +1,21 @@
+import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
+import { WorkstreamToolkit } from "../jones/mcp/workstreams/tools.ts";
+import {
+  handlers as workstreamHandlers,
+  backendLayer as workstreamBackendLayer,
+} from "../jones/mcp/workstreams/handlers.ts";
+import * as ThreadSelfConfigurationService from "../jones/threadConfiguration/ThreadSelfConfiguration.ts";
+import * as ThreadSelfConfigurationTools from "../jones/threadConfiguration/tools.ts";
+import * as RemoteAdmissionCancel from "../jones/remoteAdmissionIntegration/cancelTool.ts";
+import {
+  LINKED_MESSAGE_ORIGIN_HEADER,
+  withLinkedMessageOrigin,
+} from "../jones/peerTransport/LinkedMessageOrigin.ts";
+import * as UserResponseRequest from "../jones/mcp/userResponseRequest/UserResponseRequestMcpService.ts";
+import { handlers as userResponseRequestHandlers } from "../jones/mcp/userResponseRequest/handlers.ts";
+import { UserResponseRequestToolkit } from "../jones/mcp/userResponseRequest/tools.ts";
+import * as GoalControl from "../jones/goals/GoalControl.ts";
+import * as GoalStartDispatch from "../jones/goals/GoalStartDispatch.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -11,9 +29,16 @@ import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
-import { AiError, McpProtocol, McpSchema, McpServer, Tool, type Toolkit } from "effect/ai";
+import { AiError, McpProtocol, McpSchema, McpServer, Tool, Toolkit } from "effect/ai";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
-import { OrchestratorMcpFailure, PreviewAutomationError } from "@t3tools/contracts";
+import {
+  OrchestratorMcpFailure,
+  PreviewAutomationError,
+  ProviderInteractionMode,
+  RuntimeMode,
+  type RunId,
+  ThreadId,
+} from "@t3tools/contracts";
 
 import { DecisionSnapshotCollectorLive } from "../jones/mcp/decisionSnapshot/collector.ts";
 import {
@@ -23,6 +48,12 @@ import {
 import { DecisionSnapshotToolkit } from "../jones/mcp/decisionSnapshot/tools.ts";
 import { OrganizationMetadataHandlersLive } from "../jones/mcp/organizationMetadata/handlers.ts";
 import { OrganizationMetadataToolkit } from "../jones/mcp/organizationMetadata/tools.ts";
+import { SettlementRestoreHandlersLive } from "../jones/mcp/settlementRestore/handlers.ts";
+import { SettlementRestoreToolkit } from "../jones/mcp/settlementRestore/tools.ts";
+import * as SettlementRestore from "../jones/settlementRestore/SettlementRestore.ts";
+import * as ProjectionStoreV2 from "../orchestration-v2/ProjectionStore.ts";
+import * as TaskContinuation from "../jones/taskContinuation/TaskContinuation.ts";
+import * as TaskContinuationStore from "../jones/taskContinuation/TaskContinuationStore.ts";
 import * as OrganizationMetadata from "../jones/mcp/organizationMetadata/OrganizationMetadataMcpService.ts";
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
@@ -30,6 +61,15 @@ import * as DeviceService from "../device/DeviceService.ts";
 import * as HtmlRender from "../htmlRender/HtmlRender.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as AnalyticsService from "../telemetry/AnalyticsService.ts";
+import {
+  type AgentThread,
+  agentToolProperties,
+  handoffSettings,
+  MAX_REPORTED_DEPTH,
+  toolOutcome,
+} from "../telemetry/ProviderDimensions.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
@@ -73,11 +113,7 @@ const mcpResourceMetadataUrl = (request: HttpServerRequest.HttpServerRequest) =>
     Option.map((url) => `${url.origin}/.well-known/oauth-protected-resource/mcp`),
   );
 
-/**
- * Agents T3 Code launched carry a registry token and must never be sent into an
- * OAuth flow when it dies: they cannot open a browser, and a sign-in would mint
- * a credential that outlives their session.
- */
+/** Launched agents cannot open OAuth browsers; OAuth would mint credentials outliving their session. */
 const unauthorized = (input: {
   readonly request: HttpServerRequest.HttpServerRequest;
   readonly presentedToken: boolean;
@@ -133,7 +169,7 @@ type McpAuthMiddleware = (
   HttpServerRequest.HttpServerRequest
 >;
 
-export const normalizeMcpHttpResponse = (
+const normalizeMcpHttpResponse = (
   response: HttpServerResponse.HttpServerResponse,
 ): HttpServerResponse.HttpServerResponse => {
   const bodyIsEmpty =
@@ -147,6 +183,35 @@ export const normalizeMcpHttpResponse = (
 
 // Session tokens are `<payload>.<signature>`; registry tokens are a bare base64url secret.
 const looksLikeProviderToken = (token: string) => token.length > 0 && !token.includes(".");
+
+const decodeModeLimit = Schema.decodeUnknownOption(
+  Schema.Struct({ runtimeMode: RuntimeMode, interactionMode: ProviderInteractionMode }),
+);
+const parseModeLimit = (value: string) => {
+  const [runtimeMode, interactionMode, ...rest] = value.trim().split("/");
+  return rest.length === 0 ? decodeModeLimit({ runtimeMode, interactionMode }) : Option.none();
+};
+
+const invalidModeLimit = HttpServerResponse.jsonUnsafe(
+  {
+    error: "invalid_mode_limit",
+    message: "T3-Mode-Limit must be <runtimeMode>/<interactionMode>, e.g. auto/default.",
+  },
+  { status: 400, headers: { "cache-control": "no-store" } },
+);
+
+/** Applies a client's requested mode limit; undefined when the header is malformed. */
+const withModeLimit = (
+  invocation: McpInvocationContext.McpInvocationScope,
+  request: HttpServerRequest.HttpServerRequest,
+): McpInvocationContext.McpInvocationScope | undefined => {
+  const header = request.headers[McpInvocationContext.MODE_LIMIT_HEADER];
+  if (header === undefined || invocation.client === undefined) return invocation;
+  const limit = parseModeLimit(header);
+  return Option.isNone(limit)
+    ? undefined
+    : { ...invocation, client: { ...invocation.client, narrowedTo: limit.value } };
+};
 
 const makeMcpAuthMiddleware = Effect.gen(function* () {
   const registry = yield* McpSessionRegistry.McpSessionRegistry;
@@ -173,8 +238,22 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
         offerOAuth: Option.isSome(clients) && !looksLikeProviderToken(token),
       });
     }
+    const limited = withModeLimit(invocation, request);
+    if (limited === undefined) return invalidModeLimit;
+    const attributed = withLinkedMessageOrigin(
+      limited,
+      request.headers[LINKED_MESSAGE_ORIGIN_HEADER],
+    );
+    if (attributed === undefined)
+      return HttpServerResponse.jsonUnsafe(
+        {
+          error: "invalid_linked_message_origin",
+          message: "The linked message origin is malformed or this credential is not a peer link.",
+        },
+        { status: 400, headers: { "cache-control": "no-store" } },
+      );
     return yield* httpEffect.pipe(
-      Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+      Effect.provideService(McpInvocationContext.McpInvocationContext, attributed),
       Effect.map(normalizeMcpHttpResponse),
     );
   }) satisfies McpAuthMiddleware;
@@ -184,13 +263,7 @@ const layerMcpAuthMiddleware = HttpRouter.middleware<{
   provides: McpInvocationContext.McpInvocationContext;
 }>()(makeMcpAuthMiddleware).layer;
 
-/**
- * Claude Code moves an MCP result above its output limit to a file and hands
- * the agent a notice instead, so a snapshot that carries the full accessibility
- * tree and page text loses its locators too. Claude Code also shows the model
- * `structuredContent` in place of the text blocks when a result has both, so
- * both carry the same bounded snapshot.
- */
+/** Claude Code spills oversized results to files, losing locators; bound both text and its preferred structuredContent. */
 export const MAX_SNAPSHOT_TEXT_BYTES = 20_000;
 const MAX_SNAPSHOT_VISIBLE_TEXT_CHARS = 8_000;
 const MAX_SNAPSHOT_ELEMENT_NAME_CHARS = 200;
@@ -275,8 +348,7 @@ const boundSnapshotMetadata = (metadata: SnapshotMetadata) => {
     actionTimeline: tail(metadata.actionTimeline, "action timeline entries"),
   };
 
-  // Per-field caps do not sum below the ceiling: three log arrays of 40 capped
-  // entries alone can pass 60 KB, and the caps count characters, not bytes.
+  // Per-field character caps can still exceed the total byte ceiling.
   const shedOrder = [
     "actionTimeline",
     "networkEntries",
@@ -325,7 +397,6 @@ const boundSnapshotMetadata = (metadata: SnapshotMetadata) => {
     } else {
       const keep = Math.floor(lists[key].length / 2);
       dropped[key] += lists[key].length - keep;
-      // slice(-0) keeps everything, so spell out the empty case.
       lists[key] =
         keep === 0
           ? []
@@ -395,6 +466,16 @@ const saveScreenshot = Effect.fn("McpHttpServer.saveScreenshot")(function* (
   return screenshotPath;
 });
 
+/** Decode with the advertised JSON codec, which permits null for optional fields that the raw schema rejects. */
+const decodeAsAdvertised = <Tools extends Record<string, Tool.Any>>(
+  toolkit: Toolkit.Toolkit<Tools>,
+): Toolkit.Toolkit<Tools> =>
+  Toolkit.make(
+    ...Object.values(toolkit.tools).map((tool) =>
+      tool.setParameters(Schema.toCodecJson(tool.parametersSchema)),
+    ),
+  ) as unknown as Toolkit.Toolkit<Tools>;
+
 const isPreviewAutomationError = Schema.is(PreviewAutomationError);
 
 const previewSnapshotFailure = <E>(cause: Cause.Cause<E>) => {
@@ -410,8 +491,7 @@ const previewSnapshotFailure = <E>(cause: Cause.Cause<E>) => {
     typeof firstFailure._tag === "string"
       ? firstFailure._tag
       : "PreviewSnapshotError";
-  // Preview errors build their message on the server, never from page output,
-  // and it tells the agent what to do next, such as falling back to a shell browser.
+  // Preview errors contain server-authored recovery guidance, never page output.
   const message = isPreviewAutomationError(firstFailure) ? firstFailure.message : undefined;
   const result = new McpSchema.CallToolResult({
     isError: true,
@@ -440,7 +520,7 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
   const saveServices = yield* Effect.context<
     ServerConfig.ServerConfig | FileSystem.FileSystem | Path.Path | Crypto.Crypto
   >();
-  const built = yield* PreviewSnapshotToolkit;
+  const built = yield* decodeAsAdvertised(PreviewSnapshotToolkit);
   const tool = PreviewSnapshotTool;
   yield* server.addTool({
     tool: new McpSchema.Tool({
@@ -487,8 +567,7 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
               const png = new Uint8Array(Buffer.from(screenshot.data, "base64"));
               const screenshotPath =
                 payload?.save === true ? yield* saveScreenshot(snapshot.url, png) : undefined;
-              // Images stay out of tool history unless asked for: providers replay them on every
-              // later request, and some reject inline images outright.
+              // Providers replay images on later requests, and some reject them; include images only when requested.
               const includeImage = payload?.includeImage === true;
               if (screenshotPath !== undefined && !includeImage) {
                 const saved = {
@@ -560,11 +639,7 @@ interface ImageToolResult {
   readonly [key: string]: unknown;
 }
 
-/**
- * Failures surface only their tag unless the tool describes them: the remote
- * message may carry renderer or device output the agent should not see, and the
- * tag is what it can act on.
- */
+/** Expose only undescribed failures' tags; remote messages may contain renderer or device output. */
 const imageToolFailure =
   <E>(toolName: string, operation: string, failureText: string | ((error: E) => string)) =>
   (cause: Cause.Cause<E>) => {
@@ -613,7 +688,11 @@ const imageToolFailure =
  * `McpServer.toolkit` serializes every result as JSON text, which is the wrong
  * shape for a screenshot: the model needs image content.
  */
-const registerImageTool = <T extends Tool.Any, E, R>(
+const registerImageTool = Effect.fn("McpHttpServer.registerImageTool")(function* <
+  T extends Tool.Any,
+  E,
+  R,
+>(
   tool: T,
   handle: (payload: Tool.Parameters<T>) => Effect.Effect<{ readonly encodedResult: unknown }, E, R>,
   provide: (
@@ -625,78 +704,77 @@ const registerImageTool = <T extends Tool.Any, E, R>(
   >,
   operation: string,
   failureText: string | ((error: E) => string),
-) =>
-  Effect.gen(function* () {
-    const server = yield* McpServer.McpServer;
-    yield* server.addTool({
-      tool: new McpSchema.Tool({
-        name: tool.name,
-        description: Tool.getDescription(tool),
-        inputSchema: Tool.getJsonSchema(tool),
-        annotations: {
-          ...Context.getOption(tool.annotations, Tool.Title).pipe(
-            Option.map((title) => ({ title })),
-            Option.getOrUndefined,
-          ),
-          readOnlyHint: Context.get(tool.annotations, Tool.Readonly),
-          destructiveHint: Context.get(tool.annotations, Tool.Destructive),
-          idempotentHint: Context.get(tool.annotations, Tool.Idempotent),
-          openWorldHint: Context.get(tool.annotations, Tool.OpenWorld),
-        },
+) {
+  const server = yield* McpServer.McpServer;
+  yield* server.addTool({
+    tool: new McpSchema.Tool({
+      name: tool.name,
+      description: Tool.getDescription(tool),
+      inputSchema: Tool.getJsonSchema(tool),
+      annotations: {
+        ...Context.getOption(tool.annotations, Tool.Title).pipe(
+          Option.map((title) => ({ title })),
+          Option.getOrUndefined,
+        ),
+        readOnlyHint: Context.get(tool.annotations, Tool.Readonly),
+        destructiveHint: Context.get(tool.annotations, Tool.Destructive),
+        idempotentHint: Context.get(tool.annotations, Tool.Idempotent),
+        openWorldHint: Context.get(tool.annotations, Tool.OpenWorld),
+      },
+    }),
+    annotations: tool.annotations,
+    handle: (payload) =>
+      Effect.withFiber((fiber) => {
+        const invocation = Context.getUnsafe(
+          fiber.context,
+          McpInvocationContext.McpInvocationContext,
+        );
+        return provide(handle(payload as Tool.Parameters<T>)).pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.matchCauseEffect({
+            onFailure: imageToolFailure(tool.name, operation, failureText),
+            onSuccess: ({ encodedResult }) => {
+              const { screenshot, ...rest } = encodedResult as ImageToolResult;
+              const includeImage =
+                (payload as { readonly includeImage?: boolean } | undefined)?.includeImage !==
+                false;
+              const metadata = {
+                ...rest,
+                screenshot: {
+                  mimeType: screenshot.mimeType,
+                  width: screenshot.width,
+                  height: screenshot.height,
+                },
+              };
+              return Effect.succeed(
+                new McpSchema.CallToolResult({
+                  isError: false,
+                  structuredContent: metadata,
+                  content: [
+                    { type: "text", text: JSON.stringify(metadata) },
+                    ...(includeImage
+                      ? [
+                          {
+                            type: "image" as const,
+                            data: new Uint8Array(Buffer.from(screenshot.data, "base64")),
+                            mimeType: screenshot.mimeType,
+                          },
+                        ]
+                      : []),
+                  ],
+                }),
+              );
+            },
+          }),
+        );
       }),
-      annotations: tool.annotations,
-      handle: (payload) =>
-        Effect.withFiber((fiber) => {
-          const invocation = Context.getUnsafe(
-            fiber.context,
-            McpInvocationContext.McpInvocationContext,
-          );
-          return provide(handle(payload as Tool.Parameters<T>)).pipe(
-            Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
-            Effect.matchCauseEffect({
-              onFailure: imageToolFailure(tool.name, operation, failureText),
-              onSuccess: ({ encodedResult }) => {
-                const { screenshot, ...rest } = encodedResult as ImageToolResult;
-                const includeImage =
-                  (payload as { readonly includeImage?: boolean } | undefined)?.includeImage !==
-                  false;
-                const metadata = {
-                  ...rest,
-                  screenshot: {
-                    mimeType: screenshot.mimeType,
-                    width: screenshot.width,
-                    height: screenshot.height,
-                  },
-                };
-                return Effect.succeed(
-                  new McpSchema.CallToolResult({
-                    isError: false,
-                    structuredContent: metadata,
-                    content: [
-                      { type: "text", text: JSON.stringify(metadata) },
-                      ...(includeImage
-                        ? [
-                            {
-                              type: "image" as const,
-                              data: new Uint8Array(Buffer.from(screenshot.data, "base64")),
-                              mimeType: screenshot.mimeType,
-                            },
-                          ]
-                        : []),
-                    ],
-                  }),
-                );
-              },
-            }),
-          );
-        }),
-    });
   });
+});
 
 const registerDeviceScreenshot = Effect.fn("McpHttpServer.registerDeviceScreenshot")(function* () {
   const devices = yield* DeviceService.DeviceService;
   const threads = yield* ThreadManagementService.ThreadManagementService;
-  const built = yield* DeviceScreenshotToolkit;
+  const built = yield* decodeAsAdvertised(DeviceScreenshotToolkit);
   yield* registerImageTool(
     DeviceScreenshotTool,
     (payload) =>
@@ -718,7 +796,7 @@ const isOrchestratorMcpFailure = Schema.is(OrchestratorMcpFailure);
 const registerHtmlPreview = Effect.fn("McpHttpServer.registerHtmlPreview")(function* () {
   const htmlRender = yield* HtmlRender.HtmlRender;
   const threads = yield* ThreadManagementService.ThreadManagementService;
-  const built = yield* HtmlPreviewToolkit;
+  const built = yield* decodeAsAdvertised(HtmlPreviewToolkit);
   yield* registerImageTool(
     HtmlPreviewTool,
     (payload) =>
@@ -740,6 +818,202 @@ const registerHtmlPreview = Effect.fn("McpHttpServer.registerHtmlPreview")(funct
 });
 
 /**
+ * Tools that hand work to another thread's agent: they create it, message it,
+ * steer it, or move context into it. Their events name the receiving agent too.
+ */
+const HANDOFF_TOOLS: ReadonlySet<string> = new Set([
+  "t3_task_continue",
+  "delegate_task",
+  "create_threads",
+  "t3_thread_launch",
+  "t3_thread_handoff",
+  "t3_thread_send",
+  "t3_thread_send_attachments",
+  "t3_thread_fork",
+  "t3_thread_merge_back",
+  "t3_queue_edit",
+  "t3_queue_promote_to_steer",
+  "t3_pending_request_respond",
+  "schedule_task",
+  "run_scheduled_task_now",
+]);
+
+/** Handoff tools whose result is only `{ sequence }`; their input names the receiving thread. */
+const INPUT_TARGET_TOOLS: ReadonlySet<string> = new Set([
+  "t3_queue_edit",
+  "t3_queue_promote_to_steer",
+  "t3_pending_request_respond",
+]);
+
+const resultThreadKeys = ["childThreadId", "targetThreadId", "boundThreadId", "threadId"] as const;
+
+/** Thread ids a handoff tool result names: the thread that received the work. */
+const resultThreadIds = (content: unknown): ReadonlyArray<string> => {
+  if (typeof content !== "object" || content === null) return [];
+  const record = content as Readonly<Record<string, unknown>>;
+  if (Array.isArray(record.threads)) return record.threads.flatMap(resultThreadIds);
+  if (record.destination !== null && typeof record.destination === "object")
+    return resultThreadIds(record.destination);
+  const key = resultThreadKeys.find((candidate) => typeof record[candidate] === "string");
+  return key === undefined ? [] : [record[key] as string];
+};
+
+/**
+ * Thread ids that received a handoff. The input's `threadId` is used only after
+ * the call succeeded, so it is one the handler already resolved and authorized.
+ */
+const handoffTargetIds = (
+  tool: string,
+  args: unknown,
+  result: McpSchema.CallToolResult | undefined,
+): ReadonlyArray<string> => {
+  if (!INPUT_TARGET_TOOLS.has(tool)) return resultThreadIds(result?.structuredContent);
+  if (result === undefined || toolOutcome(result).outcome !== "ok") return [];
+  const threadId = (args as { readonly threadId?: unknown } | null | undefined)?.threadId;
+  return typeof threadId === "string" ? [threadId] : [];
+};
+
+/** Tool analytics must never include IDs, prompts or free text. */
+const withToolAnalytics =
+  /* Request instrumentation already owns the span; keep this helper in that context. */
+  Effect.fnUntraced(function* <A, E, R>(registration: Effect.Effect<A, E, R>) {
+    const server = yield* McpServer.McpServer;
+    const analytics = yield* Effect.serviceOption(AnalyticsService.AnalyticsService);
+    if (Option.isNone(analytics)) return yield* registration;
+    const registry = yield* Effect.serviceOption(ProviderRegistry.ProviderRegistry);
+    const threads = yield* Effect.serviceOption(ThreadManagementService.ThreadManagementService);
+    const shellOf = (threadId: string) =>
+      Option.isNone(threads)
+        ? Effect.succeed(null)
+        : threads.value
+            .getThreadShell(ThreadId.make(threadId))
+            .pipe(Effect.orElseSucceed(() => null));
+    // Delegation depth: parents walked from the caller, capped.
+    const depthOf =
+      /* Request instrumentation already owns the span; keep this helper in that context. */
+      Effect.fnUntraced(function* (thread: AgentThread) {
+        let depth = 0;
+        let parentId =
+          thread.lineage.relationshipToParent === "subagent" ? thread.lineage.parentThreadId : null;
+        while (parentId !== null && depth < MAX_REPORTED_DEPTH) {
+          depth += 1;
+          const parent = yield* shellOf(parentId);
+          parentId =
+            parent?.lineage.relationshipToParent === "subagent"
+              ? parent.lineage.parentThreadId
+              : null;
+        }
+        return depth;
+      });
+    // Whether the caller's active run was started by a scheduled task.
+    const scheduledRunOf = (threadId: string, runId: RunId | null) =>
+      Option.isNone(threads) || runId === null
+        ? Effect.succeed(false)
+        : threads.value
+            .getThreadRecords(ThreadId.make(threadId), ["runs", "messages"], {
+              runIds: [runId],
+              messageRoles: ["user"],
+            })
+            .pipe(
+              Effect.map((records) => {
+                const run = records.runs.find((candidate) => candidate.id === runId);
+                return records.messages.some(
+                  (message) =>
+                    message.id === run?.userMessageId && message.scheduledTaskId !== undefined,
+                );
+              }),
+              Effect.orElseSucceed(() => false),
+            );
+    const record =
+      /* Request instrumentation already owns the span; keep this helper in that context. */
+      Effect.fnUntraced(
+        function* (
+          tool: string,
+          args: unknown,
+          result: McpSchema.CallToolResult | undefined,
+          durationMs: number,
+        ) {
+          const handoff = HANDOFF_TOOLS.has(tool);
+          const outcome = toolOutcome(result);
+          // Agents call status, read, and preview tools in tight loops, so an
+          // event per successful call floods analytics. Only failures count there.
+          if (!handoff && outcome.outcome === "ok") return;
+          // Client credentials (no calling thread) report an unknown caller.
+          const invocation = Option.getOrUndefined(
+            yield* Effect.serviceOption(McpInvocationContext.McpInvocationContext),
+          )?.thread;
+          const providers = Option.isSome(registry) ? yield* registry.value.getProviders : [];
+          // Only handoff tools pay for thread lookups; the rest report the
+          // caller's provider from the credential.
+          const caller =
+            handoff && invocation !== undefined
+              ? ((yield* shellOf(invocation.threadId)) ?? undefined)
+              : undefined;
+          const targetIds = handoff
+            ? [...new Set(handoffTargetIds(tool, args, result))].filter(
+                (threadId) => threadId !== invocation?.threadId,
+              )
+            : [];
+          const targets = yield* Effect.forEach(targetIds, shellOf);
+          for (const properties of agentToolProperties({
+            tool,
+            providers,
+            caller,
+            ...(invocation === undefined
+              ? {}
+              : { callerProviderInstanceId: invocation.providerInstanceId }),
+            ...(caller === undefined || invocation === undefined
+              ? {}
+              : {
+                  callerDepth: yield* depthOf(caller),
+                  callerScheduledRun: yield* scheduledRunOf(
+                    invocation.threadId,
+                    caller.activeRunId,
+                  ),
+                }),
+            targets: targets.filter((thread) => thread !== null),
+            outcome,
+            ...(handoff
+              ? { settings: handoffSettings(tool, args, result?.structuredContent) }
+              : {}),
+            durationMs,
+          })) {
+            yield* analytics.value.record("mcp.tool.invoked", properties);
+          }
+        },
+        (effect, _tool, _args, _result, _durationMs) => effect.pipe(Effect.ignoreCause),
+      );
+    const recordingServer = McpServer.McpServer.of({
+      ...server,
+      addTool: (options) =>
+        server.addTool({
+          ...options,
+          handle:
+            /* Request instrumentation already owns the span; keep this helper in that context. */
+            Effect.fnUntraced(function* (payload) {
+              const startedAt = yield* Clock.currentTimeMillis;
+              return yield* options.handle(payload).pipe(
+                Effect.onExit((exit) => {
+                  const result = exit._tag === "Success" ? exit.value : undefined;
+                  // A call that asks for input is retried with it, and that call is the one counted.
+                  if (result instanceof McpSchema.InputRequired) return Effect.void;
+                  // Handoff tools look up threads to record; the response must not wait on them.
+                  return Clock.currentTimeMillis.pipe(
+                    Effect.flatMap((endedAt) =>
+                      record(options.tool.name, payload, result, endedAt - startedAt),
+                    ),
+                    Effect.forkDetach,
+                    Effect.asVoid,
+                  );
+                }),
+              );
+            }),
+        }),
+    });
+    return yield* registration.pipe(Effect.provideService(McpServer.McpServer, recordingServer));
+  });
+
+/**
  * `McpServer.toolkit` asks for every service its tools declare when it
  * registers them, but the auth middleware provides `McpInvocationContext` to
  * each request instead. Registration must not get one: the services it
@@ -749,7 +1023,9 @@ export const toolkitRegistration = <Tools extends Record<string, Tool.Any>, EX, 
   toolkit: Toolkit.Toolkit<Tools>,
   handlers: McpToolAccess.HandlersLayer<Tools, EX, RX>,
 ) => {
-  const registration = McpServer.toolkit(toolkit);
+  const registration = Layer.effectDiscard(
+    withToolAnalytics(McpServer.registerToolkit(decodeAsAdvertised(toolkit))),
+  ).pipe(Layer.provide(McpServer.McpServer.layer));
   // @effect-diagnostics-next-line unsafeEffectTypeAssertion:off - the auth middleware provides it per request.
   const registered = registration as Layer.Layer<
     never,
@@ -762,7 +1038,10 @@ export const toolkitRegistration = <Tools extends Record<string, Tool.Any>, EX, 
 const imageToolRegistration = <Tools extends Record<string, Tool.Any>, A, E, R, EX, RX>(
   register: Effect.Effect<A, E, R>,
   handlers: McpToolAccess.HandlersLayer<Tools, EX, RX>,
-) => Layer.effectDiscard(register).pipe(Layer.provide(McpToolAccess.HandlersLayer.layer(handlers)));
+) =>
+  Layer.effectDiscard(withToolAnalytics(register)).pipe(
+    Layer.provide(McpToolAccess.HandlersLayer.layer(handlers)),
+  );
 
 export const layerHtmlToolkit = Layer.mergeAll(
   toolkitRegistration(HtmlRenderToolkit, HtmlHandlers.layerRender),
@@ -787,9 +1066,25 @@ export const layerPreviewToolkit = Layer.mergeAll(
 export const layerOrchestratorToolkit = toolkitRegistration(
   OrchestratorToolkit,
   OrchestratorHandlers.layer,
-).pipe(Layer.provide(OrchestratorMcpService.layer), Layer.provide(ThreadMetadataMcpService.layer));
+).pipe(
+  Layer.provide(
+    TaskContinuation.layer.pipe(
+      Layer.provide(TaskContinuationStore.layer),
+      Layer.provide(ProjectionStoreV2.layer),
+    ),
+  ),
+  Layer.provide(OrchestratorMcpService.layer),
+  Layer.provide(ThreadMetadataMcpService.layer),
+  Layer.provide(GoalControl.layer.pipe(Layer.provide(GoalStartDispatch.layer))),
+);
 
-export const layerThreadToolkit = toolkitRegistration(ThreadToolkit, ThreadHandlers.layer);
+export const layerThreadSelfConfigurationToolkit = toolkitRegistration(
+  ThreadSelfConfigurationTools.ThreadSelfConfigurationToolkit,
+  ThreadSelfConfigurationTools.layer,
+);
+export const layerThreadToolkit = toolkitRegistration(ThreadToolkit, ThreadHandlers.layer).pipe(
+  Layer.provide(ThreadMetadataReads.layer),
+);
 
 const layerWorktreeToolkitRegistration = toolkitRegistration(
   WorktreeToolkit,
@@ -801,12 +1096,12 @@ const layerPreviewControlsRegistration = toolkitRegistration(
   PreviewControlsHandlers.layer,
 );
 
-export const layerEnvironmentToolkit = toolkitRegistration(
+const layerEnvironmentToolkit = toolkitRegistration(
   EnvironmentToolkit,
   EnvironmentHandlers.layer,
 ).pipe(Layer.provide(ThreadCommandExecutor.layer));
 
-const layerProjectRegistration = toolkitRegistration(ProjectToolkit, ProjectHandlers.layer);
+export const layerProjectRegistration = toolkitRegistration(ProjectToolkit, ProjectHandlers.layer);
 
 export const layerAttachmentToolkit = toolkitRegistration(
   AttachmentToolkit,
@@ -838,6 +1133,11 @@ export const OrganizationMetadataRegistrationLive = toolkitRegistration(
   OrganizationMetadataHandlersLive,
 ).pipe(Layer.provide(OrganizationMetadata.layer));
 
+const SettlementRestoreRegistrationLive = toolkitRegistration(
+  SettlementRestoreToolkit,
+  SettlementRestoreHandlersLive,
+).pipe(Layer.provide(SettlementRestore.layer.pipe(Layer.provide(ProjectionStoreV2.layer))));
+
 const DecisionSnapshotToolkitRegistrationLive = toolkitRegistration(
   DecisionSnapshotToolkit,
   DecisionSnapshotToolkitAccess,
@@ -854,12 +1154,39 @@ export const layerMcpTransport = McpServer.layerHttp({
   allowSessionTermination: true,
 }).pipe(Layer.provide(layerMcpAuthMiddleware));
 
+export const layerWorkstreamToolkit = toolkitRegistration(
+  WorkstreamToolkit,
+  workstreamHandlers,
+).pipe(Layer.provide(workstreamBackendLayer));
+
 export const layer = Layer.mergeAll(
+  layerWorkstreamToolkit,
+  toolkitRegistration(UserResponseRequestToolkit, userResponseRequestHandlers).pipe(
+    Layer.provide(UserResponseRequest.layer),
+  ),
   OrganizationMetadataRegistrationLive,
+  SettlementRestoreRegistrationLive,
+  toolkitRegistration(RemoteAdmissionCancel.toolkit, RemoteAdmissionCancel.handlers),
   DecisionSnapshotToolkitRegistrationLive,
   layerPreviewToolkit,
   layerOrchestratorToolkit,
   layerThreadToolkit,
+  Layer.unwrap(
+    Effect.serviceOption(ThreadSelfConfigurationService.ThreadSelfConfiguration).pipe(
+      Effect.map((service) =>
+        Option.isNone(service)
+          ? Layer.empty
+          : layerThreadSelfConfigurationToolkit.pipe(
+              Layer.provide(
+                Layer.succeed(
+                  ThreadSelfConfigurationService.ThreadSelfConfiguration,
+                  service.value,
+                ),
+              ),
+            ),
+      ),
+    ),
+  ),
   layerAttachmentToolkit,
   layerProjectRegistration,
   layerEnvironmentToolkit,

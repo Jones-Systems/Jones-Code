@@ -203,6 +203,22 @@ index e11b4f13e92a57a5bb823c372c055d0c6242298d..3479503ec29be559185f08c44af645d0
          }
        default:
          {
+diff --git a/dist/rpc/RpcGroup.d.ts b/dist/rpc/RpcGroup.d.ts
+index 3c71aa61d3e105a6c5d479b59a3be9d969d04e18..830caff8fde83103ff76b0df2ff888071d54c795 100644
+--- a/dist/rpc/RpcGroup.d.ts
++++ b/dist/rpc/RpcGroup.d.ts
+@@ -141,7 +141,10 @@ export type HandlerFrom<Rpc extends Rpc.Any, Tag extends Rpc["_tag"]> = Extract<
+  * @category utility types
+  * @since 4.0.0
+  */
+-export type HandlersServices<Rpcs extends Rpc.Any, Handlers> = keyof Handlers extends infer K ? K extends keyof Handlers & string ? HandlerServices<Rpcs, K, Handlers[K]> : never : never;
++export type HandlersServices<Rpcs extends Rpc.Any, Handlers> = keyof Handlers extends infer K ? K extends keyof Handlers & string ? K extends keyof RpcsByTag<Rpcs> ? RpcsByTag<Rpcs>[K] extends infer Current extends Rpc.Any ? HandlerServices<Current, K, Handlers[K]> : never : HandlerServices<Rpcs, K, Handlers[K]> : never : never;
++type RpcsByTag<Rpcs extends Rpc.Any> = {
++    readonly [Current in Rpcs as Current["_tag"]]: Current;
++};
+ /**
+  * Computes the services required by a single RPC handler, excluding services
+  * provided by middleware and `Scope` where the server supplies it.
 diff --git a/src/rpc/RpcClient.ts b/src/rpc/RpcClient.ts
 index 2f92d9bd43b0082b77ca9f34a11721d99ea0f21a..635735279f3a5cb153d57ffd1f13fd6f1aeb84d8 100644
 --- a/src/rpc/RpcClient.ts
@@ -445,3 +461,27 @@ index 2f92d9bd43b0082b77ca9f34a11721d99ea0f21a..635735279f3a5cb153d57ffd1f13fd6f
        }
        default: {
          return Effect.void
+diff --git a/src/rpc/RpcGroup.ts b/src/rpc/RpcGroup.ts
+index 1c91a06095b0241a1a868a1803ff52772e995358..080a6e519540292701e9efcf9058856047a3c85c 100644
+--- a/src/rpc/RpcGroup.ts
++++ b/src/rpc/RpcGroup.ts
+@@ -212,9 +212,18 @@ export type HandlerFrom<Rpc extends Rpc.Any, Tag extends Rpc["_tag"]> = Extract<
+  * @since 4.0.0
+  */
+ export type HandlersServices<Rpcs extends Rpc.Any, Handlers> = keyof Handlers extends infer K ?
+-  K extends keyof Handlers & string ? HandlerServices<Rpcs, K, Handlers[K]> : never :
++  K extends keyof Handlers & string ?
++    K extends keyof RpcsByTag<Rpcs> ?
++      RpcsByTag<Rpcs>[K] extends infer Current extends Rpc.Any ? HandlerServices<Current, K, Handlers[K]> : never
++    : HandlerServices<Rpcs, K, Handlers[K]>
++  : never :
+   never
+ 
++// Each handler looks up its own RPC by tag. Passing the whole union to every
++// handler costs handlers x RPCs instantiations, which exhausts the checker's
++// per-expression budget for a group of about 200 RPCs.
++type RpcsByTag<Rpcs extends Rpc.Any> = { readonly [Current in Rpcs as Current["_tag"]]: Current }
++
+ /**
+  * Computes the services required by a single RPC handler, excluding services
+  * provided by middleware and `Scope` where the server supplies it.

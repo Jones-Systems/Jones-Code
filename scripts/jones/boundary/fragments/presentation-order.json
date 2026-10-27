@@ -1,0 +1,33 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "presentation-order",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/presentationOrder/PresentationOrderSettings.tsx",
+    "apps/web/src/jones/presentationOrder/SortableOrderList.browser.test.tsx",
+    "apps/web/src/jones/presentationOrder/SortableOrderList.tsx",
+    "apps/web/src/jones/presentationOrder/environmentOrder.test.ts",
+    "apps/web/src/jones/presentationOrder/environmentOrder.ts",
+    "apps/web/src/jones/presentationOrder/projectOrder.test.ts",
+    "apps/web/src/jones/presentationOrder/projectOrder.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/hooks/useSidebarProjectGroups.ts",
+      "to": "apps/web/src/jones/presentationOrder/projectOrder.ts"
+    },
+    {
+      "from": "apps/web/src/hooks/useLogicalProjectEnvironments.ts",
+      "to": "apps/web/src/jones/presentationOrder/environmentOrder.ts"
+    },
+    {
+      "from": "apps/web/src/components/CommandPalette.tsx",
+      "to": "apps/web/src/jones/presentationOrder/environmentOrder.ts"
+    },
+    {
+      "from": "apps/web/src/components/LegacySidebar.tsx",
+      "to": "apps/web/src/jones/presentationOrder/projectOrder.ts"
+    }
+  ]
+}

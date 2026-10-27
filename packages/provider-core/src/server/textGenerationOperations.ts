@@ -5,6 +5,14 @@ import { type ChatAttachment, type ModelSelection, TextGenerationError } from "@
 import { formatGeneratedBranchName, sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import { extractJsonObject } from "@t3tools/shared/schemaJson";
 
+import {
+  buildRemoteRequestEvaluationPrompt,
+  RemoteRequestEvaluationResult,
+  remoteRequestEvaluationUnsupported,
+} from "./jones/remoteRequestEvaluation.ts";
+export { remoteRequestEvaluationUnsupported } from "./jones/remoteRequestEvaluation.ts";
+export { buildRemoteRequestEvaluationPrompt } from "./jones/remoteRequestEvaluation.ts";
+
 import type { ProviderTextGeneration } from "./textGeneration.ts";
 import {
   buildBranchNamePrompt,
@@ -28,11 +36,7 @@ export interface Request<S extends Schema.Top> {
   readonly outputSchema: S;
   readonly modelSelection: ModelSelection;
   readonly attachments?: ReadonlyArray<ChatAttachment> | undefined;
-  /**
-   * Set when the model must investigate `cwd` before answering: it may read files and run
-   * read-only commands there, over as many turns as it needs, and must change nothing. A
-   * runner that cannot guarantee read-only tools fails rather than answering blind.
-   */
+  /** Investigate cwd with read-only tools across turns; fail if the runner cannot guarantee read-only access. */
   readonly investigate?: { readonly timeoutMs: number } | undefined;
 }
 
@@ -73,7 +77,37 @@ export const decodeJsonReply = <S extends Schema.Top>(
   );
 };
 
-export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
+export function fromRunner(
+  name: string,
+  run: Runner,
+  /** Opt in only when the runner disables task tools, including MCP and browsing. */
+  capabilities?: { readonly remoteRequestEvaluation: "tool-less" },
+): ProviderTextGeneration {
+  const evaluateRemoteRequest: ProviderTextGeneration["evaluateRemoteRequest"] = Effect.fn(
+    `${name}.evaluateRemoteRequest`,
+  )(function* (input) {
+    if (capabilities?.remoteRequestEvaluation !== "tool-less") {
+      return yield* remoteRequestEvaluationUnsupported(name);
+    }
+    const prompt = yield* buildRemoteRequestEvaluationPrompt(input);
+    const generated = yield* run({
+      operation: "evaluateRemoteRequest",
+      cwd: input.cwd,
+      modelSelection: input.modelSelection,
+      ...prompt,
+    });
+    return yield* Schema.decodeUnknownEffect(RemoteRequestEvaluationResult)(generated).pipe(
+      Effect.mapError(
+        (cause) =>
+          new TextGenerationError({
+            operation: "evaluateRemoteRequest",
+            detail: `${name} returned invalid structured output.`,
+            cause,
+          }),
+      ),
+    );
+  });
+
   const generateCommitMessage: ProviderTextGeneration["generateCommitMessage"] = Effect.fn(
     `${name}.generateCommitMessage`,
   )(function* (input) {
@@ -113,6 +147,7 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
         diffPatch: input.diffPatch,
         policy: input.policy,
         changeRequestTemplate: input.changeRequestTemplate,
+        threadContext: input.threadContext,
       }),
     });
     return { title: sanitizePrTitle(generated.title), body: generated.body.trim() };
@@ -146,8 +181,10 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
       ...buildThreadTitlePrompt({
         message: input.message,
         previousTitle: input.previousTitle,
+        forkSource: input.forkSource,
         linkedContext: input.linkedContext,
         attachments: input.attachments,
+        instructions: input.instructions,
       }),
     });
     return {
@@ -169,6 +206,7 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
   });
 
   return {
+    evaluateRemoteRequest,
     generateCommitMessage,
     generatePrContent,
     generateBranchName,

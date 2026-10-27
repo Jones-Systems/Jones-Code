@@ -12,7 +12,9 @@ import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 
 import * as IpcChannels from "./ipc/channels.ts";
 import * as CompanionChannels from "./jones/previewCompanion/channels.ts";
+import * as JonesUpdateChannels from "./jones/updates/ipcChannels.ts";
 import { mergeLegacyLocalStorage } from "./legacyLocalStorageMerge.ts";
+import { createThreadMonitorMainBridge } from "./jones/threadMonitor/mainBridge.ts";
 
 const SNAP_SHOT_EVENT_TYPES = new Set([
   "requested",
@@ -47,8 +49,7 @@ try {
 const clientPlatform = process.platform;
 
 if (clientPlatform === "darwin") {
-  // Native window buttons do not scale with Chromium zoom. Keep their reserved
-  // space in native points, including when a zoomed page is reloaded.
+  // Native buttons ignore Chromium zoom; reserve native points even after reload.
   const syncWindowControlInset = () => {
     document.documentElement.style.setProperty(
       "--desktop-window-controls-inset",
@@ -76,6 +77,9 @@ function unwrapEnsureSshEnvironmentResult(result: unknown) {
 }
 
 contextBridge.exposeInMainWorld("desktopBridge", {
+  ...(process.isMainFrame && process.argv.includes("--jones-thread-monitor-publisher")
+    ? { threadMonitor: createThreadMonitorMainBridge() }
+    : {}),
   previewCompanion: {
     getState: () => ipcRenderer.invoke(CompanionChannels.GET_STATE),
     configure: (input) => ipcRenderer.invoke(CompanionChannels.CONFIGURE, input),
@@ -117,6 +121,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   },
   getPreviewAutomationRuntimeIdentity: () =>
     ipcRenderer.invoke(IpcChannels.GET_PREVIEW_AUTOMATION_RUNTIME_IDENTITY_CHANNEL),
+  getRelayTelemetryEnabled: () =>
+    ipcRenderer.sendSync(IpcChannels.GET_RELAY_TELEMETRY_ENABLED_CHANNEL) === true,
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
   getClientPlatform: () => clientPlatform,
   setNotificationBadge: (badge) =>
@@ -131,6 +137,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     ipcRenderer.on(IpcChannels.TRACKPAD_SCROLL_END_CHANNEL, handler);
     return () => ipcRenderer.removeListener(IpcChannels.TRACKPAD_SCROLL_END_CHANNEL, handler);
   },
+  revealWindow: () => ipcRenderer.invoke(IpcChannels.REVEAL_WINDOW_CHANNEL),
   getSystemLocale: () => {
     const result = ipcRenderer.sendSync(IpcChannels.GET_SYSTEM_LOCALE_CHANNEL);
     return typeof result === "string" ? result : null;
@@ -295,6 +302,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   },
   getWindowFullscreenState: () =>
     ipcRenderer.sendSync(IpcChannels.GET_WINDOW_FULLSCREEN_STATE_CHANNEL) === true,
+  getWindowZoomFactor: () => webFrame.getZoomFactor(),
   onWindowFullscreenStateChange: (listener) => {
     const wrappedListener = (_event: Electron.IpcRendererEvent, fullscreen: unknown) => {
       if (typeof fullscreen !== "boolean") return;
@@ -316,6 +324,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       : ipcRenderer.invoke(IpcChannels.UPDATE_DOWNLOAD_CHANNEL, selection),
   discardUpdate: (stagedHandle) =>
     ipcRenderer.invoke(IpcChannels.UPDATE_DISCARD_CHANNEL, stagedHandle),
+  setJonesBackgroundPreparation: (enabled) =>
+    ipcRenderer.invoke(JonesUpdateChannels.SET_BACKGROUND_PREPARATION, enabled),
   fleetUpdates: (request) => ipcRenderer.invoke(IpcChannels.FLEET_UPDATES_CHANNEL, request),
   installUpdate: (stagedHandle, campaignId) =>
     campaignId !== undefined

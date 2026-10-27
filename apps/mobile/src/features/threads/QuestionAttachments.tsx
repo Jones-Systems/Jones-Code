@@ -1,3 +1,5 @@
+import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { AsyncResult } from "effect/reactivity";
 import * as Dialog from "../../components/ui/Dialog";
 import { TextInputWrapper } from "expo-paste-input";
 import { AppTextInput as TextInput } from "../../components/ui/AppText";
@@ -49,8 +51,7 @@ export function QuestionAttachments(props: {
     props.requestId,
     props.question.id,
   ]);
-  // A focused input that unmounts never delivers its onBlur, so release focus here or
-  // the screen would keep treating the keyboard as owned by a removed input.
+  // Unmounted inputs never emit onBlur; explicitly release keyboard ownership.
   const focusedRef = useRef(false);
   const onInputFocusChange = props.onInputFocusChange;
   const releaseFocus = useEffectEvent(() => {
@@ -134,7 +135,7 @@ export function QuestionAttachments(props: {
   const pick = async (kind: "media" | "files") => {
     const scope = pickerScope.current;
     changeQuestionAttachmentPreparation(key, 1);
-    try {
+    const picked = await settlePromise(async () => {
       const existingCount = appAtomRegistry.get(composerDraftsAtom)[key]?.attachments.length ?? 0;
       const result =
         kind === "files"
@@ -158,10 +159,11 @@ export function QuestionAttachments(props: {
       const rejected = append(key, picked);
       if (result.error || rejected > 0)
         Dialog.alert("Could not attach file", result.error ?? "Too many attachments.");
-    } catch (error) {
+    });
+    changeQuestionAttachmentPreparation(key, -1);
+    if (AsyncResult.isFailure(picked)) {
+      const error = squashAtomCommandFailure(picked);
       Dialog.alert("Could not attach file", error instanceof Error ? error.message : "Try again.");
-    } finally {
-      changeQuestionAttachmentPreparation(key, -1);
     }
   };
   return (

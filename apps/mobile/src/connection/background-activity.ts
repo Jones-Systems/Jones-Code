@@ -1,3 +1,4 @@
+import { makeReportLanes } from "@t3tools/client-runtime/jones/activity/report-lanes";
 import { EnvironmentRegistry } from "@t3tools/client-runtime/connection";
 import { EnvironmentRpcSubscriptionObserver, request } from "@t3tools/client-runtime/rpc";
 import {
@@ -27,8 +28,6 @@ const REPORT_INTERVAL_MS = 25_000;
 const LEASE_TTL_MS = 45_000;
 const BASELINE_SCOPES: ReadonlyArray<BackgroundScope> = [{ type: "provider-status" }];
 
-// `AppState.currentState` is a loosely typed string that can be unset before
-// the first change event; anything outside the known states reports as unknown.
 function normalizeAppState(
   state: string | null | undefined,
 ): NonNullable<ClientActivityReportInput["appState"]> {
@@ -55,6 +54,10 @@ export const layerReporter = Layer.effectDiscard(
     const requestReport = () => Queue.offerUnsafe(reportRequests, undefined);
     let appState = AppState.currentState;
 
+    const lanes = yield* makeReportLanes(
+      (environmentId: EnvironmentId, report: ClientActivityReportInput) =>
+        registry.run(environmentId, request(WS_METHODS.serverReportClientActivity, report)),
+    );
     const report = Effect.gen(function* () {
       const observedAtMs = yield* Clock.currentTimeMillis;
       const active = appState === "active";
@@ -62,27 +65,22 @@ export const layerReporter = Layer.effectDiscard(
       yield* Effect.forEach(
         entries.keys(),
         (environmentId) =>
-          registry
-            .run(
-              environmentId,
-              request(WS_METHODS.serverReportClientActivity, {
-                environmentId: environmentId as EnvironmentId,
-                clientId,
-                clientKind: "mobile",
-                visible: active,
-                focused: active,
-                recentlyInteracted: active,
-                appState: normalizeAppState(appState),
-                scopes: [
-                  ...BASELINE_SCOPES,
-                  ...retainedMobileBackgroundScopes(environmentId as EnvironmentId),
-                ],
-                ttlMs: LEASE_TTL_MS,
-                observedAt: DateTime.makeUnsafe(observedAtMs),
-              }),
-            )
-            .pipe(Effect.ignore),
-        { concurrency: "unbounded", discard: true },
+          lanes.submit(environmentId, {
+            environmentId: environmentId as EnvironmentId,
+            clientId,
+            clientKind: "mobile",
+            visible: active,
+            focused: active,
+            recentlyInteracted: active,
+            appState: normalizeAppState(appState),
+            scopes: [
+              ...BASELINE_SCOPES,
+              ...retainedMobileBackgroundScopes(environmentId as EnvironmentId),
+            ],
+            ttlMs: LEASE_TTL_MS,
+            observedAt: DateTime.makeUnsafe(observedAtMs),
+          }),
+        { discard: true },
       );
     }).pipe(Effect.withSpan("mobile.backgroundActivity.report"));
 
@@ -102,7 +100,9 @@ export const layerReporter = Layer.effectDiscard(
         }),
     );
     yield* SubscriptionRef.changes(registry.entries).pipe(
-      Stream.runForEach(() => Effect.sync(requestReport)),
+      Stream.runForEach((entries) =>
+        lanes.retain(entries.keys()).pipe(Effect.andThen(Effect.sync(requestReport))),
+      ),
       Effect.forkScoped,
     );
     yield* Stream.fromQueue(reportRequests).pipe(

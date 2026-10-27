@@ -1,3 +1,4 @@
+import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
 import * as Layer from "effect/Layer";
 
 import * as ClaudeAdapterV2 from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
@@ -9,6 +10,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 
 export type ProviderOrchestrationAdapterInfrastructure =
+  | ControlAdmission.ControlAdmission
   | ClaudeAdapterV2.ClaudeAgentSdkQueryRunner
   | CodexAdapterV2.CodexAppServerClientFactory
   | CursorAgentSdk.CursorAgentSdkRunner
@@ -16,12 +18,9 @@ export type ProviderOrchestrationAdapterInfrastructure =
   | CursorKeychain.CursorKeychain
   | IdAllocator.IdAllocatorV2;
 
-/**
- * `providerContinuationRequestsLayer` must be the same layer reference the
- * orchestration runtime provides to its continuation worker so Effect layer
- * memoization yields one shared queue.
- */
+/** Reuse the continuation worker's exact layer reference so memoization shares one queue. */
 export const layer = Layer.mergeAll(
+  ControlAdmission.layer,
   ClaudeAdapterV2.layerQueryRunner,
   CodexAdapterV2.layerAppServerClientFactory,
   CursorAgentSdk.layer.pipe(Layer.provideMerge(CursorSdk.layer)),

@@ -51,7 +51,7 @@ On web and desktop, unpinning, settling, snoozing, and archiving a thread each s
 a notification with **Undo** for five seconds. Undo restores the thread's previous
 state, including its pinned position, and reopens an archived thread you were
 viewing. Discarding an unsent draft from the sidebar works the same way: Undo brings
-back its text and attachments. `mod+z` triggers the most recent Undo when no text field is focused; see
+back its text and attachments. `mod+z` triggers the most recent Undo, even from the composer; see
 [Keybindings](./keybindings.md#commands-with-special-behavior).
 
 On web and desktop, you can also drag files from your computer onto any thread row:
@@ -85,7 +85,7 @@ spot where the thread will land. Drops into either section keep the position you
 mobile, open a thread's menu and choose **Arrange threads**. Drag a handle within or between
 **Pinned** and **Active** to reorder, pin, or unpin. Drop onto the **Settled** divider to
 settle a thread. The dragged card shows the action before you release it. Expand **Snoozed**
-or **Settled** to drag a parked thread back into either live section. Each drop saves; **Done** returns to the thread list.
+or **Settled** to drag a parked thread back into either live section. Each drop saves; close the sheet to return to the thread list.
 **Move up** and **Move down** are also available in the thread menu. The server
 saves the order, so it survives a refresh and appears on your other connected devices.
 
@@ -107,19 +107,41 @@ To generate a fresh title from the conversation, open a thread's menu and choose
 **Regenerate title**. The action is unavailable while title generation is in progress
 or when the connected environment needs a server update.
 
+To change how titles are written, add **Thread title instructions** in **Settings → General →
+Text generation**, such as a length limit or an identifier to put first. They apply to new and
+regenerated titles. Select a project to give it its own instructions.
+
 Agents connected through T3 Code can use the same server-owned metadata workflow to
 rename a thread, regenerate its title, or link and unlink a pull request. These changes
 appear on web, desktop, and mobile without requiring the originating browser to remain
 open.
 
+### Filter by recent activity
+
+On web and desktop, click the sidebar's Working / Input / Done pill to cycle
+through those views, then back to All. Double-click to hide working threads.
+
+In **Settings → Jones Code → Thread activity window**, turn on a recent-activity
+window and choose an amount in minutes, hours, days or weeks. For example, use
+**3 hours** to see Done threads worked on in the past three hours, including
+completions you have already read. Working and Input counts use the same window.
+Threads leave these views as the window expires; All keeps the full list. The
+setting is off by default and saved on this device. Servers without reliable
+completion times cannot include those completions in the recent Done view.
+
 ### Fold working threads (beta)
 
-Turn on **Settings → General → Working section (beta)** on web and desktop, or **Settings →
-Thread behavior → Working section** on iOS and Android, to move threads that are working or
-monitoring into a collapsed **Working** section below the active list. A thread returns to the top
-of the active list when it finishes, fails, or needs an approval or answer. The Working section
-lists the thread you last sent work to first. Pinned threads stay in the pinned section. Each
-device keeps its own choice.
+Threads that are working or waiting on work they will resume from move into a collapsed
+**Working** section below the active list.
+That includes subagents, watched pull requests, and background commands or monitors the agent
+says it is waiting on. A dev server or other process an agent leaves running does not keep a thread
+there. A thread returns to the top of the active list when it finishes, fails, or needs an approval or
+answer. The Working section lists the thread you last sent work to first. Pinned threads stay in
+the pinned section.
+
+This is on by default. Turn it off with **Settings → Beta → Working section** on web and desktop,
+or **Settings → Thread behavior → Working section** on iOS and Android. Each device keeps its own
+choice.
 
 While this is on, the active list is ordered by when each thread last came back to you, so you
 cannot drag or move threads within it. Your saved order returns when you turn it off.
@@ -133,6 +155,29 @@ Manually settling an idle thread dismisses unanswered async questions without
 sending an answer or restarting the agent. Settling also closes the thread's
 terminals that wait at an idle prompt, and keeps their output. A terminal that
 runs a command, such as a dev server, stays open.
+
+Top-level threads and user-created forks settled by agents or automatically
+appear in a persistent notification. New settlement notifications exclude subagents,
+including tasks delegated from linked machines. Some older saved child notices
+may still appear.
+Threads you settle yourself through the app's buttons, menus, shortcuts or bulk
+actions stay quiet. This distinction requires an updated server; older servers
+continue notifying for all settlements. Expand a notification with multiple
+threads to see their titles. Select a title to open its conversation; the notification stays
+until you dismiss it with **X**, including after a refresh or app restart. Each
+browser or mobile app keeps its own notifications. The first time you use this
+feature, existing settled threads are left in the settled shelf without notifying
+you about all of them.
+
+On web and desktop, a settled thread's menu has **Undo settle**, which still works
+after the notification is gone, the page reloads or the server restarts. An agent can
+do the same with the `t3_thread_settlement_restore` tool. Undo returns the
+thread to active work with the pin, pinned and active positions, and wake time it had
+before its most recent settlement. It does not resume watched pull requests, answer requests,
+queued work or agent sessions that the settlement stopped. Undo is refused once the
+thread has changed since it settled, for example after it is pinned, archived,
+snoozed or settled again. Threads settled before your server supported this have
+nothing to undo; use **Un-settle thread** instead.
 
 To reclaim disk space from settled work, turn on **Run in the thread's worktree when the
 thread settles** for one of the project's actions, or set `"runOnSettle": true` on a
@@ -148,8 +193,9 @@ Press `Escape` while dragging to cancel.
 
 By default, environments settle inactive threads after three days and settle
 threads whose pull request merged. A closed pull request can also settle an idle
-thread. Work in progress, pending questions or approvals, and live background work
-prevent automatic settlement. An open pull request does not prevent inactivity
+thread. An empty thread's inactivity counts from when it was created.
+Work in progress, pending questions or approvals, and background work the agent
+is waiting on prevent automatic settlement. An open pull request does not prevent inactivity
 settlement unless you turn on **Keep threads with a PR** in **Settings → General**,
 but an old closed or merged pull request does not settle work you
 resumed after it closed. Only your own messages count as resuming. A turn that
@@ -182,8 +228,15 @@ The linked pull request participates in automatic settlement.
 ## Find and reference work
 
 On web and desktop, open the command palette with `Cmd/Ctrl+K` to search threads
-across connected environments. Message search starts after two characters and
-includes your messages and final agent responses.
+across connected environments by title, branch, pull request, or project.
+Threads you open often or recently rank higher, and for three weeks the thread
+you last picked for a query ranks higher when you type that query again.
+Threads whose messages contain all your words appear below, under **In
+messages**, and open at the matching message. Message search needs at least
+one word of three or more letters, or two for Chinese, Japanese, and Korean.
+On mobile, the thread list search also lists message matches and opens them at
+the matching message; on an iPad with a keyboard, `Cmd+K` opens the same
+palette.
 
 Use **Settings → Keybindings** to find or customize shortcuts for searching files
 and copying a thread reference. A copied reference uses the thread's pull request
@@ -212,21 +265,24 @@ Queued messages stay saved while the limit blocks the thread. They run after
 the continuation finishes. If the queue was held by a restart, resume it then.
 
 When the provider reports a reset time, choose **Resume at reset** to schedule a
-continuation. You can cancel it from the thread. Enable **Auto-resume limited
-threads** in **Settings → General** on web and desktop, or **Settings → Thread
+continuation. You can cancel it from the thread. Enable **Resume after
+usage limits** in **Settings → General** on web and desktop, or **Settings → Thread
 behavior** on mobile, to schedule limit stops by default.
 The environment must be running when the reset arrives; it resumes overdue
-continuations after a restart. Sending a new message, archiving, or settling the
-thread prevents a pending continuation from starting.
+continuations after a restart. Stopping the thread, sending a new message,
+archiving, or settling it prevents a pending continuation from starting.
 
 Choose **Snooze until reset** to hide the thread until its allowance returns.
 Snooze and auto-resume are independent: snooze alone wakes the thread without
 sending a message; enabling both wakes and continues it. **Wake now** cancels
-the snooze. Enable **Snooze limited threads** in thread behavior settings to
+the snooze. Enable **Snooze until limits reset** in thread behavior settings to
 snooze limit stops by default. Providers without a reset time offer manual
 retry and the normal snooze choices.
 
 On web and desktop, use **Agents** to follow work delegated to subagents.
+On mobile, open a subagent from its conversation card or **Agents**. On iOS
+layouts with an inspector, its thread opens beside the parent. Maximize it to
+fill the screen; close the full-screen view to return to the parent and inspector.
 Stop on a thread also stops the subagents it delegated to.
 
 Subagent threads started by the agent can't take messages; message the parent
@@ -243,3 +299,6 @@ Choose **Snooze → Custom…** from a thread's menu to pick a date and time in 
 local time zone, or a duration in minutes, hours, or days. Durations start when
 you confirm; one day means 24 hours. On web and desktop, you can also snooze
 several selected threads together. Choose **Wake thread** to bring a thread back early.
+A snoozed thread keeps working and stays hidden until its wake time, even while
+its agent wakes itself for background work. It comes back early only when it needs
+an approval or answer from you, when a run fails, or when you send it a message.

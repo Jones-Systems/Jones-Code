@@ -52,9 +52,11 @@ server with `t3 serve`. Saving your sign-in alone does not make the machine
 reachable.
 
 On your other device, sign in to the same T3 Connect account and choose the
-environment. Over SSH, the CLI prints a browser link and a short code. Open the
-link on any device, confirm the code matches, and approve. The CLI continues on
-its own, so you do not need to forward an OAuth callback port.
+environment. On the app.t3.codes home page with no computer added yet, signing
+in adds compatible computers linked to your account. Over SSH, the CLI prints a
+browser link and a short code. Open the link on any device, confirm the code
+matches, and approve. The CLI continues on its own, so you do not need to forward
+an OAuth callback port.
 
 T3 Connect renews access credentials when needed without disconnecting a healthy
 connection. Pull request diffs and provider settings keep working after the
@@ -109,7 +111,8 @@ machine's current LAN and Tailscale addresses and adds them as routes, so
 pairing once through T3 Connect is enough to use the LAN at home. When the
 machine's LAN address changes, for example after it joins another Wi-Fi network,
 the learned route follows it. The machine must allow network access for its LAN
-address to be learned. You can reorder a learned route, but not remove it; it
+address to be learned. The [background service](./background-service.md#local-network-access)
+allows it on private networks by default. You can reorder a learned route, but not remove it; it
 goes away with the route it was learned through, or when the machine stops
 reporting that address.
 
@@ -268,8 +271,9 @@ The server shows the exact line for how you started it, such as
 `sudo npx t3 browser setup`, and keeps your `PATH` when Node is installed only
 for your user. Where `t3` is not on your `PATH`, such as with only the
 desktop app installed, it names the full path of the app's own `t3` instead. It allows Chrome's sandbox with an AppArmor profile and installs
-any missing libraries with apt. It is safe to run again. Without `sudo`, it
-only reports what it would change.
+any missing libraries and system fonts with apt; pages that load without text
+can mean the host has no fonts. It is safe to run again. Without `sudo`, it only
+reports what it would change.
 
 The browser always runs in Chrome's sandbox. Where you cannot change the host,
 set `T3CODE_SERVER_BROWSER_SANDBOX=0` for the environment to run without it.
@@ -279,6 +283,69 @@ set `T3CODE_SERVER_BROWSER_SANDBOX=0` for the environment to run without it.
 Claude Code, Codex, ChatGPT and other agents T3 Code did not start can drive
 threads on an environment through its MCP server. See
 [outside agents](./outside-agents.md) for setup.
+
+## Link another environment
+
+Link two machines, such as your laptop and a VPS, and agents on one can work on
+the other: launch, message, wait on and stop its threads, answer their
+questions, and manage its queues, projects and scheduled tasks. On the machine
+you will work from, open **Settings → Connections → Linked environments**,
+choose **Link**, and enter the other machine's address and a pairing code from
+it. From a terminal, use
+`t3 environment link <address> --pairing-code <code> --access <mode>`.
+
+- The access you pick is the most agents from this machine may do there. An
+  agent also never gets more there than its own mode here.
+- Threads a link starts are marked **From** and this machine's name there.
+- A full-access link works there like that machine's own agents. Below full
+  access, the link's agents can change only threads it started, not that
+  machine's own threads, projects or settings, and they skip its project setup
+  scripts.
+- The link shows up in that machine's **Settings → Connections** like any
+  outside agent. Revoke it there to end it. **Forget** on this machine only
+  removes it here.
+- Links last 30 days. Link again with a new pairing code to renew one.
+
+An agent can also hand a task to a linked machine with `delegate_task`: it runs
+there as an ordinary thread, in the project with the same repository (or the
+one `target.projectId` names), and this thread wakes with its result when it
+ends, as for any delegated task. It keeps following the task across restarts.
+If the other machine revokes the link, or the link is removed here, the task
+fails with that reason.
+
+### Jones Code: evaluate and review incoming requests
+
+On the receiving machine, open **Settings → Connections → Background remote
+evaluation**. Choose the provider account, model and options, then enable
+evaluation. Each environment has its own selection; it runs independently of
+the model used by a conversation.
+
+Passing requests run as ordinary Jones Code tasks with the receiving
+workspace's normal tools, permissions and provider settings. A request that
+needs review waits for your decision. Open **Requests** from the sidebar or a
+request notification, expand the request, then **Approve** or
+**Deny**. An approval releases that exact request. Linked agents and MCP
+question-response tools cannot approve these holds. New remote instructions
+are evaluated separately; cancellation remains available while a request waits.
+
+The evaluator runs without task tools. Qualified Claude instances and managed
+Codex instances with ChatGPT authorization support evaluation. CLI-backed Codex
+instances are excluded because their public integration cannot disable all task
+tools. An existing CLI login does not automatically authorize managed Codex.
+
+If evaluation fails or is interrupted, the request remains held as an evaluator
+service failure. New failures include a reason such as a timeout, account-access
+problem or invalid response. Older holds may contain only a generic reason;
+changing the evaluator does not retry or release them.
+
+Review requires an owner session on the receiving environment. A working linked
+connection does not grant that permission. If a linked environment says owner
+access is required, use that machine's own Jones Code app or signed-in browser.
+This warning does not establish that the machine has no evaluator providers.
+
+Screening is a heuristic, and does not change normal
+execution after a pass or the link's underlying access grant. Revoke the link
+in Connections to remove its access.
 
 ## Manage or revoke access
 
@@ -365,28 +432,9 @@ screenshots, logs, or bug reports.
 
 ## T3 Connect troubleshooting
 
-Run `t3 connect status` on the host to inspect saved authorization and link
-configuration. It is not a live reachability check. If the environment appears
-offline, run `t3 service status` and read the displayed log. If it disappears
-when SSH closes, see [background-service troubleshooting](./background-service.md#troubleshooting).
-
-| Error                                                     | Recovery                                                                                                                                    |
-| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `environment_link_limit_exceeded` or managed tunnel limit | Deregister an unused environment, then restart T3 Code on the host.                                                                         |
-| `auth_invalid` or `invalid_bearer`                        | Run `t3 connect login`. If credentials were revoked, run `t3 connect logout`, then `t3 connect` again. Restart the server after signing in. |
-| Expired or invalid link proof                             | Check the host's date and time, update T3 Code, then restart it.                                                                            |
-| HTTP 403 without a recognized error                       | Check relay access, proxies, and firewall rules. Keep any Cloudflare Ray ID for a bug report.                                               |
-| HTTP 408, 429, or 5xx                                     | Check network and relay availability. Startup retries temporary failures for up to ten minutes.                                             |
-
-After fixing a permanent rejection, restart the host's server. On Linux, use
-`systemctl --user restart t3code.service` for the background service. A Jones
-host service installed fresh uses `jones-code.service` instead; an adopted
-host keeps its original unit name. For a
-foreground server, stop it and run `t3 serve` again with your usual options.
-Include the diagnostic message and trace ID when reporting a persistent failure.
-
-For a connection that still fails after linking, check the date and time on both
-devices. For server version warnings, follow [Updating T3 Code](./updating.md).
+When a T3 Connect connection fails, see
+[T3 Connect troubleshooting](./t3-connect-troubleshooting.md). It explains each
+error, where the problem is, and how to fix it.
 
 ## Using the Desktop App as a Remote Only
 

@@ -499,6 +499,19 @@ it.effect("migration 107 backfills only complete attributable native settlement 
       [108, "PhysicalProcessEvidence"],
       [109, "OrdinaryCheckoutLifecycle"],
       [110, "ThreadLookupIndexes"],
+      [111, "ClientSettlementCommands"],
+      [112, "ClientLaunchRequests"],
+      [114, "SelfSettlementProjectItems"],
+      [115, "ScheduledWebhookPendingRuns"],
+      [116, "RemoteAdmission"],
+      [117, "RemoteDelegationIntents"],
+      [118, "RemoteAdmissionIntegration"],
+      [119, "PeerEnvironmentLinks"],
+      [120, "SettlementRestores"],
+      [121, "RemoteTaskObservations"],
+      [122, "ThreadLinks"],
+      [123, "WorkspaceLifecycle"],
+      [124, "TaskContinuations"],
     ]);
     const proofs = yield* sql<{
       native_command_id: string;

@@ -1,13 +1,14 @@
+import * as Schema from "effect/Schema";
+import * as PlatformError from "effect/PlatformError";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ORCHESTRATION_PROTOCOL_VERSION } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as PlatformError from "effect/PlatformError";
-import * as Schema from "effect/Schema";
 
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -22,9 +23,10 @@ import {
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "./ServerEnvironment.ts";
 
-const isServerEnvironmentIdPersistenceError = Schema.is(
-  ServerEnvironment.ServerEnvironmentIdPersistenceError,
+const buildMetadata = vi.hoisted(
+  () => ({ version: "0.0.45-preview.20261020.42.1" }) as Record<string, unknown>,
 );
+vi.mock("../../package.json", () => ({ default: buildMetadata }));
 
 const layerServerEnvironment = (baseDir: string) =>
   ServerEnvironment.layer.pipe(
@@ -92,7 +94,37 @@ const layerIsolatedServerConfig = (baseDir: string) =>
     }),
   );
 
-it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
+// Descriptor tests do not inherit the launching service's managed-child context.
+const layerDescriptorHost = Layer.merge(
+  NodeServices.layer,
+  Layer.succeed(HostProcess.Environment, {}),
+);
+
+it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
+  it.effect.each(["2026-10-20T21:13:43Z", undefined, "invalid"])(
+    "forwards only valid embedded build time %s with the descriptor version",
+    (startedAt) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const baseDir = yield* fs.makeTempDirectoryScoped();
+        if (startedAt === undefined) delete buildMetadata.jonesBuildStartedAt;
+        else buildMetadata.jonesBuildStartedAt = startedAt;
+        const descriptor = yield* Effect.gen(function* () {
+          return yield* (yield* ServerEnvironment.ServerEnvironment).getDescriptor;
+        }).pipe(
+          Effect.provide(layerServerEnvironment(baseDir)),
+          Effect.ensuring(
+            Effect.sync(() => {
+              delete buildMetadata.jonesBuildStartedAt;
+            }),
+          ),
+        );
+        expect(descriptor.serverVersion).toBe(buildMetadata.version);
+        expect(descriptor.jonesBuildStartedAt).toBe(
+          startedAt === "invalid" ? undefined : startedAt,
+        );
+      }),
+  );
   it.effect("publishes proven install ownership only for manually updated servers", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -231,6 +263,9 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
 
       expect(first.environmentId).toBe(second.environmentId);
       expect(first.orchestrationProtocolVersion).toBe(ORCHESTRATION_PROTOCOL_VERSION);
+      expect(second.capabilities.workstreamOperations).toEqual({
+        contract: "workstream-operations/1.0.0",
+      });
       expect(second.capabilities.repositoryIdentity).toBe(true);
       expect(second.capabilities.connectionProbe).toBe(true);
       expect(second.capabilities.attachmentUploads).toBe(true);
@@ -240,6 +275,7 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
       expect(second.capabilities.usagePriceOverrides).toBe(true);
       expect(second.capabilities.threadActiveReorder).toBe(true);
       expect(second.capabilities.threadTitleRegeneration).toBe(true);
+      expect(second.capabilities.queuedRunStart).toBe(true);
       expect(second.capabilities.threadPullRequests).toBe(true);
       expect(second.capabilities.threadPullRequestLinking).toBe(true);
       expect(second.capabilities.serverResolvedCommandContext).toBe(true);
@@ -489,6 +525,9 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
         });
         expect(descriptor.capabilities.workQueueMetadata).toBe(true);
       }
+      expect(second.capabilities.workstreamOperations).toEqual({
+        contract: "workstream-operations/1.0.0",
+      });
       expect(second.capabilities.repositoryIdentity).toBe(true);
       expect(second.capabilities.worktreeDefaultBase).toBe(true);
       expect(second.capabilities.queuedToolBoundaryDelivery).toBe(true);
@@ -500,6 +539,7 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
       expect(second.capabilities.usagePriceOverrides).toBe(true);
       expect(second.capabilities.threadActiveReorder).toBe(true);
       expect(second.capabilities.threadTitleRegeneration).toBe(true);
+      expect(second.capabilities.queuedRunStart).toBe(true);
       expect(second.capabilities.threadPullRequests).toBe(true);
       expect(second.capabilities.threadPullRequestLinking).toBe(true);
       expect(second.capabilities.serverResolvedCommandContext).toBe(true);
@@ -657,3 +697,7 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
     }),
   );
 });
+
+const isServerEnvironmentIdPersistenceError = Schema.is(
+  ServerEnvironment.ServerEnvironmentIdPersistenceError,
+);

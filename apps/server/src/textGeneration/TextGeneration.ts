@@ -9,6 +9,7 @@ import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as ThreadTitleLinks from "./ThreadTitleLinks.ts";
+import { resolveRemoteEvaluationModel } from "./jones/remoteEvaluationModel.ts";
 
 export type {
   BranchNameGenerationInput,
@@ -17,6 +18,8 @@ export type {
   CommitMessageGenerationResult,
   PrContentGenerationInput,
   PrContentGenerationResult,
+  RemoteRequestEvaluationInput,
+  RemoteRequestEvaluationResult,
   ReviewGuideGenerationInput,
   ReviewGuideGenerationResult,
   ThreadTitleGenerationInput,
@@ -28,6 +31,7 @@ export class TextGeneration extends Context.Service<TextGeneration, ProviderText
 ) {}
 
 type TextGenerationOp =
+  | "evaluateRemoteRequest"
   | "generateCommitMessage"
   | "generatePrContent"
   | "generateBranchName"
@@ -52,11 +56,16 @@ const resolveInstance = (
     ),
   );
 
-/** @public Service construction is part of the canonical Effect module API. */
+/** @public */
 export const make = Effect.gen(function* () {
   const registry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
   const sourceControl = yield* SourceControlProviderRegistry.SourceControlProviderRegistry;
   return TextGeneration.of({
+    evaluateRemoteRequest: (input) =>
+      resolveRemoteEvaluationModel(input.modelSelection).pipe(
+        Effect.provideService(ProviderInstanceRegistry.ProviderInstanceRegistry, registry),
+        Effect.flatMap((instance) => instance.textGeneration.evaluateRemoteRequest(input)),
+      ),
     generateCommitMessage: (input) =>
       resolveInstance(registry, "generateCommitMessage", input.modelSelection.instanceId).pipe(
         Effect.flatMap((textGeneration) => textGeneration.generateCommitMessage(input)),

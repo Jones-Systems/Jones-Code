@@ -1,6 +1,5 @@
 import { CompanionToolbar } from "../../jones/previewCompanion/HostControls";
 import { useCompanionBindings } from "../../jones/previewCompanion/state";
-("use client");
 
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { settlePromise } from "@t3tools/client-runtime/state/runtime";
@@ -20,7 +19,12 @@ import {
   PREVIEW_ZOOM_LEVELS,
   type PreviewAdjustInput,
 } from "@t3tools/contracts";
-import { normalizePreviewUrl, resolveAddressBarInput } from "@t3tools/shared/preview";
+import {
+  normalizePreviewUrl,
+  resolveAddressBarInput,
+  previewPdfAssetUrl,
+  resolveSearchUrlTemplate,
+} from "@t3tools/shared/preview";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 
 import {
@@ -33,6 +37,7 @@ import {
 import { type ComposerImageAttachment, useComposerDraftStore } from "~/composerDraftStore";
 import { capturePreviewAnnotationScreenshot } from "~/lib/previewAnnotation";
 import { ensureLocalApi } from "~/localApi";
+import { getClientSettings } from "~/hooks/useSettings";
 import {
   rememberPreviewUrl,
   updatePreviewServerSnapshot,
@@ -71,6 +76,7 @@ import {
 import { browserResponsiveViewportForToggle, useBrowserDefaults } from "~/browser/browserDefaults";
 import { BrowserDeviceToolbar } from "~/browser/BrowserDeviceToolbar";
 import { BROWSER_DEVICE_TOOLBAR_HEIGHT } from "~/browser/browserViewportLayout";
+import { useBrowserLayoutZoomFactor } from "~/browser/useBrowserLayoutZoomFactor";
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 import { BrowserSettingsReadError } from "~/browser/openFileInPreview";
 import { PreviewFileNotShown, PreviewUnreachable } from "./PreviewUnreachable";
@@ -221,6 +227,7 @@ export function PreviewView({
   const serverInputDisabled = isServerTab && serverControlledTabId !== runtimeTabId;
   const [serverFrameTabId, setServerFrameTabId] = useState<string | null>(null);
   const desktopOverlay = tabId ? (previewState.desktopByTabId[tabId] ?? null) : null;
+  const layoutZoomFactor = useBrowserLayoutZoomFactor(desktopOverlay?.zoomFactor ?? 1);
   const navStatus = snapshot?.navStatus ?? { _tag: "Idle" as const };
   const url = navStatus._tag === "Idle" ? "" : navStatus.url;
   const loading = desktopOverlay?.loading ?? navStatus._tag === "Loading";
@@ -234,8 +241,7 @@ export function PreviewView({
   const controller = desktopOverlay?.controller ?? "none";
   const viewport = snapshot?.viewport ?? FILL_PREVIEW_VIEWPORT;
   const browserDefaults = useBrowserDefaults();
-  // Passing the snapshot's raw `undefined` through would reach the IPC layer
-  // as "every profile".
+  // IPC interprets undefined profile ids as all profiles.
   const activeProfileId = snapshot?.profileId ?? DEFAULT_BROWSER_PROFILE_ID;
   const activeProfileName = previewProfileName(browserDefaults.profiles, activeProfileId);
   const panelRect = useBrowserSurfaceStore((state) =>
@@ -245,7 +251,6 @@ export function PreviewView({
   const navUrl = navStatus._tag === "Success" ? navStatus.url : null;
   const navTitle = navStatus._tag === "Success" ? navStatus.title : null;
   const latestHistoryUrl = recentHistoryEntries[0]?.url;
-  // Keyed on the ids rather than threadRef, which is recreated on every update.
   const { environmentId: threadEnvironmentId, threadId } = threadRef;
   useEffect(() => {
     if (!navUrl || !navTitle || !latestHistoryUrl) return;
@@ -285,7 +290,7 @@ export function PreviewView({
 
   const handleSubmitUrl = async (next: string) => {
     try {
-      const resolved = resolveAddressBarInput(next);
+      const resolved = resolveAddressBarInput(next, resolveSearchUrlTemplate(getClientSettings()));
       if (await navigateToResolvedUrl(resolved)) {
         recordVisitForThread(threadRef, resolved);
       }
@@ -391,7 +396,7 @@ export function PreviewView({
       browserResponsiveViewportForToggle({
         defaults: browserDefaults,
         panelRect,
-        zoomFactor: serverOwnsRendering ? serverZoomFactor : desktopOverlay?.zoomFactor,
+        zoomFactor: isServerTab ? serverZoomFactor : layoutZoomFactor,
       }),
     ).catch(() => undefined);
   };
@@ -769,9 +774,7 @@ export function PreviewView({
       void previewBridge.cancelPickElement(runtimeTabId).catch(() => undefined);
       return;
     }
-    // Snapshot whatever the user was focused on (typically the chat composer
-    // textarea or the chrome-row pick button) BEFORE main steals focus into the
-    // guest webContents.
+    // Capture app focus before main moves it into guest webContents.
     const previouslyFocused =
       typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
     const pickRequest = { cancelled: false };
@@ -795,7 +798,6 @@ export function PreviewView({
         } catch {}
       }
     };
-    // A failed pick is dropped silently; finishPick still releases the picker.
     const bridge = previewBridge;
     void settlePromise(async () => {
       await bridge.setAnnotationSendEnabled?.(
@@ -806,20 +808,15 @@ export function PreviewView({
       if (pickRequest.cancelled) return;
       const result = await bridge.pickElement(runtimeTabId);
       if (!result || pickRequest.cancelled) return;
-      // Nothing that happens after this point (a second picker click, a tab
-      // change, unmount) may discard it, so the pick stops being cancellable
-      // here rather than in finishPick.
+      // The accepted pick must survive further clicks, tab changes, and unmount; stop cancellation here.
       if (pickActiveRef.current === pickRequest) {
         pickActiveRef.current = null;
         if (isMountedRef.current) setPickActive(false);
         submitted = true;
       }
       const { annotation: picked, submission, screenshotFailed = false } = result;
-      // The structured annotation is still sendable when its optional crop
-      // stalls or fails, so tell the user what they lost and keep going
-      // instead of holding the composer for an attachment that never lands.
-      // The stored copy drops the screenshot on failure, otherwise the prompt
-      // would tell the agent a crop is attached when none was sent.
+      // Send annotations even if the optional crop fails or stalls; drop failed screenshots so prompts cannot
+      // claim an attachment.
       const capture = capturePreviewAnnotationScreenshot(picked);
       const cropDropped = screenshotFailed || capture.status === "failed";
       const annotation = capture.status === "failed" ? { ...picked, screenshot: null } : picked;
@@ -877,8 +874,7 @@ export function PreviewView({
     };
   }, [runtimeTabId]);
 
-  // Subscribe only while visible; `toggle-panel` is owned by ChatView's
-  // URL-aware handler regardless of whether the panel is currently mounted.
+  // Subscribe only while visible; ChatView always owns URL-aware toggle-panel handling.
   const onPreviewAction = useEffectEvent(
     (action: Parameters<Parameters<typeof subscribePreviewAction>[0]>[0]) => {
       switch (action) {
@@ -944,7 +940,7 @@ export function PreviewView({
         pickActive={pickActive}
         pickDisabled={!tabId || isUnreachable}
         pickDisabledReason={
-          isUnreachable ? "Page didn't load — pick unavailable until the page renders" : undefined
+          isUnreachable ? "Page didn't load. Pick is unavailable until the page renders" : undefined
         }
         leadingActions={
           activeProfileId !== browserDefaults.profileId ? (
@@ -1008,6 +1004,11 @@ export function PreviewView({
                 environmentId={threadRef.environmentId}
                 threadId={threadRef.threadId}
                 tabId={snapshot.tabId}
+                pdfUrl={
+                  navStatus._tag === "Success"
+                    ? previewPdfAssetUrl(url, environmentHttpBaseUrl)
+                    : null
+                }
                 visible={visible}
                 onFirstFrame={() => setServerFrameTabId(runtimeTabId)}
                 onControl={(control) =>
@@ -1058,7 +1059,7 @@ export function PreviewView({
         !activeRecordingTabIds.has(runtimeTabId) ? (
           <AgentBrowserCursor
             tabId={runtimeTabId}
-            zoomFactor={desktopOverlay.zoomFactor}
+            zoomFactor={layoutZoomFactor}
             controller={controller}
           />
         ) : null}

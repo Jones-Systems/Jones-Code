@@ -17,7 +17,13 @@ import {
 } from "./stagedSelection.ts";
 
 import { assertStageNotRevoked, retireNativeStage } from "./stageRevocation.ts";
-import { operationBinding, reserveUpdateOperation } from "./launcherOperation.ts";
+import {
+  operationBinding,
+  publishUpdateOperationSettlement,
+  reconcileUpdateOperation,
+  reserveUpdateOperation,
+  writeFailedUpdateOperation,
+} from "./launcherOperation.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -201,6 +207,64 @@ it("persists exact revocation before retirement and safely replays a lost reply"
       "utf8",
     ),
   ).toContain("echo b");
+});
+
+it("permits retirement after settlement while refusing reuse of the accepted operation", async () => {
+  const f = await fixture();
+  await retainStagedSelection(f.selection);
+  const operationId = "12345678-1234-4234-8234-123456789abc";
+  const failed = {
+    id: operationId,
+    status: "failed" as const,
+    reason: "launcher-restarted",
+    fromVersion: f.baseline,
+    targetVersion: f.selection.receipt.version,
+    qualified: f.selection,
+  };
+  await reserveUpdateOperation(f.root, operationId, operationBinding(f.selection));
+  const digests = await writeFailedUpdateOperation(f.root, failed);
+  const input = {
+    operationId: "32345678-1234-4234-8234-123456789abc",
+    ...operationBinding(f.selection),
+  };
+  await expect(retireNativeStage(f.root, f.baseline, failed, input)).rejects.toMatchObject({
+    code: "failed-operation-unsettled",
+    operationId,
+  });
+  expect(await restoreStagedSelection(f.root, f.baseline)).toEqual(f.selection);
+  await publishUpdateOperationSettlement(f.root, {
+    schema: 1,
+    operationId,
+    basis: "launcher-recorded",
+    status: "failed",
+    settlement: "no-effect",
+    ...digests,
+    evidence: {
+      phaseAtFailure: "accepted",
+      nativeReason: "launcher-restarted",
+      candidateStarted: false,
+      activeVersion: f.baseline,
+      activeSourceSha: f.selection.binding.activeSourceSha,
+      recoveryPayload: "absent",
+      restorePending: false,
+      cause: null,
+      writerLauncherVersion: f.baseline,
+      recordedAt: "2026-10-23T04:00:00.000Z",
+    },
+  });
+  await expect(
+    retireNativeStage(f.root, f.baseline, failed, { ...input, operationId }),
+  ).rejects.toThrow("may have been accepted");
+  await retireNativeStage(f.root, f.baseline, failed, input);
+  expect(await restoreStagedSelection(f.root, f.baseline)).toBeUndefined();
+  expect(await reconcileUpdateOperation(f.root, operationId, undefined)).toMatchObject({
+    state: "blocked",
+    updateId: operationId,
+    settlement: { basis: "launcher-recorded" },
+  });
+  expect(await NodeFSP.readFile(NodePath.join(f.root, "userdata", "statev2.sqlite"), "utf8")).toBe(
+    "unchanged-state",
+  );
 });
 
 it("preserves a stage after ambiguous native acceptance or revocation publication", async () => {

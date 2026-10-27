@@ -9,7 +9,6 @@ import * as Effect from "effect/Effect";
 import type { PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
 import type * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import type { EffectOutboxV2, OrchestrationEffectV2 } from "./EffectOutbox.ts";
-import type { IdAllocatorV2, IdAllocatorV2Error } from "@t3tools/provider-core/server/IdAllocator";
 
 export interface ThreadDeletionPlan {
   readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
@@ -211,6 +210,12 @@ export const planThreadDeletion = Effect.fn("ThreadDeletion.planThreadDeletion")
     });
   }
   effects.push({
+    id: `effect:${command.commandId}:scheduled-tasks.cleanup`,
+    commandId: command.commandId,
+    threadId: command.threadId,
+    request: { type: "scheduled-tasks.cleanup" },
+  });
+  effects.push({
     id: `effect:${command.commandId}:terminal.cleanup`,
     commandId: command.commandId,
     threadId: command.threadId,
@@ -237,7 +242,9 @@ export const planThreadDeletion = Effect.fn("ThreadDeletion.planThreadDeletion")
 export function threadCreationCleanupEffects(effects: ReadonlyArray<OrchestrationEffectV2>) {
   return effects.filter(
     ({ request }) =>
+      request.type === "scheduled-tasks.cleanup" ||
       request.type === "terminal.cleanup" ||
+      request.type === "preview.cleanup" ||
       request.type === "attachment.cleanup" ||
       request.type === "provider-session.detach",
   );

@@ -1,3 +1,5 @@
+import { jonesBuildLabel, jonesBuildLabels } from "./buildVersion";
+import { outcomeBuildRefs } from "./buildPairs";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import { runtime } from "../../lib/runtime";
@@ -7,6 +9,25 @@ import type {
   DesktopUpdateActionResult,
   DesktopUpdateState,
 } from "@t3tools/contracts";
+
+export function desktopUpdateVersionLabel(state: DesktopUpdateState, version: string): string {
+  const jones = state.jones;
+  if (!jones) return version;
+  const ref =
+    version === jones.currentVersion
+      ? { version, startedAt: jones.currentBuildStartedAt, sourceSha: jones.installedSource?.sha }
+      : version === jones.provenance?.version
+        ? {
+            version,
+            startedAt: jones.provenance.buildStartedAt,
+            sourceSha: jones.provenance.sourceSha,
+          }
+        : { version };
+  const label = jonesBuildLabel(ref);
+  return label.text === version
+    ? version
+    : `${label.text} (${version}; ${label.detail}${ref.sourceSha ? `; source ${ref.sourceSha}` : ""})`;
+}
 
 export function getJonesDesktopUpdateBlockedMessage(
   state: DesktopUpdateState | null,
@@ -39,10 +60,15 @@ export function getJonesDesktopUpdateOutcomeMessage(state: DesktopUpdateState): 
   const outcome = jones.outcome;
   if (outcome?.status === jones.phase) {
     const update = jones.updateId === undefined ? "Update" : `Update ${jones.updateId}`;
+    const [from, target] = jonesBuildLabels(outcomeBuildRefs(jones));
+    const identity =
+      from!.text !== outcome.fromVersion || target!.text !== outcome.targetVersion
+        ? ` (${outcome.fromVersion} → ${outcome.targetVersion})`
+        : "";
     const reason = outcome.reason ? ` ${outcome.reason}` : "";
     return outcome.status === "committed"
-      ? `${update} committed: ${outcome.fromVersion} → ${outcome.targetVersion}.${reason}`
-      : `${update} rolled back: ${outcome.targetVersion} did not commit; ${outcome.fromVersion} remains active.${reason}`;
+      ? `${update} committed: ${from!.text} → ${target!.text}${identity}.${reason}`
+      : `${update} rolled back: ${target!.text} did not commit; ${from!.text} remains active${identity}.${reason}`;
   }
   return (
     jones.message ??

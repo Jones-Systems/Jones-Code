@@ -43,11 +43,12 @@ const auth = Layer.succeed(EnvironmentAuthenticatedAuth, (handler) =>
 );
 const makeApp = (
   serviceLayer = VoiceReview.layer.pipe(Layer.provide(VoiceReview.dependenciesLayer)),
+  authLayer = auth,
 ) =>
   HttpRouter.toWebHandler(
     HttpApiBuilder.layer(TestApi).pipe(
       Layer.provide(voiceReviewHttpApiLayer.pipe(Layer.provide(serviceLayer))),
-      Layer.provide(auth),
+      Layer.provide(authLayer),
       Layer.provide(voiceReviewResponseHeadersLayer),
       Layer.provide(HttpPlatform.layer.pipe(Layer.provide(NodeServices.layer))),
       Layer.provide(Etag.layerWeak),
@@ -56,7 +57,7 @@ const makeApp = (
     { disableLogger: true },
   );
 
-it("serves closed unconfigured and session-denied responses with no-store, without broker access", async () => {
+it("serves closed unconfigured and scope-denied responses with no-store, without broker access", async () => {
   const fetcher = vi.fn();
   vi.stubGlobal("fetch", fetcher);
   vi.stubEnv("T3CODE_VOICE_REVIEW_BROKER_URL", "");
@@ -78,7 +79,19 @@ it("serves closed unconfigured and session-denied responses with no-store, witho
     vi.stubEnv("T3CODE_VOICE_REVIEW_REVIEWER_TOKEN_FILE", "/not-read");
     vi.stubEnv("T3CODE_VOICE_REVIEW_SOURCE_ID", "microphone");
     vi.stubEnv("T3CODE_VOICE_REVIEW_ALLOWED_SESSION_IDS", '["owner"]');
-    app = makeApp();
+    app = makeApp(
+      undefined,
+      Layer.succeed(EnvironmentAuthenticatedAuth, (handler) =>
+        handler.pipe(
+          Effect.provideService(EnvironmentAuthenticatedPrincipal, {
+            sessionId: AuthSessionId.make("other"),
+            subject: "generic-subject",
+            method: "bearer-access-token",
+            scopes: new Set<AuthEnvironmentScope>(),
+          }),
+        ),
+      ),
+    );
     const denied = await app.handler(
       new Request("http://local/api/voice-review/drafts", {
         headers: { authorization: "Bearer other" },
@@ -162,5 +175,25 @@ it("delegates authenticated draft reads to the injected domain service", async (
   } finally {
     await app.dispose();
     vi.unstubAllGlobals();
+  }
+});
+
+it("leaves the removed device identity route unavailable without broker access", async () => {
+  const fetcher = vi.fn();
+  const app = makeApp(
+    VoiceReview.layer.pipe(
+      Layer.provide(Layer.succeed(VoiceReview.VoiceReviewDependencies, { config: null, fetcher })),
+    ),
+  );
+  try {
+    const response = await app.handler(
+      new Request("http://local/api/voice-review/self-identity", {
+        headers: { authorization: "Bearer owner" },
+      }),
+    );
+    expect(response.status).toBe(404);
+    expect(fetcher).not.toHaveBeenCalled();
+  } finally {
+    await app.dispose();
   }
 });

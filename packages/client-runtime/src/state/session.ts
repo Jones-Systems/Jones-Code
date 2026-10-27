@@ -1,16 +1,20 @@
 import type { AuthSessionState, EnvironmentId, ServerConfig } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
+import * as Cause from "effect/Cause";
+import * as Result from "effect/Result";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import { HttpClient } from "effect/http";
+import { HttpClient, HttpClientError } from "effect/http";
 import { AsyncResult, Atom } from "effect/reactivity";
 
 import * as RemoteEnvironmentAuthorization from "../authorization/service.ts";
 import * as EnvironmentRegistry from "../connection/registry.ts";
 import type { PreparedConnection } from "../connection/model.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
+import { ConnectionWakeups } from "../connection/wakeups.ts";
 import * as ManagedRelay from "../relay/managedRelay.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 import { executeAuthenticatedEnvironmentHttpRequest } from "./environmentHttpAuth.ts";
@@ -58,6 +62,33 @@ export const fetchEnvironmentSessionState = Effect.fn(
     isUnauthorizedResponse: (response) => !response.authenticated,
   });
 });
+
+const SESSION_RETRY_DELAYS_MS = [2_000, 5_000, 15_000] as const;
+
+function isTransientSessionFailure(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("_tag" in error)) return false;
+  switch (error._tag) {
+    case "RemoteEnvironmentAuthTimeoutError":
+    case "EnvironmentInternalError":
+      return true;
+    case "RemoteEnvironmentAuthUndeclaredStatusError":
+      return (
+        "status" in error &&
+        typeof error.status === "number" &&
+        error.status >= 500 &&
+        error.status < 600
+      );
+    case "RemoteEnvironmentAuthFetchError":
+      // Authorization renewal and signer failures share this wrapper; only retry transport errors.
+      return (
+        "cause" in error &&
+        HttpClientError.isHttpClientError(error.cause) &&
+        error.cause.reason._tag === "TransportError"
+      );
+    default:
+      return false;
+  }
+}
 
 function makeEnvironmentSessionAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, E>,
@@ -120,6 +151,33 @@ function makeEnvironmentSessionAtoms<R, E>(
     ).pipe(Atom.withLabel(`environment-prepared-connection:${environmentId}`)),
   );
 
+  const recoverySignalAtom = runtime.atom(
+    Stream.unwrap(
+      Effect.gen(function* () {
+        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        const wakeups = yield* Effect.serviceOption(ConnectionWakeups);
+        const foreground = Option.isSome(wakeups)
+          ? wakeups.value.changes.pipe(
+              Stream.filter(
+                (reason) =>
+                  reason === "application-active" ||
+                  reason === "application-active-probe" ||
+                  reason === "application-active-reconnect",
+              ),
+            )
+          : Stream.empty;
+        return Stream.merge(
+          foreground,
+          SubscriptionRef.changes(registry.networkStatus).pipe(
+            Stream.drop(1),
+            Stream.filter((status) => status === "online"),
+          ),
+        ).pipe(Stream.mapEffect(() => Clock.currentTimeMillis));
+      }),
+    ),
+    { initialValue: -Infinity },
+  );
+
   const sessionStateAtom = Atom.family((environmentId: EnvironmentId) =>
     runtime
       .atom((get) => {
@@ -134,15 +192,46 @@ function makeEnvironmentSessionAtoms<R, E>(
           );
           const client = yield* Effect.serviceOption(HttpClient.HttpClient);
           if (Option.isNone(client)) return yield* new SessionHttpClientUnavailable();
-          return yield* fetchEnvironmentSessionState({
-            prepared,
-            signer,
-            remoteAuthorization,
-          }).pipe(Effect.provideService(HttpClient.HttpClient, client.value));
+          for (let attempt = 0; ; attempt += 1) {
+            const result = yield* fetchEnvironmentSessionState({
+              prepared,
+              signer,
+              remoteAuthorization,
+            }).pipe(Effect.provideService(HttpClient.HttpClient, client.value), Effect.result);
+            if (Result.isSuccess(result)) return result.success;
+            const delay = SESSION_RETRY_DELAYS_MS[attempt];
+            if (delay === undefined || !isTransientSessionFailure(result.failure)) {
+              return yield* result.failure;
+            }
+            // Keep a failed check visible and unprivileged throughout the bounded retry window.
+            get.setSelf(AsyncResult.failure(Cause.fail(result.failure), { waiting: true }));
+            yield* Effect.sleep(delay);
+          }
         });
       })
       .pipe(
         Atom.swr({ staleTime: 30_000, revalidateOnMount: true }),
+        (self) =>
+          Atom.transform(
+            self,
+            (get) => {
+              let lastRecoveryAt = -Infinity;
+              get.subscribe(self, (value) => get.setSelf(value));
+              get.once(recoverySignalAtom);
+              get.subscribe(recoverySignalAtom, (signal) => {
+                if (signal._tag !== "Success" || signal.value === -Infinity) return;
+                const current = get.once(self);
+                if (current._tag !== "Failure" || current.waiting) return;
+                const error = Cause.findErrorOption(current.cause);
+                if (Option.isNone(error) || !isTransientSessionFailure(error.value)) return;
+                if (signal.value - lastRecoveryAt < 30_000) return;
+                lastRecoveryAt = signal.value;
+                get.refresh(self);
+              });
+              return get.once(self);
+            },
+            { initialValueTarget: self },
+          ),
         Atom.setIdleTTL(5 * 60_000),
         Atom.withLabel(`environment-session-state:${environmentId}`),
       ),

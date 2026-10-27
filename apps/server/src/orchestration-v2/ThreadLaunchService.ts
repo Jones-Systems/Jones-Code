@@ -1,3 +1,5 @@
+import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Path from "effect/Path";
 import * as NativeBootstrap from "../jones/nativeCreation/NativeBootstrapDispatch.ts";
 import { EnvironmentAuthenticatedPrincipal } from "@t3tools/contracts";
@@ -49,13 +51,14 @@ import {
   type OrchestrationV2LegacyBootstrapPolicy,
   type OrchestrationV2LegacyPreflightBinding,
   type OrchestrationV2CreationSource,
+  type OrchestrationV2DelegatedFrom,
+  type OrchestrationV2LinkOrigin,
   type OrchestrationV2ProviderThreadNativeMetadata,
   type ProviderDriverKind,
   type ProviderInteractionMode,
   ProjectId,
   type RunId,
   type RuntimeMode,
-  type VcsRef,
   type ScheduledTaskId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -63,6 +66,7 @@ import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -89,6 +93,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import type * as Orchestrator from "./Orchestrator.ts";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
+import { DispatchModeLimit, exceededDispatchModeLimit } from "./DispatchModeLimit.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 
 export type ThreadLaunchWorkspaceStrategy =
@@ -120,6 +125,8 @@ export interface ThreadLaunchInitialMessage {
 }
 
 export interface ThreadLaunchInput {
+  // Jones hook: keyed retries hold prior progress under preparation ownership.
+  readonly holdPreparationAfterProgress?: true;
   readonly commandId: CommandId;
   /** Server-owned compatibility input; public launch schemas do not decode it. */
   readonly preparationReleaseCommandId?: CommandId;
@@ -145,6 +152,10 @@ export interface ThreadLaunchInput {
   };
   readonly createdBy: OrchestrationV2Actor;
   readonly creationSource: OrchestrationV2CreationSource;
+  /** The linked environment this launch is for, if one asked for it. */
+  readonly linkOrigin?: OrchestrationV2LinkOrigin;
+  /** The parent there, when that environment's agent delegated this as a task. */
+  readonly delegatedFrom?: OrchestrationV2DelegatedFrom;
 }
 
 type PreparationInput = Pick<
@@ -174,6 +185,7 @@ export interface ThreadLaunchPreparationInput {
 export interface ThreadLaunchResult {
   readonly threadId: ThreadId;
   readonly projection: OrchestrationV2ThreadProjection;
+  /** The launch's last write (the initial message, else the thread claim) was accepted before this call. */
   readonly resumed: boolean;
   readonly legacyReleaseSequence?: number;
 }
@@ -244,10 +256,7 @@ export class ThreadLaunchService extends Context.Service<
       ThreadLaunchResult,
       ThreadLaunchError | ThreadManagement.ThreadManagementProviderInstanceDisabledError
     >;
-    /**
-     * `launch` accepts such a launch and reports the failure inside the
-     * thread; a caller that needs it before a thread exists checks first.
-     */
+    /** Check before creation for early errors; launch otherwise accepts and reports base failures inside the thread. */
     readonly checkWorktreeBase: (
       input: Pick<ThreadLaunchInput, "projectId" | "workspaceStrategy">,
     ) => Effect.Effect<void, ThreadLaunchBaseRefError>;
@@ -258,6 +267,8 @@ export class ThreadLaunchService extends Context.Service<
       | Orchestrator.OrchestratorV2Error
       | ThreadManagement.ThreadManagementProviderInstanceDisabledError
     >;
+    // Jones hook: read-only observation of the existing preparation reservation.
+    readonly preparationActive: (commandId: CommandId) => Effect.Effect<boolean>;
     readonly prepareRun: (input: ThreadLaunchPreparationInput) => Effect.Effect<void>;
   }
 >()("t3/orchestration-v2/ThreadLaunchService") {}
@@ -299,6 +310,7 @@ const make = Effect.gen(function* () {
   const eventSink = yield* EventSink.EventSinkV2;
   const ids = yield* IdAllocator.IdAllocatorV2;
   const threads = yield* ThreadManagement.ThreadManagementService;
+  const metadata = yield* ThreadMetadataReads.ThreadMetadataReads;
   const outbox = yield* EffectOutbox.EffectOutboxV2;
   const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
   const preparationScope = yield* Scope.make("sequential");
@@ -559,7 +571,7 @@ const make = Effect.gen(function* () {
         "fail-run",
         threadId,
       )("Workspace-failure policy changed; retain the shell.");
-    const control = yield* Schema.decodeUnknownEffect(LegacyNoTerminalControl)({
+    const control = yield* Schema.decodeEffect(LegacyNoTerminalControl)({
       version: 1,
       type: "no_control",
       policy: receivingPolicy,
@@ -605,7 +617,7 @@ const make = Effect.gen(function* () {
     const validated =
       deletion === undefined
         ? undefined
-        : yield* Schema.decodeUnknownEffect(LegacyFailureDeletionProvenance)(deletion).pipe(
+        : yield* Schema.decodeEffect(LegacyFailureDeletionProvenance)(deletion).pipe(
             Effect.mapError(mapError(input, "fail-run", threadId)),
           );
     const { deletion: _oldDeletion, ...original } = decision;
@@ -660,108 +672,110 @@ const make = Effect.gen(function* () {
           threadId,
         )("Legacy preparation has no authenticated ledger.");
       const bound = preparation;
-      const persist = (commandId: CommandId, update: LegacyPreparationUpdate) =>
-        Effect.gen(function* () {
-          const committed = yield* threads
-            .dispatch({
-              type: "prepared-run.progress",
-              commandId,
-              threadId,
-              runId,
-              phase: "setup",
-              legacyPreparationUpdate: update,
-            })
-            .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
-          const receipt = yield* readReceipt(input, commandId);
-          const stored = Array.from(
-            yield* eventSink
-              .readByCommandId({ commandId })
-              .pipe(Stream.runCollect, Effect.mapError(mapError(input, "read-receipt", threadId))),
-          );
-          const event = stored[0];
-          const next =
-            event?.event.type === "run.updated" ? event.event.payload.legacyPreparation : undefined;
-          const actual =
-            update.type === "setup-policy"
-              ? next?.setup
-              : update.type === "initialize"
-                ? next
-                : next?.steps.find((step) => step.effectId === update.step.effectId);
-          const expected =
-            update.type === "setup-policy"
-              ? update.setup
-              : update.type === "initialize"
-                ? update.preparation
-                : update.step;
-          if (
-            Option.isNone(receipt) ||
-            receipt.value.status !== "accepted" ||
-            receipt.value.commandType !== "prepared-run.progress" ||
-            receipt.value.threadId !== threadId ||
-            stored.length !== 1 ||
-            event?.event.type !== "run.updated" ||
-            event.event.runId !== runId ||
-            event.commandId !== commandId ||
-            event.event.id !== `${commandId}:event` ||
-            event.sequence !== receipt.value.resultSequence ||
-            committed.sequence !== event.sequence ||
-            next === undefined ||
-            canonicalLegacyPayload(actual) !== canonicalLegacyPayload(expected)
-          )
-            return yield* mapError(
-              input,
-              "read-receipt",
-              threadId,
-            )("Legacy preparation intent or outcome commit/readback is unresolved.");
-          preparation = next;
-        });
-      const intent = (effect: LegacyPreparation["steps"][number]["effect"]) =>
-        Effect.gen(function* () {
-          const effectId = legacyPreparationEffectId({ generation: bound.generation, effect });
-          if (preparation?.steps.some((entry) => entry.effect.kind === effect.kind))
-            return yield* mapError(
-              input,
-              "read-receipt",
-              threadId,
-            )("A recorded preparation effect requires reconciliation, never reexecution.");
-          const stem = `${bound.policy.createCommandId}:preparation:${bound.generation}:${effectId}`;
-          const step: LegacyPreparation["steps"][number] = {
-            effectId,
-            effect,
-            inputHash: legacyPayloadHash(canonicalLegacyPayload(effect)),
-            state: "intent",
-            intentCommandId: CommandId.make(`${stem}:intent`),
-            intentEventId: EventId.make(`${stem}:intent:event`),
-          };
-          yield* persist(step.intentCommandId, { type: "intent", step });
-        });
-      const outcome = (
+      const persist = Effect.fn("ThreadLaunchService.persist")(function* (
+        commandId: CommandId,
+        update: LegacyPreparationUpdate,
+      ) {
+        const committed = yield* threads
+          .dispatch({
+            type: "prepared-run.progress",
+            commandId,
+            threadId,
+            runId,
+            phase: "setup",
+            legacyPreparationUpdate: update,
+          })
+          .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
+        const receipt = yield* readReceipt(input, commandId);
+        const stored = Array.from(
+          yield* eventSink
+            .readByCommandId({ commandId })
+            .pipe(Stream.runCollect, Effect.mapError(mapError(input, "read-receipt", threadId))),
+        );
+        const event = stored[0];
+        const next =
+          event?.event.type === "run.updated" ? event.event.payload.legacyPreparation : undefined;
+        const actual =
+          update.type === "setup-policy"
+            ? next?.setup
+            : update.type === "initialize"
+              ? next
+              : next?.steps.find((step) => step.effectId === update.step.effectId);
+        const expected =
+          update.type === "setup-policy"
+            ? update.setup
+            : update.type === "initialize"
+              ? update.preparation
+              : update.step;
+        if (
+          Option.isNone(receipt) ||
+          receipt.value.status !== "accepted" ||
+          receipt.value.commandType !== "prepared-run.progress" ||
+          receipt.value.threadId !== threadId ||
+          stored.length !== 1 ||
+          event?.event.type !== "run.updated" ||
+          event.event.runId !== runId ||
+          event.commandId !== commandId ||
+          event.event.id !== `${commandId}:event` ||
+          event.sequence !== receipt.value.resultSequence ||
+          committed.sequence !== event.sequence ||
+          next === undefined ||
+          canonicalLegacyPayload(actual) !== canonicalLegacyPayload(expected)
+        )
+          return yield* mapError(
+            input,
+            "read-receipt",
+            threadId,
+          )("Legacy preparation intent or outcome commit/readback is unresolved.");
+        preparation = next;
+      });
+      const intent = Effect.fn("ThreadLaunchService.intent")(function* (
+        effect: LegacyPreparation["steps"][number]["effect"],
+      ) {
+        const effectId = legacyPreparationEffectId({ generation: bound.generation, effect });
+        if (preparation?.steps.some((entry) => entry.effect.kind === effect.kind))
+          return yield* mapError(
+            input,
+            "read-receipt",
+            threadId,
+          )("A recorded preparation effect requires reconciliation, never reexecution.");
+        const stem = `${bound.policy.createCommandId}:preparation:${bound.generation}:${effectId}`;
+        const step: LegacyPreparation["steps"][number] = {
+          effectId,
+          effect,
+          inputHash: legacyPayloadHash(canonicalLegacyPayload(effect)),
+          state: "intent",
+          intentCommandId: CommandId.make(`${stem}:intent`),
+          intentEventId: EventId.make(`${stem}:intent:event`),
+        };
+        yield* persist(step.intentCommandId, { type: "intent", step });
+      });
+      const outcome = Effect.fn("ThreadLaunchService.outcome")(function* (
         kind: LegacyPreparation["steps"][number]["effect"]["kind"],
         state: LegacyPreparation["steps"][number]["state"],
         evidence: NonNullable<LegacyPreparation["steps"][number]["evidence"]>,
-      ) =>
-        Effect.gen(function* () {
-          const step = preparation?.steps.find((entry) => entry.effect.kind === kind);
-          if (step === undefined || step.state !== "intent")
-            return yield* mapError(
-              input,
-              "read-receipt",
-              threadId,
-            )("Legacy preparation outcome has no exact pending intent.");
-          const commandId = CommandId.make(
-            `${step.intentCommandId.slice(0, -":intent".length)}:outcome`,
-          );
-          yield* persist(commandId, {
-            type: "outcome",
-            step: {
-              ...step,
-              state,
-              evidence,
-              outcomeCommandId: commandId,
-              outcomeEventId: EventId.make(`${commandId}:event`),
-            },
-          });
+      ) {
+        const step = preparation?.steps.find((entry) => entry.effect.kind === kind);
+        if (step === undefined || step.state !== "intent")
+          return yield* mapError(
+            input,
+            "read-receipt",
+            threadId,
+          )("Legacy preparation outcome has no exact pending intent.");
+        const commandId = CommandId.make(
+          `${step.intentCommandId.slice(0, -":intent".length)}:outcome`,
+        );
+        yield* persist(commandId, {
+          type: "outcome",
+          step: {
+            ...step,
+            state,
+            evidence,
+            outcomeCommandId: commandId,
+            outcomeEventId: EventId.make(`${commandId}:event`),
+          },
         });
+      });
       return {
         bound,
         get preparation() {
@@ -814,8 +828,8 @@ const make = Effect.gen(function* () {
       before: add.effect.input.before,
       claim,
       beforeEffect: (step) => journal.intent({ kind: "branch.rename", input: step }),
-      afterEffect: (_step, result, material) =>
-        Effect.gen(function* () {
+      afterEffect: Effect.fn("ThreadLaunchService.afterEffect")(
+        function* (_step, result, material) {
           if (result !== "settled_success" || material === undefined) {
             yield* journal.outcome("branch.rename", "unknown", {
               type: "unknown",
@@ -832,7 +846,8 @@ const make = Effect.gen(function* () {
             exitCode: 0,
             claim: material,
           });
-        }),
+        },
+      ),
     };
     return hooks;
   });
@@ -844,66 +859,63 @@ const make = Effect.gen(function* () {
   ) {
     const journal = yield* legacyPreparationJournal(input, threadId, runId);
     const hooks: LegacyWorktreePreparationHooks = {
-      neverInvoked: (step, reason) =>
-        Effect.gen(function* () {
-          const { kind, ...effectInput } = step;
-          const intent = journal.preparation?.steps.find((entry) => entry.effect.kind === kind);
-          if (
-            kind !== "worktree.add" ||
-            intent?.state !== "intent" ||
-            canonicalLegacyPayload(intent.effect) !==
-              canonicalLegacyPayload({ kind, input: effectInput })
-          )
-            return yield* mapError(
-              input,
-              "read-receipt",
-              threadId,
-            )("Never-invoked owner refusal differs from its exact accepted intent.");
-          yield* journal.outcome(kind, "known_no_effect_failure", {
-            type: "never_invoked",
-            owner: "git",
-            reason,
-          });
-        }),
-      beforeEffect: (step) =>
-        Effect.gen(function* () {
-          if (step.kind === "worktree.add" && step.before === undefined)
-            return yield* mapError(
-              input,
-              "read-receipt",
-              threadId,
-            )("Worktree intent has no exact owner absence observation.");
-          const { kind, ...effectInput } = step;
-          yield* journal.intent({ kind, input: effectInput });
-          if (journal.preparation?.commonDirectory !== step.commonDirectory)
-            return yield* mapError(
-              input,
-              "read-receipt",
-              threadId,
-            )("Worktree intent common-directory readback differs from the executing owner.");
-        }),
-      afterEffect: (step, result, claim) =>
-        Effect.gen(function* () {
-          if (result === "settled_success" && claim !== undefined) {
-            yield* journal.outcome(
-              step.kind,
-              "known_succeeded",
-              step.kind === "worktree.add"
-                ? { type: "worktree_claim", claim }
-                : { type: "settled_git", exitCode: 0, claim },
-            );
-            return;
-          }
-          yield* journal.outcome(step.kind, "unknown", {
-            type: "unknown",
-            reason: claim === undefined ? "ownership_changed" : "partial_material",
-          });
+      neverInvoked: Effect.fn("ThreadLaunchService.neverInvoked")(function* (step, reason) {
+        const { kind, ...effectInput } = step;
+        const intent = journal.preparation?.steps.find((entry) => entry.effect.kind === kind);
+        if (
+          kind !== "worktree.add" ||
+          intent?.state !== "intent" ||
+          canonicalLegacyPayload(intent.effect) !==
+            canonicalLegacyPayload({ kind, input: effectInput })
+        )
           return yield* mapError(
             input,
-            "provision-worktree",
+            "read-receipt",
             threadId,
-          )("Worktree effect outcome is unknown; preserve exact bytes, identity and journal.");
-        }),
+          )("Never-invoked owner refusal differs from its exact accepted intent.");
+        yield* journal.outcome(kind, "known_no_effect_failure", {
+          type: "never_invoked",
+          owner: "git",
+          reason,
+        });
+      }),
+      beforeEffect: Effect.fn("ThreadLaunchService.beforeEffect")(function* (step) {
+        if (step.kind === "worktree.add" && step.before === undefined)
+          return yield* mapError(
+            input,
+            "read-receipt",
+            threadId,
+          )("Worktree intent has no exact owner absence observation.");
+        const { kind, ...effectInput } = step;
+        yield* journal.intent({ kind, input: effectInput });
+        if (journal.preparation?.commonDirectory !== step.commonDirectory)
+          return yield* mapError(
+            input,
+            "read-receipt",
+            threadId,
+          )("Worktree intent common-directory readback differs from the executing owner.");
+      }),
+      afterEffect: Effect.fn("ThreadLaunchService.afterEffect")(function* (step, result, claim) {
+        if (result === "settled_success" && claim !== undefined) {
+          yield* journal.outcome(
+            step.kind,
+            "known_succeeded",
+            step.kind === "worktree.add"
+              ? { type: "worktree_claim", claim }
+              : { type: "settled_git", exitCode: 0, claim },
+          );
+          return;
+        }
+        yield* journal.outcome(step.kind, "unknown", {
+          type: "unknown",
+          reason: claim === undefined ? "ownership_changed" : "partial_material",
+        });
+        return yield* mapError(
+          input,
+          "provision-worktree",
+          threadId,
+        )("Worktree effect outcome is unknown; preserve exact bytes, identity and journal.");
+      }),
     };
     return hooks;
   });
@@ -912,6 +924,7 @@ const make = Effect.gen(function* () {
     input: PreparationInput,
     threadId: ThreadId,
     runId: RunId,
+    lifetime: Scope.Scope,
   ) {
     const journal = yield* legacyPreparationJournal(input, threadId, runId);
     const { bound, persist, intent, outcome } = journal;
@@ -936,6 +949,7 @@ const make = Effect.gen(function* () {
     };
     const captured = bound.setup.status === "resolved" ? bound.setup.definition : undefined;
     const hooks: ProjectSetupScriptRunner.LegacySetupPreparationHooks = {
+      lifetime,
       binding,
       ...(captured === undefined ? {} : { capturedDefinition: captured }),
       noScript: () =>
@@ -947,60 +961,58 @@ const make = Effect.gen(function* () {
               ),
               { type: "setup-policy", setup: { status: "no_script" } },
             ),
-      beforeSpawn: (definition) =>
-        Effect.gen(function* () {
-          const preparation = journal.preparation;
-          if (preparation?.setup.status === "unresolved")
-            yield* persist(
-              CommandId.make(
-                `${bound.policy.createCommandId}:preparation:${bound.generation}:setup-policy`,
-              ),
-              { type: "setup-policy", setup: { status: "resolved", definition } },
-            );
-          else if (
-            preparation?.setup.status !== "resolved" ||
-            canonicalLegacyPayload(preparation.setup.definition) !==
-              canonicalLegacyPayload(definition)
+      beforeSpawn: Effect.fn("ThreadLaunchService.beforeSpawn")(function* (definition) {
+        const preparation = journal.preparation;
+        if (preparation?.setup.status === "unresolved")
+          yield* persist(
+            CommandId.make(
+              `${bound.policy.createCommandId}:preparation:${bound.generation}:setup-policy`,
+            ),
+            { type: "setup-policy", setup: { status: "resolved", definition } },
+          );
+        else if (
+          preparation?.setup.status !== "resolved" ||
+          canonicalLegacyPayload(preparation.setup.definition) !==
+            canonicalLegacyPayload(definition)
+        )
+          return yield* mapError(
+            input,
+            "read-receipt",
+            threadId,
+          )("Captured setup definition changed before spawn.");
+        yield* intent({ kind: "setup.open", input: definition });
+      }),
+      neverInvoked: Effect.fn("ThreadLaunchService.neverInvoked")(function* (proof) {
+        const preparation = journal.preparation;
+        const opened = preparation?.steps.find((step) => step.effect.kind === "setup.open");
+        if (
+          preparation?.setup.status !== "resolved" ||
+          opened?.effect.kind !== "setup.open" ||
+          opened.state !== "intent" ||
+          canonicalLegacyPayload(proof.binding) !== canonicalLegacyPayload(binding) ||
+          proof.shell !== preparation.setup.definition.shell ||
+          canonicalLegacyPayload(proof.shellArgs) !==
+            canonicalLegacyPayload(preparation.setup.definition.shellArgs) ||
+          proof.cwd !== preparation.setup.definition.cwd ||
+          canonicalLegacyPayload(opened.effect.input) !==
+            canonicalLegacyPayload(preparation.setup.definition) ||
+          !(
+            proof.shell.length === 0 ||
+            proof.shell.includes("\0") ||
+            proof.shellArgs.some((arg) => arg.includes("\0"))
           )
-            return yield* mapError(
-              input,
-              "read-receipt",
-              threadId,
-            )("Captured setup definition changed before spawn.");
-          yield* intent({ kind: "setup.open", input: definition });
-        }),
-      neverInvoked: (proof) =>
-        Effect.gen(function* () {
-          const preparation = journal.preparation;
-          const opened = preparation?.steps.find((step) => step.effect.kind === "setup.open");
-          if (
-            preparation?.setup.status !== "resolved" ||
-            opened?.effect.kind !== "setup.open" ||
-            opened.state !== "intent" ||
-            canonicalLegacyPayload(proof.binding) !== canonicalLegacyPayload(binding) ||
-            proof.shell !== preparation.setup.definition.shell ||
-            canonicalLegacyPayload(proof.shellArgs) !==
-              canonicalLegacyPayload(preparation.setup.definition.shellArgs) ||
-            proof.cwd !== preparation.setup.definition.cwd ||
-            canonicalLegacyPayload(opened.effect.input) !==
-              canonicalLegacyPayload(preparation.setup.definition) ||
-            !(
-              proof.shell.length === 0 ||
-              proof.shell.includes("\0") ||
-              proof.shellArgs.some((arg) => arg.includes("\0"))
-            )
-          )
-            return yield* mapError(
-              input,
-              "read-receipt",
-              threadId,
-            )("Never-invoked setup owner differs from its exact accepted intent.");
-          yield* outcome("setup.open", "known_no_effect_failure", {
-            type: "never_invoked",
-            owner: "setup",
-            reason: "input_validation_failed",
-          });
-        }),
+        )
+          return yield* mapError(
+            input,
+            "read-receipt",
+            threadId,
+          )("Never-invoked setup owner differs from its exact accepted intent.");
+        yield* outcome("setup.open", "known_no_effect_failure", {
+          type: "never_invoked",
+          owner: "setup",
+          reason: "input_validation_failed",
+        });
+      }),
       afterSpawn: (proof) =>
         outcome("setup.open", "known_succeeded", {
           type: "terminal_generation",
@@ -1009,27 +1021,26 @@ const make = Effect.gen(function* () {
           shell: proof.shell,
           shellArgs: [...proof.shellArgs],
         }),
-      beforeWrite: () =>
-        Effect.gen(function* () {
-          const preparation = journal.preparation;
-          if (preparation?.setup.status !== "resolved")
-            return yield* mapError(
-              input,
-              "read-receipt",
-              threadId,
-            )("Setup write lacks a captured definition.");
-          const definition = preparation.setup.definition;
-          yield* intent({
-            kind: "setup.write",
-            input: {
-              terminalId,
-              generation,
-              definitionHash: definition.definitionHash,
-              commandLine: definition.commandLine,
-              completionToken: definition.completionToken,
-            },
-          });
-        }),
+      beforeWrite: Effect.fn("ThreadLaunchService.beforeWrite")(function* () {
+        const preparation = journal.preparation;
+        if (preparation?.setup.status !== "resolved")
+          return yield* mapError(
+            input,
+            "read-receipt",
+            threadId,
+          )("Setup write lacks a captured definition.");
+        const definition = preparation.setup.definition;
+        yield* intent({
+          kind: "setup.write",
+          input: {
+            terminalId,
+            generation,
+            definitionHash: definition.definitionHash,
+            commandLine: definition.commandLine,
+            completionToken: definition.completionToken,
+          },
+        });
+      }),
       afterWrite: (result, inputCount) =>
         result === "accepted"
           ? outcome("setup.write", "known_started", {
@@ -1042,52 +1053,51 @@ const make = Effect.gen(function* () {
               type: "unknown",
               reason: "process_result_unavailable",
             }),
-      afterCompletion: (completion) =>
-        Effect.gen(function* () {
-          const preparation = journal.preparation;
-          if (
-            preparation?.setup.status !== "resolved" ||
-            preparation.setup.definition.completionToken === null
-          )
-            return yield* mapError(
-              input,
-              "read-receipt",
-              threadId,
-            )("Setup completion has no captured token.");
-          const definition = preparation.setup.definition;
-          const completionToken = definition.completionToken;
-          if (completionToken === null)
-            return yield* mapError(
-              input,
-              "read-receipt",
-              threadId,
-            )("Setup completion token is unavailable.");
-          yield* intent({
-            kind: "setup.completion",
-            input: {
-              terminalId,
-              generation,
-              definitionHash: definition.definitionHash,
-              completionToken,
-            },
-          });
-          yield* completion.exitCode === null
-            ? outcome("setup.completion", "unknown", {
-                type: "unknown",
-                reason: "process_result_unavailable",
-              })
-            : outcome(
-                "setup.completion",
-                completion.exitCode === 0 ? "known_succeeded" : "known_completed_failure",
-                {
-                  type: "setup_completion",
-                  terminalId,
-                  generation,
-                  exitCode: completion.exitCode,
-                  durationMs: completion.durationMs,
-                },
-              );
-        }),
+      afterCompletion: Effect.fn("ThreadLaunchService.afterCompletion")(function* (completion) {
+        const preparation = journal.preparation;
+        if (
+          preparation?.setup.status !== "resolved" ||
+          preparation.setup.definition.completionToken === null
+        )
+          return yield* mapError(
+            input,
+            "read-receipt",
+            threadId,
+          )("Setup completion has no captured token.");
+        const definition = preparation.setup.definition;
+        const completionToken = definition.completionToken;
+        if (completionToken === null)
+          return yield* mapError(
+            input,
+            "read-receipt",
+            threadId,
+          )("Setup completion token is unavailable.");
+        yield* intent({
+          kind: "setup.completion",
+          input: {
+            terminalId,
+            generation,
+            definitionHash: definition.definitionHash,
+            completionToken,
+          },
+        });
+        yield* completion.exitCode === null
+          ? outcome("setup.completion", "unknown", {
+              type: "unknown",
+              reason: "process_result_unavailable",
+            })
+          : outcome(
+              "setup.completion",
+              completion.exitCode === 0 ? "known_succeeded" : "known_completed_failure",
+              {
+                type: "setup_completion",
+                terminalId,
+                generation,
+                exitCode: completion.exitCode,
+                durationMs: completion.durationMs,
+              },
+            );
+      }),
     };
     return hooks;
   });
@@ -1133,11 +1143,10 @@ const make = Effect.gen(function* () {
         return undefined;
       if (
         strategy.startFromOrigin === true &&
-        (yield* git.remoteExists({ cwd, remoteName: "origin" }))
+        (yield* git.resolveWorktreeBaseRemote({ cwd, refName: baseRef })) !== null
       )
         return undefined;
-      // `git worktree add` also starts from a remote-tracking branch of that
-      // name; any ref carrying it is reason enough to let Git decide.
+      // git worktree add accepts remote-tracking branches; let Git decide when any matching ref exists.
       if (yield* git.hasRefNamed({ cwd, refName: baseRef })) return undefined;
       return (yield* git.hasCommit({ cwd, refName: "HEAD" })) ? project : undefined;
     }).pipe(Effect.orElseSucceed(() => undefined));
@@ -1154,7 +1163,9 @@ const make = Effect.gen(function* () {
     input: PreparationInput,
     threadId: ThreadId,
     runId: RunId | null,
+    observeExistingSetup = false,
   ) {
+    const lifetime = yield* Effect.scope;
     const project = yield* projects.getById(input.projectId).pipe(
       Effect.mapError(mapError(input, "resolve-project", threadId)),
       Effect.flatMap(
@@ -1277,6 +1288,8 @@ const make = Effect.gen(function* () {
     let setupTerminalId: string | null = null;
     let workspaceRecorded = false;
     let runReleased = false;
+    // Stop background renames before forgetting worktrees; completed renames record them again.
+    let branchRename: Fiber.Fiber<unknown> | null = null;
     if (input.workspaceStrategy.type === "worktree") {
       yield* setupTracker.begin({
         threadId,
@@ -1296,8 +1309,8 @@ const make = Effect.gen(function* () {
     }
     yield* Effect.gen(function* () {
       const initialMessage = input.initialMessage;
-      const generateBranchNameFor = (cwd: string, message: ThreadLaunchInitialMessage) =>
-        Effect.gen(function* () {
+      const generateBranchNameFor = Effect.fn("ThreadLaunchService.generateBranchNameFor")(
+        function* (cwd: string, message: ThreadLaunchInitialMessage) {
           const settings = resolveProjectSettings(
             yield* serverSettings.getSettings,
             input.projectId,
@@ -1329,7 +1342,8 @@ const make = Effect.gen(function* () {
                 exactName: settings.branchNamingMode === "custom",
               })),
             );
-        });
+        },
+      );
 
       const requestedBranch = input.workspaceStrategy.branch;
       let branch: string | null;
@@ -1356,7 +1370,6 @@ const make = Effect.gen(function* () {
             .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
         }
         let baseRef = input.workspaceStrategy.baseRef;
-        let selectedBase: VcsRef | undefined;
         if (baseRef === undefined) {
           const refs = yield* git
             .listRefs({ cwd: project.workspaceRoot, limit: 100 })
@@ -1374,71 +1387,35 @@ const make = Effect.gen(function* () {
             );
           }
           baseRef = automaticBase;
-          selectedBase = refs.refs.find((ref) => ref.name === baseRef);
           yield* setupTracker.update(threadId, (snapshot) => ({
             ...snapshot,
             baseRef: automaticBase,
           }));
         }
         let startRef = baseRef;
-        // "Start from origin" is a stored default; repos without the requested
-        // remote branch fall back to the local base branch.
-        const startFromOrigin =
+        let baseRefName = baseRef;
+        const shouldFetch =
           input.workspaceStrategy.startFromOrigin === true &&
           (yield* git
-            .remoteExists({ cwd: project.workspaceRoot, remoteName: "origin" })
-            .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId))));
-        yield* setupTracker.stageStatus(threadId, "fetch", startFromOrigin ? "running" : "skipped");
-        if (startFromOrigin) {
-          if (selectedBase === undefined && baseRef.includes("/")) {
-            let cursor: number | undefined;
-            do {
-              const refs = yield* git
-                .listRefs({
-                  cwd: project.workspaceRoot,
-                  query: baseRef,
-                  limit: 100,
-                  includeMatchingRemoteRefs: true,
-                  ...(cursor === undefined ? {} : { cursor }),
-                })
-                .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
-              const localBase = refs.refs.find((ref) => ref.name === baseRef && !ref.isRemote);
-              selectedBase =
-                localBase ?? selectedBase ?? refs.refs.find((ref) => ref.name === baseRef);
-              if (localBase || refs.nextCursor === null) break;
-              cursor = refs.nextCursor;
-            } while (true);
-          }
-          const selectedRemote = selectedBase?.isRemote ? selectedBase.remoteName : undefined;
-          const branchName =
-            selectedRemote === "origin" ? baseRef.slice("origin/".length) : baseRef;
-          // Scoped fetch treats origin/ as a remote prefix, so fetch all refs
-          // when that spelling belongs to a local branch or another remote.
-          const ambiguousOriginPrefix =
-            selectedRemote === undefined && baseRef.startsWith("origin/");
-          yield* git
-            .fetchRemote({
+            .resolveWorktreeBaseRemote({
               cwd: project.workspaceRoot,
-              remoteName: "origin",
-              ...(!ambiguousOriginPrefix &&
-              (selectedRemote === undefined || selectedRemote === "origin")
-                ? { refName: baseRef }
-                : {}),
+              refName: baseRef,
+            })
+            .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)))) !== null;
+        yield* setupTracker.stageStatus(threadId, "fetch", shouldFetch ? "running" : "skipped");
+        if (shouldFetch) {
+          const remoteBase = yield* git
+            .fetchWorktreeBaseCommit({
+              cwd: project.workspaceRoot,
+              refName: baseRef,
             })
             .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
-          const resolvedRemoteBase =
-            selectedRemote === undefined || selectedRemote === "origin"
-              ? yield* git
-                  .resolveRemoteTrackingCommitIfExists({
-                    cwd: project.workspaceRoot,
-                    remoteName: "origin",
-                    branchName,
-                  })
-                  .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)))
-              : null;
-          if (resolvedRemoteBase !== null) startRef = resolvedRemoteBase.commitSha;
+          if (remoteBase !== null) {
+            startRef = remoteBase.commitSha;
+            baseRefName = `refs/remotes/${remoteBase.remoteRefName}`;
+          }
         }
-        if (startFromOrigin) yield* setupTracker.stageStatus(threadId, "fetch", "done");
+        if (shouldFetch) yield* setupTracker.stageStatus(threadId, "fetch", "done");
         if (
           branch !== null &&
           isTemporaryWorktreeBranch(branch) &&
@@ -1462,7 +1439,7 @@ const make = Effect.gen(function* () {
               cwd: project.workspaceRoot,
               refName: startRef,
               newRefName: branch!,
-              baseRefName: baseRef,
+              baseRefName,
               path: null,
             },
             {
@@ -1485,8 +1462,7 @@ const make = Effect.gen(function* () {
         yield* setupTracker.stageStatus(threadId, "checkout", "done");
       }
 
-      // A reused worktree is already recorded, and rewriting it could undo
-      // the first attempt's branch rename.
+      // Do not rewrite reused worktrees; that could undo the original branch rename.
       if (reused === undefined) {
         yield* threads
           .dispatch({
@@ -1509,7 +1485,7 @@ const make = Effect.gen(function* () {
       ) {
         const oldBranch = branch;
         const worktreeCwd = worktreePath;
-        yield* generateBranchNameFor(worktreeCwd, initialMessage).pipe(
+        branchRename = yield* generateBranchNameFor(worktreeCwd, initialMessage).pipe(
           Effect.flatMap(({ branch: newBranch, exactName }) =>
             Effect.gen(function* () {
               const legacyPreparation =
@@ -1545,25 +1521,21 @@ const make = Effect.gen(function* () {
                     }),
                   ),
                 );
-              // Updating the parent first makes later subagents inherit the new name.
-              // Re-read after each pass for children of subagents updated in that pass.
+              // Update parents first so children inherit names; reread each pass for newly updated descendants.
               const visited = new Set([threadId]);
               while (true) {
-                const snapshot = yield* threads.getShellSnapshot();
-                const sharing = [...snapshot.threads, ...snapshot.archivedThreads].filter(
-                  (thread) =>
-                    !visited.has(thread.id) &&
-                    thread.worktreePath === worktreeCwd &&
-                    thread.branch === oldBranch,
-                );
+                const matchingIds = yield* metadata
+                  .listIds({ worktree: { path: worktreeCwd, branch: oldBranch } })
+                  .pipe(NodeSqliteClient.readOnly);
+                const sharing = matchingIds.filter((id) => !visited.has(id));
                 if (sharing.length === 0) break;
-                for (const thread of sharing) {
-                  visited.add(thread.id);
+                for (const id of sharing) {
+                  visited.add(id);
                   yield* threads
                     .dispatch({
                       type: "thread.metadata.update",
-                      commandId: CommandId.make(`${input.commandId}:branch-rename:${thread.id}`),
-                      threadId: thread.id,
+                      commandId: CommandId.make(`${input.commandId}:branch-rename:${id}`),
+                      threadId: id,
                       branch: renamed.branch,
                       expectedBranch: oldBranch,
                       expectedWorktreePath: worktreeCwd,
@@ -1571,7 +1543,7 @@ const make = Effect.gen(function* () {
                     .pipe(
                       Effect.catchCause((cause) =>
                         Effect.logWarning("Shared thread worktree branch update failed", {
-                          threadId: thread.id,
+                          threadId: id,
                           cause,
                         }),
                       ),
@@ -1592,8 +1564,7 @@ const make = Effect.gen(function* () {
         );
       }
 
-      const cwd = worktreePath ?? project.workspaceRoot;
-      if (runId !== null) {
+      if (runId !== null && worktreePath !== null) {
         yield* threads
           .dispatch({
             type: "prepared-run.progress",
@@ -1607,8 +1578,9 @@ const make = Effect.gen(function* () {
       yield* setupTracker.stageStatus(threadId, "setup-script", "running");
       const legacyPreparation =
         input.legacyBootstrap !== undefined && runId !== null
-          ? yield* legacySetupHooks(input, threadId, runId)
+          ? yield* legacySetupHooks(input, threadId, runId, lifetime)
           : undefined;
+      const cwd = worktreePath ?? project.workspaceRoot;
       const setup = yield* (
         input.runSetupScript === false
           ? Effect.succeed({ status: "no-script" as const })
@@ -1618,6 +1590,9 @@ const make = Effect.gen(function* () {
               projectCwd: project.workspaceRoot,
               worktreePath: cwd,
               ...(legacyPreparation === undefined ? {} : { legacyPreparation }),
+              // Jones: an app-owned delegated child's existing-worktree setup is
+              // observed without the setup tracker, so release waits for a
+              // synchronous script and Stop can close the script's terminal.
               ...(tracked
                 ? {
                     observeCompletion: {
@@ -1625,7 +1600,9 @@ const make = Effect.gen(function* () {
                         setupTracker.appendTail(threadId, "setup-script", line),
                     },
                   }
-                : {}),
+                : observeExistingSetup
+                  ? { observeCompletion: {} }
+                  : {}),
               project: {
                 id: project.id,
                 workspaceRoot: project.workspaceRoot,
@@ -1642,7 +1619,7 @@ const make = Effect.gen(function* () {
               cause.operation !== "openTerminal" ||
               !isTerminalInputValidationError(cause.cause)
             )
-              return yield* Effect.fail(mapError(input, "run-setup-script", threadId)(cause));
+              return yield* mapError(input, "run-setup-script", threadId)(cause);
             const proof = cause.cause;
             const current = yield* threads
               .getThreadRecords(threadId, ["runs"], { runIds: [runId] })
@@ -1745,6 +1722,9 @@ const make = Effect.gen(function* () {
       let awaitAsyncSetup = Effect.void;
       if (setup.status === "started") {
         setupTerminalId = setup.terminalId;
+        yield* setup.writeCompletion.pipe(
+          Effect.mapError(mapError(input, "run-setup-script", threadId)),
+        );
         yield* setupTracker.update(threadId, (snapshot) => ({
           ...snapshot,
           setupScript: {
@@ -1934,10 +1914,9 @@ const make = Effect.gen(function* () {
             createdWorktreePath &&
             ((cancelled && !runReleased) || !workspaceRecorded)
           ) {
+            if (branchRename !== null) yield* Fiber.interrupt(branchRename);
             const removedPath = createdWorktreePath;
-            // The thread forgets the worktree only once it is gone; a failed
-            // removal leaves the directory for the user to clean up rather than
-            // reusing a checkout that may be half written.
+            // Forget worktrees only after removal succeeds; failed removals must not reuse partially written checkouts.
             yield* git
               .removeWorktree({ cwd: project.workspaceRoot, path: removedPath, force: true })
               .pipe(
@@ -1965,7 +1944,7 @@ const make = Effect.gen(function* () {
         }),
       ),
     );
-  });
+  }, Effect.scoped);
 
   const failPreparedRun = (
     input: Pick<PreparationInput, "commandId">,
@@ -2003,18 +1982,20 @@ const make = Effect.gen(function* () {
             ),
           );
 
-  const reservePreparation = (commandId: CommandId, legacy = false) =>
-    Effect.gen(function* () {
-      const completion = legacy ? yield* Deferred.make<void, ThreadLaunchError>() : undefined;
-      return yield* Ref.modify(scheduledLaunches, (state) => {
-        if (state.commands.has(commandId)) return [false, state] as const;
-        const commands = new Set(state.commands);
-        commands.add(commandId);
-        const legacyResults = new Map(state.legacyResults);
-        if (completion !== undefined) legacyResults.set(commandId, completion);
-        return [true, { commands, legacyResults }] as const;
-      });
+  const reservePreparation = Effect.fn("ThreadLaunchService.reservePreparation")(function* (
+    commandId: CommandId,
+    legacy = false,
+  ) {
+    const completion = legacy ? yield* Deferred.make<void, ThreadLaunchError>() : undefined;
+    return yield* Ref.modify(scheduledLaunches, (state) => {
+      if (state.commands.has(commandId)) return [false, state] as const;
+      const commands = new Set(state.commands);
+      commands.add(commandId);
+      const legacyResults = new Map(state.legacyResults);
+      if (completion !== undefined) legacyResults.set(commandId, completion);
+      return [true, { commands, legacyResults }] as const;
     });
+  });
   const releasePreparation = (commandId: CommandId) =>
     Ref.update(scheduledLaunches, (state) => {
       const commands = new Set(state.commands);
@@ -2024,19 +2005,45 @@ const make = Effect.gen(function* () {
       return { commands, legacyResults };
     });
 
+  // Jones: true when the thread is a subagent child whose parent records it as
+  // an app-owned delegated task (delegate_task), not a native or forked child.
+  const isAppOwnedDelegatedChild = Effect.fn("ThreadLaunchService.isAppOwnedDelegatedChild")(
+    (input: PreparationInput, threadId: ThreadId) =>
+      Effect.gen(function* () {
+        const { thread } = yield* threads.getThreadRecords(threadId, []);
+        const parentThreadId = thread.lineage.parentThreadId;
+        if (thread.lineage.relationshipToParent !== "subagent" || parentThreadId === null)
+          return false;
+        const { subagents } = yield* threads.getThreadRecords(parentThreadId, ["subagents"]);
+        return subagents.some(
+          (task) => task.origin === "app_owned" && task.childThreadId === threadId,
+        );
+      }).pipe(Effect.mapError(mapError(input, "update-thread", threadId))),
+  );
+
   const schedulePreparation = Effect.fn("ThreadLaunchService.schedulePreparation")(function* (
     input: PreparationInput,
     threadId: ThreadId,
     runId: RunId | null,
   ) {
     const prepareWithInterruption = Effect.gen(function* () {
-      const prepare = prepareInBackground(input, threadId, runId);
+      // Jones: an app-owned delegated child's existing worktree has its setup
+      // observed and is also prepared under Stop, so task_cancel closes its
+      // setup terminal. The checkout is not removed: this launch did not
+      // create it. Other existing-worktree and root launches are unchanged.
+      const appOwnedExisting =
+        runId !== null &&
+        input.workspaceStrategy.type === "existing_worktree" &&
+        input.reusedWorktree === undefined &&
+        (yield* isAppOwnedDelegatedChild(input, threadId));
+      const prepare = prepareInBackground(input, threadId, runId, appOwnedExisting);
+      if (runId === null) return yield* prepare;
       if (
-        runId === null ||
-        (input.workspaceStrategy.type !== "worktree" && input.reusedWorktree === undefined)
-      ) {
+        input.workspaceStrategy.type !== "worktree" &&
+        input.reusedWorktree === undefined &&
+        !appOwnedExisting
+      )
         return yield* prepare;
-      }
       const afterSequence = yield* threads
         .getThreadEventSequence(threadId)
         .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
@@ -2270,7 +2277,14 @@ const make = Effect.gen(function* () {
   });
 
   const launch: ThreadLaunchService["Service"]["launch"] = Effect.fn("ThreadLaunchService.launch")(
-    function* (input) {
+    function* (request) {
+      // Scratch has no Git repository. Normalize before folder allocation so
+      // durable preparation and retries use the thread's own Scratch folder.
+      const input: ThreadLaunchInput =
+        request.workspaceStrategy.type === "worktree" &&
+        (yield* managedFolders.isScratchProject(request.projectId))
+          ? { ...request, workspaceStrategy: { type: "root" } }
+          : request;
       if (input.preparationReleaseCommandId !== undefined || input.legacyBootstrap !== undefined) {
         const policy = input.legacyBootstrap;
         if (
@@ -2319,10 +2333,7 @@ const make = Effect.gen(function* () {
         instanceId: input.modelSelection.instanceId,
       });
       return yield* Effect.gen(function* () {
-        // A retried launch has no client-supplied id to replay against, so
-        // recover the thread id its accepted create was recorded under before
-        // allocating another one; a fresh id would only collide with the
-        // recorded receipt.
+        // Recover ids from accepted launch receipts before allocating; retries have no client id and new ids collide with receipts.
         const reusableLaunchReceipt =
           input.threadId === undefined &&
           Option.isSome(launchReceipt) &&
@@ -2403,6 +2414,10 @@ const make = Effect.gen(function* () {
                 ...(input.importedNativeThread === undefined
                   ? {}
                   : { importedNativeThread: input.importedNativeThread }),
+                ...(input.linkOrigin === undefined ? {} : { linkOrigin: input.linkOrigin }),
+                ...(input.delegatedFrom === undefined
+                  ? {}
+                  : { delegatedFrom: input.delegatedFrom }),
                 createdBy: input.createdBy,
                 creationSource: input.creationSource,
                 ...(input.legacyBootstrap === undefined
@@ -2424,7 +2439,6 @@ const make = Effect.gen(function* () {
         if (project.id !== input.projectId) {
           return yield* mapError(input, "resolve-project", threadId)("Project identity changed.");
         }
-
         let runId: RunId | null = null;
         let messageWasAlreadyAccepted = false;
         if (input.initialMessage !== undefined) {
@@ -2436,6 +2450,7 @@ const make = Effect.gen(function* () {
             (yield* ids.allocate
               .message({ threadId, ordinal: 1 })
               .pipe(Effect.mapError(mapError(input, "dispatch-message", threadId))));
+          const inheritedDispatchLimit = yield* DispatchModeLimit;
           const dispatched = yield* threads
             .dispatch({
               type: "message.dispatch",
@@ -2473,7 +2488,33 @@ const make = Effect.gen(function* () {
                 ? {}
                 : { legacyBootstrap: input.legacyBootstrap }),
             })
-            .pipe(Effect.mapError(mapError(input, "dispatch-message", threadId)));
+            .pipe(
+              // Replay or concurrent launch can select a thread with broader modes than an agent requested.
+              // The orchestrator refuses under the thread lock; preserve the stricter caller limit and refusal signal.
+              // The user's own clients launch into their own drafts using those drafts' modes.
+              input.createdBy === "agent"
+                ? Effect.provideService(DispatchModeLimit, {
+                    runtimeMode:
+                      inheritedDispatchLimit !== undefined &&
+                      exceededDispatchModeLimit(inheritedDispatchLimit, {
+                        runtimeMode: input.runtimeMode,
+                        interactionMode: inheritedDispatchLimit.interactionMode,
+                      }) === "runtime"
+                        ? inheritedDispatchLimit.runtimeMode
+                        : input.runtimeMode,
+                    interactionMode:
+                      inheritedDispatchLimit?.interactionMode === "plan"
+                        ? "plan"
+                        : input.interactionMode,
+                    ...(inheritedDispatchLimit?.refused === undefined
+                      ? {}
+                      : { refused: inheritedDispatchLimit.refused }),
+                  })
+                : (effect) => effect,
+              Effect.mapError(mapError(input, "dispatch-message", threadId)),
+            );
+          // A concurrent retry can read no receipt and still replay the dispatch.
+          messageWasAlreadyAccepted ||= dispatched.replayed === true;
           const runCreated = dispatched.storedEvents.find(
             (stored) => stored.event.type === "run.created",
           );
@@ -2597,6 +2638,19 @@ const make = Effect.gen(function* () {
                       Effect.mapError(mapError(input, "update-thread", threadId)),
                     );
               if (preparationStillRequired) {
+                // Jones hook: inspect durable progress only while owning this reservation.
+                if (input.holdPreparationAfterProgress && runId !== null) {
+                  for (const suffix of [":progress:worktree", ":progress:setup"]) {
+                    const progress = yield* readReceipt(
+                      input,
+                      CommandId.make(`${input.commandId}${suffix}`),
+                    );
+                    if (Option.isSome(progress) && progress.value.status === "accepted") {
+                      yield* releasePreparation(input.commandId);
+                      return;
+                    }
+                  }
+                }
                 yield* schedulePreparation(
                   {
                     ...input,
@@ -2652,7 +2706,12 @@ const make = Effect.gen(function* () {
         return {
           threadId,
           projection,
-          resumed: Option.isSome(launchReceipt) || messageWasAlreadyAccepted,
+          // An attempt that failed after claiming the thread recorded nothing, so
+          // only a repeat of the final write counts as resumed.
+          resumed:
+            input.initialMessage === undefined
+              ? Option.isSome(launchReceipt) || claimed.replayed === true
+              : messageWasAlreadyAccepted,
         };
       });
     },
@@ -2734,6 +2793,9 @@ const make = Effect.gen(function* () {
   };
 
   return ThreadLaunchService.of({
+    // Jones hook: spec.jones-client-launch; reservation ownership stays in this service.
+    preparationActive: (commandId) =>
+      Ref.get(scheduledLaunches).pipe(Effect.map((state) => state.commands.has(commandId))),
     dispatchNativeBootstrap: (submission) =>
       Effect.flatMap(EnvironmentAuthenticatedPrincipal, (principal) =>
         Option.isSome(nativeBootstrapConfig) && Option.isSome(nativeBootstrapPath)

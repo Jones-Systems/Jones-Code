@@ -1,0 +1,32 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "remote-evaluation-provider",
+  "jonesOwnedPaths": [
+    "apps/server/src/textGeneration/jones/CodexRemoteRequestEvaluation.test.ts",
+    "apps/server/src/textGeneration/jones/CodexRemoteRequestEvaluation.ts",
+    "apps/server/src/textGeneration/jones/remoteEvaluationModel.test.ts",
+    "apps/server/src/textGeneration/jones/remoteEvaluationModel.ts",
+    "apps/server/src/textGeneration/jones/claudeEvaluatorLaunch.ts",
+    "apps/server/src/textGeneration/jones/claudeEvaluatorLaunch.test.ts"
+  ],
+  "hookPaths": ["apps/server/src/provider/Drivers/ClaudeDriver.ts"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/textGeneration/TextGeneration.ts",
+      "to": "apps/server/src/textGeneration/jones/remoteEvaluationModel.ts"
+    },
+    {
+      "from": "apps/server/src/provider/Drivers/CodexManagedProvider.ts",
+      "to": "apps/server/src/textGeneration/jones/CodexRemoteRequestEvaluation.ts"
+    },
+    {
+      "from": "apps/server/src/provider/Drivers/ClaudeDriver.ts",
+      "to": "apps/server/src/textGeneration/jones/claudeEvaluatorLaunch.ts"
+    },
+    {
+      "from": "apps/server/src/textGeneration/ClaudeTextGeneration.ts",
+      "to": "apps/server/src/textGeneration/jones/claudeEvaluatorLaunch.ts"
+    }
+  ]
+}

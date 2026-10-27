@@ -1,8 +1,54 @@
 {
   "schema": "jones.boundary-fragment/v1",
   "feature": "connection-rpc-isolation",
-  "jonesOwnedPaths": [],
-  "hookPaths": [],
+  "jonesOwnedPaths": [
+    "packages/client-runtime/src/jones/connection/routeAttemptBudget.ts",
+    "packages/client-runtime/src/jones/connection/routeAttemptBudget.test.ts",
+    "packages/client-runtime/src/jones/activity/reportLanes.ts",
+    "packages/client-runtime/src/jones/activity/reportLanes.test.ts",
+    "packages/client-runtime/src/jones/connection/betterRouteRecovery.ts",
+    "packages/client-runtime/src/jones/connection/betterRouteRecovery.test.ts",
+    "packages/client-runtime/src/jones/sync/producerGuard.ts",
+    "packages/client-runtime/src/jones/sync/commandIsolation.test.ts"
+  ],
+  "hookPaths": [
+    "packages/client-runtime/src/connection/driver.ts",
+    "apps/web/src/lib/backgroundActivityReporter.ts",
+    "apps/mobile/src/connection/background-activity.ts",
+    "packages/client-runtime/src/connection/supervisor.ts",
+    "packages/client-runtime/src/connection/registry.ts",
+    "packages/client-runtime/src/rpc/client.ts",
+    "packages/client-runtime/src/state/shell.ts"
+  ],
   "tombstones": [],
-  "allowedImports": []
+  "allowedImports": [
+    {
+      "from": "packages/client-runtime/src/connection/driver.ts",
+      "to": "packages/client-runtime/src/jones/connection/routeAttemptBudget.ts"
+    },
+    {
+      "from": "apps/web/src/lib/backgroundActivityReporter.ts",
+      "to": "packages/client-runtime/src/jones/activity/reportLanes.ts"
+    },
+    {
+      "from": "apps/mobile/src/connection/background-activity.ts",
+      "to": "packages/client-runtime/src/jones/activity/reportLanes.ts"
+    },
+    {
+      "from": "packages/client-runtime/src/connection/driver.ts",
+      "to": "packages/client-runtime/src/jones/connection/betterRouteRecovery.ts"
+    },
+    {
+      "from": "packages/client-runtime/src/connection/supervisor.ts",
+      "to": "packages/client-runtime/src/jones/connection/betterRouteRecovery.ts"
+    },
+    {
+      "from": "packages/client-runtime/src/rpc/client.ts",
+      "to": "packages/client-runtime/src/jones/sync/producerGuard.ts"
+    },
+    {
+      "from": "packages/client-runtime/src/state/shell.ts",
+      "to": "packages/client-runtime/src/jones/sync/producerGuard.ts"
+    }
+  ]
 }

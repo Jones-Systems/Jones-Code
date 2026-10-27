@@ -1,0 +1,8 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "request-economy",
+  "jonesOwnedPaths": ["apps/server/src/jones/requestEconomy/"],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": []
+}

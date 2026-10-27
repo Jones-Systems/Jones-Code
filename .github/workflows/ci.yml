@@ -13,22 +13,69 @@ on:
         type: choice
         options:
           - "6"
+          - "7"
           - "8"
-        default: "6"
+          - "9"
+        default: "8"
       weights_source_run_id:
         description: CI run whose combined server shard weights to use (default newest main push)
         type: string
         required: false
         default: ""
+      native_jobs:
+        description: Run the macOS native jobs even when none of the files they check changed
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
+# A newer pull request or manual run cancels the one it supersedes; manual runs
+# with different shard inputs still run side by side. Main pushes share one
+# group without cancelling: the running push finishes, since it records shard
+# weights and is the CI result an update candidate's source needs, and GitHub
+# replaces a still-pending push with the newest one.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.event.pull_request.number || (github.event_name == 'workflow_dispatch' && format('dispatch-{0}-{1}-{2}', github.ref, inputs.server_shards, inputs.weights_source_run_id)) || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
+  # Linux selection uses the imported package graph and falls back to full
+  # qualification whenever the complete PR scope cannot be proved.
+  linux_changes:
+    name: Linux Changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      typecheck: ${{ steps.detect.outputs.typecheck }}
+      build: ${{ steps.detect.outputs.build }}
+      test_packages: ${{ steps.detect.outputs.test_packages }}
+      test_web: ${{ steps.detect.outputs.test_web }}
+      test_server: ${{ steps.detect.outputs.test_server }}
+      test_desktop: ${{ steps.detect.outputs.test_desktop }}
+      test_mobile: ${{ steps.detect.outputs.test_mobile }}
+      test_client_runtime: ${{ steps.detect.outputs.test_client_runtime }}
+      rust: ${{ steps.detect.outputs.rust }}
+      release_smoke: ${{ steps.detect.outputs.release_smoke }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 2
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Select Linux jobs
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/jones/ci/linux-changes.cjs
+
   # Lint, typecheck, and the desktop build each get a runner so they run side by
   # side instead of one after another. The `Check` job at the end of this file
   # passes only when every other job does.
@@ -57,9 +104,17 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version-file: package.json
+          node-version: 26.12.1
           cache: true
           run-install: true
+
+      # electron's install.js (run by ensure:electron) reads this cache before it
+      # downloads from GitHub. The key changes only with the Electron version.
+      - name: Cache Electron download
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/electron
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/.pnpm/electron@*/node_modules/electron/package.json') }}
 
       - name: Ensure Electron runtime is installed
         run: vp run --filter @t3tools/desktop ensure:electron
@@ -70,6 +125,9 @@ jobs:
 
       - name: Verify Jones boundary accounting
         run: node scripts/jones/check-boundary.ts --strict --json
+
+      - name: Check generated Expo GraphQL operations
+        run: vp run --filter t3 generate --check
 
       - name: Check
         run: vp check
@@ -90,6 +148,8 @@ jobs:
           retention-days: 7
 
   typecheck:
+    needs: linux_changes
+    if: ${{ !cancelled() && needs.linux_changes.outputs.typecheck != 'false' }}
     name: Typecheck
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -105,9 +165,17 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version-file: package.json
+          node-version: 26.12.1
           cache: true
           run-install: true
+
+      # electron's install.js (run by ensure:electron) reads this cache before it
+      # downloads from GitHub. The key changes only with the Electron version.
+      - name: Cache Electron download
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/electron
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/.pnpm/electron@*/node_modules/electron/package.json') }}
 
       - name: Ensure Electron runtime is installed
         run: vp run --filter @t3tools/desktop ensure:electron
@@ -116,6 +184,8 @@ jobs:
         run: vpr typecheck
 
   build:
+    needs: linux_changes
+    if: ${{ !cancelled() && needs.linux_changes.outputs.build != 'false' }}
     name: Build
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -131,7 +201,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version-file: package.json
+          node-version: 26.12.1
           cache: true
           run-install: true
 
@@ -147,13 +217,14 @@ jobs:
       - name: Verify preload bundle output
         run: node apps/desktop/scripts/verify-preload-bundle.mjs
 
-  # Server and web tests have their own jobs. Run client-runtime after the
-  # parallel package batch: its generated-snapshot test exceeded its timeout
-  # when competing with other suites on the hosted runner.
+  # Standalone checks always run; the package batch consumes conservative
+  # dependency selection. Desktop, mobile and client-runtime have their own jobs.
   test:
     name: Test
+    needs: linux_changes
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -166,18 +237,26 @@ jobs:
       # ACP process-tree live tests compile a small pthread fixture with `cc`
       # and soft-skip when it is missing. Install build-essential so that path
       # always runs in CI instead of silently no-oping.
-      - name: Install C toolchain for process-tree fixtures
+      - name: Install native test build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential
+          sudo apt-get install -y --no-install-recommends build-essential libsecret-1-dev pkg-config
           command -v cc
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version-file: package.json
+          node-version: 26.12.1
           cache: true
           run-install: true
+
+      # electron's install.js (run by ensure:electron) reads this cache before it
+      # downloads from GitHub. The key changes only with the Electron version.
+      - name: Cache Electron download
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/electron
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/.pnpm/electron@*/node_modules/electron/package.json') }}
 
       - name: Ensure Electron runtime is installed
         run: vp run --filter @t3tools/desktop ensure:electron
@@ -188,24 +267,102 @@ jobs:
       - name: Test nightly release checks
         run: node --test .github/scripts/check-nightly-release.test.cjs
 
+      - name: Test Vercel deployment output for enabled workflows
+        run: |
+          if test -f .github/workflows/release.yml && test -f .github/workflows/web-preview.yml; then
+            node --test .github/scripts/vercel-deployment-output.test.cjs
+          else
+            echo "Vercel deployment integration: not applicable while Jones release and preview workflows are disabled."
+          fi
+
+      - name: Test CI contracts and Chromium setup
+        run: node --test --test-concurrency=1 scripts/jones/ci/*.node-test.*
+
       - name: Test process placement build custody
         run: node --test native/process-placement/build.test.mjs
 
-      - name: Install browser secret helper build libraries
-        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
+      - name: Test affected packages
+        env:
+          TEST_PACKAGES: ${{ needs.linux_changes.outputs.test_packages }}
+        run: node scripts/jones/ci/run-packages.cjs
 
-      - name: Test
-        run: vp run --parallel --concurrency-limit 4 --filter '!t3' --filter '!@t3tools/monorepo' --filter '!@t3tools/web' --filter '!@t3tools/client-runtime' test
-
-      - name: Test client-runtime
-        run: vp run --filter @t3tools/client-runtime test
-
-  # The web suite is the largest outside the server. In the shared Test job it
-  # started last and ran alone for about 40s after everything else finished.
-  test_web:
-    name: Test Web
+  test_desktop:
+    needs: linux_changes
+    if: ${{ !cancelled() && needs.linux_changes.outputs.test_desktop != 'false' }}
+    name: Test Desktop
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      TEST_COMMAND: vp run --filter @t3tools/desktop test --reporter=default --reporter=github-actions --reporter=json --outputFile.json="$RUNNER_TEMP/test-results.json"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Install native test build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential libsecret-1-dev pkg-config
+          command -v cc
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version: 26.12.1
+          cache: true
+          run-install: true
+
+      # electron's install.js (run by ensure:electron) reads this cache before it
+      # downloads from GitHub. The key changes only with the Electron version.
+      - name: Cache Electron download
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/electron
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/.pnpm/electron@*/node_modules/electron/package.json') }}
+
+      - name: Ensure Electron runtime is installed
+        run: vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Test
+        id: tests
+        run: ${{ env.TEST_COMMAND }}
+
+      - &test_receipt
+        name: Record test cases receipt
+        if: always()
+        env:
+          TEST_OUTCOME: ${{ steps.tests.outcome }}
+        run: node scripts/jones/ci/test-evidence.cjs
+
+      - &test_receipt_upload
+        name: Upload test cases and receipt
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: test-cases-${{ github.job }}-a${{ github.run_attempt }}-s${{ strategy.job-index || 0 }}
+          path: |
+            ${{ runner.temp }}/test-results.json
+            ${{ runner.temp }}/test-receipt.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - &test_receipt_cleanup
+        name: Remove uploaded test evidence from runner
+        if: always()
+        run: node scripts/jones/ci/test-evidence.cjs cleanup
+
+  test_mobile:
+    needs: linux_changes
+    if: ${{ !cancelled() && needs.linux_changes.outputs.test_mobile != 'false' }}
+    name: Test Mobile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      TEST_COMMAND: vp run --filter @t3tools/mobile test --reporter=default --reporter=github-actions --reporter=json --outputFile.json="$RUNNER_TEMP/test-results.json"
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -218,15 +375,84 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version-file: package.json
+          node-version: 26.12.1
+          cache: true
+          run-install: true
+
+      - name: Test
+        id: tests
+        run: ${{ env.TEST_COMMAND }}
+
+      - *test_receipt
+      - *test_receipt_upload
+      - *test_receipt_cleanup
+
+  test_client_runtime:
+    needs: linux_changes
+    if: ${{ !cancelled() && needs.linux_changes.outputs.test_client_runtime != 'false' }}
+    name: Test Client Runtime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      TEST_COMMAND: vp run --filter @t3tools/client-runtime test --reporter=default --reporter=github-actions --reporter=json --outputFile.json="$RUNNER_TEMP/test-results.json"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version: 26.12.1
+          cache: true
+          run-install: true
+
+      - name: Test
+        id: tests
+        run: ${{ env.TEST_COMMAND }}
+
+      - *test_receipt
+      - *test_receipt_upload
+      - *test_receipt_cleanup
+
+  # Both shards run the complete web command, including unit and browser projects.
+  test_web:
+    needs: linux_changes
+    if: ${{ !cancelled() && needs.linux_changes.outputs.test_web != 'false' }}
+    name: Test Web ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      TEST_COMMAND: vp run --filter @t3tools/web test --shard ${{ matrix.shard }}/${{ strategy.job-total }} --reporter=default --reporter=github-actions --reporter=json --outputFile.json="$RUNNER_TEMP/test-results.json"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version: 26.12.1
           cache: true
           run-install: true
 
       # The browser project runs React tests in headless Chromium. Same cache key as
-      # test_server, so both jobs share one downloaded browser.
+      # test_server, so matching Playwright versions can reuse the cached browser.
       - name: Resolve Playwright version
         id: playwright_version
-        run: echo "version=$(node -p "require('./apps/web/node_modules/playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(node scripts/jones/ci/chromium-setup.mjs apps/web version)" >> "$GITHUB_OUTPUT"
 
       - name: Cache Chromium
         id: chromium_cache
@@ -239,22 +465,24 @@ jobs:
         if: steps.chromium_cache.outputs.cache-hit != 'true'
         run: node apps/web/node_modules/playwright/cli.js install --only-shell chromium
 
-      - name: Install missing Chromium system dependencies
-        run: |
-          browser=$(find "$HOME/.cache/ms-playwright" -name chrome-headless-shell -type f -print -quit)
-          test -n "$browser"
-          if ldd "$browser" | grep '=> not found'; then
-            node apps/web/node_modules/playwright/cli.js install-deps chromium
-          fi
+      - name: Verify Chromium and repair missing system dependencies
+        run: node scripts/jones/ci/chromium-setup.mjs apps/web
 
       - name: Test
-        run: vp run --filter @t3tools/web test
+        id: tests
+        run: ${{ env.TEST_COMMAND }}
+
+      - *test_receipt
+      - *test_receipt_upload
+      - *test_receipt_cleanup
 
   # Picks the server shard weights once for the whole run, so every shard splits
   # the same file list the same way. It reads the combined weights that the
   # newest successful main push uploaded and otherwise keeps the checked-in map;
   # it fails only when a manual run names a source that cannot be used.
   server_weights:
+    needs: linux_changes
+    if: ${{ !cancelled() && needs.linux_changes.outputs.test_server != 'false' }}
     name: Server Weights
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -280,7 +508,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version-file: package.json
+          node-version: 26.12.1
           cache: false
           run-install: false
 
@@ -300,13 +528,16 @@ jobs:
   # using the weights `server_weights` picked, and each records its own timings.
   test_server:
     name: Test Server ${{ matrix.shard }}
-    needs: server_weights
+    needs: [linux_changes, server_weights]
+    if: ${{ !cancelled() && needs.linux_changes.outputs.test_server != 'false' && needs.server_weights.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(needs.server_weights.outputs.shards) }}
+        shard: ${{ fromJSON(needs.server_weights.outputs.shards || '[1]') }}
+    env:
+      TEST_COMMAND: vp run --filter t3 test --shard ${{ matrix.shard }}/${{ strategy.job-total }} --reporter=default --reporter=github-actions --reporter=../../scripts/jones/ci-test-progress-reporter.ts --reporter=json --outputFile.json="$RUNNER_TEMP/test-results.json"
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -319,15 +550,29 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version-file: package.json
+          node-version: 26.12.1
           cache: true
           run-install: true
 
       # No Electron setup here: `t3` (apps/server) has no Electron dependency
-      # and none of its tests touch the runtime. Only the non-server `test`
-      # job, which covers @t3tools/desktop, needs the download.
+      # and none of its tests touch the runtime. Desktop tests run separately.
+      - name: Resolve Playwright version
+        id: playwright_version
+        run: echo "version=$(node scripts/jones/ci/chromium-setup.mjs apps/server version)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Chromium
+        id: chromium_cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-shell-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright_version.outputs.version }}
+
       - name: Install Chromium for server browser integration tests
-        run: node apps/server/node_modules/playwright-core/cli.js install --with-deps --only-shell chromium
+        if: steps.chromium_cache.outputs.cache-hit != 'true'
+        run: node apps/server/node_modules/playwright-core/cli.js install --only-shell chromium
+
+      - name: Verify Chromium and repair missing system dependencies
+        run: node scripts/jones/ci/chromium-setup.mjs apps/server
 
       # Every shard must use the same weights, so a map that fails its digest
       # fails the shard rather than falling back on its own.
@@ -366,11 +611,16 @@ jobs:
           esac
 
       - name: Test
+        id: tests
         env:
           T3CODE_TRANSFER_BUDGET_REPORT_PATH: ${{ runner.temp }}/t3code-transfer-budget.md
           T3CODE_TRANSFER_BUDGET_RESULT_PATH: ${{ runner.temp }}/thread-transfer-result.json
           JONES_SERVER_SHARD_TIMINGS_PATH: ${{ runner.temp }}/server-timings.ndjson
-        run: vp run --filter t3 test --shard ${{ matrix.shard }}/${{ strategy.job-total }} --reporter=default --reporter=github-actions --reporter=../../scripts/jones/ci-test-progress-reporter.ts
+        run: ${{ env.TEST_COMMAND }}
+
+      - *test_receipt
+      - *test_receipt_upload
+      - *test_receipt_cleanup
 
       # Uploaded even when the shard fails, so partial timings stay inspectable.
       # The attempt and shard in the name keep reruns and shards apart.
@@ -416,10 +666,8 @@ jobs:
 
   transfer-report:
     name: Transfer report artifact
-    needs: test_server
-    # On Blacksmith like every other job here: the GitHub-hosted queue is shared
-    # with the PR bots and can leave this job waiting until it is abandoned,
-    # which fails `Check` on an otherwise green run.
+    needs: [linux_changes, test_server]
+    if: ${{ !cancelled() && needs.linux_changes.outputs.test_server != 'false' && needs.test_server.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -435,8 +683,8 @@ jobs:
   # fail this job.
   server_timings:
     name: Server Timings
-    needs: [server_weights, test_server]
-    if: ${{ !cancelled() }}
+    needs: [linux_changes, server_weights, test_server]
+    if: ${{ !cancelled() && needs.linux_changes.outputs.test_server != 'false' && needs.server_weights.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -451,7 +699,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version-file: package.json
+          node-version: 26.12.1
           cache: false
           run-install: false
 
@@ -490,6 +738,8 @@ jobs:
   # Split out of Check and Test: both paid ~7-9s to install a Rust toolchain
   # for checks that take under 3s, on the critical path of every PR.
   rust:
+    needs: linux_changes
+    if: ${{ !cancelled() && needs.linux_changes.outputs.rust != 'false' }}
     name: Rust
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -519,31 +769,38 @@ jobs:
             cargo test --locked --manifest-path "native/$crate/Cargo.toml"
           done
 
-  # The static analysis below needs a macOS runner, so gate it on the native
-  # sources it actually lints. Detection is API-only (no checkout) and fails open: if
-  # the diff cannot be resolved, the lint runs.
-  mobile_native_changes:
-    name: Mobile Native Changes
+  # The macOS jobs below need a scarce hosted runner shared across the
+  # organization, so each is gated on the files it checks. Detection is
+  # API-only (no checkout) and fails open: if the diff cannot be resolved,
+  # every gated job runs.
+  native_changes:
+    name: Native Changes
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: read
     outputs:
-      changed: ${{ steps.detect.outputs.changed }}
+      mobile: ${{ steps.detect.outputs.mobile }}
+      enrollment: ${{ steps.detect.outputs.enrollment }}
     steps:
-      - name: Detect mobile native changes
+      - name: Detect native changes
         id: detect
         env:
           GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BEFORE_SHA: ${{ github.event.before }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          FORCE_NATIVE: ${{ inputs.native_jobs }}
         run: |
           set -uo pipefail
 
           fail_open() {
-            echo "$* Running native static analysis."
-            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "$* Running every native job."
+            echo "mobile=true" >> "$GITHUB_OUTPUT"
+            echo "enrollment=true" >> "$GITHUB_OUTPUT"
             exit 0
           }
 
@@ -551,17 +808,22 @@ jobs:
             printf '%s\n' "$1" | grep -c . || true
           }
 
+          if [[ "${FORCE_NATIVE}" == "true" ]]; then
+            fail_open "The manual run asked for the native jobs."
+          fi
+
           # One row per changed file, holding the new path and, for a rename,
           # the path it replaced: renaming a matched file out of the matched
-          # paths removes a lint input just like editing it.
+          # paths removes a checked input just like editing it.
           row='[.filename, (.previous_filename // empty)] | @tsv'
 
+          stack_base=
           if [[ -n "${PR_NUMBER}" ]]; then
             stack_base=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.stack.base.ref // empty') \
               || fail_open "Could not read native stack membership."
-            if [[ -n "$stack_base" ]]; then
-              fail_open "Native stack qualification covers lower layers as well as this PR."
-            fi
+          fi
+
+          if [[ -n "${PR_NUMBER}" && -z "${stack_base}" ]]; then
             # The PR files endpoint stops at 3000 files and pagination cannot
             # extend it, so cross-check against the count the PR itself reports.
             expected=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.changed_files') \
@@ -574,7 +836,19 @@ jobs:
               fail_open "GitHub listed only ${listed} of ${expected} changed files."
             fi
           else
-            rows=$(gh api "repos/${GITHUB_REPOSITORY}/compare/${BEFORE_SHA}...${GITHUB_SHA}" --jq ".files[]? | ${row}") \
+            # Native stack qualification covers lower layers as well as this
+            # PR, so a stacked PR compares its head against the stack's base.
+            # A push compares against the commit it replaced. A manual run
+            # compares against the default branch, so a run on that branch
+            # itself finds no changes.
+            if [[ -n "${PR_NUMBER}" ]]; then
+              base="${stack_base}" head="${PR_HEAD_SHA}"
+            elif [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+              base="${DEFAULT_BRANCH}" head="${GITHUB_SHA}"
+            else
+              base="${BEFORE_SHA}" head="${GITHUB_SHA}"
+            fi
+            rows=$(gh api "repos/${GITHUB_REPOSITORY}/compare/${base}...${head}" --jq ".files[]? | ${row}") \
               || fail_open "Could not resolve changed files."
 
             # The compare endpoint reports at most 300 files and pagination does
@@ -587,26 +861,41 @@ jobs:
 
           paths=$(tr '\t' '\n' <<< "$rows")
 
+          detect() {
+            local output="$1" description="$2" pattern="$3"
+            local selected_paths="${4-$paths}"
+            if grep -qE "$pattern" <<< "$selected_paths"; then
+              echo "Changed ${description}:"
+              grep -E "$pattern" <<< "$selected_paths"
+              echo "${output}=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "No ${description} changed."
+              echo "${output}=false" >> "$GITHUB_OUTPUT"
+            fi
+          }
+
           # Sources scripts/mobile-native-static-check.ts lints, plus the tool
           # and rule configuration that decides how it lints them, plus the
-          # root package.json that defines the lint:mobile command.
-          pattern='^apps/mobile/.*\.(swift|kt|kts)$|^apps/mobile/(\.swiftlint\.yml|detekt\.yml|\.editorconfig|Brewfile)$|^scripts/mobile-native-static-check\.ts$|^package\.json$|^\.github/workflows/ci\.yml$'
+          # root package.json that defines the lint:mobile command. SwiftLint's
+          # included roots omit e2e Swift; those files have their own native
+          # qualification. Keep Kotlin E2E inputs: detekt receives them directly.
+          detect mobile "mobile native sources or lint configuration" \
+            '^apps/mobile/.*\.(swift|kt|kts)$|^apps/mobile/(\.swiftlint\.yml|detekt\.yml|\.editorconfig|Brewfile)$|^scripts/mobile-native-static-check\.ts$|^package\.json$|^\.github/workflows/ci\.yml$' \
+            "$(printf '%s\n' "$paths" | grep -vE '^apps/mobile/e2e/.*\.swift$' || true)"
 
-          if grep -qE "$pattern" <<< "$paths"; then
-            echo "Native sources or lint configuration changed:"
-            grep -E "$pattern" <<< "$paths"
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "No mobile native sources or lint configuration changed."
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
+          # The modules the native enrollment qualification names, plus the
+          # dependency manifests and root test configuration that decide how
+          # they run on the pinned Node. Their other imports reach most of the
+          # server; the Linux leg runs on every change and covers those.
+          detect enrollment "native enrollment sources or runtime configuration" \
+            '^apps/server/src/jones/workstreams/enrollment/|^apps/server/src/environment/[Nn]ativeStoreAuthority|^packages/shared/src/nodeSqliteClient|^(package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|vite\.config\.ts)$|^\.github/workflows/ci\.yml$'
 
   mobile_native_static_analysis:
     name: Mobile Native Static Analysis
-    needs: mobile_native_changes
+    needs: native_changes
     # Skip only on an explicit "no": a gate job that failed or errored leaves the
     # output empty, and that must run the lint rather than silently skip it.
-    if: ${{ !cancelled() && needs.mobile_native_changes.outputs.changed != 'false' }}
+    if: ${{ !cancelled() && needs.native_changes.outputs.mobile != 'false' }}
     runs-on: macos-15
     timeout-minutes: 10
     steps:
@@ -621,7 +910,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version-file: package.json
+          node-version: 26.12.1
           cache: true
           run-install: |
             args:
@@ -631,23 +920,27 @@ jobs:
         run: brew bundle install --file apps/mobile/Brewfile
 
       - name: Lint mobile native sources
-        run: vp run lint:mobile
+        run: node scripts/mobile-native-static-check.ts
 
+  # The Linux and macOS legs run the same steps (shared through a YAML anchor)
+  # and differ only in runner and expected platform. Only the macOS leg is
+  # gated, because it needs the scarce runner.
   native_enrollment_qualification:
-    name: Native Enrollment (${{ matrix.os }}, Node 26.8.2)
+    name: Native Enrollment (ubuntu-24.04, Node ${{ matrix.node }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04
-            platform: linux
-            architecture: x64
-          - os: macos-15
-            platform: darwin
-            architecture: arm64
-    runs-on: ${{ matrix.os }}
+          - node: "24.22.1"
+            sqlite: "3.53.4"
+          - node: "26.8.2"
+            sqlite: "3.53.4"
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
-    steps:
+    env:
+      QUALIFICATION_PLATFORM: linux
+      QUALIFICATION_ARCHITECTURE: x64
+    steps: &native_enrollment_steps
       - name: Checkout
         uses: actions/checkout@v6
         with:
@@ -659,20 +952,24 @@ jobs:
       - name: Install dependencies on the supported development runtime
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version-file: package.json
+          node-version: 26.12.1
           cache: true
           run-install: true
+
+      - name: Verify official Effect TSRS after the full install
+        run: |
+          node scripts/jones/tsrs/patch.ts --verify
+          node scripts/jones/tsrs/typecheck.ts --version
 
       - name: Setup the standalone CLI runtime
         uses: actions/setup-node@v6
         with:
-          node-version: 26.8.2
+          node-version: ${{ matrix.node }}
 
       - name: Qualify native enrollment and store authority on the actual runtime
         env:
-          JONES_NATIVE_ENROLLMENT_QUALIFICATION_NODE: 26.8.2
-          QUALIFICATION_PLATFORM: ${{ matrix.platform }}
-          QUALIFICATION_ARCHITECTURE: ${{ matrix.architecture }}
+          JONES_NATIVE_ENROLLMENT_QUALIFICATION_NODE: ${{ matrix.node }}
+          JONES_NATIVE_ENROLLMENT_QUALIFICATION_SQLITE: ${{ matrix.sqlite }}
         run: |
           qualification_node="$(command -v node)"
           "$qualification_node" --input-type=module <<'NODE'
@@ -680,8 +977,8 @@ jobs:
           import { lstatSync, realpathSync } from 'node:fs';
           import { tmpdir } from 'node:os';
           import { join, parse, sep } from 'node:path';
-          assert.equal(process.versions.node, '26.8.2');
-          assert.equal(process.versions.sqlite, '3.53.4');
+          assert.equal(process.versions.node, process.env.JONES_NATIVE_ENROLLMENT_QUALIFICATION_NODE);
+          assert.equal(process.versions.sqlite, process.env.JONES_NATIVE_ENROLLMENT_QUALIFICATION_SQLITE);
           assert.equal(process.platform, process.env.QUALIFICATION_PLATFORM);
           assert.equal(process.arch, process.env.QUALIFICATION_ARCHITECTURE);
           console.log({ node: process.versions.node, sqlite: process.versions.sqlite, executable: realpathSync(process.execPath), platform: process.platform, architecture: process.arch });
@@ -703,7 +1000,29 @@ jobs:
             apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts \
             packages/shared/src/nodeSqliteClient.test.ts
 
+  native_enrollment_qualification_macos:
+    name: Native Enrollment (macos-15, Node ${{ matrix.node }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - node: "24.22.1"
+            sqlite: "3.53.4"
+          - node: "26.8.2"
+            sqlite: "3.53.4"
+    needs: native_changes
+    # Skip only on an explicit "no", as for the mobile lint.
+    if: ${{ !cancelled() && needs.native_changes.outputs.enrollment != 'false' }}
+    runs-on: macos-15
+    timeout-minutes: 15
+    env:
+      QUALIFICATION_PLATFORM: darwin
+      QUALIFICATION_ARCHITECTURE: arm64
+    steps: *native_enrollment_steps
+
   release_smoke:
+    needs: linux_changes
+    if: ${{ !cancelled() && needs.linux_changes.outputs.release_smoke != 'false' }}
     name: Release Smoke
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -719,7 +1038,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version-file: package.json
+          node-version: 26.12.1
           cache: true
           run-install: |
             args:
@@ -728,40 +1047,47 @@ jobs:
       - name: Exercise release-only workflow steps
         run: node scripts/release-smoke.ts
 
-  # Branch protection requires this job by its name, `Check`. It fails when any
-  # other job fails, is cancelled, or is skipped without a reason, so splitting
-  # or resharding jobs needs no ruleset change. Add every new job to `needs`.
-  # `always()` rather than `!cancelled()`: a skipped job reports success to
-  # branch protection, so a cancelled run must still produce a failing check.
+  # `Check` is the required merge check named in
+  # docs/operations/contributor-guidance.md (no branch protection or ruleset
+  # enforces it today). It fails when any other job fails, is cancelled, or is
+  # skipped without a reason, so splitting or resharding jobs needs no policy
+  # change. Add every new job to `needs`. `always()` rather than
+  # `!cancelled()`: a skipped job reports success, so a cancelled run must
+  # still produce a failing check.
   check:
     name: Check
     if: ${{ always() }}
     needs:
       [
         lint,
+        linux_changes,
         typecheck,
         build,
         test,
         test_web,
+        test_desktop,
+        test_mobile,
+        test_client_runtime,
         server_weights,
         test_server,
         transfer-report,
         server_timings,
         rust,
-        mobile_native_changes,
+        native_changes,
         mobile_native_static_analysis,
         release_smoke,
         native_enrollment_qualification,
+        native_enrollment_qualification_macos,
       ]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - name: Checkout check contract
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          sparse-checkout: scripts/jones/ci
+
       - name: Require every job to pass
         env:
           RESULTS: ${{ toJSON(needs) }}
-        run: |
-          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
-          # Only the macOS lint skips on purpose, when no native mobile code changed.
-          echo "$RESULTS" | jq -e 'all(to_entries[];
-            .value.result == "success"
-            or (.key == "mobile_native_static_analysis" and .value.result == "skipped"))' > /dev/null
+        run: node scripts/jones/ci/check-results.cjs

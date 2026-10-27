@@ -1,8 +1,12 @@
+import { jonesBuildLabels } from "@t3tools/shared/jones/buildTime";
+import type { EnvironmentId } from "@t3tools/contracts";
 import type {
   JonesUpdateProvenance,
   JonesUpdateState,
   JonesUpdateDownloadInput,
+  JonesUpdateExactInput,
   JonesUpdateInstallInput,
+  JonesUpdateReconcileInput,
 } from "@t3tools/contracts/jones/jonesUpdates";
 import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
@@ -29,9 +33,12 @@ export class JonesUpdateDisconnectedError extends Schema.TaggedError<JonesUpdate
   {},
 ) {}
 
-type JonesAction =
+export type JonesAction =
   | { action: "check" }
   | { action: "download"; input: JonesUpdateDownloadInput }
+  /** Hosts that predate exact selection answer 404; callers gate this on `capability.exactSource`. */
+  | { action: "downloadExact"; input: JonesUpdateExactInput }
+  | { action: "reconcile"; input: JonesUpdateReconcileInput }
   | { action: "install"; input: JonesUpdateInstallInput };
 
 const request = Effect.fn("clientRuntime.jonesUpdates.request")(function* (
@@ -64,8 +71,12 @@ const request = Effect.fn("clientRuntime.jonesUpdates.request")(function* (
           return client.check({ headers });
         case "download":
           return client.download({ headers, payload: input.input });
+        case "downloadExact":
+          return client.downloadExact({ headers, payload: input.input });
         case "install":
           return client.install({ headers, payload: input.input });
+        case "reconcile":
+          return client.reconcile({ headers, payload: input.input });
       }
     },
   });
@@ -236,20 +247,80 @@ export function createJonesUpdateAtoms<R, E>(
   return { value, observation, action };
 }
 
+const SETTLEMENT_REFUSALS = {
+  "not-failed": "This attempt is not a failed update.",
+  "not-found": "The attempt record was not found.",
+  "insufficient-evidence": "Retained evidence cannot prove this attempt made no changes.",
+  "restore-pending": "Recovery is still pending.",
+  "active-changed": "The running version changed. Its outcome needs review.",
+  "trial-evidence-present": "The candidate may have started. Its outcome needs review.",
+  "retired-evidence-mismatch": "The retired attempt does not match the retained evidence.",
+  "settlement-write-failed": "The launcher could not save reconciliation.",
+  "capability-unsupported": "Launcher refresh recommended",
+} satisfies Record<NonNullable<JonesUpdateState["settlementRefusal"]>, string>;
+
 export function jonesUpdatePresentation(state: JonesUpdateState) {
   const busy = ["checking", "downloading", "verifying", "preparing", "installing"].includes(
     state.phase,
   );
   const message =
     state.phase === "installing"
-      ? "Installing — server restarting. Waiting for the launcher outcome."
+      ? "Installing. Server restarting. Waiting for the launcher outcome."
       : (state.message ?? state.phase);
+  const settled =
+    state.settlement === "launcher-recorded" || state.settlement === "legacy-reconciled";
+  const settlementMessage =
+    state.settlement === undefined
+      ? undefined
+      : settled
+        ? `Update did not start: ${state.cause ?? "cause unavailable"}. Nothing changed.`
+        : "Previous attempt needs reconciliation";
+  const refusalMessage =
+    state.settlementRefusal === undefined
+      ? undefined
+      : SETTLEMENT_REFUSALS[state.settlementRefusal];
   const outcome = state.outcome;
+  const outcomeLabels =
+    outcome === undefined
+      ? undefined
+      : jonesBuildLabels([
+          {
+            version: outcome.fromVersion,
+            startedAt:
+              outcome.fromVersion === state.currentVersion
+                ? state.currentBuildStartedAt
+                : undefined,
+            sourceSha:
+              outcome.fromVersion === state.currentVersion ? state.installedSource?.sha : undefined,
+          },
+          {
+            version: outcome.targetVersion,
+            startedAt:
+              outcome.targetVersion === state.provenance?.version
+                ? state.provenance.buildStartedAt
+                : undefined,
+            sourceSha:
+              outcome.targetVersion === state.provenance?.version
+                ? state.provenance.sourceSha
+                : undefined,
+          },
+        ]);
   const outcomeMessage =
     outcome === undefined
       ? undefined
-      : `${outcome.status === "committed" ? "Installed" : outcome.status === "rolled-back" ? "Rolled back" : "Blocked"}: ${outcome.fromVersion} → ${outcome.targetVersion}${outcome.reason ? ` · ${outcome.reason}` : ""}`;
-  return { busy, message, outcomeMessage };
+      : `${outcome.status === "committed" ? "Installed" : outcome.status === "rolled-back" ? "Rolled back" : "Blocked"}: ${outcomeLabels![0]!.text} → ${outcomeLabels![1]!.text}${outcome.reason ? ` · ${outcome.reason}` : ""}`;
+  return {
+    busy,
+    message,
+    outcomeMessage,
+    settlementMessage,
+    refusalMessage,
+    settled,
+    canReconcile:
+      state.settlement === "none" &&
+      state.updateId !== undefined &&
+      state.launcherSettlement === "supported",
+  };
 }
 
 export function jonesUpdateActionError(
@@ -261,6 +332,13 @@ export function jonesUpdateActionError(
       : "The update request failed. Check the connection and try again.";
   const state = result.value;
   if (state === null) return "This host does not support Jones updates.";
+  const presentation = jonesUpdatePresentation(state);
+  if (presentation.refusalMessage !== undefined) return presentation.refusalMessage;
+  if (
+    presentation.settled &&
+    (state.phase === "error" || state.message === presentation.settlementMessage)
+  )
+    return null;
   return ["error", "blocked", "rolled-back"].includes(state.phase)
     ? (state.message ?? `The update is ${state.phase}.`)
     : null;
@@ -269,6 +347,31 @@ export function jonesUpdateActionError(
 /** GitHub's abbreviation; callers keep the full commit reachable. */
 export function shortJonesSource(sha: string) {
   return sha.slice(0, 7);
+}
+
+/**
+ * Why a host that follows its laptop will not take `source` (by default its offered or staged
+ * build), or undefined when it will. The host enforces the same rule; this only explains it.
+ */
+export function jonesFollowerHold(
+  state: JonesUpdateState,
+  source: string | undefined = state.provenance?.sourceSha,
+): string | undefined {
+  const policy = state.policy;
+  if (policy === undefined) return undefined;
+  if (policy.leaderSource === null)
+    return "This host follows its laptop and waits for the laptop to report its installed build.";
+  if (source === undefined || source === policy.leaderSource) return undefined;
+  return `This host follows its laptop and installs only the laptop's installed source ${shortJonesSource(policy.leaderSource)}.`;
+}
+
+/** One line naming whose build a following host takes. */
+export function jonesFollowerSummary(state: JonesUpdateState): string | undefined {
+  const policy = state.policy;
+  if (policy === undefined) return undefined;
+  return policy.leaderSource === null
+    ? "Follows its laptop · waiting for the laptop's installed build"
+    : `Follows its laptop · takes only source ${shortJonesSource(policy.leaderSource)}`;
 }
 
 /** The host's offered or staged build. Hosts that predate offered versions omit `version`. */
@@ -290,6 +393,7 @@ export function jonesCandidatePresentation(state: JonesUpdateState) {
           ? "Available"
           : "Offered",
     version: provenance.version,
+    buildStartedAt: provenance.buildStartedAt,
     sourceSha: provenance.sourceSha,
   };
 }
@@ -316,4 +420,238 @@ export function compareJonesSource(
   )
     return "unavailable";
   return installed.sha === candidate.sourceSha ? "matches" : "different";
+}
+
+/** What one host can do toward this app's exact source commit. */
+export type JonesExactSourceStep =
+  | { readonly kind: "download-exact"; readonly targetSource: string }
+  | {
+      readonly kind: "replace-exact";
+      readonly targetSource: string;
+      readonly replace: Omit<NonNullable<JonesUpdateExactInput["replace"]>, "operationId">;
+    }
+  | { readonly kind: "download"; readonly input: JonesUpdateDownloadInput }
+  | { readonly kind: "install"; readonly input: JonesUpdateInstallInput };
+
+export type JonesExactSourceUnavailable =
+  | "invalid-target"
+  | "waiting"
+  | "unsupported"
+  | "no-permission"
+  | "already-installed"
+  | "already-downloaded"
+  | "busy"
+  | "reconciling"
+  | "staged-other"
+  | "offered-other"
+  | "follows-laptop"
+  | "unavailable";
+
+export type JonesExactSourceDecision =
+  | { readonly status: "ready"; readonly step: JonesExactSourceStep }
+  | {
+      readonly status: "unavailable";
+      readonly reason: JonesExactSourceUnavailable;
+      readonly message: string;
+    };
+
+export interface JonesExactSourceInput {
+  readonly environmentId: EnvironmentId;
+  readonly observation: JonesUpdateObservation;
+  /** A verified installed source commit, never an offered or downloaded build. */
+  readonly targetSource: string | undefined;
+  readonly canOperate: boolean;
+  readonly allowReplace?: boolean | undefined;
+  readonly allowInstall?: boolean | undefined;
+  readonly subject?: "this app" | "this laptop" | undefined;
+  /** An install request whose response was lost; it blocks re-submission until the host moves on. */
+  readonly unresolvedInstall?:
+    | {
+        readonly stagedHandle: string;
+        readonly revision: number | undefined;
+      }
+    | undefined;
+}
+
+const unavailable = (
+  reason: JonesExactSourceUnavailable,
+  message: string,
+): JonesExactSourceDecision => ({ status: "unavailable", reason, message });
+
+function capabilityRefusal(state: JonesUpdateState, what: "download" | "install") {
+  return state.capability.reason === "bootstrap-required"
+    ? "Installing needs a qualified launcher on this host first."
+    : `This host cannot ${what} updates right now.`;
+}
+
+/**
+ * Chooses the one next step that moves a host toward this app's exact source, or says why none
+ * exists. Sources compare as full commits: platform artifacts of one commit carry different
+ * versions, and equal versions can hide different commits. Hosts that cannot select a source
+ * may only download an offer that already is the target.
+ */
+export function resolveJonesExactSourceAction(
+  input: JonesExactSourceInput,
+): JonesExactSourceDecision {
+  const { observation, targetSource } = input;
+  const subject = input.subject ?? "this app";
+  if (targetSource === undefined || !FULL_SOURCE_COMMIT.test(targetSource))
+    return unavailable(
+      "invalid-target",
+      subject === "this laptop"
+        ? "Waiting for this laptop's verified installed build."
+        : "This app does not report a verified installed source commit.",
+    );
+  const state = observation.state;
+  if (observation.freshness === "unsupported" || (observation.freshness === "fresh" && !state))
+    return unavailable("unsupported", "This host does not support Jones updates.");
+  if (observation.freshness !== "fresh" || state === null)
+    return unavailable(
+      "waiting",
+      observation.message ?? "Waiting for this host's current update status.",
+    );
+  if (!input.canOperate)
+    return unavailable("no-permission", "Your session on this host cannot change updates.");
+  const short = shortJonesSource(targetSource);
+  if (state.installedSource?.sha === targetSource)
+    return unavailable("already-installed", `This host already runs source ${short}.`);
+  if (jonesUpdatePresentation(state).busy)
+    return unavailable("busy", jonesUpdatePresentation(state).message);
+  const hold = jonesFollowerHold(state, targetSource);
+  if (hold !== undefined) return unavailable("follows-laptop", hold);
+  const pending = input.unresolvedInstall;
+  if (
+    pending !== undefined &&
+    state.stagedHandle === pending.stagedHandle &&
+    state.revision === pending.revision
+  )
+    return unavailable(
+      "reconciling",
+      "The install request was sent but its outcome is unknown. Waiting for the host to report it; it will not be sent again.",
+    );
+  const provenance = state.provenance;
+  if (state.stagedHandle !== undefined) {
+    if (provenance === undefined)
+      return unavailable(
+        "staged-other",
+        "This host has a downloaded update with no reported source, so it will not be installed from this notice. Open Settings → Connections to review this host's downloaded update; we cannot confirm it matches this app.",
+      );
+    if (provenance.sourceSha !== targetSource) {
+      if (
+        input.allowReplace === true &&
+        state.capability.download &&
+        state.capability.exactSource === true &&
+        state.capability.replaceStaged === true &&
+        state.environmentId === input.environmentId &&
+        state.currentVersion !== undefined &&
+        state.installedSource !== undefined &&
+        FULL_SOURCE_COMMIT.test(provenance.sourceSha)
+      )
+        return {
+          status: "ready",
+          step: {
+            kind: "replace-exact",
+            targetSource,
+            replace: {
+              stagedHandle: state.stagedHandle,
+              sourceSha: provenance.sourceSha,
+              environmentId: input.environmentId,
+              currentVersion: state.currentVersion,
+              expectedInstalledSource: state.installedSource.sha,
+            },
+          },
+        };
+      return unavailable(
+        "staged-other",
+        input.allowReplace === true
+          ? `This host has source ${shortJonesSource(provenance.sourceSha)} downloaded; ${subject} needs ${short}. This host cannot safely replace that download from here. Update its server and launcher to enable replacement.`
+          : `This host has source ${shortJonesSource(provenance.sourceSha)} downloaded; ${subject} needs ${short}. It will not be installed from this notice. Open Settings → Connections to review this host's downloaded update. Installing it there will not match ${subject}.`,
+      );
+    }
+    if (input.allowInstall === false)
+      return unavailable(
+        "already-downloaded",
+        `Source ${short} is downloaded. Choose Install separately to apply it.`,
+      );
+    if (!state.capability.install || state.currentVersion === undefined)
+      return unavailable("unavailable", capabilityRefusal(state, "install"));
+    return {
+      status: "ready",
+      step: {
+        kind: "install",
+        input: {
+          stagedHandle: state.stagedHandle,
+          environmentId: input.environmentId,
+          currentVersion: state.currentVersion,
+        },
+      },
+    };
+  }
+  if (!state.capability.download)
+    return unavailable("unavailable", capabilityRefusal(state, "download"));
+  if (state.capability.exactSource === true)
+    return { status: "ready", step: { kind: "download-exact", targetSource } };
+  if (
+    provenance !== undefined &&
+    state.phase === "available" &&
+    provenance.sourceSha === targetSource
+  )
+    return {
+      status: "ready",
+      step: {
+        kind: "download",
+        input: { artifactId: provenance.artifactId, sourceSha: provenance.sourceSha },
+      },
+    };
+  return unavailable(
+    "offered-other",
+    provenance !== undefined && state.phase === "available"
+      ? `This host offers source ${shortJonesSource(provenance.sourceSha)} and cannot download a specific source. Update the host from its own settings.`
+      : `This host cannot download a specific source (${short}). Update the host from its own settings.`,
+  );
+}
+
+/** Revalidates the selected download after an installation confirmation. */
+export function jonesInstallRefusal(
+  clicked: JonesUpdateInstallInput,
+  latest: JonesUpdateObservation,
+): string | undefined {
+  const state = latest.state;
+  if (latest.freshness !== "fresh" || state === null)
+    return "Waiting for this host's current update status.";
+  if (jonesUpdatePresentation(state).busy) return "An update operation is already in progress.";
+  if (
+    state.stagedHandle !== clicked.stagedHandle ||
+    state.environmentId !== clicked.environmentId ||
+    state.currentVersion !== clicked.currentVersion
+  )
+    return "The host or downloaded build changed while confirmation was open.";
+  if (!state.capability.install) return capabilityRefusal(state, "install");
+  return jonesFollowerHold(state);
+}
+
+/**
+ * Judges a completed exact-source request. A host that stages another commit than the target
+ * is a refusal for this notice even when the host itself reports success.
+ */
+export function jonesExactSourceResultError(
+  step: JonesExactSourceStep,
+  result: AtomCommandResult<JonesUpdateState | null, unknown>,
+  targetSource: string,
+): string | null {
+  const failure = jonesUpdateActionError(result);
+  if (failure !== null || result._tag !== "Success" || step.kind === "install") return failure;
+  const state = result.value;
+  if (state === null) return failure;
+  if (
+    ["downloading", "verifying", "staged"].includes(state.phase) &&
+    state.provenance?.sourceSha !== targetSource
+  )
+    return state.provenance === undefined
+      ? "The host did not report the requested source for its download. Check its status before continuing."
+      : `The host reports source ${shortJonesSource(state.provenance.sourceSha)} downloaded, not ${shortJonesSource(targetSource)}. It will not be installed from this notice.`;
+  // Accepted work is under way or done; any other phase means the host did not take the download.
+  return ["downloading", "verifying", "staged"].includes(state.phase)
+    ? null
+    : (state.message ?? `The host did not start the download (${state.phase}).`);
 }

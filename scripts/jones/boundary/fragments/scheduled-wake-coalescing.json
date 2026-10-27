@@ -1,0 +1,16 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "scheduled-wake-coalescing",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/scheduledTasks/queuedWake.ts",
+    "apps/server/src/jones/scheduledTasks/queuedWake.test.ts"
+  ],
+  "hookPaths": ["apps/server/src/scheduledTasks/ScheduledTaskService.ts"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
+      "to": "apps/server/src/jones/scheduledTasks/queuedWake.ts"
+    }
+  ]
+}

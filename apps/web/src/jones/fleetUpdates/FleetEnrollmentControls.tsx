@@ -6,6 +6,7 @@ import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import { runtime } from "../../lib/runtime";
 import { FleetEnrollmentStatus, type FleetHostReadiness } from "./FleetEnrollmentStatus";
+import { describeFollower } from "./followerStatus";
 import {
   fleetDesktopState,
   fleetHost,
@@ -29,6 +30,7 @@ export function FleetEnrollmentControls({
   const [busy, setBusy] = useState(false);
   const [continueThreads, setContinueThreads] = useState(false);
   const supported = window.desktopBridge?.fleetUpdates !== undefined;
+  // oxlint-disable-next-line t3code/react-effect-budget -- Read fleet enrollment status through the desktop bridge and ignore responses after the controls retire.
   useEffect(() => {
     if (!supported) return;
     let cancelled = false;
@@ -122,6 +124,11 @@ export function FleetEnrollmentControls({
       label={label}
       enrolled={enrollment?.enabled === true}
       readiness={readiness}
+      follower={
+        enrollment?.enabled === true && status?.follower !== undefined
+          ? describeFollower(status.follower)
+          : undefined
+      }
       campaign={
         latest === undefined
           ? undefined

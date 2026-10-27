@@ -39,6 +39,7 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
 
 export const RPC_REQUIRED_SCOPES = {
   ...CLIENT_GUARDED_RPC_SCOPES,
+  [ORCHESTRATION_V2_WS_METHODS.listLinkedThreads]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_V2_WS_METHODS.previewProviderConversationReselection]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.reselectProviderConversation]: AuthOrchestrationOperateScope,
@@ -54,8 +55,12 @@ export const RPC_REQUIRED_SCOPES = {
   [ORCHESTRATION_V2_WS_METHODS.searchThread]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.searchThreadStream]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.getArchivedShellSnapshot]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_V2_WS_METHODS.getThreadFamily]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_V2_WS_METHODS.getWorktreeThreadIds]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_V2_WS_METHODS.getOlderSettledThreads]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.getThreadProjection]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.getTurnItem]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_V2_WS_METHODS.getThreadReferenceExcerpt]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.launchThread]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_V2_WS_METHODS.subscribeArchivedShell]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.subscribeShell]: AuthOrchestrationReadScope,
@@ -89,6 +94,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.serverGetStorageCleanupReport]: AuthOrchestrationReadScope,
   [WS_METHODS.serverGetDatabaseStorage]: AuthOrchestrationReadScope,
   [WS_METHODS.serverGetSettings]: AuthOrchestrationReadScope,
+  [WS_METHODS.peerLinksList]: AuthAccessReadScope,
   [WS_METHODS.serverUpdateSettings]: AuthSettingsWriteScope,
   [WS_METHODS.serverSearchAcpRegistry]: AuthOrchestrationReadScope,
   [WS_METHODS.serverPrepareAcpRegistryAgent]: AuthProvidersManageScope,
@@ -104,8 +110,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.serverDiscoverSourceControl]: AuthOrchestrationReadScope,
   [WS_METHODS.serverGetTraceDiagnostics]: AuthDiagnosticsReadScope,
   [WS_METHODS.serverGetProcessDiagnostics]: AuthDiagnosticsReadScope,
-  // Load-balancing new threads reads host load; that is part of operating
-  // threads, not of inspecting diagnostics.
+  // Thread load balancing reads host load, so it needs thread scope rather than diagnostics scope.
   [WS_METHODS.serverGetHostResources]: AuthOrchestrationReadScope,
   [WS_METHODS.serverGetProcessResourceHistory]: AuthDiagnosticsReadScope,
   [WS_METHODS.serverGetResourceTelemetryHistory]: AuthDiagnosticsReadScope,
@@ -127,6 +132,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.pullRequestsCiStatus]: AuthOrchestrationReadScope,
   [WS_METHODS.pullRequestsList]: AuthOrchestrationReadScope,
   [WS_METHODS.pullRequestsListStats]: AuthOrchestrationReadScope,
+  [WS_METHODS.pullRequestsFilterOptions]: AuthOrchestrationReadScope,
   [WS_METHODS.pullRequestsSummary]: AuthOrchestrationReadScope,
   [WS_METHODS.pullRequestsRouting]: AuthOrchestrationReadScope,
   [WS_METHODS.pullRequestsRoutingIdentity]: AuthOrchestrationReadScope,
@@ -140,6 +146,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.pullRequestsThreadComments]: AuthOrchestrationReadScope,
   [WS_METHODS.pullRequestsDiffFileContents]: AuthOrchestrationReadScope,
   [WS_METHODS.pullRequestsFilesViewed]: AuthOrchestrationReadScope,
+  [WS_METHODS.pullRequestsChangeBreakdown]: AuthOrchestrationReadScope,
   [WS_METHODS.pullRequestsInvalidate]: AuthOrchestrationReadScope,
   [WS_METHODS.pullRequestsReportState]: AuthOrchestrationReadScope,
   [WS_METHODS.pullRequestsSubscribeRefreshes]: AuthOrchestrationReadScope,
@@ -148,6 +155,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.sourceControlLookupRepository]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeProjectClones]: AuthOrchestrationReadScope,
   [WS_METHODS.projectsListEntries]: AuthFilesystemReadScope,
+  [WS_METHODS.projectsListIgnoredFiles]: AuthFilesystemReadScope,
   [WS_METHODS.projectsReadFile]: AuthFilesystemReadScope,
   [WS_METHODS.projectsSearchContents]: AuthFilesystemReadScope,
   [WS_METHODS.projectsSearchEntries]: AuthFilesystemReadScope,
@@ -201,6 +209,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.subscribeDiscoveredLocalServers]: AuthOrchestrationReadScope,
   [WS_METHODS.deviceConfigure]: AuthSettingsWriteScope,
   [WS_METHODS.deviceTestHost]: AuthSettingsWriteScope,
+  [WS_METHODS.deviceEasAccount]: AuthSettingsWriteScope,
   [WS_METHODS.deviceList]: AuthOrchestrationReadScope,
   [WS_METHODS.deviceOpen]: AuthOrchestrationOperateScope,
   [WS_METHODS.deviceClose]: AuthOrchestrationOperateScope,
@@ -240,7 +249,6 @@ const requiredScopesForSettingsUpdate = (payload: unknown) => {
   const input = Schema.decodeUnknownSync(SettingsUpdate)(payload);
   const scopes = requiredScopesForServerSettingsPatch(input.patch);
   if (input.providerInstanceMutation === undefined) return scopes;
-  // An atomic provider mutation carries an empty patch unless it also changes settings.
   return Object.values(input.patch).every((value) => value === undefined)
     ? [AuthProvidersManageScope]
     : [...new Set([...scopes, AuthProvidersManageScope])];
@@ -274,11 +282,22 @@ const requiredScopesForRpcCall = (
   return [requiredScopeForRpcMethod(method)];
 };
 
-export const layer = (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
+/**
+ * `onAuthorized` runs once after an authorized request succeeds; for a stream
+ * RPC, that is when the stream completes. Every RPC passes through here, so it
+ * is the one place to observe requests without wrapping each handler.
+ */
+export const layer = (
+  scopes: ReadonlyArray<AuthEnvironmentScope>,
+  onAuthorized?: (method: string, payload: unknown) => Effect.Effect<void>,
+) =>
   Layer.succeed(RpcScopeAuthorization)((effect, { rpc, payload }) => {
     const requiredScopes = requiredScopesForRpcCall(rpc._tag, payload);
     const requiredScope = requiredScopes.find((scope) => !scopes.includes(scope));
-    return requiredScope === undefined ? effect : Effect.fail(rpcAuthorizationError(requiredScope));
+    if (requiredScope !== undefined) return Effect.fail(rpcAuthorizationError(requiredScope));
+    return onAuthorized === undefined
+      ? effect
+      : Effect.tap(effect, () => onAuthorized(rpc._tag, payload));
   });
 
 /** Retrying can install or restart tools even though ordinary listing is readable. */

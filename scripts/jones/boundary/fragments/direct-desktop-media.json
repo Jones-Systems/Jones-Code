@@ -18,7 +18,8 @@
     "apps/web/src/jones/device/device.test.tsx",
     "apps/web/src/jones/device/useDeviceStreamRoute.ts",
     "packages/client-runtime/src/jones/device/mediaRoute.test.ts",
-    "packages/client-runtime/src/jones/device/mediaRoute.ts"
+    "packages/client-runtime/src/jones/device/mediaRoute.ts",
+    "apps/web/src/jones/device/deviceStreamSession.test.ts"
   ],
   "hookPaths": [
     "apps/desktop/src/ipc/DesktopIpcHandlers.ts",
@@ -36,10 +37,6 @@
   ],
   "tombstones": [],
   "allowedImports": [
-    {
-      "from": "apps/web/src/components/device/DeviceStreamView.browser.test.tsx",
-      "to": "apps/web/src/jones/device/useDeviceStreamRoute.ts"
-    },
     {
       "from": "apps/server/src/device/DeviceService.test.ts",
       "to": "apps/server/src/jones/device/DeviceDirectGrants.ts"

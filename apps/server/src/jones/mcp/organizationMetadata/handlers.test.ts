@@ -145,7 +145,18 @@ it("bounds metadata pagination input", () => {
     expectedSnapshotSequence: 7,
   });
   expect(decode({ limit: 100 })).toEqual({ limit: 100 });
+  expect(decode({ threadIds: ["a", "b"], pinned: true })).toEqual({
+    threadIds: ["a", "b"],
+    pinned: true,
+  });
+  expect(
+    decode({ threadIds: Array.from({ length: 100 }, (_, i) => `t${i}`) }).threadIds,
+  ).toHaveLength(100);
   for (const input of [
+    { threadIds: [] },
+    { threadIds: Array.from({ length: 101 }, (_, i) => `t${i}`) },
+    { threadIds: [""] },
+    { pinned: "yes" },
     { limit: 0 },
     { limit: 101 },
     { limit: 1.5 },

@@ -10,6 +10,7 @@ import type { ClientSettings } from "@t3tools/contracts/settings";
 
 import type { EnvironmentProject } from "./models.ts";
 import { normalizeProjectPathForComparison } from "./projects.ts";
+import { sharedSavedProjectTitle } from "../jones/projectGroupTitle.ts";
 
 const SCRATCH_PROJECT_SCOPE_KEY = "\0no-project";
 
@@ -90,7 +91,7 @@ export function getProjectOrderKey(
   return derivePhysicalProjectKey(project);
 }
 
-export function resolveProjectGroupingMode(
+function resolveProjectGroupingMode(
   project: Pick<EnvironmentProject, "environmentId" | "workspaceRoot">,
   settings: ProjectGroupingSettings,
 ): SidebarProjectGroupingMode {
@@ -126,7 +127,7 @@ function deriveRepositoryScopedKey(
     : `${canonicalKey}::${relativeProjectPath}`;
 }
 
-export function deriveLogicalProjectKey(
+function deriveLogicalProjectKey(
   project: Pick<
     EnvironmentProject,
     "environmentId" | "id" | "workspaceRoot" | "repositoryIdentity" | "isScratch"
@@ -202,6 +203,8 @@ export function deriveProjectGroupLabel(input: {
   readonly representative: Pick<EnvironmentProject, "title" | "repositoryIdentity">;
   readonly members: ReadonlyArray<Pick<EnvironmentProject, "title" | "repositoryIdentity">>;
 }): string {
+  const savedTitle = sharedSavedProjectTitle(input.members);
+  if (savedTitle !== null) return savedTitle;
   const sharedTitles = uniqueNonEmptyValues(input.members.map((member) => member.title));
   const sharedDisplayNames = uniqueNonEmptyValues(
     input.members.map((member) =>

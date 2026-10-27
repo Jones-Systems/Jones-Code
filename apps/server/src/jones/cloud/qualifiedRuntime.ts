@@ -1,5 +1,5 @@
 /* oxlint-disable t3code/no-global-process-runtime -- Standalone launcher boundary uses native host identity; platform qualification also accepts injected test adapters. */
-// @effect-diagnostics nodeBuiltinImport:off
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off - Detached launcher timing stays on Node built-ins.
 // Imported by the detached launcher: keep this boundary on Node built-ins.
 import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
@@ -7,6 +7,8 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeModule from "node:module";
 import * as NodeSqlite from "node:sqlite";
+import * as NodePerfHooks from "node:perf_hooks";
+import * as NodeWorkerThreads from "node:worker_threads";
 import type { JonesStagedArtifact } from "@t3tools/shared/jones/jonesActions";
 
 const nodeRequire = NodeModule.createRequire(import.meta.url);
@@ -22,6 +24,9 @@ export function bundleFileSystem(
 }
 
 export const QUALIFIED_UPDATES_PROTOCOL = 1 as const;
+// Historical enrollment receipts need a distinct stage format that old launchers refuse.
+export const RECOVERED_QUALIFIED_STAGE_PROTOCOL = 2 as const;
+export const QUALIFIED_RECOVERY_PROTOCOL = 1 as const;
 export const QUALIFIED_RUNTIME_RECEIPT = ".jones-runtime-receipt.json";
 const HASH = /^[a-f0-9]{64}$/;
 const SOURCE = /^[a-f0-9]{40}$/;
@@ -29,6 +34,55 @@ const VERSION =
   /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-preview\.[0-9]+\.[0-9]+(?:\.[0-9]+)?$/;
 const HANDLE = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const localLocks = new Set<string>();
+
+export interface QualifiedDigestTiming {
+  readonly schema: 1;
+  readonly role:
+    | "staging"
+    | "launcher-admission"
+    | "launcher-activation"
+    | "child-start"
+    | "server-startup"
+    | "selection"
+    | "recovery"
+    | "revocation"
+    | "adoption"
+    | "unspecified";
+  readonly runtime: string;
+  readonly files: number;
+  readonly bytes: number;
+  readonly wallMs: number;
+  /** Process CPU includes concurrent work; wall time and loop delay distinguish contention. */
+  readonly cpuMs: number;
+  readonly eventLoopDelayP99Ms: number | null;
+  readonly result: "match" | "mismatch" | "error";
+  readonly at: string;
+}
+
+export interface QualifiedDigestOptions {
+  readonly mode?: "full" | "receipt";
+  readonly retainVerification?: boolean;
+  /** A serving caller delegates a cache miss to its own bounded preparation worker. */
+  readonly fullVerification?: (input: {
+    readonly baseDir: string;
+    readonly version: string;
+    readonly host: { readonly platform: string; readonly architecture: string };
+  }) => Promise<QualifiedRuntimeReceipt>;
+  readonly signal?: AbortSignal;
+  readonly role?: QualifiedDigestTiming["role"];
+  readonly runtimeVersion?: string;
+  /** Dedicated child processes can also declare that they have no shared serving loop. */
+  readonly eventLoop?: "shared" | "worker";
+  /** Used only to label the measurement; callers retain their existing integrity decisions. */
+  readonly expectedSha256?: string;
+  readonly onDigestTiming?: (timing: QualifiedDigestTiming) => void | Promise<void>;
+}
+
+const digestTimings: QualifiedDigestTiming[] = [];
+
+export function recentQualifiedDigestTimings(): ReadonlyArray<QualifiedDigestTiming> {
+  return digestTimings.slice();
+}
 
 export interface QualifiedRuntimeArtifact {
   readonly repository: "Jones-Systems/Jones-Code";
@@ -99,7 +153,7 @@ export interface QualifiedRuntimeBinding {
 }
 
 export interface StagedQualifiedRuntime {
-  readonly protocol: typeof QUALIFIED_UPDATES_PROTOCOL;
+  readonly protocol: typeof QUALIFIED_UPDATES_PROTOCOL | typeof RECOVERED_QUALIFIED_STAGE_PROTOCOL;
   readonly stagedHandle: string;
   readonly binding: QualifiedRuntimeBinding;
   readonly receipt: QualifiedRuntimeReceipt;
@@ -128,7 +182,7 @@ const record = (value: unknown): Record<string, unknown> | undefined =>
     ? (value as Record<string, unknown>)
     : undefined;
 
-function decodeQualifiedRuntimeReceipt(value: unknown): QualifiedRuntimeReceipt | undefined {
+export function decodeQualifiedRuntimeReceipt(value: unknown): QualifiedRuntimeReceipt | undefined {
   const r = record(value);
   if (
     r === undefined ||
@@ -164,7 +218,8 @@ export function decodeStagedQualifiedRuntime(value: unknown): StagedQualifiedRun
   const b = record(r?.binding);
   const receipt = decodeQualifiedRuntimeReceipt(r?.receipt);
   if (
-    r?.protocol !== QUALIFIED_UPDATES_PROTOCOL ||
+    (r?.protocol !== QUALIFIED_UPDATES_PROTOCOL &&
+      r?.protocol !== RECOVERED_QUALIFIED_STAGE_PROTOCOL) ||
     typeof r.stagedHandle !== "string" ||
     !HANDLE.test(r.stagedHandle) ||
     receipt === undefined ||
@@ -185,8 +240,10 @@ export function decodeStagedQualifiedRuntime(value: unknown): StagedQualifiedRun
     !SOURCE.test(String(b.activeSourceSha))
   )
     return undefined;
+  const historical = receipt.installedSourceSha !== b.activeSourceSha;
+  if (historical !== (r.protocol === RECOVERED_QUALIFIED_STAGE_PROTOCOL)) return undefined;
   return {
-    protocol: QUALIFIED_UPDATES_PROTOCOL,
+    protocol: r.protocol,
     stagedHandle: r.stagedHandle,
     binding: b as unknown as QualifiedRuntimeBinding,
     receipt,
@@ -283,6 +340,132 @@ export async function qualifiedPayloadDigest(
   directory: string,
   platform: "linux" | "darwin" = "linux",
   workflow?: QualifiedRuntimeArtifact["workflow"],
+  options?: QualifiedDigestOptions,
+): Promise<string> {
+  if (options?.eventLoop === "shared")
+    return blocked("busy", "Full runtime verification requires a preparation worker or launcher.");
+  const started = NodePerfHooks.performance.now();
+  const cpu = process.cpuUsage();
+  const delay =
+    NodeWorkerThreads.isMainThread && options?.eventLoop !== "worker"
+      ? NodePerfHooks.monitorEventLoopDelay({ resolution: 10 })
+      : undefined;
+  delay?.enable();
+  let count = 0;
+  let files = 0;
+  let total = 0;
+  let result: QualifiedDigestTiming["result"] = "error";
+  try {
+    options?.signal?.throwIfAborted();
+    const fs = bundleFileSystem().promises;
+    const root = await fs.realpath(directory);
+    const rootStat = await fs.lstat(directory);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink())
+      return blocked("invalid-artifact", "Runtime payload must be a real directory.");
+    const digest = NodeCrypto.createHash("sha256");
+    const visit = async (relative: string): Promise<void> => {
+      options?.signal?.throwIfAborted();
+      const absolute = NodePath.join(root, relative);
+      const stat = await fs.lstat(absolute);
+      if (++count > 100_000)
+        return blocked("invalid-artifact", "Runtime payload exceeds the file limit.");
+      if (stat.isSymbolicLink()) {
+        const target = await fs.readlink(absolute);
+        const resolved = await fs.realpath(absolute);
+        if (NodePath.isAbsolute(target) || !resolved.startsWith(`${root}${NodePath.sep}`))
+          return blocked("invalid-artifact", "Runtime symlink escapes its payload.");
+        digest.update(`link\0${relative}\0${target}\0`);
+      } else if (stat.isDirectory()) {
+        digest.update(`dir\0${relative}\0`);
+        for (const name of (await fs.readdir(absolute)).sort())
+          await visit(NodePath.join(relative, name));
+      } else if (stat.isFile()) {
+        files += 1;
+        total += stat.size;
+        if (total > 2 * 1024 * 1024 * 1024)
+          return blocked("invalid-artifact", "Runtime payload exceeds the byte limit.");
+        const hash = NodeCrypto.createHash("sha256");
+        const handle = await fs.open(
+          absolute,
+          NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,
+        );
+        try {
+          for await (const bytes of handle.createReadStream()) {
+            options?.signal?.throwIfAborted();
+            hash.update(bytes);
+          }
+          options?.signal?.throwIfAborted();
+        } finally {
+          await handle.close();
+        }
+        digest.update(
+          `file\0${relative}\0${stat.mode & 0o111}\0${stat.size}\0${hash.digest("hex")}\0`,
+        );
+      } else return blocked("invalid-artifact", "Runtime payload contains a special file.");
+    };
+    const roots = (await fs.readdir(root)).sort();
+    for (const name of roots) {
+      options?.signal?.throwIfAborted();
+      if (
+        name === QUALIFIED_RUNTIME_RECEIPT ||
+        name === ".install-complete" ||
+        name === ".jones-provenance.json"
+      )
+        continue;
+      if (
+        !(
+          platform === "darwin" && workflow !== ".github/workflows/artifact-cli-mac.yml"
+            ? ["t3", "Jones Code.app"]
+            : ["t3", "client", "node_modules", "resource-monitor"]
+        ).includes(name)
+      )
+        return blocked("invalid-artifact", "Runtime payload has an unexpected root entry.");
+      await visit(name);
+    }
+    options?.signal?.throwIfAborted();
+    const entry = await fs.lstat(NodePath.join(root, "t3"));
+    options?.signal?.throwIfAborted();
+    if (!entry.isFile() || (entry.mode & 0o111) === 0)
+      return blocked("invalid-artifact", "Runtime payload has no executable.");
+    const value = digest.digest("hex");
+    result =
+      options?.expectedSha256 === undefined || options.expectedSha256 === value
+        ? "match"
+        : "mismatch";
+    return value;
+  } finally {
+    delay?.disable();
+    const used = process.cpuUsage(cpu);
+    const version = options?.runtimeVersion ?? NodePath.basename(directory);
+    const timing: QualifiedDigestTiming = Object.freeze({
+      schema: 1,
+      role: options?.role ?? "unspecified",
+      runtime: VERSION.test(version) ? version : "unspecified",
+      files,
+      bytes: total,
+      wallMs: NodePerfHooks.performance.now() - started,
+      cpuMs: (used.user + used.system) / 1_000,
+      eventLoopDelayP99Ms:
+        delay === undefined ? null : delay.count === 0 ? 0 : delay.percentile(99) / 1_000_000,
+      result,
+      at: new Date().toISOString(),
+    });
+    digestTimings.push(timing);
+    if (digestTimings.length > 32) digestTimings.shift();
+    try {
+      const observed = options?.onDigestTiming?.(timing);
+      if (observed !== undefined) void Promise.resolve(observed).catch(() => {});
+    } catch {
+      // Observability must never replace an integrity result or its original failure.
+    }
+  }
+}
+
+/** Metadata identity is a cache key only; activation still verifies all content. */
+async function qualifiedPayloadFingerprint(
+  directory: string,
+  receipt: Pick<QualifiedRuntimeReceipt, "platform" | "workflow">,
+  signal?: AbortSignal,
 ): Promise<string> {
   const fs = bundleFileSystem().promises;
   const root = await fs.realpath(directory);
@@ -290,64 +473,128 @@ export async function qualifiedPayloadDigest(
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink())
     return blocked("invalid-artifact", "Runtime payload must be a real directory.");
   const digest = NodeCrypto.createHash("sha256");
-  let count = 0;
-  let total = 0;
+  let entries = 0;
+  let bytes = 0n;
   const visit = async (relative: string): Promise<void> => {
+    signal?.throwIfAborted();
     const absolute = NodePath.join(root, relative);
-    const stat = await fs.lstat(absolute);
-    if (++count > 100_000)
+    const stat = await fs.lstat(absolute, { bigint: true });
+    if (++entries > 100_000)
       return blocked("invalid-artifact", "Runtime payload exceeds the file limit.");
-    if (stat.isSymbolicLink()) {
+    const type = stat.isSymbolicLink()
+      ? "link"
+      : stat.isDirectory()
+        ? "dir"
+        : stat.isFile()
+          ? "file"
+          : undefined;
+    if (type === undefined)
+      return blocked("invalid-artifact", "Runtime payload contains a special file.");
+    digest.update(
+      JSON.stringify([
+        relative,
+        type,
+        ...[stat.size, stat.mode, stat.mtimeNs, stat.ctimeNs, stat.dev, stat.ino].map(String),
+      ]) + "\n",
+    );
+    if (type === "link") {
       const target = await fs.readlink(absolute);
       const resolved = await fs.realpath(absolute);
       if (NodePath.isAbsolute(target) || !resolved.startsWith(`${root}${NodePath.sep}`))
         return blocked("invalid-artifact", "Runtime symlink escapes its payload.");
-      digest.update(`link\0${relative}\0${target}\0`);
-    } else if (stat.isDirectory()) {
-      digest.update(`dir\0${relative}\0`);
+      digest.update(JSON.stringify(target) + "\n");
+    } else if (type === "dir") {
       for (const name of (await fs.readdir(absolute)).sort())
         await visit(NodePath.join(relative, name));
-    } else if (stat.isFile()) {
-      total += stat.size;
-      if (total > 2 * 1024 * 1024 * 1024)
+    } else {
+      bytes += stat.size;
+      if (bytes > 2n * 1024n * 1024n * 1024n)
         return blocked("invalid-artifact", "Runtime payload exceeds the byte limit.");
-      const hash = NodeCrypto.createHash("sha256");
-      const handle = await fs.open(
-        absolute,
-        NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,
-      );
-      try {
-        for await (const bytes of handle.createReadStream()) hash.update(bytes);
-      } finally {
-        await handle.close();
-      }
-      digest.update(
-        `file\0${relative}\0${stat.mode & 0o111}\0${stat.size}\0${hash.digest("hex")}\0`,
-      );
-    } else return blocked("invalid-artifact", "Runtime payload contains a special file.");
+    }
   };
-  const roots = (await fs.readdir(root)).sort();
-  for (const name of roots) {
-    if (
-      name === QUALIFIED_RUNTIME_RECEIPT ||
-      name === ".install-complete" ||
-      name === ".jones-provenance.json"
-    )
+  for (const name of (await fs.readdir(root)).sort()) {
+    if ([QUALIFIED_RUNTIME_RECEIPT, ".install-complete", ".jones-provenance.json"].includes(name))
       continue;
-    if (
-      !(
-        platform === "darwin" && workflow !== ".github/workflows/artifact-cli-mac.yml"
-          ? ["t3", "Jones Code.app"]
-          : ["t3", "client", "node_modules", "resource-monitor"]
-      ).includes(name)
-    )
+    const allowed =
+      receipt.platform === "darwin" && receipt.workflow !== ".github/workflows/artifact-cli-mac.yml"
+        ? ["t3", "Jones Code.app"]
+        : ["t3", "client", "node_modules", "resource-monitor"];
+    if (!allowed.includes(name))
       return blocked("invalid-artifact", "Runtime payload has an unexpected root entry.");
     await visit(name);
   }
   const entry = await fs.lstat(NodePath.join(root, "t3"));
   if (!entry.isFile() || (entry.mode & 0o111) === 0)
     return blocked("invalid-artifact", "Runtime payload has no executable.");
+  signal?.throwIfAborted();
   return digest.digest("hex");
+}
+
+const verificationPath = (baseDir: string, version: string) =>
+  NodePath.join(baseDir, "runtime", "jones-verification", `${version}.json`);
+
+async function checkVerificationDirectory(baseDir: string): Promise<boolean> {
+  const stat = await NodeFSP.lstat(NodePath.join(baseDir, "runtime", "jones-verification")).catch(
+    (cause: NodeJS.ErrnoException) => {
+      if (cause.code === "ENOENT") return undefined;
+      throw cause;
+    },
+  );
+  if (stat === undefined) return false;
+  if (
+    !stat.isDirectory() ||
+    stat.isSymbolicLink() ||
+    (stat.mode & 0o022) !== 0 ||
+    (typeof process.getuid === "function" && stat.uid !== process.getuid())
+  )
+    return blocked("invalid-artifact", "Verification cache ownership is unknown.");
+  return true;
+}
+
+async function readQualifiedVerification(
+  baseDir: string,
+  version: string,
+): Promise<Record<string, unknown> | undefined> {
+  if (!(await checkVerificationDirectory(baseDir))) return undefined;
+  return record(await readRegularJson(verificationPath(baseDir, version)).catch(() => undefined));
+}
+
+async function retainQualifiedVerification(
+  baseDir: string,
+  receipt: QualifiedRuntimeReceipt,
+  fingerprint: string,
+  timing: QualifiedDigestTiming | undefined,
+): Promise<void> {
+  const path = verificationPath(baseDir, receipt.version);
+  const previous = await readQualifiedVerification(baseDir, receipt.version);
+  const sameReceipt =
+    JSON.stringify(decodeQualifiedRuntimeReceipt(previous?.receipt)) === JSON.stringify(receipt);
+  const stagingTiming =
+    timing?.role === "staging" ? timing : sameReceipt ? previous?.stagingTiming : undefined;
+  await NodeFSP.mkdir(NodePath.dirname(path), { recursive: true, mode: 0o700 });
+  await checkVerificationDirectory(baseDir);
+  const partial = `${path}.${NodeCrypto.randomUUID()}.partial`;
+  // Capture successful exclusive creation before registering removal of this exact file.
+  const file = await NodeFSP.open(partial, "wx", 0o600);
+  try {
+    try {
+      await file.writeFile(
+        `${JSON.stringify({ schema: 1, receipt, fingerprint, timing, stagingTiming })}\n`,
+      );
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    await NodeFSP.rename(partial, path);
+    const directory = await NodeFSP.open(NodePath.dirname(path), "r");
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
+  } finally {
+    await NodeFSP.rm(partial, { force: true });
+  }
 }
 
 export async function readQualifiedRuntimeReceipt(
@@ -357,7 +604,9 @@ export async function readQualifiedRuntimeReceipt(
     platform: process.platform,
     architecture: process.arch,
   },
+  options?: QualifiedDigestOptions,
 ): Promise<QualifiedRuntimeReceipt> {
+  options?.signal?.throwIfAborted();
   if (!VERSION.test(version))
     return blocked(
       "bootstrap-required",
@@ -368,6 +617,7 @@ export async function readQualifiedRuntimeReceipt(
       NodePath.join(runtimeDirectory(baseDir, version), QUALIFIED_RUNTIME_RECEIPT),
     ).catch(() => undefined),
   );
+  options?.signal?.throwIfAborted();
   if (receipt === undefined || receipt.version !== version)
     return blocked(
       "bootstrap-required",
@@ -375,14 +625,47 @@ export async function readQualifiedRuntimeReceipt(
     );
   if (receipt.platform !== host.platform || receipt.architecture !== host.architecture)
     return blocked("invalid-artifact", "Runtime receipt does not match this host platform.");
+  const directory = runtimeDirectory(baseDir, version);
+  const fingerprint = await qualifiedPayloadFingerprint(directory, receipt, options?.signal);
+  if (options?.mode === "receipt") {
+    const cached = await readQualifiedVerification(baseDir, version);
+    const cachedReceipt = decodeQualifiedRuntimeReceipt(cached?.receipt);
+    if (
+      cached?.schema === 1 &&
+      cached.fingerprint === fingerprint &&
+      JSON.stringify(cachedReceipt) === JSON.stringify(receipt)
+    )
+      return receipt;
+    if (options.fullVerification !== undefined) {
+      const verified = await options.fullVerification({ baseDir, version, host });
+      if (JSON.stringify(verified) !== JSON.stringify(receipt))
+        return blocked(
+          "integrity-mismatch",
+          "Qualified runtime changed during worker verification.",
+        );
+      return verified;
+    }
+  }
+  let timing: QualifiedDigestTiming | undefined;
   if (
-    (await qualifiedPayloadDigest(
-      runtimeDirectory(baseDir, version),
-      receipt.platform,
-      receipt.workflow,
-    )) !== receipt.payloadSha256
+    (await qualifiedPayloadDigest(directory, receipt.platform, receipt.workflow, {
+      ...options,
+      runtimeVersion: version,
+      expectedSha256: receipt.payloadSha256,
+      onDigestTiming: (record) => {
+        timing = record;
+        return options?.onDigestTiming?.(record);
+      },
+    })) !== receipt.payloadSha256
   )
     return blocked("integrity-mismatch", "Qualified runtime payload changed.");
+  if ((await qualifiedPayloadFingerprint(directory, receipt, options?.signal)) !== fingerprint)
+    return blocked("integrity-mismatch", "Qualified runtime changed during verification.");
+  if (
+    options?.retainVerification === true ||
+    (options?.mode === "receipt" && options.retainVerification !== false)
+  )
+    await retainQualifiedVerification(baseDir, receipt, fingerprint, timing);
   return receipt;
 }
 
@@ -390,7 +673,9 @@ export async function currentQualifiedRuntimeBinding(
   baseDir: string,
   activeVersion: string,
   host?: { readonly platform: string; readonly architecture: string },
+  options?: QualifiedDigestOptions,
 ): Promise<QualifiedRuntimeBinding> {
+  options?.signal?.throwIfAborted();
   const resolvedBase = await NodeFSP.realpath(baseDir);
   const dbPath = NodePath.join(resolvedBase, "userdata", "statev2.sqlite");
   const database = await NodeFSP.lstat(dbPath);
@@ -412,7 +697,7 @@ export async function currentQualifiedRuntimeBinding(
   ).trim();
   if (environmentId === "")
     return blocked("binding-mismatch", "Native environment identity is missing.");
-  const receipt = await readQualifiedRuntimeReceipt(resolvedBase, activeVersion, host);
+  const receipt = await readQualifiedRuntimeReceipt(resolvedBase, activeVersion, host, options);
   return {
     baseDir: resolvedBase,
     dbPath,
@@ -425,6 +710,9 @@ export async function currentQualifiedRuntimeBinding(
 export async function stageQualifiedRuntime(input: {
   readonly stagedHandle?: string;
   readonly artifact: QualifiedRuntimeArtifact;
+  /** Only the preparation worker transfers its exclusively owned extraction root. Other callers copy. */
+  readonly consumePayload?: boolean;
+  readonly options?: QualifiedDigestOptions;
   readonly binding: QualifiedRuntimeBinding;
   readonly validate: (entryPath: string) => Promise<void>;
   readonly host?: { readonly platform: string; readonly architecture: string };
@@ -436,15 +724,36 @@ export async function stageQualifiedRuntime(input: {
       input.binding.baseDir,
       input.binding.activeVersion,
       input.host,
+      { ...input.options, mode: "receipt" },
     );
     if (JSON.stringify(current) !== JSON.stringify(input.binding))
       return blocked("binding-mismatch", "The selected native environment changed before staging.");
     const { payloadDirectory, ...candidate } = input.artifact;
+    const sourceFingerprint = await qualifiedPayloadFingerprint(
+      payloadDirectory,
+      candidate,
+      input.options?.signal,
+    );
+    let stagingTiming: QualifiedDigestTiming | undefined;
     const digest = await qualifiedPayloadDigest(
       payloadDirectory,
       candidate.platform,
       candidate.workflow,
+      {
+        ...input.options,
+        runtimeVersion: candidate.version,
+        role: "staging",
+        onDigestTiming: (timing) => {
+          stagingTiming = timing;
+          return input.options?.onDigestTiming?.(timing);
+        },
+      },
     );
+    if (
+      (await qualifiedPayloadFingerprint(payloadDirectory, candidate, input.options?.signal)) !==
+      sourceFingerprint
+    )
+      return blocked("integrity-mismatch", "Runtime payload changed during staging.");
     const host = input.host ?? { platform: process.platform, architecture: process.arch };
     const receipt = decodeQualifiedRuntimeReceipt({
       ...candidate,
@@ -472,11 +781,11 @@ export async function stageQualifiedRuntime(input: {
       },
     );
     if (occupied) {
-      const cached = await readQualifiedRuntimeReceipt(
-        current.baseDir,
-        receipt.version,
-        host,
-      ).catch(() =>
+      const cached = await readQualifiedRuntimeReceipt(current.baseDir, receipt.version, host, {
+        ...input.options,
+        mode: "receipt",
+        role: "staging",
+      }).catch(() =>
         blocked(
           "occupied-cache",
           "The occupied runtime cache has no matching qualified receipt; it was preserved.",
@@ -501,19 +810,53 @@ export async function stageQualifiedRuntime(input: {
       );
       const scratch = NodePath.join(ownedScratch, "payload");
       try {
-        await bundleFileSystem().promises.cp(payloadDirectory, scratch, {
-          recursive: true,
-          dereference: false,
-          verbatimSymlinks: true,
-          errorOnExist: true,
-          force: false,
-        });
-        if ((await qualifiedPayloadDigest(scratch, receipt.platform, receipt.workflow)) !== digest)
+        if (input.consumePayload === true) {
+          await NodeFSP.rename(payloadDirectory, scratch);
+        } else {
+          await bundleFileSystem().promises.cp(payloadDirectory, scratch, {
+            recursive: true,
+            dereference: false,
+            verbatimSymlinks: true,
+            errorOnExist: true,
+            force: false,
+          });
+        }
+        const fingerprint = await qualifiedPayloadFingerprint(
+          scratch,
+          receipt,
+          input.options?.signal,
+        );
+        if (input.consumePayload === true) {
+          if (fingerprint !== sourceFingerprint)
+            return blocked("integrity-mismatch", "Runtime payload changed during staging.");
+        } else if (
+          (await qualifiedPayloadDigest(scratch, receipt.platform, receipt.workflow, {
+            ...input.options,
+            runtimeVersion: receipt.version,
+            expectedSha256: digest,
+            role: "staging",
+            onDigestTiming: (timing) => {
+              stagingTiming = timing;
+              return input.options?.onDigestTiming?.(timing);
+            },
+          })) !== digest
+        )
           return blocked("integrity-mismatch", "Runtime payload changed during staging.");
         await input.validate(NodePath.join(scratch, "t3"));
+        if (
+          (await qualifiedPayloadFingerprint(scratch, receipt, input.options?.signal)) !==
+          fingerprint
+        )
+          return blocked("integrity-mismatch", "Runtime payload changed during staging.");
         await durableCreate(NodePath.join(scratch, QUALIFIED_RUNTIME_RECEIPT), receipt);
         await durableCreate(NodePath.join(scratch, ".install-complete"), receipt.version);
         await NodeFSP.rename(scratch, destination);
+        if (
+          (await qualifiedPayloadFingerprint(destination, receipt, input.options?.signal)) !==
+          fingerprint
+        )
+          return blocked("integrity-mismatch", "Runtime payload changed during publication.");
+        await retainQualifiedVerification(current.baseDir, receipt, fingerprint, stagingTiming);
         const directory = await NodeFSP.open(NodePath.dirname(destination), "r");
         try {
           await directory.sync();
@@ -525,7 +868,10 @@ export async function stageQualifiedRuntime(input: {
       }
     }
     const staged: StagedQualifiedRuntime = {
-      protocol: QUALIFIED_UPDATES_PROTOCOL,
+      protocol:
+        stagedReceipt.installedSourceSha === current.activeSourceSha
+          ? QUALIFIED_UPDATES_PROTOCOL
+          : RECOVERED_QUALIFIED_STAGE_PROTOCOL,
       stagedHandle: input.stagedHandle ?? NodeCrypto.randomUUID(),
       binding: current,
       receipt: stagedReceipt,
@@ -542,6 +888,7 @@ export async function stageQualifiedRuntime(input: {
           current.activeVersion,
           staged.stagedHandle,
           input.host,
+          input.options,
         );
         if (JSON.stringify(prior) !== JSON.stringify(staged))
           return blocked("occupied-cache", "The fixed staged handle belongs to another selection.");
@@ -574,17 +921,22 @@ export async function verifyStagedQualifiedRuntime(
   activeVersion: string,
   handle: string,
   host?: { readonly platform: string; readonly architecture: string },
+  options?: QualifiedDigestOptions,
 ): Promise<StagedQualifiedRuntime> {
+  options?.signal?.throwIfAborted();
   const staged = decodeStagedQualifiedRuntime(await readRegularJson(stagedPath(baseDir, handle)));
   if (staged === undefined)
     return blocked("invalid-artifact", "Staged handle has no valid durable receipt.");
-  const current = await currentQualifiedRuntimeBinding(baseDir, activeVersion, host);
+  const current = await currentQualifiedRuntimeBinding(baseDir, activeVersion, host, {
+    ...options,
+    mode: "receipt",
+  });
   if (JSON.stringify(current) !== JSON.stringify(staged.binding))
     return blocked(
       "binding-mismatch",
       "The staged handle belongs to a different home, database, environment or active source.",
     );
-  const receipt = await readQualifiedRuntimeReceipt(baseDir, staged.receipt.version, host);
+  const receipt = await readQualifiedRuntimeReceipt(baseDir, staged.receipt.version, host, options);
   if (JSON.stringify(receipt) !== JSON.stringify(staged.receipt))
     return blocked("integrity-mismatch", "Staged receipt does not match the qualified runtime.");
   return staged;
@@ -603,6 +955,7 @@ export async function enrollQualifiedRuntime(input: {
     payloadDirectory,
     artifact.platform,
     artifact.workflow,
+    { runtimeVersion: artifact.version },
   );
   const receipt = decodeQualifiedRuntimeReceipt({
     ...artifact,
@@ -624,7 +977,10 @@ export async function enrollQualifiedRuntime(input: {
     if (
       !existing.isDirectory() ||
       existing.isSymbolicLink() ||
-      (await qualifiedPayloadDigest(destination, receipt.platform, receipt.workflow)) !== digest
+      (await qualifiedPayloadDigest(destination, receipt.platform, receipt.workflow, {
+        runtimeVersion: receipt.version,
+        expectedSha256: digest,
+      })) !== digest
     )
       return blocked(
         "occupied-cache",
@@ -654,7 +1010,10 @@ export async function enrollQualifiedRuntime(input: {
     if (input.prepareExistingRuntime !== undefined) {
       await input.prepareExistingRuntime(destination);
       if (
-        (await qualifiedPayloadDigest(destination, receipt.platform, receipt.workflow)) !== digest
+        (await qualifiedPayloadDigest(destination, receipt.platform, receipt.workflow, {
+          runtimeVersion: receipt.version,
+          expectedSha256: digest,
+        })) !== digest
       )
         return blocked(
           "integrity-mismatch",
@@ -678,7 +1037,12 @@ export async function enrollQualifiedRuntime(input: {
       errorOnExist: true,
       force: false,
     });
-    if ((await qualifiedPayloadDigest(scratch, receipt.platform, receipt.workflow)) !== digest)
+    if (
+      (await qualifiedPayloadDigest(scratch, receipt.platform, receipt.workflow, {
+        runtimeVersion: receipt.version,
+        expectedSha256: digest,
+      })) !== digest
+    )
       return blocked("integrity-mismatch", "Bootstrap payload changed while copied.");
     await input.validate(NodePath.join(scratch, "t3"));
     await durableCreate(NodePath.join(scratch, QUALIFIED_RUNTIME_RECEIPT), receipt);
@@ -694,4 +1058,84 @@ export async function enrollQualifiedRuntime(input: {
     await NodeFSP.rm(owner, { recursive: true, force: true });
   }
   return receipt;
+}
+
+/** Staging evidence is read before activation refreshes the verification cache. */
+export async function qualifiedStagingTiming(
+  baseDir: string,
+  version: string,
+): Promise<QualifiedDigestTiming | undefined> {
+  if (!VERSION.test(version)) return undefined;
+  const cached = await readQualifiedVerification(baseDir, version);
+  const value = record(cached?.stagingTiming);
+  if (
+    value?.schema !== 1 ||
+    value.role !== "staging" ||
+    value.runtime !== version ||
+    !["match", "mismatch", "error"].includes(String(value.result)) ||
+    typeof value.at !== "string" ||
+    !Number.isFinite(Date.parse(value.at)) ||
+    ["files", "bytes", "wallMs", "cpuMs"].some(
+      (key) =>
+        typeof value[key] !== "number" || !Number.isFinite(value[key]) || Number(value[key]) < 0,
+    ) ||
+    (value.eventLoopDelayP99Ms !== null &&
+      (typeof value.eventLoopDelayP99Ms !== "number" ||
+        !Number.isFinite(value.eventLoopDelayP99Ms) ||
+        value.eventLoopDelayP99Ms < 0))
+  )
+    return undefined;
+  return value as unknown as QualifiedDigestTiming;
+}
+
+/** Diagnostics have their own exclusive files and never alter operation-ledger receipt bytes. */
+export async function retainQualifiedAttemptTimings(
+  baseDir: string,
+  operationId: string,
+  timings: ReadonlyArray<QualifiedDigestTiming>,
+): Promise<void> {
+  if (!HANDLE.test(operationId) || timings.length > 128)
+    throw new Error("Invalid bounded update timing record.");
+  const directory = NodePath.join(baseDir, "runtime", "jones-update-timing");
+  await NodeFSP.mkdir(directory, { recursive: true, mode: 0o700 });
+  const owned = await NodeFSP.lstat(directory);
+  if (
+    !owned.isDirectory() ||
+    owned.isSymbolicLink() ||
+    (owned.mode & 0o077) !== 0 ||
+    (typeof process.getuid === "function" && owned.uid !== process.getuid())
+  )
+    throw new Error("Update timing directory ownership is unknown.");
+  const path = NodePath.join(directory, `${operationId}.json`);
+  await durableCreate(path, { schema: 1, operationId, records: timings }).catch(
+    (cause: NodeJS.ErrnoException) => {
+      if (cause.code !== "EEXIST") throw cause;
+    },
+  );
+  const retained: { path: string; mtime: number }[] = [];
+  const names = await NodeFSP.readdir(directory);
+  if (names.length > 4096)
+    throw new Error("Update timing retention inspection exceeded its bound.");
+  for (const name of names) {
+    if (!name.endsWith(".json") || !HANDLE.test(name.slice(0, -5))) continue;
+    const file = NodePath.join(directory, name);
+    const stat = await NodeFSP.lstat(file);
+    if (
+      !stat.isFile() ||
+      stat.isSymbolicLink() ||
+      (stat.mode & 0o077) !== 0 ||
+      stat.size > 64 * 1024 ||
+      (typeof process.getuid === "function" && stat.uid !== process.getuid())
+    )
+      continue;
+    retained.push({ path: file, mtime: stat.mtimeMs });
+  }
+  retained.sort((a, b) => b.mtime - a.mtime || a.path.localeCompare(b.path));
+  for (const older of retained.slice(64)) await NodeFSP.unlink(older.path);
+  const parent = await NodeFSP.open(directory, "r");
+  try {
+    await parent.sync();
+  } finally {
+    await parent.close();
+  }
 }

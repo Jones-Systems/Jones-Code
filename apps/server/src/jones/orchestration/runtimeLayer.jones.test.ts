@@ -22,6 +22,8 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as SettlementOrigins from "../settlementOrigins/SettlementOrigins.ts";
 import * as Fiber from "effect/Fiber";
 import * as AuthSessions from "../../persistence/AuthSessions.ts";
 import * as ConversationReselection from "../runtime/ProviderConversationReselection.ts";
@@ -90,7 +92,7 @@ const GitWorkflowTestLayer = Layer.mock(GitWorkflow.GitWorkflowService)({
   createWorktree: () => Effect.succeed({} as never),
 });
 const ProjectServiceTestLayer = Layer.mock(ProjectService.ProjectService)({
-  getById: () => Effect.succeed(Option.none()),
+  getById: () => Effect.succeedNone,
 });
 
 const driver = ProviderDriverKind.make("codex");
@@ -188,7 +190,7 @@ const TestLayer = Layer.mergeAll(
 ).pipe(
   Layer.provide(McpSessionRegistryTestkit.layer),
   Layer.provide(McpProviderSessions.layer),
-  Layer.provide(SqlitePersistence.layerMemory),
+  Layer.provideMerge(SqlitePersistence.layerMemory),
   Layer.provide(CheckpointStoreTestLayer),
   Layer.provide(ServerConfigLayer),
   Layer.provide(ServerSettings.layerTest()),
@@ -299,24 +301,22 @@ const queuedToolFixture = Effect.fnUntraced(function* (prefix: string) {
   const now = yield* DateTime.now;
   const turnId = ProviderTurnId.make(`${prefix}-turn`);
   const sessionSpy = vi.spyOn(sessions, "get").mockReturnValue(
-    Effect.succeed(
-      Option.some({
-        providerSession,
-        providerSessionId: providerSession.id,
-        instanceId: modelSelection.instanceId,
-        driver,
-        events: Stream.empty,
-        ensureThread: () => Effect.die("Unexpected ensure"),
-        resumeThread: () => Effect.die("Unexpected resume"),
-        startTurn: () => Effect.die("Unexpected start"),
-        steerTurn: () => Effect.die("Effects are not executed by this test"),
-        interruptTurn: () => Effect.die("Unexpected interrupt"),
-        respondToRuntimeRequest: () => Effect.die("Unexpected response"),
-        readThreadSnapshot: () => Effect.die("Unexpected snapshot"),
-        rollbackThread: () => Effect.die("Unexpected rollback"),
-        forkThread: () => Effect.die("Unexpected fork"),
-      } satisfies ProviderAdapterV2SessionRuntime),
-    ),
+    Effect.succeedSome({
+      providerSession,
+      providerSessionId: providerSession.id,
+      instanceId: modelSelection.instanceId,
+      driver,
+      events: Stream.empty,
+      ensureThread: () => Effect.die("Unexpected ensure"),
+      resumeThread: () => Effect.die("Unexpected resume"),
+      startTurn: () => Effect.die("Unexpected start"),
+      steerTurn: () => Effect.die("Effects are not executed by this test"),
+      interruptTurn: () => Effect.die("Unexpected interrupt"),
+      respondToRuntimeRequest: () => Effect.die("Unexpected response"),
+      readThreadSnapshot: () => Effect.die("Unexpected snapshot"),
+      rollbackThread: () => Effect.die("Unexpected rollback"),
+      forkThread: () => Effect.die("Unexpected fork"),
+    } satisfies ProviderAdapterV2SessionRuntime),
   );
   yield* Effect.addFinalizer(() => Effect.sync(() => sessionSpy.mockRestore()));
   const root = (yield* orchestrator.getThreadProjection(threadId)).nodes.find(
@@ -701,13 +701,13 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
         const outbox = yield* EffectOutbox.EffectOutboxV2;
         const effects = yield* outbox.listByCommandId(
           CommandId.make(
-            `command:queue-tool-boundary:${eligible.id}:${f.turnId}:${boundary.sequence}`,
+            `command:queue-tool-boundary:batch:${eligible.id}:${f.turnId}:${boundary.sequence}`,
           ),
         );
         assert.isTrue(
           effects.some(
             (effect) =>
-              effect.request.type === "provider-turn.steer" &&
+              effect.request.type === "provider-turn.steer-batch" &&
               effect.request.messageId === eligible.userMessageId,
           ),
         );
@@ -733,24 +733,22 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
         const now = yield* DateTime.now;
         const turnId = ProviderTurnId.make(`${prefix}-turn`);
         const sessionSpy = vi.spyOn(sessions, "get").mockReturnValue(
-          Effect.succeed(
-            Option.some({
-              providerSession,
-              providerSessionId: providerSession.id,
-              instanceId: modelSelection.instanceId,
-              driver,
-              events: Stream.empty,
-              ensureThread: () => Effect.die("Unexpected ensure"),
-              resumeThread: () => Effect.die("Unexpected resume"),
-              startTurn: () => Effect.die("Unexpected start"),
-              steerTurn: () => Effect.die("Effects are not executed by this test"),
-              interruptTurn: () => Effect.die("Unexpected interrupt"),
-              respondToRuntimeRequest: () => Effect.die("Unexpected response"),
-              readThreadSnapshot: () => Effect.die("Unexpected snapshot"),
-              rollbackThread: () => Effect.die("Unexpected rollback"),
-              forkThread: () => Effect.die("Unexpected fork"),
-            } satisfies ProviderAdapterV2SessionRuntime),
-          ),
+          Effect.succeedSome({
+            providerSession,
+            providerSessionId: providerSession.id,
+            instanceId: modelSelection.instanceId,
+            driver,
+            events: Stream.empty,
+            ensureThread: () => Effect.die("Unexpected ensure"),
+            resumeThread: () => Effect.die("Unexpected resume"),
+            startTurn: () => Effect.die("Unexpected start"),
+            steerTurn: () => Effect.die("Effects are not executed by this test"),
+            interruptTurn: () => Effect.die("Unexpected interrupt"),
+            respondToRuntimeRequest: () => Effect.die("Unexpected response"),
+            readThreadSnapshot: () => Effect.die("Unexpected snapshot"),
+            rollbackThread: () => Effect.die("Unexpected rollback"),
+            forkThread: () => Effect.die("Unexpected fork"),
+          } satisfies ProviderAdapterV2SessionRuntime),
         );
         yield* Effect.addFinalizer(() => Effect.sync(() => sessionSpy.mockRestore()));
         yield* sink.write({
@@ -865,30 +863,25 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
           effectTypes: ["provider-turn.start"],
           reason: "Fixture start is already represented by the running provider turn",
         });
-        for (const queuedRun of queued) {
-          const effects = yield* outbox.listByCommandId(
-            CommandId.make(
-              `command:queue-tool-boundary:${queuedRun.id}:${turnId}:${completed[0]!.sequence}`,
-            ),
-          );
-          assert.deepEqual(
-            effects.map((effect) => effect.request.type),
-            ["provider-turn.steer"],
-          );
-        }
+        const effects = yield* outbox.listByCommandId(
+          CommandId.make(
+            `command:queue-tool-boundary:batch:${queued.at(-1)!.id}:${turnId}:${completed[0]!.sequence}`,
+          ),
+        );
+        assert.deepEqual(
+          effects.map((effect) => effect.request.type),
+          ["provider-turn.steer-batch"],
+        );
         const workerId = `${prefix}-claim-worker`;
-        for (const expectedMessageId of expectedMessageIds) {
-          const effect = Option.getOrThrow(
-            yield* outbox.claimNext({ workerId, leaseDurationMs: 30_000 }),
-          );
-          assert.equal(effect.threadId, threadId);
-          assert.equal(effect.request.type, "provider-turn.steer");
-          if (effect.request.type !== "provider-turn.steer") return;
-          assert.equal(effect.request.messageId, expectedMessageId);
-          assert.isTrue(yield* outbox.succeed({ effectId: effect.id, workerId }));
-        }
+        const effect = Option.getOrThrow(
+          yield* outbox.claimNext({ workerId, leaseDurationMs: 30_000 }),
+        );
+        assert.equal(effect.threadId, threadId);
+        assert.equal(effect.request.type, "provider-turn.steer-batch");
+        if (effect.request.type !== "provider-turn.steer-batch") return;
+        assert.deepEqual(effect.request.messageIds, expectedMessageIds);
+        assert.isTrue(yield* outbox.succeed({ effectId: effect.id, workerId }));
       }),
-    { timeout: 6000 },
   );
 
   it.effect.each(["owner", "peer", "scheduled"] as const)(
@@ -935,11 +928,11 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
         for (const run of [candidate!, tail!]) {
           assert.equal(
             after.runs.find((entry) => entry.id === run.id)?.status,
-            source === "owner" ? "cancelled" : "queued",
+            source !== "scheduled" ? "cancelled" : "queued",
           );
         }
         assert.equal(after.runs.find((run) => run.id === f.run.id)?.status, "running");
-        if (source === "owner") {
+        if (source !== "scheduled") {
           assert.equal(
             after.messages.find((message) => message.text === "Candidate")?.runId,
             f.run.id,
@@ -979,7 +972,31 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
         (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.at(-1)?.status,
         "queued",
       );
-      yield* f.react(f.tool("fresh-tool"));
+      const freshBoundary = yield* f.react(f.tool("fresh-tool"));
+      const freshCommandId = CommandId.make(
+        `command:queue-tool-boundary:batch:${later.id}:${f.turnId}:${freshBoundary.sequence}`,
+      );
+      // Terminal-event reactions also take this thread's lock. Wait for this
+      // boundary's committed promotion before reading its result.
+      const promoted = yield* f.sink
+        .stream({
+          threadId: f.threadId,
+          afterSequence: freshBoundary.sequence,
+          eventType: "turn-item.updated",
+        })
+        .pipe(
+          Stream.filter(
+            (stored) =>
+              stored.commandId === freshCommandId &&
+              stored.event.type === "turn-item.updated" &&
+              stored.event.payload.type === "user_message" &&
+              stored.event.payload.inputIntent === "promoted_queued_to_steer" &&
+              stored.event.payload.messageId === later.userMessageId &&
+              stored.event.payload.runId === f.run.id,
+          ),
+          Stream.runHead,
+        );
+      assert.isTrue(Option.isSome(promoted));
       assert.equal(
         (yield* f.orchestrator.getThreadProjection(f.threadId)).messages.find(
           (message) => message.text === "Later",
@@ -1046,176 +1063,165 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
     "maintenance",
     "restart-only",
     "live-restart-only",
-  ] as const)(
-    "keeps the FIFO queue intact at a %s boundary",
-    (condition) =>
-      Effect.gen(function* () {
-        const f = yield* queuedToolFixture(`queue-boundary-${condition}`);
-        yield* f.queue(
-          condition === "maintenance" ? "/compact" : "First",
-          condition === "incompatible-model"
-            ? { ...modelSelection, model: "different-model" }
-            : modelSelection,
-        );
-        yield* f.queue("Second");
-        let node = f.tool("boundary");
-        const projection = yield* f.orchestrator.getThreadProjection(f.threadId);
-        const first = projection.runs.find((run) => run.status === "queued")!;
-        if (condition === "subagent") {
-          const child = { ...f.tool("subagent-root", "running"), kind: "subagent" as const };
-          yield* f.writeTool(child);
-          node = { ...node, parentNodeId: child.id };
-        } else if (condition === "old-turn") {
-          node = { ...node, providerTurnId: ProviderTurnId.make("previous-turn") };
-        } else if (condition === "old-run") {
-          node = { ...node, runId: RunId.make("previous-run") };
-        } else if (condition === "held") {
-          yield* f.sink.write({
-            events: projection.runs
-              .filter((run) => run.status === "queued")
-              .map((run) => ({
-                id: EventId.make(`queue-boundary-held-event:${run.id}`),
-                type: "run.updated" as const,
-                threadId: f.threadId,
-                runId: run.id,
-                occurredAt: f.now,
-                payload: { ...run, queueHeld: true },
-              })),
-          });
-        } else if (condition === "approval") {
-          yield* f.sink.write({
-            events: [
-              {
-                id: EventId.make("queue-boundary-approval-event"),
-                type: "runtime-request.updated",
-                threadId: f.threadId,
-                runId: f.run.id,
-                occurredAt: f.now,
-                payload: {
-                  id: RuntimeRequestId.make("queue-boundary-approval-request"),
-                  nodeId: f.run.rootNodeId!,
-                  providerTurnId: f.turnId,
-                  nativeRequestRef: null,
-                  kind: "permission",
-                  status: "pending",
-                  responseCapability: { type: "live", providerSessionId: f.providerSession.id },
-                  createdAt: f.now,
-                  resolvedAt: null,
-                },
-              },
-            ],
-          });
-        } else if (condition === "runtime-mode" || condition === "interaction-mode") {
-          yield* f.orchestrator.dispatch(
-            condition === "runtime-mode"
-              ? {
-                  type: "thread.runtime-mode.set",
-                  threadId: f.threadId,
-                  commandId: CommandId.make(`${f.threadId}-mode`),
-                  runtimeMode: "approval-required",
-                }
-              : {
-                  type: "thread.interaction-mode.set",
-                  threadId: f.threadId,
-                  commandId: CommandId.make(`${f.threadId}-mode`),
-                  interactionMode: "plan",
-                },
-          );
-        } else if (condition === "restart-only" || condition === "live-restart-only") {
-          const providerSession = {
-            ...f.providerSession,
-            capabilities: {
-              ...f.providerSession.capabilities,
-              turns: {
-                ...f.providerSession.capabilities.turns,
-                supportsActiveSteering: false,
-                supportsSteeringByInterruptRestart: true,
-              },
-            },
-          };
-          if (condition === "restart-only")
-            yield* f.sink.write({
-              events: [
-                {
-                  id: EventId.make(`${f.threadId}-capabilities`),
-                  type: "provider-session.updated",
-                  threadId: f.threadId,
-                  occurredAt: f.now,
-                  payload: providerSession,
-                },
-              ],
-            });
-          f.sessionSpy.mockReturnValue(
-            Effect.succeed(
-              Option.some({
-                ...Option.getOrThrow(yield* f.sessions.get(f.providerSession.id)),
-                providerSession,
-              }),
-            ),
-          );
-        }
-        const stored = yield* f.react(node);
-        const after = yield* f.orchestrator.getThreadProjection(f.threadId);
-        assert.equal(after.runs.filter((run) => run.status === "queued").length, 2);
-        assert.equal(after.runs.find((run) => run.id === f.run.id)?.status, "running");
-        assert.isFalse(
-          after.turnItems.some(
-            (item) =>
-              item.type === "user_message" && item.inputIntent === "promoted_queued_to_steer",
-          ),
-        );
-        const outbox = yield* EffectOutbox.EffectOutboxV2;
-        assert.deepEqual(
-          yield* outbox.listByCommandId(
-            CommandId.make(
-              `command:queue-tool-boundary:${first.id}:${f.turnId}:${stored.sequence}`,
-            ),
-          ),
-          [],
-        );
-      }),
-    { timeout: 6000 },
-  );
-
-  it.effect(
-    "preserves terminal fallback for an incompatible FIFO head",
-    () =>
-      Effect.gen(function* () {
-        const f = yield* queuedToolFixture("queue-boundary-terminal-fallback");
-        yield* f.queue("Different", { ...modelSelection, model: "different-model" });
-        yield* f.queue("Second");
-        yield* f.react(f.tool("tool"));
-        const queued = (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.filter(
-          (run) => run.status === "queued",
-        );
-        const started = yield* Queue.unbounded<RunId>();
-        yield* f.sink
-          .stream({ threadId: f.threadId, afterSequence: yield* f.sink.latestSequence() })
-          .pipe(
-            Stream.runForEach((stored) =>
-              stored.event.type === "run.updated" && stored.event.payload.status === "starting"
-                ? Queue.offer(started, stored.event.payload.id)
-                : Effect.void,
-            ),
-            Effect.forkScoped,
-          );
+  ] as const)("keeps the FIFO queue intact at a %s boundary", (condition) =>
+    Effect.gen(function* () {
+      const f = yield* queuedToolFixture(`queue-boundary-${condition}`);
+      yield* f.queue(
+        condition === "maintenance" ? "/compact" : "First",
+        condition === "incompatible-model"
+          ? { ...modelSelection, model: "different-model" }
+          : modelSelection,
+      );
+      yield* f.queue("Second");
+      let node = f.tool("boundary");
+      const projection = yield* f.orchestrator.getThreadProjection(f.threadId);
+      const first = projection.runs.find((run) => run.status === "queued")!;
+      if (condition === "subagent") {
+        const child = { ...f.tool("subagent-root", "running"), kind: "subagent" as const };
+        yield* f.writeTool(child);
+        node = { ...node, parentNodeId: child.id };
+      } else if (condition === "old-turn") {
+        node = { ...node, providerTurnId: ProviderTurnId.make("previous-turn") };
+      } else if (condition === "old-run") {
+        node = { ...node, runId: RunId.make("previous-run") };
+      } else if (condition === "held") {
+        yield* f.sink.write({
+          events: projection.runs
+            .filter((run) => run.status === "queued")
+            .map((run) => ({
+              id: EventId.make(`queue-boundary-held-event:${run.id}`),
+              type: "run.updated" as const,
+              threadId: f.threadId,
+              runId: run.id,
+              occurredAt: f.now,
+              payload: { ...run, queueHeld: true },
+            })),
+        });
+      } else if (condition === "approval") {
         yield* f.sink.write({
           events: [
             {
-              id: EventId.make(`${f.threadId}-terminal`),
-              type: "run.updated",
+              id: EventId.make("queue-boundary-approval-event"),
+              type: "runtime-request.updated",
               threadId: f.threadId,
               runId: f.run.id,
               occurredAt: f.now,
-              payload: { ...f.run, status: "completed", startedAt: f.now, completedAt: f.now },
+              payload: {
+                id: RuntimeRequestId.make("queue-boundary-approval-request"),
+                nodeId: f.run.rootNodeId!,
+                providerTurnId: f.turnId,
+                nativeRequestRef: null,
+                kind: "permission",
+                status: "pending",
+                responseCapability: { type: "live", providerSessionId: f.providerSession.id },
+                createdAt: f.now,
+                resolvedAt: null,
+              },
             },
           ],
         });
-        assert.equal(yield* Queue.take(started), queued[0]!.id);
-        const after = yield* f.orchestrator.getThreadProjection(f.threadId);
-        assert.equal(after.runs.find((run) => run.id === queued[1]!.id)?.status, "queued");
-      }),
-    { timeout: 6000 },
+      } else if (condition === "runtime-mode" || condition === "interaction-mode") {
+        yield* f.orchestrator.dispatch(
+          condition === "runtime-mode"
+            ? {
+                type: "thread.runtime-mode.set",
+                threadId: f.threadId,
+                commandId: CommandId.make(`${f.threadId}-mode`),
+                runtimeMode: "approval-required",
+              }
+            : {
+                type: "thread.interaction-mode.set",
+                threadId: f.threadId,
+                commandId: CommandId.make(`${f.threadId}-mode`),
+                interactionMode: "plan",
+              },
+        );
+      } else if (condition === "restart-only" || condition === "live-restart-only") {
+        const providerSession = {
+          ...f.providerSession,
+          capabilities: {
+            ...f.providerSession.capabilities,
+            turns: {
+              ...f.providerSession.capabilities.turns,
+              supportsActiveSteering: false,
+              supportsSteeringByInterruptRestart: true,
+            },
+          },
+        };
+        if (condition === "restart-only")
+          yield* f.sink.write({
+            events: [
+              {
+                id: EventId.make(`${f.threadId}-capabilities`),
+                type: "provider-session.updated",
+                threadId: f.threadId,
+                occurredAt: f.now,
+                payload: providerSession,
+              },
+            ],
+          });
+        f.sessionSpy.mockReturnValue(
+          Effect.succeedSome({
+            ...Option.getOrThrow(yield* f.sessions.get(f.providerSession.id)),
+            providerSession,
+          }),
+        );
+      }
+      const stored = yield* f.react(node);
+      const after = yield* f.orchestrator.getThreadProjection(f.threadId);
+      assert.equal(after.runs.filter((run) => run.status === "queued").length, 2);
+      assert.equal(after.runs.find((run) => run.id === f.run.id)?.status, "running");
+      assert.isFalse(
+        after.turnItems.some(
+          (item) => item.type === "user_message" && item.inputIntent === "promoted_queued_to_steer",
+        ),
+      );
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      assert.deepEqual(
+        yield* outbox.listByCommandId(
+          CommandId.make(`command:queue-tool-boundary:${first.id}:${f.turnId}:${stored.sequence}`),
+        ),
+        [],
+      );
+    }),
+  );
+
+  it.effect("preserves terminal fallback for an incompatible FIFO head", () =>
+    Effect.gen(function* () {
+      const f = yield* queuedToolFixture("queue-boundary-terminal-fallback");
+      yield* f.queue("Different", { ...modelSelection, model: "different-model" });
+      yield* f.queue("Second");
+      yield* f.react(f.tool("tool"));
+      const queued = (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.filter(
+        (run) => run.status === "queued",
+      );
+      const started = yield* Queue.unbounded<RunId>();
+      yield* f.sink
+        .stream({ threadId: f.threadId, afterSequence: yield* f.sink.latestSequence() })
+        .pipe(
+          Stream.runForEach((stored) =>
+            stored.event.type === "run.updated" && stored.event.payload.status === "starting"
+              ? Queue.offer(started, stored.event.payload.id)
+              : Effect.void,
+          ),
+          Effect.forkScoped,
+        );
+      yield* f.sink.write({
+        events: [
+          {
+            id: EventId.make(`${f.threadId}-terminal`),
+            type: "run.updated",
+            threadId: f.threadId,
+            runId: f.run.id,
+            occurredAt: f.now,
+            payload: { ...f.run, status: "completed", startedAt: f.now, completedAt: f.now },
+          },
+        ],
+      });
+      assert.equal(yield* Queue.take(started), queued[0]!.id);
+      const after = yield* f.orchestrator.getThreadProjection(f.threadId);
+      assert.equal(after.runs.find((run) => run.id === queued[1]!.id)?.status, "queued");
+    }),
   );
 
   it.effect(
@@ -1254,7 +1260,47 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
           f.run.id,
         );
       }),
-    { timeout: 6000 },
+  );
+
+  it.effect("rolls back failed project-item acceptance and preserves empty original retries", () =>
+    Effect.gen(function* () {
+      const { orchestrator, threadId, request } = yield* selfSettlementFixture("items-rollback");
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`CREATE TRIGGER fail_project_items BEFORE INSERT ON jones_self_settlement_project_items BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END`;
+      yield* Effect.addFinalizer(() =>
+        sql`DROP TRIGGER IF EXISTS fail_project_items`.pipe(Effect.orDie),
+      );
+      const result = yield* Effect.exit(
+        orchestrator.requestSelfSettlement({ ...request, projectRemaining: ["Pending work"] }),
+      );
+      assert.isTrue(Exit.isFailure(result));
+      assert.isUndefined((yield* orchestrator.getThreadProjection(threadId)).thread.selfSettlement);
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM orchestration_command_receipts WHERE command_id = ${request.commandId}`,
+        0,
+      );
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM orchestration_events WHERE command_id = ${request.commandId}`,
+        0,
+      );
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM jones_self_settlement_project_items WHERE command_id = ${request.commandId}`,
+        0,
+      );
+      yield* sql`DROP TRIGGER fail_project_items`;
+      const accepted = yield* orchestrator.requestSelfSettlement(request);
+      assert.deepEqual(
+        yield* orchestrator.requestSelfSettlement({
+          ...request,
+          projectRemaining: ["Later replacement"],
+        }),
+        accepted,
+      );
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM jones_self_settlement_project_items WHERE command_id = ${request.commandId}`,
+        0,
+      );
+    }),
   );
 
   it.effect(
@@ -1263,7 +1309,21 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
       Effect.gen(function* () {
         const { orchestrator, sink, threadId, run, provider, providerSession, request } =
           yield* selfSettlementFixture("runtime-self-settle");
-        const accepted = yield* orchestrator.requestSelfSettlement(request);
+        const projectRemaining = [
+          "Finish the separate project follow-up",
+          "Publish the other workstream",
+        ];
+        const accepted = yield* orchestrator.requestSelfSettlement({
+          ...request,
+          projectRemaining,
+        });
+        assert.deepEqual(
+          yield* orchestrator.requestSelfSettlement({
+            ...request,
+            projectRemaining: ["replacement"],
+          }),
+          accepted,
+        );
         assert.isTrue(
           Exit.isFailure(
             yield* Effect.exit(
@@ -1340,6 +1400,15 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
         const settled = yield* orchestrator.getThreadProjection(threadId);
         assert.equal(settled.thread.settledOverride, "settled");
         assert.isNull(settled.thread.selfSettlement);
+        const origins = yield* SettlementOrigins.SettlementOrigins.pipe(
+          Effect.provide(SettlementOrigins.layer),
+        );
+        assert.deepEqual(
+          (yield* origins.resolve({
+            items: [{ threadId, settledAtMs: DateTime.toEpochMillis(settled.thread.settledAt!) }],
+          })).items[0]?.projectRemaining,
+          projectRemaining,
+        );
         assert.isFalse(
           settled.providerSessions.some((session) => session.id === provider.providerSessionId),
         );
@@ -1385,7 +1454,10 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
         const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
         const outbox = yield* EffectOutbox.EffectOutboxV2;
         const now = yield* DateTime.now;
-        yield* orchestrator.requestSelfSettlement(request);
+        yield* orchestrator.requestSelfSettlement({
+          ...request,
+          projectRemaining: ["Cancelled project item"],
+        });
 
         const completeReaction = Effect.fnUntraced(function* (
           status: "cancelled" | "failed" | "completed",
@@ -1461,7 +1533,7 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
             const sessionSpy = vi
               .spyOn(sessions, "get")
               .mockReturnValue(
-                Effect.succeed(Option.some({ providerSession } as ProviderAdapterV2SessionRuntime)),
+                Effect.succeedSome({ providerSession } as ProviderAdapterV2SessionRuntime),
               );
             yield* Effect.addFinalizer(() => Effect.sync(() => sessionSpy.mockRestore()));
           }
@@ -1510,6 +1582,22 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
           ),
           0,
         );
+        if (invalidation === "cancelled" || invalidation === "failed") {
+          yield* orchestrator.dispatch({
+            type: "thread.settle",
+            commandId: CommandId.make(`${prefix}-manual`),
+            threadId,
+          });
+          const later = yield* orchestrator.getThreadProjection(threadId);
+          const origins = yield* SettlementOrigins.SettlementOrigins.pipe(
+            Effect.provide(SettlementOrigins.layer),
+          );
+          assert.isUndefined(
+            (yield* origins.resolve({
+              items: [{ threadId, settledAtMs: DateTime.toEpochMillis(later.thread.settledAt!) }],
+            })).items[0]?.projectRemaining,
+          );
+        }
       }),
   );
 });

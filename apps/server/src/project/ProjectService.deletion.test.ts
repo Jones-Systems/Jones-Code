@@ -1,3 +1,4 @@
+import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -39,6 +40,7 @@ const layerEventPersistence = EventSink.layer.pipe(
   Layer.provideMerge(Layer.merge(EventStore.layer, ProjectionStore.layer)),
 );
 const layerServices = Layer.mergeAll(
+  ThreadMetadataReads.layer,
   LegacyV1ThreadImporter.layer.pipe(Layer.provideMerge(layerEventPersistence)),
   ProjectionMaintenance.layer.pipe(Layer.provide(layerEventPersistence)),
   ProjectStore.layer,
@@ -58,6 +60,7 @@ const layerServices = Layer.mergeAll(
             resolve: () => Effect.succeed(null),
           }),
           Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+            invalidate: () => Effect.void,
             resolvePath: () => Effect.succeed(null),
           }),
         ),
@@ -203,6 +206,7 @@ it.effect("retries a partial project deletion without repeating child events or 
         partialCleanup.map((effect) => [effect.thread_id, effect.effect_type]),
         [
           [firstThreadId, "preview.cleanup"],
+          [firstThreadId, "scheduled-tasks.cleanup"],
           [firstThreadId, "terminal.cleanup"],
         ],
       );
@@ -226,7 +230,7 @@ it.effect("retries a partial project deletion without repeating child events or 
       assert.deepEqual(finalEvents[0], partialEvents[0]);
       assert.equal(finalEvents[2]?.command_id, commandId);
       const finalCleanup = yield* readCleanup;
-      assert.lengthOf(finalCleanup, 4);
+      assert.lengthOf(finalCleanup, 6);
       assert.deepEqual(
         finalCleanup.filter((effect) => effect.thread_id === firstThreadId),
         partialCleanup,
@@ -241,6 +245,12 @@ it.effect("retries a partial project deletion without repeating child events or 
               thread_id: threadId,
               command_id: expectedCommandId,
               effect_type: "preview.cleanup",
+            },
+            {
+              effect_id: `effect:${expectedCommandId}:scheduled-tasks.cleanup`,
+              thread_id: threadId,
+              command_id: expectedCommandId,
+              effect_type: "scheduled-tasks.cleanup",
             },
             {
               effect_id: `effect:${expectedCommandId}:terminal.cleanup`,
@@ -517,6 +527,69 @@ it.effect(
 
         const settingsAfterDelete = yield* serverSettings.getSettings;
         assert.isUndefined(settingsAfterDelete.projectSettingsOverrides[projectId]);
+      }).pipe(Effect.provide(layerServices));
+    }).pipe(Effect.provide(layerDatabase)),
+);
+
+it.effect(
+  "metadata discovery preserves nonempty rejection and active-before-archived cascade order",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const projectId = ProjectId.make("project:metadata-deletion");
+      const otherProjectId = ProjectId.make("project:metadata-unrelated");
+      yield* seedProject(projectId);
+      yield* seedProject(otherProjectId);
+      yield* Effect.gen(function* () {
+        const events = yield* EventSink.EventSinkV2;
+        const service = yield* ProjectService.make;
+        const archived = ThreadId.make("thread:metadata-a-archive");
+        const active = ThreadId.make("thread:metadata-z-active");
+        const unrelated = ThreadId.make("thread:metadata-unrelated");
+        const archivedEvent = nativeThreadCreated(projectId, archived);
+        yield* events.write({
+          events: [
+            {
+              ...archivedEvent,
+              payload: { ...archivedEvent.payload, archivedAt: archivedEvent.occurredAt },
+            },
+            nativeThreadCreated(projectId, active),
+            nativeThreadCreated(otherProjectId, unrelated),
+          ],
+        });
+        yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = '{}'
+        WHERE thread_id = ${unrelated}`;
+        const rejected = yield* service
+          .delete({
+            commandId: CommandId.make("metadata-deletion:reject"),
+            projectId,
+          })
+          .pipe(Effect.flip);
+        assert.equal(rejected._tag, "ProjectNotEmptyError");
+        const before = yield* sql<{
+          count: number;
+        }>`SELECT COUNT(*) AS count FROM orchestration_events
+        WHERE event_type = 'thread.deleted'`;
+        assert.equal(before[0]?.count, 0);
+        yield* service.delete({
+          commandId: CommandId.make("metadata-deletion:force"),
+          projectId,
+          force: true,
+        });
+        const deletions = yield* sql<{ stream_id: string; event_type: string }>`
+        SELECT stream_id, event_type FROM orchestration_events
+        WHERE event_type IN ('thread.deleted', 'project.deleted') ORDER BY sequence ASC`;
+        assert.deepEqual(
+          deletions.map((row) => [row.stream_id, row.event_type]),
+          [
+            [active, "thread.deleted"],
+            [archived, "thread.deleted"],
+            [projectId, "project.deleted"],
+          ],
+        );
+        const retained = yield* sql<{ deleted_at: string | null }>`
+        SELECT deleted_at FROM orchestration_v2_projection_threads WHERE thread_id = ${unrelated}`;
+        assert.isNull(retained[0]?.deleted_at);
       }).pipe(Effect.provide(layerServices));
     }).pipe(Effect.provide(layerDatabase)),
 );

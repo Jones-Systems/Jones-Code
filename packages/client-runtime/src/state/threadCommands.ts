@@ -19,7 +19,6 @@ import {
   createEnvironmentRpcCommand,
 } from "./runtime.ts";
 import {
-  type ThreadCommandInput,
   type ArchiveThreadInput,
   type CancelQueuedRunInput,
   type RetryWorkspacePreparationInput,
@@ -31,7 +30,9 @@ import {
   type ForkThreadFromRunInput,
   type MergeThreadBackInput,
   type PromoteQueuedRunInput,
+  type PromoteQueuedBatchInput,
   type ReorderQueuedRunInput,
+  type ResumeThreadQueueInput,
   type LinkThreadPullRequestInput,
   type RespondToThreadApprovalInput,
   type RespondToThreadUserInputInput,
@@ -48,6 +49,8 @@ import {
   type StartThreadTurnInput,
   type StopThreadSessionInput,
   type UnarchiveThreadInput,
+  type CloseGuestShareInput,
+  type ResolveGuestMessageInput,
   type UnlinkThreadPullRequestInput,
   type UnpinThreadInput,
   type WatchThreadPullRequestInput,
@@ -56,6 +59,8 @@ import {
   type UpdateThreadMetadataInput,
   type VisitThreadInput,
   archiveThread,
+  closeGuestShare,
+  resolveGuestMessage,
   cancelQueuedRun,
   createThread,
   deleteThread,
@@ -65,6 +70,7 @@ import {
   markThreadUnread,
   mergeThreadBack,
   promoteQueuedRun,
+  promoteQueuedBatch,
   reorderQueuedRun,
   resumeThreadQueue,
   retryWorkspacePreparation,
@@ -150,6 +156,45 @@ export function createThreadEnvironmentAtoms<R, E>(
     key: ({ environmentId, input }: { environmentId: string; input: { threadId: string } }) =>
       JSON.stringify([environmentId, input.threadId]),
   };
+  const loadEarlierHistory = Effect.fn("ThreadCommands.loadEarlierHistory")(function* (
+    input: LoadEarlierThreadHistoryInput,
+  ) {
+    const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
+    const controller = yield* Effect.serviceOption(ThreadHistoryController.ThreadHistoryController);
+    if (Option.isNone(controller)) {
+      return {
+        _tag: "noop",
+      } satisfies ThreadHistoryController.ThreadHistoryLoadEarlierResult;
+    }
+    return yield* controller.value.loadEarlier(
+      supervisor.target.environmentId,
+      input.threadId,
+      input.throughEntryId,
+    );
+  });
+
+  // Runs whether or not the server accepted the interrupt, so a stale cached item still
+  // settles when Stop had nothing to interrupt; the interrupt's own failure still surfaces.
+  // The repair is detached: its lookups must not hold the thread's serial command key, and
+  // closing the thread cancels the repair, not the Stop that triggered it.
+  const interruptTurn = Effect.fn("ThreadCommands.interruptTurn")(function* (
+    input: InterruptThreadTurnInput,
+  ) {
+    const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
+    const controller = yield* Effect.serviceOption(ThreadHistoryController.ThreadHistoryController);
+    return yield* interruptThreadTurn(input).pipe(
+      Effect.ensuring(
+        Option.match(controller, {
+          onNone: () => Effect.void,
+          onSome: (value) =>
+            value
+              .reconcilePendingWork(supervisor.target.environmentId, input.threadId)
+              .pipe(Effect.forkDetach, Effect.asVoid),
+        }),
+      ),
+    );
+  });
+
   const commands = {
     create: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:create",
@@ -160,6 +205,18 @@ export function createThreadEnvironmentAtoms<R, E>(
     delete: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:delete",
       execute: (input: DeleteThreadInput) => deleteThread(input),
+      scheduler,
+      concurrency,
+    }),
+    closeGuestShare: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:close-guest-share",
+      execute: (input: CloseGuestShareInput) => closeGuestShare(input),
+      scheduler,
+      concurrency,
+    }),
+    resolveGuestMessage: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:resolve-guest-message",
+      execute: (input: ResolveGuestMessageInput) => resolveGuestMessage(input),
       scheduler,
       concurrency,
     }),
@@ -285,7 +342,7 @@ export function createThreadEnvironmentAtoms<R, E>(
     }),
     interruptTurn: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:interrupt-turn",
-      execute: (input: InterruptThreadTurnInput) => interruptThreadTurn(input),
+      execute: interruptTurn,
       scheduler,
       concurrency,
     }),
@@ -358,13 +415,19 @@ export function createThreadEnvironmentAtoms<R, E>(
     }),
     resumeThreadQueue: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:resume-queue",
-      execute: (input: ThreadCommandInput) => resumeThreadQueue(input),
+      execute: (input: ResumeThreadQueueInput) => resumeThreadQueue(input),
       scheduler,
       concurrency,
     }),
     reorderQueuedRun: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:reorder-queued-run",
       execute: (input: ReorderQueuedRunInput) => reorderQueuedRun(input),
+      scheduler,
+      concurrency,
+    }),
+    promoteQueuedBatch: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:promote-queued-batch",
+      execute: (input: PromoteQueuedBatchInput) => promoteQueuedBatch(input),
       scheduler,
       concurrency,
     }),
@@ -394,27 +457,15 @@ export function createThreadEnvironmentAtoms<R, E>(
     }),
     loadEarlierHistory: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:load-earlier-history",
-      execute: (input: LoadEarlierThreadHistoryInput) =>
-        Effect.gen(function* () {
-          const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
-          const controller = yield* Effect.serviceOption(
-            ThreadHistoryController.ThreadHistoryController,
-          );
-          if (Option.isNone(controller)) {
-            return {
-              _tag: "noop",
-            } satisfies ThreadHistoryController.ThreadHistoryLoadEarlierResult;
-          }
-          return yield* controller.value.loadEarlier(
-            supervisor.target.environmentId,
-            input.threadId,
-            input.throughEntryId,
-          );
-        }),
+      execute: loadEarlierHistory,
       scheduler,
+      // A page load can make two sequential HTTP fetches, so it gets its own lane
+      // and Send or Stop never waits behind it. Loads still run one at a time, and
+      // the controller drops stale cursors and merges pages under its apply lock.
       concurrency: {
         mode: "serial",
-        key: ({ environmentId, input }) => JSON.stringify([environmentId, input.threadId]),
+        key: ({ environmentId, input }) =>
+          JSON.stringify([environmentId, input.threadId, "history"]),
       },
     }),
     uploadFeedback: createEnvironmentRpcCommand(runtime, {
@@ -462,11 +513,7 @@ export function createThreadEnvironmentAtoms<R, E>(
             ...thread,
             pendingRuntimeRequest: null,
             snoozedUntil: DateTime.makeUnsafe(input.snoozedUntil),
-            snoozedAt:
-              thread.snoozedUntil != null &&
-              DateTime.formatIso(thread.snoozedUntil) === input.snoozedUntil
-                ? (thread.snoozedAt ?? now)
-                : now,
+            snoozedAt: now,
           },
     ),
     unsnooze: optimistic.wrap(commands.unsnooze, (thread) => ({

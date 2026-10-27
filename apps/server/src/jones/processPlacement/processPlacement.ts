@@ -13,8 +13,7 @@ export interface CgroupBinding {
   readonly device: string;
   readonly inode: string;
 }
-export interface ProcessPlacementBinding {
-  readonly version: 1;
+interface ProcessPlacementIdentity {
   readonly helperPath: string;
   readonly helperSha256: string;
   readonly helperDevice: string;
@@ -23,6 +22,12 @@ export interface ProcessPlacementBinding {
   readonly workload: CgroupBinding;
   readonly serverPriority?: { readonly nice: -15; readonly resetOnFork: true };
 }
+
+export type ProcessPlacementBinding = ProcessPlacementIdentity &
+  (
+    | { readonly version: 1; readonly workloadMode?: never }
+    | { readonly version: 2; readonly workloadMode: "systemd-descendant" }
+  );
 
 export class ProcessPlacementError extends Error {
   constructor(message: string) {
@@ -65,6 +70,7 @@ export function readProcessPlacementBinding(
       (key) =>
         ![
           "version",
+          "workloadMode",
           "helperPath",
           "helperSha256",
           "helperDevice",
@@ -77,7 +83,10 @@ export function readProcessPlacementBinding(
   )
     return fail("unknown binding field");
   if (
-    record.version !== 1 ||
+    !(
+      (record.version === 1 && record.workloadMode === undefined) ||
+      (record.version === 2 && record.workloadMode === "systemd-descendant")
+    ) ||
     typeof record.helperPath !== "string" ||
     !NodePath.isAbsolute(record.helperPath) ||
     NodePath.normalize(record.helperPath) !== record.helperPath ||
@@ -134,7 +143,9 @@ export function readProcessPlacementBinding(
     }
   }
   return {
-    version: 1,
+    ...(record.version === 2
+      ? { version: 2 as const, workloadMode: "systemd-descendant" as const }
+      : { version: 1 as const }),
     helperPath: record.helperPath,
     helperSha256: record.helperSha256,
     helperDevice: record.helperDevice as string,
@@ -184,7 +195,8 @@ export function validateProcessPlacementBinding(
       ) {
         fail("cgroup identity changed");
       }
-      NodeFS.accessSync(NodePath.join(target.path, "cgroup.procs"), NodeFS.constants.W_OK);
+      if (binding.version === 1 || role === "control")
+        NodeFS.accessSync(NodePath.join(target.path, "cgroup.procs"), NodeFS.constants.W_OK);
       NodeFS.accessSync(NodePath.join(target.path, "cpu.max"), NodeFS.constants.R_OK);
     }
   } catch (cause) {
@@ -277,6 +289,7 @@ export function placementArguments(
     "--inode",
     group.inode,
     ...(server && binding.serverPriority !== undefined ? ["--server-priority", "-15"] : []),
+    ...(binding.version === 2 && role === "workload" ? ["--verify-descendant"] : []),
     "--",
   ];
 }

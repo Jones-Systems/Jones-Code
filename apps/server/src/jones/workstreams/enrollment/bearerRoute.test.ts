@@ -83,9 +83,11 @@ it.live(
     Effect.gen(function* () {
       const home = yield* syntheticT3Home("workstreams-native-bearer-route-");
       // First server start: full migrations, WAL journal and the server-created signing key.
-      yield* Effect.gen(function* () {
-        yield* EnvironmentAuth.EnvironmentAuth;
-      }).pipe(Effect.provide(serverAuthLayer(home.baseDir)), Effect.scoped);
+      yield* EnvironmentAuth.EnvironmentAuth.pipe(
+        Effect.asVoid,
+        Effect.provide(serverAuthLayer(home.baseDir)),
+        Effect.scoped,
+      );
       assert.strictEqual(NodeFS.existsSync(`${home.dbPath}-wal`), false);
 
       const requestFile = `${home.baseDir}/native-enrollment-request.json`;
@@ -135,15 +137,24 @@ it.live(
         const sessionStore = yield* SessionStore.SessionStore;
         const enrollments = yield* makeNativeEnrollments({
           authority: authorityPort,
-          build: Effect.succeed(Option.some(syntheticBuild)),
+          build: Effect.succeedSome(syntheticBuild),
         }).pipe(Effect.provideService(AuthSessions.AuthSessionRepository, sessions));
         const runtime = NativeWorkstreamsRuntime.of({
           provider: makeWorkstreamsNativeProvider({
             ...providerFixture.ports,
             authority: authorityPort,
-            build: Effect.succeed(Option.some(syntheticBuild)),
+            build: Effect.succeedSome(syntheticBuild),
             threadExists: (threadId) => Effect.succeed(threadId === nativeThreadId),
           }),
+          providerV2: makeWorkstreamsNativeProvider(
+            {
+              ...providerFixture.ports,
+              authority: authorityPort,
+              build: Effect.succeedSome(syntheticBuild),
+              threadExists: (threadId) => Effect.succeed(threadId === nativeThreadId),
+            },
+            "v2",
+          ),
           enrollments: NativeProviderEnrollment.of({
             getBySessionId: (sessionId) =>
               enrollments.getBySessionId(sessionId).pipe(Effect.orElseSucceed(() => Option.none())),

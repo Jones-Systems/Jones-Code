@@ -1,0 +1,30 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "durable-owner-response",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.test.ts",
+    "apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.ts",
+    "apps/server/src/jones/mcp/userResponseRequest/handlers.ts",
+    "apps/server/src/jones/mcp/userResponseRequest/tools.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/orchestration/userInputRequestRecord.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/userResponseRequest/handlers.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/userResponseRequest/tools.ts"
+    }
+  ]
+}

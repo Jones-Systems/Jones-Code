@@ -20,6 +20,7 @@ export function useAssistantCitationTarget({
   viewport,
   historyLoading,
   loadEarlier,
+  getTurnFoldRunId,
   onExpandTurn,
   onManualNavigation,
 }: {
@@ -30,6 +31,7 @@ export function useAssistantCitationTarget({
   viewport: HTMLElement | null;
   historyLoading: boolean;
   loadEarlier: CitationHistoryPage | null;
+  getTurnFoldRunId: (entryId: string) => RunId | undefined;
   onExpandTurn: (runId: RunId) => void;
   onManualNavigation: () => void;
 }) {
@@ -43,7 +45,6 @@ export function useAssistantCitationTarget({
     done: boolean;
   } | null>(null);
 
-  // A target belongs to one request, so returning to an earlier key never reuses it.
   if (ready !== null && ready.key !== request?.key) {
     setReady(null);
   }
@@ -123,12 +124,14 @@ export function useAssistantCitationTarget({
       (row) => row.kind === "message" && row.message.id === navigation.target.citation.messageId,
     );
     if (index < 0) {
-      if (source.message.runId) onExpandTurn(source.message.runId);
+      const foldRunId = getTurnFoldRunId(source.id);
+      if (foldRunId) onExpandTurn(foldRunId);
       return;
     }
     if (listLoaded && listRef.current) setReady(navigation.target);
   }, [
     entries,
+    getTurnFoldRunId,
     historyLoading,
     listLoaded,
     listRef,

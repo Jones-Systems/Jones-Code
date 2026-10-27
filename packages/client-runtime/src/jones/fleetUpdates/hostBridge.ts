@@ -1,6 +1,7 @@
 import type {
   FleetActivateInput,
   FleetEnrollmentInput,
+  FleetLeaderInput,
   FleetStageInput,
   FleetRetireInput,
 } from "@t3tools/contracts/jones/fleet-updates";
@@ -18,7 +19,8 @@ export type FleetHostRequest =
   | { readonly action: "enroll"; readonly input: FleetEnrollmentInput }
   | { readonly action: "stage"; readonly input: FleetStageInput }
   | { readonly action: "retire"; readonly input: FleetRetireInput }
-  | { readonly action: "activate"; readonly input: FleetActivateInput };
+  | { readonly action: "activate"; readonly input: FleetActivateInput }
+  | { readonly action: "leader"; readonly input: FleetLeaderInput };
 
 /** Uses the narrow authenticated update transport even when orchestration is incompatible. */
 export const requestFleetHost = Effect.fn("clientRuntime.fleetUpdates.requestFleetHost")(function* (
@@ -47,7 +49,12 @@ export const requestFleetHost = Effect.fn("clientRuntime.fleetUpdates.requestFle
     signer,
     remoteAuthorization,
     group: "jonesFleetUpdates",
-    method: input.action === "status" ? "GET" : input.action === "enroll" ? "PUT" : "POST",
+    method:
+      input.action === "status"
+        ? "GET"
+        : input.action === "enroll" || input.action === "leader"
+          ? "PUT"
+          : "POST",
     url: (urls) =>
       input.action === "status"
         ? urls.status({
@@ -70,6 +77,8 @@ export const requestFleetHost = Effect.fn("clientRuntime.fleetUpdates.requestFle
           return client.retire({ headers, payload: input.input });
         case "activate":
           return client.activate({ headers, payload: input.input });
+        case "leader":
+          return client.leader({ headers, payload: input.input });
       }
     },
   });

@@ -26,6 +26,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ClaudeAdapterV2 from "./Adapters/ClaudeAdapterV2.ts";
@@ -127,6 +128,7 @@ const deliveries = [
   "scheduled message",
   "user steering",
   "promoted queued message",
+  "promoted queued batch",
 ] as const;
 
 it.effect.each(deliveries)(
@@ -157,8 +159,7 @@ it.effect.each(deliveries)(
                   Effect.sync(() => {
                     offers.push(message);
                     nativeQueue.push(message);
-                    // Claude Code 2.1.289's queue watcher aborts when a now-priority
-                    // command arrives, including while Bash blocks pending reads.
+                    // Claude Code 2.1.289 aborts on now-priority commands even while Bash blocks reads.
                     if (nativeQueue.some((command) => command.priority === "now")) {
                       batchAbort.abort({ kind: "interrupt" });
                     }
@@ -330,6 +331,12 @@ it.effect.each(deliveries)(
                     }),
                   ),
                   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
+                  Layer.provide(
+                    Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+                      namedProjectsRoot: "/projects",
+                      isScratchProject: () => Effect.succeed(false),
+                    }),
+                  ),
                   Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
                   Layer.provide(
                     CommandReceiptStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
@@ -356,6 +363,36 @@ it.effect.each(deliveries)(
               createdBy: "user",
               creationSource: "web",
             });
+          } else if (delivery === "promoted queued batch") {
+            for (let index = 0; index < 22; index++)
+              yield* orchestrator.dispatch({
+                type: "message.dispatch",
+                commandId: CommandId.make(`queue:${index}`),
+                threadId,
+                messageId: index === 0 ? messageId : MessageId.make(`queued:${index}`),
+                text: `Queued direction ${index}`,
+                attachments: [],
+                dispatchMode: { type: "queue_after_active" },
+                createdBy: "agent",
+                creationSource: "mcp",
+                senderThreadId: ThreadId.make(`sender:${index}`),
+              });
+            const queued = yield* orchestrator.getThreadProjection(threadId);
+            yield* orchestrator.dispatch({
+              type: "queued-message.promote-batch-to-steer",
+              commandId: CommandId.make("promote-batch"),
+              threadId,
+              targetRunId: parent.id,
+              items: queued.runs
+                .filter((run) => run.status === "queued")
+                .map((run) => ({
+                  queuedRunId: run.id,
+                  messageId: run.userMessageId,
+                  messageUpdatedAt: DateTime.formatIso(
+                    queued.messages.find((message) => message.id === run.userMessageId)!.updatedAt,
+                  ),
+                })),
+            });
           } else {
             yield* orchestrator.dispatch({
               type: "message.dispatch",
@@ -376,8 +413,6 @@ it.effect.each(deliveries)(
               queuedRunId: queuedRun.id,
               targetRunId: parent.id,
             });
-            // Promotion cancels the queued run and moves its message into the
-            // running run as a steer that remembers where it came from.
             const promoted = yield* orchestrator.getThreadProjection(threadId);
             assert.equal(promoted.runs.find((run) => run.id === queuedRun.id)?.status, "cancelled");
             assert.equal(
@@ -392,9 +427,16 @@ it.effect.each(deliveries)(
           }
           yield* worker.drain();
           const explicitSteer =
-            delivery === "user steering" || delivery === "promoted queued message";
+            delivery === "user steering" ||
+            delivery === "promoted queued message" ||
+            delivery === "promoted queued batch";
           assert.equal(batchAbort.signal.aborted, explicitSteer);
           assert.equal(offers.length, explicitSteer ? 2 : 1);
+          if (delivery === "promoted queued batch") {
+            const payload = JSON.stringify(offers[1]!.message.content);
+            for (let index = 0; index < 22; index++)
+              assert.include(payload, `Queued direction ${index}`);
+          }
           const finished = yield* watch(
             (event) =>
               event.type === "run.updated" &&

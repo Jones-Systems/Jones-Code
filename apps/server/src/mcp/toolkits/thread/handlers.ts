@@ -1,3 +1,7 @@
+import * as Option from "effect/Option";
+import * as ThreadSelfConfiguration from "../../../jones/threadConfiguration/ThreadSelfConfiguration.ts";
+import * as Invocation from "../../McpInvocationContext.ts";
+import { toMcpFailure } from "../../../jones/threadConfiguration/tools.ts";
 import {
   type CommandId,
   type RuntimeRequestId,
@@ -9,6 +13,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
+import { formatThreadLink } from "@t3tools/shared/threadLinks";
 
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import {
@@ -70,10 +75,7 @@ const readQuestion = Effect.fn("mcp.readQuestion")(function* (
     ? readMessageWritableThread(input.threadId, ["runtimeRequests", "turnItems"])
     : readThread(input.threadId, ["runtimeRequests", "turnItems"]);
   const request = context.projection.runtimeRequests.find(
-    (request) =>
-      request.id === input.requestId &&
-      request.kind === "user_input" &&
-      request.status === "pending",
+    (request) => request.id === input.requestId && request.kind === "user_input",
   );
   const item = context.projection.turnItems.find(
     (item) => item.type === "user_input_request" && item.requestId === input.requestId,
@@ -82,6 +84,14 @@ const readQuestion = Effect.fn("mcp.readQuestion")(function* (
     return yield* new OrchestratorMcpFailure({
       code: "invalid_request",
       message: "The pending user-input request was not found.",
+    });
+  if (request.status !== "pending")
+    return yield* new OrchestratorMcpFailure({
+      code: "invalid_request",
+      message:
+        request.status === "resolved"
+          ? "The user-input request was already answered."
+          : `The user-input request is no longer pending (${request.status}).`,
     });
   return { ...context, request, item };
 });
@@ -99,12 +109,12 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           code: "invalid_request",
           message: "The scheduled task was not found.",
         });
-      const { task } = yield* scheduler
+      const { task, threadId } = yield* scheduler
         .runNow({ id: input.taskId })
         .pipe(Effect.mapError(unavailable));
       return {
         taskId: task.id,
-        threadId: task.threadId,
+        threadId,
         lastRunStatus: task.lastRunStatus,
         runCount: task.runCount,
         nextRunAt: task.nextRunAt,
@@ -114,15 +124,15 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
   t3_thread_search: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
       const { caller } = yield* readCaller();
-      const { projectId: requested, ...query } = input;
-      const projectId = requested ?? caller?.projectId;
       const threadSearch = yield* ThreadSearch.ThreadSearch;
-      const result = yield* threadSearch.search(query).pipe(Effect.mapError(unavailable));
+      const { matches } = yield* threadSearch
+        .searchThreads({ ...input, projectId: input.projectId ?? caller?.projectId })
+        .pipe(Effect.mapError(unavailable));
       return {
-        matches:
-          projectId === undefined
-            ? result.matches
-            : result.matches.filter((match) => match.projectId === projectId),
+        matches: matches.map((match) => ({
+          ...match,
+          link: formatThreadLink(match.threadId, match.title),
+        })),
       };
     }),
   ),
@@ -186,12 +196,20 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       const {
         projection: { thread },
       } = yield* readThread(input.threadId);
+      const configuration = yield* Effect.serviceOption(
+        ThreadSelfConfiguration.ThreadSelfConfiguration,
+      );
       return {
         threadId: thread.id,
         modelSelection: thread.modelSelection,
         runtimeMode: thread.runtimeMode,
         interactionMode: thread.interactionMode,
         threadMessagesBlocked: thread.threadMessagesBlocked ?? false,
+        ...(Option.isNone(configuration)
+          ? {}
+          : yield* configuration.value
+              .read(thread.id, yield* Invocation.McpInvocationContext)
+              .pipe(Effect.mapError(toMcpFailure))),
       };
     }),
   ),
@@ -201,6 +219,13 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         threads,
         projection: { thread },
       } = yield* readThread(input.threadId);
+      const scope = yield* Invocation.McpInvocationContext;
+      if (scope.thread?.threadId === thread.id)
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message:
+            "Use t3_thread_self_configure with the revision and execution precondition from t3_thread_configuration to safely change your own thread.",
+        });
       const type = modelSelectionCommandType(thread.providerInstanceId, input.modelSelection);
       const result = yield* threads
         .dispatch({
@@ -301,12 +326,34 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
     })),
   ),
   t3_queue_promote_to_steer: writesThread((input) =>
-    dispatch(input.threadId, (common) => ({
-      ...common,
-      type: "queued-message.promote-to-steer",
-      queuedRunId: input.queuedRunId,
-      targetRunId: input.targetRunId,
-    })),
+    Effect.gen(function* () {
+      if (input.queuedRunIds === undefined)
+        return yield* dispatch(input.threadId, (common) => ({
+          ...common,
+          type: "queued-message.promote-to-steer",
+          queuedRunId: input.queuedRunId,
+          targetRunId: input.targetRunId,
+        }));
+      if (input.queuedRunIds[0] !== input.queuedRunId)
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "queuedRunId must identify the first batch member.",
+        });
+      const { threads, projection } = yield* readThread(input.threadId);
+      if (threads.promoteQueuedBatch === undefined)
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "Queued batch steering is unavailable.",
+        });
+      return yield* threads
+        .promoteQueuedBatch({
+          commandId: yield* newCommandId(),
+          threadId: projection.thread.id,
+          targetRunId: input.targetRunId,
+          queuedRunIds: input.queuedRunIds,
+        })
+        .pipe(Effect.mapError(dispatchFailure));
+    }),
   ),
   t3_thread_organize: writesThread((input) =>
     Effect.gen(function* () {

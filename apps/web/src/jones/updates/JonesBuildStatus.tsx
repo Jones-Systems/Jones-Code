@@ -1,5 +1,7 @@
 import {
   jonesCandidatePresentation,
+  jonesFollowerHold,
+  jonesFollowerSummary,
   jonesUpdatePresentation,
   shortJonesSource,
   type JonesSourceComparison,
@@ -8,15 +10,18 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import type {
   JonesUpdateDownloadInput,
   JonesUpdateInstallInput,
+  JonesUpdateReconcileInput,
   JonesUpdateState,
 } from "@t3tools/contracts/jones/jonesUpdates";
 import { ArrowRightIcon } from "lucide-react";
-import { useId, useState } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
 import { ITEM_ROW_CLASSNAME, ITEM_ROW_INNER_CLASSNAME } from "../../components/settings/itemRows";
-import { compactJonesVersionText } from "./buildVersion";
+import { jonesBuildLabel, jonesBuildLabels } from "./buildVersion";
+import { outcomeBuildDetail, outcomeBuildRefs } from "./buildPairs";
+import type { JonesInstalledComparison } from "./installedSourceComparison";
 import {
   DETAIL_PANEL_CLASSNAME,
   DetailItem,
@@ -25,10 +30,12 @@ import {
   INLINE_ACTIONS_CLASSNAME,
 } from "./disclosure";
 import { BuildVersion, CopyableValue } from "./updateDisplay";
+import { randomUUID } from "../../lib/utils";
 
 export type JonesBuildRequest =
   | { readonly action: "check" }
   | { readonly action: "download"; readonly input: JonesUpdateDownloadInput }
+  | { readonly action: "reconcile"; readonly input: JonesUpdateReconcileInput }
   | { readonly action: "install"; readonly input: JonesUpdateInstallInput };
 
 const LAYOUTS = {
@@ -73,6 +80,42 @@ const COMPARISON = {
   },
 } as const;
 
+const INSTALLED_COMPARISON = {
+  matches: {
+    label: "Matches",
+    variant: "success",
+    detail: "Installed from the same source commit as this laptop.",
+  },
+  older: {
+    label: "Older",
+    variant: "warning",
+    detail: "Installed from an older source commit than this laptop.",
+  },
+  newer: {
+    label: "Newer",
+    variant: "info",
+    detail: "Installed from a newer source commit than this laptop.",
+  },
+  different: {
+    label: "Different source",
+    variant: "warning",
+    detail:
+      "Installed from a different source commit than this laptop. Which is newer is not known.",
+  },
+  diverged: {
+    label: "Diverged",
+    variant: "warning",
+    detail:
+      "Installed from a source commit that has diverged from this laptop's; neither contains the other.",
+  },
+  unavailable: {
+    label: null,
+    variant: "outline",
+    detail:
+      "Not compared. Comparing needs the full installed source commit of both this host and this laptop.",
+  },
+} as const;
+
 /**
  * Presentation of one host's Jones main builds. Installed and offered builds share one line;
  * exact versions, commits and the update record stay one disclosure away.
@@ -83,9 +126,11 @@ export function JonesBuildStatus({
   freshness,
   freshnessMessage,
   comparison = null,
+  installedComparison = null,
   pending = false,
   actionError = null,
   layout = "inline",
+  extraAction,
   onRequest,
 }: {
   readonly environmentId: EnvironmentId;
@@ -94,32 +139,101 @@ export function JonesBuildStatus({
   readonly freshnessMessage?: string | undefined;
   /** Set when this host's build is compared with this laptop's installed source. */
   readonly comparison?: JonesSourceComparison | null;
+  /** Set when this host's installed source is compared with this laptop's installed source. */
+  readonly installedComparison?: JonesInstalledComparison | null;
   readonly pending?: boolean;
   readonly actionError?: string | null;
   readonly layout?: JonesBuildStatusLayout;
+  readonly extraAction?: ReactNode;
   readonly onRequest: (request: JonesBuildRequest) => void;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const detailsId = useId();
-  if (state === null)
-    return freshness === "stale" ? (
-      <p role="status" className="mt-1.5 text-xs text-muted-foreground">
-        {freshnessMessage}
-      </p>
-    ) : null;
-
   const styles = LAYOUTS[layout];
+  const freshnessReason =
+    freshness === "fresh"
+      ? undefined
+      : (freshnessMessage ??
+        {
+          loading: "Waiting for this host's update status.",
+          stale: "Update status is unavailable. Reconnect before downloading.",
+          unsupported: "This host does not support Jones build updates.",
+        }[freshness]);
+  if (state === null) {
+    const reason = freshnessReason ?? "No update status is available for this host.";
+    return (
+      <div className={styles.root}>
+        <div className={styles.header}>
+          <div className={styles.summary}>
+            {layout === "row" ? (
+              <h3 className="text-sm font-medium text-foreground">Jones builds</h3>
+            ) : null}
+            <p role="status" className="text-muted-foreground">
+              {reason}
+            </p>
+          </div>
+          <div className={styles.actions}>
+            {extraAction}
+            <DownloadAction
+              key="download"
+              size={styles.button}
+              reason={reason}
+              onDownload={() => undefined}
+            />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const presentation = jonesUpdatePresentation(state);
   const candidate = jonesCandidatePresentation(state);
   const busy = pending || presentation.busy || freshness !== "fresh";
   const provenance = state.provenance;
   const outcome = state.outcome;
+  const installedRef = {
+    version: state.currentVersion ?? "",
+    startedAt: state.currentBuildStartedAt,
+    sourceSha: state.installedSource?.sha,
+  };
+  const offeredRef = {
+    version: candidate?.version ?? "",
+    startedAt: provenance?.buildStartedAt,
+    sourceSha: candidate?.sourceSha,
+  };
+  const [installedLabel, offeredLabel] = jonesBuildLabels([installedRef, offeredRef], "day");
+  const outcomeLabels = outcome === undefined ? [] : jonesBuildLabels(outcomeBuildRefs(state));
   const outcomeText =
     outcome === undefined
       ? undefined
-      : `${compactJonesVersionText(outcome.fromVersion)} → ${compactJonesVersionText(outcome.targetVersion)}${outcome.reason ? ` · ${outcome.reason}` : ""}`;
+      : `${outcomeLabels[0]!.text} → ${outcomeLabels[1]!.text}${outcome.reason ? ` · ${outcome.reason}` : ""}`;
   const hasBuilds = state.currentVersion !== undefined || candidate !== undefined;
   const badge = comparison === null ? null : COMPARISON[comparison];
+  const installedBadge =
+    installedComparison === null ? null : INSTALLED_COMPARISON[installedComparison];
+  const candidateLabel = candidate?.label ?? "Offered";
+  // A host that follows its laptop takes only the laptop's build; the host refuses others too.
+  const followerHold = jonesFollowerHold(state);
+  const followerSummary = jonesFollowerSummary(state);
+  const downloadReason =
+    freshnessReason ??
+    (pending
+      ? "An update request is in progress. Wait for it to finish."
+      : presentation.busy
+        ? presentation.message
+        : (followerHold ??
+          (!state.capability.download
+            ? DOWNLOAD_CAPABILITY_REASONS[state.capability.reason ?? "blocked"]
+            : state.phase !== "available"
+              ? (state.message ??
+                (state.phase === "no-new"
+                  ? "No newer qualified build is available to download."
+                  : state.phase === "building"
+                    ? "The new build is still being prepared."
+                    : "Check for an available build before downloading."))
+              : provenance === undefined
+                ? "No qualified build is available to download."
+                : undefined)));
 
   const builds = hasBuilds ? (
     <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
@@ -130,8 +244,17 @@ export function JonesBuildStatus({
             label="installed version"
             version={state.currentVersion}
             sourceSha={state.installedSource?.sha}
+            buildLabel={installedLabel}
           />
         </span>
+      ) : null}
+      {state.currentVersion !== undefined && installedBadge?.label ? (
+        <SourceBadge
+          subject="Installed"
+          label={installedBadge.label}
+          variant={installedBadge.variant}
+          detail={installedBadge.detail}
+        />
       ) : null}
       {state.currentVersion !== undefined && candidate !== undefined ? (
         <ArrowRightIcon aria-hidden className="size-3 shrink-0 text-muted-foreground/70" />
@@ -144,6 +267,7 @@ export function JonesBuildStatus({
               label={`${candidate.label.toLowerCase()} version`}
               version={candidate.version}
               sourceSha={candidate.sourceSha}
+              buildLabel={offeredLabel}
             />
           ) : (
             <CopyableValue
@@ -155,19 +279,23 @@ export function JonesBuildStatus({
         </span>
       ) : null}
       {badge?.label ? (
-        <Tooltip>
-          <TooltipTrigger render={<Badge variant={badge.variant} size="sm" />}>
-            {badge.label}
-          </TooltipTrigger>
-          <TooltipPopup side="top">{badge.detail}</TooltipPopup>
-        </Tooltip>
+        <SourceBadge
+          subject={candidateLabel}
+          label={badge.label}
+          variant={badge.variant}
+          detail={`${candidateLabel}: ${badge.detail}`}
+        />
       ) : null}
     </div>
   ) : null;
 
   const statusLine = (
     <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-muted-foreground">
-      <span className="min-w-0">{presentation.message}</span>
+      <span className="min-w-0">
+        {presentation.busy
+          ? presentation.message
+          : (presentation.settlementMessage ?? presentation.message)}
+      </span>
       <DisclosureButton
         open={detailsOpen}
         controls={detailsId}
@@ -189,6 +317,23 @@ export function JonesBuildStatus({
           {statusLine}
         </div>
         <div className={styles.actions}>
+          {extraAction}
+          {presentation.canReconcile ? (
+            <Button
+              size={styles.button}
+              variant="outline"
+              disabled={busy}
+              onClick={() => {
+                if (state.updateId === undefined) return;
+                onRequest({
+                  action: "reconcile",
+                  input: { operationId: state.updateId, requestId: randomUUID() },
+                });
+              }}
+            >
+              Reconcile
+            </Button>
+          ) : null}
           <Button
             size={styles.button}
             variant="outline"
@@ -201,7 +346,12 @@ export function JonesBuildStatus({
           {state.stagedHandle !== undefined ? (
             <Button
               size={styles.button}
-              disabled={busy || !state.capability.install || state.currentVersion === undefined}
+              disabled={
+                busy ||
+                !state.capability.install ||
+                state.currentVersion === undefined ||
+                followerHold !== undefined
+              }
               onClick={() => {
                 if (state.stagedHandle === undefined || state.currentVersion === undefined) return;
                 onRequest({
@@ -216,26 +366,55 @@ export function JonesBuildStatus({
             >
               Install
             </Button>
-          ) : provenance !== undefined ? (
-            <Button
+          ) : (
+            <DownloadAction
+              key="download"
               size={styles.button}
-              disabled={busy || !state.capability.download || state.phase !== "available"}
-              onClick={() =>
+              reason={downloadReason}
+              onDownload={() => {
+                if (downloadReason !== undefined || provenance === undefined) return;
                 onRequest({
                   action: "download",
                   input: { artifactId: provenance.artifactId, sourceSha: provenance.sourceSha },
-                })
-              }
-            >
-              Download
-            </Button>
-          ) : null}
+                });
+              }}
+            />
+          )}
         </div>
       </div>
       <div className={styles.after}>
+        {presentation.settlementMessage !== undefined && state.updateId !== undefined ? (
+          <p role="status" className="text-muted-foreground">
+            Attempt{" "}
+            <CopyableValue
+              label="attempt ID"
+              value={state.updateId}
+              display={state.updateId.slice(0, 8)}
+            />
+          </p>
+        ) : null}
+        {state.launcherRefresh === "recommended" || state.launcherSettlement === "unsupported" ? (
+          <p className="text-muted-foreground">Launcher refresh recommended</p>
+        ) : null}
+        {presentation.refusalMessage !== undefined &&
+        actionError !== presentation.refusalMessage ? (
+          <p role="alert" className="text-destructive">
+            {presentation.refusalMessage}
+          </p>
+        ) : null}
         {freshness !== "fresh" ? (
           <p role="status" className="text-muted-foreground">
             {freshnessMessage}
+          </p>
+        ) : null}
+        {followerSummary !== undefined ? (
+          <p className="text-muted-foreground">
+            {followerSummary}
+            {followerHold !== undefined &&
+            candidate !== undefined &&
+            state.policy?.leaderSource !== null
+              ? ` · ${candidate.label} build is not the laptop's, so it will not install`
+              : ""}
           </p>
         ) : null}
         {actionError ? (
@@ -244,9 +423,26 @@ export function JonesBuildStatus({
           </p>
         ) : null}
         {outcome !== undefined && outcome.status !== "committed" ? (
-          <p role="status" className="text-destructive">
-            {outcome.status === "rolled-back" ? "Rolled back" : "Blocked"}: {outcomeText}
-          </p>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <p
+                  role="status"
+                  className={presentation.settled ? "text-muted-foreground" : "text-destructive"}
+                  tabIndex={0}
+                  aria-label={`${outcome.status}: ${outcomeBuildDetail(state)}${outcome.reason ? `; ${outcome.reason}` : ""}`}
+                />
+              }
+            >
+              {presentation.settled
+                ? "No changes"
+                : outcome.status === "rolled-back"
+                  ? "Rolled back"
+                  : "Blocked"}
+              : {outcomeText}
+            </TooltipTrigger>
+            <TooltipPopup side="top">{outcomeBuildDetail(state)}</TooltipPopup>
+          </Tooltip>
         ) : null}
         {state.capability.reason === "bootstrap-required" ? (
           <p className="text-muted-foreground">
@@ -256,11 +452,20 @@ export function JonesBuildStatus({
         {detailsOpen ? (
           <div id={detailsId} className={DETAIL_PANEL_CLASSNAME}>
             <DetailList>
+              {state.launcherVersion === undefined ? null : (
+                <DetailItem label="Launcher version">{state.launcherVersion}</DetailItem>
+              )}
+              {state.childVersion === undefined ? null : (
+                <DetailItem label="Server version">{state.childVersion}</DetailItem>
+              )}
               {state.currentVersion !== undefined ? (
                 <DetailItem label="Installed">
                   <CopyableValue label="installed version" value={state.currentVersion} />
                 </DetailItem>
               ) : null}
+              <DetailItem label="Installed built">
+                {jonesBuildLabel(installedRef).detail}
+              </DetailItem>
               <DetailItem label="Installed source">
                 {state.installedSource === undefined ? (
                   "not reported"
@@ -283,12 +488,20 @@ export function JonesBuildStatus({
                       />
                     )}
                   </DetailItem>
+                  <DetailItem label={`${candidate.label} built`}>
+                    {jonesBuildLabel(offeredRef).detail}
+                  </DetailItem>
                   <DetailItem label={`${candidate.label} source`}>
                     <CopyableValue label="source commit" value={candidate.sourceSha} />
                   </DetailItem>
                 </>
               ) : null}
-              {badge !== null ? <DetailItem label="This laptop">{badge.detail}</DetailItem> : null}
+              {installedBadge !== null ? (
+                <DetailItem label="Installed vs this laptop">{installedBadge.detail}</DetailItem>
+              ) : null}
+              {badge !== null ? (
+                <DetailItem label={`${candidateLabel} vs this laptop`}>{badge.detail}</DetailItem>
+              ) : null}
               {state.updateId !== undefined ? (
                 <DetailItem label="Update">
                   <CopyableValue label="update ID" value={state.updateId} />
@@ -306,12 +519,84 @@ export function JonesBuildStatus({
                 </DetailItem>
               ) : null}
               {outcome !== undefined ? (
-                <DetailItem label="Last update">{presentation.outcomeMessage}</DetailItem>
+                <>
+                  <DetailItem label="Last update">{presentation.outcomeMessage}</DetailItem>
+                  <DetailItem label="From version">
+                    <CopyableValue label="outcome from version" value={outcome.fromVersion} />
+                  </DetailItem>
+                  <DetailItem label="Target version">
+                    <CopyableValue label="outcome target version" value={outcome.targetVersion} />
+                  </DetailItem>
+                </>
               ) : null}
             </DetailList>
           </div>
         ) : null}
       </div>
     </div>
+  );
+}
+
+/** A source-comparison badge whose spoken name says which build is compared with this laptop. */
+function SourceBadge({
+  subject,
+  label,
+  variant,
+  detail,
+}: {
+  readonly subject: string;
+  readonly label: string;
+  readonly variant: "success" | "warning" | "info" | "outline";
+  readonly detail: string;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger render={<Badge variant={variant} size="sm" />}>
+        <span className="sr-only">{subject} compared with this laptop: </span>
+        {label}
+      </TooltipTrigger>
+      <TooltipPopup side="top">{detail}</TooltipPopup>
+    </Tooltip>
+  );
+}
+
+const DOWNLOAD_CAPABILITY_REASONS = {
+  "bootstrap-required": "This host needs a qualified launcher before downloading builds.",
+  "source-unqualified": "This host's source is not qualified for build downloads.",
+  "unsupported-platform": "Build downloads are not supported on this host's platform.",
+  "native-consent-required": "This host requires native consent before downloading builds.",
+  blocked: "Build downloads are not available on this host.",
+} as const;
+
+function DownloadAction({
+  size,
+  reason,
+  onDownload,
+}: {
+  readonly size: "xs" | "sm";
+  readonly reason: string | undefined;
+  readonly onDownload: () => void;
+}) {
+  const reasonId = useId();
+  const button = (
+    <Button
+      size={size}
+      aria-disabled={reason === undefined ? undefined : true}
+      aria-describedby={reason === undefined ? undefined : reasonId}
+      onClick={() => {
+        if (reason !== undefined) return;
+        onDownload();
+      }}
+    >
+      Download
+    </Button>
+  );
+  return (
+    <Tooltip disabled={reason === undefined}>
+      <TooltipTrigger render={button} />
+      <TooltipPopup side="top" role="tooltip" id={reasonId}>
+        {reason}
+      </TooltipPopup>
+    </Tooltip>
   );
 }

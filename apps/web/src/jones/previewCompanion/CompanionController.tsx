@@ -22,22 +22,23 @@ import { subscribeCompanionController } from "./controller.ts";
 
 const ticketCommand = createEnvironmentCommand(connectionAtomRuntime, {
   label: "companion:ticket",
-  execute: (input: { readonly environmentId: DesktopCompanionTicketRequest["environmentId"] }) =>
-    Effect.gen(function* () {
-      const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
-      const prepared = yield* SubscriptionRef.get(supervisor.prepared);
-      if (Option.isNone(prepared)) return { _tag: "unavailable" } as const;
-      const entry = appAtomRegistry
-        .get(environmentCatalog.catalogValueAtom)
-        .entries.get(input.environmentId);
-      const rejected = companionTicketEligibility({
-        registered: !!entry,
-        enabled: entry?.enabled === true,
-        prepared: prepared.value,
-        session: appAtomRegistry.get(environmentSession.sessionStateValueAtom(input.environmentId)),
-      });
-      return rejected ?? (yield* resolveCompanionTicket(prepared.value));
-    }),
+  execute: Effect.fn("companion:ticket")(function* (input: {
+    readonly environmentId: DesktopCompanionTicketRequest["environmentId"];
+  }) {
+    const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
+    const prepared = yield* SubscriptionRef.get(supervisor.prepared);
+    if (Option.isNone(prepared)) return { _tag: "unavailable" } as const;
+    const entry = appAtomRegistry
+      .get(environmentCatalog.catalogValueAtom)
+      .entries.get(input.environmentId);
+    const rejected = companionTicketEligibility({
+      registered: !!entry,
+      enabled: entry?.enabled === true,
+      prepared: prepared.value,
+      session: appAtomRegistry.get(environmentSession.sessionStateValueAtom(input.environmentId)),
+    });
+    return rejected ?? (yield* resolveCompanionTicket(prepared.value));
+  }),
 });
 
 async function ticket(
@@ -83,6 +84,7 @@ export function CompanionController() {
   const prepared = useAtomValue(
     environmentId ? environmentSession.preparedConnectionValueAtom(environmentId) : noPrepared,
   );
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own the desktop companion bridge subscription and refresh its assigned thread bindings.
   useEffect(() => {
     const bridge = window.desktopBridge?.previewCompanion;
     if (!bridge) return;
@@ -111,6 +113,7 @@ export function CompanionController() {
         }),
     });
   }, []);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Publish ticket-provider readiness to the desktop bridge when connection eligibility changes.
   useEffect(() => {
     if (!state?.config.enabled || !environmentId) return;
     const entry = catalog.entries.get(environmentId);

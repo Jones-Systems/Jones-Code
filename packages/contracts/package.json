@@ -1,12 +1,28 @@
 {
   "name": "@t3tools/contracts",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "private": true,
   "files": [
     "dist"
   ],
   "type": "module",
   "exports": {
+    "./jones/workstreamOperations": {
+      "types": "./src/jones/workstreamOperations.ts",
+      "import": "./src/jones/workstreamOperations.ts"
+    },
+    "./jones/shellDestinationFence": {
+      "types": "./src/jones/shellDestinationFence.ts",
+      "import": "./src/jones/shellDestinationFence.ts"
+    },
+    "./jones/userResponseRequest": {
+      "types": "./src/jones/userResponseRequest.ts",
+      "import": "./src/jones/userResponseRequest.ts"
+    },
+    "./jones/workstreamsRegistrationAvailability": {
+      "types": "./src/jones/workstreamsRegistrationAvailability.ts",
+      "import": "./src/jones/workstreamsRegistrationAvailability.ts"
+    },
     "./jones/fleet-updates": {
       "types": "./src/jones/fleetUpdates/index.ts",
       "import": "./src/jones/fleetUpdates/index.ts"
@@ -42,10 +58,39 @@
     "./jones/threadAttention": {
       "types": "./src/jones/threadAttention.ts",
       "import": "./src/jones/threadAttention.ts"
+    },
+    "./jones/threadReferenceExcerpt": {
+      "types": "./src/jones/threadReferenceExcerpt.ts",
+      "import": "./src/jones/threadReferenceExcerpt.ts"
+    },
+    "./jones/threadReferenceExcerptRpc": {
+      "types": "./src/jones/threadReferenceExcerptRpc.ts",
+      "import": "./src/jones/threadReferenceExcerptRpc.ts"
+    },
+    "./jones/linkedThreads": {
+      "types": "./src/jones/linkedThreads.ts",
+      "import": "./src/jones/linkedThreads.ts"
+    },
+    "./jones/linkedThreadsCapability": {
+      "types": "./src/jones/linkedThreadsCapability.ts",
+      "import": "./src/jones/linkedThreadsCapability.ts"
+    },
+    "./jones/linkedThreadsRpc": {
+      "types": "./src/jones/linkedThreadsRpc.ts",
+      "import": "./src/jones/linkedThreadsRpc.ts"
+    },
+    "./jones/desktopThreadMonitor": {
+      "types": "./src/jones/desktopThreadMonitor.ts",
+      "import": "./src/jones/desktopThreadMonitor.ts"
+    },
+    "./jones/guardedThreadSettlement": {
+      "types": "./src/jones/guardedThreadSettlement.ts",
+      "import": "./src/jones/guardedThreadSettlement.ts"
     }
   },
   "scripts": {
-    "typecheck": "tsc-rs --noEmit",
+    "typecheck": "vp run tsrs:typecheck",
+    "typecheck:native": "node ../../scripts/jones/tsrs/typecheck.ts --noEmit",
     "test": "vp test run --config ../../vite.config.ts --dir ."
   },
   "dependencies": {

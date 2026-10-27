@@ -13,7 +13,7 @@ import {
 export const PROVIDER_SEND_TURN_MAX_INPUT_CHARS = 120_000;
 export const PROVIDER_SEND_TURN_MAX_ATTACHMENTS = 100;
 export const PROVIDER_SEND_TURN_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
-const PROVIDER_SEND_TURN_MAX_TOTAL_IMAGE_BYTES = 80 * 1024 * 1024;
+export const PROVIDER_SEND_TURN_MAX_TOTAL_IMAGE_BYTES = 80 * 1024 * 1024;
 export const PROVIDER_SEND_TURN_MAX_FILE_BYTES = 50 * 1024 * 1024;
 export const PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES = [
   "image/gif",
@@ -167,19 +167,12 @@ export const ChatFileAttachment = Schema.Struct({
     Schema.isGreaterThanOrEqualTo(1),
     Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_FILE_BYTES),
   ),
-  /** Providers keep these path-only so the
-      agent can inspect the file selectively instead of eagerly spending the
-      same context the fold is intended to preserve. */
+  /** Keep path-only so agents inspect selectively without consuming the context folding preserves. */
   source: Schema.optional(PastedTextAttachmentSource),
 });
 export type ChatFileAttachment = typeof ChatFileAttachment.Type;
 
-/**
- * Attachments ride on persisted events and thread streams, so a newer server or client must be
- * able to introduce a type without making older readers fail to decode the whole message.
- * The known discriminators are excluded so a malformed image or file attachment fails its own
- * schema instead of sliding through here with its size and mime constraints unchecked.
- */
+/** Accepts unknown attachment types for older readers; malformed known types must fail their own schema. */
 export const ChatUnknownAttachment = Schema.Struct({
   type: TrimmedNonEmptyString.check(
     Schema.isMaxLength(50),

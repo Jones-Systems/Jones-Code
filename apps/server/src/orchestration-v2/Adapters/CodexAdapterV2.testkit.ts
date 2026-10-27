@@ -1,3 +1,5 @@
+import * as Deferred from "effect/Deferred";
+import * as ControlAdmission from "../../jones/orchestration/ControlAdmission.ts";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -197,10 +199,10 @@ export function makeCodexReplayClientFactory(input: {
   readonly transcript: CodexReplay.CodexAppServerReplayTranscript;
   readonly driver?: CodexReplay.CodexAppServerReplayDriver;
 }): CodexAdapterV2.CodexAppServerClientFactoryShape {
-  const replayLayer =
+  const replayLayer = (options: CodexClient.CodexAppServerClientOptions) =>
     input.driver === undefined
-      ? CodexReplay.layerReplay(input.transcript)
-      : CodexReplay.layerReplayWithDriver(input.driver);
+      ? CodexReplay.layerReplay(input.transcript, options)
+      : CodexReplay.layerReplayWithDriver(input.driver, options);
   const recordedGoalControl = input.transcript.entries.some(
     (entry) =>
       entry.type === "expect_outbound" &&
@@ -210,7 +212,14 @@ export function makeCodexReplayClientFactory(input: {
   return {
     open: (openInput) =>
       Effect.gen(function* () {
-        const context = yield* Layer.build(replayLayer).pipe(
+        const processExited = yield* Deferred.make<void>();
+        openInput.captureProcessExit?.(Deferred.await(processExited));
+        yield* Effect.addFinalizer(() => Deferred.succeed(processExited, undefined));
+        const context = yield* Layer.build(
+          replayLayer(
+            openInput.onTermination === undefined ? {} : { onTermination: openInput.onTermination },
+          ),
+        ).pipe(
           Effect.mapError(
             (cause) =>
               new ProviderAdapter.ProviderAdapterOpenSessionError({
@@ -268,6 +277,7 @@ function makeCodexProviderAdapterRegistryReplayLayer(input: {
         layerServerConfig,
         NodeServices.layer,
         IdAllocator.layer,
+        ControlAdmission.layer,
       ),
     ),
   );

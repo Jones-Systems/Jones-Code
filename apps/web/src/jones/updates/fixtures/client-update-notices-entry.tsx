@@ -5,6 +5,7 @@ import "../../../index.css";
 import { APP_SOURCE_SHA, APP_VERSION } from "../../../branding";
 import { ComposerBannerStack } from "../../../components/chat/ComposerBannerStack";
 import { useClientUpdateBanners } from "../clientUpdateBanner";
+import { useSyntheticExactSource } from "./exact-source-fixture";
 
 function Fixture() {
   const [selected, setSelected] = useState("Laptop");
@@ -38,10 +39,13 @@ function Fixture() {
       },
     },
   }));
+  // This page has no connection providers; actions run against the synthetic exact-source host.
+  const { renderExactSourceAction } = useSyntheticExactSource();
   const banners = useClientUpdateBanners({
     activeEnvironment: environments.find((environment) => environment.label === selected),
     automaticEnvironment: automatic,
     eligibleEnvironments: environments,
+    renderExactSourceAction,
   });
   return (
     <main className="mx-auto max-w-3xl space-y-8 p-8 text-foreground">

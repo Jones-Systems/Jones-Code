@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off - Node-only launcher/desktop transport and receipt boundary; clock is injected for qualification tests.
+import { parseJonesBuildStartedAt } from "./buildTime.ts";
 import * as NodeCrypto from "node:crypto";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
@@ -25,6 +26,7 @@ export const JONES_ACTIONS_RECEIPT_FILE = "jones-actions-stage.json";
 const MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024;
 const SHA = /^[a-f0-9]{40}$/;
 const HASH = /^[a-f0-9]{64}$/;
+const ANCESTRY_MEMO_LIMIT = 256;
 const PREVIEW = /^\d+\.\d+\.\d+-preview\.\d{8}\.\d+(?:\.\d+)?$/;
 const API_ROOT = `repos/${JONES_ACTIONS_REPOSITORY}`;
 
@@ -77,7 +79,7 @@ export interface JonesArtifactReceipt {
   readonly source: string;
   readonly tree: string;
   readonly workflow: string;
-  readonly event: "push";
+  readonly event: "push" | "schedule";
   readonly ref: "refs/heads/main";
   readonly runId: string;
   readonly runAttempt: string;
@@ -99,7 +101,11 @@ export interface JonesStagedArtifact {
 }
 
 export type JonesActionsCheckResult =
-  | { readonly state: "available"; readonly candidate: JonesActionsCandidate }
+  | {
+      readonly state: "available";
+      readonly candidate: JonesActionsCandidate;
+      readonly buildStartedAt?: string;
+    }
   | { readonly state: "no-new" }
   | { readonly state: "building"; readonly retryAfterMs: number }
   | {
@@ -107,6 +113,8 @@ export type JonesActionsCheckResult =
       readonly reason: JonesActionsBlockedReason;
       readonly retryAfterMs: number;
     };
+
+export type JonesSourceRelationKind = "ahead" | "behind" | "identical" | "diverged";
 
 /** Adapters own authentication and redirect following; neither enters the updater model. */
 export interface JonesActionsTransport {
@@ -129,6 +137,11 @@ function positive(value: unknown): number {
     throw new JonesActionsError("unqualified");
   return value;
 }
+function count(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
+    throw new JonesActionsError("unqualified");
+  return value;
+}
 function text(value: unknown): string {
   if (typeof value !== "string") throw new JonesActionsError("unqualified");
   return value;
@@ -148,22 +161,35 @@ function spec(platform: JonesActionsPlatform, architecture: JonesActionsArchitec
     return {
       workflow: ".github/workflows/artifact-desktop-mac.yml",
       name: "desktop-mac-arm64",
+      events: ["push", "schedule"],
     };
   if (platform === "linux" && (architecture === "x64" || architecture === "arm64"))
     return {
       workflow: ".github/workflows/artifact-cli-linux.yml",
       name: `jones-code-cli-linux-${architecture}`,
+      events: ["push"],
     };
   throw new JonesActionsError("unsupported-platform");
 }
 function canonicalRun(run: Record<string, unknown>, workflow: string): boolean {
   return (
     run.path === workflow &&
-    run.event === "push" &&
     run.head_branch === "main" &&
     record(run.repository).full_name === JONES_ACTIONS_REPOSITORY &&
     record(run.head_repository).full_name === JONES_ACTIONS_REPOSITORY
   );
+}
+function artifactEvent(approved: ReturnType<typeof spec>, event: unknown): boolean {
+  return typeof event === "string" && approved.events.includes(event);
+}
+function canonicalArtifactRun(
+  run: Record<string, unknown>,
+  approved: ReturnType<typeof spec>,
+): boolean {
+  return canonicalRun(run, approved.workflow) && artifactEvent(approved, run.event);
+}
+function canonicalCiRun(run: Record<string, unknown>): boolean {
+  return canonicalRun(run, ".github/workflows/ci.yml") && run.event === "push";
 }
 function safeTransportError(error: unknown): JonesActionsError {
   return error instanceof JonesActionsError ? error : new JonesActionsError("unavailable");
@@ -246,6 +272,8 @@ function createGhJonesActionsTransport(): JonesActionsTransport {
 export class JonesActionsClient {
   private readonly transport: JonesActionsTransport;
   private readonly now: () => number;
+  /** Immutable `base...head` ancestry answers, oldest first; bounded by `ANCESTRY_MEMO_LIMIT`. */
+  private readonly ancestry = new Map<string, boolean>();
   constructor(
     options: { readonly transport?: JonesActionsTransport; readonly now?: () => number } = {},
   ) {
@@ -280,13 +308,13 @@ export class JonesActionsClient {
       for (let page = 1; page <= 3; page++) {
         const runs = rows(
           await this.transport.api(
-            `${API_ROOT}/actions/workflows/${NodePath.posix.basename(approved.workflow)}/runs?branch=main&event=push${targetSource === undefined ? "" : `&head_sha=${targetSource}`}&per_page=50&page=${page}`,
+            `${API_ROOT}/actions/workflows/${NodePath.posix.basename(approved.workflow)}/runs?branch=main${input.platform === "linux" ? "&event=push" : ""}${targetSource === undefined ? "" : `&head_sha=${targetSource}`}&per_page=50&page=${page}`,
           ),
           "workflow_runs",
         );
         for (const listed of runs) {
           if (
-            !canonicalRun(listed, approved.workflow) ||
+            !canonicalArtifactRun(listed, approved) ||
             (targetSource !== undefined && listed.head_sha !== targetSource)
           )
             continue;
@@ -299,7 +327,7 @@ export class JonesActionsClient {
             await this.transport.api(`${API_ROOT}/actions/runs/${positive(listed.id)}`),
           );
           if (
-            !canonicalRun(run, approved.workflow) ||
+            !canonicalArtifactRun(run, approved) ||
             run.status !== "completed" ||
             run.conclusion !== "success"
           )
@@ -319,8 +347,7 @@ export class JonesActionsClient {
             "workflow_runs",
           );
           const sourceCi = ciRuns.filter(
-            (item) =>
-              canonicalRun(item, ".github/workflows/ci.yml") && item.head_sha === candidateSource,
+            (item) => canonicalCiRun(item) && item.head_sha === candidateSource,
           );
           const ci = sourceCi.find(
             (item) => item.status === "completed" && item.conclusion === "success",
@@ -367,8 +394,10 @@ export class JonesActionsClient {
             if (commit.sha !== candidateSource) throw new JonesActionsError("unqualified");
             const artifactBytes = positive(artifact.size_in_bytes);
             if (artifactBytes > MAX_ARCHIVE_BYTES) throw new JonesActionsError("integrity");
+            const buildStartedAt = parseJonesBuildStartedAt(run.run_started_at);
             return {
               state: "available",
+              ...(buildStartedAt === undefined ? {} : { buildStartedAt }),
               candidate: {
                 schema: 1,
                 repository: JONES_ACTIONS_REPOSITORY,
@@ -402,12 +431,68 @@ export class JonesActionsClient {
     }
   }
 
+  /**
+   * Ancestry of two exact commits in the fixed repository: "ahead" when `base` is an ancestor of
+   * `head`, "behind" for the reverse. It says nothing about main membership or channel order.
+   * Throws a sanitized `JonesActionsError` when GitHub cannot prove one relation for this pair.
+   */
+  async relation(base: string, head: string): Promise<JonesSourceRelationKind> {
+    if (source(base) === source(head)) return "identical";
+    try {
+      const comparison = record(
+        await this.transport.api(`${API_ROOT}/compare/${base}...${head}?per_page=1`),
+      );
+      const mergeBase = source(record(comparison.merge_base_commit).sha);
+      const aheadBy = count(comparison.ahead_by),
+        behindBy = count(comparison.behind_by);
+      if (source(record(comparison.base_commit).sha) !== base)
+        throw new JonesActionsError("unqualified");
+      if (comparison.status === "ahead" && mergeBase === base && aheadBy > 0 && behindBy === 0)
+        return "ahead";
+      if (comparison.status === "behind" && mergeBase === head && behindBy > 0 && aheadBy === 0)
+        return "behind";
+      if (
+        comparison.status === "diverged" &&
+        mergeBase !== base &&
+        mergeBase !== head &&
+        aheadBy > 0 &&
+        behindBy > 0
+      )
+        return "diverged";
+      throw new JonesActionsError("unqualified");
+    } catch (error) {
+      throw safeTransportError(error);
+    }
+  }
+
+  /**
+   * Whether `base` is an ancestor of `head` and the merge base is `base`. Ancestry between two
+   * exact commits never changes, so a parsed answer is remembered for this client; main
+   * membership is still proven on every check because the fresh main SHA is part of the pair.
+   * Transport failures and unparsable comparisons are never remembered.
+   */
   private async descends(base: string, head: string): Promise<boolean> {
     if (base === head) return true;
-    const comparison = record(
-      await this.transport.api(`${API_ROOT}/compare/${source(base)}...${source(head)}`),
-    );
-    return comparison.status === "ahead" && record(comparison.merge_base_commit).sha === base;
+    const pair = `${source(base)}...${source(head)}`;
+    const known = this.ancestry.get(pair);
+    if (known !== undefined) return known;
+    const comparison = record(await this.transport.api(`${API_ROOT}/compare/${pair}?per_page=1`));
+    if (comparison.status === "ahead") {
+      const proven = record(comparison.merge_base_commit).sha === base;
+      if (proven) this.remember(pair, true);
+      return proven;
+    }
+    if (comparison.status === "behind" || comparison.status === "diverged")
+      this.remember(pair, false);
+    return false;
+  }
+
+  private remember(pair: string, descends: boolean): void {
+    if (this.ancestry.size >= ANCESTRY_MEMO_LIMIT) {
+      const oldest = this.ancestry.keys().next();
+      if (!oldest.done) this.ancestry.delete(oldest.value);
+    }
+    this.ancestry.set(pair, descends);
   }
 
   /** Download changes only the staging cache; it never extracts or launches the candidate app/runtime. */
@@ -419,13 +504,13 @@ export class JonesActionsClient {
     const commit = record(await this.transport.api(`${API_ROOT}/git/commits/${candidate.source}`));
     const main = record(await this.transport.api(`${API_ROOT}/commits/main`));
     if (
-      !canonicalRun(run, candidate.workflow) ||
+      !canonicalArtifactRun(run, spec(candidate.platform, candidate.architecture)) ||
       run.status !== "completed" ||
       run.conclusion !== "success" ||
       run.head_sha !== candidate.source ||
       run.run_attempt !== candidate.runAttempt ||
       run.workflow_id !== candidate.workflowId ||
-      !canonicalRun(ci, ".github/workflows/ci.yml") ||
+      !canonicalCiRun(ci) ||
       ci.status !== "completed" ||
       ci.conclusion !== "success" ||
       ci.head_sha !== candidate.source ||
@@ -463,7 +548,11 @@ export class JonesActionsClient {
         stagedHandle,
         JONES_ACTIONS_RECEIPT_FILE,
       );
-      if (completed !== undefined) return await validateJonesStagedArtifact(completed, candidate);
+      if (completed !== undefined) {
+        const cached = await validateJonesStagedArtifact(completed, candidate);
+        if (cached.receipt.event !== run.event) throw new JonesActionsError("unqualified");
+        return cached;
+      }
     } catch (error) {
       throw error instanceof JonesActionsError ? error : new JonesActionsError("occupied-cache");
     }
@@ -491,6 +580,7 @@ export class JonesActionsClient {
         JSON.parse(await NodeFSP.readFile(receiptPath, "utf8")) as unknown,
         candidate,
       );
+      if (receipt.event !== run.event) throw new JonesActionsError("unqualified");
       const permitted = new Set([
         "ARTIFACT.json",
         "SOURCE_COMMIT",
@@ -542,6 +632,7 @@ export class JonesActionsClient {
       );
       if (selected === working) return verified;
       const winner = await validateJonesStagedArtifact(selected, candidate);
+      if (winner.receipt.event !== run.event) throw new JonesActionsError("unqualified");
       retainAttempt = false;
       return winner;
     } catch (cause) {
@@ -633,7 +724,7 @@ function parseJonesArtifactReceipt(
     item.source !== candidate.source ||
     item.tree !== candidate.tree ||
     item.workflow !== candidate.workflow ||
-    item.event !== "push" ||
+    !artifactEvent(spec(candidate.platform, candidate.architecture), item.event) ||
     item.ref !== "refs/heads/main" ||
     item.runId !== String(candidate.runId) ||
     item.runAttempt !== String(candidate.runAttempt) ||
@@ -696,7 +787,8 @@ export async function validateJonesStagedArtifact(
       ) as unknown,
       candidate,
     );
-    if (original.sha256 !== receipt.sha256) throw new JonesActionsError("integrity");
+    if (original.sha256 !== receipt.sha256 || original.event !== receipt.event)
+      throw new JonesActionsError("integrity");
     return item as unknown as JonesStagedArtifact;
   } catch (error) {
     throw error instanceof JonesActionsError ? error : new JonesActionsError("occupied-cache");

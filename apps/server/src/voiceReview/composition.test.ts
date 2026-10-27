@@ -14,9 +14,11 @@ import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
 import * as Data from "effect/Data";
 import { ServerEnvironmentIdentity } from "../environment/ServerEnvironment.ts";
+import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
+import * as Layer from "effect/Layer";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { WorkstreamGateway } from "../workstreams/WorkstreamGateway.ts";
-import type { VoiceReviewConfig } from "./config.ts";
+import { voiceReviewConfigFromEnv, type VoiceReviewConfig } from "./config.ts";
 import { makeVoiceReviewComposition, makeVoiceReviewCompositionFactory } from "./composition.ts";
 
 class NativeReadFailure extends Data.TaggedError("NativeReadFailure")<{
@@ -34,12 +36,13 @@ const binding = {
   registry_environment: "registered-environment",
   native_environment_id: "native-environment",
 };
-const reviewConfig = {
-  broker_url: "http://127.0.0.1:7000",
-  reviewer_token_file: "/not-read",
-  source_id: "source",
-  allowed_session_ids: new Set(["reader"]),
-};
+const reviewConfig = voiceReviewConfigFromEnv({
+  T3CODE_VOICE_REVIEW_BROKER_URL: "http://127.0.0.1:7000",
+  T3CODE_VOICE_REVIEW_REVIEWER_TOKEN_FILE: "/not-read",
+  T3CODE_VOICE_REVIEW_SOURCE_ID: "source",
+  T3CODE_VOICE_REVIEW_ALLOWED_SESSION_IDS: '["reader"]',
+})!;
+
 const registryThread: ThreadRegistryThread = {
   thread_key: '["native-host","registered-environment","thread"]',
   registration: null,
@@ -77,6 +80,7 @@ const seam = (location: "active" | "archive" = "active") => {
         location === "archive" ? threadIds.map((id) => ({ id, deletedAt: null })) : [],
     } as unknown as OrchestrationV2ThreadShellSnapshot),
   );
+  const metadataRead = vi.fn(() => Effect.succeed(threadIds.map((id) => ThreadId.make(id))));
   const run = (
     input: {
       binding: typeof binding | null;
@@ -88,8 +92,10 @@ const seam = (location: "active" | "archive" = "active") => {
       Effect.provideService(ServerEnvironmentIdentity, {
         getEnvironmentId: Effect.suspend(() => Effect.succeed(EnvironmentId.make(environmentId))),
       }),
+      Effect.provide(
+        Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({ listIds: metadataRead }),
+      ),
       Effect.provideService(ProjectionStore.ProjectionStoreV2, {
-        getShellSnapshot: projectionRead,
         getThreadShell: (id: ThreadId) =>
           projectionRead().pipe(
             Effect.map(
@@ -108,6 +114,7 @@ const seam = (location: "active" | "archive" = "active") => {
     run,
     read,
     projectionRead,
+    metadataRead,
     removeThread: () => {
       threadIds = [];
     },
@@ -117,6 +124,28 @@ const seam = (location: "active" | "archive" = "active") => {
   };
 };
 describe("voice native service composition", () => {
+  it.effect("keeps an initial metadata failure unavailable without a shell fallback", () =>
+    Effect.gen(function* () {
+      const port = yield* makeVoiceReviewComposition({ binding, reviewConfig, principal }).pipe(
+        Effect.provideService(ServerEnvironmentIdentity, {
+          getEnvironmentId: Effect.succeed(EnvironmentId.make("native-environment")),
+        }),
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({
+              listIds: () =>
+                Effect.fail(
+                  new ThreadMetadataReads.ThreadMetadataReadError({ cause: "synthetic failure" }),
+                ),
+            }),
+            Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
+            Layer.mock(WorkstreamGateway)({ purgeAuthorization: vi.fn() }),
+          ),
+        ),
+      );
+      expect(port).toBeUndefined();
+    }),
+  );
   it.effect(
     "captures production services in a factory without leaking their Effect requirements",
     () =>
@@ -127,15 +156,13 @@ describe("voice native service composition", () => {
             getEnvironmentId: Effect.succeed(EnvironmentId.make("native-environment")),
           }),
           Effect.provideService(ProjectionStore.ProjectionStoreV2, {
-            getShellSnapshot: () =>
-              Effect.succeed({
-                snapshotSequence: 1,
-                schemaVersion: 1,
-                threads: [],
-                archivedThreads: [],
-              }),
             getThreadShell: () => Effect.succeed(null),
           } as unknown as ProjectionStore.ProjectionStoreV2["Service"]),
+          Effect.provide(
+            Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({
+              listIds: () => Effect.succeed([]),
+            }),
+          ),
           Effect.provideService(WorkstreamGateway, {
             readThreadPlacements: read,
           } as unknown as WorkstreamGateway["Service"]),
@@ -152,6 +179,7 @@ describe("voice native service composition", () => {
       const fixture = seam();
       expect(yield* fixture.run({ binding: null, reviewConfig, principal })).toBeUndefined();
       expect(fixture.projectionRead).not.toHaveBeenCalled();
+      expect(fixture.metadataRead).not.toHaveBeenCalled();
       expect(fixture.read).not.toHaveBeenCalled();
     }),
   );
@@ -173,7 +201,8 @@ describe("voice native service composition", () => {
         }).pipe(Effect.flip);
         expect(error._tag).toBe("NativeReadFailure");
         expect(error.cause).toBeInstanceOf(Error);
-        expect(fixture.projectionRead).toHaveBeenCalledTimes(2);
+        expect(fixture.metadataRead).toHaveBeenCalledTimes(1);
+        expect(fixture.projectionRead).toHaveBeenCalledTimes(1);
         expect(fixture.read).not.toHaveBeenCalled();
       }),
   );
@@ -183,63 +212,52 @@ describe("voice native service composition", () => {
       fixture.changeEnvironment();
       expect(yield* fixture.run()).toBeUndefined();
       expect(fixture.projectionRead).not.toHaveBeenCalled();
+      expect(fixture.metadataRead).not.toHaveBeenCalled();
       expect(fixture.read).not.toHaveBeenCalled();
     }),
   );
-  it.effect("accepts renewed enrolled DPoP keys and denies shared subjects with other keys", () =>
+  it.effect("accepts scoped principals across sessions authentication methods and proof keys", () =>
     Effect.gen(function* () {
       const fixture = seam();
-      const enrolled = {
-        ...reviewConfig,
-        allowed_session_ids: new Set<string>(),
-        allowed_dpop_identities: [
-          { subject: "cloud-connect", proof_key_thumbprint: "fixture-key" },
-        ],
-      };
-      const device: EnvironmentSessionPrincipalShape = {
-        ...principal,
-        method: "dpop-access-token",
-        subject: "cloud-connect",
-        proofKeyThumbprint: "fixture-key",
-      };
-      for (const session of ["before-renewal", "after-renewal"]) {
-        expect(
-          yield* fixture.run({
-            binding,
-            reviewConfig: enrolled,
-            principal: { ...device, sessionId: AuthSessionId.make(session) },
-          }),
-        ).toBeDefined();
+      for (const method of [
+        "browser-session-cookie",
+        "bearer-access-token",
+        "dpop-access-token",
+      ] as const) {
+        for (const session of ["before-renewal", "after-renewal"]) {
+          for (const proofKeyThumbprint of ["first-key", "another-key"]) {
+            expect(
+              yield* fixture.run({
+                binding,
+                reviewConfig,
+                principal: {
+                  ...principal,
+                  method,
+                  subject: "cloud-connect",
+                  sessionId: AuthSessionId.make(session),
+                  proofKeyThumbprint,
+                },
+              }),
+            ).toBeDefined();
+          }
+        }
       }
-      expect(fixture.projectionRead).toHaveBeenCalledTimes(2);
-      for (const denied of [
-        { ...device, proofKeyThumbprint: "other-key" },
-        { ...principal, method: "dpop-access-token" as const, subject: "cloud-connect" },
-        { ...device, method: "bearer-access-token" as const },
-        { ...device, scopes: new Set<never>() },
-      ]) {
-        expect(
-          yield* fixture
-            .run({ binding, reviewConfig: enrolled, principal: denied })
-            .pipe(Effect.flip),
-        ).toBeInstanceOf(VoiceReviewForbiddenError);
-      }
-      expect(fixture.projectionRead).toHaveBeenCalledTimes(2);
-      expect(fixture.read).not.toHaveBeenCalled();
-    }),
-  );
-  it.effect("denies non-enrolled sessions before native projection access", () =>
-    Effect.gen(function* () {
-      const fixture = seam();
-      const error = yield* fixture
-        .run({
-          binding,
-          reviewConfig,
-          principal: { ...principal, sessionId: AuthSessionId.make("other") },
-        })
-        .pipe(Effect.flip);
-      expect(error).toBeInstanceOf(VoiceReviewForbiddenError);
+      expect(fixture.metadataRead).toHaveBeenCalledTimes(12);
       expect(fixture.projectionRead).not.toHaveBeenCalled();
+      expect(fixture.read).not.toHaveBeenCalled();
+    }),
+  );
+  it.effect("denies missing read scope before native projection access", () =>
+    Effect.gen(function* () {
+      const fixture = seam();
+      for (const scopes of [new Set<never>(), new Set(["orchestration:operate"] as const)]) {
+        const error = yield* fixture
+          .run({ binding, reviewConfig, principal: { ...principal, scopes } })
+          .pipe(Effect.flip);
+        expect(error).toBeInstanceOf(VoiceReviewForbiddenError);
+      }
+      expect(fixture.projectionRead).not.toHaveBeenCalled();
+      expect(fixture.metadataRead).not.toHaveBeenCalled();
       expect(fixture.read).not.toHaveBeenCalled();
     }),
   );
@@ -265,7 +283,8 @@ it.effect("includes archived V2 threads and rechecks their exact native identity
     ]);
     expect(yield* Effect.promise(() => port!.read(principal, identities))).toEqual(result);
     expect(fixture.read).toHaveBeenCalledExactlyOnceWith({ identities });
-    expect(fixture.projectionRead).toHaveBeenCalledTimes(2);
+    expect(fixture.metadataRead).toHaveBeenCalledTimes(1);
+    expect(fixture.projectionRead).toHaveBeenCalledTimes(1);
   }),
 );
 

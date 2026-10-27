@@ -2,6 +2,7 @@ import {
   McpCapabilityUnavailableError,
   NonNegativeInt,
   OrchestratorMcpFailure,
+  ThreadId,
 } from "@t3tools/contracts";
 import {
   NativeInvocationContext,
@@ -38,13 +39,17 @@ export const OrganizationMetadataToolkit = Toolkit.make(
     .annotate(Tool.OpenWorld, false),
   Tool.make("list_organization_thread_metadata", {
     description:
-      "Read environment-wide active and archived thread navigation and activity metadata without conversation bodies. Pass the first page's snapshotSequence on later pages; restart if the watermark changes. The watermark covers persisted projection state; separately sampled runtime state is not an atomic census. projectionUpdatedAt is a metadata timestamp, not activity. This grants no custody, attestation, or exclusive ownership.",
+      "Read environment-wide active and archived thread navigation and activity metadata without conversation bodies. Each page comes from one consistent projection read. Pass the first page's snapshotSequence on later pages; restart if the watermark changes. On a busy server, select only what you need in one page: threadIds returns those threads and pinned:true returns every pinned thread; together they return the union, so a target's pin fields and the whole pinned list share one snapshotSequence. Missing or deleted IDs are omitted. The watermark covers persisted projection state; separately sampled runtime state is not an atomic census. projectionUpdatedAt is a metadata timestamp, not activity. This grants no custody, attestation, or exclusive ownership.",
     parameters: Schema.Struct({
       limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 }))),
       offset: Schema.optional(
         NonNegativeInt.check(Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER)),
       ),
       expectedSnapshotSequence: Schema.optional(NonNegativeInt),
+      threadIds: Schema.optional(
+        Schema.Array(ThreadId).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
+      ),
+      pinned: Schema.optional(Schema.Boolean),
     }),
     success: OrganizationThreadMetadataPage,
     failure: Schema.Union([McpCapabilityUnavailableError, OrganizationMetadataError]),

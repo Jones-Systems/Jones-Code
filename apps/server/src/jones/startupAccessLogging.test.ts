@@ -144,15 +144,13 @@ it.effect("keeps real browser-launch failures out of local and delegated traces"
           return yield* Effect.die(new Error("Expected a standard browser command"));
         }
         spawnedArgs.push(command.args);
-        return yield* Effect.fail(
-          PlatformError.systemError({
-            _tag: "PermissionDenied",
-            module: "ChildProcessSpawner",
-            method: "spawn",
-            pathOrDescriptor: target,
-            description: `SYNTHETIC_FAILURE ${target}`,
-          }),
-        );
+        return yield* PlatformError.systemError({
+          _tag: "PermissionDenied",
+          module: "ChildProcessSpawner",
+          method: "spawn",
+          pathOrDescriptor: target,
+          description: `SYNTHETIC_FAILURE ${target}`,
+        });
       }).pipe(Effect.withSpan("startup-test.spawn")),
     ),
   );

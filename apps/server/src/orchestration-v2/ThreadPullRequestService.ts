@@ -1,8 +1,4 @@
 import {
-  canonicalRepositoryKey,
-  sourceControlRepositorySelector,
-} from "@t3tools/shared/sourceControl";
-import {
   CommandId,
   type OrchestrationProjectShell,
   type OrchestrationV2DomainEvent,
@@ -17,17 +13,20 @@ import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
+import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as GitManager from "../git/GitManager.ts";
+import { asBackgroundGitWork } from "../jones/git/backgroundGitAdmission.ts";
+import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import { forkParked } from "../serverActivation.ts";
+import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 
 class ThreadPullRequestServiceV2 extends Context.Service<
@@ -58,26 +57,25 @@ function pullRequestMatchesProject(
   return (
     pullRequest.repositoryKey !== null &&
     project.repositoryIdentity != null &&
-    canonicalRepositoryKey(pullRequest.repositoryKey) ===
-      canonicalRepositoryKey(project.repositoryIdentity.canonicalKey)
+    sourceControlDefinitions.canonicalRepositoryKey(pullRequest.repositoryKey) ===
+      sourceControlDefinitions.canonicalRepositoryKey(project.repositoryIdentity.canonicalKey)
   );
 }
 
-export const resolveProjectForPullRequestDiscovery = Effect.fn(
+const resolveProjectForPullRequestDiscovery = Effect.fn(
   "ThreadPullRequestServiceV2.resolveProject",
 )(function* (
   project: OrchestrationProjectShell,
   repositoryIdentities: RepositoryIdentityResolver.RepositoryIdentityResolver["Service"],
   options?: { readonly refresh?: boolean },
 ) {
-  // Identities stay cached for 15 minutes. A finished turn may have added the
-  // remote its pull request lives on, so post-turn discovery refreshes.
+  // Post-turn discovery refreshes 15-minute identity caches because agents may add remotes.
   const repositoryIdentity = yield* repositoryIdentities.resolve(project.workspaceRoot, {
     refresh: options?.refresh ?? false,
   });
   return {
     project: { ...project, repositoryIdentity },
-    repository: sourceControlRepositorySelector(repositoryIdentity),
+    repository: sourceControlDefinitions.repositorySelector(repositoryIdentity),
   };
 });
 
@@ -100,12 +98,14 @@ interface RefreshRequest {
 
 export const make = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
+  const metadata = yield* ThreadMetadataReads.ThreadMetadataReads;
   const projectStore = yield* ProjectStore.ProjectStoreV2;
   const git = yield* GitManager.GitManager;
   const pullRequests = yield* PullRequestService.PullRequestService;
   const repositoryIdentities = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
   const crypto = yield* Crypto.Crypto;
   const fileSystem = yield* FileSystem.FileSystem;
+  const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
   const pendingBackfill = new Map<ThreadId, number>();
 
   const finishBackfill = (threads: ReadonlyArray<Pick<OrchestrationV2ThreadShell, "id">>) => {
@@ -122,18 +122,17 @@ export const make = Effect.gen(function* () {
 
   const readThreadSnapshot = ({ threadId, backfill }: RefreshRequest) =>
     threadId === null
-      ? orchestrator
-          .getShellSnapshot({
+      ? metadata
+          .list({
             location: "active",
             unsettledOnly: !(backfill || pendingBackfill.size > 0),
           })
           .pipe(NodeSqliteClient.readOnly)
       : Effect.gen(function* () {
-          // Read the sequence first. The thread is then at least this new, so a
-          // sync guarded by the sequence is rejected rather than missing a change.
+          // Read sequence first so guarded sync rejects intervening changes.
           const snapshotSequence = yield* orchestrator.getThreadEventSequence(threadId);
-          const thread = yield* orchestrator.getThreadShell(threadId);
-          return { snapshotSequence, threads: thread === null ? [] : [thread] };
+          const { threads } = yield* metadata.list({ threadIds: [threadId] });
+          return { snapshotSequence, threads };
         });
 
   const synchronize = Effect.fn("ThreadPullRequestServiceV2.synchronize")(function* (
@@ -194,10 +193,12 @@ export const make = Effect.gen(function* () {
           const detected =
             first.branch === null
               ? null
-              : yield* git.branchPullRequest(
-                  { cwd, branch: first.branch },
-                  { refresh: request.refresh },
-                );
+              : yield* git
+                  .branchPullRequest(
+                    { cwd, branch: first.branch },
+                    { refresh: request.refresh, confirmTerminal: false },
+                  )
+                  .pipe(asBackgroundGitWork);
           if (detected !== null && !pullRequestMatchesProject(detected, resolvedProject)) {
             return finishBackfill(group);
           }
@@ -223,7 +224,10 @@ export const make = Effect.gen(function* () {
                 const previous = yield* pullRequests.summary(thread.branchPullRequest, {
                   recoverTransientFailure: false,
                 });
-                if (previous.state === "merged" || previous.state === "closed") {
+                if (
+                  previous.headBranch === thread.branch &&
+                  (previous.state === "merged" || previous.state === "closed")
+                ) {
                   branchPullRequest = thread.branchPullRequest;
                 }
               }
@@ -269,10 +273,9 @@ export const make = Effect.gen(function* () {
           if (updates.length === 0) return;
 
           if (detected !== null && first.branch !== null) {
-            const current = yield* git.branchPullRequest(
-              { cwd, branch: first.branch },
-              { freshGitState: true },
-            );
+            const current = yield* git
+              .branchPullRequest({ cwd, branch: first.branch }, { freshGitState: true })
+              .pipe(asBackgroundGitWork);
             const currentIdentity = yield* repositoryIdentities.resolve(project.workspaceRoot, {
               refresh: true,
             });
@@ -295,9 +298,7 @@ export const make = Effect.gen(function* () {
             updates,
             ({ thread, branchPullRequest, replacement }) =>
               Effect.gen(function* () {
-                // Discovery can perform network I/O. Re-read the project at
-                // the transaction boundary so a deleted project or changed
-                // workspace root cannot apply a result from the old checkout.
+                // Discovery yields to network I/O; recheck the project at commit to reject deleted projects or changed checkouts.
                 const currentProject = yield* projectStore.getShell(project.id);
                 if (!projectWorkspaceMatchesSnapshot(currentProject, project.workspaceRoot)) {
                   return failBackfill([thread]);
@@ -342,14 +343,25 @@ export const make = Effect.gen(function* () {
               }).pipe(Effect.tap(() => Effect.sync(() => failBackfill(group)))),
           ),
         ),
-      // Wide enough that a sweep's GitHub branch lookups reach the GitHub provider together and share one
-      // GraphQL document, instead of one `gh pr list` per branch.
+      // Batch concurrent branch lookups into one GitHub GraphQL document.
       { concurrency: 32, discard: true },
     );
   });
 
+  // Each thread whose item still waits in the worker queue, and whether any
+  // request it absorbed asked for a refresh. The item removes its entry when it
+  // starts, so an event arriving while it runs queues a follow-up.
+  const queuedThreadRefresh = new Map<ThreadId, boolean>();
+
+  const startRequest = (request: RefreshRequest): RefreshRequest => {
+    if (request.threadId === null) return request;
+    const refresh = queuedThreadRefresh.get(request.threadId);
+    queuedThreadRefresh.delete(request.threadId);
+    return refresh === undefined ? request : { ...request, refresh };
+  };
+
   const worker = yield* makeDrainableWorker((request: RefreshRequest) =>
-    synchronize(request).pipe(
+    Effect.suspend(() => synchronize(startRequest(request))).pipe(
       Effect.catchCauseIf(
         (cause) => !Cause.hasInterruptsOnly(cause),
         (cause) =>
@@ -360,15 +372,28 @@ export const make = Effect.gen(function* () {
     ),
   );
 
+  // A request for a thread whose item still waits joins it, so a turn's
+  // `checkpoint.captured` and terminal `run.updated` queued behind other work
+  // cost one lookup. Recording the entry before the offer, uninterruptibly,
+  // keeps an interrupted event from leaving an entry no queued item will clear.
+  const enqueueThread = (threadId: ThreadId, refresh: boolean) =>
+    Effect.uninterruptible(
+      Effect.suspend(() => {
+        const queued = queuedThreadRefresh.get(threadId);
+        queuedThreadRefresh.set(threadId, queued === true || refresh);
+        return queued === undefined ? worker.enqueue({ threadId, refresh }) : Effect.void;
+      }),
+    );
+
   const processEvent = (event: OrchestrationV2DomainEvent) => {
     switch (event.type) {
       case "thread.created":
       case "thread.unarchived":
       case "thread.metadata-updated":
-        return worker.enqueue({ threadId: event.threadId, refresh: false });
+        return enqueueThread(event.threadId, false);
       case "thread.unsettled":
       case "checkpoint.captured":
-        return worker.enqueue({ threadId: event.threadId, refresh: true });
+        return enqueueThread(event.threadId, true);
       case "run.updated":
         if (
           event.payload.status === "completed" ||
@@ -376,7 +401,7 @@ export const make = Effect.gen(function* () {
           event.payload.status === "cancelled" ||
           event.payload.status === "interrupted"
         ) {
-          return worker.enqueue({ threadId: event.threadId, refresh: true });
+          return enqueueThread(event.threadId, true);
         }
         break;
     }
@@ -392,6 +417,9 @@ export const make = Effect.gen(function* () {
         yield* worker.enqueue({ threadId: null, refresh: false, backfill: true });
         yield* worker.drain;
         yield* Effect.gen(function* () {
+          // The sweep only catches pull requests opened outside a turn, which
+          // nobody sees without a client. Thread events still refresh headless work.
+          if (!(yield* backgroundPolicy.shouldRunOpportunisticWork)) return;
           yield* worker.enqueue({ threadId: null, refresh: false });
           yield* worker.drain;
         }).pipe(Effect.repeat(Schedule.spaced("1 minute")), Effect.delay("1 minute"));
@@ -401,5 +429,3 @@ export const make = Effect.gen(function* () {
 
   return { start, drain: worker.drain } satisfies ThreadPullRequestServiceV2["Service"];
 });
-
-const layer = Layer.effect(ThreadPullRequestServiceV2, make);

@@ -2,10 +2,8 @@ import { SourceControlProviderKind, type PullRequestCiStatusResult } from "@t3to
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import * as Semaphore from "effect/Semaphore";
 
-import type * as GitHubRest from "@t3tools/source-control-github/server/GitHubRest";
 import type * as PullRequestProviderRegistry from "../../pullRequest/PullRequestProviderRegistry.ts";
 import type {
   PullRequestError,
@@ -21,19 +19,17 @@ interface CiStatusDependencies {
   }) => Effect.Effect<{ readonly supported: ReadonlyArray<SupportedProject> }, PullRequestError>;
   readonly registry: Pick<
     PullRequestProviderRegistry.PullRequestProviderRegistry["Service"],
-    "get"
+    "get" | "getCi"
   >;
-  readonly githubCi: Option.Option<GitHubRest.GitHubRest["Service"]>;
   readonly rateLimits: SourceControlRateLimit.SourceControlRateLimit["Service"];
 }
 
 export const createCiStatus = ({
   listWorkspaceProjects,
   registry,
-  githubCi,
   rateLimits,
-}: CiStatusDependencies) =>
-  Effect.gen(function* () {
+}: CiStatusDependencies) => {
+  const runEffect = Effect.fn("PullRequestCiStatus.createCiStatus")(function* () {
     const ciCache = new Map<string, { at: number; value: PullRequestCiStatusResult }>();
     const ciGate = yield* Semaphore.make(1);
     const ciStatus: PullRequestService["Service"]["ciStatus"] = Effect.fn(
@@ -66,11 +62,12 @@ export const createCiStatus = ({
         }));
       const project = selected[0];
       const api = registry.get(SourceControlProviderKind.make("github"));
+      const githubCi = registry.getCi?.(SourceControlProviderKind.make("github")) ?? null;
       if (project === undefined)
         return yield* unavailable(
           "No configured GitHub repositories match this organization and host.",
         );
-      if (api?.withVerifiedCredential === undefined || Option.isNone(githubCi))
+      if (api?.withVerifiedCredential === undefined || githubCi === null)
         return yield* unavailable("This environment cannot read GitHub CI status.");
       return yield* api
         .withVerifiedCredential({ cwd: project.project.workspaceRoot, host }, (identity) => {
@@ -92,7 +89,7 @@ export const createCiStatus = ({
               const now = yield* Clock.currentTimeMillis;
               const cached = ciCache.get(key);
               if (cached !== undefined && now - cached.at < 120_000) return cached.value;
-              const value = yield* readGitHubCiStatus(githubCi.value, {
+              const value = yield* readGitHubCiStatus(githubCi, {
                 cwd: project.project.workspaceRoot,
                 host,
                 organization: input.organization,
@@ -113,3 +110,5 @@ export const createCiStatus = ({
 
     return ciStatus;
   });
+  return runEffect();
+};

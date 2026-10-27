@@ -26,8 +26,8 @@ export const hasJonesTrialAuthority = Effect.gen(function* () {
 export const awaitJonesTrialStartup = <E, R>(input: {
   readonly waitUntilParked: Effect.Effect<void, E, R>;
   readonly observedListener: Effect.Effect<NetAddress.SocketAddress, E, R>;
-}) =>
-  Effect.gen(function* () {
+}) => {
+  const runEffect = Effect.fn("JonesTrialStartup.awaitJonesTrialStartup")(function* () {
     const environment = yield* HostProcess.Environment;
     const descriptorPath = environment.T3CODE_JONES_TRIAL_DESCRIPTOR;
     if (descriptorPath === undefined) return;
@@ -74,25 +74,25 @@ export const awaitJonesTrialStartup = <E, R>(input: {
         }).pipe(Effect.catch((error) => (error.uncertain ? Effect.fail(error) : Effect.void))),
     );
   });
+  return runEffect();
+};
 
 export const awaitSelectedJonesTrialStartup = <E, R>(input: {
   readonly waitUntilParked: Effect.Effect<void, E, R>;
   readonly observedListener: Effect.Effect<NetAddress.SocketAddress, E, R>;
-}) =>
-  Effect.gen(function* () {
+}) => {
+  const runEffect = Effect.fn("JonesTrialStartup.awaitSelectedJonesTrialStartup")(function* () {
     const descriptor = yield* hasJonesTrialDescriptor;
     const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
     const qualified = launcher.requiresQualifiedTrialGate === true;
     if (descriptor && qualified) {
-      return yield* Effect.fail(
-        new JonesTrialGateError({
-          step: "identity",
-          uncertain: false,
-          cause: new Error(
-            "A native descriptor and a qualified launcher trial cannot share startup authority.",
-          ),
-        }),
-      );
+      return yield* new JonesTrialGateError({
+        step: "identity",
+        uncertain: false,
+        cause: new Error(
+          "A native descriptor and a qualified launcher trial cannot share startup authority.",
+        ),
+      });
     }
     if (descriptor) return yield* awaitJonesTrialStartup(input);
     if (!qualified) return;
@@ -117,3 +117,5 @@ export const awaitSelectedJonesTrialStartup = <E, R>(input: {
     };
     yield* launcher.prepareQualifiedTrial(witness);
   });
+  return runEffect();
+};

@@ -92,6 +92,23 @@
     "apps/server/src/jones/cloud/capturedProcess.test.ts",
     "apps/server/src/jones/cloud/stoppedServerOwnership.ts",
     "apps/server/src/jones/cloud/stoppedServerOwnership.test.ts",
+    "apps/server/src/jones/cloud/ownedScratch.ts",
+    "apps/server/src/jones/cloud/ownedScratch.test.ts",
+    "apps/desktop/src/jones/updates/asarScratchRemoval.test.ts",
+    "apps/web/src/jones/updates/ExactSourceUpdateAction.tsx",
+    "apps/web/src/jones/updates/ExactSourceUpdateAction.browser.test.tsx",
+    "apps/web/src/jones/updates/ProductionExactSourceUpdateAction.tsx",
+    "apps/web/src/jones/updates/fixtures/exact-source-fixture.tsx",
+    "apps/web/src/jones/updates/installedSourceComparison.ts",
+    "apps/web/src/jones/updates/installedSourceComparison.test.ts",
+    "apps/server/src/jones/updates/sourceRelation.ts",
+    "apps/server/src/jones/updates/sourceRelation.test.ts",
+    "apps/web/src/jones/updates/installedSourceObservation.ts",
+    "apps/web/src/jones/updates/installedSourceObservation.test.ts",
+    "apps/desktop/src/jones/updates/updateChannels.test.ts",
+    "apps/desktop/src/jones/updates/jonesColdBackendCustody.testFixtures.ts",
+    "apps/server/src/jones/updates/trialGate.testFixtures.ts",
+    "apps/server/src/jones/cloud/qualifiedLauncher.testFixtures.ts",
     "apps/server/src/jones/updates/recoverQualifiedStage.ts",
     "apps/server/src/jones/updates/recoverQualifiedStage.test.ts"
   ],
@@ -106,11 +123,9 @@
     "apps/desktop/src/updates/DesktopRemoteUpdates.test.ts",
     "apps/desktop/src/updates/DesktopRemoteUpdates.ts",
     "apps/desktop/src/updates/DesktopUpdates.ts",
-    "apps/desktop/src/updates/updateChannels.test.ts",
     "apps/desktop/src/updates/updateChannels.ts",
     "apps/server/src/resourceTelemetry/DesktopTelemetryReceiver.ts",
     "packages/contracts/package.json",
-    "packages/contracts/src/ipc.test.ts",
     "packages/contracts/src/resourceTelemetry.ts",
     "packages/shared/package.json",
     "scripts/build-desktop-artifact.ts",
@@ -211,7 +226,9 @@
     "apps/server/src/jones/cloud/qualifiedWriterObserverSocket.ts",
     "apps/server/src/jones/cloud/qualifiedWriterObserverSocket.test.ts",
     "apps/server/src/jones/cloud/qualifiedLinuxLease.ts",
-    "apps/server/src/jones/cloud/qualifiedLinuxLease.test.ts"
+    "apps/server/src/jones/cloud/qualifiedLinuxLease.test.ts",
+    "apps/desktop/src/updates/updateChannels.test.ts",
+    "packages/contracts/src/ipc.test.ts"
   ],
   "allowedImports": [
     {
@@ -429,6 +446,14 @@
     {
       "from": "apps/desktop/src/backend/DesktopBackendManager.test.ts",
       "to": "scripts/jones/updates/native-fixture-support.mjs"
+    },
+    {
+      "from": "apps/server/src/cloud/selfUpdate.ts",
+      "to": "apps/server/src/jones/cloud/ownedScratch.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/updates/sourceRelation.ts"
     }
   ]
 }

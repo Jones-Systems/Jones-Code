@@ -17,6 +17,10 @@ import {
   type WorkstreamThreadLike,
 } from "@t3tools/client-runtime/state/workstreams";
 import * as Schema from "effect/Schema";
+import {
+  registrationContextWithAvailability,
+  type AssignmentAvailability,
+} from "./registrationAvailability";
 
 import { canEditWorkstreams } from "../../components/workstreams/nativeWorkstreamActions";
 import type { EnvironmentWorkstreamsRequest } from "./environmentWorkstreamsRequest";
@@ -25,7 +29,12 @@ import {
   type NativeThreadAssignmentOptions,
   type NativeThreadAssignmentSnapshot,
 } from "./nativeThreadAssignment";
-import { assertWorkstreamReadContext, WorkstreamActionError } from "./workstreamActionSnapshot";
+import {
+  assertWorkstreamReadContext,
+  WorkstreamActionError,
+  workstreamCommandNoEffect,
+  workstreamOperationFailure,
+} from "./workstreamActionSnapshot";
 import { classifyWorkstreamReadFailure, isWorkstreamsNotConfigured } from "./workstreamReadErrors";
 
 /** The Workstreams routes of one environment's own server. */
@@ -34,7 +43,7 @@ export interface EnvironmentWorkstreamsRoutes {
   readonly list: (cursor?: string, signal?: AbortSignal) => Promise<T3WorkstreamListResult>;
   readonly registrationContext: (
     signal?: AbortSignal,
-  ) => Promise<WorkstreamsRegistrationContextAcceptedResponse>;
+  ) => Promise<ReturnType<typeof registrationContextWithAvailability>>;
   readonly threadPlacements: (
     identities: readonly T3PlacementIdentity[],
     signal?: AbortSignal,
@@ -90,9 +99,10 @@ export function environmentWorkstreamsRoutes(
         environmentId,
         "GET",
         (urls) => urls.registrationContext(),
-        (client, headers) => client.registrationContext({ headers }),
+        (client, headers) =>
+          client.registrationContext({ headers, responseMode: "decoded-and-response" }),
         signal,
-      ),
+      ).then(registrationContextWithAvailability),
     threadPlacements: (identities, signal) =>
       request(
         environmentId,
@@ -174,11 +184,17 @@ const REFUSAL_MESSAGES: Record<RemoteAssignmentRefusal, string> = {
 };
 
 /** A remote assignment refused before any command was submitted. */
-class RemoteWorkstreamAssignmentError extends WorkstreamActionError {
-  constructor(readonly refusal: RemoteAssignmentRefusal) {
+export class RemoteWorkstreamAssignmentError extends WorkstreamActionError {
+  constructor(
+    readonly refusal: RemoteAssignmentRefusal,
+    availability?: AssignmentAvailability,
+  ) {
     super("activation");
     this.name = "RemoteWorkstreamAssignmentError";
-    this.message = REFUSAL_MESSAGES[refusal];
+    this.message =
+      refusal === "source-unavailable" && availability?.reason
+        ? `The thread's environment cannot verify this thread yet (${availability.reason}); nothing was changed.`
+        : REFUSAL_MESSAGES[refusal];
   }
 }
 
@@ -202,7 +218,8 @@ export type RemoteWorkstreamCommandLedger = Map<
 
 /**
  * True while a command sent through another environment may still change this binding's owner
- * registry. Only an exact receipt read on that environment clears it; a later reload does not.
+ * registry. An exact terminal receipt or decoded pre-submission refusal clears it; a later
+ * metadata reload does not.
  */
 export const hasUnresolvedRemoteCommand = (
   commands: RemoteWorkstreamCommandLedger,
@@ -310,6 +327,7 @@ export async function assignRemoteNativeThread(input: RemoteThreadAssignmentInpu
     } catch (cause) {
       signal?.throwIfAborted();
       if (commandAttempted || cause instanceof WorkstreamActionError) throw cause;
+      if (workstreamCommandNoEffect(cause) === "denied") throw new WorkstreamActionError("denied");
       throw new RemoteWorkstreamAssignmentError(remoteAssignmentRefusal(cause));
     }
     signal?.throwIfAborted();
@@ -323,9 +341,14 @@ export async function assignRemoteNativeThread(input: RemoteThreadAssignmentInpu
     return list;
   };
   const loadContext = async (list: T3WorkstreamListResult) => {
-    const context = await read(() => routes.registrationContext(signal));
-    if (!sourceReady(context, list.binding, thread.environmentId))
-      throw refuse("source-unavailable");
+    const { context, availability } = await read(() => routes.registrationContext(signal));
+    if (
+      availability.state === "unavailable" ||
+      !sourceReady(context, list.binding, thread.environmentId)
+    )
+      throw commandAttempted
+        ? new WorkstreamActionError("stale")
+        : new RemoteWorkstreamAssignmentError("source-unavailable", availability);
     return context;
   };
 
@@ -391,6 +414,7 @@ export async function assignRemoteNativeThread(input: RemoteThreadAssignmentInpu
   const runBindingOperation = async <A>(
     operation: (submit: (command: WorkstreamCommand) => Promise<WorkstreamReceipt>) => Promise<A>,
   ): Promise<A> => {
+    let refreshAfterRefusal = false;
     const submit = async (command: WorkstreamCommand) => {
       input.check();
       // Checked again at the POST: an overlapping operation may have sent a command since entry.
@@ -399,6 +423,8 @@ export async function assignRemoteNativeThread(input: RemoteThreadAssignmentInpu
         input.primaryCommandUnresolved()
       )
         throw new WorkstreamActionError("unknown");
+      const previouslyAttempted = commandAttempted;
+      const newlyPending = !input.commands.has(command.command_id);
       commandAttempted = true;
       input.commands.set(command.command_id, {
         environmentId: routes.environmentId,
@@ -410,7 +436,20 @@ export async function assignRemoteNativeThread(input: RemoteThreadAssignmentInpu
         input.check();
         return receipt;
       };
-      let receipt = settle(await routes.submit(command, signal));
+      let submitted: WorkstreamReceipt;
+      try {
+        submitted = await routes.submit(command, signal);
+      } catch (cause) {
+        const noEffect = workstreamCommandNoEffect(cause);
+        if (noEffect && newlyPending) {
+          input.commands.delete(command.command_id);
+          commandAttempted = previouslyAttempted;
+          refreshAfterRefusal = noEffect === "stale";
+          throw new WorkstreamActionError(noEffect);
+        }
+        throw cause;
+      }
+      let receipt = settle(submitted);
       // Pending effects reconcile on the environment that accepted the command; never resend.
       while (receipt.state === "pending" || receipt.state === "unresolved") {
         await waitForReceipt(
@@ -427,9 +466,9 @@ export async function assignRemoteNativeThread(input: RemoteThreadAssignmentInpu
     } catch (cause) {
       // Cancelling after a submit does not undo it, so the primary still becomes read-only.
       if (commandAttempted) input.commandFailed();
-      throw cause;
+      throw workstreamOperationFailure(cause, commandAttempted);
     } finally {
-      if (commandAttempted) input.refreshPrimary();
+      if (commandAttempted || refreshAfterRefusal) input.refreshPrimary();
     }
   };
 

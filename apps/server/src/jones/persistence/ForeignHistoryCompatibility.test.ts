@@ -68,6 +68,16 @@ it.effect.each([11, 13])(
           .map((object) => object.name)
           .filter((name) => !baseline.has(name)),
       );
+      // Migration 69 must backfill upstream search beside the preserved foreign ledger.
+      const messagePayload = JSON.stringify({ text: "foreign history needle", createdBy: "user" });
+      yield* sql`
+        INSERT INTO orchestration_v2_projection_messages (
+          message_id, thread_id, run_id, node_id, role, streaming, created_at, updated_at, payload_json
+        ) VALUES (
+          'foreign-history-message', 'fixture-thread', NULL, NULL, 'user', 0,
+          '2026-10-03T00:00:00Z', '2026-10-03T00:00:00Z', ${messagePayload}
+        )
+      `;
       const before = yield* snapshotForeign(foreign);
       assert.isAbove(Object.keys(before.rows).length, 0);
       assert.deepEqual(
@@ -82,6 +92,22 @@ it.effect.each([11, 13])(
           .map(([id, name]) => [id, name] as const),
       );
       assert.deepEqual(yield* snapshotForeign(foreign), before);
+      assert.deepEqual(
+        yield* sql`SELECT payload_json FROM orchestration_v2_projection_messages
+          WHERE message_id = 'foreign-history-message'`,
+        [{ payload_json: messagePayload }],
+      );
+      const search = yield* sql`SELECT name FROM sqlite_master
+        WHERE name = 'orchestration_v2_message_search'`;
+      if (search.length > 0) {
+        assert.deepEqual(
+          yield* sql`SELECT messages.message_id FROM orchestration_v2_message_search AS search
+            JOIN orchestration_v2_projection_messages AS messages ON messages.rowid = search.rowid
+            WHERE orchestration_v2_message_search MATCH '"needle"'`,
+          [{ message_id: "foreign-history-message" }],
+        );
+      }
+
       assert.deepEqual(
         yield* sql`SELECT migration_id, name FROM jones_sql_migrations WHERE migration_id = ${latestJones[0]}`,
         [{ migration_id: latestJones[0], name: latestJones[1] }],

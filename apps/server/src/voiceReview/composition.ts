@@ -9,14 +9,11 @@ import * as Effect from "effect/Effect";
 import * as Clock from "effect/Clock";
 import { ServerEnvironmentIdentity } from "../environment/ServerEnvironment.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
 import { WorkstreamGateway, WorkstreamGatewayError } from "../workstreams/WorkstreamGateway.ts";
 import { makeVoiceReviewNativeReadPort, type VoiceReviewNativeIdentity } from "./native.ts";
 import type { VoiceReviewNativeReadPort } from "./bridge.ts";
-import {
-  isVoiceReviewPrincipalEnrolled,
-  type VoiceReviewConfig,
-  type VoiceReviewNativeBinding,
-} from "./config.ts";
+import { type VoiceReviewConfig, type VoiceReviewNativeBinding } from "./config.ts";
 
 export interface VoiceReviewCompositionInput {
   readonly binding: VoiceReviewNativeBinding | null;
@@ -31,14 +28,12 @@ export const makeVoiceReviewComposition = Effect.fn("voiceReview.makeComposition
   input: VoiceReviewCompositionInput,
 ) {
   if (input.binding === null || input.reviewConfig === null) return undefined;
-  if (
-    !isVoiceReviewPrincipalEnrolled(input.reviewConfig, input.principal) ||
-    !input.principal.scopes.has(AuthOrchestrationReadScope)
-  )
+  if (!input.principal.scopes.has(AuthOrchestrationReadScope))
     return yield* new VoiceReviewForbiddenError({});
   const binding = input.binding;
   const clock = yield* Clock.Clock;
   const identity = yield* ServerEnvironmentIdentity;
+  const metadata = yield* ThreadMetadataReads.ThreadMetadataReads;
   const projection = yield* ProjectionStore.ProjectionStoreV2;
   const gateway = yield* WorkstreamGateway;
   const readIdentities = Effect.fn("voiceReview.readNativeIdentities")(function* (
@@ -47,35 +42,31 @@ export const makeVoiceReviewComposition = Effect.fn("voiceReview.makeComposition
     const environmentId = yield* identity.getEnvironmentId;
     if (environmentId !== binding.native_environment_id)
       return yield* new VoiceReviewUnavailableError({});
-    const threads =
+    const ids =
       threadIds === undefined
-        ? yield* projection
-            .getShellSnapshot()
-            .pipe(Effect.map((snapshot) => [...snapshot.threads, ...snapshot.archivedThreads]))
-        : yield* Effect.forEach(threadIds, (id) => projection.getThreadShell(ThreadId.make(id)));
-    return threads.flatMap((thread): VoiceReviewNativeIdentity[] =>
-      thread === null || thread.deletedAt !== null
-        ? []
-        : [
-            {
-              thread_key: JSON.stringify([
-                binding.registry_host,
-                binding.registry_environment,
-                thread.id,
-              ]),
-              identity: { source_instance_id: environmentId, native_thread_id: thread.id },
-            },
-          ],
-    );
+        ? yield* metadata.listIds()
+        : yield* Effect.forEach(threadIds, (id) =>
+            projection.getThreadShell(ThreadId.make(id)),
+          ).pipe(
+            Effect.map((threads) =>
+              threads.flatMap((thread) =>
+                thread === null || thread.deletedAt !== null ? [] : [thread.id],
+              ),
+            ),
+          );
+    return ids.map((id): VoiceReviewNativeIdentity => ({
+      thread_key: JSON.stringify([binding.registry_host, binding.registry_environment, id]),
+      identity: { source_instance_id: environmentId, native_thread_id: id },
+    }));
   });
-  const initial = yield* readIdentities().pipe(Effect.catch(() => Effect.succeed(undefined)));
+  const initial = yield* readIdentities().pipe(Effect.orElseSucceed(() => undefined));
   if (initial === undefined) return undefined;
   return makeVoiceReviewNativeReadPort({
     now: () => clock.currentTimeMillisUnsafe(),
     readIdentities: () => initial,
     gateway: {
-      readThreadPlacements: (request) =>
-        Effect.gen(function* () {
+      readThreadPlacements: Effect.fn("VoiceReviewComposition.readThreadPlacements")(
+        function* (request) {
           const fresh = yield* readIdentities(
             request.identities.map((item) => item.native_thread_id),
           ).pipe(
@@ -100,15 +91,18 @@ export const makeVoiceReviewComposition = Effect.fn("voiceReview.makeComposition
               detail: "Native voice projection changed.",
             });
           return yield* gateway.readThreadPlacements(request);
-        }).pipe(
-          Effect.mapError(
-            () =>
-              new WorkstreamGatewayError({
-                reason: "offline",
-                detail: "Native voice binding is unavailable.",
-              }),
+        },
+        (effect) =>
+          effect.pipe(
+            Effect.mapError(
+              () =>
+                new WorkstreamGatewayError({
+                  reason: "offline",
+                  detail: "Native voice binding is unavailable.",
+                }),
+            ),
           ),
-        ),
+      ),
     },
   });
 });
@@ -116,11 +110,13 @@ export const makeVoiceReviewComposition = Effect.fn("voiceReview.makeComposition
 export const makeVoiceReviewCompositionFactory = Effect.fn("voiceReview.makeCompositionFactory")(
   function* () {
     const identity = yield* ServerEnvironmentIdentity;
+    const metadata = yield* ThreadMetadataReads.ThreadMetadataReads;
     const projection = yield* ProjectionStore.ProjectionStoreV2;
     const gateway = yield* WorkstreamGateway;
     const factory: VoiceReviewCompositionFactory = (input) =>
       makeVoiceReviewComposition(input).pipe(
         Effect.provideService(ServerEnvironmentIdentity, identity),
+        Effect.provideService(ThreadMetadataReads.ThreadMetadataReads, metadata),
         Effect.provideService(ProjectionStore.ProjectionStoreV2, projection),
         Effect.provideService(WorkstreamGateway, gateway),
       );

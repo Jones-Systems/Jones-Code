@@ -56,11 +56,20 @@ Rollback awaits the captured trial's exit and acquires state ownership before
 restoring. A durable restore marker makes an interrupted restore finish before
 either version boots. After durable commit and its IPC acknowledgement, or after
 restoration and the terminal rollback state are durable, the launcher removes that
-attempt's recovery payload and transient advanced state, keeping the directory and
-small receipts used by startup and update status. Cleanup failures preserve the
-durable result and keep the remaining files for later reconciliation. An uncertain pointer write, failed
-restore or failed terminal write preserves recovery bytes. It leaves older retained
-snapshots alone. The shared ownership file is never unlinked.
+attempt's exact recovery payload files, keeping every directory, restore journal,
+receipt and unknown entry. Cleanup failures preserve the durable result. Before
+the next qualified Install's capacity checks, the launcher retries only the
+immediately previous committed or rolled-back generation. An unsafe binding,
+file identity or incomplete restore journal refuses that Install while the current
+server remains active. Completed rollback journals remain valid after live WAL
+or settings files rotate. Startup does not clean terminal qualified generations,
+and older retained snapshots remain operator-owned.
+
+An uncertain pointer write, failed restore or failed terminal write preserves
+recovery bytes. Failed generations are never retried; the sole qualified failure
+cleanup is an accepted-phase launcher restart, before the candidate could run,
+with no restore evidence. State-ownership and post-restore failures stay held.
+The shared ownership file is never unlinked.
 Attachments and other files outside SQLite and the paired startup files are outside
 this rollback boundary. Qualified at-most-once resume reservations remain at
 `runtime/db-backup/<update-id>/resume-dispatched.json`. Keeping that directory lets
@@ -84,12 +93,30 @@ service-state entry. These Jones receipts live under `runtime/jones-update-opera
 outside the database rollback pair.
 
 An absent reservation and absent matching service state permit submission with the
-same ID. A reservation without matching native state or a retained terminal outcome
-requires reconciliation; it does not authorize another replacement with any ID. The
-launcher inspects at most 4,096 receipt entries and fails closed on malformed,
-unreadable, or larger receipt stores. Receipt preparation failures preserve the old
-child and any partial reservation. Only an exact operation proven absent can clear
-its uncertain in-memory handoff fence. Readback of an operation and observation of the currently installed source are separate checks.
+same ID. Only the request that reserved an operation can accept it, and the launcher
+runs requests one at a time, so a reservation that service state does not name and
+that has no outcome belongs to a request that ended, or a launcher that is gone,
+without accepting it. The launcher records such an operation as `rejected`: before
+it answers the refusing request, before another request or stage retirement, and at
+startup. A rejected operation never starts and does not block the next one. Receipts
+are published whole, through an exclusive hard link from a temporary file. A failed
+outcome without a valid no-effect settlement blocks further replacement. A
+malformed, unreadable or over-4,096-entry receipt store also refuses replacement.
+Readback of an operation and observation of the currently installed source are
+separate checks.
+
+A timeout or missing reply proves nothing about a handoff: the launcher can still
+be finishing the reservation's durability writes when the server stops waiting.
+After a failed handoff the server therefore asks the launcher. A launcher that
+advertises `updateOutcomeProtocol: 1` answers `reconcile-update` in IPC order, after
+every earlier request from that server, so an operation it never reserved can no
+longer be accepted by any of them. It answers `accepted` when its state names the
+operation or holds its terminal outcome, `rejected` for a recorded or newly
+recorded rejection or an unreserved operation, and `unknown` otherwise. The server
+asks again on `unknown`, backing off to every 30 seconds, until the process exits.
+Under an older launcher only acceptance or a refusal it sent can be proven, so an
+unanswered handoff stays held until the process exits. A proven rejection clears
+the attempt's continuation markers and allows another Install.
 
 Desktop updates have a separate two-phase handoff because installing the app stops
 its bundled backend. Preparation returns a token while the connection is alive;
@@ -97,6 +124,187 @@ the client commits that token only after receiving it. Otherwise backend shutdow
 could lose the only successful RPC result. The client must then observe the
 prepared version after reconnecting. If installation fails, desktop restarts the
 stopped backends and replays the failure for the same token.
+
+## Settling failed attempts
+
+A failed attempt remains failed. A digest-bound `launcher-recorded` or
+`legacy-reconciled` no-effect settlement can permit a **new** attempt; it never
+reuses the old ID or rewrites its outcome. Settlement and bounded, redacted cause
+evidence live beside the [operation ledger](../../apps/server/src/jones/updates/launcherOperation.ts),
+so older receipt readers and historical `reconciliation.state` retain their
+meaning. A rolled-back trial and an unknown handoff are not no-effect evidence.
+
+For a proved pre-trial failure, launcher recovery records the failed outcome,
+removes only its owned pre-trial recovery payload, publishes settlement, then
+records native failure. Interrupted recovery repeats these steps idempotently
+under the same ownership checks. Restore evidence or uncertain state keeps the
+attempt held; settlement is not a shortcut around rollback.
+
+The client offers **Reconcile** only for an unsettled attempt with an ID and a
+launcher advertising `updateSettlementProtocol: 1`. The
+[reconciliation endpoint](../../apps/server/src/jones/updates/http.ts),
+`/api/jones-updates/reconcile`, requires `orchestration:operate`; its typed refusals distinguish missing records,
+changed active state, trial or restore evidence, and failure to save settlement.
+Without launcher support, the client recommends a launcher refresh rather than
+performing one. Retired attempts use the separate operator-only
+`/api/jones-updates/record-retired` endpoint requiring `environment:maintain`, not the normal UI. Its
+`retired-exception` tombstone binds the retained retirement evidence and reserves
+the old ID permanently. Deleting a receipt would destroy that replay protection.
+
+## Admission fence
+
+A process that hands off to an update must not start provider work that the
+stopped process then loses. The event sink checks the
+[fence](../../apps/server/src/jones/updates/UpdateAdmissionFence.ts) inside the
+transaction that records a process-bound effect, or a run that prepares a
+workspace, so every origin passes it; an open fence reads one reference and never
+waits. An installation raises it just before its final quiet check, which runs on
+the SQLite writer: a transaction admitted before the fence rose holds the writer,
+so the check sees its work. Until the launcher accepts, new work withdraws an
+automatic activation and leaves its stage ready; a manual Install refuses it
+instead. From the handoff on, new work is refused with a message to send it again,
+and nothing is recorded, so the same command id is accepted later. A failure or
+cancellation before the handoff, or a refusal the launcher sent, reopens admission
+and restarts the queued runs it held. After any other failed or cancelled handoff,
+admission stays closed until the launcher proves the outcome: rejection reopens it,
+and acceptance keeps it closed until the process exits.
+
+A scheduled task's message is held rather than refused, because the scheduler
+records any dispatch failure as a failed run and drops an accepted webhook delivery
+with it. A held dispatch records nothing, and stays held while a handoff's outcome is
+unknown. It continues under its command id when admission reopens, and the restart
+after an accepted handoff interrupts it from outside, which leaves the delivery's
+pending record for the next server.
+
+## Following hosts
+
+An enrolled service host follows the laptop's committed source. The desktop
+renderer relays the repository, commit and tree of the laptop's native active
+install; the host checks that tree against the one the repository records for the
+commit. It stores the report under `runtime/jones-fleet`, bound to the enrollment
+ID, so re-enrolling discards it and the host can still install while the laptop
+sleeps. A source without its tree is not proof: a record written before the laptop
+sent one counts as no report. The ceiling is enforced in `JonesUpdater`, the one
+path behind HTTP check, download, exact download, Install, fleet staging and fleet
+activation; hiding a button is not the control. Until the laptop reports, every
+path holds, including an older laptop's campaign. A host already installed ahead of
+the laptop holds instead of going back.
+
+The host prepares the laptop's source itself and retires any other unaccepted
+stage first. It does not prefetch an uncommitted laptop build: every retirement
+adds a launcher revocation receipt, and the launcher refuses more than 4,096.
+Campaigns still stage the laptop's next build early on hosts that do not follow,
+but preparing it does not supersede hosts still catching up to the committed
+build; the next commit retires them. Automatic activation, including a campaign
+activation from an older laptop, waits for 30 minutes without client input, at
+least 15 minutes since the previous automatic activation, and no work a restart
+would cut. The activation time is recorded before dispatch, and the final check
+runs under the admission fence. A pending request answerable by message survives a
+restart; a live or non-resumable approval does not, and holds activation until a
+provider adapter can declare that a pending approval rebinds to its resumed
+session.
+
+## Off-process preparation
+
+Download, archive and tree hashes, extraction and candidate validation run in a
+[worker](../../apps/server/src/jones/updates/preparation/worker.ts) started from
+the server's own build as `__jones-preparation-worker`, which `bin.ts` dispatches
+before the CLI loads. Because the worker is the same build, its protocol always
+matches its parent's, and it needs no separate packaging. The serving process only
+[supervises](../../apps/server/src/jones/updates/preparation/supervisor.ts) it.
+Jobs run one at a time: the supervisor queues them, and the worker holds a
+per-home lock, so a second server on the same home is refused. The worker runs at
+the lowest scheduling priority; that is not a CPU cap.
+
+The parent never trusts the worker's report on its own. It
+[rereads](../../apps/server/src/jones/updates/preparation/rebind.ts) the bounded
+durable stage receipt, requires it to equal that report, and checks the receipt's
+home, database, active runtime and candidate provenance. A matching qualified
+verification receipt, metadata fingerprint and ownership binding allow receipt-mode
+verification without repeating the full payload hash. A miss or changed fingerprint
+requires full verification; a serving caller delegates that work to its same-build
+worker. This is not a general cache bypass: staging still detects copy or tamper
+changes, and the launcher fully verifies the candidate at activation. Staging
+refuses a Linux candidate that cannot answer
+`__jones-preparation-worker --protocol`, since an installed host could not prepare
+its next update without it. Darwin candidates are never launched while staging, so
+only the desktop artifact smoke proves their packaged worker.
+
+Each job lives in `runtime/jones-preparation/jobs/<id>` on the home's own disk.
+That directory holds the worker's `TMPDIR` and extraction scratch, and the parent
+holds the job's owner lock while the worker runs. Cancellation, a deadline, a
+missed heartbeat or an output bound stops the worker's whole process group. A
+worker whose parent exits sees end-of-file on stdin and stops itself. A sweep job
+at startup and after every failed job removes what a killed worker left. It takes
+a job directory only when its owner lock is free, and it also removes unpublished
+Actions attempts and abandoned `.jones-stage-*` runtime copies. It keeps only the
+two newest completed downloads, so failing candidates do not accumulate.
+
+### Verification cost evidence
+
+[Verification receipts](../../apps/server/src/jones/cloud/qualifiedRuntime.ts)
+at `runtime/jones-verification/<version>.json` bind the matching fingerprint and
+receipt to staging timing. Timing distinguishes the executing role, file and byte
+counts, wall time, process CPU, result and event-loop delay; dedicated workers
+report no event-loop delay (`null`). These observations explain where work ran;
+they do not establish a fixed speedup or number of saved hashes.
+
+The in-process timing ring holds 32 records. The launcher also emits JSON timing
+to stderr and exclusively creates `runtime/jones-update-timing/<operationId>.json`,
+retaining the newest 64 files. A timing-write failure must not replace the original
+error or turn an already committed update into a failure. These diagnostics do not
+change database backup receipts.
+
+## Desktop background preparation
+
+The desktop can prepare its own stage while the user works. The opt-in lives in a
+Jones-owned file beside the desktop settings, whose writer drops unknown keys, and
+is off by default. Preparation only stages: Install remains a renderer action, so a
+background download starts no fleet campaign, and a claimed install pins its stage
+until commit or rollback. Downloads, startup artifact validation and payload removal
+run one at a time in a forked low-priority process group. Main trusts its reply only
+after binding it to the on-disk receipts. Niceness lowers scheduling priority; it is
+not a CPU cap.
+
+A newer build replaces an unaccepted stage only through the helper's validated
+discard. Unlike a host retirement, a desktop discard writes no launcher revocation
+receipt, so the 4,096-receipt limit does not bound it; disk does. The replaced
+handle is recorded before the discard. After a proven discard, the worker removes
+that handle's payload unless any selection, attempt, transaction or retired
+preparation names it, and it removes the completion index before the tree. Two
+unremoved handles pause replacement with a visible reason while the prepared build
+stays installable. A hard kill can leave an unindexed attempt that nothing reuses or
+sweeps.
+
+## Desktop activation and startup refusal
+
+A helper failure proved to precede state pairing and app swap can return
+`rolled-back` with `preEffect` evidence: the original app and state are unchanged.
+This is distinct from rollback after a trial. Relaunching the previous app is safe
+only after every recorded process is proved exited within the 30-second bound;
+otherwise relaunch is skipped. An uncertain exit cannot authorize a second writer.
+
+[Native startup](../../apps/desktop/src/jones/updates/jonesNativeStartup.ts)
+checks the [writer fence](../../packages/shared/src/jones/nativeWriterFence.ts)
+before opening application state. Refusals carry a code and, when known, a
+transaction ID. For an exactly settleable interrupted activation, startup
+synchronously materializes the **current app's** embedded helper using its
+hash-derived filename, exclusive creation and file/directory durability. It invokes
+`--settle-interrupted-activation` once; the helper owns the nonblocking activation
+lock and compare-and-swap checks. Only a closed protocol-1 `settled` result permits
+one fresh fence check.
+
+This journal-only settlement requires matching manifest and transaction evidence
+in intent/preparing/quiescent state, or a matching intent alone, before any state
+pairing or app swap. Trial, cold, paired, swapped, blocked, legacy and unknown states
+are not eligible. A valid candidate trial or later paired rollback still follows
+its existing path. No automatic broad repair or artifact deletion is implied.
+
+If the fence still refuses, startup reports **Jones Code could not start safely**
+with the code, optional transaction ID and the
+[user recovery reference](../user/updating.md#if-an-update-fails), preserves the
+bounded stderr diagnostic and exits with status 1 before opening state, even if
+dialog reporting fails.
 
 ## Recovering interrupted threads
 
@@ -116,9 +324,17 @@ that note waits for the next user message.
 Recovery retires effects tied to the lost process and records continuation intent
 in the durable outbox. That intent survives another restart before provider startup.
 Continuation effects wait for activation; a slow provider must not delay the server's
-readiness or the launcher's commit boundary. Graceful shutdown captures intent before
-closing providers, then reconciles after ingestion has stopped so a late completion
-cannot be overwritten by a stale cancellation.
+readiness or the launcher's commit boundary. Before quitting, the desktop asks its
+ready local backends to write the same passive, opted-in continuation markers as
+the native installer. Preparing before signalling the backend process group avoids
+racing provider exit; the markers remain passive until process-loss recovery.
+Graceful shutdown also captures intent before closing providers, then reconciles
+after ingestion has stopped so a late completion cannot be overwritten by a stale
+cancellation. Older or unavailable backends fall back to that shutdown and startup
+recovery. Desktop Quit and updater handoff allow the same server shutdown grace
+and await the captured backend exit, including after forced escalation; expiration
+of the grace alone does not establish closure. Ordinary restart recovery keeps
+queued runs held.
 
 Shutdown releases captured provider sessions concurrently, retaining the existing
 30-second bound for each session scope. The launcher gives the child 75 seconds
@@ -148,6 +364,22 @@ listener ignores reconciliation's cancellations. A cancelled child whose restart
 continuation is still pending in the outbox is not a result yet; the continuation's run
 settles it, or the handler settles it when it declines to continue. Schedulers wait for
 activation so they cannot start runs that reconciliation would then cancel.
+
+Watchers keep only what is stored. Timer tasks keep their next run: an interval
+due during the outage runs once, and a fixed time missed by more than ten minutes
+is skipped. Pull request watches keep their cursor on the thread's link, so the
+first sweep after startup reports outage changes once. Neither the relay nor a
+sender resends a webhook delivery the server acknowledged, so the server
+acknowledges one only after its relay claim, its log row and a pending record
+commit in one transaction. A failed write answers 503 with nothing claimed, so
+a retry runs it. The record stays until the run settles; a run that shutdown
+interrupts is not marked failed, and after activation the server runs records
+it does not own under the delivery's command id, which keeps a dispatch that
+landed from repeating
+([recovery](../../apps/server/src/jones/scheduledTasks/webhookRunRecovery.ts)).
+Requests that arrive while the server is down are lost unless T3 Connect holds
+them or the sender redelivers. Approvals bound to the provider process expire,
+and background shells, monitors and agent polling loops end with it.
 
 Qualified planned updates with caller-bound operation support capture eligible queues
 and live Work Mode conversations before handoff. Jones migration 106 stores this

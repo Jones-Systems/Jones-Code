@@ -23,15 +23,38 @@ export function toolValue(result) {
   }
 }
 
-export function assertVisible(snapshot, expected, absent = false) {
-  NodeAssert.equal(typeof expected, "string");
-  NodeAssert.ok(expected.length > 0);
-  const visible = snapshot.visibleText ?? snapshot.text ?? "";
+export async function assertVisible(call, tabId, { contains = [], excludes = [] }) {
+  const assertions = [
+    ...contains.map((text) => ({ text, present: true })),
+    ...excludes.map((text) => ({ text, present: false })),
+  ];
+  for (const { text } of assertions) {
+    NodeAssert.equal(typeof text, "string");
+    NodeAssert.ok(text.length > 0);
+  }
+  if (assertions.length === 0) return;
+  // Snapshots can omit text to fit the MCP budget. Read the same rendered text
+  // in the owned page, returning only matches so assertions cannot be truncated.
+  const result = await call("preview_evaluate", {
+    tabId,
+    expression: `(() => {
+      const text = document.body?.innerText ?? "";
+      return ${JSON.stringify(assertions.map(({ text }) => text))}.map(phrase => text.includes(phrase));
+    })()`,
+  });
+  const matches = result?.value;
+  NodeAssert.ok(Array.isArray(matches), "Preview text assertion result must be an array");
   NodeAssert.equal(
-    visible.includes(expected),
-    !absent,
-    `${absent ? "Unexpected" : "Missing"} visible text: ${expected}`,
+    matches.length,
+    assertions.length,
+    "Preview text assertion result is incomplete",
   );
+  for (const [index, { text, present }] of assertions.entries())
+    NodeAssert.equal(
+      matches[index],
+      present,
+      `${present ? "Missing" : "Unexpected"} visible text: ${text}`,
+    );
 }
 
 export async function atomicJson(file, value) {
@@ -142,9 +165,9 @@ export async function createMilestoneChannel({ runId, caseId, files, signal }) {
     NodeAssert.ok(!receipts.has(name), "Duplicate milestone");
     const receipt = { schema: milestoneSchema, runId, caseId, name, sha256 };
     receipts.set(name, receipt);
-    for (const waiter of [...waiters])
+    for (const waiter of Array.from(waiters))
       if (waiter.names.includes(name)) waiter.finish(undefined, receipt);
-    if (name === "release") for (const response of [...held]) reply(response, 200, receipt);
+    if (name === "release") for (const response of Array.from(held)) reply(response, 200, receipt);
     return receipt;
   };
   const server = NodeHttp.createServer(async (request, response) => {
@@ -193,8 +216,9 @@ export async function createMilestoneChannel({ runId, caseId, files, signal }) {
     if (closing) return closing;
     closed = true;
     signal?.removeEventListener("abort", cancel);
-    for (const waiter of [...waiters]) waiter.finish(new Error("Milestone channel closed"));
-    for (const response of [...held]) reply(response, 503, { error: "fixture_channel_closed" });
+    for (const waiter of Array.from(waiters)) waiter.finish(new Error("Milestone channel closed"));
+    for (const response of Array.from(held))
+      reply(response, 503, { error: "fixture_channel_closed" });
     held.clear();
     markReleaseWaiting(false);
     server.closeAllConnections();
@@ -387,16 +411,19 @@ export async function runScenario(client, scenario, report) {
       else if (step.action === "capture") {
         const snapshot = await call("preview_snapshot", { tabId, save: true, includeImage: true });
         report.captures.push({ name: step.name, snapshot });
-        for (const expected of step.contains ?? []) assertVisible(snapshot, expected);
-        for (const absent of step.excludes ?? []) assertVisible(snapshot, absent, true);
+        await assertVisible(call, tabId, step);
       } else if (step.action === "assert-evaluate") {
         const result = await call("preview_evaluate", { tabId, expression: step.expression });
         NodeAssert.deepEqual(result.value ?? result.result ?? result, step.expected, step.label);
       } else throw new Error(`Unknown bounded scenario action: ${step.action}`);
     }
-    const snapshot = await call("preview_snapshot", { tabId, save: true, includeImage: true });
     const sentinel = `jones-deliberate-wrong-UI-${NodeCrypto.randomUUID()}`;
-    NodeAssert.throws(() => assertVisible(snapshot, sentinel), /Missing visible text/);
+    await NodeAssert.rejects(assertVisible(call, tabId, { contains: [sentinel] }), {
+      code: "ERR_ASSERTION",
+      actual: false,
+      expected: true,
+      message: /Missing visible text/,
+    });
     report.negativeControls.wrongUiAssertion = "rejected";
     report.viewport = await call("preview_status", { tabId });
   } catch (error) {

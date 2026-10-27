@@ -28,6 +28,28 @@ import JonesMigration0108 from "./Migrations/108_JonesPhysicalProcessEvidence.ts
 import JonesMigration0109 from "./Migrations/109_JonesOrdinaryCheckoutLifecycle.ts";
 
 import JonesMigration0110 from "./Migrations/110_JonesThreadLookupIndexes.ts";
+import JonesMigration0111 from "./Migrations/111_JonesClientSettlementCommands.ts";
+
+import JonesMigration0112 from "./Migrations/112_JonesClientLaunchRequests.ts";
+
+import JonesMigration0114 from "./Migrations/114_JonesSelfSettlementProjectItems.ts";
+import JonesMigration0115 from "./Migrations/115_JonesScheduledWebhookPendingRuns.ts";
+
+import JonesMigration0116 from "./Migrations/116_JonesRemoteAdmission.ts";
+
+import JonesMigration0117 from "./Migrations/117_JonesRemoteDelegationIntents.ts";
+
+import JonesMigration0118 from "./Migrations/118_JonesRemoteAdmissionIntegration.ts";
+
+import JonesMigration0119 from "./Migrations/119_JonesPeerEnvironmentLinks.ts";
+
+import JonesMigration0120 from "./Migrations/120_JonesSettlementRestores.ts";
+import JonesMigration0121 from "./Migrations/121_JonesRemoteTaskObservations.ts";
+
+import JonesMigration0122 from "./Migrations/122_JonesThreadLinks.ts";
+
+import JonesMigration0123 from "./Migrations/123_JonesWorkspaceLifecycle.ts";
+import JonesMigration0124 from "./Migrations/124_JonesTaskContinuations.ts";
 
 export const jonesMigrationEntries = [
   [1, "WorktreeOwnershipLeases", JonesMigration0001],
@@ -47,14 +69,26 @@ export const jonesMigrationEntries = [
   [108, "PhysicalProcessEvidence", JonesMigration0108],
   [109, "OrdinaryCheckoutLifecycle", JonesMigration0109],
   [110, "ThreadLookupIndexes", JonesMigration0110],
+  [111, "ClientSettlementCommands", JonesMigration0111],
+  [112, "ClientLaunchRequests", JonesMigration0112],
+  [114, "SelfSettlementProjectItems", JonesMigration0114],
+  [115, "ScheduledWebhookPendingRuns", JonesMigration0115],
+  [116, "RemoteAdmission", JonesMigration0116],
+  [117, "RemoteDelegationIntents", JonesMigration0117],
+  [118, "RemoteAdmissionIntegration", JonesMigration0118],
+  [119, "PeerEnvironmentLinks", JonesMigration0119],
+  [120, "SettlementRestores", JonesMigration0120],
+  [121, "RemoteTaskObservations", JonesMigration0121],
+  [122, "ThreadLinks", JonesMigration0122],
+  [123, "WorkspaceLifecycle", JonesMigration0123],
+  [124, "TaskContinuations", JonesMigration0124],
 ] as const;
 
-export const runMigrations = () =>
-  Effect.gen(function* () {
-    const jonesMigrations = yield* runJonesMigrations(jonesMigrationEntries);
-    if (jonesMigrations.length > 0) {
-      yield* Effect.log("Jones migrations ran successfully").pipe(
-        Effect.annotateLogs({ migrations: jonesMigrations.map(([id, name]) => `${id}_${name}`) }),
-      );
-    }
-  });
+export const runMigrations = Effect.fn("JonesMigrations.runMigrations")(function* () {
+  const jonesMigrations = yield* runJonesMigrations(jonesMigrationEntries);
+  if (jonesMigrations.length > 0) {
+    yield* Effect.log("Jones migrations ran successfully").pipe(
+      Effect.annotateLogs({ migrations: jonesMigrations.map(([id, name]) => `${id}_${name}`) }),
+    );
+  }
+});

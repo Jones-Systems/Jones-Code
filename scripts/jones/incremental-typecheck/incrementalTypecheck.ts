@@ -1,0 +1,704 @@
+import * as Scope from "effect/Scope";
+import { configurationInputs } from "../tsrs/config-inputs.ts";
+export { configurationInputs } from "../tsrs/config-inputs.ts";
+import {
+  hostPath,
+  hostFileSystem,
+  fileInfo,
+  object,
+  errorCode,
+  digest,
+  canonical,
+  contained,
+  safeDirectory,
+  readBounded,
+  writePrivateFile,
+  readSeed,
+  encodeEnvelope,
+  admitNamespace,
+} from "../tsrs/seed-files.ts";
+export {
+  digest,
+  readSeed,
+  encodeEnvelope,
+  admitNamespace,
+  validNativePayload,
+} from "../tsrs/seed-files.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Crypto from "effect/Crypto";
+import * as FileSystem from "effect/FileSystem";
+import type * as PlatformError from "effect/PlatformError";
+import * as Stream from "effect/Stream";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
+
+import * as CompilerIdentity from "../tsrs/identity.ts";
+import { launchVerified } from "../tsrs/typecheck.ts";
+import * as NodeOS from "node:os";
+
+export const RAW_LIMIT = 16 * 1024 * 1024;
+export const ENVELOPE_LIMIT = 24 * 1024 * 1024;
+export const NAMESPACE_LIMIT = 1024 * 1024 * 1024;
+const SCHEMA = "jones-incremental-typecheck/v2";
+const BUILD_VERSION = CompilerIdentity.BUILD_VERSION;
+const OPTIONS = ["--noEmit", "--incremental", ...CompilerIdentity.CHECKER_OPTIONS];
+
+export const HELP = `Usage: pnpm typecheck:incremental <workspace-name-or-relative-path>... | --all
+Options: --fresh (no retained reads or publication), --help
+Only exact repository verified-launcher scripts are supported.
+Projects run serially; every selected project runs the native Effect checker.
+Cache: node_modules/.cache/jones/incremental-typecheck/v2; retained for the
+worktree dependency-cache lifetime. Admission: 1 GiB including crash residue;
+payload: 16 MiB; envelope: 24 MiB. No eviction or automatic cold fallback.
+These are retention/admission bounds, not concurrent native-write quotas.
+Retained config support: no extends, the terminal worktree tsconfig.base.json,
+or mobile's qualified Expo base/binding. Unknown topology fails closed; --fresh
+bypasses only retained identity/reuse/publication. Configs are bounded to 1 MiB.
+`;
+
+export interface Workspace {
+  name: string;
+  directory: string;
+  script: string | undefined;
+  nativeScript?: string;
+}
+export interface Command {
+  executable: string;
+  args: string[];
+  cwd: string;
+  capture: boolean;
+  signal: AbortSignal;
+  spawned?: () => Promise<void>;
+}
+export interface CommandResult {
+  code: number;
+  stdout: string;
+}
+export type Runner = (command: Command) => Promise<CommandResult>;
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function parseArguments(args: string[]) {
+  const selectors: string[] = [];
+  const flags = new Set<string>();
+  for (const arg of args) {
+    if (arg.startsWith("-")) {
+      if (!["--all", "--fresh", "--help"].includes(arg) || flags.has(arg)) {
+        throw new Error(`Unknown or repeated option: ${arg}`);
+      }
+      flags.add(arg);
+    } else {
+      if (!arg.trim() || hostPath().isAbsolute(arg))
+        throw new Error(`Invalid workspace selector: ${arg}`);
+      selectors.push(arg);
+    }
+  }
+  if (flags.has("--all") && selectors.length)
+    throw new Error("Use --all or explicit workspaces, not both.");
+  if (!flags.has("--help") && !flags.has("--all") && !selectors.length) {
+    throw new Error("Explicit workspace selection is required (or use --all).");
+  }
+  return {
+    selectors,
+    all: flags.has("--all"),
+    fresh: flags.has("--fresh"),
+    help: flags.has("--help"),
+  };
+}
+
+export function workspaceCommand(root: string, directory: string): string {
+  const relative = hostPath().relative(
+    directory,
+    hostPath().join(root, "scripts/jones/tsrs/typecheck.ts"),
+  );
+  return `node ${relative.split(hostPath().sep).join("/")} --noEmit`;
+}
+
+export function selectWorkspaces(
+  root: string,
+  workspaces: Workspace[],
+  args: ReturnType<typeof parseArguments>,
+) {
+  const eligible = workspaces.filter((workspace) => {
+    const expected = workspaceCommand(root, workspace.directory);
+    return (
+      workspace.directory !== root &&
+      (workspace.script === expected ||
+        (workspace.script === "vp run tsrs:typecheck" && workspace.nativeScript === expected))
+    );
+  });
+  const selected = args.all
+    ? eligible
+    : args.selectors.map((selector) => {
+        const matches = workspaces.filter(
+          (workspace) =>
+            workspace.name === selector ||
+            workspace.directory === hostPath().resolve(root, selector),
+        );
+        if (matches.length !== 1)
+          throw new Error(`${matches.length ? "Ambiguous" : "Unknown"} workspace: ${selector}`);
+        const workspace = matches[0]!;
+        if (!eligible.includes(workspace))
+          throw new Error(
+            `Unsupported typecheck script for ${selector}: ${workspace.script ?? "<none>"}`,
+          );
+        return workspace;
+      });
+  if (!selected.length) throw new Error("No eligible workspaces selected.");
+  return {
+    selected: [...new Set(selected)].sort((a, b) =>
+      a.directory < b.directory ? -1 : a.directory > b.directory ? 1 : 0,
+    ),
+    excluded: workspaces.filter((workspace) => !eligible.includes(workspace)),
+  };
+}
+
+class Interrupted extends Error {
+  readonly exitCode: number;
+  constructor(signal: string) {
+    super(`Interrupted by ${signal}`);
+    const number = NodeOS.constants.signals[signal as NodeJS.Signals];
+    this.exitCode = number === undefined ? 1 : 128 + number;
+  }
+}
+
+// Cleanup must not race a process whose exit could not be established.
+class UnconfirmedExit extends Error {}
+
+function checkCancellation(signal: AbortSignal): void {
+  if (signal.aborted) throw new Interrupted(String(signal.reason));
+}
+
+function groupExists(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (error) {
+    if (errorCode(error) === "ESRCH") return false;
+    throw error;
+  }
+}
+
+export const runProcess: Runner = async (command) => {
+  checkCancellation(command.signal);
+  const scope = Scope.makeUnsafe();
+  let exitConfirmed = true;
+  let escalation: Fiber.Fiber<void> | undefined;
+  let capture: Fiber.Fiber<void, PlatformError.PlatformError> | undefined;
+  let stop: (() => void) | undefined;
+  try {
+    const child = await Effect.runPromise(
+      Effect.flatMap(ChildProcessSpawner.ChildProcessSpawner, (spawner) =>
+        spawner.spawn(
+          ChildProcess.make(command.executable, command.args, {
+            cwd: command.cwd,
+            // The native checker stays in this process on all platforms.
+            env: { ...HostProcess.Environment.defaultValue(), RAYON_NUM_THREADS: "2" },
+            detached: HostProcess.Platform.defaultValue() !== "win32",
+            stdin: "ignore",
+            stdout: command.capture ? "pipe" : "inherit",
+            stderr: "inherit",
+            windowsHide: true,
+            forceKillAfter: 1500,
+          }),
+        ),
+      ).pipe(Effect.provide(NodeServices.layer), Scope.provide(scope)),
+    );
+    let output = Buffer.alloc(0);
+    let overflow = false;
+    let rejectExit: ((error: Error) => void) | undefined;
+    const kill = (signal: NodeJS.Signals) => {
+      try {
+        process.kill(
+          HostProcess.Platform.defaultValue() === "win32" ? child.pid : -child.pid,
+          signal,
+        );
+      } catch (error) {
+        if (errorCode(error) !== "ESRCH") throw error;
+      }
+    };
+    stop = () => {
+      kill(command.signal.reason === "SIGINT" ? "SIGINT" : "SIGTERM");
+      escalation ??= Effect.runFork(
+        Effect.gen(function* () {
+          yield* Effect.sleep(1500);
+          kill("SIGKILL");
+          yield* Effect.sleep(5000);
+          rejectExit?.(
+            new UnconfirmedExit(
+              `Process ${child.pid} exit unconfirmed after escalation; invocation files retained.`,
+            ),
+          );
+        }),
+      );
+    };
+    if (command.capture) {
+      capture = Effect.runFork(
+        Stream.runForEach(child.stdout, (chunk) =>
+          Effect.sync(() => {
+            if (output.length + chunk.length > ENVELOPE_LIMIT) {
+              overflow = true;
+              stop?.();
+            } else if (!overflow) output = Buffer.concat([output, chunk]);
+          }),
+        ),
+      );
+    }
+    command.signal.addEventListener("abort", stop, { once: true });
+    if (command.signal.aborted) stop();
+    await command.spawned?.();
+    const outcome = await new Promise<{ code?: number; error?: unknown }>((resolve, reject) => {
+      rejectExit = reject;
+      void Effect.runPromise(child.exitCode).then(
+        (code) => resolve({ code }),
+        (error: unknown) => resolve({ error }),
+      );
+    });
+    if (HostProcess.Platform.defaultValue() !== "win32" && groupExists(child.pid)) {
+      kill("SIGTERM");
+      for (let attempt = 0; attempt < 100 && groupExists(child.pid); attempt++) {
+        if (attempt === 30) kill("SIGKILL");
+        await Effect.runPromise(Effect.sleep(25));
+      }
+      if (groupExists(child.pid))
+        throw new UnconfirmedExit(
+          `Native process group ${child.pid} did not exit; invocation files retained.`,
+        );
+    }
+    checkCancellation(command.signal);
+    if (outcome.error !== undefined) {
+      // The Node spawner preserves a signal exit in its PlatformError cause.
+      const cause =
+        object(outcome.error) && object(outcome.error.reason)
+          ? outcome.error.reason.cause
+          : outcome.error;
+      const signal = /receipt of signal: '(SIG[A-Z]+)'/.exec(message(cause))?.[1];
+      if (signal) throw new Interrupted(signal);
+      throw outcome.error;
+    }
+    if (capture) await Effect.runPromise(Fiber.join(capture));
+    if (overflow) throw new Error("Captured command output exceeded 24 MiB.");
+    return { code: outcome.code ?? 1, stdout: output.toString("utf8") };
+  } catch (error) {
+    if (error instanceof UnconfirmedExit) exitConfirmed = false;
+    throw error;
+  } finally {
+    if (stop) command.signal.removeEventListener("abort", stop);
+    if (escalation) await Effect.runPromise(Fiber.interrupt(escalation));
+    if (capture) await Effect.runPromise(Fiber.interrupt(capture));
+    // An unconfirmed process retains its scope and exact invocation files;
+    // scope release must not conceal an unbounded native exit wait.
+    if (exitConfirmed) await Effect.runPromise(Scope.close(scope, Exit.void));
+  }
+};
+
+export async function discoverWorkspaces(
+  root: string,
+  signal: AbortSignal,
+  run: Runner = runProcess,
+): Promise<Workspace[]> {
+  const manager = process.env.npm_execpath;
+  const viaNode = manager !== undefined && /pnpm\.(?:c?js)$/.test(manager);
+  const result = await run({
+    executable: viaNode ? process.execPath : "pnpm",
+    args: [...(viaNode ? [manager!] : []), "list", "--recursive", "--depth", "-1", "--json"],
+    cwd: root,
+    capture: true,
+    signal,
+  });
+  if (result.code !== 0)
+    throw new Error(`Workspace discovery failed (${result.code}): ${result.stdout}`);
+  const records: unknown = JSON.parse(result.stdout);
+  if (!Array.isArray(records)) throw new Error("Invalid pnpm workspace inventory.");
+  const directories = new Set<string>([root]);
+  for (const record of records) {
+    if (!object(record) || typeof record.path !== "string")
+      throw new Error("Invalid pnpm workspace path.");
+    const workspacePath = record.path;
+    const directory = await hostFileSystem((fs) => fs.realPath(workspacePath));
+    if (!contained(root, directory))
+      throw new Error(`Workspace escapes canonical worktree: ${record.path}`);
+    directories.add(directory);
+  }
+  return Promise.all(
+    [...directories].sort().map(async (directory) => {
+      const manifest: unknown = JSON.parse(
+        await hostFileSystem((fs) => fs.readFileString(hostPath().join(directory, "package.json"))),
+      );
+      if (!object(manifest) || typeof manifest.name !== "string")
+        throw new Error(`Workspace name missing: ${directory}`);
+      return {
+        name: manifest.name,
+        directory,
+        script:
+          object(manifest.scripts) && typeof manifest.scripts.typecheck === "string"
+            ? manifest.scripts.typecheck
+            : undefined,
+        ...(object(manifest.scripts) && typeof manifest.scripts["typecheck:native"] === "string"
+          ? { nativeScript: manifest.scripts["typecheck:native"] }
+          : {}),
+      };
+    }),
+  );
+}
+
+export async function resolveCompiler(root: string) {
+  const target = CompilerIdentity.hostTarget();
+  if (!target)
+    throw new Error(
+      "Retained typechecking requires a supported official Effect TSRS host; use the regular typecheck command for the pinned local fallback.",
+    );
+  const installed = await CompilerIdentity.resolveInstalled(root, target);
+  await CompilerIdentity.provePrivate(installed);
+  return CompilerIdentity.verified(installed);
+}
+
+type Compiler = Awaited<ReturnType<typeof resolveCompiler>>;
+
+// Fingerprint metadata, not source bytes or Git HEAD. Native incremental state
+// remains responsible for source, declaration, and module-resolution changes.
+export async function sharedIdentity(
+  root: string,
+  workspaces: Workspace[],
+  compiler: Compiler,
+): Promise<string> {
+  // Acquire the CLI's stateless adapters once per sweep. Every publication
+  // revalidation calls this afresh; no metadata or bindings survive a sweep.
+  const path = hostPath();
+  const fs = Effect.runSync(Effect.provide(FileSystem.FileSystem, NodeFileSystem.layer));
+  const crypto = Effect.runSync(Effect.provide(Crypto.Crypto, NodeCrypto.layer));
+  const hash = (bytes: string | Uint8Array) =>
+    Buffer.from(
+      Effect.runSync(
+        crypto.digest("SHA-256", typeof bytes === "string" ? Buffer.from(bytes) : bytes),
+      ),
+    ).toString("hex");
+  const row = (label: string, valueHash: string) => `${JSON.stringify(label)}\0${valueHash}\n`;
+  const chunks: string[] = [];
+  // Many pnpm bindings name the same physical manifest. Read those bytes once
+  // within this snapshot, while still resolving and recording EVERY binding.
+  const manifests = new Map<string, Promise<string>>();
+  const fileHash = (filename: string, optional = false): Promise<string> => {
+    const key = `${optional ? "optional" : "required"}:${filename}`;
+    let pending = manifests.get(key);
+    if (!pending) {
+      pending = Effect.runPromise(fs.readFile(filename)).then(hash, (error: unknown) => {
+        if (optional && errorCode(error) === "ENOENT") return hash("<absent>");
+        throw error;
+      });
+      manifests.set(key, pending);
+    }
+    return pending;
+  };
+  const file = async (filename: string, optional = false) => {
+    chunks.push(row(filename, await fileHash(filename, optional)));
+  };
+  for (const filename of ["pnpm-lock.yaml", "pnpm-workspace.yaml", "package.json"])
+    await file(path.join(root, filename));
+  for (const workspace of workspaces) await file(path.join(workspace.directory, "package.json"));
+  for (const filename of [".modules.yaml", ".pnpm/lock.yaml", ".pnpm-workspace-state-v1.json"])
+    await file(path.join(root, "node_modules", filename), true);
+  await file(compiler.wrapper);
+  await file(compiler.nativeManifest);
+  await file(compiler.executable);
+  const libraries = path.dirname(compiler.executable);
+  for (const name of (await Effect.runPromise(fs.readDirectory(libraries))).sort())
+    if (/^lib.*\.d\.ts$/.test(name)) await file(path.join(libraries, name));
+  if (!(await Effect.runPromise(fs.exists(path.join(libraries, "lib.d.ts")))))
+    throw new Error("Native adjacent standard library is missing.");
+
+  const seen = new Set<string>();
+  const entries: Array<{ path: string; absent: boolean }> = [];
+  const modules = async (directory: string): Promise<void> => {
+    if (seen.has(directory)) return;
+    seen.add(directory);
+    let names: string[];
+    try {
+      names = (await Effect.runPromise(fs.readDirectory(directory))).sort();
+    } catch (error) {
+      if (errorCode(error) === "ENOENT") {
+        entries.push({ path: directory, absent: true });
+        return;
+      }
+      throw error;
+    }
+    for (const name of names) {
+      if (name.startsWith(".")) continue;
+      const target = path.join(directory, name);
+      if (name.startsWith("@")) await modules(target);
+      else entries.push({ path: target, absent: false });
+    }
+  };
+  for (const workspace of workspaces) await modules(path.join(workspace.directory, "node_modules"));
+  const store = path.join(root, "node_modules", ".pnpm");
+  for (const name of (await Effect.runPromise(fs.readDirectory(store))).sort()) {
+    if (name === "node_modules") await modules(path.join(store, name));
+    else if ((await fileInfo(path.join(store, name))).type === "Directory")
+      await modules(path.join(store, name, "node_modules"));
+  }
+  // Eight metadata operations at most; append only in the original traversal
+  // order. Drain each batch even on failure, before returning to the caller.
+  for (let offset = 0; offset < entries.length; offset += 8) {
+    const batch = await Promise.allSettled(
+      entries.slice(offset, offset + 8).map(async (entry) => {
+        if (entry.absent) return row(entry.path, hash("<absent>"));
+        const resolved = await Effect.runPromise(fs.realPath(entry.path));
+        const manifest = path.join(resolved, "package.json");
+        return row(entry.path, hash(resolved)) + row(manifest, await fileHash(manifest, true));
+      }),
+    );
+    for (const result of batch) {
+      if (result.status === "rejected") throw result.reason;
+      chunks.push(result.value);
+    }
+  }
+  return hash(chunks.join(""));
+}
+
+async function runCompiler(
+  compiler: Compiler,
+  command: Command,
+  run: Runner,
+): Promise<CommandResult> {
+  let result: CommandResult | undefined;
+  await launchVerified(compiler, command.signal, async (_installed, spawned) => {
+    result = await run({ ...command, spawned });
+    return result.code;
+  });
+  if (!result) throw new Error("Verified compiler returned no result.");
+  return result;
+}
+
+export function projectIdentity(
+  root: string,
+  project: Workspace,
+  shared: string,
+  config: unknown,
+): string {
+  return digest(
+    canonical({
+      schema: SCHEMA,
+      root,
+      project: project.directory,
+      shared,
+      config,
+      options: OPTIONS,
+      buildVersion: BUILD_VERSION,
+      packageVersion: CompilerIdentity.TSRS_VERSION,
+      effectVersion: CompilerIdentity.EFFECT_VERSION,
+      patchedHashes: CompilerIdentity.TARGETS,
+      rayon: 2,
+    }),
+  );
+}
+
+export function cachePaths(root: string, project: Workspace) {
+  const namespace = hostPath().join(
+    root,
+    "node_modules",
+    ".cache",
+    "jones",
+    "incremental-typecheck",
+    "v2",
+  );
+  const directory = hostPath().join(namespace, digest(canonical([root, project.directory])));
+  return { namespace, directory, entry: hostPath().join(directory, "entry.json") };
+}
+
+export interface CheckProjectOptions {
+  root: string;
+  project: Workspace;
+  compiler: Compiler;
+  identity: string;
+  fresh: boolean;
+  signal: AbortSignal;
+  inputsUnchanged: () => Promise<boolean>;
+  run?: Runner;
+  writePrivate?: typeof writePrivateFile;
+  log?: (line: string) => void;
+}
+
+export async function checkProject(options: CheckProjectOptions): Promise<number> {
+  const { root, project, compiler, identity, fresh, signal } = options;
+  const run = options.run ?? runProcess;
+  const writePrivate = options.writePrivate ?? writePrivateFile;
+  const log = options.log ?? ((line: string) => process.stderr.write(`${line}\n`));
+  const paths = cachePaths(root, project);
+  checkCancellation(signal);
+  await admitNamespace(root, paths.namespace, RAW_LIMIT + (fresh ? 0 : ENVELOPE_LIMIT));
+  await safeDirectory(root, paths.directory, true);
+  const nonce = Effect.runSync(
+    Effect.flatMap(Crypto.Crypto, (crypto) => crypto.randomUUIDv4()).pipe(
+      Effect.provide(NodeCrypto.layer),
+    ),
+  );
+  const native = hostPath().join(paths.directory, `run-${nonce}.tsbuildinfo`);
+  const staging = hostPath().join(paths.directory, `entry-${nonce}.tmp`);
+  const owned = new Set<string>();
+  let exitConfirmed = true;
+  let result = 1;
+  let failure: unknown;
+  try {
+    const seed = fresh ? undefined : await readSeed(paths.entry, identity);
+    // Empty private files are a native cache miss; exclusive creation establishes
+    // cleanup ownership before the first write, including partial setup failure.
+    await writePrivate(native, seed ?? Buffer.alloc(0), () => owned.add(native));
+    log(
+      `[incremental] ${project.name}: ${fresh ? "fresh" : seed ? "seed validated" : "cache miss"}; ${native}`,
+    );
+    const outcome = await runCompiler(
+      compiler,
+      {
+        executable: compiler.executable,
+        args: [...OPTIONS, "--tsBuildInfoFile", native],
+        cwd: project.directory,
+        capture: false,
+        signal,
+      },
+      run,
+    );
+    result = outcome.code;
+    checkCancellation(signal);
+    if (result === 0 && !fresh) {
+      try {
+        if (!(await options.inputsUnchanged())) {
+          throw new Error("identity inputs changed during checking.");
+        }
+        checkCancellation(signal);
+        await safeDirectory(root, paths.directory, false);
+        const payload = await readBounded(native, RAW_LIMIT);
+        if (!payload) throw new Error("Native build info missing or exceeds 16 MiB.");
+        const envelope = encodeEnvelope(identity, payload);
+        await admitNamespace(root, paths.namespace, envelope.length);
+        await writePrivate(staging, envelope, () => owned.add(staging));
+        checkCancellation(signal);
+        // One rename publishes identity and payload together. Concurrent writers
+        // may lose reuse, never produce a mixed generation or skip native checking.
+        await hostFileSystem((fs) => fs.rename(staging, paths.entry));
+        owned.delete(staging);
+      } catch (error) {
+        if (error instanceof Interrupted || error instanceof UnconfirmedExit) throw error;
+        log(`[incremental] ${project.name}: cache not retained: ${message(error)}`);
+      }
+    }
+  } catch (error) {
+    if (error instanceof UnconfirmedExit) exitConfirmed = false;
+    failure = error;
+  }
+  if (exitConfirmed) {
+    const failures: string[] = [];
+    for (const filename of owned) {
+      try {
+        await safeDirectory(root, paths.directory, false);
+        if ((await fileInfo(filename)).type !== "File")
+          throw new Error(`Owned cleanup path is not a regular file: ${filename}`);
+        await hostFileSystem((fs) => fs.remove(filename));
+      } catch (error) {
+        if (errorCode(error) !== "ENOENT") failures.push(`${filename}: ${message(error)}`);
+      }
+    }
+    if (failures.length)
+      throw new Error(
+        `Invocation cleanup failed (native status ${result}${failure ? `; ${message(failure)}` : ""}); residue: ${failures.join("; ")}`,
+        { cause: failure },
+      );
+  } else
+    log(
+      `[incremental] Exit unconfirmed; preserved exact invocation files: ${[...owned].join(", ")}`,
+    );
+  if (failure !== undefined) throw failure;
+  return result;
+}
+
+export async function runCli(
+  rootDirectory: string,
+  argv: string[],
+  run: Runner = runProcess,
+): Promise<number> {
+  const cancellation = new AbortController();
+  const interrupt = () => cancellation.abort("SIGINT");
+  const terminate = () => cancellation.abort("SIGTERM");
+  process.on("SIGINT", interrupt);
+  process.on("SIGTERM", terminate);
+  let firstFailure = 0;
+  try {
+    const args = parseArguments(argv);
+    if (args.help) {
+      process.stdout.write(HELP);
+      return 0;
+    }
+    const root = await hostFileSystem((fs) => fs.realPath(rootDirectory));
+    const signal = cancellation.signal;
+    const workspaces = await discoverWorkspaces(root, signal, run);
+    const { selected, excluded } = selectWorkspaces(root, workspaces, args);
+    process.stderr.write(
+      `[incremental] Selected (${selected.length}): ${selected.map((workspace) => `${workspace.name} (${hostPath().relative(root, workspace.directory)})`).join(", ")}\n`,
+    );
+    process.stderr.write(
+      `[incremental] Excluded: ${excluded.map((workspace) => `${workspace.name}: ${workspace.script ?? "no typecheck script"}`).join("; ")}\n`,
+    );
+    const compiler = await resolveCompiler(root);
+    process.stderr.write(
+      `[incremental] Official Effect TSRS ${CompilerIdentity.TSRS_VERSION} / Effect ${CompilerIdentity.EFFECT_VERSION}.\n[incremental] ${compiler.executable} ${OPTIONS.join(" ")} --tsBuildInfoFile <private>; RAYON_NUM_THREADS=2\n`,
+    );
+    const legacy = hostPath().join(root, "node_modules/.cache/jones/incremental-typecheck/v1");
+    if (await hostFileSystem((fs) => fs.exists(legacy)))
+      process.stderr.write(
+        `[incremental] Legacy v1 cache ignored and preserved: ${legacy}; remove this exact directory separately when no older invocation uses it.\n`,
+      );
+    const shared = args.fresh ? "fresh" : await sharedIdentity(root, workspaces, compiler);
+    // The finite raw JSONC topology guard fingerprints configuration without
+    // handwritten inheritance or TSRS's unsupported --showConfig command.
+    const configInputs = args.fresh
+      ? new Map<string, string>()
+      : await configurationInputs(root, selected);
+    for (const project of selected) {
+      checkCancellation(signal);
+      if (
+        !args.fresh &&
+        (await configurationInputs(root, [project])).get(project.directory) !==
+          configInputs.get(project.directory)
+      ) {
+        throw new Error(
+          `Config inputs changed before reuse for ${project.name}; rerun or use --fresh.`,
+        );
+      }
+      const identity = projectIdentity(root, project, shared, {
+        inputs: configInputs.get(project.directory),
+      });
+      const result = await checkProject({
+        root,
+        project,
+        compiler,
+        identity,
+        fresh: args.fresh,
+        signal,
+        run,
+        inputsUnchanged: async () => {
+          const currentInputs = (await configurationInputs(root, [project])).get(project.directory);
+          return (
+            projectIdentity(root, project, await sharedIdentity(root, workspaces, compiler), {
+              inputs: currentInputs,
+            }) === identity
+          );
+        },
+      });
+      if (result !== 0 && firstFailure === 0) firstFailure = result;
+    }
+    checkCancellation(signal);
+    return firstFailure;
+  } catch (error) {
+    process.stderr.write(`[incremental] ${message(error)}\n`);
+    return error instanceof Interrupted ? error.exitCode : firstFailure || 1;
+  } finally {
+    process.removeListener("SIGINT", interrupt);
+    process.removeListener("SIGTERM", terminate);
+  }
+}

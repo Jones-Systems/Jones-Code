@@ -13,6 +13,12 @@ const decodePreparationState = Schema.decodeUnknownSync(
     message: Schema.optionalKey(Schema.String),
   }),
 );
+const decodeQuitPreparation = Schema.decodeUnknownSync(
+  Schema.Struct({
+    prepared: Schema.Boolean,
+    threadCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  }),
+);
 
 /**
  * A backend launched with the desktop secret accepts only the current rotating
@@ -51,6 +57,7 @@ function post(
   contentType: string,
   body: string,
   bearer?: string,
+  timeoutMs = 30000,
 ): Promise<unknown> {
   if (url.protocol !== "http:" || !["127.0.0.1", "[::1]", "localhost"].includes(url.hostname)) {
     throw new Error("Native preparation requires the exact loopback listener.");
@@ -90,7 +97,7 @@ function post(
         });
       },
     );
-    request.setTimeout(30000, () =>
+    request.setTimeout(timeoutMs, () =>
       request.destroy(Object.assign(new Error(), { code: "TIMEOUT" })),
     );
     request.once("error", (cause) =>
@@ -102,15 +109,12 @@ function post(
 
 /**
  * The bootstrap token and access token remain in memory and are sent only to the local backend.
- * Returns the backend's state so a missing receipt can be explained by its refusal message.
  */
-export async function prepareJonesNativeInstall(input: {
+async function preparationAccessToken(input: {
   listener: string;
   bootstrapToken: string;
-  stagedHandle: string;
-  transactionId: string;
-  active: JonesActiveInstall;
-}): Promise<{ readonly phase?: string; readonly message?: string }> {
+  timeoutMs?: number;
+}): Promise<string> {
   const form = new URLSearchParams({
     grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
     subject_token_type: "urn:t3:params:oauth:token-type:environment-bootstrap",
@@ -124,8 +128,22 @@ export async function prepareJonesNativeInstall(input: {
       new URL("/oauth/token", input.listener),
       "application/x-www-form-urlencoded",
       form.toString(),
+      undefined,
+      input.timeoutMs,
     ),
   );
+  return token.access_token;
+}
+
+/** Returns the backend state so a missing installer receipt can be explained by its refusal. */
+export async function prepareJonesNativeInstall(input: {
+  listener: string;
+  bootstrapToken: string;
+  stagedHandle: string;
+  transactionId: string;
+  active: JonesActiveInstall;
+}): Promise<{ readonly phase?: string; readonly message?: string }> {
+  const accessToken = await preparationAccessToken(input);
   const state = await post(
     "preparation",
     new URL("/api/jones-updates/prepare-native", input.listener),
@@ -136,11 +154,33 @@ export async function prepareJonesNativeInstall(input: {
       environmentId: input.active.environmentId,
       currentVersion: input.active.version,
     }),
-    token.access_token,
+    accessToken,
   );
   try {
     return decodePreparationState(state);
   } catch {
     return {};
+  }
+}
+
+/** Prepare passive restart markers without an installer transaction or payload. */
+export async function prepareJonesQuit(input: {
+  listener: string;
+  bootstrapToken: string;
+  timeoutMs?: number;
+}): Promise<{ readonly prepared: boolean; readonly threadCount: number }> {
+  const accessToken = await preparationAccessToken(input);
+  const state = await post(
+    "quit preparation",
+    new URL("/api/jones-updates/prepare-quit", input.listener),
+    "application/json",
+    "",
+    accessToken,
+    input.timeoutMs,
+  );
+  try {
+    return decodeQuitPreparation(state);
+  } catch {
+    return { prepared: false, threadCount: 0 };
   }
 }

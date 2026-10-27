@@ -31,6 +31,25 @@ const guards = new WeakMap<
 const refused = (message: string) =>
   new ProviderAdapterProtocolError({ driver: ProviderDriverKind.make("codex"), detail: message });
 
+export const assertNativeProviderStartOperation = Effect.fn("NativeProvider.assertStartOperation")(
+  function* (
+    guard: NativeProviderExecutionGuard,
+    threadId: ThreadId,
+    runId: import("@t3tools/contracts").RunId,
+  ) {
+    const state = guards.get(guard);
+    if (
+      !state ||
+      state.retired ||
+      state.acknowledgement !== undefined ||
+      state.threadId !== threadId ||
+      state.runId !== runId
+    )
+      return yield* refused("Native start ownership is no longer current");
+    yield* revalidateNativeProviderGuard(guard, { threadId });
+  },
+);
+
 // This private handle is issued only after the native100 durable start; wire correlation cannot mint it.
 export const revalidateNativeProviderGuard = Effect.fn("revalidateNativeProviderGuard")(function* (
   guard: NativeProviderExecutionGuard | undefined,
@@ -112,21 +131,19 @@ export const acknowledgeNativeProviderGuard = Effect.fn("acknowledgeNativeProvid
       input.providerThread.nativeThreadRef?.nativeId !== binding.nativeThreadId
     )
       return yield* refused("Native provider acknowledgement differs from its captured operation");
-    state.acknowledgement = yield* Schema.decodeUnknownEffect(NativeCreationWholeOperationEvidence)(
-      {
-        version: 1,
-        outcome: "confirmed_success",
-        effectId: state.effectId,
-        threadId: state.threadId,
-        commandId: state.commandId,
-        providerSessionId: binding.providerSessionId,
-        providerThreadId: binding.providerThreadId,
-        runtimeGeneration: binding.runtimeGeneration,
-        runId: input.runId,
-        attemptId: input.attemptId,
-        coverage: "whole_operation",
-      },
-    );
+    state.acknowledgement = yield* Schema.decodeEffect(NativeCreationWholeOperationEvidence)({
+      version: 1,
+      outcome: "confirmed_success",
+      effectId: state.effectId,
+      threadId: state.threadId,
+      commandId: state.commandId,
+      providerSessionId: binding.providerSessionId,
+      providerThreadId: binding.providerThreadId,
+      runtimeGeneration: binding.runtimeGeneration,
+      runId: input.runId,
+      attemptId: input.attemptId,
+      coverage: "whole_operation",
+    });
   },
 );
 

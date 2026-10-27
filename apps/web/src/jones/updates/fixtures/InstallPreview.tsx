@@ -20,10 +20,12 @@ import { SidebarUpdatePill } from "../../../components/sidebar/SidebarUpdatePill
 import { ConfirmDialogHost } from "../../../components/ConfirmDialogHost";
 import { ToastProvider, AnchoredToastProvider } from "../../../components/ui/toast";
 import { TooltipProvider } from "../../../components/ui/tooltip";
+import { ExactSourcePreview, useSyntheticExactSource } from "./exact-source-fixture";
 import type { InstallPreviewFixture } from "./install-preview-bridge";
 
 function ObservedUpdate({ fixture }: { readonly fixture: InstallPreviewFixture }) {
   const state = useDesktopUpdateState();
+  // oxlint-disable-next-line t3code/react-effect-budget -- Expose production update atom observations to the mounted install fixture controller.
   useEffect(() => fixture.observe(state), [fixture, state]);
   return (
     <output data-testid="observed-update" className="block font-mono text-xs">
@@ -55,6 +57,8 @@ function ClientNoticePreview({ runId }: { readonly runId: string }) {
   const [automatic, setAutomatic] = useState(false);
   const [pair, setPair] = useState<NoticePair>("different");
   const [mount, setMount] = useState(1);
+  // Notices here cover selection and dismissal; their actions run against a synthetic host.
+  const { renderExactSourceAction } = useSyntheticExactSource();
   // Both synthetic sources differ from the client and share their displayed abbreviation.
   const differentSource = (APP_SOURCE_SHA?.startsWith("a") ? "b" : "a").repeat(39) + "b";
   const source =
@@ -156,6 +160,7 @@ function ClientNoticePreview({ runId }: { readonly runId: string }) {
         activeEnvironment={environments.find((environment) => environment.label === selected)}
         automaticEnvironment={automatic}
         eligibleEnvironments={environments.slice(0, 2)}
+        renderExactSourceAction={renderExactSourceAction}
       />
     </section>
   );
@@ -165,6 +170,7 @@ function FixtureScreen({ fixture }: { readonly fixture: InstallPreviewFixture })
   const stored = useSyncExternalStore(fixture.subscribe, fixture.read, fixture.read);
   const [failure, setFailure] = useState<string | null>(null);
   const [showClientNotices, setShowClientNotices] = useState(false);
+  const [showExactSource, setShowExactSource] = useState(false);
   const control = (action: () => void) => {
     try {
       action();
@@ -173,6 +179,7 @@ function FixtureScreen({ fixture }: { readonly fixture: InstallPreviewFixture })
       setFailure(error instanceof Error ? error.message : String(error));
     }
   };
+  // oxlint-disable-next-line t3code/react-effect-budget -- Register fixture mount readiness after the production controls commit.
   useEffect(() => fixture.mounted(isElectron), [fixture]);
   return (
     <ToastProvider>
@@ -195,7 +202,7 @@ function FixtureScreen({ fixture }: { readonly fixture: InstallPreviewFixture })
               aria-label="Production Settings update controls"
               data-testid="settings-updates"
             >
-              <h2 className="mb-2 font-medium">Settings — About</h2>
+              <h2 className="mb-2 font-medium">Settings. About</h2>
               <SettingsGroup>
                 <AboutVersionSection />
               </SettingsGroup>
@@ -303,6 +310,18 @@ function FixtureScreen({ fixture }: { readonly fixture: InstallPreviewFixture })
                 onClick={() => setShowClientNotices(true)}
               >
                 Open client notice fixture
+              </button>
+            )}
+            {showExactSource ? (
+              <ExactSourcePreview runId={stored.runId} />
+            ) : (
+              <button
+                type="button"
+                className="rounded border px-2 py-1 text-xs"
+                data-testid="show-exact-source"
+                onClick={() => setShowExactSource(true)}
+              >
+                Open exact-source action fixture
               </button>
             )}
           </main>

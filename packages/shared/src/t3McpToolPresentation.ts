@@ -16,15 +16,18 @@ export type T3McpToolSummaryAction =
   | "schedule-update"
   | "schedule-delete"
   | "thread-create"
+  | "thread-launch-resolve"
   | "thread-list"
   | "thread-read"
   | "thread-send"
   | "thread-wait"
   | "thread-interrupt"
   | "workflow-stop"
+  | "background-wait"
   | "thread-settle"
   | "thread-configuration"
   | "thread-configure"
+  | "thread-self-configure"
   | "thread-fork"
   | "thread-merge"
   | "thread-search"
@@ -51,6 +54,7 @@ export type T3McpToolSummaryAction =
   | "project-delete"
   | "project-clone"
   | "environment-read"
+  | "environment-links"
   | "environment-update"
   | "attachment-prepare"
   | "attachment-discard"
@@ -86,6 +90,9 @@ function tool(
 const T3_MCP_SERVER_ALIASES = new Set(["t3-code", "t3_code", "t3code"]);
 
 const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
+  t3_thread_links: tool(["List", "Listing", "Listed", "linked threads"], "thread-list"),
+  t3_thread_link: tool(["Update", "Updating", "Updated", "thread links"], "thread-update"),
+  t3_thread_handoff: tool(["Hand off", "Handing off", "Handed off", "thread work"], "thread-send"),
   link_pull_request: tool(
     ["Link", "Linking", "Linked", "a pull request"],
     "link-pr",
@@ -107,12 +114,12 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     "pull-request",
   ),
   unwatch_pull_request: tool(
-    ["Stop watching", "Stopping watching", "Stopped watching", "a pull request"],
+    ["Stop watching", "Unwatching", "Stopped watching", "a pull request"],
     "unwatch-pr",
     "pull-request",
   ),
   write_pull_request_guides: tool(
-    ["Write", "Writing", "Started", "review guides"],
+    ["Write", "Writing", "Started writing", "review guides"],
     "write-pr-guides",
     "pull-request",
   ),
@@ -128,7 +135,7 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
   delegate_task: tool(["Delegate", "Delegating", "Delegated", "a child task"], "delegate"),
   task_status: tool(["Get", "Getting", "Got", "delegated task status"], "task-status"),
   task_cancel: tool(
-    ["Cancel", "Canceling", "Requested cancellation of", "delegated task"],
+    ["Cancel", "Canceling", "Requested cancellation of", "a delegated task"],
     "task-cancel",
   ),
   schedule_task: tool(
@@ -144,16 +151,28 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     ["Delete", "Deleting", "Requested deletion of", "a scheduled task"],
     "schedule-delete",
   ),
+  t3_request_user_response: tool(
+    ["Request", "Requesting", "Requested", "owner response"],
+    "question-respond",
+  ),
   request_secret: tool(["Ask for", "Asking for", "Asked for", "a secret"], "secret-request"),
   create_threads: tool(["Create", "Creating", "Created", "T3 threads"], "thread-create"),
   t3_thread_start: tool(["Start", "Starting", "Started", "a T3 thread"], "thread-create"),
   t3_thread_list: tool(["List", "Listing", "Listed", "T3 threads"], "thread-list"),
+  t3_thread_goal: tool(
+    ["Control", "Controlling", "Controlled", "a native thread goal"],
+    "thread-update",
+  ),
   t3_thread_read: tool(["Read", "Reading", "Read", "a T3 thread"], "thread-read"),
   t3_thread_send: tool(["Send", "Sending", "Sent", "to a T3 thread"], "thread-send"),
   t3_thread_wait: tool(["Wait", "Waiting", "Waited", "for a T3 thread"], "thread-wait"),
   t3_workflow_stop: tool(
     ["Stop", "Stopping", "Requested a stop for", "a workflow"],
     "workflow-stop",
+  ),
+  t3_background_wait: tool(
+    ["Update", "Updating", "Updated", "background waits"],
+    "background-wait",
   ),
   t3_thread_interrupt: tool(
     ["Interrupt", "Interrupting", "Requested an interrupt of", "a T3 thread"],
@@ -297,6 +316,10 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     ["Read", "Reading", "Read", "thread configuration"],
     "thread-configuration",
   ),
+  t3_thread_self_configure: tool(
+    ["Save", "Saving", "Saved", "future thread settings"],
+    "thread-self-configure",
+  ),
   t3_thread_configure: tool(["Set", "Setting", "Set", "thread model"], "thread-configure"),
   t3_thread_fork: tool(["Fork", "Forking", "Requested a fork of", "this thread"], "thread-fork"),
   t3_thread_merge_back: tool(
@@ -314,11 +337,23 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     ["Read", "Reading", "Read", "environment preferences"],
     "environment-read",
   ),
+  t3_environment_links: tool(
+    ["List", "Listing", "Listed", "linked environments"],
+    "environment-links",
+  ),
   t3_environment_preferences_update: tool(
     ["Update", "Updating", "Updated", "environment preferences"],
     "environment-update",
   ),
   t3_thread_launch: tool(["Launch", "Launching", "Launched", "a project thread"], "thread-create"),
+  t3_thread_launch_lookup: tool(
+    ["Look up", "Looking up", "Looked up", "a keyed thread launch"],
+    "thread-read",
+  ),
+  t3_thread_launch_fence: tool(
+    ["Resolve", "Resolving", "Resolved", "an unknown thread launch"],
+    "thread-launch-resolve",
+  ),
   t3_project_list: tool(["List", "Listing", "Listed", "projects"], "project-list"),
   t3_project_read: tool(["Read", "Reading", "Read", "a project"], "project-read"),
   t3_project_create: tool(["Register", "Registering", "Registered", "a project"], "project-create"),
@@ -344,13 +379,7 @@ function normalizeT3McpToolLabel(value: string): string {
   return value.replace(/\s+(?:complete|completed)\s*$/i, "").trim();
 }
 
-/**
- * ACP agents disagree on how the injected T3 server prefixes its tools:
- * `mcp__t3-code__x` (Claude/Cursor), `t3-code.x` (Codex), plus single
- * underscore, colon, slash, dash, and space separators seen from registry
- * agents. The prefix match is deliberately loose because the display-name
- * inventory is the real gate; unknown tools stay on the generic renderer.
- */
+// ACP tool prefixes vary; match loosely but require a known display-name entry.
 function resolveT3McpToolName(value: string): string | null {
   const label = normalizeT3McpToolLabel(value);
   const mcpMatch = /^mcp__(?<server>.+?)__(?<tool>.+)$/i.exec(label);
@@ -373,9 +402,7 @@ function resolveT3McpToolName(value: string): string | null {
   const prefixed = /^(?:mcp[-_]{1,2})?t3[-_ ]?code(?:__|[-_.:/ ])(?<tool>.+)$/i.exec(label);
   const candidate = prefixed?.groups?.tool ?? label;
   if (Object.hasOwn(T3_MCP_TOOLS, candidate)) return candidate;
-  // OpenCode 2 registers one server per thread, `t3-code-<thread>`, and joins
-  // it to the tool with `_`. Thread ids can hold `_` too, so take the longest
-  // known tool name that ends the label.
+  // OpenCode 2 thread prefixes can contain underscores; choose the longest known tool-name suffix.
   if (!/^t3-code-/i.test(label)) return null;
   let longest: string | null = null;
   for (const tool of Object.keys(T3_MCP_TOOLS)) {
@@ -401,10 +428,4 @@ export function resolveT3McpToolPresentation(
 ): T3McpToolPresentation | null {
   const definition = resolveT3McpToolDefinition(toolName);
   return definition === null ? null : { displayName: definition.displayName, logo: "t3-code" };
-}
-
-export function resolveT3McpToolSummaryAction(
-  toolName: string | null | undefined,
-): T3McpToolSummaryAction | null {
-  return resolveT3McpToolDefinition(toolName)?.summaryAction ?? null;
 }

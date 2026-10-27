@@ -1,5 +1,3 @@
-"use client";
-
 import { Spinner } from "~/components/ui/spinner";
 
 import { Toast } from "@base-ui/react/toast";
@@ -36,6 +34,8 @@ export type ThreadToastData = {
   tooltipStyle?: boolean;
   onClose?: (() => void) | undefined;
   dismissAfterVisibleMs?: number;
+  // Pair with timeout: 0; navigation/actions must not call manager.close themselves.
+  explicitDismissOnly?: boolean;
   hideCopyButton?: boolean;
   additionalActions?: ReadonlyArray<{
     id: string;
@@ -51,6 +51,7 @@ export type ThreadToastData = {
     | "outline"
     | "secondary";
   expandableContent?: ReactNode;
+  expandableFitWidth?: boolean;
   expandableLabels?: { expand?: string; collapse?: string };
   expandableDescriptionTrigger?: boolean;
   actionLayout?: "inline" | "stacked-end";
@@ -160,7 +161,11 @@ function ToastExpandableSection({
         />
         {open ? collapseLabel : expandLabel}
       </button>
-      {open ? <div className={toastExpandablePanelClassName}>{children}</div> : null}
+      {open ? (
+        <div data-slot="toast-expandable-panel" className={toastExpandablePanelClassName}>
+          {children}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -239,14 +244,18 @@ function ToastDescriptionAndExpandable({
           </div>
           <MorphIcon
             aria-hidden
-            className="mt-0.5 size-3.5 shrink-0 text-muted-foreground opacity-80"
+            className="size-3.5 h-lh shrink-0 text-muted-foreground opacity-80"
             icon={open ? ChevronUp : ChevronDown}
             strokeWidth={2.25}
           />
         </TooltipTrigger>
         <TooltipPopup side="top">{open ? collapseLabel : expandLabel}</TooltipPopup>
       </Tooltip>
-      {open ? <div className={toastExpandablePanelClassName}>{expandableContent}</div> : null}
+      {open ? (
+        <div data-slot="toast-expandable-panel" className={toastExpandablePanelClassName}>
+          {expandableContent}
+        </div>
+      ) : null}
     </>
   );
 }
@@ -287,7 +296,7 @@ function deriveToastBodyDescriptor(toast: {
     hasVisibleToastAction(toast.actionProps) ||
     hasAdditionalActions ||
     hasSecondaryAction;
-  const inlineContentEndPad = hasTrailingControls ? "pr-6" : "pr-10";
+  const inlineContentEndPad = hasTrailingControls ? "pr-6" : "pr-3.5";
   return {
     Icon,
     stackedActionLayout,
@@ -332,7 +341,12 @@ function ToastBodyContent({
           stackedActionLayout ? "pr-5" : "flex-1",
         )}
       >
-        <div className="flex min-w-0 gap-2">
+        <div
+          className={cn(
+            "flex min-w-0 gap-2",
+            !stackedActionLayout && !hasTrailingControls && "pr-6",
+          )}
+        >
           {leadingIcon ? (
             <div
               className="flex h-lh w-4 shrink-0 items-center justify-center"
@@ -563,6 +577,8 @@ function Toasts({ position }: { position: ToastPosition }) {
             <Toast.Root
               className={cn(
                 "dropdown-glass absolute z-[calc(9999-var(--toast-index))] w-full overflow-visible select-none rounded-lg text-popover-foreground shadow-xl shadow-black/25 [transition:transform_.5s_cubic-bezier(.22,1,.36,1),opacity_.5s,height_.15s]",
+                toast.data?.expandableFitWidth &&
+                  "has-data-[slot=toast-expandable-panel]:w-max has-data-[slot=toast-expandable-panel]:min-w-full has-data-[slot=toast-expandable-panel]:max-w-[min(200%,calc(100vw-var(--toast-inset)*2))] data-[position*=center]:has-data-[slot=toast-expandable-panel]:left-1/2 data-[position*=center]:has-data-[slot=toast-expandable-panel]:right-auto data-[position*=center]:has-data-[slot=toast-expandable-panel]:-translate-x-1/2",
                 "data-[position*=right]:right-0 data-[position*=right]:left-auto",
                 "data-[position*=left]:right-auto data-[position*=left]:left-0",
                 "data-[position*=center]:right-0 data-[position*=center]:left-0",
@@ -575,9 +591,7 @@ function Toasts({ position }: { position: ToastPosition }) {
                   ? "not-data-expanded:[--toast-calc-height:var(--toast-frontmost-height)] data-expanded:[--toast-calc-height:max(var(--toast-frontmost-height,var(--toast-height)),var(--toast-height))]"
                   : "[--toast-calc-height:max(var(--toast-frontmost-height,var(--toast-height)),var(--toast-height))]",
                 "[--toast-gap:--spacing(3)] [--toast-peek:--spacing(3)] [--toast-scale:calc(max(0,1-(var(--toast-index)*.1)))] [--toast-shrink:calc(1-var(--toast-scale))]",
-                // Root height: never `min-h-(--toast-height)` — Base UI measures height by briefly forcing
-                // `height: auto` on this node; an old `min-height` from `--toast-height` blocks shrinking,
-                // so `recalculateHeight` keeps the inflated value after an expandable closes.
+                // Base UI measures with height:auto; --toast-height as min-height would prevent shrinking.
                 visibleIndex > 0
                   ? "not-data-expanded:h-(--toast-calc-height) data-expanded:h-auto"
                   : "h-auto",
@@ -610,17 +624,26 @@ function Toasts({ position }: { position: ToastPosition }) {
                   "--toast-offset-y": `${offsetY}px`,
                 } as CSSProperties
               }
+              onKeyDown={(event) => {
+                if (toast.data?.explicitDismissOnly && event.key === "Escape") {
+                  event.preventBaseUIHandler();
+                }
+              }}
               swipeDirection={
-                position.includes("center")
-                  ? [isTop ? "up" : "down"]
-                  : position.includes("left")
-                    ? ["left", isTop ? "up" : "down"]
-                    : ["right", isTop ? "up" : "down"]
+                toast.data?.explicitDismissOnly
+                  ? []
+                  : position.includes("center")
+                    ? [isTop ? "up" : "down"]
+                    : position.includes("left")
+                      ? ["left", isTop ? "up" : "down"]
+                      : ["right", isTop ? "up" : "down"]
               }
               toast={toast}
             >
               <ThreadToastVisibleAutoDismiss
-                dismissAfterVisibleMs={toast.data?.dismissAfterVisibleMs}
+                dismissAfterVisibleMs={
+                  toast.data?.explicitDismissOnly ? undefined : toast.data?.dismissAfterVisibleMs
+                }
                 toastId={toast.id}
               />
               <div className={toastCornerDismissClass}>
@@ -638,8 +661,8 @@ function Toasts({ position }: { position: ToastPosition }) {
               </div>
               <Toast.Content
                 className={cn(
-                  // `overflow-x: clip` avoids the CSS quirk where pairing `hidden` + `y: visible`
-                  // forces `y` to `auto`. Expandable detail panels can extend below without being cut off.
+                  // overflow-x:clip preserves visible vertical overflow; hidden would force overflow-y:auto
+                  // and clip detail panels.
                   "pointer-events-auto min-h-0 overflow-y-visible pl-3.5 text-sm transition-opacity duration-250 [overflow-x:clip] data-expanded:opacity-100",
                   stackedActionLayout
                     ? "flex flex-col gap-2 py-2.5 pr-3.5"
@@ -706,6 +729,12 @@ function AnchoredToasts() {
                     tooltipStyle ? "rounded-md" : "rounded-lg",
                   )}
                   data-slot="toast-popup"
+                  onKeyDown={(event) => {
+                    if (toast.data?.explicitDismissOnly && event.key === "Escape") {
+                      event.preventBaseUIHandler();
+                    }
+                  }}
+                  swipeDirection={toast.data?.explicitDismissOnly ? [] : undefined}
                   toast={toast}
                 >
                   {tooltipStyle ? (
@@ -762,7 +791,7 @@ function AnchoredToasts() {
   );
 }
 
-export { hiddenToastActionProps, stackedThreadToast } from "./toastHelpers";
+export { stackedThreadToast } from "./toastHelpers";
 export type { StackedThreadToastOptions } from "./toastHelpers";
 
 export {

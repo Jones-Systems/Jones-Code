@@ -1,0 +1,68 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "queued-steer-batch",
+  "jonesOwnedPaths": [
+    "apps/mobile/src/jones/queue/QueuedSteerBatchAction.tsx",
+    "apps/web/src/jones/queue/QueuedSteerBatch.browser.test.tsx",
+    "apps/web/src/jones/queue/QueuedSteerBatchAction.tsx",
+    "apps/web/src/jones/queue/useQueuedSteerBatch.ts",
+    "packages/client-runtime/src/jones/queue/commands.test.ts",
+    "packages/client-runtime/src/jones/queue/commands.ts",
+    "packages/client-runtime/src/jones/queue/queuedSteerBatch.test.ts",
+    "packages/client-runtime/src/jones/queue/queuedSteerBatch.ts",
+    "packages/shared/src/jones/queuedSteerBatch.test.ts",
+    "packages/shared/src/jones/queuedSteerBatch.ts"
+  ],
+  "hookPaths": ["packages/contracts/src/chatAttachment.ts"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/mobile/src/features/threads/ThreadQueueControl.tsx",
+      "to": "apps/mobile/src/jones/queue/QueuedSteerBatchAction.tsx"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/orchestration/QueuedSteerBatch.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "packages/shared/src/jones/queuedSteerBatch.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnControlService.ts",
+      "to": "packages/shared/src/jones/queuedSteerBatch.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadManagementService.ts",
+      "to": "packages/shared/src/jones/queuedSteerBatch.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadManagementService.ts",
+      "to": "apps/server/src/jones/orchestration/QueuedSteerBatch.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/QueuedRunsControl.tsx",
+      "to": "apps/web/src/jones/queue/QueuedSteerBatchAction.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/QueuedRunsControl.tsx",
+      "to": "apps/web/src/jones/queue/useQueuedSteerBatch.ts"
+    },
+    {
+      "from": "packages/client-runtime/src/operations/commands.ts",
+      "to": "packages/client-runtime/src/jones/queue/commands.ts"
+    },
+    {
+      "from": "packages/contracts/src/environment.ts",
+      "to": "packages/contracts/src/jones/queuedSteerBatch.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/queuedSteerBatch.ts"
+    },
+    {
+      "from": "packages/contracts/src/orchestrationV2.ts",
+      "to": "packages/contracts/src/jones/queuedSteerBatch.ts"
+    }
+  ]
+}

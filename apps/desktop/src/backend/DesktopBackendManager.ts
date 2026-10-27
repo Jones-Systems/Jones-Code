@@ -27,6 +27,7 @@ import {
   type DesktopTelemetryControlMessage as DesktopTelemetryControlMessageValue,
 } from "@t3tools/contracts";
 import { waitForHttpReady as waitForHttpReadyShared } from "@t3tools/shared/httpReadiness";
+import { SERVER_CHILD_SHUTDOWN_GRACE_MS } from "@t3tools/shared/jones/shutdownBudget";
 
 import {
   startJonesColdBackend,
@@ -50,9 +51,9 @@ const MAX_PREFLIGHT_FAILURE_ATTEMPTS = 5;
 const DEFAULT_BACKEND_READINESS_TIMEOUT = Duration.minutes(1);
 const DEFAULT_BACKEND_READINESS_INTERVAL = Duration.millis(100);
 const DEFAULT_BACKEND_READINESS_REQUEST_TIMEOUT = Duration.seconds(1);
-// A killed backend leaves its agents running, and a busy one needs a few
-// seconds to stop every provider session.
-const DEFAULT_BACKEND_TERMINATE_GRACE = Duration.seconds(5);
+// Allow server recovery and provider cleanup before escalation. Scope closure
+// still waits for the captured child to exit after the grace expires.
+const DEFAULT_BACKEND_TERMINATE_GRACE = Duration.millis(SERVER_CHILD_SHUTDOWN_GRACE_MS);
 const DEFAULT_BACKEND_OUTPUT_DRAIN_TIMEOUT = Duration.seconds(5);
 const BACKEND_READINESS_PATH = "/.well-known/t3/environment";
 const { logWarning: logBackendProcessWarning } =
@@ -78,9 +79,7 @@ export interface DesktopBackendStartConfig extends BackendProcessContext {
   readonly jonesDesktopOwner?: () => JonesNativeWriterAdmission;
   readonly args: ReadonlyArray<string>;
   readonly env: Record<string, string | undefined>;
-  // When true the spawner merges the desktop process.env on top of `env`;
-  // when false `env` is passed verbatim. WSL mode opts out so a leaking
-  // T3CODE_HOME can't pin the WSL backend to /mnt/c/...\.t3.
+  /** False passes env verbatim, preventing the Windows T3CODE_HOME from leaking into WSL. */
   readonly extendEnv: boolean;
   readonly bootstrap: DesktopBackendBootstrapValue;
   readonly bootstrapDelivery: DesktopBackendBootstrapDelivery;
@@ -309,11 +308,7 @@ export interface BackendInstanceSpec {
   readonly id: BackendInstanceId;
   readonly label: Effect.Effect<string>;
   readonly configResolve: Effect.Effect<DesktopBackendStartConfig, PlatformError.PlatformError>;
-  // Receives the *resolved* httpBaseUrl of the run that just became
-  // ready. The window service uses this to decide what URL to load
-  // (the WSL backend reports its distro IP, the Windows backend reports
-  // 127.0.0.1). Splitting this off from configResolve avoids races
-  // between "fired onReady" and "currentConfig already advanced".
+  /** Receives the ready run's resolved URL; reading current config could race a subsequent restart. */
   readonly onReady?: (httpBaseUrl: URL) => Effect.Effect<void>;
   readonly onShutdown?: () => Effect.Effect<void>;
   readonly onPreflightFailed?: (failure: PreflightFailure) => Effect.Effect<boolean>;
@@ -388,7 +383,7 @@ const closeRun = (
   );
 };
 
-export const waitForHttpReady = (
+const waitForHttpReady = (
   options: BackendProcessContext & { readonly timeout: Duration.Duration },
 ): Effect.Effect<void, BackendReadinessTimeoutError, HttpClient.HttpClient> => {
   const readinessUrl = new URL(BACKEND_READINESS_PATH, options.httpBaseUrl);
@@ -523,16 +518,12 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
     cwd: options.cwd,
     env: options.env,
     extendEnv: options.extendEnv,
-    // In Electron main, process.execPath points to the Electron binary.
-    // Run the child in Node mode so this backend process does not become a GUI app instance.
     stdin: options.bootstrapDelivery === "stdin" ? bootstrapStream : "ignore",
     stdout: options.captureOutput ? "pipe" : "inherit",
     stderr: options.captureOutput ? "pipe" : "inherit",
     killSignal: "SIGTERM",
     forceKillAfter: DEFAULT_BACKEND_TERMINATE_GRACE,
-    // wsl.exe drops additional file descriptors when forwarding to the Linux
-    // side, so the WSL spawn path delivers the bootstrap envelope via stdin
-    // (`--bootstrap-fd 0`) instead.
+    // wsl.exe drops extra file descriptors; deliver its bootstrap via stdin.
     ...(options.bootstrapDelivery === "fd3" ? { additionalFds } : {}),
   });
 
@@ -610,7 +601,7 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
             try: async () => {
               const status = await coldOwner.exit();
               if (status.code === null) throw new Error("Captured cold backend exited by signal.");
-              return status.code;
+              return ChildProcessSpawner.ExitCode(status.code);
             },
             catch: coldStreamError,
           }),
@@ -735,12 +726,8 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
         }),
     });
   }
-  // Probe readiness in a loop while the backend process is still alive instead
-  // of giving up after the first budget. A slow cold boot (the WSL bundle
-  // loading across /mnt/c, or a first launch right after an update) can exceed
-  // the initial readiness budget while the backend is about to come up moments
-  // later; a one-shot probe left the app stuck on "Connecting to WSL…" forever
-  // even though the backend kept running and became healthy.
+  // Retry readiness while the backend remains alive: WSL /mnt/c loading or first boot after update
+  // can exceed the initial budget. A single probe left Connecting to WSL stuck even after the backend became healthy.
   const probeReadiness = Effect.fn("desktop.backendProcess.probeReadiness")(() =>
     waitForHttpReady({
       executablePath: options.executablePath,
@@ -761,8 +748,22 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
   yield* probeReadiness().pipe(Effect.repeat({ while: (ready) => !ready }), Effect.forkScoped);
 
   const exit = yield* handle.exitCode.pipe(
-    Effect.mapError(
-      (cause) =>
+    Effect.map((exitCode) => ({
+      code: Option.some(exitCode),
+      reason: `code=${exitCode}`,
+    })),
+    Effect.catch((cause) => {
+      // Effect's Node spawner exposes signal exits only through this cause message.
+      const signal =
+        cause.cause instanceof Error
+          ? /^Process interrupted due to receipt of signal: '(SIG[A-Z0-9]+)'$/.exec(
+              cause.cause.message,
+            )?.[1]
+          : undefined;
+      if (signal !== undefined) {
+        return Effect.succeed({ code: Option.none(), reason: `killed by ${signal}` });
+      }
+      return Effect.fail(
         new BackendProcessExitStatusError({
           executablePath: options.executablePath,
           entryPath: options.entryPath,
@@ -771,7 +772,8 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
           pid: Number(handle.pid),
           cause,
         }),
-    ),
+      );
+    }),
     Effect.exit,
   );
   if (desktopOwner !== undefined) yield* desktopOwner.close;
@@ -798,11 +800,7 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
   if (Exit.isFailure(exit)) {
     return yield* Effect.failCause(exit.cause);
   }
-  const exitCode = exit.value;
-  return {
-    code: Option.some(exitCode),
-    reason: `code=${exitCode}`,
-  } satisfies BackendProcessExit;
+  return exit.value;
 });
 
 export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
@@ -1389,20 +1387,25 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
     });
   });
 
-  const waitForReady = (timeout: Duration.Duration): Effect.Effect<boolean> =>
-    Effect.gen(function* () {
+  const waitForReady: (timeout: Duration.Duration) => Effect.Effect<boolean> = Effect.fn(
+    "DesktopBackendManager.waitForReady",
+  )(
+    function* (_timeout: Duration.Duration) {
       const current = yield* Ref.get(state);
       if (!current.desiredRunning) return { done: true, ready: false };
       return current.ready ? { done: true, ready: true } : { done: false, ready: false };
-    }).pipe(
-      Effect.repeat({
-        until: (status) => status.done,
-        schedule: Schedule.spaced(Duration.millis(100)),
-      }),
-      Effect.map((status) => status.ready),
-      Effect.timeoutOption(timeout),
-      Effect.map(Option.getOrElse(() => false)),
-    );
+    },
+    (effect, timeout) =>
+      effect.pipe(
+        Effect.repeat({
+          until: (status) => status.done,
+          schedule: Schedule.spaced(Duration.millis(100)),
+        }),
+        Effect.map((status) => status.ready),
+        Effect.timeoutOption(timeout),
+        Effect.map(Option.getOrElse(() => false)),
+      ),
+  );
 
   yield* Effect.addFinalizer(() => stop());
 

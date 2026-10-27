@@ -7,6 +7,7 @@ export function qualifiedServerCapability(input: {
   readonly launcherManaged: boolean;
   readonly qualifiedStaging: boolean;
   readonly qualifiedUpdates: boolean;
+  readonly qualifiedRetirement?: boolean;
   readonly hasCurrentVersion: boolean;
   readonly hasStage: boolean;
   readonly hasInstall: boolean;
@@ -27,6 +28,11 @@ export function qualifiedServerCapability(input: {
     check,
     download,
     install,
+    // Exact-source staging reuses the download guards; older clients read absence as unsupported.
+    ...(download ? { exactSource: true } : {}),
+    ...(download && input.qualifiedRetirement === true && input.hasEnvironment
+      ? { replaceStaged: true }
+      : {}),
     ...(download && install
       ? {}
       : {

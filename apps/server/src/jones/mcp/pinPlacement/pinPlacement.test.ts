@@ -18,6 +18,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
+import * as ThreadMetadataReads from "../../orchestration/threadMetadataReads.ts";
 import * as McpInvocationContext from "../../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../../mcp/McpToolAccess.ts";
 import * as ThreadHandlers from "../../../mcp/toolkits/thread/handlers.ts";
@@ -120,23 +121,21 @@ const makeEnvironment = (
     NodeCrypto.layer,
     Layer.mock(ThreadSearch.ThreadSearch)({}),
     Layer.mock(ScheduledTasks.ScheduledTaskService)({}),
+    Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({
+      list: (query) =>
+        Effect.sync(() => {
+          expect(query).toEqual({ location: "active" });
+          return {
+            snapshotSequence: commands.length,
+            threads: [...shells.values()].filter(
+              (thread) => thread.archivedAt === null && thread.deletedAt === null,
+            ),
+          };
+        }),
+    }),
     Layer.mock(ThreadManagement.ThreadManagementService)({
       getThreadShell: (id) => Effect.succeed(shells.get(id) ?? null),
       getProjectThreadRecords: ({ threadId }) => Effect.succeed(records(threadId)),
-      getShellSnapshot: (options) =>
-        Effect.sync(() => {
-          const all = [...shells.values()];
-          const archived = all.filter((thread) => thread.archivedAt !== null);
-          return {
-            schemaVersion: 1,
-            snapshotSequence: commands.length,
-            threads:
-              options?.location === "archive"
-                ? []
-                : all.filter((thread) => thread.archivedAt === null),
-            archivedThreads: options?.location === "archive" ? archived : [],
-          };
-        }),
       dispatch: (command) =>
         Effect.sync(() => {
           commands.push(command);
@@ -408,6 +407,63 @@ describe("t3_thread_organize placement", () => {
       });
       expect(rewriting.isFailure).toBe(true);
       expect(rewriting.result).toMatchObject({ code: "runtime_mode_escalation_denied" });
+      expect(env.commands).toEqual([]);
+    }),
+  );
+
+  it.effect("restores an exact recorded key with one write and no neighbor rewrites", () =>
+    Effect.gen(function* () {
+      const env = makeEnvironment([
+        shell("x", { pinOrderKey: "f" }),
+        shell("keyless", { pinned: true }),
+        shell("target"),
+      ]);
+      const result = yield* env.invoke({
+        action: "pin",
+        threadId: "target",
+        placement: { position: "exact", orderKey: "a0V" },
+      });
+      expect(result.isFailure).toBe(false);
+      expect(env.commands).toEqual([
+        { type: "thread.pin", commandId: expect.any(String), threadId: "target", orderKey: "a0V" },
+      ]);
+      expect(result.result).toEqual({ sequence: 1, pinOrderKey: "a0V", reorderedThreads: [] });
+      expect(env.pinnedOrder()).toEqual(["target", "x", "keyless"]);
+    }),
+  );
+
+  it.effect("moves an already pinned target to an exact key with a reorder", () =>
+    Effect.gen(function* () {
+      const env = makeEnvironment([
+        shell("x", { pinOrderKey: "f" }),
+        shell("target", { pinOrderKey: "c" }),
+      ]);
+      yield* env.invoke({
+        action: "pin",
+        threadId: "target",
+        placement: { position: "exact", orderKey: "t" },
+      });
+      expect(env.commands).toEqual([
+        expect.objectContaining({ type: "thread.pin.reorder", threadId: "target", orderKey: "t" }),
+      ]);
+      expect(env.pinnedOrder()).toEqual(["x", "target"]);
+    }),
+  );
+
+  it.effect("refuses an exact key held by another pinned thread, or a malformed request", () =>
+    Effect.gen(function* () {
+      const env = makeEnvironment([shell("holder", { pinOrderKey: "m" }), shell("target")]);
+      const cases: ReadonlyArray<Record<string, unknown>> = [
+        { position: "exact", orderKey: "m" },
+        { position: "exact" },
+        { position: "top", orderKey: "m" },
+        { position: "exact", orderKey: "q", anchorThreadId: "holder" },
+      ];
+      for (const placement of cases) {
+        const result = yield* env.invoke({ action: "pin", threadId: "target", placement });
+        expect(result.isFailure, JSON.stringify(placement)).toBe(true);
+        expect(result.result, JSON.stringify(placement)).toMatchObject({ code: "invalid_request" });
+      }
       expect(env.commands).toEqual([]);
     }),
   );

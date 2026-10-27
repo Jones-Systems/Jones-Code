@@ -1,5 +1,4 @@
 import * as Cause from "effect/Cause";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -37,6 +36,7 @@ import * as DesktopSnapShot from "../snapShot/DesktopSnapShot.ts";
 import * as DesktopWslBackend from "../wsl/DesktopWslBackend.ts";
 import * as DesktopRendererHistory from "../telemetry/DesktopRendererHistory.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { prepareLocalBackendsForQuit } from "../jones/updates/jonesQuitPreparation.ts";
 
 const DEFAULT_DESKTOP_BACKEND_PORT = 3773;
 const MAX_TCP_PORT = 65_535;
@@ -152,123 +152,117 @@ export const stopAllPoolInstances = Effect.fn("desktop.app.stopAllPoolInstances"
   function* (): Effect.fn.Return<void, never, DesktopBackendPool.DesktopBackendPool> {
     const pool = yield* DesktopBackendPool.DesktopBackendPool;
     const instances = yield* pool.list;
-    yield* Effect.forEach(
-      instances,
-      (instance) => instance.stop({ timeout: Duration.seconds(5) }),
-      { concurrency: "unbounded" },
-    );
+    yield* Effect.forEach(instances, (instance) => instance.stop(), { concurrency: "unbounded" });
   },
 );
 
-export const bootstrapWithIpcRegistration = <E, R>(registerIpc: Effect.Effect<void, E, R>) =>
-  Effect.gen(function* () {
-    const state = yield* DesktopState.DesktopState;
-    const environment = yield* DesktopEnvironment.DesktopEnvironment;
-    const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
-    const desktopWindow = yield* DesktopWindow.DesktopWindow;
-    const snapShot = yield* DesktopSnapShot.DesktopSnapShot;
-    const appActivation = yield* DesktopAppActivation.DesktopAppActivation;
-    yield* logBootstrapInfo("bootstrap start");
+export const prepareAndStopAllPoolInstances = Effect.fn(
+  "desktop.app.prepareAndStopAllPoolInstances",
+)(() => prepareLocalBackendsForQuit().pipe(Effect.ensuring(stopAllPoolInstances())));
 
-    yield* CompanionConfig.prepareStartup;
-    const settings = yield* desktopSettings.get;
-    // The renderer is served from the bundled client (or Vite in development)
-    // rather than through the local backend, so the window can open without one.
-    const electronProtocol = yield* ElectronProtocol.ElectronProtocol;
-    yield* electronProtocol.registerDesktopProtocol({
-      scheme: ElectronProtocol.getDesktopScheme(environment.isDevelopment),
-      ...(environment.isDevelopment
-        ? { targetOrigin: Option.getOrThrow(environment.devServerUrl) }
-        : { assetDirectory: environment.clientAssetsDir }),
-      clerkFrontendApiHostname: DesktopClerk.desktopClerkFrontendApiHostname,
-    });
-    yield* registerIpc;
-    yield* logBootstrapInfo("bootstrap ipc handlers registered");
-    // Before any window: the preload merges these items before the app reads storage.
-    yield* (yield* DesktopLegacyLocalStorage.DesktopLegacyLocalStorage).load(
-      yield* (yield* DesktopAppIdentity.DesktopAppIdentity).resolveUserDataPath,
-    );
+export const bootstrapWithIpcRegistration = Effect.fn("desktop.bootstrap")(function* <E, R>(
+  registerIpc: Effect.Effect<void, E, R>,
+) {
+  const state = yield* DesktopState.DesktopState;
+  const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
+  const desktopWindow = yield* DesktopWindow.DesktopWindow;
+  const snapShot = yield* DesktopSnapShot.DesktopSnapShot;
+  const appActivation = yield* DesktopAppActivation.DesktopAppActivation;
+  yield* logBootstrapInfo("bootstrap start");
 
-    yield* snapShot.initialize;
+  yield* CompanionConfig.prepareStartup;
+  const settings = yield* desktopSettings.get;
+  // The renderer is served from the bundled client (or Vite in development)
+  // rather than through the local backend, so the window can open without one.
+  const electronProtocol = yield* ElectronProtocol.ElectronProtocol;
+  yield* electronProtocol.registerDesktopProtocol({
+    scheme: ElectronProtocol.getDesktopScheme(environment.isDevelopment),
+    ...(environment.isDevelopment
+      ? { targetOrigin: Option.getOrThrow(environment.devServerUrl) }
+      : { assetDirectory: environment.clientAssetsDir }),
+    clerkFrontendApiHostname: DesktopClerk.desktopClerkFrontendApiHostname,
+  });
+  yield* registerIpc;
+  yield* logBootstrapInfo("bootstrap ipc handlers registered");
+  // Before any window: the preload merges these items before the app reads storage.
+  yield* (yield* DesktopLegacyLocalStorage.DesktopLegacyLocalStorage).load(
+    yield* (yield* DesktopAppIdentity.DesktopAppIdentity).resolveUserDataPath,
+  );
 
-    if (!settings.localEnvironmentEnabled) {
-      yield* logBootstrapInfo("bootstrap skipping local environment (disabled in settings)");
-      if (!(yield* Ref.get(state.quitting))) {
-        yield* desktopWindow.createMainIfBackendReady;
-      }
-      return;
-    }
+  yield* snapShot.initialize;
 
-    const pool = yield* DesktopBackendPool.DesktopBackendPool;
-    const primaryBackend = yield* pool.primary;
-    const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
-    const wslBackend = yield* DesktopWslBackend.DesktopWslBackend;
-
-    if (environment.isDevelopment && Option.isNone(environment.configuredBackendPort)) {
-      return yield* new DesktopDevelopmentBackendPortRequiredError();
-    }
-
-    const backendPortSelection = yield* resolveDesktopBackendPort(
-      environment.configuredBackendPort,
-    );
-    const backendPort = backendPortSelection.port;
-    yield* logBootstrapInfo(
-      backendPortSelection.selectedByScan
-        ? "selected backend port via sequential scan"
-        : "using configured backend port",
-      {
-        port: backendPort,
-        ...(backendPortSelection.selectedByScan ? { startPort: DEFAULT_DESKTOP_BACKEND_PORT } : {}),
-      },
-    );
-
-    if (settings.serverExposureMode !== environment.defaultDesktopSettings.serverExposureMode) {
-      yield* logBootstrapInfo("bootstrap restoring persisted server exposure mode", {
-        mode: settings.serverExposureMode,
-      });
-    }
-    const serverExposureState = yield* serverExposure.configureFromSettings({ port: backendPort });
-    const backendConfig = yield* serverExposure.backendConfig;
-    yield* logBootstrapInfo("bootstrap resolved backend endpoint", {
-      baseUrl: backendConfig.httpBaseUrl.href,
-    });
-    if (serverExposureState.endpointUrl) {
-      yield* logBootstrapInfo("bootstrap enabled network access", {
-        endpointUrl: serverExposureState.endpointUrl,
-      });
-    } else if (
-      settings.serverExposureMode === "network-accessible" &&
-      serverExposureState.mode === "local-only"
-    ) {
-      yield* logBootstrapWarning(
-        "bootstrap fell back to local-only because no advertised network host was available",
-      );
-    }
-
+  if (!settings.localEnvironmentEnabled) {
+    yield* logBootstrapInfo("bootstrap skipping local environment (disabled in settings)");
     if (!(yield* Ref.get(state.quitting))) {
-      // The main window waits for the primary backend. In wsl-only mode that is
-      // the WSL backend, which can be slow to cold-boot — show a "Connecting to
-      // WSL" splash immediately so the app feels responsive instead of presenting
-      // no window until WSL is ready. (Dual mode opens fast off the Windows
-      // primary, so no splash there.)
-      if (settings.wslOnly === true && settings.wslBackendEnabled === true) {
-        yield* desktopWindow.showConnectingSplash;
-      }
-      yield* primaryBackend.start;
-      yield* logBootstrapInfo("bootstrap backend start requested");
-      yield* appActivation.start.pipe(
-        Effect.tap(() => logBootstrapInfo("desktop app control socket ready")),
-        Effect.catch((error) =>
-          logStartupError("desktop app control socket unavailable", { error }),
-        ),
-      );
-      // Bring up the WSL backend if the user previously enabled it. The
-      // primary is already starting; reconcile fires off the WSL register
-      // in parallel rather than blocking primary readiness on a possibly
-      // slow first wsl.exe spawn.
-      yield* Effect.forkScoped(wslBackend.reconcile);
+      yield* desktopWindow.createMainIfBackendReady;
     }
-  }).pipe(Effect.withSpan("desktop.bootstrap"));
+    return;
+  }
+
+  const pool = yield* DesktopBackendPool.DesktopBackendPool;
+  const primaryBackend = yield* pool.primary;
+  const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
+  const wslBackend = yield* DesktopWslBackend.DesktopWslBackend;
+
+  if (environment.isDevelopment && Option.isNone(environment.configuredBackendPort)) {
+    return yield* new DesktopDevelopmentBackendPortRequiredError();
+  }
+
+  const backendPortSelection = yield* resolveDesktopBackendPort(environment.configuredBackendPort);
+  const backendPort = backendPortSelection.port;
+  yield* logBootstrapInfo(
+    backendPortSelection.selectedByScan
+      ? "selected backend port via sequential scan"
+      : "using configured backend port",
+    {
+      port: backendPort,
+      ...(backendPortSelection.selectedByScan ? { startPort: DEFAULT_DESKTOP_BACKEND_PORT } : {}),
+    },
+  );
+
+  if (settings.serverExposureMode !== environment.defaultDesktopSettings.serverExposureMode) {
+    yield* logBootstrapInfo("bootstrap restoring persisted server exposure mode", {
+      mode: settings.serverExposureMode,
+    });
+  }
+  const serverExposureState = yield* serverExposure.configureFromSettings({ port: backendPort });
+  const backendConfig = yield* serverExposure.backendConfig;
+  yield* logBootstrapInfo("bootstrap resolved backend endpoint", {
+    baseUrl: backendConfig.httpBaseUrl.href,
+  });
+  if (serverExposureState.endpointUrl) {
+    yield* logBootstrapInfo("bootstrap enabled network access", {
+      endpointUrl: serverExposureState.endpointUrl,
+    });
+  } else if (
+    settings.serverExposureMode === "network-accessible" &&
+    serverExposureState.mode === "local-only"
+  ) {
+    yield* logBootstrapWarning(
+      "bootstrap fell back to local-only because no advertised network host was available",
+    );
+  }
+
+  if (!(yield* Ref.get(state.quitting))) {
+    // The main window awaits its primary backend. Show a Connecting to WSL splash immediately
+    // in wsl-only mode because cold boot can be slow. Dual mode opens from the Windows primary without a splash.
+    if (settings.wslOnly === true && settings.wslBackendEnabled === true) {
+      yield* desktopWindow.showConnectingSplash;
+    }
+    yield* primaryBackend.start;
+    yield* logBootstrapInfo("bootstrap backend start requested");
+    yield* appActivation.start.pipe(
+      Effect.tap(() => logBootstrapInfo("desktop app control socket ready")),
+      Effect.catch((error) => logStartupError("desktop app control socket unavailable", { error })),
+    );
+    // Bring up the WSL backend if the user previously enabled it. The
+    // primary is already starting; reconcile fires off the WSL register
+    // in parallel rather than blocking primary readiness on a possibly
+    // slow first wsl.exe spawn.
+    yield* Effect.forkScoped(wslBackend.reconcile);
+  }
+});
 
 const bootstrap = bootstrapWithIpcRegistration(installDesktopIpcHandlers());
 
@@ -359,12 +353,9 @@ const scopedProgram = Effect.scoped(
     const rendererHistory = yield* DesktopRendererHistory.DesktopRendererHistory;
 
     yield* Effect.addFinalizer(() =>
-      // Stop every backend in the pool, not just the primary. The
-      // electronApp.quit() path can race ahead of the layer-scope
-      // cascade, so leaving the WSL instance for its parent scope
-      // finalizer means it gets hard-killed by the OS instead of
-      // receiving SIGTERM + grace.
-      stopAllPoolInstances().pipe(
+      // Stop every pooled backend before electronApp.quit can outrun layer-scope cleanup.
+      // Leaving WSL to its scope finalizer risks an OS hard kill instead of SIGTERM plus grace.
+      prepareAndStopAllPoolInstances().pipe(
         Effect.ensuring(rendererHistory.shutdown),
         Effect.ensuring(shutdown.markComplete),
       ),

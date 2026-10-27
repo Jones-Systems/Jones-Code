@@ -1,3 +1,5 @@
+import { ThreadActivitySettings } from "../threadStatusFilter/ThreadActivitySettings";
+import { PresentationOrderSettings } from "../presentationOrder/PresentationOrderSettings";
 import { persistClientSettingsPatch, useClientSettings } from "../../hooks/useSettings";
 import {
   SettingsPageContainer,
@@ -47,6 +49,8 @@ export function PromptsSettings() {
           }
         />
       </SettingsSection>
+      <ThreadActivitySettings />
+      <PresentationOrderSettings />
     </SettingsPageContainer>
   );
 }

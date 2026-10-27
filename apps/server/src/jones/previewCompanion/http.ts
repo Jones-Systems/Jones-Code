@@ -24,16 +24,15 @@ export const previewCompanionHttpApiLayer = HttpApiBuilder.group(
   Effect.fnUntraced(function* (handlers) {
     const registry = yield* CompanionHostRegistry.CompanionHostRegistry;
     const selection = yield* RenderHostSelection.RenderHostSelection;
-    const authorize = (write: boolean) =>
-      Effect.gen(function* () {
-        const principal = yield* requireEnvironmentScope(AuthOrchestrationReadScope);
-        if (principal.subject === "mcp-client")
-          return yield* failEnvironmentScopeRequired(AuthPreviewOperateScope);
-        if (write) yield* requireEnvironmentScope(AuthPreviewOperateScope);
-        yield* HttpEffect.appendPreResponseHandler((_request, response) =>
-          Effect.succeed(HttpServerResponse.setHeader(response, "cache-control", "no-store")),
-        );
-      });
+    const authorize = Effect.fn("http.authorize")(function* (write: boolean) {
+      const principal = yield* requireEnvironmentScope(AuthOrchestrationReadScope);
+      if (principal.subject === "mcp-client")
+        return yield* failEnvironmentScopeRequired(AuthPreviewOperateScope);
+      if (write) yield* requireEnvironmentScope(AuthPreviewOperateScope);
+      yield* HttpEffect.appendPreResponseHandler((_request, response) =>
+        Effect.succeed(HttpServerResponse.setHeader(response, "cache-control", "no-store")),
+      );
+    });
     return handlers
       .handle("hosts", () =>
         Effect.gen(function* () {

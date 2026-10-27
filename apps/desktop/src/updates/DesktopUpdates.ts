@@ -15,6 +15,7 @@ import {
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   JonesDesktopUpdateController,
+  jonesNativeProcessRoles,
   type JonesDesktopDownloadSelection,
   type JonesDesktopDownloadResult,
 } from "../jones/updates/JonesDesktopUpdates.ts";
@@ -22,7 +23,7 @@ import {
   jonesNativeBootstrapCredential,
   prepareJonesNativeInstall,
 } from "../jones/updates/jonesNativePreparation.ts";
-import { runNativeCommand } from "../jones/updates/jonesMacStaging.ts";
+import { createJonesDesktopPreparation } from "../jones/updates/desktopPreparationRuntime.ts";
 import { errorTag } from "@t3tools/shared/observability";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -82,9 +83,7 @@ type AppUpdateYmlConfig = typeof AppUpdateYmlConfig.Type;
 
 const UpdateInfo = Schema.Struct({
   version: Schema.String,
-  // Left unvalidated on purpose: a malformed release-notes payload must never
-  // fail the decode and block the update state transition. The shape is
-  // validated defensively in normalizeDesktopUpdateReleaseNotes.
+  // Malformed notes must not block update-state decoding; normalizeDesktopUpdateReleaseNotes validates separately.
   releaseNotes: Schema.optional(Schema.Unknown),
 });
 
@@ -211,6 +210,7 @@ export class DesktopUpdates extends Context.Service<
     ) => Effect.Effect<JonesDesktopDownloadResult & { readonly state: DesktopUpdateState }>;
     readonly install: Effect.Effect<DesktopUpdateActionResult>;
     readonly discardStaged?: (handle: string) => Effect.Effect<DesktopUpdateActionResult>;
+    readonly setBackgroundPreparation?: (enabled: boolean) => Effect.Effect<DesktopUpdateState>;
     readonly installStaged?: (
       handle: string,
       campaignId?: string,
@@ -301,13 +301,15 @@ function parseAppUpdateYml(raw: string): Effect.Effect<Option.Option<AppUpdateYm
 
 function createBaseUpdateState(
   channel: DesktopUpdateChannel,
-  enabled: boolean,
+  disabledReason: Option.Option<string>,
   environment: DesktopEnvironment.DesktopEnvironment["Service"],
 ): DesktopUpdateState {
+  const enabled = Option.isNone(disabledReason);
   return {
     ...createInitialDesktopUpdateState(environment.appVersion, environment.runtimeInfo, channel),
     enabled,
     status: enabled ? "idle" : "disabled",
+    message: Option.getOrNull(disabledReason),
   };
 }
 
@@ -361,7 +363,7 @@ function isArm64HostRunningIntelBuild(runtimeInfo: DesktopRuntimeInfo): boolean 
   return runtimeInfo.hostArch === "arm64" && runtimeInfo.appArch === "x64";
 }
 
-/** @public Service construction is part of the canonical Effect module API. */
+/** @public */
 export const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const electronWindow = yield* ElectronWindow.ElectronWindow;
@@ -382,6 +384,9 @@ export const make = Effect.gen(function* () {
 
   const appUpdateYmlConfigRef = yield* Ref.make<Option.Option<AppUpdateYmlConfig>>(Option.none());
   const activeUpdateActionRef = yield* Ref.make<Option.Option<UpdateAction>>(Option.none());
+  const installRunningBackendsRef = yield* Ref.make<
+    ReadonlyArray<DesktopBackendPool.DesktopBackendInstance>
+  >([]);
   const finishedUpdateActions = yield* PubSub.unbounded<UpdateAction>();
   const updaterConfiguredRef = yield* Ref.make(false);
   const lastLoggedDownloadMilestoneRef = yield* Ref.make(-1);
@@ -395,8 +400,7 @@ export const make = Effect.gen(function* () {
   );
 
   const stateChanges = yield* PubSub.sliding<DesktopUpdateState>(16);
-  // Makes ref writes + publishes atomic against subscribe, so a snapshot
-  // never overlaps with the first change a subscriber receives.
+  // Serialize writes and publishes against subscription so snapshots cannot overlap the first change.
   const stateMutex = yield* Semaphore.make(1);
 
   const emitState = Ref.get(updateStateRef).pipe(
@@ -434,7 +438,13 @@ export const make = Effect.gen(function* () {
     const executablePath = yield* HostProcess.ExecutablePath;
     const profile = yield* DesktopUserData.resolveUserDataPath(environment);
     const fleet = createDesktopFleetStore({ home: environment.baseDir, profile });
+    const preparation = createJonesDesktopPreparation({
+      bundleDirectory: environment.dirname,
+      stateDirectory: environment.stateDir,
+      platform: environment.platform,
+    });
     const controller = new JonesDesktopUpdateController({
+      ...preparation.controllerOptions,
       home: environment.baseDir,
       appRoot: environment.appRoot,
       appPath: environment.path.resolve(environment.resourcesPath, "../.."),
@@ -467,26 +477,12 @@ export const make = Effect.gen(function* () {
       },
       processProofs: async () => {
         const instances = await Effect.runPromiseWith(context)(pool.list);
-        const pids = [process.pid];
+        const pids: number[] = [];
         for (const instance of instances) {
           const snapshot = await Effect.runPromiseWith(context)(instance.snapshot);
           if (Option.isSome(snapshot.activePid)) pids.push(snapshot.activePid.value);
         }
-        return Promise.all(
-          pids.map(async (pid) => ({
-            pid,
-            identity: (
-              await runNativeCommand("/bin/ps", [
-                "-p",
-                String(pid),
-                "-o",
-                "lstart=",
-                "-o",
-                "command=",
-              ])
-            ).trim(),
-          })),
-        );
+        return jonesNativeProcessRoles(process.pid, pids);
       },
       listener: async () => {
         const primary = await Effect.runPromiseWith(context)(pool.primary);
@@ -495,9 +491,10 @@ export const make = Effect.gen(function* () {
         return backend.value.httpBaseUrl.origin;
       },
     });
-    const check = Effect.promise(() => controller.check());
+    const background = preparation.attach(controller);
+    const check = Effect.promise(() => background.check());
     const install = (handle?: string, campaignId?: string) =>
-      Effect.promise(() => controller.install(handle, campaignId)).pipe(
+      Effect.promise(() => background.track(() => controller.install(handle, campaignId))).pipe(
         Effect.map((result) => ({ ...result, state: controller.state })),
       );
     return DesktopUpdates.of({
@@ -522,7 +519,9 @@ export const make = Effect.gen(function* () {
         ),
       ),
       configure: Effect.gen(function* () {
+        yield* Effect.addFinalizer(() => Effect.promise(() => preparation.close()));
         yield* Effect.promise(() => controller.configure());
+        yield* Effect.promise(() => background.start());
         yield* Effect.sleep(AUTO_UPDATE_STARTUP_DELAY).pipe(
           Effect.andThen(check),
           Effect.asVoid,
@@ -537,19 +536,23 @@ export const make = Effect.gen(function* () {
       }),
       setChannel: () => Ref.get(updateStateRef),
       check: () => check.pipe(Effect.map((checked) => ({ checked, state: controller.state }))),
-      download: Effect.promise(() => controller.download()).pipe(
+      download: Effect.promise(() => background.track(() => controller.download())).pipe(
         Effect.map((result) => ({ ...result, state: controller.state })),
       ),
       downloadSelected: (selection) =>
-        Effect.promise(() => controller.download(selection)).pipe(
+        Effect.promise(() => background.track(() => controller.download(selection))).pipe(
           Effect.map((result) => ({ ...result, state: controller.state })),
         ),
       install: install().pipe(
         Effect.map(({ accepted, completed, state }) => ({ accepted, completed, state })),
       ),
       discardStaged: (handle) =>
-        Effect.promise(() => controller.discard(handle)).pipe(
+        Effect.promise(() => background.discard(handle)).pipe(
           Effect.map((result) => ({ ...result, state: controller.state })),
+        ),
+      setBackgroundPreparation: (enabled) =>
+        Effect.promise(() => background.setEnabled(enabled)).pipe(
+          Effect.map(() => controller.state),
         ),
       fleetUpdates: (request) => Effect.promise(() => fleet.request(request)),
       installStaged: (handle, campaignId) =>
@@ -578,8 +581,7 @@ export const make = Effect.gen(function* () {
     ),
   );
 
-  // The .deb carries electron-builder's resources/package-type marker.
-  // electron-updater reads the same file and installs updates with dpkg.
+  // electron-updater uses this marker to install .deb updates with dpkg.
   const isDebPackage =
     environment.platform === "linux" && environment.isPackaged
       ? yield* fileSystem
@@ -648,8 +650,6 @@ export const make = Effect.gen(function* () {
       fullChangelog: allowsPrerelease,
     });
   });
-
-  const shouldEnableAutoUpdates = resolveDisabledReason.pipe(Effect.map(Option.isNone));
 
   const checkForUpdates = Effect.fn("desktop.updates.checkForUpdates")(function* (
     reason: string,
@@ -778,8 +778,7 @@ export const make = Effect.gen(function* () {
       ),
     );
 
-  // A failed or interrupted install brings no updated backend, so a later
-  // quit must release the tunnel.
+  // Failed or interrupted installs leave no replacement backend; later quits must release the tunnel.
   const removeUpdateRestartMarker = fileSystem
     .remove(updateRestartMarkerPath, { force: true })
     .pipe(Effect.ignore);
@@ -812,10 +811,10 @@ export const make = Effect.gen(function* () {
     ),
   );
 
-  const baseUpdateState = (channel: DesktopUpdateChannel, enabled: boolean) =>
+  const baseUpdateState = (channel: DesktopUpdateChannel, disabledReason: Option.Option<string>) =>
     Ref.get(notAppliedVersionRef).pipe(
       Effect.map((notAppliedVersion) => ({
-        ...createBaseUpdateState(channel, enabled, environment),
+        ...createBaseUpdateState(channel, disabledReason, environment),
         ...Option.match(notAppliedVersion, {
           onNone: () => ({}),
           onSome: (version) => ({ notAppliedVersion: version }),
@@ -827,6 +826,7 @@ export const make = Effect.gen(function* () {
     [
       finishUpdateAction("install"),
       Ref.set(desktopState.quitting, false),
+      Ref.set(installRunningBackendsRef, []),
       removeUpdateRestartMarker,
       removeInstallRecord,
     ],
@@ -847,7 +847,10 @@ export const make = Effect.gen(function* () {
     yield* removeUpdateRestartMarker;
     yield* removeInstallRecord;
     yield* Effect.gen(function* () {
-      const instances = yield* pool.list;
+      const runningInstances = yield* Ref.getAndSet(installRunningBackendsRef, []);
+      const instances = (yield* pool.list).filter((instance) =>
+        runningInstances.includes(instance),
+      );
       const restartExit = yield* Effect.forEach(instances, (instance) => instance.start, {
         concurrency: "unbounded",
         discard: true,
@@ -913,22 +916,22 @@ export const make = Effect.gen(function* () {
         }
 
         yield* Ref.set(desktopState.quitting, true);
+        yield* Ref.set(installRunningBackendsRef, []);
 
         return yield* Effect.gen(function* () {
           yield* writeUpdateRestartMarker;
           const { downloadedVersion } = yield* Ref.get(updateStateRef);
           if (downloadedVersion !== null) yield* writeInstallRecord(downloadedVersion);
-          // Stop every backend in the pool, not just the primary. With parallel
-          // WSL + Windows backends, leaving the WSL instance up means
-          // quitAndInstall's app.quit() exits before the pool's scope cascade
-          // has a chance to run its stop finalizer, so the WSL child gets
-          // hard-killed by the OS instead of receiving SIGTERM + grace.
+          // Stop pooled backends before quitAndInstall can outrun their scope finalizers.
           const instances = yield* pool.list;
-          yield* Effect.forEach(
-            instances,
-            (instance) => instance.stop({ timeout: Duration.seconds(5) }),
-            { concurrency: "unbounded" },
+          // stop clears desiredRunning, so retain the recovery set beforehand.
+          const runningInstances = yield* Effect.filter(instances, (instance) =>
+            instance.snapshot.pipe(Effect.map((snapshot) => snapshot.desiredRunning)),
           );
+          yield* Ref.set(installRunningBackendsRef, runningInstances);
+          yield* Effect.forEach(instances, (instance) => instance.stop(), {
+            concurrency: "unbounded",
+          });
           yield* electronUpdater.quitAndInstall({
             isSilent: true,
             isForceRunAfter: true,
@@ -1227,9 +1230,9 @@ export const make = Effect.gen(function* () {
       }
 
       const settings = yield* desktopSettings.get;
-      const enabled = yield* shouldEnableAutoUpdates;
-      yield* setState(yield* baseUpdateState(settings.updateChannel, enabled));
-      if (!enabled) {
+      const disabledReason = yield* resolveDisabledReason;
+      yield* setState(yield* baseUpdateState(settings.updateChannel, disabledReason));
+      if (Option.isSome(disabledReason)) {
         return;
       }
       yield* Ref.set(updaterConfiguredRef, true);
@@ -1298,10 +1301,10 @@ export const make = Effect.gen(function* () {
             ),
           );
 
-        const enabled = yield* shouldEnableAutoUpdates;
-        yield* setState(yield* baseUpdateState(nextChannel, enabled));
+        const disabledReason = yield* resolveDisabledReason;
+        yield* setState(yield* baseUpdateState(nextChannel, disabledReason));
 
-        if (!enabled || !(yield* Ref.get(updaterConfiguredRef))) {
+        if (Option.isSome(disabledReason) || !(yield* Ref.get(updaterConfiguredRef))) {
           return yield* Ref.get(updateStateRef);
         }
 

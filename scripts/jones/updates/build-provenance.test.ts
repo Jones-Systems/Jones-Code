@@ -4,9 +4,12 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as Schema from "effect/Schema";
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import * as Effect from "effect/Effect";
+import { afterEach, describe, expect } from "vite-plus/test";
+import { it } from "@effect/vitest";
 import {
   bundlesJonesNativeHelper,
+  decodeJonesDesktopBuildMetadata,
   JonesDesktopBuildMetadata,
   stampJonesBuildSource,
   verifyJonesPackagedStartupGate,
@@ -71,6 +74,34 @@ describe("Jones build provenance", () => {
     sha: "b".repeat(40),
     tree: "c".repeat(40),
   } as const;
+
+  it.effect.each([undefined, "2026-10-20T21:13:43Z", "invalid", null])(
+    "preserves only valid display time through staged metadata: %s",
+    (jonesBuildStartedAt) =>
+      Effect.gen(function* () {
+        for (const startupGateProtocol of [undefined, 1] as const) {
+          const metadata = {
+            jonesSource: source,
+            ...(startupGateProtocol === undefined ? {} : { startupGateProtocol }),
+            ...(jonesBuildStartedAt === undefined ? {} : { jonesBuildStartedAt }),
+          };
+          const decoded = yield* decodeJonesDesktopBuildMetadata(metadata);
+          expect(decoded).toEqual({
+            jonesSource: source,
+            ...(startupGateProtocol === undefined ? {} : { startupGateProtocol }),
+            ...(jonesBuildStartedAt === "2026-10-20T21:13:43Z" ? { jonesBuildStartedAt } : {}),
+          });
+          if (startupGateProtocol === 1) {
+            expect(() =>
+              verifyJonesPackagedStartupGate(
+                { ...metadata, version: "same-build" },
+                { version: "same-build", source },
+              ),
+            ).not.toThrow();
+          }
+        }
+      }),
+  );
 
   it("refuses packaged metadata that lost its implemented gate or source binding", () => {
     const metadata = {

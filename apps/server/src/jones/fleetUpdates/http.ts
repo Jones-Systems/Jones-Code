@@ -55,6 +55,13 @@ export const fleetUpdatesHttpApiLayer = HttpApiBuilder.group(
             yield* noStore;
             return yield* fleet.activate(payload);
           }),
+        )
+        .handle("leader", ({ payload }) =>
+          Effect.gen(function* () {
+            yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+            yield* noStore;
+            return yield* fleet.leader(payload);
+          }),
         );
     }),
 );

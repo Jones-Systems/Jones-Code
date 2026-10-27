@@ -1,17 +1,17 @@
-import type { MigrationPlan } from "../jones/updates/migrationPlan.ts";
-import type { OperationReconciliation } from "../jones/updates/launcherOperation.ts";
 // @effect-diagnostics nodeBuiltinImport:off
-// Qualified staging delegates to the Node-only launcher boundary and owns its scratch lifetime.
+// Qualified Install delegates to the Node-only launcher boundary; staging runs off-process.
 import {
   ServerSelfUpdateError,
   type ServerSelfUpdateCapability,
   type ServerSelfUpdateInput,
+  type ServerSelfUpdateProgressEvent,
   type ServerSelfUpdateProgressStage,
   type ServerSelfUpdateResult,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
@@ -23,25 +23,20 @@ import * as Schema from "effect/Schema";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Queue from "effect/Queue";
+import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/http";
 
 import { CLI_RELEASE_BASE_URL_ENV } from "@t3tools/shared/cliRelease";
-import {
-  validateJonesStagedArtifact,
-  type JonesStagedArtifact,
-} from "@t3tools/shared/jones/jonesActions";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import {
-  currentQualifiedRuntimeBinding,
-  qualifiedRuntimeArtifactFromJonesStage,
-  stageQualifiedRuntime,
-  verifyStagedQualifiedRuntime,
+  QUALIFIED_RECOVERY_PROTOCOL,
+  RECOVERED_QUALIFIED_STAGE_PROTOCOL,
   type StagedQualifiedRuntime,
 } from "../jones/cloud/qualifiedRuntime.ts";
-import { extractQualifiedLinuxArchive } from "../jones/cloud/qualifiedArchive.ts";
-import { extractQualifiedDarwinRuntime } from "../jones/cloud/qualifiedDarwinRuntime.ts";
 
+import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
 import * as DesktopAppUpdate from "../desktopUpdate/DesktopAppUpdate.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -49,7 +44,9 @@ import {
   ensurePinnedRuntimeInstalled,
   pinnedRuntimeCommand,
   PinnedRuntimeInstallError,
+  pinnedRuntimePaths,
   PinnedRuntimePreflightBlockedError,
+  prunePinnedRuntimes,
 } from "./pinnedRuntime.ts";
 import {
   decodeServicePreflightResult,
@@ -61,6 +58,16 @@ import { isExactServiceVersion, SERVICE_LAUNCHER_PROTOCOL } from "./serviceProto
 const PREFLIGHT_TIMEOUT = Duration.seconds(30);
 const isServiceLauncherClientError = Schema.is(ServiceLauncherClient.ServiceLauncherClientError);
 const decodePreflightJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
+
+/**
+ * Re-verifies a staged runtime against the active one before Install. Jones staging and this
+ * verification run in the off-process preparation worker, never on the serving event loop.
+ */
+export type QualifiedStageVerifier = (input: {
+  readonly stagedHandle: string;
+  readonly activeVersion: string;
+  readonly signal: AbortSignal;
+}) => Promise<StagedQualifiedRuntime>;
 
 export function resolveServerSelfUpdateCapability(input: {
   readonly desktopManaged: boolean;
@@ -80,20 +87,18 @@ export class ServerSelfUpdate extends Context.Service<
       ) => Effect.Effect<void, ServerSelfUpdateError>,
       onHandoffAccepted?: () => Effect.Effect<void>,
     ) => Effect.Effect<ServerSelfUpdateResult, ServerSelfUpdateError>;
-    readonly stageQualified?: (
-      artifact: JonesStagedArtifact,
-    ) => Effect.Effect<
-      StagedQualifiedRuntime & { readonly migrationPlan?: MigrationPlan },
-      ServerSelfUpdateError
-    >;
     readonly installQualified?: (
       input: {
         readonly stagedHandle: string;
         readonly continueRunningThreads?: boolean;
         readonly operationId?: string;
+        readonly verifyStaged: QualifiedStageVerifier;
       },
       onHandoffAccepted?: () => Effect.Effect<void>,
       onPrepared?: (staged: StagedQualifiedRuntime) => Effect.Effect<void, ServerSelfUpdateError>,
+      reportStep?: (
+        step: "marking" | "verifying" | "preflight" | "capturing" | "handoff",
+      ) => Effect.Effect<void>,
     ) => Effect.Effect<ServerSelfUpdateResult, ServerSelfUpdateError>;
     readonly commitDesktopUpdate: (
       requestId: string,
@@ -101,6 +106,53 @@ export class ServerSelfUpdate extends Context.Service<
     ) => Effect.Effect<never, ServerSelfUpdateError>;
   }
 >()("t3/cloud/selfUpdate/ServerSelfUpdate") {}
+
+const timedQualifiedStep = Effect.fn("ServerSelfUpdate.timedQualifiedStep")(function* <A, E, R>(
+  step: string,
+  operationId: string | undefined,
+  effect: Effect.Effect<A, E, R>,
+) {
+  const started = yield* Clock.currentTimeMillis;
+  return yield* effect.pipe(
+    Effect.ensuring(
+      Clock.currentTimeMillis.pipe(
+        Effect.flatMap((completed) =>
+          Effect.logInfo("Qualified installation timing", {
+            operationId,
+            step,
+            durationMs: completed - started,
+          }),
+        ),
+      ),
+    ),
+  );
+});
+
+/** The deadline owns preparation only; launcher handoff can have an uncertain external effect. */
+export function runQualifiedInstallPhases<A, B, R, R2>(input: {
+  readonly prepare: Effect.Effect<A, ServerSelfUpdateError, R>;
+  readonly handoff: (prepared: A) => Effect.Effect<B, ServerSelfUpdateError, R2>;
+}): Effect.Effect<B, ServerSelfUpdateError, R | R2> {
+  return Effect.uninterruptibleMask((restore) =>
+    Effect.gen(function* () {
+      const prepared = yield* restore(
+        input.prepare.pipe(
+          Effect.timeoutOrElse({
+            duration: Duration.minutes(20),
+            orElse: () =>
+              Effect.fail(
+                new ServerSelfUpdateError({
+                  reason:
+                    "Installation preparation timed out after 20 minutes; the launcher was not contacted. Retry Install.",
+                }),
+              ),
+          }),
+        ),
+      );
+      return yield* input.handoff(prepared);
+    }),
+  );
+}
 
 export const withRunningThreadContinuation = Effect.fn(
   "cloud.server_self_update.withRunningThreadContinuation",
@@ -111,15 +163,14 @@ export const withRunningThreadContinuation = Effect.fn(
   readonly clear: (
     threadIds: ReadonlyArray<ThreadId>,
   ) => Effect.Effect<void, ServerSelfUpdateError>;
-  readonly reconcileQualifiedOperation?: (
-    operationId: string,
-  ) => Effect.Effect<OperationReconciliation>;
 }) {
   const desktopContinuationTokens = yield* Ref.make(HashSet.empty<string>());
+  // Held after an uncertain handoff until the launcher proves it rejected.
   const qualifiedInstallInFlight = yield* Ref.make<
     | {
         readonly operationId: string | undefined;
         readonly uncertain: boolean;
+        readonly threadIds: ReadonlyArray<ThreadId>;
       }
     | undefined
   >(undefined);
@@ -196,11 +247,28 @@ export const withRunningThreadContinuation = Effect.fn(
     );
   };
 
-  return ServerSelfUpdate.of({
+  /**
+   * The launcher proved the uncertain handoff of `operationId` ended without acceptance: its
+   * continuation markers are cleared and another Install may start.
+   */
+  const releaseRejectedHandoff = Effect.fn("ServerSelfUpdate.releaseRejectedHandoff")(function* (
+    operationId: string,
+  ) {
+    const inFlight = yield* Ref.get(qualifiedInstallInFlight);
+    if (inFlight?.operationId !== operationId || !inFlight.uncertain) return;
+    yield* input
+      .clear(inFlight.threadIds)
+      .pipe(
+        Effect.ensuring(
+          Ref.update(qualifiedInstallInFlight, (current) =>
+            current === inFlight ? undefined : current,
+          ),
+        ),
+      );
+  });
+
+  const service = ServerSelfUpdate.of({
     update,
-    ...(input.selfUpdate.stageQualified === undefined
-      ? {}
-      : { stageQualified: input.selfUpdate.stageQualified }),
     ...(input.selfUpdate.installQualified === undefined
       ? {}
       : {
@@ -209,29 +277,24 @@ export const withRunningThreadContinuation = Effect.fn(
               readonly stagedHandle: string;
               readonly continueRunningThreads?: boolean;
               readonly operationId?: string;
+              readonly verifyStaged: QualifiedStageVerifier;
             },
             onAccepted?: () => Effect.Effect<void>,
             onPrepared?: (
               staged: StagedQualifiedRuntime,
             ) => Effect.Effect<void, ServerSelfUpdateError>,
+            reportStep?: (
+              step: "marking" | "verifying" | "preflight" | "capturing" | "handoff",
+            ) => Effect.Effect<void>,
           ) => {
             let handoffAccepted = false;
             let continuationThreadIds: ReadonlyArray<ThreadId> = [];
             return Effect.gen(function* () {
-              const inFlight = yield* Ref.get(qualifiedInstallInFlight);
-              if (
-                request.operationId !== undefined &&
-                inFlight?.operationId === request.operationId &&
-                inFlight.uncertain &&
-                input.reconcileQualifiedOperation !== undefined
-              ) {
-                const receipt = yield* input.reconcileQualifiedOperation(request.operationId);
-                if (receipt.operationId === request.operationId && receipt.state === "absent")
-                  yield* Ref.update(qualifiedInstallInFlight, (current) =>
-                    current === inFlight ? undefined : current,
-                  );
-              }
-              const attempt = { operationId: request.operationId, uncertain: false };
+              const attempt = {
+                operationId: request.operationId,
+                uncertain: false,
+                threadIds: [] as ReadonlyArray<ThreadId>,
+              };
               const claimed = yield* Ref.modify(qualifiedInstallInFlight, (current) =>
                 current === undefined ? ([true, attempt] as const) : ([false, current] as const),
               );
@@ -241,8 +304,14 @@ export const withRunningThreadContinuation = Effect.fn(
                 });
               return yield* clearOnError(
                 Effect.gen(function* () {
-                  continuationThreadIds =
-                    request.continueRunningThreads === true ? yield* input.prepare : [];
+                  if (request.continueRunningThreads === true) {
+                    yield* reportStep?.("marking") ?? Effect.void;
+                    continuationThreadIds = yield* timedQualifiedStep(
+                      "marking",
+                      request.operationId,
+                      input.prepare,
+                    );
+                  }
                   return yield* input.selfUpdate.installQualified!(
                     request,
                     () =>
@@ -250,6 +319,7 @@ export const withRunningThreadContinuation = Effect.fn(
                         handoffAccepted = true;
                       }).pipe(Effect.andThen(onAccepted?.() ?? Effect.void)),
                     onPrepared,
+                    reportStep,
                   );
                 }),
                 () => continuationThreadIds,
@@ -261,44 +331,76 @@ export const withRunningThreadContinuation = Effect.fn(
                     current !== attempt
                       ? current
                       : handoffAccepted || uncertainQualifiedHandoff(cause)
-                        ? { ...attempt, uncertain: !handoffAccepted }
+                        ? {
+                            ...attempt,
+                            uncertain: !handoffAccepted,
+                            threadIds: continuationThreadIds,
+                          }
                         : undefined,
                   ).pipe(Effect.andThen(Effect.failCause(cause))),
                 ),
               );
-            });
+            }).pipe((effect) => timedQualifiedStep("total", request.operationId, effect));
           },
         }),
-    commitDesktopUpdate: (requestId) =>
-      Effect.gen(function* () {
-        const shouldContinue = yield* Ref.modify(desktopContinuationTokens, (tokens) => [
-          HashSet.has(tokens, requestId),
-          HashSet.remove(tokens, requestId),
-        ]);
-        let handoffAccepted = false;
-        let continuationThreadIds: ReadonlyArray<ThreadId> = [];
-        return yield* clearOnError(
-          Effect.gen(function* () {
-            continuationThreadIds = shouldContinue ? yield* input.prepare : [];
-            return yield* input.selfUpdate.commitDesktopUpdate(requestId, () =>
-              Effect.sync(() => {
-                handoffAccepted = true;
-              }),
-            );
-          }),
-          () => continuationThreadIds,
-          () => handoffAccepted,
-        ).pipe(
-          Effect.catchCause((cause) =>
-            (shouldContinue && !handoffAccepted
-              ? Ref.update(desktopContinuationTokens, HashSet.add(requestId))
-              : Effect.void
-            ).pipe(Effect.andThen(Effect.failCause(cause))),
-          ),
-        );
-      }),
+    commitDesktopUpdate: Effect.fn("selfUpdate.commitDesktopUpdate")(function* (requestId) {
+      const shouldContinue = yield* Ref.modify(desktopContinuationTokens, (tokens) => [
+        HashSet.has(tokens, requestId),
+        HashSet.remove(tokens, requestId),
+      ]);
+      let handoffAccepted = false;
+      let continuationThreadIds: ReadonlyArray<ThreadId> = [];
+      return yield* clearOnError(
+        Effect.gen(function* () {
+          continuationThreadIds = shouldContinue ? yield* input.prepare : [];
+          return yield* input.selfUpdate.commitDesktopUpdate(requestId, () =>
+            Effect.sync(() => {
+              handoffAccepted = true;
+            }),
+          );
+        }),
+        () => continuationThreadIds,
+        () => handoffAccepted,
+      ).pipe(
+        Effect.catchCause((cause) =>
+          (shouldContinue && !handoffAccepted
+            ? Ref.update(desktopContinuationTokens, HashSet.add(requestId))
+            : Effect.void
+          ).pipe(Effect.andThen(Effect.failCause(cause))),
+        ),
+      );
+    }),
   });
+  return { ...service, releaseRejectedHandoff };
 });
+
+/**
+ * A server starting from the runtime its launcher settled on means runtimes left by earlier
+ * updates can go. The boot service says so through its IPC context. The SSH launcher and the
+ * install script's `t3` start this home's pinned runtime directly, without one.
+ */
+export const pruneRuntimesOnStart = Effect.fn("cloud.server_self_update.prune_on_start")(
+  function* (input: { readonly baseDir: string; readonly managed: boolean }) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const platform = yield* HostProcess.Platform;
+    const executablePath = yield* HostProcess.ExecutablePath;
+    const { entryPath } = pinnedRuntimePaths(path, input.baseDir, packageJson.version, platform);
+    // The executable path is resolved, so it names the real path of a symlinked T3 home.
+    const realEntryPath = yield* fs.realPath(entryPath).pipe(Effect.orElseSucceed(() => entryPath));
+    if (!input.managed && executablePath !== entryPath && executablePath !== realEntryPath) {
+      return [];
+    }
+    const removed = yield* prunePinnedRuntimes({
+      baseDir: input.baseDir,
+      keep: [packageJson.version],
+    });
+    if (removed.length > 0) {
+      yield* Effect.logInfo("Removed unused t3 runtimes.", { versions: removed });
+    }
+    return removed;
+  },
+);
 
 export const make = Effect.fn("cloud.server_self_update.make")(function* () {
   const serverConfig = yield* ServerConfig.ServerConfig;
@@ -314,8 +416,10 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     yield* Config.String(CLI_RELEASE_BASE_URL_ENV).pipe(Config.option),
   );
   const inFlight = yield* Ref.make(false);
-  const runtimeContext = yield* Effect.context<never>();
-  const runPromise = Effect.runPromiseWith(runtimeContext);
+
+  yield* pruneRuntimesOnStart({ baseDir: serverConfig.baseDir, managed: launcher.managed }).pipe(
+    Effect.forkScoped,
+  );
 
   const capability: ServerSelfUpdateCapability | null =
     serverConfig.mode === "desktop" ? "desktop-managed" : launcher.managed ? "boot-service" : null;
@@ -469,10 +573,10 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     }).pipe(Effect.onError(() => Ref.set(inFlight, false)));
   });
 
-  const requireQualifiedLauncher = (install = false) => {
+  const requireQualifiedLauncher = () => {
     if (
       capability !== "boot-service" ||
-      (install ? launcher.qualifiedUpdates !== true : launcher.qualifiedStaging !== true) ||
+      launcher.qualifiedUpdates !== true ||
       launcher.currentVersion === undefined
     ) {
       throw new Error(
@@ -481,8 +585,13 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     }
     return launcher.currentVersion;
   };
-  const validateQualifiedCandidate = (entryPath: string, databasePath: string, version: string) =>
-    Effect.gen(function* () {
+  const validateQualifiedCandidate = Effect.fn("ServerSelfUpdate.validateQualifiedCandidate")(
+    function* (
+      entryPath: string,
+      databasePath: string,
+      version: string,
+      requiredQualifiedRecoveryProtocol?: 1,
+    ) {
       const result = yield* runner
         .run({
           command: entryPath,
@@ -511,6 +620,9 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
         code: result.code,
         stdout: result.stdout,
         version,
+        ...(requiredQualifiedRecoveryProtocol === undefined
+          ? {}
+          : { requiredQualifiedRecoveryProtocol }),
       });
       if (reason !== undefined) return yield* failWith(reason);
       const parsed = yield* decodePreflightJson(result.stdout.trim()).pipe(
@@ -523,127 +635,102 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
       );
       const decoded = decodeServicePreflightResult(parsed);
       return decoded?.status === "ready" ? decoded.migrationPlan : undefined;
-    });
-  const stageQualified = (artifact: JonesStagedArtifact) =>
-    Effect.tryPromise({
-      try: async () => {
-        const activeVersion = requireQualifiedLauncher();
-        const staged = await validateJonesStagedArtifact(
-          NodePath.dirname(artifact.payloadPath),
-          artifact.candidate,
-        );
-        if (
-          staged.candidate.platform !== platform ||
-          staged.candidate.architecture !== arch ||
-          (platform !== "linux" && platform !== "darwin")
-        )
-          throw new Error(
-            "This service requires an Actions artifact matching its native platform.",
-          );
-        const binding = await currentQualifiedRuntimeBinding(serverConfig.baseDir, activeVersion, {
-          platform,
-          architecture: arch,
-        });
-        if (binding.dbPath !== (await NodeFSP.realpath(serverConfig.dbPath)))
-          throw new Error("This qualified staging binding does not match the running database.");
-        await NodeFSP.mkdir(NodePath.join(binding.baseDir, "runtime"), {
-          recursive: true,
-          mode: 0o700,
-        });
-        const scratch = await NodeFSP.mkdtemp(
-          NodePath.join(binding.baseDir, "runtime", ".jones-extract-"),
-        );
-        try {
-          if (staged.candidate.platform === "darwin") {
-            await extractQualifiedDarwinRuntime({
-              artifact: staged,
-              destination: scratch,
-              baseDir: binding.baseDir,
-              run: async (command) => {
-                const result = await runPromise(
-                  runner.run({ ...command, timeout: Duration.minutes(5) }),
-                );
-                return { code: result.code ?? 1, stdout: result.stdout };
-              },
-            });
-          } else await extractQualifiedLinuxArchive(staged.payloadPath, scratch);
-          await validateJonesStagedArtifact(NodePath.dirname(staged.payloadPath), staged.candidate);
-          let migrationPlan: MigrationPlan | undefined;
-          const qualifiedStage = await stageQualifiedRuntime({
-            artifact: qualifiedRuntimeArtifactFromJonesStage(staged, scratch),
-            binding,
-            host: { platform, architecture: arch },
-            validate: async (entryPath) => {
-              // Darwin Download inspects app metadata and ASAR; it never launches
-              // an unsigned candidate against the owner's native service home.
-              if (staged.candidate.platform === "darwin") return;
-              migrationPlan = await runPromise(
-                validateQualifiedCandidate(entryPath, binding.dbPath, staged.receipt.version),
-              );
-            },
-          });
-          return { ...qualifiedStage, ...(migrationPlan === undefined ? {} : { migrationPlan }) };
-        } finally {
-          await NodeFSP.rm(scratch, { recursive: true, force: true });
-        }
-      },
-      catch: (cause) =>
-        failWith(
-          cause instanceof Error ? cause.message : "Could not stage the qualified Jones runtime.",
-          cause,
-        ),
-    });
+    },
+  );
   const installQualified: NonNullable<ServerSelfUpdate["Service"]["installQualified"]> = (
     input,
     onHandoffAccepted = () => Effect.void,
     onPrepared = () => Effect.void,
+    reportStep = () => Effect.void,
   ) =>
-    Effect.gen(function* () {
-      const staged = yield* Effect.tryPromise({
-        try: () =>
-          verifyStagedQualifiedRuntime(
-            serverConfig.baseDir,
-            requireQualifiedLauncher(true),
-            input.stagedHandle,
-            { platform, architecture: arch },
+    runQualifiedInstallPhases({
+      prepare: Effect.gen(function* () {
+        yield* reportStep("verifying");
+        const staged = yield* timedQualifiedStep(
+          "verifying",
+          input.operationId,
+          Effect.tryPromise({
+            try: (signal) =>
+              input.verifyStaged({
+                stagedHandle: input.stagedHandle,
+                activeVersion: requireQualifiedLauncher(),
+                signal,
+              }),
+            catch: (cause) =>
+              failWith(
+                cause instanceof Error ? cause.message : "The staged update binding is invalid.",
+                cause,
+              ),
+          }),
+        );
+        if (
+          staged.protocol === RECOVERED_QUALIFIED_STAGE_PROTOCOL &&
+          launcher.qualifiedRecovery !== true
+        )
+          return yield* failWith(
+            "bootstrap-required: The launcher cannot activate historical enrollment receipts. Refresh it on this host first.",
+          );
+        const actualDatabase = yield* Effect.tryPromise({
+          try: () => NodeFSP.realpath(serverConfig.dbPath),
+          catch: (cause) => failWith("Could not bind the running database.", cause),
+        });
+        if (staged.binding.dbPath !== actualDatabase)
+          return yield* failWith("The staged update belongs to a different running database.");
+        yield* reportStep("preflight");
+        yield* timedQualifiedStep(
+          "preflight",
+          input.operationId,
+          validateQualifiedCandidate(
+            NodePath.join(
+              staged.binding.baseDir,
+              "runtime",
+              "versions",
+              staged.receipt.version,
+              "t3",
+            ),
+            staged.binding.dbPath,
+            staged.receipt.version,
+            staged.protocol === RECOVERED_QUALIFIED_STAGE_PROTOCOL
+              ? QUALIFIED_RECOVERY_PROTOCOL
+              : undefined,
           ),
-        catch: (cause) =>
-          failWith(
-            cause instanceof Error ? cause.message : "The staged update binding is invalid.",
-            cause,
-          ),
-      });
-      const actualDatabase = yield* Effect.tryPromise({
-        try: () => NodeFSP.realpath(serverConfig.dbPath),
-        catch: (cause) => failWith("Could not bind the running database.", cause),
-      });
-      if (staged.binding.dbPath !== actualDatabase)
-        return yield* failWith("The staged update belongs to a different running database.");
-      yield* validateQualifiedCandidate(
-        NodePath.join(staged.binding.baseDir, "runtime", "versions", staged.receipt.version, "t3"),
-        staged.binding.dbPath,
-        staged.receipt.version,
-      );
-      yield* onPrepared(staged);
-      const updateId = yield* Effect.uninterruptible(
-        launcher
-          .requestUpdate({
-            targetVersion: staged.receipt.version,
-            dbPath: staged.binding.dbPath,
-            stagedHandle: staged.stagedHandle,
-            ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
-          })
-          .pipe(
-            Effect.mapError((cause) => failWith(cause.message, cause)),
-            Effect.tap(() => onHandoffAccepted()),
-          ),
-      );
-      return { targetVersion: staged.receipt.version, method: "boot-service" as const, updateId };
+        );
+        yield* reportStep("capturing");
+        yield* timedQualifiedStep("capturing", input.operationId, onPrepared(staged));
+        return staged;
+      }),
+      handoff: Effect.fn("ServerSelfUpdate.handoffQualified")(function* (
+        staged: StagedQualifiedRuntime,
+      ) {
+        yield* reportStep("handoff");
+        const updateId = yield* timedQualifiedStep(
+          "handoff",
+          input.operationId,
+          launcher
+            .requestUpdate({
+              targetVersion: staged.receipt.version,
+              dbPath: staged.binding.dbPath,
+              stagedHandle: staged.stagedHandle,
+              ...(staged.protocol === RECOVERED_QUALIFIED_STAGE_PROTOCOL
+                ? { qualifiedRecoveryProtocol: QUALIFIED_RECOVERY_PROTOCOL }
+                : {}),
+              ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
+            })
+            .pipe(
+              Effect.mapError((cause) => failWith(cause.message, cause)),
+              Effect.tap(() => onHandoffAccepted()),
+            ),
+        );
+        return {
+          targetVersion: staged.receipt.version,
+          method: "boot-service" as const,
+          updateId,
+        };
+      }),
     });
 
   return ServerSelfUpdate.of({
     update,
-    stageQualified,
     installQualified,
     commitDesktopUpdate: (requestId, onHandoffAccepted) =>
       desktopAppUpdate.commit(requestId, onHandoffAccepted),
@@ -653,3 +740,24 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
 export const layer = Layer.effect(ServerSelfUpdate, make()).pipe(
   Layer.provide(ProcessRunner.layer),
 );
+
+// The update outlives client sockets; progress offers to a closed queue are ignored.
+export const updateProgressStream = (
+  selfUpdate: ServerSelfUpdate["Service"],
+  input: ServerSelfUpdateInput,
+) =>
+  Stream.callback<ServerSelfUpdateProgressEvent, ServerSelfUpdateError>((queue) => {
+    const offer = (event: ServerSelfUpdateProgressEvent) =>
+      Queue.offer(queue, event).pipe(Effect.ignore);
+
+    return selfUpdate
+      .update(input, (stage) => offer({ type: "progress", stage }))
+      .pipe(
+        Effect.flatMap((result) => offer({ type: "complete", result })),
+        Effect.catchTags({
+          ServerSelfUpdateError: (error) => Queue.fail(queue, error).pipe(Effect.ignore),
+        }),
+        Effect.andThen(Queue.end(queue).pipe(Effect.ignore)),
+        Effect.forkDetach,
+      );
+  });

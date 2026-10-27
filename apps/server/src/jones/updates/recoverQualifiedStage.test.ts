@@ -70,7 +70,7 @@ function zip(entries: ReadonlyArray<{ name: string; bytes: Buffer }>): Buffer {
   return Buffer.concat([...local, directory, end]);
 }
 
-async function fixture() {
+async function fixture(event: "push" | "schedule" = "push") {
   const allocated = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-recover-stage-"));
   roots.push(allocated);
   const base = await NodeFSP.realpath(allocated);
@@ -88,7 +88,7 @@ async function fixture() {
     source,
     tree,
     workflow,
-    event: "push",
+    event,
     ref: "refs/heads/main",
     runId: "101",
     runAttempt: "1",
@@ -221,7 +221,7 @@ async function fixture() {
     path: workflow,
     head_sha: source,
     head_branch: "main",
-    event: "push",
+    event,
     status: "completed",
     conclusion: "success",
     repository: { id: 1, full_name: "Jones-Systems/Jones-Code" },
@@ -231,7 +231,7 @@ async function fixture() {
     ["actions/runs/101/attempts/1", { status: 200, body: run }],
     [
       "actions/runs/102",
-      { status: 200, body: { ...run, id: 102, path: ".github/workflows/ci.yml" } },
+      { status: 200, body: { ...run, event: "push", id: 102, path: ".github/workflows/ci.yml" } },
     ],
     [`git/commits/${source}`, { status: 200, body: { sha: source, tree: { sha: tree } } }],
     ["commits/main", { status: 200, body: { sha: source } }],
@@ -255,7 +255,7 @@ async function fixture() {
   return { input, api, base, targetReceipt, responses, run, requests, stage, candidate };
 }
 
-it("recovers an already enrolled original attempt with unavailable metadata and preserves the D0 selection protocol", async () => {
+it("recovers an already enrolled original attempt with unavailable metadata and retains the historical receipt in its distinct stage format", async () => {
   const f = await fixture();
   const target = NodePath.join(f.base, "runtime", "versions", f.input.targetVersion);
   const before = await NodeFSP.readFile(NodePath.join(target, ".jones-runtime-receipt.json"));
@@ -268,6 +268,7 @@ it("recovers an already enrolled original attempt with unavailable metadata and 
   ).rejects.toMatchObject({ code: "ENOENT" });
   const selected = await applyQualifiedStageRecovery(plan, f.api);
   expect(selected.stagedHandle).toBe(f.input.operationId);
+  expect(selected.protocol).toBe(2);
   expect(selected.receipt).toEqual(f.targetReceipt);
   expect(selected.binding.activeSourceSha).toBe(f.input.currentSource);
   expect(await restoreStagedSelection(f.base, f.input.currentVersion, f.api.nativeHost)).toEqual(
@@ -488,3 +489,21 @@ it.each(["unenrolled", "stage-evidence", "dmg", "manifest", "ci", "http"])(
     await expect(inspectQualifiedStageRecovery(f.input, f.api)).rejects.toThrow();
   },
 );
+
+it("qualifies scheduled macOS admission while retaining push-only CI and exact artifact events", async () => {
+  const f = await fixture("schedule");
+  await expect(inspectQualifiedStageRecovery(f.input, f.api)).resolves.toMatchObject({
+    trustBasis: "preserved-original-admission",
+  });
+  f.responses.set("actions/runs/101/attempts/1", {
+    status: 200,
+    body: { ...f.run, event: "workflow_dispatch" },
+  });
+  await expect(inspectQualifiedStageRecovery(f.input, f.api)).rejects.toThrow();
+  f.responses.set("actions/runs/101/attempts/1", { status: 200, body: f.run });
+  f.responses.set("actions/runs/102", {
+    status: 200,
+    body: { ...f.run, id: 102, path: ".github/workflows/ci.yml", event: "schedule" },
+  });
+  await expect(inspectQualifiedStageRecovery(f.input, f.api)).rejects.toThrow();
+});

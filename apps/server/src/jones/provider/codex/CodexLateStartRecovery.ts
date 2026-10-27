@@ -1,3 +1,7 @@
+// A slow live producer can acknowledge the original start well after 30 seconds.
+// Bound a wedged wait without treating the deadline as proof of native cancellation.
+export const CODEX_START_ACK_TIMEOUT_MS = 10 * 60 * 1_000;
+
 interface NativeBinding {
   readonly runtimeGeneration: string;
   readonly nativeThreadId: string;

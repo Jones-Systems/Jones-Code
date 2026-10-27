@@ -10,6 +10,7 @@ import {
 
 /** Native proof gates activation; ordinary app startup and source equality do not. */
 export function FleetController() {
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own the desktop fleet campaign advancement loop and cancel its timer when the controller unmounts.
   useEffect(() => {
     const bridge = window.desktopBridge?.fleetUpdates;
     if (bridge === undefined) return;
@@ -25,6 +26,9 @@ export function FleetController() {
           },
           host: fleetHost,
           cancelled: () => cancelled,
+          // The native active install's provenance; the renderer only relays it.
+          committedSource: async () =>
+            (await window.desktopBridge?.getUpdateState())?.jones?.installedSource,
         });
         if (!cancelled) await refreshFleetDesktopState();
       } catch {

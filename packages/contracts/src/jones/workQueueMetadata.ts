@@ -16,7 +16,7 @@ const Id = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,1
 const NativeId = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(512),
-  // oxlint-disable-next-line no-control-regex -- Native identifiers must exclude control characters.
+  // Native identifiers must exclude control characters.
   Schema.isPattern(/^[^\u0000-\u001f\u007f]+$/),
 );
 const Integer = Schema.Number.check(
@@ -125,6 +125,63 @@ const ItemV3 = closed({
       item.native_handoff === null || (item.target !== null && item.payload_sha256 !== null),
   ),
 );
+export const WorkQueueAssignment = closed({
+  workstream_id: Id,
+  state: Schema.Literals([
+    "issued",
+    "pending",
+    "satisfied",
+    "conflict",
+    "rejected",
+    "unavailable",
+    "unsupported",
+    "permanent",
+    "excluded",
+    "cancelled",
+  ]),
+  reason: Schema.Literals([
+    "assignment_pending",
+    "assignment_satisfied",
+    "assignment_conflict",
+    "assignment_slot_excluded",
+    "assignment_unsupported",
+    "assignment_cancelled",
+    "assignment_rejected:foreign_thread",
+    "assignment_rejected:thread_not_found",
+    "assignment_rejected:registry_mismatch",
+    "assignment_rejected:permission_denied",
+    "assignment_rejected:workstream_not_found",
+    "assignment_rejected:identity_conflict",
+    "assignment_rejected:verification_rejected",
+    "assignment_rejected:registry_rejected",
+    "assignment_rejected:operation_id_conflict",
+    "assignment_unavailable:not_configured",
+    "assignment_unavailable:offline",
+    "assignment_unavailable:registration_unavailable",
+    "assignment_unavailable:placements_not_ready",
+    "assignment_unavailable:contention",
+    "assignment_unavailable:backpressure",
+    "assignment_unavailable:verification_pending",
+    "assignment_unavailable:verification_unresolved",
+    "assignment_unavailable:destination_scan_bound",
+  ]),
+  observed_workstream_id: Schema.NullOr(Id),
+  operation_id: Id,
+  // Retained result time in Unix milliseconds; null means no correlated result.
+  updated_at: Schema.NullOr(Integer),
+});
+export type WorkQueueAssignment = typeof WorkQueueAssignment.Type;
+const ItemV4 = closed({
+  ...itemFields,
+  payload_sha256: Schema.NullOr(Digest),
+  native_handoff: Schema.NullOr(NativeHandoffV3),
+  assignment: Schema.NullOr(WorkQueueAssignment),
+}).check(
+  Schema.makeFilter(
+    (item) =>
+      item.native_handoff === null || (item.target !== null && item.payload_sha256 !== null),
+  ),
+);
 const snapshotFields = {
   source: WorkQueueMetadataSource,
   observed_at_ms: Integer,
@@ -162,10 +219,27 @@ export const WorkQueueMetadataV3 = closed({
   items: Schema.Array(ItemV3).check(Schema.isMaxLength(1000)),
   authority_effect: Schema.Literal("none"),
 }).check(Schema.makeFilter(validSnapshot));
+export const WorkQueueMetadataV4 = closed({
+  schema: Schema.Literal("codex.t3-work-queue-metadata/v4"),
+  ...snapshotFields,
+  items: Schema.Array(ItemV4).check(Schema.isMaxLength(1000)),
+  authority_effect: Schema.Literal("none"),
+}).check(
+  Schema.makeFilter(validSnapshot),
+  Schema.makeFilter((value) =>
+    value.items.every(
+      (item) =>
+        item.assignment === null ||
+        item.assignment.updated_at === null ||
+        item.assignment.updated_at <= value.observed_at_ms,
+    ),
+  ),
+);
 export const WorkQueueMetadata = Schema.Union([
   WorkQueueMetadataV1,
   WorkQueueMetadataV2,
   WorkQueueMetadataV3,
+  WorkQueueMetadataV4,
 ]);
 export type WorkQueueMetadata = typeof WorkQueueMetadata.Type;
 export const WorkQueueMetadataResult = Schema.Union([

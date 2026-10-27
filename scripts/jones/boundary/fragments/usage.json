@@ -5,7 +5,10 @@
     "apps/web/src/jones/usage/",
     "apps/web/src/components/usage/UsagePage.jones.test.tsx"
   ],
-  "hookPaths": ["apps/web/src/components/usage/UsagePage.tsx"],
+  "hookPaths": [
+    "apps/web/src/components/usage/UsagePage.tsx",
+    "apps/web/src/components/usage/UsageModelDialog.tsx"
+  ],
   "tombstones": [
     "apps/web/src/components/usage/SavedTokenAccounting.tsx",
     "apps/web/src/components/usage/UsageProviderDetails.tsx",
@@ -37,6 +40,18 @@
     {
       "from": "apps/web/src/components/usage/UsagePage.tsx",
       "to": "apps/web/src/jones/usage/useUsageProviderDetails.ts"
+    },
+    {
+      "from": "apps/web/src/components/usage/UsagePage.tsx",
+      "to": "apps/web/src/jones/usage/UsageTotals.tsx"
+    },
+    {
+      "from": "apps/web/src/components/usage/UsagePage.tsx",
+      "to": "apps/web/src/jones/usage/UsageModelTableHead.tsx"
+    },
+    {
+      "from": "apps/web/src/components/usage/UsageModelDialog.tsx",
+      "to": "apps/web/src/jones/usage/UsageModelTokenStats.tsx"
     }
   ]
 }

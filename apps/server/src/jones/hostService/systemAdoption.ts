@@ -42,6 +42,11 @@ import {
   type AdoptionRunner,
 } from "./adoption.ts";
 import * as LegacyBootstrap from "./legacyBootstrap.ts";
+import {
+  assertLinuxPriorityPolicy,
+  assertNoLaterLinuxPriorityOverride,
+  LINUX_PRIORITY_DROPIN,
+} from "./linuxPriorityPolicy.ts";
 import * as PrivateSetup from "./privateSetupCompatibility.ts";
 import {
   isCanonicalSystemPath,
@@ -79,6 +84,7 @@ const SHOW_PROPERTIES = [
   "MainPID",
   "ExecStart",
   "WorkingDirectory",
+  "Nice",
 ] as const;
 
 export interface SystemAdoptInput {
@@ -97,7 +103,7 @@ export interface SystemAdoptInput {
 }
 
 export type RootFileObservation =
-  | { readonly uid: number; readonly mode: number; readonly bytes: Buffer }
+  | { readonly uid: number; readonly gid?: number; readonly mode: number; readonly bytes: Buffer }
   | "absent"
   | "unreadable";
 
@@ -263,7 +269,7 @@ async function systemctlShow(host: SystemAdoptionHost, unit: string) {
     if (match === null || values.has(match[1]!)) return refuse("Unit readback is malformed.");
     values.set(match[1]!, match[2]!);
   }
-  if (SHOW_PROPERTIES.some((key) => !values.has(key)))
+  if (SHOW_PROPERTIES.some((key) => key !== "Nice" && !values.has(key)))
     return refuse("Unit readback is incomplete.");
   return (key: (typeof SHOW_PROPERTIES)[number]) => values.get(key)!;
 }
@@ -430,6 +436,30 @@ async function inspectSystemAdoption(input: SystemAdoptInput, host: SystemAdopti
     return refuse(
       "Effective unit files differ from the selected unit's own fragment and drop-ins.",
     );
+  if (preimage.dropins.includes(LINUX_PRIORITY_DROPIN)) {
+    const priority = await host.rootFile(NodePath.join(preimage.directory, LINUX_PRIORITY_DROPIN));
+    if (priority === "absent" || priority === "unreadable")
+      return refuse(
+        "The system service priority policy is unavailable; external administrator reconciliation is required.",
+      );
+    try {
+      assertLinuxPriorityPolicy({ ...priority, gid: priority.gid ?? -1 }, show("Nice"));
+      for (const name of preimage.dropins) {
+        assertNoLaterLinuxPriorityOverride(
+          name,
+          await NodeFSP.readFile(NodePath.join(preimage.directory, name)),
+        );
+      }
+    } catch {
+      return refuse(
+        "The system service priority policy is untrusted, overridden or differs from effective Nice=-15; external administrator reconciliation is required.",
+      );
+    }
+  } else if (show("Nice") !== undefined && show("Nice") !== "0") {
+    return refuse(
+      "Effective unit priority has no recognized root-owned priority policy; external administrator reconciliation is required.",
+    );
+  }
   if (show("User") !== host.user || show("NoNewPrivileges") !== "yes")
     return refuse("The unit does not run as the service user with NoNewPrivileges=yes.");
   if (show("ActiveState") !== "active" || show("MainPID") !== String(runtimeRecord.pid))
@@ -616,11 +646,9 @@ export async function planSystemAdoption(
 }
 
 /**
- * The worker's stopped state as reported: exactly `inactive dead`, or the
- * `failed failed` a retained process leaves when it exits unclean on stop,
- * with no main process and no cgroup. A complete worker `stop` result also
- * carries its private job and original-cgroup checks; `install-launcher`
- * checks its private job. An inspection alone never proves quiescence.
+ * Reported stopped state is inactive/dead or retained failed/failed, with no main process or cgroup.
+ * Complete stop proof also checks the private job and original cgroup; install-launcher checks its private job.
+ * Inspection alone never proves quiescence.
  */
 const stoppedUnit = (inspection: SystemUnitInspection) =>
   ((inspection.activeState === "inactive" && inspection.subState === "dead") ||
@@ -662,11 +690,9 @@ async function createServiceState(path: string, activeVersion: string): Promise<
 }
 
 /**
- * Applies only the approved plan. Each step records its phase first. A failure
- * whose effects are all known records `partial`: the completed setup effects
- * up to its recorded phase remain, so it never means that nothing changed. A
- * failure during an attempt whose result is not settled records `unknown`.
- * Neither is retried, reversed or restarted here.
+ * Apply only the approved plan and record each phase first. partial retains known completed effects
+ * through that phase; it never means no change. Unsettled attempted effects are unknown.
+ * Neither outcome is retried, reversed or restarted here.
  */
 export async function adoptSystemHost(
   input: SystemAdoptInput,
@@ -1097,7 +1123,20 @@ export function nativeSystemAdoptionHost(input: {
           NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,
         );
         try {
-          return { uid: stat.uid, mode: stat.mode, bytes: await handle.readFile() };
+          const opened = await handle.stat();
+          if (
+            !opened.isFile() ||
+            opened.dev !== stat.dev ||
+            opened.ino !== stat.ino ||
+            opened.size > 1024 * 1024
+          )
+            return "unreadable";
+          return {
+            uid: opened.uid,
+            gid: opened.gid,
+            mode: opened.mode,
+            bytes: await handle.readFile(),
+          };
         } finally {
           await handle.close();
         }

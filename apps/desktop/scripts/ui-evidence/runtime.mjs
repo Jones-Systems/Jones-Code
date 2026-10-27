@@ -184,20 +184,144 @@ export async function setupRuntime(source) {
   }
 }
 
-export async function packageAt(name, from) {
-  let current = from;
-  while (true) {
-    const candidate = NodePath.join(current, "node_modules", name);
-    try {
-      return await NodeFSP.realpath(candidate);
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-    }
-    const parent = NodePath.dirname(current);
-    if (parent === current) throw new Error(`Missing runtime package: ${name}`);
-    current = parent;
-  }
+const protectedSegments = new Set([".t3", ".git", ".ssh", ".codex", ".claude"]);
+function below(base, target) {
+  const relative = NodePath.relative(base, target);
+  return (
+    relative !== "" &&
+    !NodePath.isAbsolute(relative) &&
+    relative !== ".." &&
+    !relative.startsWith(`..${NodePath.sep}`)
+  );
 }
+export function validatePackageName(name) {
+  if (
+    typeof name !== "string" ||
+    !/^(?:@[a-zA-Z0-9_][a-zA-Z0-9._-]*\/)?[a-zA-Z0-9_][a-zA-Z0-9._-]*$/.test(name)
+  )
+    throw new Error("Invalid runtime package name");
+  return name;
+}
+export async function createPackageResolver(source) {
+  source = await NodeFSP.realpath(source);
+  const anchors = ["node_modules", "apps/desktop/node_modules", "apps/server/node_modules"].map(
+    (path) => NodePath.join(source, path),
+  );
+  const suffixSafe = (path) => {
+    if (!below(source, path)) throw new Error("Runtime dependency escaped source");
+    const parts = NodePath.relative(source, path).split(NodePath.sep);
+    if (
+      parts.some(
+        (part) => protectedSegments.has(part) || part === ".env" || part.startsWith(".env."),
+      )
+    )
+      throw new Error("Protected runtime dependency path");
+  };
+  for (const anchor of anchors) {
+    try {
+      await NodeFSP.lstat(anchor);
+    } catch (error) {
+      if (error.code === "ENOENT") continue;
+      throw error;
+    }
+    const physical = await NodeFSP.realpath(anchor);
+    if (!anchors.includes(physical) || !(await NodeFSP.stat(physical)).isDirectory())
+      throw new Error("Runtime storage anchor escaped source");
+  }
+  const packagePath = (path) => {
+    suffixSafe(path);
+    if (!anchors.some((anchor) => below(anchor, path)))
+      throw new Error("Runtime dependency escaped package storage");
+    const parts = NodePath.relative(source, path).split(NodePath.sep);
+    const tail = parts.slice(parts.lastIndexOf("node_modules") + 1);
+    if (tail.length !== (tail[0]?.startsWith("@") ? 2 : 1))
+      throw new Error("Runtime dependency is not a package root");
+    validatePackageName(tail.join("/"));
+  };
+  const admit = async (path) => {
+    packagePath(path);
+    const root = await NodeFSP.realpath(path);
+    packagePath(root);
+    if (!(await NodeFSP.stat(root)).isDirectory())
+      throw new Error("Runtime package is not a directory");
+    return root;
+  };
+  const metadata = async (root) => {
+    if ((await admit(root)) !== root) throw new Error("Runtime package identity changed");
+    const manifest = await NodeFSP.realpath(NodePath.join(root, "package.json"));
+    if (!below(root, manifest)) throw new Error("Runtime package manifest escaped package");
+    suffixSafe(manifest);
+    if (!(await NodeFSP.stat(manifest)).isFile())
+      throw new Error("Runtime package manifest is not a file");
+    return JSON.parse(await NodeFSP.readFile(manifest, "utf8"));
+  };
+  const resolve = async (name, from) => {
+    validatePackageName(name);
+    let current = await NodeFSP.realpath(from);
+    if (current !== source) suffixSafe(current);
+    while (true) {
+      const storage = NodePath.join(current, "node_modules");
+      const destination = NodePath.join(storage, name);
+      let present = true;
+      try {
+        await NodeFSP.lstat(storage);
+      } catch (error) {
+        if (error.code === "ENOENT") present = false;
+        else throw error;
+      }
+      if (present) {
+        const physicalStorage = await NodeFSP.realpath(storage);
+        suffixSafe(storage);
+        suffixSafe(physicalStorage);
+        if (!anchors.some((anchor) => physicalStorage === anchor || below(anchor, physicalStorage)))
+          throw new Error("Runtime lookup storage escaped source");
+        try {
+          await NodeFSP.lstat(destination);
+        } catch (error) {
+          if (error.code === "ENOENT") present = false;
+          else throw error;
+        }
+      }
+      if (present) {
+        // Validate every alias before deduplication, including installed optional dependencies.
+        const root = await admit(destination);
+        await metadata(root);
+        return { name, root, destination };
+      }
+      if (current === source) break;
+      current = NodePath.dirname(current);
+      if (current !== source && !below(source, current))
+        throw new Error("Runtime lookup escaped source");
+    }
+    throw Object.assign(new Error(`Missing runtime package: ${name}`), {
+      code: "RUNTIME_PACKAGE_MISSING",
+    });
+  };
+  return { source, resolve, admit, metadata };
+}
+
+// Required and optional peer semantics match PR507 at 238b185a9c05fccce5aedbcc485205f62b61a99f.
+export async function resolvedPackageDependencies(root, metadata, resolver) {
+  const dependencies = [];
+  for (const name of new Set([
+    ...Object.keys(metadata.dependencies || {}),
+    ...Object.keys(metadata.optionalDependencies || {}),
+    ...Object.keys(metadata.peerDependencies || {}),
+  ])) {
+    const optional =
+      Object.hasOwn(metadata.optionalDependencies || {}, name) ||
+      (!Object.hasOwn(metadata.dependencies || {}, name) &&
+        metadata.peerDependenciesMeta?.[name]?.optional === true);
+    try {
+      dependencies.push(await resolver.resolve(name, root));
+    } catch (error) {
+      if (optional && error.code === "RUNTIME_PACKAGE_MISSING") continue;
+      throw error;
+    }
+  }
+  return dependencies;
+}
+
 export async function runtimeExternalDependencies(source, app, dependencies) {
   if (!["desktop", "server"].includes(app)) throw new Error("Unknown runtime app");
   const desktop = app === "desktop";
@@ -216,65 +340,108 @@ export async function runtimeExternalDependencies(source, app, dependencies) {
   return Object.keys(select(dependencies));
 }
 export async function dependencyClosure(source) {
-  const roots = [];
-  const links = new Map();
-  const packages = new Map();
+  const resolver = await createPackageResolver(source);
+  source = resolver.source;
+  const roots = [],
+    links = new Map(),
+    packages = new Map();
   for (const app of ["desktop", "server"]) {
     const dir = NodePath.join(source, "apps", app);
     const pkg = JSON.parse(await NodeFSP.readFile(NodePath.join(dir, "package.json"), "utf8"));
-    const names = await runtimeExternalDependencies(source, app, pkg.dependencies || {});
-    for (const name of names) {
-      const root = await packageAt(name, dir);
-      roots.push({ name, root, destination: `/app/apps/${app}/node_modules/${name}` });
+    for (const name of await runtimeExternalDependencies(source, app, pkg.dependencies || {})) {
+      const edge = await resolver.resolve(name, dir);
+      roots.push({ ...edge, destination: `/app/apps/${app}/node_modules/${name}` });
     }
   }
-  // Playwright drives Electron from the harness, without importing the Electron package helper.
   roots.push({
-    name: "playwright-core",
-    root: await packageAt("playwright-core", NodePath.join(source, "apps/desktop")),
+    ...(await resolver.resolve("playwright-core", NodePath.join(source, "apps/desktop"))),
     destination: "/harness/node_modules/playwright-core",
   });
   async function visit(root) {
+    const pkg = await resolver.metadata(root);
     if (packages.has(root)) return;
-    if (
-      !root.includes("/node_modules/") ||
-      root.split("/").some((part) => [".t3", ".git", ".ssh", ".codex", ".claude"].includes(part))
-    )
-      throw new Error("Runtime dependency escaped package storage");
-    const pkg = JSON.parse(await NodeFSP.readFile(NodePath.join(root, "package.json"), "utf8"));
-    packages.set(root, { name: pkg.name, version: pkg.version });
-    for (const name of new Set([
-      ...Object.keys(pkg.dependencies || {}),
-      ...Object.keys(pkg.optionalDependencies || {}),
-    ])) {
-      let dependency;
-      try {
-        dependency = await packageAt(name, root);
-      } catch (error) {
-        if (pkg.optionalDependencies?.[name]) continue;
-        throw error;
-      }
-      let lexical = root;
-      while (true) {
-        const candidate = NodePath.join(lexical, "node_modules", name);
-        try {
-          await NodeFSP.lstat(candidate);
-          links.set(candidate, dependency);
-          break;
-        } catch (error) {
-          if (error.code !== "ENOENT") throw error;
-        }
-        const parent = NodePath.dirname(lexical);
-        if (parent === lexical) throw new Error("Dependency link resolution failed");
-        lexical = parent;
-      }
-      await visit(dependency);
+    const dependencies = await resolvedPackageDependencies(root, pkg, resolver);
+    packages.set(root, { name: pkg.name, version: pkg.version, dependencies });
+    for (const edge of dependencies) {
+      links.set(edge.destination, edge.root);
+      await visit(edge.root);
     }
   }
   for (const root of roots) await visit(root.root);
   return {
+    source,
     roots,
     packages: [...packages].map(([root, identity]) => ({ root, ...identity })),
     links: [...links].map(([destination, root]) => ({ destination, root })),
   };
+}
+
+async function readProcessIdentity(pid, readFile = NodeFSP.readFile) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("Invalid captured process PID");
+  const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+  const fields = stat
+    .slice(stat.lastIndexOf(")") + 2)
+    .trim()
+    .split(/\s+/);
+  if (!/^\d+$/.test(fields[19] || "")) throw new Error("Missing process start identity");
+  return { pid, parentPid: Number(fields[1]), startTicks: fields[19], state: fields[0] };
+}
+
+export async function captureApplicationProcesses(app, readFile = NodeFSP.readFile) {
+  const electron = await readProcessIdentity(app.process().pid, readFile);
+  // Only inspect direct children of the captured app inside the runner's private PID namespace.
+  const children = await readFile(`/proc/${electron.pid}/task/${electron.pid}/children`, "utf8");
+  const servers = [];
+  for (const value of children.trim().split(/\s+/).filter(Boolean)) {
+    const pid = Number(value);
+    try {
+      const argv = (await readFile(`/proc/${pid}/cmdline`, "utf8")).split("\0");
+      if (!argv.includes("/app/apps/server/dist/bin.mjs")) continue;
+      const server = await readProcessIdentity(pid, readFile);
+      if (server.parentPid !== electron.pid) throw new Error("Backend parent identity changed");
+      servers.push(server);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+  if (servers.length !== 1) throw new Error("Expected one captured app-owned backend");
+  return { electron, server: servers[0] };
+}
+
+export async function assertApplicationStopped(processes, readFile = NodeFSP.readFile) {
+  for (const [role, identity] of Object.entries(processes)) {
+    try {
+      const current = await readProcessIdentity(identity.pid, readFile);
+      if (current.startTicks === identity.startTicks)
+        throw new Error(`Old ${role} process still exists after app close`);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+}
+
+export async function closeApplicationGeneration(generation, readFile = NodeFSP.readFile) {
+  if (generation.closeAttempted) {
+    if (!generation.closed) throw new Error("Previous app close has unresolved outcome");
+    return;
+  }
+  const child = generation.app.process();
+  generation.closeAttempted = true;
+  await generation.app.close();
+  generation.exit = { code: child.exitCode, signal: child.signalCode };
+  if (child.exitCode !== 0 || child.signalCode !== null)
+    throw new Error("Electron did not exit cleanly");
+  if (generation.processes) await assertApplicationStopped(generation.processes, readFile);
+  generation.closed = true;
+}
+
+export function assertRestartIdentity(before, after) {
+  for (const role of ["electron", "server"]) {
+    if (before.processes[role].pid === after.processes[role].pid)
+      throw new Error(`Restart reused the ${role} PID`);
+  }
+  if (JSON.stringify(before.paths) !== JSON.stringify(after.paths))
+    throw new Error("Restart changed private application paths");
+  if (JSON.stringify(before.database) !== JSON.stringify(after.database))
+    throw new Error("Restart replaced the synthetic database file");
 }

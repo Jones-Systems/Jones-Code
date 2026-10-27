@@ -48,9 +48,7 @@ const StoredQueueState = Schema.Union([
   }),
 ]);
 export const decodeProviderQueueState = Effect.fnUntraced(function* (contents: string) {
-  const state = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(StoredQueueState))(
-    contents,
-  );
+  const state = yield* Schema.decodeEffect(Schema.fromJsonString(StoredQueueState))(contents);
   if (state.version === 2) return state;
   return {
     version: 2 as const,
@@ -124,8 +122,8 @@ export const makeProviderQueueStorage = Effect.gen(function* () {
       if (Number(stat.size) > MAX_STATE_BYTES) return yield* failure();
       return yield* decodeProviderQueueState(yield* fs.readFileString(filePath));
     }).pipe(Effect.mapError(failure)),
-    write: (state: QueueState) =>
-      Effect.gen(function* () {
+    write: Effect.fn("ProviderQueue.write")(
+      function* (state: QueueState) {
         const contents = yield* Schema.encodeEffect(Schema.fromJsonString(QueueState))(state);
         if (Buffer.byteLength(contents) > MAX_STATE_BYTES) return yield* failure();
         yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
@@ -135,7 +133,9 @@ export const makeProviderQueueStorage = Effect.gen(function* () {
           Effect.provideService(Path.Path, path),
         );
         yield* fs.chmod(filePath, 0o600);
-      }).pipe(Effect.mapError(failure)),
+      },
+      (effect) => effect.pipe(Effect.mapError(failure)),
+    ),
   } satisfies ProviderQueueStorage;
 });
 

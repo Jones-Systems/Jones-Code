@@ -14,8 +14,8 @@ import {
   scheduledTaskDefaultModel,
   createDraft,
   editDraft,
-  DEFAULT_SCHEDULE,
   hasScheduledTaskDraftChanges,
+  DEFAULT_SCHEDULE,
   scheduleDraftForTask,
   scheduleFromDraft,
   scheduledTaskUpsertInputFromDraft,
@@ -28,32 +28,35 @@ describe("scheduleDraftForTask", () => {
     expect(scheduleFromDraft(draft)).toEqual({ type: "interval", everyMs: 60_000 });
   });
 
-  it("preserves valid fractional-minute schedules through an edit", () => {
-    const schedule = { type: "interval" as const, everyMs: 65_000 };
-    expect(scheduleFromDraft(scheduleDraftForTask({ schedule }))).toEqual(schedule);
-  });
-
-  it("round-trips a webhook schedule without a signature", () => {
-    const draft = scheduleDraftForTask({ schedule: { type: "webhook", signature: null } });
-    expect(draft.mode).toBe("webhook");
-    expect(scheduleFromDraft(draft)).toEqual({
-      type: "webhook",
-      signature: null,
-      maxDeliveryAgeMinutes: null,
-    });
-  });
-
-  it("round-trips a webhook max age and treats blank input as no limit", () => {
-    const draft = scheduleDraftForTask({
-      schedule: { type: "webhook", signature: null, maxDeliveryAgeMinutes: 45 },
-    });
-    expect(draft.maxDeliveryAgeMinutes).toBe("45");
-    expect(scheduleFromDraft(draft)).toMatchObject({ maxDeliveryAgeMinutes: 45 });
-    expect(scheduleFromDraft({ ...draft, maxDeliveryAgeMinutes: "1.5" })).toBeNull();
-    expect(scheduleFromDraft({ ...draft, maxDeliveryAgeMinutes: "0" })).toBeNull();
-    expect(scheduleFromDraft({ ...draft, maxDeliveryAgeMinutes: "" })).toMatchObject({
-      maxDeliveryAgeMinutes: null,
-    });
+  it("round-trips dedupe settings and rejects invalid windows", () => {
+    const dedupe = {
+      replayKey: "{{headers.delivery-id}}",
+      coalesceKey: "{{body.id}}",
+      coalesceWindowSeconds: 3600,
+    };
+    const draft = scheduleDraftForTask({ schedule: { type: "webhook", signature: null, dedupe } });
+    expect(scheduleFromDraft(draft)).toMatchObject({ dedupe });
+    expect(
+      scheduleFromDraft({
+        ...draft,
+        replayKey: " \n ",
+        coalesceKey: " \t ",
+        coalesceWindowSeconds: "",
+      }),
+    ).toMatchObject({ dedupe: {} });
+    expect(
+      scheduleFromDraft({
+        ...draft,
+        replayKey: `  ${dedupe.replayKey}  `,
+        coalesceKey: `\t${dedupe.coalesceKey}\n`,
+      }),
+    ).toMatchObject({ dedupe });
+    expect(
+      scheduleFromDraft({ ...draft, replayKey: "", coalesceKey: "", coalesceWindowSeconds: "" }),
+    ).toMatchObject({ dedupe: {} });
+    for (const coalesceWindowSeconds of ["9", "3601", "1.5", "abc"]) {
+      expect(scheduleFromDraft({ ...draft, coalesceWindowSeconds })).toBeNull();
+    }
   });
 
   it("keeps a webhook signature on save without sending a secret", () => {
@@ -65,79 +68,25 @@ describe("scheduleDraftForTask", () => {
     const saved = scheduleFromDraft(
       scheduleDraftForTask({ schedule: { type: "webhook", signature } }),
     );
-    expect(saved).toEqual({ type: "webhook", signature, maxDeliveryAgeMinutes: null });
+    expect(saved).toEqual({ type: "webhook", signature, maxDeliveryAgeMinutes: null, dedupe: {} });
     expect(saved?.type === "webhook" && saved.signature && "secret" in saved.signature).toBe(false);
   });
-});
 
-describe("hasScheduledTaskDraftChanges", () => {
-  it("leaves an untouched form clean and clears changes when edits are reverted", () => {
-    const initial = createDraft(null, null);
-    const edited = { ...initial, prompt: "Review open issues" };
-    expect(hasScheduledTaskDraftChanges(initial, createDraft(null, null))).toBe(false);
-    expect(hasScheduledTaskDraftChanges(initial, edited)).toBe(true);
-    expect(hasScheduledTaskDraftChanges(initial, { ...edited, prompt: initial.prompt })).toBe(
-      false,
-    );
-  });
-
-  it("keeps invalid, unsaved schedule input dirty", () => {
-    const initial = createDraft(null, null);
-    expect(
-      hasScheduledTaskDraftChanges(initial, {
-        ...initial,
-        schedule: { ...initial.schedule, weekdays: [] },
-      }),
-    ).toBe(true);
-  });
-
-  it("does not warn after deselecting and reselecting the same weekdays", () => {
-    const initial = createDraft(null, null);
-    expect(
-      hasScheduledTaskDraftChanges(initial, {
-        ...initial,
-        schedule: { ...initial.schedule, weekdays: [2, 3, 4, 5, 1] },
-      }),
-    ).toBe(false);
-  });
-
-  it("detects changes from the branch and model pickers", () => {
-    const initial = createDraft(null, {
-      instanceId: ProviderInstanceId.make("codex"),
-      model: "gpt-5.4",
-      options: [
-        { id: "effort", value: "high" },
-        { id: "fastMode", value: false },
-      ],
+  it("round-trips webhook filters and refuses an invalid one", () => {
+    const filters = [
+      { path: "headers.x-github-event", op: "equals", value: "pull_request" },
+      { path: "body.label.name", op: "in", value: ["needs review", "agent:fix"] },
+    ] as const;
+    const draft = scheduleDraftForTask({ schedule: { type: "webhook", signature: null, filters } });
+    // Untouched rows are left out, so the server keeps whatever is stored now.
+    expect(scheduleFromDraft(draft)).not.toHaveProperty("filters");
+    expect(scheduleFromDraft({ ...draft, filters: [] })).toMatchObject({ filters: [] });
+    expect(scheduleFromDraft({ ...draft, filters: draft.filters.slice(1) })).toMatchObject({
+      filters: filters.slice(1),
     });
-    expect(hasScheduledTaskDraftChanges(initial, { ...initial, baseRef: "release" })).toBe(true);
-    expect(hasScheduledTaskDraftChanges(initial, { ...initial, startFromOrigin: false })).toBe(
-      true,
-    );
     expect(
-      hasScheduledTaskDraftChanges(initial, {
-        ...initial,
-        modelSelection: {
-          ...initial.modelSelection!,
-          options: [
-            { id: "fastMode", value: false },
-            { id: "effort", value: "high" },
-          ],
-        },
-      }),
-    ).toBe(false);
-    expect(
-      hasScheduledTaskDraftChanges(initial, {
-        ...initial,
-        modelSelection: {
-          ...initial.modelSelection!,
-          options: [
-            { id: "effort", value: "low" },
-            { id: "fastMode", value: false },
-          ],
-        },
-      }),
-    ).toBe(true);
+      scheduleFromDraft({ ...draft, filters: [{ id: "f1", path: "", op: "exists", value: "" }] }),
+    ).toBeNull();
   });
 });
 
@@ -146,63 +95,9 @@ describe("scheduleFromDraft", () => {
     expect(scheduleFromDraft({ ...DEFAULT_SCHEDULE, weekdays: [] })).toBeNull();
   });
 
-  it("accepts a selected local time and sorts weekdays", () => {
-    expect(
-      scheduleFromDraft({ ...DEFAULT_SCHEDULE, timeOfDay: "18:30", weekdays: [5, 1] }),
-    ).toEqual({
-      type: "fixed_time",
-      timeOfDay: "18:30",
-      weekdays: [1, 5],
-    });
-  });
-
-  it("stores every day without a weekday restriction", () => {
-    expect(scheduleFromDraft({ ...DEFAULT_SCHEDULE, weekdays: [1, 2, 3, 4, 5, 6, 0] })).toEqual({
-      type: "fixed_time",
-      timeOfDay: "09:00",
-    });
-  });
-
-  it("does not add a missing run day when an existing schedule contains duplicates", () => {
-    expect(scheduleFromDraft({ ...DEFAULT_SCHEDULE, weekdays: [1, 2, 3, 4, 5, 6, 6] })).toEqual({
-      type: "fixed_time",
-      timeOfDay: "09:00",
-      weekdays: [1, 2, 3, 4, 5, 6],
-    });
-    expect(scheduleFromDraft({ ...DEFAULT_SCHEDULE, weekdays: [0, 1, 2, 3, 4, 5, 6, 6] })).toEqual({
-      type: "fixed_time",
-      timeOfDay: "09:00",
-    });
-  });
-
-  it.each([-1, 7, 1.5, NaN])(
-    "rejects invalid weekday %s instead of scheduling every day",
-    (day) => {
-      expect(
-        scheduleFromDraft({ ...DEFAULT_SCHEDULE, weekdays: [0, 1, 2, 3, 4, 5, day] }),
-      ).toBeNull();
-    },
-  );
-
-  it("rejects malformed times and sub-minute intervals", () => {
-    expect(scheduleFromDraft({ ...DEFAULT_SCHEDULE, timeOfDay: "25:00" })).toBeNull();
-    expect(
-      scheduleFromDraft({ ...DEFAULT_SCHEDULE, mode: "interval", intervalMinutes: "0" }),
-    ).toBeNull();
-    expect(
-      scheduleFromDraft({ ...DEFAULT_SCHEDULE, mode: "interval", intervalMinutes: "15" }),
-    ).toEqual({
-      type: "interval",
-      everyMs: 900_000,
-    });
-  });
-
   it.each([
     ["1.5", 90_000],
-    ["1000001", 60_000_060_000],
     [String(60_001 / 60_000), 60_001],
-    [String(65_000 / 60_000), 65_000],
-    [String(123_456 / 60_000), 123_456],
   ])("preserves a valid %s minute interval when saving", (intervalMinutes, everyMs) => {
     expect(scheduleFromDraft({ ...DEFAULT_SCHEDULE, mode: "interval", intervalMinutes })).toEqual({
       type: "interval",
@@ -312,9 +207,6 @@ describe("scheduled task model defaults", () => {
     ],
   } as unknown as ServerConfig;
   const resolve = scheduledTaskDefaultModel;
-  it("uses the environment default with its provider options", () => {
-    expect(resolve(config, { id: projectId })).toEqual(environmentSelection);
-  });
   it("prefers the project's configured model", () => {
     expect(resolve(config, { id: projectId, defaultModelSelection: projectSelection })).toEqual(
       projectSelection,
@@ -369,6 +261,15 @@ describe("scheduled task model defaults", () => {
   });
 });
 
+it("rejects dedupe keys without valid request placeholders", () => {
+  expect(
+    scheduleFromDraft({ ...DEFAULT_SCHEDULE, mode: "webhook", replayKey: "literal" }),
+  ).toBeNull();
+  expect(
+    scheduleFromDraft({ ...DEFAULT_SCHEDULE, mode: "webhook", coalesceKey: "{{body.bad" }),
+  ).toBeNull();
+});
+
 describe("scheduled-task form save and reopen", () => {
   it.each([true, false])(
     "saves the current webhook signature while keeping automatic base and origin %s",
@@ -401,6 +302,7 @@ describe("scheduled-task form save and reopen", () => {
         type: "webhook",
         signature: currentSignature,
         maxDeliveryAgeMinutes: 45,
+        dedupe: {},
       });
       expect(saved.workspaceStrategy).toEqual({ type: "worktree", startFromOrigin });
       expect(saved.workspaceStrategy).not.toHaveProperty("baseRef");

@@ -1,7 +1,15 @@
+import {
+  threadLinksHandler,
+  threadLinkHandler,
+  threadHandoffHandler,
+} from "../../../jones/linkedThreads/tools.ts";
+import { threadGoalHandler } from "../../../jones/goals/tool.ts";
+import { taskContinueHandler } from "../../../jones/taskContinuation/tool.ts";
 import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import { OrchestratorToolkit } from "./tools.ts";
 import * as Effect from "effect/Effect";
 
+import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import { readCaller } from "../../threadAccess.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
@@ -9,6 +17,11 @@ import * as OrchestratorMcpService from "../../OrchestratorMcpService.ts";
 import * as ThreadMetadataMcpService from "../../ThreadMetadataMcpService.ts";
 
 const handlers = {
+  t3_task_continue: taskContinueHandler,
+  t3_thread_links: threadLinksHandler,
+  t3_thread_link: threadLinkHandler,
+  t3_thread_handoff: threadHandoffHandler,
+  t3_thread_goal: threadGoalHandler,
   t3_thread_settle: McpToolAccess.actsAsCaller((input) =>
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.McpInvocationContext;
@@ -16,11 +29,11 @@ const handlers = {
       return yield* service.settleThread(scope, input);
     }),
   ),
-  orchestrator_capabilities: McpToolAccess.reads(() =>
+  orchestrator_capabilities: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.McpInvocationContext;
       const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-      return yield* service.capabilities(scope);
+      return yield* service.capabilities(scope, input);
     }),
   ),
   delegate_task: McpToolAccess.actsAsCaller((input) =>
@@ -64,6 +77,27 @@ const handlers = {
         );
       }),
   ),
+  t3_background_wait: McpToolAccess.actsAsCaller((input) =>
+    Effect.gen(function* () {
+      const { scope, threads } = yield* readCaller();
+      const caller = yield* McpInvocationContext.requireThreadScope(scope, "t3_background_wait");
+      return yield* threads
+        .awaitBackgroundTasks({
+          threadId: caller.thread.threadId,
+          taskIds: input.taskIds,
+          awaited: input.waiting ?? true,
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new OrchestratorMcpFailure({
+                code: cause.reason === "unsupported" ? "invalid_request" : "orchestration_error",
+                message: cause.message,
+              }),
+          ),
+        );
+    }),
+  ),
   schedule_task: McpToolAccess.startsThreads(
     () => ({}),
     (input) =>
@@ -72,6 +106,8 @@ const handlers = {
         const service = yield* OrchestratorMcpService.OrchestratorMcpService;
         return yield* service.scheduleTask(scope, input);
       }),
+    // A scheduled run starts long after its caller, with nothing to carry the link.
+    { refused: "schedule tasks in this environment" },
   ),
   list_scheduled_tasks: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
@@ -145,6 +181,13 @@ const handlers = {
       const scope = yield* McpInvocationContext.McpInvocationContext;
       const service = yield* OrchestratorMcpService.OrchestratorMcpService;
       return yield* service.waitForThread(scope, input);
+    }),
+  ),
+  t3_environment_links: McpToolAccess.reads(() =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const forwarding = yield* PeerForwarding.PeerForwarding;
+      return yield* forwarding.links(scope);
     }),
   ),
   t3_thread_interrupt: McpToolAccess.writesThreads(

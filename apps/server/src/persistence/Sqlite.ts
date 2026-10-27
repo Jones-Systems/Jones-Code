@@ -10,7 +10,7 @@ import { initializeV2Database } from "./initializeV2Database.ts";
 import * as ServerConfig from "../config.ts";
 import { holdJonesServerNativeWriterFence } from "../jones/updates/nativeWriterStartup.ts";
 
-export const WAL_SIZE_LIMIT_BYTES = 32 * 1024 * 1024;
+const WAL_SIZE_LIMIT_BYTES = 32 * 1024 * 1024;
 
 const layerSetup = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -25,11 +25,9 @@ const layerSetup = Layer.effectDiscard(
     }>`SELECT COUNT(*) AS count FROM sqlite_schema WHERE type = 'table'`;
     if (tables[0]?.count === 0) yield* sql`PRAGMA auto_vacuum = INCREMENTAL;`;
     yield* sql`PRAGMA journal_mode = WAL;`;
-    // FULL fsyncs the WAL on every commit, on the main thread. Every provider
-    // event is its own commit, so a slow or busy disk stalls the event loop
-    // and clients drop. In WAL mode NORMAL only fsyncs at checkpoints. It
-    // cannot corrupt the database and an app crash loses nothing; an OS crash
-    // or power loss can roll back commits since the last checkpoint.
+    // FULL fsyncs each provider-event commit on the main thread, stalling clients on slow disks.
+    // WAL NORMAL fsyncs checkpoints: app crashes lose no commits or integrity,
+    // but OS crash/power loss can roll back commits since the last checkpoint.
     yield* sql`PRAGMA synchronous = NORMAL;`;
     // Checkpoints are now the only sync, and macOS fsync() does not flush the
     // drive cache. F_FULLFSYNC makes them reach disk; other platforms ignore it.
@@ -38,12 +36,9 @@ const layerSetup = Layer.effectDiscard(
     // largest size until the last connection closes.
     yield* sql.unsafe(`PRAGMA journal_size_limit = ${WAL_SIZE_LIMIT_BYTES};`);
     yield* runMigrations();
-    // No planner statistics. Collecting them reads every page of the large
-    // tables, and stats taken while a table was small make the planner scan it
-    // once it grows. Without them SQLite assumes large tables and uses indexes;
-    // the few queries that still pick a worse index name theirs with INDEXED BY.
-    // Older builds collected stats, so clear them. A connection loads stats
-    // when it opens, so this one must reload them after the delete.
+    // Planner statistics read every page and can preserve small-table scan plans after growth.
+    // Without statistics SQLite assumes large tables and uses indexes; exceptions use INDEXED BY.
+    // Clear older builds' statistics, then reload this connection's cached planner state.
     const statTables = yield* sql`SELECT 1 FROM sqlite_schema WHERE name = 'sqlite_stat1'`;
     if (statTables.length > 0) {
       yield* sql`DELETE FROM sqlite_stat1;`;
@@ -63,6 +58,7 @@ export const layerFromPath = Effect.fn("makeSqlitePersistenceLive")(function* (d
     NodeSqliteClient.layer({
       filename: dbPath,
       readerWorker: true,
+      readerFailureMode: "fail",
       // Checkpoints sync the database, with F_FULLFSYNC on macOS. Run them off
       // the event loop so a slow flush cannot stall clients.
       checkpointWorker: true,

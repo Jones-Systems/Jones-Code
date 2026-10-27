@@ -36,7 +36,8 @@ it.effect("110 indexes thread lookups without changing rows or the upstream ledg
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* runMigrations({ toMigrationInclusive: migrationManifest.at(-1)![0] });
-    yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id < 110));
+    const migrationsThrough110 = jonesMigrationEntries.filter(([id]) => id <= 110);
+    yield* runJonesMigrations(migrationsThrough110.filter(([id]) => id < 110));
     for (const thread of ["thread:a", "thread:b"]) {
       yield* sql`INSERT INTO jones_imported_history_choices(command_id,thread_id,actor_session_id,actor_digest,command_digest,delivery_digest,reviewed_basis,command_json,basis_json)
         VALUES(${`command:${thread}`},${thread},'actor',${digest},${digest},${digest},${digest},'{}','{}')`;
@@ -64,7 +65,7 @@ it.effect("110 indexes thread lookups without changing rows or the upstream ledg
     );
     const schemaBefore = yield* schema;
 
-    assert.deepEqual(yield* runJonesMigrations(jonesMigrationEntries), [
+    assert.deepEqual(yield* runJonesMigrations(migrationsThrough110), [
       [110, "ThreadLookupIndexes"],
     ]);
     const after = yield* plans;
@@ -90,6 +91,6 @@ it.effect("110 indexes thread lookups without changing rows or the upstream ledg
       "index:jones_imported_history_choices_by_thread:jones_imported_history_choices",
       "index:jones_runtime_stop_intents_by_thread:jones_runtime_stop_intents",
     ]);
-    assert.deepEqual(yield* runJonesMigrations(jonesMigrationEntries), []);
+    assert.deepEqual(yield* runJonesMigrations(migrationsThrough110), []);
   }).pipe(Effect.provide(memory)),
 );

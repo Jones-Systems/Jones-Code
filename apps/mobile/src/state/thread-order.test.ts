@@ -19,7 +19,9 @@ vi.mock("./atom-registry", async () => {
 });
 vi.mock("./threads", async () => {
   const { Atom } = await import("effect/reactivity");
-  return { environmentThreadShells: { threadShellsAtom: Atom.make([]).pipe(Atom.keepAlive) } };
+  return {
+    environmentThreadShells: { navigationThreadShellsAtom: Atom.make([]).pipe(Atom.keepAlive) },
+  };
 });
 vi.mock("./server", async () => {
   const { Atom } = await import("effect/reactivity");
@@ -30,7 +32,7 @@ vi.mock("./use-thread-outbox", async () => {
   return { queuedThreadKeysAtom: Atom.make(new Set<string>()).pipe(Atom.keepAlive) };
 });
 
-const shellsAtom = environmentThreadShells.threadShellsAtom as Atom.Writable<
+const shellsAtom = environmentThreadShells.navigationThreadShellsAtom as Atom.Writable<
   readonly EnvironmentThreadShell[],
   readonly EnvironmentThreadShell[]
 >;
@@ -90,7 +92,7 @@ describe("shared mobile pending move", () => {
     expect(getPendingThreadOrder()).toBeNull();
   });
 
-  it.each(["failure", "interruption"])("releases a %s without restoring old canonical keys", () => {
+  it("releases a cancelled move without restoring old canonical keys", () => {
     const { start, upsert } = fixture();
     const move = start();
     upsert("b", "aa");

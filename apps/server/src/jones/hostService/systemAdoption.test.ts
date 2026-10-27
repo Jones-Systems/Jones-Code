@@ -1094,3 +1094,48 @@ it("fences user adoption from a home that holds a system adoption record", () =>
       ),
     ).rejects.toThrow(/system-unit adoption record/);
   }));
+
+it("refuses a priority drop-in with untrusted root metadata", () =>
+  fixture(async (f) => {
+    const priority = NodePath.join(f.dropins, "90-jones-priority.conf");
+    await NodeFSP.writeFile(priority, "[Service]\nNice=-15\n");
+    const rootFile = f.host.rootFile;
+    const run = f.host.run;
+    const host: SystemAdoptionHost = {
+      ...f.host,
+      rootFile: async (path) =>
+        path === priority
+          ? { uid: 1000, gid: 0, mode: 0o100644, bytes: Buffer.from("[Service]\nNice=-15\n") }
+          : rootFile(path),
+      run: async (command) => {
+        const output = await run(command);
+        return command.command === "systemctl" ? `${output}Nice=-15\n` : output;
+      },
+    };
+    await expect(planSystemAdoption(f.input, host)).rejects.toThrow(/priority/);
+  }));
+
+it("plans adoption with the exact independently installed priority policy", () =>
+  fixture(async (f) => {
+    const priority = NodePath.join(f.dropins, "90-jones-priority.conf");
+    await NodeFSP.writeFile(priority, "[Service]\nNice=-15\n");
+    const rootFile = f.host.rootFile;
+    const run = f.host.run;
+    const host: SystemAdoptionHost = {
+      ...f.host,
+      rootFile: async (path) =>
+        path === priority
+          ? { uid: 0, gid: 0, mode: 0o100644, bytes: Buffer.from("[Service]\nNice=-15\n") }
+          : rootFile(path),
+      run: async (command) => {
+        const output = await run(command);
+        return command.command === "systemctl" ? `${output}Nice=-15\n` : output;
+      },
+    };
+    const plan = await planSystemAdoption(f.input, host);
+    expect(
+      plan.plan.unit.records.some((entry) => entry.startsWith("dropin 90-jones-priority.conf ")),
+    ).toBe(true);
+    await NodeFSP.writeFile(NodePath.join(f.dropins, "jones-later.conf"), "[Service]\nNice=-15\n");
+    await expect(planSystemAdoption(f.input, host)).rejects.toThrow(/priority/);
+  }));

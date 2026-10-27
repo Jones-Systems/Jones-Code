@@ -1,10 +1,18 @@
+import { ThreadMonitorGuardedSettleCapability } from "./jones/guardedThreadSettlement.ts";
+import { LinkedThreadsCapability } from "./jones/linkedThreadsCapability.ts";
+import { WORKSTREAM_OPERATIONS_CONTRACT } from "./jones/workstreamOperations.ts";
+import { QueuedSteerBatchCapability } from "./jones/queuedSteerBatch.ts";
 import { ThreadAttentionCapability } from "./jones/threadAttention.ts";
+import { SettlementOriginsCapability } from "./jones/settlementOrigins.ts";
+export * from "./jones/settlementOrigins.ts";
+import { SettlementRestoreCapability } from "./jones/settlementRestore.ts";
+export * from "./jones/settlementRestore.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { QueueDispatchCapability } from "./queueProtocol.ts";
 import { ThreadCorpusCapability } from "./threadCorpusProtocol.ts";
-import { JonesSourceIdentity } from "./jones/fleetUpdates/source.ts";
+import { JonesBuildStartedAt, JonesSourceIdentity } from "./jones/fleetUpdates/source.ts";
 
 import {
   EnvironmentId,
@@ -13,6 +21,7 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
+import { SourceControlProviderKind } from "./sourceControl.ts";
 
 export const ORCHESTRATION_PROTOCOL_VERSION = 2;
 export const ORCHESTRATION_PROTOCOL_VERSION_TEXT = "2";
@@ -49,10 +58,7 @@ export const ExecutionEnvironmentPlatform = Schema.Struct({
   machine: ForwardCompatibleOptional(EnvironmentMachineKind),
 });
 
-/**
- * Lives here (not settings.ts) so orchestration contracts can reference it
- * without an import cycle.
- */
+// Kept outside settings.ts to avoid an orchestration import cycle.
 export const ThreadEnvMode = Schema.Literals(["local", "worktree"]);
 export type ThreadEnvMode = typeof ThreadEnvMode.Type;
 
@@ -97,10 +103,18 @@ export const NativeBootstrapCreationCapability = nativeBootstrapCapabilityStruct
 export type NativeBootstrapCreationCapability = typeof NativeBootstrapCreationCapability.Type;
 
 export const ExecutionEnvironmentCapabilities = Schema.Struct({
+  workstreamOperations: Schema.optionalKey(
+    Schema.Struct({ contract: Schema.Literal(WORKSTREAM_OPERATIONS_CONTRACT) }),
+  ),
+  queuedSteerBatch: Schema.optionalKey(QueuedSteerBatchCapability),
   workQueueMetadata: Schema.optionalKey(Schema.Boolean),
+  settlementOrigins: Schema.optionalKey(SettlementOriginsCapability),
+  settlementRestore: Schema.optionalKey(SettlementRestoreCapability),
+  threadMonitorGuardedSettle: Schema.optionalKey(ThreadMonitorGuardedSettleCapability),
   queueDispatch: Schema.optionalKey(QueueDispatchCapability),
   threadCorpus: Schema.optionalKey(ThreadCorpusCapability),
   threadAttention: Schema.optionalKey(ThreadAttentionCapability),
+  linkedThreads: Schema.optionalKey(LinkedThreadsCapability),
   nativeBootstrapCreation: Schema.optionalKey(NativeBootstrapCreationCapability),
   currentRuntimeStop: Schema.optionalKey(
     Schema.Struct({
@@ -121,17 +135,14 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   ),
   pullRequests: Schema.optionalKey(Schema.Boolean),
   pullRequestChecks: Schema.optionalKey(Schema.Boolean),
-  /** Absent on servers from before inline context shipped, which drop the records and forward
-      the links as literal text -- so a client must serialize context the legacy way for them. */
+  /** Absent on older servers; serialize context as legacy text for them. */
   inlineMessageContext: Schema.optionalKey(Schema.Boolean),
   requiredWorktreeBootstrap: Schema.optionalKey(Schema.Boolean),
   threadSettlement: Schema.optionalKey(Schema.Boolean),
   threadAutoSettlement: Schema.optionalKey(Schema.Boolean),
   storageCleanup: Schema.optionalKey(Schema.Boolean),
   storageCleanupRun: Schema.optionalKey(Schema.Boolean),
-  /** Server streams database size and reclaimable space for the Storage settings notice. */
   databaseStorage: Schema.optionalKey(Schema.Boolean),
-  /** Server checks OTLP endpoints for the telemetry export settings. */
   otlpEndpointCheck: Schema.optionalKey(Schema.Boolean),
   projectWorktreeCleanup: Schema.optionalKey(Schema.Boolean),
   settledWorktreeCleanup: Schema.optionalKey(Schema.Boolean),
@@ -139,20 +150,14 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   threadAutoSettlementScope: Schema.optionalKey(Schema.Boolean),
   threadRestartContinuation: Schema.optionalKey(Schema.Boolean),
   projectSettingsOverrides: Schema.optionalKey(Schema.Boolean),
-  /**
-   * Older
-      servers decode the key away (unknown fields are stripped, not
-      rejected), so the per-project provider switch would silently do
-      nothing; clients hide it instead of sending a patch that goes nowhere.
-   */
+  /** Hide the switch when absent; older servers silently drop per-project provider patches. */
   projectProviderInstanceOverrides: Schema.optionalKey(Schema.Boolean),
   threadSnooze: Schema.optionalKey(Schema.Boolean),
-  /** Absent on servers from
-      before environment themes shipped, which never emit the events -- so a
-      client reconnecting to one must drop published themes rather than keep
-      showing a set nothing will ever update. */
+  /** Clear published themes when absent; older servers never send updates. */
   environmentThemes: Schema.optionalKey(Schema.Boolean),
   usageLimitSources: Schema.optionalKey(Schema.Boolean),
+  /** Honors `workspaceSnapshotsOnDemand`; older servers send every snapshot and drop them in the stream. */
+  providerWorkspaceSnapshotsOnDemand: Schema.optionalKey(Schema.Boolean),
   usagePriceOverrides: Schema.optionalKey(Schema.Boolean),
   /** An enrolled adapter can explicitly read one configured, canonically validated saved report. */
   savedTokenAccounting: Schema.optionalKey(Schema.Boolean),
@@ -168,6 +173,9 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   serverResolvedCommandContext: Schema.optionalKey(Schema.Boolean),
   /** Opted-in owner queues can deliver at successful foreground tool boundaries. */
   queuedToolBoundaryDelivery: Schema.optionalKey(Schema.Boolean),
+  /** Explicit support for starting one selected queued run; absent means unsupported. */
+  queuedRunStart: Schema.optionalKey(Schema.Boolean),
+  threadStop: Schema.optionalKey(Schema.Boolean),
   threadPullRequests: Schema.optionalKey(Schema.Boolean),
   threadPullRequestWatch: Schema.optionalKey(Schema.Boolean),
   pullRequestStackActions: Schema.optionalKey(Schema.Boolean),
@@ -176,22 +184,29 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   serverInstallation: ForwardCompatibleOptional(ServerInstallation),
   serverSelfUpdateProgress: Schema.optionalKey(Schema.Boolean),
   serverUpdateThreadContinuation: Schema.optionalKey(Schema.Boolean),
-  /**
-   * Clients skip seeding a Live Activity when
-      this is false — no update would ever repaint it. Absent on older
-      servers, which may still publish, so only an explicit false skips.
-   */
+  /** Only explicit false skips Live Activity seeding; older servers may still publish. */
   agentActivityPublishing: Schema.optionalKey(Schema.Boolean),
   projectCloneTracking: Schema.optionalKey(Schema.Boolean),
+  /** Server answers projects.listIgnoredFiles. */
+  ignoredFileListing: Schema.optionalKey(Schema.Boolean),
   environmentIcon: Schema.optionalKey(Schema.Boolean),
   desktopAppUpdate: Schema.optionalKey(Schema.Boolean),
-  /** Server answers orchestration.subscribeCommandOutput. Absent on older servers,
-      which never send command output, so clients must not subscribe. */
+  /** Subscribe to command output only when advertised; older servers never send it. */
   commandOutputStreaming: Schema.optionalKey(Schema.Boolean),
-  /** Server hosts preview tabs in its own headless Chromium (`runtime:
-      "server"`) and streams them over `/api/preview-stream`. Clients
-      without a local browser runtime open server tabs here. */
+  /** Hosts headless Chromium tabs streamed over /api/preview-stream for clients without a local runtime. */
   serverBrowser: Schema.optionalKey(Schema.Boolean),
+  /** Server links to other environments (`PeerLink`) and its agents can work
+      in them. Absent on servers from before linking, which clients must not
+      offer linking for. */
+  peerLinks: Schema.optionalKey(Schema.Boolean),
+  /** Server's `/mcp` narrows an OAuth client's modes from `T3-Mode-Limit`, so
+      a linked environment's calls keep its agent's limits. Another environment
+      links to this one only when it is set. */
+  mcpModeLimitHeader: Schema.optionalKey(Schema.Boolean),
+  /** Work a linked environment starts here stays within its link
+      (`linkOrigin`). Another environment links to this one only when it is
+      set, since without it that work could change the user's own threads. */
+  linkFence: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 
@@ -201,6 +216,7 @@ export const ExecutionEnvironmentDescriptor = Schema.Struct({
   platform: ExecutionEnvironmentPlatform,
   serverVersion: TrimmedNonEmptyString,
   jonesSource: Schema.optionalKey(JonesSourceIdentity),
+  jonesBuildStartedAt: Schema.optionalKey(JonesBuildStartedAt),
   orchestrationProtocolVersion: Schema.optionalKey(Schema.Int),
   capabilities: ExecutionEnvironmentCapabilities,
 });
@@ -215,6 +231,7 @@ export type RepositoryIdentityLocator = typeof RepositoryIdentityLocator.Type;
 
 export const RepositoryOrigin = Schema.Struct({
   canonicalKey: TrimmedNonEmptyString,
+  remoteUrl: Schema.optionalKey(TrimmedNonEmptyString),
   displayName: Schema.optionalKey(TrimmedNonEmptyString),
 });
 export type RepositoryOrigin = typeof RepositoryOrigin.Type;
@@ -223,9 +240,10 @@ export const RepositoryIdentity = Schema.Struct({
   canonicalKey: TrimmedNonEmptyString,
   locator: RepositoryIdentityLocator,
   webUrl: Schema.optionalKey(TrimmedNonEmptyString),
+  /** Work tree root, or the git dir for a bare repository. */
   rootPath: Schema.optionalKey(TrimmedNonEmptyString),
   displayName: Schema.optionalKey(TrimmedNonEmptyString),
-  provider: Schema.optionalKey(TrimmedNonEmptyString),
+  provider: Schema.optionalKey(SourceControlProviderKind),
   owner: Schema.optionalKey(TrimmedNonEmptyString),
   name: Schema.optionalKey(TrimmedNonEmptyString),
   origin: Schema.optionalKey(RepositoryOrigin),

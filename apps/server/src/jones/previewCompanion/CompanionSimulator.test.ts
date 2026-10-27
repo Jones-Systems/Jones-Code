@@ -43,6 +43,7 @@ import * as DesktopChannel from "../../preview/DesktopBrowserChannel.ts";
 import * as Manager from "../../preview/Manager.ts";
 import * as PreviewBrowser from "../../preview/PreviewBrowser.ts";
 import * as ServerBrowser from "../../preview/ServerBrowser.ts";
+import * as PreviewAgentActivity from "../../preview/PreviewAgentActivity.ts";
 import { ServerBrowserContexts } from "../../preview/ServerBrowserContexts.ts";
 import * as PageOperations from "../../preview/ServerBrowserPage.ts";
 import * as CompanionRegistration from "./registration.ts";
@@ -184,6 +185,7 @@ it.live.skipIf(!executable || !scratch)(
         ServerBrowser.layer.pipe(
           Layer.provideMerge(CompanionRegistration.servicesLayer),
           Layer.provideMerge(DesktopChannel.layer),
+          Layer.provide(PreviewAgentActivity.layer),
           Layer.provideMerge(common),
         ),
       );
@@ -435,5 +437,4 @@ it.live.skipIf(!executable || !scratch)(
       });
       expect(fallback).not.toHaveBeenCalled();
     }).pipe(Effect.scoped),
-  60_000,
 );

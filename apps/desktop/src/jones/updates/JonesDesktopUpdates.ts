@@ -4,6 +4,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
+import * as NodeUtil from "node:util";
 import {
   JonesActionsClient,
   JonesActionsError,
@@ -12,6 +13,7 @@ import {
   type JonesActionsCandidate,
 } from "@t3tools/shared/jones/jonesActions";
 import type { DesktopUpdateState } from "@t3tools/contracts";
+import { readJonesBuildStartedAt } from "@t3tools/contracts/jones/fleet-updates";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -36,9 +38,20 @@ import {
 } from "./jonesMacStaging.ts";
 import { jonesNativeHelperSource } from "./jonesNativeHelperSource.ts";
 import { jonesPreparationText } from "./jonesNativePreparation.ts";
+import type {
+  JonesDesktopPreparationState,
+  PreparationHold,
+} from "./backgroundPreparationPolicy.ts";
+import {
+  prepareJonesStage,
+  type JonesPreparedStage,
+  type JonesStagingRoots,
+} from "./stagingJobs.ts";
 
 const SourceHash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/));
 const BuildMetadata = Schema.Struct({
+  version: Schema.optionalKey(Schema.Unknown),
+  jonesBuildStartedAt: Schema.optionalKey(Schema.Unknown),
   t3codeCommitHash: Schema.optionalKey(SourceHash),
   jonesSource: Schema.optionalKey(
     Schema.Struct({
@@ -49,6 +62,32 @@ const BuildMetadata = Schema.Struct({
   ),
 });
 const ActivationJournal = Schema.Struct({
+  preEffect: Schema.optionalKey(
+    Schema.Struct({
+      phase: Schema.Literals(["intent", "preparing", "quiescent"]),
+      step: Schema.Literals([
+        "storage",
+        "reserve",
+        "bundle",
+        "stop-processes",
+        "quiescence",
+        "pair",
+      ]),
+      reason: Schema.String,
+      diagnostics: Schema.optionalKey(
+        Schema.Record(Schema.String, Schema.Union([Schema.String, Schema.Number])),
+      ),
+      relaunch: Schema.Literals(["started", "skipped"]),
+    }),
+  ),
+  phaseBeforeBlock: Schema.optionalKey(Schema.String),
+  legacySettlement: Schema.optionalKey(
+    Schema.Struct({
+      basis: Schema.Literals(["interrupted-preparation", "unstarted-activation"]),
+      settledBy: Schema.Literal("startup"),
+      evidence: Schema.Record(Schema.String, Schema.Union([Schema.String, Schema.Boolean])),
+    }),
+  ),
   intent: JonesInstallIntent,
   phase: Schema.String,
   message: Schema.optionalKey(Schema.String),
@@ -110,13 +149,32 @@ const decodeNativePreparationResult = Schema.decodeUnknownSync(
 const decodePreparationFailure = Schema.decodeUnknownSync(
   Schema.Struct({ protocol: Schema.Literal(1), reason: Schema.String }),
 );
-const DISPATCHED_PREPARATION_RECORDS = new Set([
-  "prepare-dispatched.json",
-  "continuation.json",
-  "activation-request.json",
-  "intent.json",
-  "journal.json",
-]);
+const decodeNativeWithdrawalResult = Schema.decodeUnknownSync(
+  Schema.Struct({
+    protocol: Schema.Literal(1),
+    operation: Schema.Literal("withdraw-preparation"),
+    transactionId: Schema.String,
+    status: Schema.Literals(["withdrawn", "refused", "uncertain"]),
+    claimSha256: Schema.optionalKey(Schema.String),
+    proofPath: Schema.optionalKey(Schema.String),
+    proofSha256: Schema.optionalKey(Schema.String),
+    reason: Schema.optionalKey(Schema.String),
+  }),
+);
+const decodeNativeRetirementResult = Schema.decodeUnknownSync(
+  Schema.Struct({
+    protocol: Schema.Literal(1),
+    operation: Schema.Literals(["inspect-retirement", "retire-transaction"]),
+    transactionId: Schema.String,
+    status: Schema.Literals(["ready", "retired", "refused", "uncertain"]),
+    planSha256: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/))),
+    activeBinding: Schema.optionalKey(JonesActiveInstall),
+    journalSha256: Schema.optionalKey(Schema.String),
+    targets: Schema.optionalKey(Schema.Array(Schema.Unknown)),
+    reconciliation: Schema.optionalKey(Schema.Boolean),
+    reason: Schema.optionalKey(Schema.String),
+  }),
+);
 
 const decodeBuildMetadata = Schema.decodeUnknownSync(BuildMetadata);
 const decodeActiveInstall = Schema.decodeUnknownSync(JonesActiveInstall);
@@ -164,7 +222,7 @@ function nativeFailureReason(cause: unknown): string {
   return text.length === 0 ? "unexpected error" : text.replace(/\.$/, "");
 }
 
-function provenance(candidate: JonesActionsCandidate) {
+function provenance(candidate: JonesActionsCandidate, buildStartedAt: string | undefined) {
   return {
     repository: candidate.repository,
     sourceSha: candidate.source,
@@ -177,6 +235,7 @@ function provenance(candidate: JonesActionsCandidate) {
     platform: candidate.platform,
     architecture: candidate.architecture,
     version: candidate.version,
+    ...(buildStartedAt === undefined ? {} : { buildStartedAt }),
   } as const;
 }
 
@@ -228,6 +287,118 @@ export interface JonesDesktopDownloadResult {
   readonly refusal?: "selection-mismatch";
 }
 
+export type JonesLegacyProcessProof = { readonly pid: number; readonly identity: string };
+export type JonesProcessRole = { readonly pid: number; readonly role: "main" | "backend" };
+export type JonesKernelProcessProof = {
+  readonly pid: number;
+  readonly startSec: number;
+  readonly startUsec: number;
+  readonly executable: string;
+};
+
+const validProcessPid = (pid: unknown): pid is number =>
+  typeof pid === "number" && Number.isInteger(pid) && pid > 0 && pid <= 2147483647;
+
+export function jonesNativeProcessRoles(
+  main: number,
+  backends: readonly number[],
+): JonesProcessRole[] {
+  if (!validProcessPid(main) || backends.some((pid) => !validProcessPid(pid)))
+    throw new Error("Invalid native writer PID.");
+  const pids = [...new Set(backends)].filter((pid) => pid !== main);
+  if (pids.length >= 256) throw new Error("Too many native writers.");
+  return [{ pid: main, role: "main" }, ...pids.map((pid) => ({ pid, role: "backend" as const }))];
+}
+
+export async function captureJonesNativeProcesses(
+  helper: string,
+  supplied: readonly JonesLegacyProcessProof[] | readonly JonesProcessRole[],
+): Promise<{
+  processes: readonly JonesLegacyProcessProof[] | readonly JonesProcessRole[];
+  proofs: readonly JonesLegacyProcessProof[] | readonly JonesKernelProcessProof[];
+}> {
+  const processes = supplied.map((proof) => ({ ...proof }));
+  const roles = processes.some((proof) => "role" in proof);
+  if (!roles) {
+    if (
+      processes.length > 256 ||
+      !processes.every(
+        (proof) =>
+          Object.keys(proof).length === 2 &&
+          Number.isInteger(proof.pid) &&
+          proof.pid > 0 &&
+          "identity" in proof &&
+          typeof proof.identity === "string" &&
+          proof.identity.trim(),
+      )
+    )
+      throw new Error("Invalid legacy native writer proofs.");
+    return {
+      processes: processes as JonesLegacyProcessProof[],
+      proofs: processes as JonesLegacyProcessProof[],
+    };
+  }
+  if (
+    !processes.length ||
+    processes.length > 256 ||
+    !processes.every(
+      (proof) =>
+        Object.keys(proof).length === 2 &&
+        validProcessPid(proof.pid) &&
+        "role" in proof &&
+        (proof.role === "main" || proof.role === "backend"),
+    ) ||
+    new Set(processes.map((proof) => proof.pid)).size !== processes.length ||
+    processes.filter((proof) => "role" in proof && proof.role === "main").length !== 1
+  )
+    throw new Error("Invalid native writer roles.");
+  const deadline = performance.now() + 30000;
+  const proofs: JonesKernelProcessProof[] = [];
+  for (const role of processes) {
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) throw new Error("Native writer capture deadline expired.");
+    const { stdout, stderr } = await new Promise<{ stdout: string; stderr: string }>(
+      (resolve, reject) => {
+        NodeChildProcess.execFile(
+          "/usr/bin/python3",
+          [helper, "--process-identity", String(role.pid)],
+          {
+            encoding: "utf8",
+            maxBuffer: 4096,
+            timeout: Math.max(1, Math.floor(Math.min(5000, remaining))),
+          },
+          (error, stdout, stderr) => (error ? reject(error) : resolve({ stdout, stderr })),
+        );
+      },
+    );
+    if (stderr.trim() || performance.now() > deadline)
+      throw new Error("Native writer inspection failed.");
+    const proof: unknown = JSON.parse(stdout);
+    if (proof === null || typeof proof !== "object" || Array.isArray(proof))
+      throw new Error("Invalid native writer identity.");
+    const value = proof as Record<string, unknown>;
+    if (
+      Object.keys(value).length !== 4 ||
+      !validProcessPid(value.pid) ||
+      value.pid !== role.pid ||
+      typeof value.startSec !== "number" ||
+      !Number.isSafeInteger(value.startSec) ||
+      value.startSec < 0 ||
+      typeof value.startUsec !== "number" ||
+      !Number.isInteger(value.startUsec) ||
+      value.startUsec < 0 ||
+      value.startUsec >= 1000000 ||
+      typeof value.executable !== "string" ||
+      !value.executable.startsWith("/") ||
+      value.executable.includes("\0") ||
+      Buffer.byteLength(value.executable, "utf8") >= 4096
+    )
+      throw new Error("Invalid native writer identity.");
+    proofs.push(value as JonesKernelProcessProof);
+  }
+  return { processes: processes as JonesProcessRole[], proofs };
+}
+
 export interface JonesDesktopUpdateOptions {
   readonly home: string;
   readonly appRoot: string;
@@ -247,13 +418,26 @@ export interface JonesDesktopUpdateOptions {
     transactionId: string,
     active: ActiveInstall,
   ) => Promise<{ readonly phase?: string; readonly message?: string } | void>;
-  readonly processProofs: () => Promise<readonly { pid: number; identity: string }[]>;
+  readonly processProofs: () => Promise<
+    readonly JonesLegacyProcessProof[] | readonly JonesProcessRole[]
+  >;
   readonly listener: () => Promise<string>;
   readonly timestamp: () => Promise<string>;
   readonly client?: Pick<JonesActionsClient, "check" | "stage">;
   readonly stageApp?: typeof stageJonesMacApp;
   readonly validateArtifact?: typeof validateJonesStagedArtifact;
+  /**
+   * Downloads and verifies the artifact and app. Production runs it in the separate preparation
+   * process; the default stages in this process with `client` and `stageApp`.
+   */
+  readonly prepareStage?: (
+    candidate: JonesActionsCandidate,
+    roots: JonesStagingRoots,
+    onVerifying: () => Promise<void>,
+  ) => Promise<JonesPreparedStage>;
 }
+
+export type JonesSupersedeResult = "replaced" | "refused" | "uncertain" | "download-failed";
 
 /** One host-owned checker. Downloads retain a fixed candidate; later checks cannot replace Install. */
 export class JonesDesktopUpdateController {
@@ -261,9 +445,14 @@ export class JonesDesktopUpdateController {
   #source: string | undefined;
   #installedSource: JonesUpdateState["installedSource"];
   #candidate: JonesActionsCandidate | undefined;
+  #candidateBuildStartedAt: string | undefined;
+  #currentBuildStartedAt: string | undefined;
   #staged: StagedMacApp | undefined;
   #selectedAttempt: { readonly stagedHandle: string; readonly transactionId: string } | undefined;
-  #busy: "check" | "download" | "install" | "discard" | null = null;
+  #busy: "check" | "download" | "install" | "discard" | "reclaim" | null = null;
+  /** The newest build the last check offered, even while an older one stays staged. */
+  #latest: JonesActionsCandidate | undefined;
+  #latestBuildStartedAt: string | undefined;
   #bootstrap: ActiveInstall | undefined;
   #activationBlocked = false;
   #candidateStartupGateUnavailable = false;
@@ -284,6 +473,37 @@ export class JonesDesktopUpdateController {
   }
   get busy() {
     return this.#busy;
+  }
+  get latestAvailable() {
+    return this.#latest;
+  }
+  get stagedBuild():
+    | { readonly handle: string; readonly source: string; readonly version: string }
+    | undefined {
+    return this.#staged === undefined
+      ? undefined
+      : {
+          handle: this.#staged.handle,
+          source: this.#staged.sourceSha,
+          version: this.#staged.version,
+        };
+  }
+  /** Why automatic preparation must not touch the stage; a claimed install pins it. */
+  get preparationHold(): PreparationHold | undefined {
+    const phase = this.#state.jones?.phase;
+    if (this.#busy === "install" || phase === "preparing" || phase === "installing")
+      return { kind: "install" };
+    if (this.#activationBlocked)
+      return {
+        kind: "blocked",
+        ...(this.#state.message === null ? {} : { message: this.#state.message }),
+      };
+    if (this.#source === undefined || this.#options.disabledByEnv || this.#bootstrap === undefined)
+      return {
+        kind: "unavailable",
+        ...(this.#state.message === null ? {} : { message: this.#state.message }),
+      };
+    return undefined;
   }
   get manifestPath() {
     return NodePath.join(this.#options.home, "runtime", "jones-active-install.json");
@@ -465,6 +685,7 @@ export class JonesDesktopUpdateController {
     )
       throw new Error("Native app receipt bindings changed.");
     this.#candidate = artifact.candidate;
+    this.#candidateBuildStartedAt = undefined;
     this.#staged = selection.app;
   }
 
@@ -547,13 +768,18 @@ export class JonesDesktopUpdateController {
         install: reason === undefined && phase !== "installing",
         ...(reason === undefined ? {} : { reason }),
       },
-      ...(this.#candidate === undefined ? {} : { provenance: provenance(this.#candidate) }),
+      ...(this.#candidate === undefined
+        ? {}
+        : { provenance: provenance(this.#candidate, this.#candidateBuildStartedAt) }),
       ...(this.#staged === undefined ? {} : { stagedHandle: this.#staged.handle }),
       ...(this.#bootstrap === undefined
         ? {}
         : {
             environmentId: decodeEnvironmentId(this.#bootstrap.environmentId),
             currentVersion: this.#state.currentVersion,
+            ...(this.#currentBuildStartedAt === undefined
+              ? {}
+              : { currentBuildStartedAt: this.#currentBuildStartedAt }),
           }),
       ...(message === undefined ? {} : { message }),
       ...(checkedAt === null ? {} : { checkedAt }),
@@ -698,6 +924,10 @@ export class JonesDesktopUpdateController {
       ),
     );
     this.#source = metadata.jonesSource?.sha;
+    this.#currentBuildStartedAt =
+      metadata.version === this.#state.currentVersion
+        ? readJonesBuildStartedAt(metadata)
+        : undefined;
     this.#installedSource = undefined;
     this.#terminalPhase = undefined;
     this.#activationMessage = undefined;
@@ -758,8 +988,8 @@ export class JonesDesktopUpdateController {
         if (cause.code === "ENOENT") return [];
         throw cause;
       });
-      // A preparation-only claim cannot activate. Retire it once no dispatch can follow,
-      // so a failed preparation does not block Install until manual recovery.
+      // Withdraw protocol-3 preparations under the activation lock before retirement.
+      // Older claims still require the helper's original no-dispatch proof.
       const preparationHolds = new Map<string, string>();
       const released = new Set<string>();
       for (const entry of entries) {
@@ -769,7 +999,8 @@ export class JonesDesktopUpdateController {
         );
         if (
           !names.includes("prepare-intent.json") ||
-          names.some((name) => DISPATCHED_PREPARATION_RECORDS.has(name))
+          names.includes("intent.json") ||
+          names.includes("journal.json")
         )
           continue;
         const recovery = await this.#retirePreparation(entry);
@@ -823,19 +1054,12 @@ export class JonesDesktopUpdateController {
             }
             try {
               await NodeFSP.lstat(NodePath.join(directory, "prepare-intent.json"));
-              try {
-                await NodeFSP.lstat(NodePath.join(directory, "continuation.json"));
-              } catch (preparationError) {
-                if ((preparationError as NodeJS.ErrnoException).code === "ENOENT") {
-                  this.#activationBlocked = true;
-                  const failure = await this.#preparationFailure(directory);
-                  throw new Error(
-                    `Update preparation ${entry} did not finish${failure === undefined ? "" : ` (${failure})`} and could not be proved safe to retry (${preparationHolds.get(entry) ?? "unknown-state"}). Quit Jones Code, then run the native helper's --retire-preparation recovery.`,
-                    { cause: preparationError },
-                  );
-                }
-                throw preparationError;
-              }
+              this.#activationBlocked = true;
+              const failure = await this.#preparationFailure(directory);
+              throw new Error(
+                `Update preparation ${entry} was not activated${failure === undefined ? "" : ` (${failure})`} and could not be proved safe to retry (${preparationHolds.get(entry) ?? "unknown-state"}). Quit Jones Code, then run the native helper's --retire-preparation recovery.`,
+                { cause },
+              );
             } catch (preparationError) {
               if ((preparationError as NodeJS.ErrnoException).code !== "ENOENT")
                 throw preparationError;
@@ -868,7 +1092,9 @@ export class JonesDesktopUpdateController {
             this.#lastJournal = journal;
             this.#terminalPhase = committed ? "committed" : "rolled-back";
             this.#activationMessage =
-              journal.message ??
+              (rolledBack && journal.preEffect !== undefined
+                ? `Update did not start; nothing changed. Transaction ${entry}.`
+                : journal.message) ??
               (committed
                 ? `Update ${entry} committed; Jones Code ${active.version} is active.`
                 : `Update ${entry} rolled back; Jones Code ${active.version} remains active.`);
@@ -882,6 +1108,14 @@ export class JonesDesktopUpdateController {
           activeGeneration: active.generation,
           activeSource: active.sourceSha,
         });
+      }
+      if (!(await this.#retireSuccessfulTransactions(active, retained))) {
+        this.#activationMessage = [
+          this.#activationMessage,
+          "Older recovery data remains retained; cleanup is waiting for a safe recovery boundary.",
+        ]
+          .filter(Boolean)
+          .join(" ");
       }
     } catch (cause) {
       if (boundManifest) this.#activationBlocked = true;
@@ -948,7 +1182,12 @@ export class JonesDesktopUpdateController {
         architecture: this.#options.architecture,
       });
       if (result.state === "available") {
-        if (this.#staged === undefined) this.#candidate = result.candidate;
+        this.#latest = result.candidate;
+        this.#latestBuildStartedAt = result.buildStartedAt;
+        if (this.#staged === undefined) {
+          this.#candidate = result.candidate;
+          this.#candidateBuildStartedAt = result.buildStartedAt;
+        }
         await this.#publish(
           this.#staged === undefined ? "available" : "staged",
           this.#staged === undefined ? "available" : "downloaded",
@@ -959,7 +1198,11 @@ export class JonesDesktopUpdateController {
           this.#staged === undefined ? "error" : "downloaded",
           `Jones main check blocked: ${result.reason}.`,
         );
-      else
+      else {
+        if (result.state === "no-new") {
+          this.#latest = undefined;
+          this.#latestBuildStartedAt = undefined;
+        }
         await this.#publish(
           this.#staged === undefined
             ? result.state === "no-new"
@@ -975,6 +1218,7 @@ export class JonesDesktopUpdateController {
             ? "The latest main build is still being qualified."
             : undefined,
         );
+      }
       return true;
     } catch {
       await this.#publish(
@@ -1016,16 +1260,20 @@ export class JonesDesktopUpdateController {
         mode: 0o700,
       });
       await this.#publish("downloading", "downloading");
-      const artifact = await this.#client.stage(
-        candidate,
-        NodePath.join(this.updaterRoot, "artifacts"),
-      );
-      await this.#publish("verifying", "downloading");
-      this.#staged = await (this.#options.stageApp ?? stageJonesMacApp)(
-        artifact,
-        NodePath.join(this.updaterRoot, "apps"),
-        this.#options.platform,
-      );
+      const roots = {
+        artifacts: NodePath.join(this.updaterRoot, "artifacts"),
+        apps: NodePath.join(this.updaterRoot, "apps"),
+      };
+      const onVerifying = () => this.#publish("verifying", "downloading");
+      const prepared = await (this.#options.prepareStage === undefined
+        ? prepareJonesStage(candidate, roots, this.#options.platform, {
+            actions: this.#client,
+            stageApp: this.#options.stageApp ?? stageJonesMacApp,
+            onVerifying,
+          })
+        : this.#options.prepareStage(candidate, roots, onVerifying));
+      const artifact = prepared.artifact;
+      this.#staged = await this.#bindPreparedStage(candidate, prepared);
       const selectionFile = await this.#selectionFile();
       await NodeFSP.mkdir(NodePath.dirname(selectionFile), { recursive: true, mode: 0o700 });
       const selection = {
@@ -1076,14 +1324,76 @@ export class JonesDesktopUpdateController {
     return helper;
   }
 
-  /**
-   * Retires a preparation-only claim when the helper proves no dispatch can follow: the
-   * backend refused it, or the desktop and backends that could receive its request exited.
-   * Unproved claims stay held for the quit-app operator recovery.
-   */
+  /** Keep current, recovery-parent and failure journals; native ownership guards decide every deletion. */
+  async #retireSuccessfulTransactions(
+    active: ActiveInstall,
+    entries: ReadonlyArray<string>,
+  ): Promise<boolean> {
+    let complete = true;
+    for (const transactionId of entries) {
+      if (transactionId === active.transactionId || transactionId === active.generation) continue;
+      const path = NodePath.join(this.updaterRoot, "transactions", transactionId, "journal.json");
+      try {
+        const info = await NodeFSP.lstat(path);
+        if (!info.isFile() || info.isSymbolicLink() || info.size > 1024 * 1024) continue;
+        const raw = await NodeFSP.readFile(path, "utf8");
+        const journal = decodeActivationJournal(JSON.parse(raw));
+        if (journal.phase !== "resumed" || journal.intent.transactionId !== transactionId) continue;
+        const helper = await this.#helperPath();
+        const run = async (
+          operation: "inspect-retirement" | "retire-transaction",
+          plan?: string,
+        ) => {
+          const result = decodeNativeRetirementResult(
+            JSON.parse(
+              await runNativeCommand("/usr/bin/python3", [
+                helper,
+                "--manifest",
+                this.manifestPath,
+                `--${operation}`,
+                transactionId,
+                ...(plan === undefined ? [] : ["--plan-sha256", plan]),
+              ]),
+            ),
+          );
+          if (result.operation !== operation || result.transactionId !== transactionId)
+            throw new Error("Native retirement identity changed.");
+          return result;
+        };
+        const inspection = await run("inspect-retirement");
+        if (
+          inspection.status === "retired" ||
+          (inspection.status === "refused" && inspection.reason === "protected-recovery-parent")
+        )
+          continue;
+        if (
+          inspection.status !== "ready" ||
+          inspection.planSha256 === undefined ||
+          !NodeUtil.isDeepStrictEqual(inspection.activeBinding, active) ||
+          inspection.journalSha256 !== NodeCrypto.createHash("sha256").update(raw).digest("hex") ||
+          inspection.targets === undefined
+        ) {
+          complete = false;
+          continue;
+        }
+        if (inspection.targets.length === 0 && inspection.reconciliation !== true) continue;
+        const result = await run("retire-transaction", inspection.planSha256);
+        if (result.status !== "retired" || result.planSha256 !== inspection.planSha256)
+          complete = false;
+      } catch (cause) {
+        if ((cause as NodeJS.ErrnoException).code !== "ENOENT") complete = false;
+      }
+    }
+    return complete;
+  }
+
+  /** Retires only a proven withdrawal or a legacy claim with no possible dispatch. */
   async #retirePreparation(transactionId: string): Promise<{ retired: boolean; reason: string }> {
     try {
       const helper = await this.#helperPath();
+      const withdrawal = await this.#withdrawPreparation(transactionId, helper);
+      if (withdrawal !== undefined && !withdrawal.withdrawn)
+        return { retired: false, reason: withdrawal.reason };
       const run = async (
         operation: "inspect-preparation" | "retire-preparation",
         plan?: string,
@@ -1115,6 +1425,78 @@ export class JonesDesktopUpdateController {
     }
   }
 
+  async #withdrawPreparation(
+    transactionId: string,
+    helper: string,
+  ): Promise<{ withdrawn: boolean; reason: string } | undefined> {
+    const directory = NodePath.join(this.updaterRoot, "transactions", transactionId);
+    const read = async (path: string) => {
+      const info = await NodeFSP.lstat(path);
+      if (!info.isFile() || info.isSymbolicLink() || info.size > 1024 * 1024)
+        throw new Error("Native preparation proof is not a bounded regular file.");
+      const raw = await NodeFSP.readFile(path, "utf8");
+      return { raw, value: JSON.parse(raw) as Record<string, unknown> };
+    };
+    const claim = await read(NodePath.join(directory, "prepare-intent.json")).catch(
+      () => undefined,
+    );
+    // A legacy or unreadable claim still goes through the native retirement guard.
+    if (claim?.value?.preparationClaimProtocol !== 3) return undefined;
+    const value = claim.value;
+    if (
+      value.transactionId !== transactionId ||
+      typeof value.stagedHandle !== "string" ||
+      !/^[a-f0-9]{64}$/.test(value.stagedHandle) ||
+      typeof value.selectionPath !== "string" ||
+      NodePath.dirname(value.selectionPath) !== NodePath.join(this.updaterRoot, "staging") ||
+      typeof value.selectionSha256 !== "string" ||
+      !/^[a-f0-9]{64}$/.test(value.selectionSha256)
+    )
+      return { withdrawn: false, reason: "withdrawal-binding-invalid" };
+    const claimSha256 = NodeCrypto.createHash("sha256").update(claim.raw).digest("hex");
+    const result = decodeNativeWithdrawalResult(
+      JSON.parse(
+        await runNativeCommand("/usr/bin/python3", [
+          helper,
+          "--manifest",
+          this.manifestPath,
+          "--withdraw-preparation",
+          transactionId,
+          "--staged-handle",
+          value.stagedHandle,
+          "--selection",
+          value.selectionPath,
+          "--selection-sha256",
+          value.selectionSha256,
+          "--claim-sha256",
+          claimSha256,
+        ]),
+      ),
+    );
+    if (result.transactionId !== transactionId)
+      return { withdrawn: false, reason: "withdrawal-binding-invalid" };
+    if (result.status !== "withdrawn")
+      return { withdrawn: false, reason: result.reason ?? result.status };
+    const proofPath = NodePath.join(directory, "preparation-withdrawal.json");
+    if (result.claimSha256 !== claimSha256 || result.proofPath !== proofPath)
+      return { withdrawn: false, reason: "withdrawal-binding-invalid" };
+    const proof = await read(proofPath);
+    if (
+      NodeCrypto.createHash("sha256").update(proof.raw).digest("hex") !== result.proofSha256 ||
+      !NodeUtil.isDeepStrictEqual(proof.value, {
+        protocol: 1,
+        withdrawalProtocol: 1,
+        transactionId,
+        claimSha256,
+        claim: value,
+        expected: this.#bootstrap,
+        evidence: "withdrawal-protocol",
+      })
+    )
+      return { withdrawn: false, reason: "withdrawal-proof-invalid" };
+    return { withdrawn: true, reason: "withdrawn" };
+  }
+
   async #preparationFailure(directory: string): Promise<string | undefined> {
     try {
       const raw = await NodeFSP.readFile(NodePath.join(directory, "prepare-failure.json"), "utf8");
@@ -1136,37 +1518,9 @@ export class JonesDesktopUpdateController {
       return { accepted: false, completed: false };
     }
     this.#busy = "discard";
-    let dispatched = false;
+    const dispatch = { dispatched: false };
     try {
-      const selection = await this.#selectionFile();
-      const raw = await NodeFSP.readFile(selection, "utf8");
-      if (decodeStageSelection(JSON.parse(raw)).app.handle !== handle)
-        throw new Error("Selection changed.");
-      const helper = await this.#helperPath();
-      dispatched = true;
-      const result = decodeNativeSelectionResult(
-        JSON.parse(
-          await runNativeCommand("/usr/bin/python3", [
-            helper,
-            "--manifest",
-            this.manifestPath,
-            "--discard-staged",
-            handle,
-            "--selection",
-            selection,
-            "--selection-sha256",
-            NodeCrypto.createHash("sha256").update(raw).digest("hex"),
-          ]),
-        ),
-      );
-      if (
-        result.operation !== "discard-staged" ||
-        result.handle !== handle ||
-        result.status === "uncertain"
-      )
-        throw new Error("Native discard outcome is uncertain.");
-      if (result.status !== "discarded") {
-        if (result.status !== "refused") throw new Error("Unexpected native discard outcome.");
+      if ((await this.#runNativeDiscard(handle, dispatch)) === "refused") {
         await this.#publish(
           "blocked",
           "downloaded",
@@ -1176,6 +1530,7 @@ export class JonesDesktopUpdateController {
       }
       this.#staged = undefined;
       this.#candidate = undefined;
+      this.#candidateBuildStartedAt = undefined;
       this.#selectedAttempt = undefined;
       this.#candidateStartupGateUnavailable = false;
       await this.#publish(
@@ -1185,11 +1540,11 @@ export class JonesDesktopUpdateController {
       );
       return { accepted: true, completed: true };
     } catch {
-      if (dispatched) this.#activationBlocked = true;
+      if (dispatch.dispatched) this.#activationBlocked = true;
       await this.#publish(
         "blocked",
         "downloaded",
-        dispatched
+        dispatch.dispatched
           ? "The discard outcome needs reconciliation; the retained stage remains held."
           : "The downloaded selection could not be verified; its files were preserved.",
       );
@@ -1197,6 +1552,174 @@ export class JonesDesktopUpdateController {
     } finally {
       this.#busy = null;
     }
+  }
+
+  /** The helper's validated discard. The caller owns the busy latch and what it publishes. */
+  async #runNativeDiscard(
+    handle: string,
+    dispatch: { dispatched: boolean },
+  ): Promise<"discarded" | "refused"> {
+    const selection = await this.#selectionFile();
+    const raw = await NodeFSP.readFile(selection, "utf8");
+    if (decodeStageSelection(JSON.parse(raw)).app.handle !== handle)
+      throw new Error("Selection changed.");
+    const helper = await this.#helperPath();
+    dispatch.dispatched = true;
+    const result = decodeNativeSelectionResult(
+      JSON.parse(
+        await runNativeCommand("/usr/bin/python3", [
+          helper,
+          "--manifest",
+          this.manifestPath,
+          "--discard-staged",
+          handle,
+          "--selection",
+          selection,
+          "--selection-sha256",
+          NodeCrypto.createHash("sha256").update(raw).digest("hex"),
+        ]),
+      ),
+    );
+    if (
+      result.operation !== "discard-staged" ||
+      result.handle !== handle ||
+      result.status === "uncertain"
+    )
+      throw new Error("Native discard outcome is uncertain.");
+    if (result.status === "discarded") return "discarded";
+    if (result.status !== "refused") throw new Error("Unexpected native discard outcome.");
+    return "refused";
+  }
+
+  /**
+   * Replaces an unaccepted stage with the newest checked build under one latch hold: native
+   * discard, removal of the replaced payload, then download. A refused discard keeps the stage;
+   * an uncertain one blocks activation exactly like a manual discard.
+   */
+  async supersede(
+    handle: string,
+    next: JonesActionsCandidate,
+    reclaim?: (handle: string) => Promise<void>,
+  ): Promise<JonesSupersedeResult> {
+    const staged = this.#staged;
+    if (
+      this.#busy !== null ||
+      staged?.handle !== handle ||
+      next !== this.#latest ||
+      next.source === staged.sourceSha ||
+      this.#activationBlocked ||
+      this.#options.disabledByEnv ||
+      this.#bootstrap === undefined
+    )
+      return "refused";
+    const nextBuildStartedAt = this.#latestBuildStartedAt;
+    this.#busy = "discard";
+    const dispatch = { dispatched: false };
+    let discarded: "discarded" | "refused" | "failed";
+    try {
+      discarded = await this.#runNativeDiscard(handle, dispatch);
+    } catch {
+      discarded = "failed";
+    }
+    if (discarded !== "discarded") {
+      const uncertain = discarded === "failed" && dispatch.dispatched;
+      if (uncertain) this.#activationBlocked = true;
+      this.#busy = null;
+      await this.#publish(
+        "blocked",
+        "downloaded",
+        uncertain
+          ? "The discard outcome needs reconciliation; the retained stage remains held."
+          : discarded === "refused"
+            ? "The retained stage cannot be discarded while native work needs reconciliation."
+            : "The downloaded selection could not be verified; its files were preserved.",
+      );
+      return uncertain ? "uncertain" : "refused";
+    }
+    this.#staged = undefined;
+    this.#candidate = next;
+    this.#candidateBuildStartedAt = nextBuildStartedAt;
+    this.#selectedAttempt = undefined;
+    this.#candidateStartupGateUnavailable = false;
+    if (reclaim !== undefined) {
+      this.#busy = "reclaim";
+      await this.#publish(
+        "available",
+        "available",
+        `Replacing ${staged.version} with ${next.version}.`,
+      );
+      try {
+        await reclaim(handle);
+      } catch {
+        /* The caller keeps the replaced handle and retries its removal later. */
+      }
+    }
+    this.#busy = null;
+    return (await this.download()).completed ? "replaced" : "download-failed";
+  }
+
+  /** Runs payload removal under the busy latch, so no download can select the same handle. */
+  async reclaimExclusive(reclaim: () => Promise<void>): Promise<boolean> {
+    if (this.#busy !== null) return false;
+    this.#busy = "reclaim";
+    try {
+      await reclaim();
+      return true;
+    } finally {
+      this.#busy = null;
+    }
+  }
+
+  /** Background preparation status rides along with every later publication. */
+  async setPreparationStatus(status: JonesDesktopPreparationState | undefined): Promise<void> {
+    if (JSON.stringify(this.#state.jonesPreparation) === JSON.stringify(status)) return;
+    const { jonesPreparation: _previous, ...rest } = this.#state;
+    this.#state = status === undefined ? rest : { ...rest, jonesPreparation: status };
+    await this.#options.onState(this.#state);
+  }
+
+  /**
+   * Binds a prepared stage to its immutable on-disk receipts before selection, so a reply from
+   * the preparation process is never trusted beyond what those receipts already prove.
+   */
+  async #bindPreparedStage(
+    candidate: JonesActionsCandidate,
+    prepared: JonesPreparedStage,
+  ): Promise<StagedMacApp> {
+    const app = decodeStagedApp(prepared.app);
+    const { artifact } = prepared;
+    if (
+      JSON.stringify(artifact.candidate) !== JSON.stringify(candidate) ||
+      artifact.stagedHandle !== app.handle ||
+      app.sourceSha !== candidate.source ||
+      app.sourceTree !== candidate.tree ||
+      app.version !== candidate.version
+    )
+      throw new Error("The prepared stage does not bind the selected candidate.");
+    await requireJonesStageDirectory(
+      NodePath.join(this.updaterRoot, "artifacts"),
+      app.handle,
+      NodePath.dirname(artifact.payloadPath),
+    );
+    const appDirectory = await requireJonesStageDirectory(
+      await NodeFSP.realpath(NodePath.join(this.updaterRoot, "apps")),
+      app.handle,
+      NodePath.dirname(app.appPath),
+    );
+    if (app.receiptPath !== NodePath.join(appDirectory, "mac-app-receipt.json"))
+      throw new Error("The prepared app receipt is outside its stage.");
+    const info = await NodeFSP.lstat(app.receiptPath);
+    if (!info.isFile() || info.size > 131072) throw new Error("Unknown native app receipt.");
+    const receipt = decodeNativeStageReceipt(
+      JSON.parse(await NodeFSP.readFile(app.receiptPath, "utf8")),
+    );
+    if (
+      JSON.stringify(receipt.app) !== JSON.stringify(app) ||
+      JSON.stringify(receipt.artifact) !== JSON.stringify(artifact) ||
+      JSON.stringify(receipt.candidate) !== JSON.stringify(candidate)
+    )
+      throw new Error("The prepared app receipt does not bind this stage.");
+    return app;
   }
 
   async install(
@@ -1255,7 +1778,11 @@ export class JonesDesktopUpdateController {
         if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
       }
       // Every process that can carry this claim's one backend request, captured before the claim.
-      const requesters = await this.#options.processProofs();
+      const captured = await captureJonesNativeProcesses(
+        helper,
+        await this.#options.processProofs(),
+      );
+      const requesters = captured.proofs;
       await this.#publish("preparing", "downloaded");
       // Claim preparation under the same native lock as discard before the backend can create effects.
       this.#activationBlocked = true;
@@ -1273,6 +1800,7 @@ export class JonesDesktopUpdateController {
             selectionPath,
             "--selection-sha256",
             NodeCrypto.createHash("sha256").update(selectionRaw).digest("hex"),
+            "--withdrawable",
           ]),
         ),
       );
@@ -1324,18 +1852,22 @@ export class JonesDesktopUpdateController {
       }
       if (
         continuation.prepared !== true ||
-        continuation.preparationClaimProtocol !== 2 ||
+        continuation.preparationClaimProtocol !== 3 ||
         continuation.transactionId !== transactionId ||
         continuation.stagedHandle !== handle
       )
-        throw new Error("Native continuation preparation is required.");
+        return await this.#preparationFailed(
+          transactionId,
+          tx,
+          new Error("Native continuation preparation is required."),
+        );
       const intent = {
         protocol: 1,
         transactionId,
         staged,
         expected,
         continuationReceipt,
-        processes: await this.#options.processProofs(),
+        processes: captured.processes,
         listener: await this.#options.listener(),
       };
       const requestPath = NodePath.join(tx, "activation-request.json");
@@ -1451,7 +1983,7 @@ export class JonesDesktopUpdateController {
     }
   }
 
-  /** Keeps the original cause visible and releases the claim only when the helper proves no dispatch. */
+  /** Keeps the original cause visible and releases only a proven, inactive claim. */
   async #preparationFailed(
     transactionId: string,
     tx: string,
@@ -1475,7 +2007,7 @@ export class JonesDesktopUpdateController {
       await this.#publish(
         "staged",
         "downloaded",
-        `Update preparation stopped before any change: ${reason}. Install can be retried.`,
+        `Update preparation stopped safely: ${reason}. Install can be retried.`,
       );
     } else {
       await this.#publish(

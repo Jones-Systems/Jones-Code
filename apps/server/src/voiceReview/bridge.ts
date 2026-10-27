@@ -43,7 +43,6 @@ import * as NodeFSP from "node:fs/promises";
 import {
   voiceReviewConfigFromEnv,
   voiceReviewNativeBindingFromEnv,
-  isVoiceReviewPrincipalEnrolled,
   type VoiceReviewConfig,
   type VoiceReviewNativeBinding,
 } from "./config.ts";
@@ -166,7 +165,6 @@ export const makeVoiceReviewBridge = (
   const authorize = (principal: EnvironmentSessionPrincipalShape, mutation: boolean) => {
     if (config === null) throw new VoiceReviewNotConfiguredError({});
     if (
-      !isVoiceReviewPrincipalEnrolled(config, principal) ||
       !principal.scopes.has(mutation ? AuthOrchestrationOperateScope : AuthOrchestrationReadScope)
     ) {
       throw new VoiceReviewForbiddenError({});
@@ -487,7 +485,7 @@ export const makeVoiceReviewBridge = (
         memberships.clear();
         unavailable.add("native_memberships");
       }
-      return Schema.decodeUnknownSync(ThreadRegistryComposedSnapshot)({
+      return Schema.decodeSync(ThreadRegistryComposedSnapshot)({
         ...result,
         partial: result.partial || unavailable.size > result.unavailable.length,
         unavailable: Array.from(unavailable),
@@ -523,7 +521,7 @@ export const makeVoiceReviewBridge = (
       metadataMutation(
         principal,
         "/v1/registry/associations",
-        Schema.decodeUnknownSync(ThreadRegistryAssociationPayload)(payload),
+        Schema.decodeSync(ThreadRegistryAssociationPayload)(payload),
       ),
     correctLabel: async (
       principal: EnvironmentSessionPrincipalShape,
@@ -532,7 +530,7 @@ export const makeVoiceReviewBridge = (
       metadataMutation(
         principal,
         "/v1/registry/labels",
-        Schema.decodeUnknownSync(ThreadRegistryLabelPayload)(payload),
+        Schema.decodeSync(ThreadRegistryLabelPayload)(payload),
       ),
     diagnostics: async (principal: EnvironmentSessionPrincipalShape, id: string) => {
       const trusted = authorize(principal, false);
@@ -667,8 +665,8 @@ const make = Effect.gen(function* () {
     });
   return VoiceReview.of({
     recent: (principal, limit) => call(() => bridge.recent(principal, limit)),
-    registrySnapshot: (principal, cursor, limit) =>
-      Effect.gen(function* () {
+    registrySnapshot: Effect.fn("VoiceReviewBridge.registrySnapshot")(
+      function* (principal, cursor, limit) {
         const native =
           compositionFactory === undefined
             ? undefined
@@ -684,7 +682,8 @@ const make = Effect.gen(function* () {
             limit,
           ),
         );
-      }),
+      },
+    ),
     registryWorkstreams: (principal) => call(() => bridge.registryWorkstreams(principal)),
     registryEvents: (principal, after, limit) =>
       call(() => bridge.registryEvents(principal, after, limit)),

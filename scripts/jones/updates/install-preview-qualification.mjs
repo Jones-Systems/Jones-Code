@@ -752,7 +752,7 @@ export async function serveRendererFixture(directory) {
 }
 
 // Serialized into native preview_evaluate; no application cache hooks or browser substitutes.
-export async function indexedDbBrowserProof(phase) {
+export async function indexedDbBrowserProof(phase, syntheticOrigin) {
   const slot = "__jonesLegacyIndexedDbProof";
   const runtimeName = "t3code:connection-runtime";
   const hintName = "t3code:connection-compatibility-hints";
@@ -919,6 +919,52 @@ export async function indexedDbBrowserProof(phase) {
   const state = window[slot];
   require(state && !state.disposed, "Legacy IndexedDB proof is not active");
   try {
+    if (phase === "seed-off") {
+      // Incompatibility pauses a connection without changing its saved user preference.
+      // Seed only this isolated loopback fixture, then reload before taking the baseline.
+      const origin = new URL(syntheticOrigin);
+      require(origin.protocol === "http:" &&
+        origin.hostname === "127.0.0.1" &&
+        origin.origin === syntheticOrigin, "Saved Off seeding requires the exact synthetic origin");
+      await new Promise((resolve, reject) => {
+        const transaction = state.database.transaction("catalog", "readwrite");
+        const store = transaction.objectStore("catalog");
+        const request = store.get("document");
+        let failure;
+        request.onsuccess = () => {
+          try {
+            const catalog = JSON.parse(request.result);
+            const target = catalog.targets?.[0];
+            const profile = catalog.profiles?.[0];
+            require(catalog.schemaVersion === 1 &&
+              catalog.targets?.length === 1 &&
+              target?._tag === "BearerConnectionTarget" &&
+              target.label === "Synthetic incompatible Jones host" &&
+              typeof target.environmentId === "string" &&
+              target.environmentId.length > 0 &&
+              catalog.profiles?.length === 1 &&
+              profile?._tag === "BearerConnectionProfile" &&
+              profile.environmentId === target.environmentId &&
+              profile.connectionId === target.connectionId &&
+              (profile.httpBaseUrl === syntheticOrigin || profile.httpBaseUrl === origin.href) &&
+              Array.isArray(catalog.disabledEnvironmentIds) &&
+              catalog.disabledEnvironmentIds.length ===
+                0, "Saved Off seeding requires exactly one newly paired synthetic target");
+            store.put(
+              JSON.stringify({ ...catalog, disabledEnvironmentIds: [target.environmentId] }),
+              "document",
+            );
+          } catch (error) {
+            failure = error;
+            transaction.abort();
+          }
+        };
+        transaction.oncomplete = () => resolve();
+        transaction.onabort = () => reject(failure ?? new Error("Synthetic Off seed aborted"));
+        transaction.onerror = () => reject(new Error("Synthetic Off seed failed"));
+      });
+      return { savedOffFixtureSeeded: true };
+    }
     if (phase === "checkpoint") {
       const raw = await state.read(state.database, "catalog");
       let catalog;
@@ -986,11 +1032,11 @@ export async function indexedDbBrowserProof(phase) {
   }
 }
 
-function indexedDbStep(phase, label, expected) {
+function indexedDbStep(phase, label, expected, syntheticOrigin) {
   return {
     action: "assert-evaluate",
     label,
-    expression: `(${indexedDbBrowserProof.toString()})(${JSON.stringify(phase)})`,
+    expression: `(${indexedDbBrowserProof.toString()})(${JSON.stringify(phase)}, ${JSON.stringify(syntheticOrigin)})`,
     expected,
   };
 }
@@ -1026,7 +1072,24 @@ export function scenarioSteps(remotePairing) {
       contains: ["Source matches this app.", "Synthetic host needs qualified launcher setup."],
       excludes: ["A newer Jones source is available."],
     },
+    indexedDbStep(
+      "seed-off",
+      "Save Off for the exact isolated synthetic target",
+      { savedOffFixtureSeeded: true },
+      new URL(remotePairing).origin,
+    ),
+    indexedDbStep(
+      "close",
+      "Release the initial legacy handle before loading the saved Off fixture",
+      { legacyProofReleased: true },
+    ),
+    { action: "navigate", path: "/settings/connections" },
+    { action: "wait", text: "Synthetic incompatible Jones host" },
+    { action: "wait", text: "Source matches this app." },
     disabledPreference,
+    indexedDbStep("hold", "Hold the saved Off version-4 catalog connection", {
+      legacyV4Held: true,
+    }),
     indexedDbStep("checkpoint", "Capture the saved Off catalog before the authenticated check", {
       savedOffCatalogCaptured: true,
       legacyConnectionUnchanged: true,
@@ -1069,7 +1132,7 @@ export function scenarioSteps(remotePairing) {
   ];
 }
 
-function rendererSteps(origin, sourceSha, runId) {
+export function rendererSteps(origin, sourceSha, runId) {
   const steps = [];
   const click = (locator) => steps.push({ action: "click", locator });
   const control = (name) => click(`[data-testid="${name}"]`);
@@ -1112,7 +1175,13 @@ function rendererSteps(origin, sourceSha, runId) {
   const pendingDisabled = () =>
     check(
       "Both production controls refuse duplicate pending installation",
-      `document.querySelector('[data-testid="settings-updates"] button').disabled === true && document.querySelector('[data-testid="sidebar-updates"] button[aria-label]').getAttribute('aria-disabled') === 'true'`,
+      `(() => {
+        const install = [...document.querySelectorAll('[data-testid="settings-updates"] button')]
+          .filter(button => button.textContent?.trim() === 'Install');
+        const sidebar = document.querySelectorAll('[data-testid="sidebar-updates"] button[aria-label]:not([aria-label="Nightly update release notes"])');
+        return install.length === 1 && install[0].disabled === true &&
+          sidebar.length === 1 && sidebar[0].getAttribute('aria-disabled') === 'true';
+      })()`,
     );
   begin("available");
   wait("available");
@@ -1245,6 +1314,15 @@ function rendererSteps(origin, sourceSha, runId) {
   control("show-client-notices");
   const noticeCount = (count) => steps.push({ action: "wait", text: `Client notices: ${count}` });
   const noticeText = `document.querySelector('[data-testid="notice-banners"]').textContent`;
+  const noticeBuild = (sha, version = "0.0.45-preview.20261011.1.1") => `(() => {
+    const labels = [...document.querySelectorAll('[data-testid="notice-banners"] [aria-label]')]
+      .filter(node => {
+        const detail = node.getAttribute('aria-label') ?? '';
+        return detail.split('\\n').includes(${JSON.stringify(version)}) &&
+          detail.endsWith(${JSON.stringify(`source ${sha}`)});
+      });
+    return labels.length === 1 && labels[0].textContent === ${JSON.stringify(sha.slice(0, 7))};
+  })()`;
   const noticeTitles = (label, titles) =>
     check(
       label,
@@ -1306,7 +1384,7 @@ function rendererSteps(origin, sourceSha, runId) {
   noticeCount(1);
   check(
     "Initial preview pair renders the expected full source and abbreviation",
-    `document.querySelector('[data-testid="notice-server"]').textContent.endsWith(${JSON.stringify(syntheticSource)}) && ${noticeText}.includes(${JSON.stringify(syntheticSource.slice(0, 12))})`,
+    `document.querySelector('[data-testid="notice-server"]').textContent.endsWith(${JSON.stringify(syntheticSource)}) && ${noticeBuild(syntheticSource)}`,
   );
   click('[data-testid="notice-banners"] >> role=button[name="Dismiss client version notice"]');
   noticeCount(0);
@@ -1327,11 +1405,11 @@ function rendererSteps(origin, sourceSha, runId) {
   ]);
   check(
     "Changed full source retains the same displayed abbreviation",
-    `document.querySelector('[data-testid="notice-server"]').textContent.endsWith(${JSON.stringify(syntheticSource.slice(0, -1) + "c")}) && ${noticeText}.includes(${JSON.stringify(syntheticSource.slice(0, 12))})`,
+    `document.querySelector('[data-testid="notice-server"]').textContent.endsWith(${JSON.stringify(syntheticSource.slice(0, -1) + "c")}) && ${noticeBuild(syntheticSource.slice(0, -1) + "c")}`,
   );
   capture("client-notice-changed-full-source", [
     "Laptop: Different preview sources",
-    syntheticSource.slice(0, 12),
+    syntheticSource.slice(0, 7),
   ]);
   control("notice-pair-equal");
   noticeCount(0);
@@ -1356,8 +1434,8 @@ function rendererSteps(origin, sourceSha, runId) {
     "Laptop: Client update available",
   ]);
   check(
-    "Stable guidance keeps the ordinary version and update-or-reload instructions",
-    `${noticeText}.includes('Server 0.1.0') && ${noticeText}.includes('Update this app or reload an updated web client.')`,
+    "Stable guidance retains full version details and update-or-reload instructions",
+    `${noticeBuild(syntheticSource, "0.1.0")} && ${noticeText}.includes('Update this app or reload an updated web client.')`,
   );
   details();
   steps.push({ action: "wait", text: "Update this app or reload an updated web client." });
@@ -1366,7 +1444,7 @@ function rendererSteps(origin, sourceSha, runId) {
     [
       "Laptop: Client update available",
       "Update this app or reload an updated web client.",
-      "Server 0.1.0",
+      syntheticSource.slice(0, 7),
     ],
     ["Which source is newer is unknown."],
   );
@@ -1374,6 +1452,239 @@ function rendererSteps(origin, sourceSha, runId) {
     "Client notices never request a server installation or download",
     `s.calls.every(c => c.action !== 'downloadUpdate' && c.action !== 'installUpdate')`,
   );
+
+  // Exact-source action: the production notice and controller against a scripted synthetic host.
+  // Targets are always the running app's own source; the desktop bridge is never involved.
+  const shortSource = sourceSha.slice(0, 7);
+  const banners = '[data-testid="exact-banners"]';
+  const exactButton = (name) => `${banners} >> role=button[name="${name}"]`;
+  const exactCalls = (select) =>
+    `JSON.stringify(JSON.parse(document.querySelector('[data-testid="exact-receipts"]').textContent).map(c => ${select}))`;
+  const exactCallsAre = (label, select, expected) =>
+    check(label, exactCalls(select), JSON.stringify(expected));
+  const noExactButton = (label) =>
+    check(
+      label,
+      `!Array.from(document.querySelectorAll('${banners} button')).some(b => /^(Download|Install|Replace with) [0-9a-f]{7}$/.test(b.textContent))`,
+    );
+  const exactState = (text) => steps.push({ action: "wait", text });
+  const exactReset = (scenario) => control(`exact-scenario-${scenario}`);
+  const noBridge = () =>
+    check(
+      "The exact-source notice never used the desktop update bridge",
+      `s.calls.every(c => c.action !== 'downloadUpdate' && c.action !== 'installUpdate')`,
+    );
+  // The production controller keeps its action report (and any lost-response hold) while it stays
+  // mounted, so each independent case loads a fresh fixture page with its own run id and mounts
+  // the exact-source fixture itself; only the scripted host scenario is chosen inside the case.
+  const exactCase = (suffix, scenario = "exact") => {
+    begin("available", `exact-${suffix}`);
+    wait("available");
+    control("show-exact-source");
+    if (scenario !== "exact") exactReset(scenario);
+  };
+  exactCase("source");
+  exactState("Exact-source notices: 1");
+  exactState(`Download ${shortSource}`);
+  capture("exact-source-download-offer", [
+    "Different preview sources",
+    `Download ${shortSource}`,
+    "Host: exact",
+  ]);
+  click(exactButton(`Download ${shortSource}`));
+  exactState("Synthetic download is in progress.");
+  exactCallsAre(
+    "Download selects only the app's own full source, never the host's offered build",
+    "[c.action, c.input.targetSource]",
+    [["downloadExact", sourceSha]],
+  );
+  noExactButton("No second request is offered while the host downloads");
+  control("exact-complete-download");
+  exactState(`Install ${shortSource}`);
+  capture("exact-source-staged", [`Install ${shortSource}`, "handle staged-target-handle"]);
+  click(exactButton(`Install ${shortSource}`));
+  steps.push({ action: "wait", text: "Confirm" });
+  capture("exact-source-install-confirmation", [
+    "Cancel",
+    "Confirm",
+    `Install source ${shortSource} on Mac Mini?`,
+  ]);
+  click('role=alertdialog >> role=button[name="Cancel"]');
+  exactCallsAre("Cancelled confirmation never dispatches installation", "c.action", [
+    "downloadExact",
+  ]);
+  click(exactButton(`Install ${shortSource}`));
+  confirm();
+  // The production presentation replaces the host message while the phase is "installing"
+  // (jonesUpdatePresentation), so the fixture's own accepted-install message is never rendered.
+  exactState("Installing — server restarting. Waiting for the launcher outcome.");
+  noExactButton("No second install is offered while the host installs");
+  exactCallsAre(
+    "Installation binds the staged handle of the matching source",
+    "[c.action, c.input.stagedHandle ?? c.input.targetSource]",
+    [
+      ["downloadExact", sourceSha],
+      ["install", "staged-target-handle"],
+    ],
+  );
+  control("exact-commit-install");
+  exactState("Exact-source notices: 0");
+  capture("exact-source-committed", ["Exact-source notices: 0"], [`Install ${shortSource}`]);
+  noBridge();
+
+  exactCase("lost-install");
+  exactState("Exact-source notices: 1");
+  click(exactButton(`Download ${shortSource}`));
+  control("exact-complete-download");
+  exactState(`Install ${shortSource}`);
+  control("exact-next-install-lost-not-started");
+  click(exactButton(`Install ${shortSource}`));
+  confirm();
+  exactState("will not be sent again");
+  noExactButton("A lost install response is never offered for resubmission");
+  capture("exact-source-lost-install", ["will not be sent again"], [`Install ${shortSource}`]);
+  control("exact-report-state");
+  exactState(`Install ${shortSource}`);
+  exactCallsAre("Reconciling never resent the install", "c.action", ["downloadExact", "install"]);
+  noBridge();
+
+  exactCase("wrong-source");
+  exactState("Exact-source notices: 1");
+  control("exact-next-download-wrong-source");
+  click(exactButton(`Download ${shortSource}`));
+  exactState("will not be installed from this notice");
+  exactState(`Replace with ${shortSource}`);
+  capture("exact-source-wrong-source", ["will not be installed from this notice"]);
+  noBridge();
+
+  exactCase("refusal");
+  exactState("Exact-source notices: 1");
+  control("exact-next-download-refuse");
+  click(exactButton(`Download ${shortSource}`));
+  exactState("Synthetic refusal: this app's build is not newer than the host's.");
+  capture("exact-source-refusal", ["is not newer than the host's"]);
+  noBridge();
+
+  exactCase("staged-other", "staged-other");
+  exactState(`Replace with ${shortSource}`);
+  capture("exact-source-staged-other", [
+    "Downloaded",
+    `Replace with ${shortSource}`,
+    "Match laptop",
+  ]);
+  click(exactButton(`Replace with ${shortSource}`));
+  steps.push({ action: "wait", text: "Nothing installs until you choose Install." });
+  capture("exact-source-replace-confirmation", ["Replace downloaded source", "Cancel", "Confirm"]);
+  click('role=alertdialog >> role=button[name="Cancel"]');
+  exactCallsAre("Cancelled replacement preserves the existing download", "c.action", []);
+  click(exactButton(`Replace with ${shortSource}`));
+  confirm();
+  exactState("Synthetic download is in progress.");
+  exactCallsAre(
+    "Notice replacement only downloads the exact target",
+    "[c.action, c.input.targetSource, c.input.replace.stagedHandle]",
+    [["downloadExact", sourceSha, "staged-other-handle"]],
+  );
+  noBridge();
+
+  const connections = '[aria-label="Synthetic Connections update row"]';
+  const matchButton = `${connections} >> role=button[name="Match laptop"]`;
+  exactCase("connections-match", "staged-other");
+  capture("connections-match-before", [
+    "Downloaded",
+    "Match laptop",
+    `Replace with ${shortSource}`,
+  ]);
+  click(matchButton);
+  steps.push({ action: "wait", text: "Nothing installs until you choose Install." });
+  confirm();
+  exactState("Synthetic download is in progress.");
+  exactCallsAre(
+    "Match laptop sends a bound replacement and never installs",
+    "[c.action, c.input.targetSource, c.input.replace.stagedHandle]",
+    [["downloadExact", sourceSha, "staged-other-handle"]],
+  );
+  check(
+    "Replacement carries the complete host binding and a UUID",
+    `(() => {
+    const input = JSON.parse(document.querySelector('[data-testid="exact-receipts"]').textContent)[0].input;
+    const old = input.replace;
+    return typeof old.environmentId === 'string' && typeof old.currentVersion === 'string' &&
+      /^[a-f0-9]{40}$/.test(old.expectedInstalledSource) && /^[a-f0-9]{40}$/.test(old.sourceSha) &&
+      /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(old.operationId);
+  })()`,
+  );
+  control("exact-complete-download");
+  exactState(`Install ${shortSource}`);
+  capture("connections-match-after", ["Downloaded", "Install"], ["Match laptop"]);
+  click(`${connections} >> role=button[name="Install"]`);
+  steps.push({ action: "wait", text: "Install the downloaded build on Mac Mini?" });
+  capture("connections-install-confirmation", ["Cancel", "Confirm", "disconnects briefly"]);
+  click('role=alertdialog >> role=button[name="Cancel"]');
+  exactCallsAre("Connections install cancellation sends nothing", "c.action", ["downloadExact"]);
+  click(`${connections} >> role=button[name="Install"]`);
+  confirm();
+  exactState("Installing — server restarting. Waiting for the launcher outcome.");
+  exactCallsAre(
+    "Connections installs only after separate confirmation",
+    "[c.action, c.input.stagedHandle ?? c.input.targetSource]",
+    [
+      ["downloadExact", sourceSha],
+      ["install", "staged-target-handle"],
+    ],
+  );
+  noBridge();
+
+  exactCase("legacy-staged", "legacy-staged");
+  exactState("cannot safely replace that download");
+  noExactButton("A legacy host cannot silently replace a download");
+  check(
+    "Legacy Match laptop is disabled and its click guard sends nothing",
+    `(() => {
+    const button = Array.from(document.querySelectorAll('${connections} button'))
+      .find(button => button.textContent === 'Match laptop');
+    if (button?.getAttribute('aria-disabled') !== 'true') return false;
+    button.click();
+    return JSON.parse(document.querySelector('[data-testid="exact-receipts"]').textContent).length === 0;
+  })()`,
+  );
+  exactCallsAre("Disabled Match laptop cannot dispatch a legacy replacement", "c.action", []);
+  capture("connections-match-legacy", ["Match laptop", "cannot safely replace that download"]);
+  noBridge();
+
+  exactCase("legacy-mismatch", "legacy-mismatch");
+  exactState("cannot download a specific source");
+  noExactButton("An older host offering another build offers no action");
+  noBridge();
+
+  exactCase("legacy-match", "legacy-match");
+  exactState(`Download ${shortSource}`);
+  click(exactButton(`Download ${shortSource}`));
+  exactState("Synthetic download is in progress.");
+  exactCallsAre("An older host downloads only by its own artifact binding", "c.action", [
+    "download",
+  ]);
+  noBridge();
+
+  exactCase("stale", "stale");
+  exactState("temporarily unavailable");
+  noExactButton("A stale observation offers no action");
+  noBridge();
+
+  exactCase("unsupported", "unsupported");
+  exactState("does not support Jones updates");
+  noBridge();
+
+  exactCase("permission");
+  exactState("Exact-source notices: 1");
+  control("exact-toggle-permission");
+  exactState("cannot change updates");
+  noExactButton("A session without operate permission offers no action");
+  control("exact-toggle-permission");
+  exactState(`Download ${shortSource}`);
+  click(`${banners} >> role=button[name="Dismiss client version notice"]`);
+  exactState("Exact-source notices: 0");
+  noBridge();
   return steps;
 }
 

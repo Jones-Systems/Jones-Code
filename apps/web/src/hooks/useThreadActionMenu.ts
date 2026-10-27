@@ -1,5 +1,6 @@
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { requestCustomSnooze } from "../components/CustomSnoozeDialog";
+import { openGuestShareDialog } from "../components/chat/guestShareDialogState";
 import {
   type AtomCommandResult,
   isAtomCommandInterrupted,
@@ -46,6 +47,11 @@ import { useCopyToClipboard } from "./useCopyToClipboard";
 import { useNewThreadHandler } from "./useHandleNewThread";
 import { useClientSettings } from "./useSettings";
 import { useThreadActions } from "./useThreadActions";
+import { SETTLEMENT_RESTORE_MENU_ID } from "../jones/settlementRestore/menu";
+import {
+  undoSettleFromMenu,
+  withThreadSettlementRestore,
+} from "../jones/settlementRestore/threadMenu";
 
 function failureToast(title: string, error: unknown) {
   toastManager.add(
@@ -61,8 +67,9 @@ export function useThreadActionMenu(input: {
   readonly threadRef: ScopedThreadRef | null;
   readonly projectCwd: string | null;
   readonly onStartRename: () => void;
+  readonly canShareWithGuest: boolean;
 }) {
-  const { threadRef, projectCwd, onStartRename } = input;
+  const { threadRef, projectCwd, onStartRename, canShareWithGuest } = input;
   const router = useRouter();
   const projects = useProjects();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -131,12 +138,17 @@ export function useThreadActionMenu(input: {
       };
       const isRegeneratingTitle = thread.titleRegeneration != null;
       const snoozePresets = resolveSnoozePresets(now, timestampFormat);
-      const items = buildThreadActionMenuItems({
-        canOperate: readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope),
+      const canOperate = readEnvironmentScope(
+        threadRef.environmentId,
+        AuthOrchestrationOperateScope,
+      );
+      const isSettled = supports.settlement && thread.settledOverride === "settled";
+      const menuItems = buildThreadActionMenuItems({
+        canOperate,
         branch: thread.branch ?? null,
         projectFilter: null,
         isPinned: thread.pinnedAt != null,
-        isSettled: supports.settlement && thread.settledOverride === "settled",
+        isSettled,
         autoSettleEnabled: thread.autoSettleDisabledAt == null,
         isSnoozed: supports.snooze && effectiveSnoozed(thread, { now: now.toISOString() }),
         canSnoozeNow: canSnooze(thread, { now: now.toISOString() }),
@@ -144,10 +156,20 @@ export function useThreadActionMenu(input: {
         isRunning: !threadRuntimeCanArchive(thread.runtime),
         supports,
         snoozePresets,
+        canShareWithGuest,
       });
+      // Jones: persistent Undo settle, for servers that keep a restore record.
+      const items = withThreadSettlementRestore(menuItems, { threadRef, isSettled, canOperate });
       const clicked = await settlePromise(() => api.contextMenu.show(items, position));
       if (clicked._tag === "Failure" || clicked.value === null) return;
-      const action: ThreadActionMenuId = clicked.value;
+      const choice = clicked.value;
+      if (choice === SETTLEMENT_RESTORE_MENU_ID) {
+        await undoSettleFromMenu(threadRef, (error) =>
+          failureToast("Failed to undo settle", error),
+        );
+        return;
+      }
+      const action: ThreadActionMenuId = choice;
       if (
         threadActionRequiresOperate(action) &&
         !readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope)
@@ -254,6 +276,9 @@ export function useThreadActionMenu(input: {
         case "mark-unread":
           markThreadUnread(threadRef);
           return;
+        case "share-guest":
+          openGuestShareDialog(threadRef);
+          return;
         case "copy-path": {
           const workspacePath = thread.worktreePath ?? projectCwd;
           if (!workspacePath) {
@@ -315,9 +340,7 @@ export function useThreadActionMenu(input: {
           if (
             deleted._tag === "Failure" &&
             !isAtomCommandInterrupted(deleted) &&
-            // A failure with the thread already gone is worktree cleanup
-            // failing after a successful delete — deleteThread has toasted
-            // that itself, and "Failed to delete thread" would be a lie.
+            // A missing thread means cleanup failed after deletion; deleteThread already toasted that failure.
             readThreadShell(threadRef) !== null
           ) {
             failureToast("Failed to delete thread", squashAtomCommandFailure(deleted));

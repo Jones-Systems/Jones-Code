@@ -4,7 +4,7 @@ import {
   type ProviderInstanceConfig,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
-import { moveProviderInstance } from "./providerOrder";
+import { reorderProviderInstance } from "./providerOrder";
 
 const codex = ProviderDriverKind.make("codex");
 const claude = ProviderDriverKind.make("claudeAgent");
@@ -21,7 +21,7 @@ const instances: Readonly<Record<string, ProviderInstanceConfig>> = {
 
 describe("provider order", () => {
   it("reaches the requested custom order while preserving default, other drivers, and values", () => {
-    const next = moveProviderInstance(instances, "umich", "up");
+    const next = reorderProviderInstance(instances, "umich", "steven");
     expect(Object.keys(next)).toEqual([
       defaultId,
       "malcolm",
@@ -49,7 +49,7 @@ describe("provider order", () => {
   });
 
   it("moves across other-driver slots without moving those slots and can reverse the change", () => {
-    const next = moveProviderInstance(instances, "jace", "up");
+    const next = reorderProviderInstance(instances, "jace", "malcolm");
     expect(Object.keys(next)).toEqual([
       defaultId,
       "jace",
@@ -59,18 +59,41 @@ describe("provider order", () => {
       "umich",
       "wallace",
     ]);
-    expect(Object.entries(moveProviderInstance(next, "jace", "down"))).toEqual(
+    expect(Object.entries(reorderProviderInstance(next, "jace", "malcolm"))).toEqual(
       Object.entries(instances),
     );
   });
 
-  it("keeps the default pinned and refuses moves beyond the custom bounds", () => {
-    expect(moveProviderInstance(instances, defaultId, "down")).toBe(instances);
-    expect(moveProviderInstance(instances, "malcolm", "up")).toBe(instances);
-    expect(moveProviderInstance(instances, "wallace", "down")).toBe(instances);
-    expect(moveProviderInstance(instances, "claude", "up")).toBe(instances);
-    expect(moveProviderInstance(instances, "missing", "down")).toBe(instances);
-    expect(moveProviderInstance({}, "missing", "up")).toEqual({});
+  it("moves multiple positions by insertion and reverses without disturbing other drivers", () => {
+    const next = reorderProviderInstance(instances, "malcolm", "wallace");
+    expect(Object.keys(next)).toEqual([
+      defaultId,
+      "jace",
+      "claude",
+      "steven",
+      "umich",
+      "wallace",
+      "malcolm",
+    ]);
+    expect(Object.entries(reorderProviderInstance(next, "malcolm", "jace"))).toEqual(
+      Object.entries(instances),
+    );
+    for (const [id, instance] of Object.entries(instances)) expect(next[id]).toBe(instance);
+  });
+
+  it("keeps defaults pinned and rejects unknown, cross-driver and same-row drops", () => {
+    for (const [from, to] of [
+      [defaultId, "malcolm"],
+      ["malcolm", defaultId],
+      ["malcolm", "claude"],
+      ["missing", "malcolm"],
+      ["malcolm", "missing"],
+      ["malcolm", "malcolm"],
+    ]) {
+      expect(reorderProviderInstance(instances, from!, to!)).toBe(instances);
+    }
+    const empty = {};
+    expect(reorderProviderInstance(empty, "missing", "missing")).toBe(empty);
   });
 
   it("does not move an explicitly stored default even between custom slots", () => {
@@ -79,7 +102,7 @@ describe("provider order", () => {
       [defaultId]: instances[defaultId]!,
       last: instances.jace!,
     };
-    expect(Object.keys(moveProviderInstance(interleaved, "last", "up"))).toEqual([
+    expect(Object.keys(reorderProviderInstance(interleaved, "last", "first"))).toEqual([
       "last",
       defaultId,
       "first",

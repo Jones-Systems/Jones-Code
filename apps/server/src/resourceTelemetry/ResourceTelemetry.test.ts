@@ -1,3 +1,5 @@
+import * as TestClock from "effect/testing/TestClock";
+import * as Duration from "effect/Duration";
 import type {
   DesktopHostTelemetrySnapshot,
   ResourceMonitorProcessSample,
@@ -6,23 +8,29 @@ import type {
 import { describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
-import * as Scope from "effect/Scope";
+
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
-import * as TestClock from "effect/testing/TestClock";
 
 import * as DesktopTelemetryReceiver from "./DesktopTelemetryReceiver.ts";
 import * as NativeTelemetryClient from "./NativeTelemetryClient.ts";
 import * as ProcessAttribution from "../jones/resourceTelemetry/ProcessAttribution.ts";
 import * as ResourceAttribution from "./ResourceAttribution.ts";
 import * as ResourceTelemetry from "./ResourceTelemetry.ts";
+
+// ResourceTelemetry classifies process.pid as the server, so fixture PIDs are
+// offsets from it. Fixed PIDs collide whenever the test worker is assigned one.
+const SERVER_PID = process.pid;
+const CODEX_PID = SERVER_PID + 1;
+const SHORT_LIVED_CHILD_PID = SERVER_PID + 2;
+const ELECTRON_PID = SERVER_PID + 3;
+const MONITOR_PID = SERVER_PID + 4;
+const RESTARTED_MONITOR_PID = SERVER_PID + 5;
 
 function processSample(
   input: Partial<ResourceMonitorProcessSample> &
@@ -49,18 +57,19 @@ function nativeSnapshot(input: {
   readonly sampledAtUnixMs: number;
   readonly childCpuTimeMs: number;
   readonly childWriteBytes: number;
+  readonly monitorPid?: number;
   readonly externalProcesses?: ResourceMonitorSnapshotEvent["externalProcesses"];
 }): ResourceMonitorSnapshotEvent {
   const processes = [
     processSample({
-      pid: process.pid,
+      pid: SERVER_PID,
       ppid: 1,
       startTimeMs: 100,
       cpuTimeMs: input.sequence * 10,
     }),
     processSample({
-      pid: 4_242,
-      ppid: process.pid,
+      pid: CODEX_PID,
+      ppid: SERVER_PID,
       startTimeMs: 200,
       name: "codex",
       command: "codex app-server",
@@ -68,7 +77,7 @@ function nativeSnapshot(input: {
       ioWriteBytes: input.childWriteBytes,
     }),
     processSample({
-      pid: 5_000,
+      pid: ELECTRON_PID,
       ppid: 1,
       startTimeMs: 300,
       name: "electron",
@@ -76,8 +85,8 @@ function nativeSnapshot(input: {
       cpuTimeMs: input.sequence * 20,
     }),
     processSample({
-      pid: 9_000,
-      ppid: process.pid,
+      pid: input.monitorPid ?? MONITOR_PID,
+      ppid: SERVER_PID,
       startTimeMs: 400,
       name: "t3-resource-monitor",
       command: "t3-resource-monitor",
@@ -114,7 +123,7 @@ function desktopSnapshot(sampledAtUnixMs: number): DesktopHostTelemetrySnapshot 
     type: "desktopTelemetry",
     sequence: 1,
     sampledAtUnixMs,
-    electronPid: 5_000,
+    electronPid: ELECTRON_PID,
     power: {
       source: "electron-main",
       idle: "false",
@@ -130,7 +139,7 @@ function desktopSnapshot(sampledAtUnixMs: number): DesktopHostTelemetrySnapshot 
     speedLimitPercent: Option.some(90),
     electronProcesses: [
       {
-        pid: 5_000,
+        pid: ELECTRON_PID,
         creationTimeMs: 300,
         type: "Browser",
         name: "electron",
@@ -157,17 +166,17 @@ describe("ResourceTelemetry", () => {
           childWriteBytes: index * 100,
         });
         const processes = sample.processes
-          .filter((entry) => entry.pid === process.pid || entry.pid === 4_242)
+          .filter((entry) => entry.pid === SERVER_PID || entry.pid === CODEX_PID)
           .map((entry) =>
-            entry.pid === 4_242
+            entry.pid === CODEX_PID
               ? { ...entry, startTimeMs: index }
               : { ...entry, ioWriteBytes: index * 100 },
           );
         if (index === 0 || index === 2) {
           processes.push(
             processSample({
-              pid: 4_243,
-              ppid: process.pid,
+              pid: SHORT_LIVED_CHILD_PID,
+              ppid: SERVER_PID,
               startTimeMs: 500,
               cpuTimeMs: index === 0 ? 100 : 350,
               ioWriteBytes: index === 0 ? 1_000 : 5_000,
@@ -196,18 +205,20 @@ describe("ResourceTelemetry", () => {
 
         expect(history.topProcesses).toHaveLength(sampleCount + 2);
         expect(
-          history.topProcesses.find((entry) => entry.identity.pid === process.pid),
+          history.topProcesses.find((entry) => entry.identity.pid === SERVER_PID),
         ).toMatchObject({
           sampleCount,
           cpuTimeMs: (sampleCount - 1) * 10,
           ioWriteBytes: (sampleCount - 1) * 100,
         });
-        const children = history.topProcesses.filter((entry) => entry.identity.pid === 4_242);
+        const children = history.topProcesses.filter((entry) => entry.identity.pid === CODEX_PID);
         expect(children).toHaveLength(sampleCount);
         for (const child of children) {
           expect(child).toMatchObject({ sampleCount: 1, cpuTimeMs: 0, ioWriteBytes: 0 });
         }
-        expect(history.topProcesses.find((entry) => entry.identity.pid === 4_243)).toMatchObject({
+        expect(
+          history.topProcesses.find((entry) => entry.identity.pid === SHORT_LIVED_CHILD_PID),
+        ).toMatchObject({
           sampleCount: 2,
           cpuTimeMs: 250,
           ioWriteBytes: 4_000,
@@ -325,7 +336,7 @@ describe("ResourceTelemetry", () => {
           sampledAtUnixMs,
           childCpuTimeMs: 100,
           childWriteBytes: 1_000,
-          externalProcesses: [{ pid: 5_000, startTimeMs: 300 }],
+          externalProcesses: [{ pid: ELECTRON_PID, startTimeMs: 300 }],
         });
         const desktop = {
           ...desktopSnapshot(sampledAtUnixMs),
@@ -361,9 +372,9 @@ describe("ResourceTelemetry", () => {
           return yield* telemetry.refresh;
         }).pipe(Effect.provide(layerTelemetry));
 
-        expect(snapshot.processes.find((entry) => entry.identity.pid === 5_000)?.category).toBe(
-          "electron-main",
-        );
+        expect(
+          snapshot.processes.find((entry) => entry.identity.pid === ELECTRON_PID)?.category,
+        ).toBe("electron-main");
         expect(snapshot.groups.electron.processStarts).toBe(1);
         expect(snapshot.groups.backend.processStarts).toBe(3);
       }),
@@ -473,11 +484,14 @@ describe("ResourceTelemetry", () => {
         );
         const resultFiber = yield* Effect.gen(function* () {
           const telemetry = yield* ResourceTelemetry.ResourceTelemetry;
-          while (true) {
-            const snapshot = yield* telemetry.latest;
-            if (snapshot.health.desktop.status === "degraded") return snapshot;
-            yield* Effect.yieldNow;
-          }
+          const subscription = yield* telemetry.subscribe;
+          if (subscription.latest.health.desktop.status === "degraded") return subscription.latest;
+          return Option.getOrThrow(
+            yield* subscription.changes.pipe(
+              Stream.filter((snapshot) => snapshot.health.desktop.status === "degraded"),
+              Stream.runHead,
+            ),
+          );
         }).pipe(Effect.provide(layerTelemetry), Effect.timeout("1 second"), Effect.forkChild);
 
         yield* Deferred.await(healthSubscribed);
@@ -590,6 +604,7 @@ describe("ResourceTelemetry", () => {
           sampledAtUnixMs: startedAt + 2_000,
           childCpuTimeMs: 500,
           childWriteBytes: 7_000,
+          monitorPid: RESTARTED_MONITOR_PID,
         }),
       ] as const;
       const sampleIndex = yield* Ref.make(0);
@@ -603,7 +618,7 @@ describe("ResourceTelemetry", () => {
           version: 3,
           type: "hello",
           sidecarVersion: "0.1.0",
-          sidecarPid: 9_000,
+          sidecarPid: MONITOR_PID,
           platform: "test",
           arch: "test",
           capabilities: {
@@ -663,7 +678,9 @@ describe("ResourceTelemetry", () => {
         const telemetry = yield* ResourceTelemetry.ResourceTelemetry;
         const attribution = yield* ResourceAttribution.ResourceAttribution;
 
-        expect(yield* Ref.get(externalProcesses)).toEqual([{ pid: 5_000, startTimeMs: 300 }]);
+        expect(yield* Ref.get(externalProcesses)).toEqual([
+          { pid: ELECTRON_PID, startTimeMs: 300 },
+        ]);
 
         yield* attribution.record({
           component: "provider-event-log",
@@ -691,7 +708,7 @@ describe("ResourceTelemetry", () => {
 
         yield* TestClock.adjust(Duration.seconds(1));
         const second = yield* telemetry.refresh;
-        const codex = second.processes.find((entry) => entry.identity.pid === 4_242);
+        const codex = second.processes.find((entry) => entry.identity.pid === CODEX_PID);
         expect(codex?.cpuPercent).toBe(25);
         expect(codex?.ioWriteBytesPerSecond).toBe(4_000);
         expect(second.groups.backend.ioWriteBytes).toBe(4_000);
@@ -705,13 +722,13 @@ describe("ResourceTelemetry", () => {
         });
         expect(history.retainedSampleCount).toBeGreaterThan(0);
         expect(
-          history.topProcesses.find((entry) => entry.identity.pid === 4_242)?.sampleCount,
+          history.topProcesses.find((entry) => entry.identity.pid === CODEX_PID)?.sampleCount,
         ).toBe(2);
-        expect(history.topProcesses.find((entry) => entry.identity.pid === 4_242)?.cpuTimeMs).toBe(
-          250,
-        );
         expect(
-          history.topProcesses.find((entry) => entry.identity.pid === 4_242)?.ioWriteBytes,
+          history.topProcesses.find((entry) => entry.identity.pid === CODEX_PID)?.cpuTimeMs,
+        ).toBe(250);
+        expect(
+          history.topProcesses.find((entry) => entry.identity.pid === CODEX_PID)?.ioWriteBytes,
         ).toBe(4_000);
         expect(history.buckets.reduce((total, bucket) => total + bucket.ioWriteBytes, 0)).toBe(
           4_000,
@@ -725,14 +742,14 @@ describe("ResourceTelemetry", () => {
           ...current,
           hello: Option.map(current.hello, (hello) => ({
             ...hello,
-            sidecarPid: 9_001,
+            sidecarPid: RESTARTED_MONITOR_PID,
           })),
           restartCount: 3,
         }));
         yield* TestClock.adjust(Duration.seconds(1));
         const restarted = yield* telemetry.refresh;
         expect(DateTime.toEpochMillis(restarted.readAt)).toBe(startedAt + 2_000);
-        expect(Option.getOrNull(restarted.health.sidecarPid)).toBe(9_001);
+        expect(Option.getOrNull(restarted.health.sidecarPid)).toBe(RESTARTED_MONITOR_PID);
 
         yield* Ref.update(nativeHealth, (current) => ({
           ...current,

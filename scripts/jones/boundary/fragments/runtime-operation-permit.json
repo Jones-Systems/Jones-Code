@@ -7,5 +7,10 @@
   ],
   "hookPaths": [],
   "tombstones": [],
-  "allowedImports": []
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/runtime/RuntimeOperationPermit.ts"
+    }
+  ]
 }
