@@ -1,6 +1,8 @@
-// @effect-diagnostics nodeBuiltinImport:off -- Synthetic SQLite/WAL fixtures stay in the assigned evidence cone for root cleanup.
+// @effect-diagnostics nodeBuiltinImport:off -- Isolated SQLite/WAL scratch is scoped; explicitly requested evidence is retained.
 // @effect-diagnostics preferSchemaOverJson:off -- Exact original fixture bytes and deliberate corruptions are test inputs.
 import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -31,8 +33,16 @@ const decodeUnknownSyncHomeWireWorkstreamsHomeBindCommittedV2 = Schema.decodeUnk
 const decodeUnknownSyncMemberWireWorkstreamsMemberEnrollmentBoundV1 = Schema.decodeUnknownSync(
   MemberWire.WorkstreamsMemberEnrollmentBoundV1,
 );
-const evidence =
-  "/home/malcolmjones/.local/share/agent-work/native-workstreams-d1842794/nw-member-enrollment-evidence";
+const scratch = (prefix: string) => {
+  const parent = process.env.NW_MEMBER_ENROLLMENT_EVIDENCE_DIR;
+  return Effect.acquireRelease(
+    Effect.sync(() => NodeFS.mkdtempSync(NodePath.join(parent ?? NodeOS.tmpdir(), prefix))),
+    (directory) =>
+      Effect.sync(() => {
+        if (parent === undefined) NodeFS.rmSync(directory, { recursive: true, force: true });
+      }),
+  );
+};
 const home = { ...Test.scope, home_environment_id: "home:test", server_generation: 1 };
 const sourceAuthority = {
   environment_id: "member:test",
@@ -372,8 +382,8 @@ it.effect(
   "file-backed WAL contains encrypted bytes and restart recovers immutable bound history",
   () =>
     Effect.gen(function* () {
-      const directory = NodeFS.mkdtempSync(evidence + "/store-restart-"),
-        filename = directory + "/state.sqlite";
+      const directory = yield* scratch("nw-member-store-"),
+        filename = NodePath.join(directory, "state.sqlite");
       const expected = boundRecord();
       yield* Effect.scoped(
         Effect.gen(function* () {
@@ -401,7 +411,7 @@ it.effect(
           });
         }).pipe(Effect.provide(services(filename))),
       );
-    }),
+    }).pipe(Effect.scoped),
 );
 
 it.effect("home-key substitution and a zero-row CAS are refused", () =>

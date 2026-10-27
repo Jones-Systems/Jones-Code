@@ -1,6 +1,8 @@
-// @effect-diagnostics nodeBuiltinImport:off -- Synthetic file-backed evidence is retained in the assigned external cone for root cleanup.
+// @effect-diagnostics nodeBuiltinImport:off -- Isolated test scratch is scoped; explicitly requested evidence is retained.
 // @effect-diagnostics preferSchemaOverJson:off -- Tests deliberately retain and corrupt exact wire JSON bytes.
 import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import { expect, it } from "@effect/vitest";
 import { AuthSessionId, EnvironmentId } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -50,8 +52,16 @@ const decodeUnknownSyncHomeWireWorkstreamsHomeBindCommittedV2 = Schema.decodeUnk
   HomeWire.WorkstreamsHomeBindCommittedV2,
 );
 const isSourceNativeSourceSetupRequest = Schema.is(Source.NativeSourceSetupRequest);
-const evidence =
-  "/home/malcolmjones/.local/share/agent-work/native-workstreams-d1842794/nw-member-enrollment-evidence";
+const scratch = (prefix: string) => {
+  const parent = process.env.NW_MEMBER_ENROLLMENT_EVIDENCE_DIR;
+  return Effect.acquireRelease(
+    Effect.sync(() => NodeFS.mkdtempSync(NodePath.join(parent ?? NodeOS.tmpdir(), prefix))),
+    (directory) =>
+      Effect.sync(() => {
+        if (parent === undefined) NodeFS.rmSync(directory, { recursive: true, force: true });
+      }),
+  );
+};
 const home = { ...Test.scope, home_environment_id: "home:test", server_generation: 1 };
 const sourceAuthority = {
   environment_id: "member:test",
@@ -200,6 +210,11 @@ const homeResult = (intent = makeIntent()) =>
     },
     home_pin_bound_revision: 2,
   });
+const configLayer = Layer.unwrap(
+  scratch("nw-member-config-").pipe(
+    Effect.map((directory) => Config.layerTest(process.cwd(), directory)),
+  ),
+);
 const baseServices = (filename?: string) =>
   NativePins.nativeLayer.pipe(
     Layer.provideMerge(AuthRows.layer),
@@ -222,7 +237,7 @@ const baseServices = (filename?: string) =>
         keys: new Map([...Test.secrets(), ["server-signing-key", Test.keyBytes]]),
       }),
     ),
-    Layer.provideMerge(Config.layerTest(process.cwd(), NodeFS.mkdtempSync(evidence + "/config-"))),
+    Layer.provideMerge(configLayer),
     Layer.provideMerge(
       Layer.succeed(Environment.ServerEnvironmentIdentity, {
         getEnvironmentId: Effect.succeed(EnvironmentId.make("member:test")),
