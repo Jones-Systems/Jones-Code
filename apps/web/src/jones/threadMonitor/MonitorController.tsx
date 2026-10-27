@@ -11,6 +11,7 @@ import {
   type ThreadMonitorTheme,
 } from "@t3tools/contracts/jones/desktopThreadMonitor";
 import * as Option from "effect/Option";
+import { pendingDecisionRequestIds } from "./pendingDecisionRequestIds";
 import type { AppRouter } from "../../router";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { environmentThreadDetails } from "../../state/threads";
@@ -343,13 +344,7 @@ function NativeMonitorPublisher({ router }: { readonly router: AppRouter }) {
         projection && reason === null ? derivePendingThreadRequests(projection) : null;
       monitorStore.setDetail(
         detail,
-        pendingRequests
-          ? new Set(
-              [...pendingRequests.approvals, ...pendingRequests.userInputs].map(
-                (request) => request.requestId,
-              ),
-            )
-          : undefined,
+        projection && reason === null ? pendingDecisionRequestIds(projection) : undefined,
       );
       if (projection && reason === null) {
         const request = pendingRequests?.userInputs[0];
