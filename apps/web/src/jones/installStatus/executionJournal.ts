@@ -78,6 +78,12 @@ export function nativeJonesDispatch(input: {
       throw new Error(
         "This desktop cannot reconcile a lost handoff. Update it before using this control.",
       );
+    const expectedRevision =
+      request.type === "start"
+        ? undefined
+        : request.type === "edit"
+          ? request.expectedRevision
+          : state.current?.revision;
     const command: JonesInstallPlanClientCommand = {
       commandId: input.commandId,
       environmentId: input.environmentId,
@@ -88,8 +94,7 @@ export function nativeJonesDispatch(input: {
         ? {}
         : {
             planId: request.planId,
-            expectedRevision:
-              request.type === "edit" ? request.expectedRevision : state.current?.revision,
+            ...(expectedRevision === undefined ? {} : { expectedRevision }),
           }),
     };
     const body = canonicalJonesCommand({ ...request, command });

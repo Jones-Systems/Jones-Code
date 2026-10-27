@@ -1,3 +1,4 @@
+import { useSyncExternalStore } from "react";
 import { act, render as renderScreen, type Screen } from "../../../test/render";
 import type { JonesAction } from "@t3tools/client-runtime/jones/updates";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
@@ -18,6 +19,36 @@ import {
   type ExactSourceHost,
   type ExactSourceTarget,
 } from "./ExactSourceUpdateAction";
+
+// The real journal persists across controls and remounts in this suite. Its synthetic
+// storage port serializes admission without depending on a browser task's Web Lock timing.
+const journalStorage = vi.hoisted(() => ({
+  disk: new Map<string, string>(),
+  lock: Promise.resolve(),
+}));
+vi.mock("@t3tools/client-runtime/jones/updates/action-journal", async (original) => {
+  const actual =
+    await original<typeof import("@t3tools/client-runtime/jones/updates/action-journal")>();
+  return {
+    ...actual,
+    createJonesActionJournal: () =>
+      actual.createJonesActionJournal({
+        getItem: (key) => journalStorage.disk.get(key) ?? null,
+        setItem: (key, value) => {
+          journalStorage.disk.set(key, value);
+        },
+        withLock: (work) => {
+          const next = journalStorage.lock.then(work);
+          journalStorage.lock = next.then(
+            () => undefined,
+            () => undefined,
+          );
+          return next;
+        },
+      }),
+  };
+});
+import { webJonesJournal } from "../installStatus/executionJournal";
 
 let environmentId = EnvironmentId.make("exact-source-host");
 let sequence = 0;
@@ -68,11 +99,9 @@ function createHost(initial: JonesUpdateState | null) {
       Promise.reject(new Error("No handler for this request.")),
     dialog: async () => true,
   };
-  let render = async () => {};
-  const snapshot = () => ({
-    observation: { state, freshness },
-    canOperate: true,
-  });
+  let view: ExactSourceHost["snapshot"] = { observation: { state, freshness }, canOperate: true };
+  const listeners = new Set<() => void>();
+  const snapshot = () => view;
   const host: ExactSourceHost = {
     get snapshot() {
       return snapshot();
@@ -95,10 +124,16 @@ function createHost(initial: JonesUpdateState | null) {
     set: (next: JonesUpdateState | null, nextFreshness: "fresh" | "stale" = "fresh") => {
       state = next;
       freshness = nextFreshness;
-      return render();
+      view = { observation: { state, freshness }, canOperate: true };
+      for (const listener of listeners) listener();
+      return Promise.resolve();
     },
-    onChange: (callback: () => Promise<void>) => {
-      render = callback;
+    snapshot,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
     },
   };
 }
@@ -111,14 +146,14 @@ async function setupFixture1() {
   const stack = new AsyncDisposableStack();
   renderDisposables = stack;
   stack.defer(async () => {
-    await act(async () => root.unmount());
-    container.remove();
+    await journalStorage.lock;
     vi.unstubAllGlobals();
   });
   try {
     container = document.createElement("div");
     document.body.append(container);
     root = renderDisposables.use(await renderScreen(null, { container, router: false }));
+    await act(() => webJonesJournal.load());
 
     return stack;
   } catch (error) {
@@ -127,19 +162,26 @@ async function setupFixture1() {
   }
 }
 
+function FixtureAction({
+  world,
+  targetProps,
+}: {
+  readonly world: ReturnType<typeof createHost>;
+  readonly targetProps: Partial<ExactSourceTarget>;
+}) {
+  const snapshot = useSyncExternalStore(world.subscribe, world.snapshot, world.snapshot);
+  return (
+    <ExactSourceUpdateAction
+      environmentId={environmentId}
+      label="Mac Mini"
+      targetSource={target}
+      host={{ ...world.host, snapshot }}
+      {...targetProps}
+    />
+  );
+}
 async function mount(world: ReturnType<typeof createHost>, props: Partial<ExactSourceTarget> = {}) {
-  const draw = () =>
-    root.rerender(
-      <ExactSourceUpdateAction
-        environmentId={environmentId}
-        label="Mac Mini"
-        targetSource={target}
-        host={world.host}
-        {...props}
-      />,
-    );
-  world.onChange(draw);
-  await draw();
+  await root.rerender(<FixtureAction world={world} targetProps={props} />);
 }
 const buttons = () => [...container.querySelectorAll("button")].map((node) => node.textContent);
 const click = async (name: string) => {
@@ -218,7 +260,11 @@ describe("exact-source action", () => {
     expect(container.querySelectorAll("button:not([aria-disabled=true])")).toHaveLength(0);
     expect(status()).toContain("may have been accepted");
     await act(() => container.querySelector("button")!.focus());
-    await expect.element(page.getByRole("tooltip")).toHaveTextContent("may have been accepted");
+    await expect
+      .element(page.getByRole("tooltip"))
+      .toHaveTextContent(
+        "The request may have been accepted. Its effect is unknown. This host cannot provide a bound receipt; nothing will be resent.",
+      );
     await userEvent.keyboard("{Enter} ");
     expect(world.requests).toHaveLength(1);
     expect(world.dialogs).toHaveLength(1);
@@ -361,7 +407,11 @@ describe("exact-source action", () => {
     expect(world.requests).toHaveLength(1);
     expect(container.querySelector("button")?.getAttribute("aria-disabled")).toBe("true");
     await act(() => container.querySelector("button")!.focus());
-    await expect.element(page.getByRole("tooltip")).toHaveTextContent("Its effect is unknown");
+    await expect
+      .element(page.getByRole("tooltip"))
+      .toHaveTextContent(
+        "The request may have been accepted. Its effect is unknown. This host cannot provide a bound receipt; nothing will be resent.",
+      );
     expect(container.querySelector("button")?.getAttribute("aria-describedby")).toBe(
       page.getByRole("tooltip").element().id,
     );

@@ -30,7 +30,11 @@ import { EnvironmentRegistry } from "../../connection/registry.ts";
 import { EnvironmentSupervisor } from "../../connection/supervisor.ts";
 import { ManagedRelayDpopSigner } from "../../relay/managedRelay.ts";
 import { RemoteEnvironmentAuthorization } from "../../authorization/service.ts";
-import { executeAuthenticatedEnvironmentHttpRequest } from "../../state/environmentHttpAuth.ts";
+import {
+  executeAuthenticatedEnvironmentHttpRequest,
+  type EnvironmentHttpAuthHeaders,
+} from "../../state/environmentHttpAuth.ts";
+import type { makeEnvironmentHttpApiGroupClient } from "../../rpc/http.ts";
 import {
   createEnvironmentCommand,
   isAtomCommandInterrupted,
@@ -71,6 +75,46 @@ type JonesRequestResult<I extends JonesRequest> = I extends { action: "operation
       ? JonesOperationReceipt
       : JonesUpdateState | null;
 
+type JonesDispatchContext = {
+  readonly client: Effect.Success<
+    ReturnType<typeof makeEnvironmentHttpApiGroupClient<"jonesUpdates">>
+  >;
+  readonly headers: EnvironmentHttpAuthHeaders;
+};
+
+const dispatchRequest = Effect.fn("clientRuntime.jonesUpdates.dispatch")(function* (
+  input: JonesRequest,
+  { client, headers }: JonesDispatchContext,
+) {
+  switch (input.action) {
+    case "state":
+      return yield* client.state({
+        headers,
+        query: input.after === undefined ? {} : { after: input.after },
+      });
+    case "check":
+      return yield* client.check({ headers });
+    case "download":
+      return yield* client.download({ headers, payload: input.input });
+    case "downloadExact":
+      return yield* client.downloadExact({ headers, payload: input.input });
+    case "install":
+      return yield* client.install({ headers, payload: input.input });
+    case "reconcile":
+      return yield* client.reconcile({ headers, payload: input.input });
+    case "operationStart":
+      return yield* client.operationStart({ headers, payload: input.input });
+    case "operationStop":
+      return yield* client.operationStop({ headers, payload: input.input });
+    case "operationFence":
+      return yield* client.operationFence({ headers, payload: input.input });
+    case "operationRead":
+      return yield* client.operationRead({ headers, payload: input.input });
+    case "recoveryPreflight":
+      return yield* client.recoveryPreflight({ headers, payload: input.input });
+  }
+});
+
 const requestImpl = Effect.fn("clientRuntime.jonesUpdates.request")(function* (
   input:
     | JonesAction
@@ -105,36 +149,7 @@ const requestImpl = Effect.fn("clientRuntime.jonesUpdates.request")(function* (
             ].includes(input.action)
           ? 60_000
           : 20 * 60_000,
-    request: ({ client, headers }) =>
-      Effect.gen(function* () {
-        switch (input.action) {
-          case "state":
-            return yield* client.state({
-              headers,
-              query: input.after === undefined ? {} : { after: input.after },
-            });
-          case "check":
-            return yield* client.check({ headers });
-          case "download":
-            return yield* client.download({ headers, payload: input.input });
-          case "downloadExact":
-            return yield* client.downloadExact({ headers, payload: input.input });
-          case "install":
-            return yield* client.install({ headers, payload: input.input });
-          case "reconcile":
-            return yield* client.reconcile({ headers, payload: input.input });
-          case "operationStart":
-            return yield* client.operationStart({ headers, payload: input.input });
-          case "operationStop":
-            return yield* client.operationStop({ headers, payload: input.input });
-          case "operationFence":
-            return yield* client.operationFence({ headers, payload: input.input });
-          case "operationRead":
-            return yield* client.operationRead({ headers, payload: input.input });
-          case "recoveryPreflight":
-            return yield* client.recoveryPreflight({ headers, payload: input.input });
-        }
-      }).pipe(Effect.withSpan("clientRuntime.jonesUpdates.dispatch")),
+    request: (context) => dispatchRequest(input, context),
   });
 });
 

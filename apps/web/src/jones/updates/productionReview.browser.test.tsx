@@ -1,6 +1,5 @@
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { act, render, stubGlobal, type Screen } from "../../../test/render";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
 import { EnvironmentId } from "@t3tools/contracts";
 import type {
@@ -23,6 +22,7 @@ const h = vi.hoisted(() => ({
   recoveries: [] as Array<(policy: JonesRecoveryPolicy | null) => void>,
   disk: new Map<string, string>(),
   sequence: 1,
+  lock: Promise.resolve(),
   legacy: vi.fn(),
   operation: vi.fn(),
   stop: vi.fn(),
@@ -38,6 +38,14 @@ vi.mock("@t3tools/client-runtime/jones/updates/action-journal", async (original)
         getItem: (key) => h.disk.get(key) ?? null,
         setItem: (key, value) => {
           h.disk.set(key, value);
+        },
+        withLock: (work) => {
+          const next = h.lock.then(work);
+          h.lock = next.then(
+            () => undefined,
+            () => undefined,
+          );
+          return next;
         },
       }),
   };
@@ -103,7 +111,17 @@ vi.mock("../installStatus/recoveryReview", () => ({
       h.recoveries.push(resolve);
     }),
 }));
-vi.mock("../../connection/runtime", () => ({ connectionAtomRuntime: {} }));
+// These controls do not request a laptop comparison. Avoid activating the real catalog
+// behind that unused fixture input; controls, executor and native gates remain real.
+vi.mock("../../connection/runtime", async () => {
+  const { Atom } = await import("effect/reactivity");
+  const Layer = await import("effect/Layer");
+  return { connectionAtomRuntime: Atom.runtime(Layer.empty) };
+});
+vi.mock("../../state/primaryEnvironment", async () => {
+  const { Atom } = await import("effect/reactivity");
+  return { primaryEnvironmentIdAtom: Atom.make(null) };
+});
 vi.mock("../../env", async (original) => ({
   ...(await original<typeof import("../../env")>()),
   isElectron: false,
@@ -115,7 +133,11 @@ vi.mock("../../lib/utils", async (original) => ({
 import { JonesUpdateControls } from "./JonesUpdateControls";
 import { ProductionExactSourceUpdateAction } from "./ProductionExactSourceUpdateAction";
 
-let root: Root, container: HTMLDivElement, previousBridge: PropertyDescriptor | undefined;
+import { webJonesJournal } from "../installStatus/executionJournal";
+import { bindInstallPlanServices, type InstallPlanServices } from "../installStatus/services";
+import { createInstallStatusStore } from "../installStatus/panelUi";
+
+let root: Screen, container: HTMLElement;
 let count = 0;
 const source = "a".repeat(40),
   old = "b".repeat(40);
@@ -153,17 +175,15 @@ function state(environmentId: EnvironmentId, modern: boolean, recovery = false):
   };
 }
 const draw = (control: "connections" | "exact", env: EnvironmentId, targetSource = source) =>
-  act(async () =>
-    root.render(
-      control === "connections" ? (
-        <JonesUpdateControls environmentId={env} />
-      ) : (
-        <ProductionExactSourceUpdateAction
-          environmentId={env}
-          label="host"
-          targetSource={targetSource}
-        />
-      ),
+  root.rerender(
+    control === "connections" ? (
+      <JonesUpdateControls environmentId={env} />
+    ) : (
+      <ProductionExactSourceUpdateAction
+        environmentId={env}
+        label="host"
+        targetSource={targetSource}
+      />
     ),
   );
 async function click(label: string) {
@@ -182,12 +202,12 @@ function hosts(modern = true, recovery = false) {
   }
   return { a, b };
 }
-beforeEach(() => {
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-  previousBridge = Object.getOwnPropertyDescriptor(window, "desktopBridge");
-  Object.defineProperty(window, "desktopBridge", { configurable: true, value: undefined });
+async function fixture() {
+  const stack = new AsyncDisposableStack();
+  stack.use(stubGlobal("desktopBridge", undefined));
+  root = stack.use(await render(null, { router: false }));
+  container = root.container;
+  await act(() => webJonesJournal.load());
   h.confirmations.length = 0;
   h.recoveries.length = 0;
   h.native.mockReset();
@@ -227,16 +247,56 @@ beforeEach(() => {
         });
       return success({ receipts: [] });
     });
-});
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  if (previousBridge === undefined) Reflect.deleteProperty(window, "desktopBridge");
-  else Object.defineProperty(window, "desktopBridge", previousBridge);
-});
+  stack.defer(async () => {
+    await h.lock;
+  });
+  return stack;
+}
+
+function nativeFixture(environmentId: EnvironmentId): Disposable {
+  h.native.mockResolvedValue({
+    state: {
+      schema: 1,
+      current: null,
+      last: null,
+      clientCommands: 1,
+      laptop: { environmentId, observedAt: new Date().toISOString(), activationBlocked: false },
+      view: { complete: false },
+    },
+  });
+  const unavailable = async (): Promise<never> => {
+    throw new Error("Unexpected fixture port call");
+  };
+  const services: InstallPlanServices = {
+    bridge: {
+      installPlan: h.native,
+      onInstallPlan: () => () => {},
+      getUpdateState: unavailable,
+      onUpdateState: () => () => {},
+    },
+    devices: () => [],
+    observe: unavailable,
+    legacy: unavailable,
+    operation: unavailable,
+    stop: unavailable,
+    host: unavailable,
+    confirm: async () => true,
+    chooseRecovery: async () => null,
+    now: Date.now,
+  };
+  const release = bindInstallPlanServices(services, createInstallStatusStore());
+  const bridge = stubGlobal("desktopBridge", services.bridge);
+  return {
+    [Symbol.dispose]() {
+      release();
+      bridge[Symbol.dispose]();
+    },
+  };
+}
 
 describe("production web review authority", () => {
   it("revokes an exact-source control when its target changes within the same fresh environment", async () => {
+    await using _fixture = await fixture();
     const { a } = hosts();
     await draw("exact", a);
     await click("Install aaaaaaa");
@@ -246,76 +306,92 @@ describe("production web review authority", () => {
     expect(h.legacy).not.toHaveBeenCalled();
     expect(h.native).not.toHaveBeenCalled();
   });
-  for (const control of ["connections", "exact"] as const) {
-    for (const modern of [true, false]) {
-      it.each(["retarget", "unmount", "permission"] as const)(
-        `${control} ${modern ? "operations" : "legacy"}: revokes %s while A remains fresh`,
-        async (transition) => {
-          const { a, b } = hosts(modern);
-          Object.defineProperty(window, "desktopBridge", {
-            configurable: true,
-            value: { installPlan: h.native },
-          });
-          await draw(control, a);
-          await click(control === "connections" ? "Install" : "Install aaaaaaa");
-          expect(h.confirmations).toHaveLength(1);
-          if (transition === "retarget") await draw(control, b);
-          else if (transition === "unmount") await act(async () => root.render(null));
-          else {
-            h.permissions.set(a, false);
-            await draw(control, a);
-          }
-          expect(h.observations.get(a)?.freshness).toBe("fresh");
-          await act(async () => h.confirmations[0]!(true));
-          expect(h.legacy).not.toHaveBeenCalled();
-          expect(h.operation).not.toHaveBeenCalled();
-          expect(h.native).not.toHaveBeenCalled();
-        },
-      );
-      it(`${control} ${modern ? "operations" : "legacy"}: unchanged review sends once`, async () => {
-        const { a } = hosts(modern);
+  it.each(
+    (["connections", "exact"] as const).flatMap((control) =>
+      [true, false].flatMap((modern) =>
+        (["retarget", "unmount", "permission"] as const).map((transition) => ({
+          control,
+          modern,
+          transition,
+        })),
+      ),
+    ),
+  )(
+    "$control modern=$modern: revokes $transition while A remains fresh",
+    async ({ control, modern, transition }) => {
+      await using _fixture = await fixture();
+      const { a, b } = hosts(modern);
+      using _native = nativeFixture(a);
+      await draw(control, a);
+      await click(control === "connections" ? "Install" : "Install aaaaaaa");
+      expect(h.confirmations).toHaveLength(1);
+      if (transition === "retarget") await draw(control, b);
+      else if (transition === "unmount") await root.rerender(null);
+      else {
+        h.permissions.set(a, false);
         await draw(control, a);
-        await click(control === "connections" ? "Install" : "Install aaaaaaa");
-        await act(async () => h.confirmations[0]!(true));
-        if (modern) expect(h.operation).toHaveBeenCalledTimes(1);
-        else expect(h.legacy).toHaveBeenCalledTimes(1);
-        const button = [...container.querySelectorAll("button")].find((node) =>
-          node.textContent?.startsWith("Install"),
-        );
-        if (button !== undefined)
-          await act(async () => {
-            button.click();
-            button.focus();
-          });
-        await userEvent.keyboard("{Enter} ");
-        expect(h.confirmations).toHaveLength(1);
-      });
-    }
-    it.each(["retarget", "unmount", "permission"] as const)(
-      `${control}: revokes pending recovery on %s`,
-      async (transition) => {
-        const { a, b } = hosts(true, true);
-        await draw(control, a);
-        await click(control === "connections" ? "Install" : "Install aaaaaaa");
-        await act(async () => h.confirmations[0]!(true));
-        expect(h.recoveries).toHaveLength(1);
-        if (transition === "retarget") await draw(control, b);
-        else if (transition === "unmount") await act(async () => root.render(null));
-        else {
-          h.permissions.set(a, false);
-          await draw(control, a);
-        }
-        await act(async () => h.recoveries[0]!("clone-required"));
-        expect(
-          h.operation.mock.calls.filter(([request]) => request.input.action === "operationStart"),
-        ).toEqual([]);
-        expect(h.legacy).not.toHaveBeenCalled();
-        expect(h.native).not.toHaveBeenCalled();
-      },
+      }
+      expect(h.observations.get(a)?.freshness).toBe("fresh");
+      await act(async () => h.confirmations[0]!(true));
+      expect(h.legacy).not.toHaveBeenCalled();
+      expect(h.operation).not.toHaveBeenCalled();
+      expect(h.native).not.toHaveBeenCalled();
+    },
+  );
+  it.each(
+    (["connections", "exact"] as const).flatMap((control) =>
+      [true, false].map((modern) => ({ control, modern })),
+    ),
+  )("$control modern=$modern: unchanged review sends once", async ({ control, modern }) => {
+    await using _fixture = await fixture();
+    const { a } = hosts(modern);
+    await draw(control, a);
+    await click(control === "connections" ? "Install" : "Install aaaaaaa");
+    await draw(control, a);
+    await act(async () => h.confirmations[0]!(true));
+    if (modern) expect(h.operation).toHaveBeenCalledTimes(1);
+    else expect(h.legacy).toHaveBeenCalledTimes(1);
+    const button = [...container.querySelectorAll("button")].find((node) =>
+      node.textContent?.startsWith("Install"),
     );
-  }
+    if (button !== undefined)
+      await act(async () => {
+        button.click();
+        button.focus();
+      });
+    await userEvent.keyboard("{Enter} ");
+    expect(h.confirmations).toHaveLength(1);
+  });
+  it.each(
+    (["connections", "exact"] as const).flatMap((control) =>
+      (["retarget", "unmount", "permission"] as const).map((transition) => ({
+        control,
+        transition,
+      })),
+    ),
+  )("$control: revokes pending recovery on $transition", async ({ control, transition }) => {
+    await using _fixture = await fixture();
+    const { a, b } = hosts(true, true);
+    await draw(control, a);
+    await click(control === "connections" ? "Install" : "Install aaaaaaa");
+    await act(async () => h.confirmations[0]!(true));
+    expect(h.recoveries).toHaveLength(1);
+    if (transition === "retarget") await draw(control, b);
+    else if (transition === "unmount") await root.rerender(null);
+    else {
+      h.permissions.set(a, false);
+      await draw(control, a);
+    }
+    await act(async () => h.recoveries[0]!("clone-required"));
+    expect(
+      h.operation.mock.calls.filter(([request]) => request.input.action === "operationStart"),
+    ).toEqual([]);
+    expect(h.legacy).not.toHaveBeenCalled();
+    expect(h.native).not.toHaveBeenCalled();
+  });
 
   it("keeps one Stop through pointer/keyboard, remount, wrong proofs and a late start response", async () => {
+    await using _fixture = await fixture();
     const { a } = hosts();
     const { stagedHandle: _stage, ...unstaged } = state(a, true);
     const initial = { ...unstaged, phase: "available" as const };
@@ -345,7 +421,7 @@ describe("production web review authority", () => {
     await click("Stop download");
     await click("Stop download");
     const stopId = h.stop.mock.calls[0]![0].input.input.stopId as string;
-    await act(async () => root.render(null));
+    await root.rerender(null);
     await draw("connections", a);
     await click("Stop download");
     await userEvent.keyboard("{Enter} ");
@@ -368,7 +444,14 @@ describe("production web review authority", () => {
     expect(container.textContent).toContain("Read operation status");
     answer = { ...answer, stop: { ...answer.stop!, stopId } };
     await click("Read operation status");
+    expect(webJonesJournal.getSnapshot().duties.filter((d) => d.environmentId === a)).toEqual([]);
+    const stopped = () =>
+      webJonesJournal.getSnapshot().history.find((d) => d.environmentId === a && d.kind === "stop")
+        ?.receipt;
+    expect(stopped()).toMatchObject({ phase: "stopped", stop: { stopId, result: "stopped" } });
     await act(async () => finish(success(running)));
+    expect(stopped()).toMatchObject({ phase: "stopped", stop: { stopId, result: "stopped" } });
+    expect(container.textContent).not.toContain("Read operation status");
     expect(container.textContent).toContain("stopped");
     expect(h.stop).toHaveBeenCalledTimes(1);
   });

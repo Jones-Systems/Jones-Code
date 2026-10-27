@@ -98,11 +98,15 @@ export function jonesTargetStatus(
           ? "Checking download · can't stop now"
           : operation?.phase === "handed-off"
             ? "Installing · restarting"
-            : state === null
-              ? observation.freshness === "unsupported"
-                ? "Updates unsupported"
-                : "Waiting for update status"
-              : jonesUpdatePresentation(state).message;
+            : operation?.phase === "stopped"
+              ? operation.action.kind === "install"
+                ? "Update stopped"
+                : "Download stopped"
+              : state === null
+                ? observation.freshness === "unsupported"
+                  ? "Updates unsupported"
+                  : "Waiting for update status"
+                : jonesUpdatePresentation(state).message;
   return {
     headline,
     ...(operation?.message === undefined && observation.message === undefined

@@ -1,14 +1,19 @@
-import { useLayoutEffect, useMemo } from "react";
+import { useLayoutEffect } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
 
-export function createWebReviewAuthority(environmentId: EnvironmentId) {
+export function createWebReviewAuthority(
+  environmentId: EnvironmentId,
+  allowed = true,
+  selection: string = environmentId,
+) {
   let active = false;
   const cancellations = new Set<() => void>();
   return {
     environmentId,
+    binding: { environmentId, allowed, selection },
     isCurrent: () => active,
     activate() {
-      active = true;
+      active = allowed;
     },
     revoke() {
       active = false;
@@ -53,10 +58,7 @@ export function useWebReviewAuthority(
   allowed: boolean,
   selection: string = environmentId,
 ) {
-  const authority = useMemo(
-    () => createWebReviewAuthority(environmentId),
-    [environmentId, allowed, selection],
-  );
+  const authority = createWebReviewAuthority(environmentId, allowed, selection);
   // oxlint-disable-next-line t3code/react-effect-budget -- Commit/unmount revokes only this control's asynchronous review authority, before any continuation can dispatch.
   useLayoutEffect(() => {
     if (allowed) authority.activate();

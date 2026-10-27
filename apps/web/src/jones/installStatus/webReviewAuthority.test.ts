@@ -3,6 +3,24 @@ import { EnvironmentId } from "@t3tools/contracts";
 import { createWebReviewAuthority } from "./webReviewAuthority";
 
 describe("control-owned review authority", () => {
+  it("captures selection and permission even when the environment stays the same", async () => {
+    const environmentId = EnvironmentId.make("same-host");
+    const original = createWebReviewAuthority(environmentId, true, "source-a");
+    const retargeted = createWebReviewAuthority(environmentId, true, "source-b");
+    const denied = createWebReviewAuthority(environmentId, false, "source-b");
+    expect(original.binding).toEqual({ environmentId, allowed: true, selection: "source-a" });
+    expect(retargeted.binding.selection).toBe("source-b");
+    denied.activate();
+    expect(denied.isCurrent()).toBe(false);
+    let sent = false;
+    expect(
+      await denied.wait(async () => {
+        sent = true;
+        return true;
+      }, false),
+    ).toBe(false);
+    expect(sent).toBe(false);
+  });
   it("revokes pending confirmation and recovery, without cancelling another control", async () => {
     const a = createWebReviewAuthority(EnvironmentId.make("a"));
     const b = createWebReviewAuthority(EnvironmentId.make("b"));

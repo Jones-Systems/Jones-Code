@@ -86,3 +86,40 @@ it("distinguishes bounded discovery, pending qualification, failure and transpor
   expect(texts.join(" ")).not.toContain("exhaustive");
   expect(state.phase).toBe("downloading");
 });
+
+it.each(["available", "downloading", "staged"] as const)(
+  "shows a confirmed stopped receipt instead of lagging %s package status",
+  (phase) => {
+    const receipt = {
+      ...state.operation!,
+      phase: "stopped" as const,
+      stop: {
+        stopId: "22222222-2222-4222-8222-222222222222",
+        requestedAt: state.operation!.updatedAt,
+        result: "stopped" as const,
+      },
+    };
+    const observed = { ...state, phase, operation: receipt };
+    const status = jonesTargetStatus({ state: observed, freshness: "fresh" }, { canOperate: true });
+    expect(status.headline).toBe("Download stopped");
+    expect(status.operation).toMatchObject({
+      operationId: id,
+      phase: "stopped",
+      held: false,
+      unknown: false,
+    });
+    expect(status.actions.stop).toBeUndefined();
+    expect(observed.phase).toBe(phase);
+    // A terminal phase with unconfirmed native effects remains held by its exact outcome.
+    const unknown = jonesTargetStatus(
+      {
+        state: { ...observed, operation: { ...receipt, code: "launcher-unconfirmed" } },
+        freshness: "fresh",
+      },
+      { canOperate: true },
+    );
+    expect(unknown.headline).toBe("Not confirmed");
+    expect(unknown.actions.download).toBeUndefined();
+    expect(unknown.actions.install).toBeUndefined();
+  },
+);

@@ -112,14 +112,13 @@ function refreshCommands(document: PlanDocument): PlanDocument {
           remote.code !== "launcher-unconfirmed";
     if (!settled) return receipt === entry.receipt ? entry : { ...entry, receipt };
     changed = true;
+    const code = local?.result?.code ?? remote?.code;
     return {
       ...entry,
       receipt: {
         ...receipt,
         outcome: "terminal" as const,
-        ...((local?.result?.code ?? remote?.code) === undefined
-          ? {}
-          : { code: local?.result?.code ?? remote?.code }),
+        ...(code === undefined ? {} : { code }),
       },
     };
   });

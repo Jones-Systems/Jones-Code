@@ -217,7 +217,7 @@ function metadataDuty(duty: JonesActionDuty): JonesActionDuty {
       : {
           native: {
             commandId: duty.native.commandId,
-            bodyHash: duty.native.bodyHash,
+            ...(duty.native.bodyHash === undefined ? {} : { bodyHash: duty.native.bodyHash }),
             requestType: duty.native.requestType,
             ...(duty.native.planId === undefined ? {} : { planId: duty.native.planId }),
             ...(duty.native.expectedRevision === undefined
@@ -469,7 +469,7 @@ export function createJonesActionJournal(storage: JonesActionStorage) {
           const original = d.request ?? d.receipt;
           if (
             original === undefined ||
-            !(d.kind === "stop" && "phase" in original
+            !(d.kind === "stop" && Schema.is(JonesOperationReceipt)(original)
               ? validateJonesStopReceipt(original, receipt)
               : validateReceipt(original, receipt)) ||
             (d.receipt !== undefined &&
