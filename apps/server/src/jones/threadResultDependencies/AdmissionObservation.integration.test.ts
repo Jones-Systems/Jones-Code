@@ -24,6 +24,8 @@ import * as Watch from "./RequestWatch.ts";
 import * as Fixture from "./testkit.ts";
 import { runtime } from "./runtimeTestkit.ts";
 
+const decodeProviderThread = Schema.decodeEffect(OrchestrationV2ProviderThread);
+
 const invocation: McpInvocationScope = {
   environmentId: EnvironmentId.make("receiving-environment"),
   capabilities: new Set(["orchestration"]),
@@ -92,7 +94,7 @@ it.effect.each([
       yield* f.sql`INSERT INTO jones_remote_admission_policy (singleton, policy_json) VALUES (1, ${policy})`;
       // Real queued dispatch needs a provider-thread binding. A preparing run
       // accepts the queued message without preparing a filesystem checkpoint.
-      const providerThread = Schema.decodeUnknownSync(OrchestrationV2ProviderThread)({
+      const providerThread = yield* decodeProviderThread({
         id: "receiving-provider-thread",
         driver: "codex",
         providerInstanceId: f.receiver.providerInstanceId,
@@ -112,7 +114,7 @@ it.effect.each([
       yield* f.sink.write({
         events: [
           f.event({
-            type: "provider-thread.created",
+            type: "provider-thread.updated",
             threadId: f.receiver.id,
             payload: providerThread,
           }),
