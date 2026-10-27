@@ -813,13 +813,14 @@ T3CODE_NETDATA_MINI_NODE='<mini-machine-guid>'
 T3CODE_NETDATA_HOME_NODE='<home-machine-guid>'
 ```
 
-| Variable                    | Meaning                                                                                       |
-| --------------------------- | --------------------------------------------------------------------------------------------- |
-| `T3CODE_NETDATA_URL`        | Shared parent base URL reachable from the serving environment.                                |
-| `T3CODE_NETDATA_TOKEN`      | Optional bearer token for the shared parent, supplied through protected server configuration. |
-| `T3CODE_NETDATA_<ID>_NODE`  | Exact machine GUID for a fixed slot.                                                          |
-| `T3CODE_NETDATA_<ID>_URL`   | Per-slot endpoint override; without `_NODE`, it must report exactly one node.                 |
-| `T3CODE_NETDATA_<ID>_TOKEN` | Per-slot bearer token. A URL override never inherits the shared token.                        |
+| Variable                                  | Meaning                                                                                                   |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `T3CODE_NETDATA_URL`                      | Shared parent base URL reachable from the serving environment.                                            |
+| `T3CODE_NETDATA_TOKEN`                    | Optional bearer token for the shared parent, supplied through protected server configuration.             |
+| `T3CODE_NETDATA_<ID>_NODE`                | Exact machine GUID for a fixed slot.                                                                      |
+| `T3CODE_NETDATA_<ID>_URL`                 | Per-slot endpoint override; without `_NODE`, it must report exactly one node.                             |
+| `T3CODE_NETDATA_<ID>_TOKEN`               | Per-slot bearer token. A URL override never inherits the shared token.                                    |
+| `T3CODE_NETDATA_<ID>_STORAGE_MOUNT_POINT` | Optional exact filesystem mount; defaults to `/` on Linux and `/System/Volumes/Data`, then `/`, on macOS. |
 
 Tokens authenticate API reads; they are not Netdata streaming keys. Keep collector
 configuration out of browser build variables. Changing process launch settings
@@ -848,9 +849,20 @@ Missing or invalid available-memory data leaves CPU usable and available RAM
 unavailable; free RAM is never relabeled as available RAM. Every reported byte
 value is integral and bounded by total RAM.
 
+Optional storage fields report one exact `disk.space` filesystem on the selected
+node, never a sum of mounts or physical disks. Free space is `avail`; total is
+`avail + used + reserved_for_root`, including blocks reserved for root.
+The gateway validates the returned node, mount label, individual dimension
+freshness and GiB units. Missing, malformed or stale storage leaves the other
+metrics available. Mount overrides accept absolute paths using letters, digits,
+underscores, dots, slashes and hyphens; pattern syntax is rejected. The Mac
+collector must publish a matching chart; source changes cannot enable it.
+
 The header shows compact whole numbers such as `VPS · 24% · 41`: total-host CPU
-percentage and available RAM in GiB. Tooltips retain units and collector-estimate
-meaning. CPU and RAM colors use their unrounded utilization, and either can raise
+percentage and available RAM in GiB. Hover and keyboard focus show one bullet per
+CPU, available/total RAM, Mac swap I/O and free/total main-filesystem storage
+reading, with units. Available RAM on macOS remains a collector estimate.
+CPU and RAM colors use their unrounded utilization, and either can raise
 the badge background; the RAM color is not a direct measurement of memory
 pressure. The breadcrumb receives its natural width first; complete badges fit
 into the remaining space in VPS, Test, Mini, Home order, with hidden badges

@@ -2,6 +2,7 @@ import { decodeMigrationPlan, type MigrationPlan } from "../jones/updates/migrat
 import type { ServerSelfUpdateOutcome } from "@t3tools/contracts";
 import {
   decodeStagedQualifiedRuntime,
+  RECOVERED_QUALIFIED_STAGE_PROTOCOL,
   type StagedQualifiedRuntime,
 } from "../jones/cloud/qualifiedRuntime.ts";
 import {
@@ -63,6 +64,7 @@ export interface ServiceLauncherContext {
   /** The running launcher's own version; absence does not imply it matches the child. */
   readonly launcherVersion?: string;
   readonly qualifiedUpdatesProtocol?: 1;
+  readonly qualifiedRecoveryProtocol?: 1;
   readonly updateOperationsProtocol?: 1;
   readonly updateRetirementProtocol?: 1;
   /** The launcher answers `reconcile-update` from its durable operation outcomes. */
@@ -115,6 +117,7 @@ export type ServiceLauncherChildMessage =
     }
   | {
       readonly type: "request-update";
+      readonly qualifiedRecoveryProtocol?: 1;
       readonly targetVersion: string;
       readonly dbPath: string;
       readonly stagedHandle?: string;
@@ -199,7 +202,8 @@ function decodeServiceUpdate(value: unknown): ServiceUpdateRecord | undefined {
     (qualified === undefined ||
       qualified.binding.activeVersion !== fromVersion ||
       qualified.receipt.version !== targetVersion ||
-      qualified.receipt.installedSourceSha !== qualified.binding.activeSourceSha)
+      (qualified.protocol !== RECOVERED_QUALIFIED_STAGE_PROTOCOL &&
+        qualified.receipt.installedSourceSha !== qualified.binding.activeSourceSha))
   )
     return undefined;
   if (
@@ -349,6 +353,7 @@ export function decodeServiceLauncherContext(value: string): ServiceLauncherCont
   }
   if (
     !isRecord(parsed) ||
+    ("qualifiedRecoveryProtocol" in parsed && parsed.qualifiedRecoveryProtocol !== 1) ||
     (parsed.protocol !== SERVICE_LAUNCHER_PROTOCOL &&
       parsed.protocol !== LEGACY_SERVICE_LAUNCHER_PROTOCOL) ||
     typeof parsed.childVersion !== "string" ||
@@ -363,6 +368,11 @@ export function decodeServiceLauncherContext(value: string): ServiceLauncherCont
         ? decodeServiceUpdate(parsed.update)
         : decodeLegacyServiceUpdate(parsed.update);
   if (parsed.update !== undefined && update === undefined) return undefined;
+  if (
+    update?.qualified?.protocol === RECOVERED_QUALIFIED_STAGE_PROTOCOL &&
+    parsed.qualifiedRecoveryProtocol !== 1
+  )
+    return undefined;
   if (
     parsed.protocol === SERVICE_LAUNCHER_PROTOCOL &&
     update?.status === "pending" &&
@@ -386,6 +396,7 @@ export function decodeServiceLauncherContext(value: string): ServiceLauncherCont
       ? { launcherVersion: parsed.launcherVersion }
       : {}),
     ...(parsed.qualifiedUpdatesProtocol === 1 ? { qualifiedUpdatesProtocol: 1 as const } : {}),
+    ...(parsed.qualifiedRecoveryProtocol === 1 ? { qualifiedRecoveryProtocol: 1 as const } : {}),
     ...(parsed.updateOperationsProtocol === 1 ? { updateOperationsProtocol: 1 as const } : {}),
     ...(parsed.updateRetirementProtocol === 1 ? { updateRetirementProtocol: 1 as const } : {}),
     ...(parsed.updateOutcomeProtocol === 1 ? { updateOutcomeProtocol: 1 as const } : {}),
@@ -482,6 +493,11 @@ export function decodeServiceLauncherChildMessage(
     if (value.stagedHandle !== undefined && typeof value.stagedHandle !== "string")
       return undefined;
     if (
+      "qualifiedRecoveryProtocol" in value &&
+      (value.qualifiedRecoveryProtocol !== 1 || value.stagedHandle === undefined)
+    )
+      return undefined;
+    if (
       value.operationId !== undefined &&
       (typeof value.operationId !== "string" ||
         !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(
@@ -495,6 +511,7 @@ export function decodeServiceLauncherChildMessage(
       targetVersion: value.targetVersion,
       dbPath: value.dbPath,
       ...(typeof value.stagedHandle === "string" ? { stagedHandle: value.stagedHandle } : {}),
+      ...(value.qualifiedRecoveryProtocol === 1 ? { qualifiedRecoveryProtocol: 1 as const } : {}),
       ...(typeof value.operationId === "string" ? { operationId: value.operationId } : {}),
     };
   }

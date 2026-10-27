@@ -2106,6 +2106,30 @@ it("clears an Office metadata error when the same URL becomes previewable", asyn
 describe("attachment HTML preview recovery", () => {
   const originalUrl = "data:text/html,original";
   const renewedUrl = "data:text/html,renewed";
+  const discoveryUrl = new URL("/.well-known/t3/environment", window.location.origin).href;
+  const discoveryOptions = { method: "GET", credentials: "include" } as const;
+
+  function remoteHtmlFetchRecorder() {
+    const discovery = vi.fn<typeof fetch>(async () => new Response(null, { status: 503 }));
+    const nonDiscovery = vi.fn<typeof fetch>(async () => new Response("<p>Captured HTML</p>"));
+    const fetchStub = vi.fn<typeof fetch>((input, init) => {
+      const request = input instanceof Request ? input : undefined;
+      const url = request?.url ?? String(input);
+      const method = init?.method ?? request?.method ?? "GET";
+      const credentials = init?.credentials ?? request?.credentials;
+      const headers = new Headers(init?.headers ?? request?.headers);
+      if (
+        url === discoveryUrl &&
+        method === "GET" &&
+        credentials === "include" &&
+        !headers.has("Range")
+      ) {
+        return discovery(input, init);
+      }
+      return nonDiscovery(input, init);
+    });
+    return { fetchStub, discovery, nonDiscovery };
+  }
 
   function setup() {
     refresh.mockReset().mockResolvedValueOnce(originalUrl).mockResolvedValue(renewedUrl);
@@ -2134,18 +2158,21 @@ describe("attachment HTML preview recovery", () => {
     setup();
     let now = 0;
     using _now = vi.spyOn(Date, "now").mockImplementation(() => now);
-    using _fetch = stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("<p>Captured HTML</p>")),
-    );
+    const recorder = remoteHtmlFetchRecorder();
+    using _fetch = stubGlobal("fetch", recorder.fetchStub);
     await using screen = await openRemote();
     expect(screen.container.querySelector("iframe")?.getAttribute("src")).toBe(originalUrl);
+    const discoveryCount = recorder.discovery.mock.calls.length;
+    expect((await fetch(discoveryUrl, discoveryOptions)).status).toBe(503);
+    expect(recorder.discovery).toHaveBeenCalledTimes(discoveryCount + 1);
+    expect(recorder.discovery).toHaveBeenLastCalledWith(discoveryUrl, discoveryOptions);
+    expect(recorder.nonDiscovery).not.toHaveBeenCalled();
     now = 61 * 60_000;
     await toggleMode(screen, "Show HTML source");
     await act(async () => {
       await import("./ReadOnlySourcePreview");
     });
-    expect(fetch).toHaveBeenCalledExactlyOnceWith(renewedUrl, expect.any(Object));
+    expect(recorder.nonDiscovery).toHaveBeenCalledExactlyOnceWith(renewedUrl, expect.any(Object));
     await vi.waitFor(() =>
       expect(screen.container.querySelector("pre")?.textContent).toBe("<p>Captured HTML</p>"),
     );
@@ -2154,28 +2181,31 @@ describe("attachment HTML preview recovery", () => {
     expect(screen.container.querySelector("iframe")?.getAttribute("src")).toBe(renewedUrl);
     await toggleMode(screen, "Show HTML source");
     expect(refresh).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toEqual([renewedUrl, renewedUrl]);
+    expect(recorder.nonDiscovery.mock.calls.map(([url]) => url)).toEqual([renewedUrl, renewedUrl]);
   });
 
   it("does not fetch or mark an expired URL fresh when reauthorization is unavailable", async () => {
     setup();
     let now = 0;
     using _now = vi.spyOn(Date, "now").mockImplementation(() => now);
-    using _fetch = stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("<p>Captured HTML</p>")),
-    );
+    const recorder = remoteHtmlFetchRecorder();
+    using _fetch = stubGlobal("fetch", recorder.fetchStub);
     await using screen = await openRemote();
+    const discoveryCount = recorder.discovery.mock.calls.length;
+    expect((await fetch(discoveryUrl, discoveryOptions)).status).toBe(503);
+    expect(recorder.discovery).toHaveBeenCalledTimes(discoveryCount + 1);
+    expect(recorder.discovery).toHaveBeenLastCalledWith(discoveryUrl, discoveryOptions);
+    expect(recorder.nonDiscovery).not.toHaveBeenCalled();
     now = 61 * 60_000;
     refresh.mockResolvedValue(null);
     await toggleMode(screen, "Show HTML source");
-    expect(fetch).not.toHaveBeenCalled();
+    expect(recorder.nonDiscovery).not.toHaveBeenCalled();
     expect(alert(screen)?.textContent).toContain("Reconnect to the environment and try again.");
 
     await toggleMode(screen, "Show rendered page");
     await toggleMode(screen, "Show HTML source");
     expect(refresh).toHaveBeenCalledTimes(3);
-    expect(fetch).not.toHaveBeenCalled();
+    expect(recorder.nonDiscovery).not.toHaveBeenCalled();
   });
 
   it("can return to rendered HTML after local source decoding fails", async () => {

@@ -190,6 +190,8 @@ describe("receiving V2 synthetic fixtures", () => {
           { id: 124, name: "TaskContinuations" },
           { id: 129, name: "CodexFailover" },
           { id: 130, name: "ThreadTitleRefinement" },
+          { id: 132, name: "OwnerSelections" },
+          { id: 133, name: "ThreadResultDependencies" },
         ]);
         NodeAssert.equal(result.capture?.integrity.ok, true);
         NodeAssert.equal(result.capture?.foreignKeys.violations, 0);

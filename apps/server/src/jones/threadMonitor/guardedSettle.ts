@@ -1,3 +1,7 @@
+import * as Option from "effect/Option";
+import * as SqlClient from "effect/sql/SqlClient";
+import { makeJonesTablePresence } from "../persistence/JonesTablePresence.ts";
+import { makeDependencyStore } from "../threadResultDependencies/DependencyStore.ts";
 import type { OrchestrationV2TurnItem, ThreadId } from "@t3tools/contracts";
 import { isOrchestrationV2WorkActive } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -19,6 +23,7 @@ export type GuardedSettlementRecords = Pick<
   "thread" | (typeof fields)[number]
 >;
 export type MonitorSettlementBlocker =
+  | "dependency"
   | "stale"
   | "request"
   | "guest"
@@ -102,6 +107,12 @@ export const readMonitorSettlementBlocker = Effect.fn("ThreadMonitor.readSettlem
     threadId: ThreadId,
     expectedUpdatedAt: string,
   ) {
+    const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
+    const dependencies = Option.isSome(sql)
+      ? makeDependencyStore(sql.value, makeJonesTablePresence(sql.value))
+      : undefined;
+    if (dependencies && (yield* dependencies.duties(threadId)).outgoing > 0)
+      return "dependency" as const;
     const records = yield* store.getThreadRecords(threadId, fields, {
       turnItemTypes: [...executingItems],
       turnItemStatuses: ["pending", "running", "waiting"],
@@ -123,6 +134,8 @@ export const readMonitorSettlementBlocker = Effect.fn("ThreadMonitor.readSettlem
       if (seen.has(task.childThreadId)) continue;
       if (seen.size >= 64) return "unavailable" as const;
       seen.add(task.childThreadId);
+      if (dependencies && (yield* dependencies.duties(task.childThreadId)).outgoing > 0)
+        return "dependency" as const;
       const child = yield* store.getThreadRecords(task.childThreadId, fields, {
         turnItemTypes: [...executingItems],
         turnItemStatuses: ["pending", "running", "waiting"],
@@ -151,6 +164,8 @@ export const readMonitorSettlementBlocker = Effect.fn("ThreadMonitor.readSettlem
 );
 
 export const monitorSettlementBlockerMessage: Record<MonitorSettlementBlocker, string> = {
+  dependency:
+    "Thread or descendant is waiting on an explicit result. Stop or release before settling.",
   stale: "Thread changed after the monitor snapshot. Refresh before settling.",
   request: "Resolve every pending request before settling.",
   guest: "Review pending guest messages in Jones Code before settling.",

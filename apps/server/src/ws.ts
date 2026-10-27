@@ -1,3 +1,8 @@
+import * as DependencyChanges from "./jones/threadResultDependencies/DependencyChanges.ts";
+import { makeDependencyStore } from "./jones/threadResultDependencies/DependencyStore.ts";
+import { makeJonesTablePresence } from "./jones/persistence/JonesTablePresence.ts";
+import { refreshItems as dependencyRefreshItems } from "./jones/orchestration/shellThreadRefresh.ts";
+import { withOwnerSelectionIngress } from "./jones/threadConfiguration/ownerIngress.ts";
 import * as LinkedThreads from "./jones/linkedThreads/LinkedThreads.ts";
 import * as ThreadReferenceExcerpts from "./jones/orchestration/threadReferenceExcerpt.ts";
 import * as RuntimeStop from "./jones/runtime/RuntimeStop.ts";
@@ -1035,6 +1040,7 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
     readonly requestCompletionMarker?: boolean;
     readonly omitIdleSubagents?: boolean;
     readonly omitOlderSettled?: boolean;
+    readonly acceptThreadRefresh?: boolean | undefined;
   }) {
     const sql = yield* SqlClient.SqlClient;
     const threadManagement = yield* ThreadManagementService.ThreadManagementService;
@@ -1049,6 +1055,12 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
       shouldPublishShellApplicationEvent(stored, subagentThreadIds);
 
     const enrichmentChanges = yield* projectEnrichment.subscribeChanges;
+    const resultDependencies = makeDependencyStore(sql, makeJonesTablePresence(sql));
+    const dependencyChanges = yield* Effect.serviceOption(DependencyChanges.DependencyChanges);
+    const dependencySubscription =
+      input.acceptThreadRefresh === true && Option.isSome(dependencyChanges)
+        ? yield* dependencyChanges.value.subscribe
+        : undefined;
     const loadProjectMetadataSnapshot = Effect.fn("ws.orchestrationV2.loadProjectMetadataSnapshot")(
       function* (snapshotSequence: number) {
         const enriched = yield* enrichProjectShells(yield* projects.listShells());
@@ -1085,6 +1097,7 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
           ...forSubscriber.snapshot,
           projects: enriched.projects,
         } as OrchestrationV2ShellSnapshot,
+        currentThreads: base.threads,
         resolvedRepositoryIdentityRoots: enriched.resolvedRepositoryIdentityRoots,
       };
     });
@@ -1180,6 +1193,36 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
       ),
     );
 
+    const dependencyRefreshes =
+      dependencySubscription === undefined
+        ? Stream.empty
+        : Stream.fromSubscription(dependencySubscription).pipe(
+            Stream.groupedWithin(128, Duration.millis(25)),
+            Stream.mapEffect((changes) =>
+              Effect.gen(function* () {
+                const ids = [
+                  ...new Set(Array.from(changes).flatMap((change) => [...change.threadIds])),
+                ];
+                if (ids.length === 0) return [];
+                const loaded = yield* loadSnapshot();
+                return dependencyRefreshItems(loaded.snapshot, ids, loaded.currentThreads);
+              }),
+            ),
+            Stream.flatMap(Stream.fromIterable),
+          );
+    const shellRefreshes = Stream.merge(enrichmentRefreshes, dependencyRefreshes);
+    const reconnectDependencies =
+      input.acceptThreadRefresh !== true || input.afterSequence === undefined
+        ? Stream.empty
+        : Stream.fromEffect(
+            Effect.gen(function* () {
+              const ids = yield* resultDependencies.changedThreads(input.afterSequence!);
+              if (ids.length === 0) return [];
+              const loaded = yield* loadSnapshot();
+              return dependencyRefreshItems(loaded.snapshot, ids, loaded.currentThreads);
+            }),
+          ).pipe(Stream.flatMap(Stream.fromIterable));
+
     // Subscribe before loading for racing enrichments; initial refresh covers pre-subscription completions and cold HTTP snapshots.
     const completionMarker =
       input.requestCompletionMarker === true
@@ -1215,7 +1258,7 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
         return composeShellStreamWithEnrichment({
           initial: initialSnapshotItems(loaded),
           tail: completionThenLive(loaded.snapshot.snapshotSequence),
-          enrichment: enrichmentRefreshes,
+          enrichment: shellRefreshes,
         });
       }
 
@@ -1225,7 +1268,7 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
         return composeShellStreamWithEnrichment({
           initial: initialSnapshotItems(loaded),
           tail: completionThenLive(loaded.snapshot.snapshotSequence),
-          enrichment: enrichmentRefreshes,
+          enrichment: shellRefreshes,
         });
       }
 
@@ -1246,8 +1289,11 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
       );
       return composeShellStreamWithEnrichment({
         initial: initialEnrichmentItems(loaded),
-        tail: Stream.concat(Stream.concat(replay, completionMarker), liveFrom(highWater)),
-        enrichment: enrichmentRefreshes,
+        tail: Stream.concat(
+          Stream.concat(Stream.concat(replay, reconnectDependencies), completionMarker),
+          liveFrom(highWater),
+        ),
+        enrichment: shellRefreshes,
       });
     }).pipe(
       Effect.mapError(
@@ -1893,6 +1939,7 @@ export const layerWsRpc = (
           shellResumeCompletionMarker: true,
           shellThreadFamilies: true,
           shellOlderSettled: true,
+          shellThreadRefresh: true,
           threadResumeCompletionMarker: true,
           threadSnapshotPagination: true,
           threadFind: true,
@@ -2118,7 +2165,11 @@ export const layerWsRpc = (
               }).pipe(
                 Effect.andThen(
                   startup
-                    .enqueueCommand(queueCompatibility.dispatch(command, "legacy_websocket"))
+                    .enqueueCommand(
+                      queueCompatibility
+                        .dispatch(command, "legacy_websocket")
+                        .pipe(withOwnerSelectionIngress),
+                    )
                     .pipe(
                       Effect.mapError((error) => {
                         const cause = error.cause;
@@ -2169,7 +2220,7 @@ export const layerWsRpc = (
                                   "creationSource" in command ? command.creationSource : "web",
                               }),
                             )
-                        ).pipe(Effect.provide(intakeContext)),
+                        ).pipe(Effect.provide(intakeContext), withOwnerSelectionIngress),
                       )
                       .pipe(
                         Effect.tap((result) =>
