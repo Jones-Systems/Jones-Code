@@ -21,6 +21,7 @@ import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { type ReleaseChannel, releaseResourceAttributes } from "@t3tools/shared/releaseResource";
 import packageJson from "../package.json" with { type: "json" };
 import { holdJonesServerNativeWriterFence } from "./jones/updates/nativeWriterStartup.ts";
+import type { Configuration as FleetCheckpointConfiguration } from "./jones/fleetCheckpoint/Configuration.ts";
 import type { Configuration as WorkspaceLifecycleConfiguration } from "./jones/workspaceLifecycle/Configuration.ts";
 
 // Official release workflows set this telemetry channel; other builds report dev.
@@ -110,6 +111,7 @@ export class ServerConfig extends Context.Service<
     readonly desktopNativeOwnerInputFd?: number | undefined;
     readonly desktopNativeOwnerOutputFd?: number | undefined;
     readonly resourceMonitorPath?: string | undefined;
+    readonly fleetCheckpoint?: FleetCheckpointConfiguration | undefined;
     readonly workspaceLifecycle?: WorkspaceLifecycleConfiguration | undefined;
     readonly autoBootstrapProjectFromCwd: boolean;
     readonly logWebSocketEvents: boolean;

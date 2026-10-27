@@ -1,3 +1,4 @@
+import { Configuration as FleetCheckpointConfiguration } from "../jones/fleetCheckpoint/Configuration.ts";
 import * as NetService from "@t3tools/shared/Net";
 import {
   OtlpHeadersFromString,
@@ -94,6 +95,10 @@ export const traceMaxFilesConfig = Config.Int("T3CODE_TRACE_MAX_FILES").pipe(
 );
 
 const EnvServerConfig = Config.all({
+  fleetCheckpoint: Config.schema(
+    Schema.fromJsonString(FleetCheckpointConfiguration),
+    "JONES_FLEET_CHECKPOINT_COMMAND",
+  ).pipe(Config.option, Config.map(Option.getOrUndefined)),
   logLevel: Config.LogLevel("T3CODE_LOG_LEVEL").pipe(Config.withDefault("Info")),
   traceMinLevel: Config.LogLevel("T3CODE_TRACE_MIN_LEVEL").pipe(Config.withDefault("Info")),
   traceTimingEnabled: Config.Boolean("T3CODE_TRACE_TIMING_ENABLED").pipe(Config.withDefault(true)),
@@ -515,6 +520,7 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     desktopNativeOwnerInputFd,
     desktopNativeOwnerOutputFd,
     resourceMonitorPath,
+    fleetCheckpoint: env.fleetCheckpoint,
     autoBootstrapProjectFromCwd,
     logWebSocketEvents,
     tailscaleServeEnabled,

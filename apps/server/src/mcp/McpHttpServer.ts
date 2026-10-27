@@ -53,6 +53,10 @@ import {
 import { DecisionSnapshotToolkit } from "../jones/mcp/decisionSnapshot/tools.ts";
 import { OrganizationMetadataHandlersLive } from "../jones/mcp/organizationMetadata/handlers.ts";
 import { OrganizationMetadataToolkit } from "../jones/mcp/organizationMetadata/tools.ts";
+import { FleetCheckpointHandlersLive } from "../jones/mcp/fleetCheckpoint/handlers.ts";
+import { FleetCheckpointToolkit } from "../jones/mcp/fleetCheckpoint/tools.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import * as FleetCheckpoint from "../jones/fleetCheckpoint/Checkpoint.ts";
 import { SettlementRestoreHandlersLive } from "../jones/mcp/settlementRestore/handlers.ts";
 import { SettlementRestoreToolkit } from "../jones/mcp/settlementRestore/tools.ts";
 import * as SettlementRestore from "../jones/settlementRestore/SettlementRestore.ts";
@@ -1169,6 +1173,20 @@ export const layerWorkstreamToolkit = toolkitRegistration(
 ).pipe(Layer.provide(workstreamBackendLayer));
 
 export const layer = Layer.mergeAll(
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      return config.fleetCheckpoint === undefined
+        ? Layer.empty
+        : toolkitRegistration(FleetCheckpointToolkit, FleetCheckpointHandlersLive).pipe(
+            Layer.provide(
+              FleetCheckpoint.layer(config.fleetCheckpoint).pipe(
+                Layer.provide(ProcessRunner.layer),
+              ),
+            ),
+          );
+    }),
+  ),
   layerWorkstreamToolkit,
   toolkitRegistration(UserResponseRequestToolkit, userResponseRequestHandlers).pipe(
     Layer.provide(UserResponseRequest.layer),

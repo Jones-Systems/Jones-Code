@@ -3694,6 +3694,19 @@
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "fleet-checkpoint",
+      "tests": [
+        "apps/server/src/jones/fleetCheckpoint/Checkpoint.test.ts",
+        "apps/server/src/jones/fleetCheckpoint/Connected.test.ts",
+        "apps/server/src/jones/fleetCheckpoint/Configuration.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/fleetCheckpoint/Checkpoint.test.ts apps/server/src/jones/fleetCheckpoint/Connected.test.ts apps/server/src/jones/fleetCheckpoint/Configuration.test.ts",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict --json"
+      ]
     }
   ]
 }

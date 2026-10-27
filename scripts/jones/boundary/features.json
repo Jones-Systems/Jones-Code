@@ -2342,6 +2342,15 @@
         "apps/server/src/orchestration-v2/ThreadTitleRegenerationService.test.ts"
       ],
       "scope": "Bounded automatic title and quality assessment in one provider call using at most the first three accepted owner messages and one bounded completed root-provider reply. Jones-owned policy, provenance, context and sparse migration 130 state commit through a narrow EventSink hook with the existing title completion command and outbox effect. Manual rename/regenerate/cancel permanently stops automation, including same-text and pre-first-message edits. Common and Muse paths share the assessment verdict; unassessed manual prompts/schema and legacy retry behavior remain unchanged. The title worker and prompt builder are narrow hooks. Existing EventSink and Muse accepted-shared classifications remain; their private transaction/runner integration cannot be extracted without duplicating machinery. Existing title-worker and Muse tests retain small integration cases because those harnesses own the worker and SDK fixtures. Provider-core package metadata adds one private helper subpath. No wire/schema, upstream-table, CLI lifecycle, client UI, ancestor lookup or installed-runtime changes."
+    },
+    {
+      "id": "fleet-checkpoint",
+      "tests": [
+        "apps/server/src/jones/fleetCheckpoint/Checkpoint.test.ts",
+        "apps/server/src/jones/fleetCheckpoint/Connected.test.ts",
+        "apps/server/src/jones/fleetCheckpoint/Configuration.test.ts"
+      ],
+      "scope": "Typed native checkpoint place/get/cancel-pending through the existing fixed Fleet controller client. Original caller identity, bounded process uncertainty and exact native receipt attribution; no new queue, installation or activation."
     }
   ]
 }
