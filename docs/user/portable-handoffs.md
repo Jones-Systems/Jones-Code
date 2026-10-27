@@ -44,3 +44,18 @@ attachments reserve 4,096 each for their references. Existing context is estimat
 activity when usage telemetry is unavailable. Known smaller windows still constrain the handoff.
 These are fallback estimates, not exact token counts. Image resolution, custom models, and hidden
 native context can differ, so the provider may still reject an input.
+
+## Goal checkpoints
+
+Jones Code can keep an explicitly initialized goal's intent, finish criteria, progress, blockers
+and evidence with its exact provider conversation. Ask the agent to initialize continuity for the
+goal and checkpoint meaningful progress. Finishing requires evidence covering every finish item,
+with no remaining blocker or unresolved effect. Checkpointing does not start or resume a native goal.
+
+Codex can receive fresh checkpoint context when a turn starts and after compaction. Other providers
+can use explicit checkpoint reads when their conversation identity is available; automatic recovery
+is unsupported. A provider switch or fork needs an explicit continuity handoff. If recovery delivery
+is uncertain, continuation stays held for reconciliation. An acknowledgement does not resume a paused
+goal, and recovery does not guarantee that no model output occurred before context was restored.
+The native feature requires no external Goal-Autonomy CLI or project hook; existing external state
+and hooks are left in place.
