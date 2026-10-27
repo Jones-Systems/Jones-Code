@@ -12,7 +12,7 @@ export const SYSTEM_SERVICE_CONTROL_PATH =
 export const SYSTEM_SERVICE_POLICY_PATH = "/etc/jones-code/system-service.policy";
 /** SHA-256 of systemServiceControl.pl; a root installation reads this digest back. */
 export const SYSTEM_SERVICE_CONTROL_SHA256 =
-  "47681a7598b79ae9bff6832c7f1d218146083e4b8e592ad4b46f88a106927ca3";
+  "26dd60849a99cc0f49f571ad1bc78d03d9eb61c4e02f2145d08962f0e39bb4c5";
 export const OWNED_SYSTEM_DROPIN = "zzzz-jones-qualified-launcher.conf";
 const OWNED_MARKER = "# Jones qualified system launcher protocol 1";
 const HEADER = "jones-system-service-control 1";
@@ -56,6 +56,13 @@ export type SystemControlRequest =
       readonly owned: string;
       readonly launcherVersion: string;
     }
+  | {
+      readonly operation: "install-launcher-pointer";
+      readonly unitDigest: string;
+      readonly owned: string;
+      readonly launcherVersion: string;
+      readonly shimSha256: string;
+    }
   | { readonly operation: "start"; readonly unitDigest: string; readonly owned: string }
   | { readonly operation: "archive-launcher"; readonly unitDigest: string; readonly owned: string };
 
@@ -85,6 +92,17 @@ export function systemControlArguments(request: SystemControlRequest): string[] 
       if (!VERSION.test(request.launcherVersion))
         return invalid("System control launcher version is malformed.");
       return ["install-launcher", ...preimage, "--launcher-version", request.launcherVersion];
+    case "install-launcher-pointer":
+      if (!VERSION.test(request.launcherVersion) || !SHA.test(request.shimSha256))
+        return invalid("System control pointer binding is malformed.");
+      return [
+        "install-launcher-pointer",
+        ...preimage,
+        "--launcher-version",
+        request.launcherVersion,
+        "--shim-sha256",
+        request.shimSha256,
+      ];
     case "start":
       return ["start", ...preimage];
     case "archive-launcher":
@@ -105,7 +123,7 @@ export interface SystemUnitInspection {
   readonly mainBirth?: string;
   readonly controlGroup?: string;
   readonly killMode: string;
-  /** `retained`, `launcher VERSION` or `other`; never the command line itself. */
+  /** `retained`, `launcher VERSION`, `pointer VERSION` or `other`; never the command line itself. */
   readonly exec: string;
   readonly serve: { readonly port?: number; readonly host?: string; readonly mode?: string };
 }
@@ -167,7 +185,7 @@ function parseInspection(lines: readonly string[]): SystemUnitInspection | undef
     !/^\d{1,10}$/.test(mainPid) ||
     (birth !== undefined && !/^\d{1,20}$/.test(birth)) ||
     !/^[a-z-]+$/.test(single.get("kill-mode") ?? "") ||
-    !(exec === "retained" || exec === "other" || /^launcher \S+$/.test(exec)) ||
+    !(exec === "retained" || exec === "other" || /^(?:launcher|pointer) \S+$/.test(exec)) ||
     files[0]?.startsWith("fragment ") !== true ||
     files.slice(1).some((file) => !file.startsWith("dropin ")) ||
     (port !== undefined && !/^[1-9]\d{0,4}$/.test(port))
@@ -346,6 +364,7 @@ export function parseRetainedServeCommand(
 export function renderOwnedSystemDropin(input: {
   readonly base: string;
   readonly launcherVersion: string;
+  readonly launcherPointer?: boolean;
   readonly serve: RetainedServeCommand;
 }): string {
   if (!isCanonicalSystemPath(input.base) || !VERSION.test(input.launcherVersion))
@@ -354,7 +373,7 @@ export function renderOwnedSystemDropin(input: {
     OWNED_MARKER,
     "[Service]",
     "ExecStart=",
-    `ExecStart=${NodePath.join(input.base, "runtime/versions", input.launcherVersion, "t3")} __service-launcher`,
+    `ExecStart=${input.launcherPointer === true ? NodePath.join(input.base, "runtime/launcher/t3-launcher") : NodePath.join(input.base, "runtime/versions", input.launcherVersion, "t3")} __service-launcher`,
     `Environment=T3CODE_HOME=${input.base}`,
     ...(input.serve.port === undefined ? [] : [`Environment=T3CODE_PORT=${input.serve.port}`]),
     ...(input.serve.host === undefined ? [] : [`Environment=T3CODE_HOST=${input.serve.host}`]),

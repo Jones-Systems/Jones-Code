@@ -15,7 +15,10 @@ import {
   type QualifiedRuntimeReceipt,
   type StagedQualifiedRuntime,
 } from "../cloud/qualifiedRuntime.ts";
-import { validateJonesStagedArtifact } from "@t3tools/shared/jones/jonesActions";
+import {
+  validateJonesStagedArtifact,
+  type JonesArtifactReceipt,
+} from "@t3tools/shared/jones/jonesActions";
 import { parseServiceState, SERVICE_STATE_FILE } from "../../cloud/serviceProtocol.ts";
 import { assertNoUnreconciledUpdateOperations, isUpdateOperationId } from "./launcherOperation.ts";
 import { assertStageNotRevoked } from "./stageRevocation.ts";
@@ -96,7 +99,7 @@ function canonicalRun(
   value: unknown,
   workflow: string,
   source: string,
-  event: "push" | "schedule" = "push",
+  event: JonesArtifactReceipt["event"] = "push",
 ): Record<string, unknown> {
   const run = object(value);
   if (

@@ -1,0 +1,28 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "delegated-task-supervision",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/mcp/delegatedTaskSupervision/DelegatedTaskSupervision.ts",
+    "apps/server/src/jones/mcp/delegatedTaskSupervision/DelegatedTaskSupervision.test.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "packages/contracts/src/orchestratorMcp.ts",
+      "to": "packages/contracts/src/jones/delegatedTaskSupervision.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/OrchestratorMcpService.ts",
+      "to": "apps/server/src/jones/mcp/delegatedTaskSupervision/DelegatedTaskSupervision.ts"
+    },
+    {
+      "from": "apps/server/src/peer/RemoteDelegation.ts",
+      "to": "apps/server/src/jones/mcp/delegatedTaskSupervision/DelegatedTaskSupervision.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/project/handlers.ts",
+      "to": "apps/server/src/jones/mcp/delegatedTaskSupervision/DelegatedTaskSupervision.ts"
+    }
+  ]
+}

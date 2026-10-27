@@ -79,7 +79,7 @@ export interface JonesArtifactReceipt {
   readonly source: string;
   readonly tree: string;
   readonly workflow: string;
-  readonly event: "push" | "schedule";
+  readonly event: "push" | "schedule" | "workflow_dispatch";
   readonly ref: "refs/heads/main";
   readonly runId: string;
   readonly runAttempt: string;
@@ -390,13 +390,13 @@ function spec(
     return {
       workflow: PRODUCTION_DESKTOP_WORKFLOW,
       name: "desktop-mac-production-arm64",
-      events: ["push"],
+      events: ["push", "workflow_dispatch"],
     };
   if (platform === "darwin" && architecture === "arm64")
     return {
       workflow: ".github/workflows/artifact-desktop-mac.yml",
       name: "desktop-mac-arm64",
-      events: ["push", "schedule"],
+      events: ["push", "schedule", "workflow_dispatch"],
     };
   if (platform === "linux" && (architecture === "x64" || architecture === "arm64"))
     return {

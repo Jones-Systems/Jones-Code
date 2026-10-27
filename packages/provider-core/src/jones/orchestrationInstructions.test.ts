@@ -160,3 +160,13 @@ it("keeps compatible upstream delivery and cancellation rules", () => {
   ])
     assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, text);
 });
+
+it("inherits delegated modes unless the user explicitly asks for supervision", () => {
+  assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "Omit `runtimeMode` and `interactionMode`");
+  assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "`supervisionRequestedByUser: true`");
+  assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "A role or read-only scope is not a reason");
+  assert.include(
+    T3_CODE_ORCHESTRATION_INSTRUCTIONS,
+    "never add the flag automatically after a refusal",
+  );
+});

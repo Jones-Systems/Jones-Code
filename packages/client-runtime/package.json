@@ -582,6 +582,10 @@
     "./jones/thread-monitor": {
       "types": "./src/jones/threadMonitor/index.ts",
       "default": "./src/jones/threadMonitor/index.ts"
+    },
+    "./jones/descendant-approval": {
+      "types": "./src/jones/descendantApproval/index.ts",
+      "default": "./src/jones/descendantApproval/index.ts"
     }
   },
   "scripts": {

@@ -52,6 +52,7 @@ import {
 import { ProviderOptionSelection, ProviderOptionSelectionValue } from "./model.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { DelegatedTaskWorkspaceFields } from "./jones/delegatedTaskWorkspace.ts";
+import { DelegatedTaskSupervisionFields } from "./jones/delegatedTaskSupervision.ts";
 import { DelegatedTaskNativeSession } from "./jones/delegatedTaskNativeSession.ts";
 
 const OrchestratorMcpPrompt = TrimmedNonEmptyString.check(Schema.isMaxLength(120_000));
@@ -195,10 +196,15 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   runtimeMode: Schema.optional(
     OrchestratorMcpRuntimeMode.annotate({
       description:
-        "Omit unless the user asks for a supervised child. Narrow modes pause for human approval, not read-only. Above yours is rejected.",
+        "Omit to inherit yours. Narrower modes pause the child for human approval and need supervisionRequestedByUser. Above yours is rejected.",
     }),
   ),
-  interactionMode: Schema.optional(OrchestratorMcpInteractionMode),
+  interactionMode: Schema.optional(
+    OrchestratorMcpInteractionMode.annotate({
+      description: "Omit to inherit yours. plan from default needs supervisionRequestedByUser.",
+    }),
+  ),
+  ...DelegatedTaskSupervisionFields,
 });
 export type OrchestratorMcpDelegateTaskInput = typeof OrchestratorMcpDelegateTaskInput.Type;
 
