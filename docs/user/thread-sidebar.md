@@ -295,8 +295,11 @@ fill the screen; close the full-screen view to return to the parent and inspecto
 Stop on a thread also stops the subagents it delegated to.
 
 Subagent threads started by the agent can't take messages; message the parent
-thread instead. When such a subagent needs an approval or an answer, the parent
-thread asks for it.
+thread instead. When a subagent needs approval, the parent shows the request
+and its offered options. Use **Next** to move between waiting subagents or
+**Open** to visit the selected subagent. Questions link to the subagent for
+your answer. If current data or response permission is unavailable, approval
+options stay disabled with a reason; **Open** remains available.
 
 Expand a tool call in the conversation to see its full command and output.
 Summaries shorten shell wrappers and can still describe the latest call after it

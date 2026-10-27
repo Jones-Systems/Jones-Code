@@ -3869,6 +3869,51 @@
         "vp lint apps/web/src/jones/pendingSends apps/web/src/components/ThreadRouteView.tsx apps/web/src/components/ChatView.tsx apps/web/src/components/ChatView.logic.ts apps/web/src/components/Sidebar.tsx apps/web/src/components/LegacySidebar.tsx apps/web/src/components/chat/QueuedRunsControl.tsx apps/web/src/components/chat/TimelineUserMessageRow.tsx apps/web/src/components/chat/chatViewSend.ts apps/web/src/components/chat/useAttachmentPreviewHandoff.ts apps/web/src/components/chat/useComposerSend.ts apps/web/src/components/chat/useComposerResume.ts apps/web/src/components/chat/useMultipleModelSend.ts apps/web/src/components/chat/useProposedPlanSend.ts apps/web/src/components/chat/useThreadLifecycle.tsx apps/web/src/components/sidebar/SidebarDraftBlock.tsx apps/web/src/components/sidebar/SidebarThreadRow.tsx apps/web/src/routes/__root.tsx apps/web/test/fakeEnvironment.ts",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-delegated-task-supervision",
+      "tests": [
+        "packages/contracts/src/jones/delegatedTaskSupervision.test.ts",
+        "packages/provider-core/src/jones/orchestrationInstructions.test.ts",
+        "apps/server/src/jones/platformCompatibility/mcp/toolkits/orchestrator/tools.test.ts",
+        "apps/server/src/jones/mcp/delegatedTaskSupervision/DelegatedTaskSupervision.test.ts",
+        "apps/server/src/jones/platformCompatibility/mcp/OrchestratorMcpService.test.ts",
+        "apps/server/src/jones/remoteDelegation/IntentStore.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpService.test.ts",
+        "apps/server/src/mcp/toolkits/project/handlers.test.ts",
+        "apps/server/src/peer/RemoteDelegation.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/contracts/src/jones/delegatedTaskSupervision.test.ts packages/provider-core/src/jones/orchestrationInstructions.test.ts apps/server/src/jones/platformCompatibility/mcp/toolkits/orchestrator/tools.test.ts apps/server/src/jones/mcp/delegatedTaskSupervision/DelegatedTaskSupervision.test.ts apps/server/src/jones/platformCompatibility/mcp/OrchestratorMcpService.test.ts apps/server/src/jones/remoteDelegation/IntentStore.test.ts apps/server/src/mcp/OrchestratorMcpService.test.ts apps/server/src/mcp/toolkits/project/handlers.test.ts apps/server/src/peer/RemoteDelegation.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run packages/contracts/src/orchestratorMcp.test.ts packages/contracts/src/jones/orchestrationCompatibility.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/contracts typecheck",
+        "vp run --filter @t3tools/provider-core typecheck",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-descendant-approval",
+      "tests": [
+        "packages/client-runtime/src/jones/descendantApproval/model.test.ts",
+        "apps/web/src/jones/descendantApproval/DescendantApprovalBanner.browser.test.tsx",
+        "apps/web/src/components/chat/ThreadActivityBanners.browser.test.tsx",
+        "apps/web/src/jones/threadMonitor/detail.test.ts",
+        "apps/mobile/src/jones/descendantApproval/DescendantApprovalCard.test.tsx",
+        "apps/mobile/src/jones/descendantApproval/PendingApprovalStack.test.tsx"
+      ],
+      "commands": [
+        "vp test run packages/client-runtime/src/jones/descendantApproval/model.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/web --config vite.config.ts --project browser src/jones/descendantApproval/DescendantApprovalBanner.browser.test.tsx src/components/chat/ThreadActivityBanners.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/web --config vite.config.ts --project unit src/jones/threadMonitor/detail.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/mobile --config vite.config.ts --project react src/jones/descendantApproval/DescendantApprovalCard.test.tsx src/jones/descendantApproval/PendingApprovalStack.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/web --config vite.config.ts --project unit src/reactCompilerCoverage.test.ts -t \"compiles apps/web/src/(jones/descendantApproval/|components/chat/useThreadLifecycle|components/ChatView)\" --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/mobile --config vite.config.ts --project unit src/reactCompilerCoverage.test.ts -t \"compiles src/jones/descendantApproval|compiles src/features/threads/ThreadDetailScreen.tsx\" --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter @t3tools/mobile typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }

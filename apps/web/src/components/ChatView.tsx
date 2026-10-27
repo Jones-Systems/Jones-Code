@@ -2339,6 +2339,7 @@ export default function ChatView(props: ChatViewProps) {
     activeBranchMismatchKey,
     backgroundWorkBanner,
     childInputBanner,
+    descendantApprovalBanner,
     goalBanner,
     handleSwitchCheckoutToThread,
     handleSwitchCheckoutToThreadStable,
@@ -2510,6 +2511,7 @@ export default function ChatView(props: ChatViewProps) {
     const projectCloneItems = projectCloneBannerItem === null ? [] : [projectCloneBannerItem];
     if (!localCheckoutBranchMismatch || !showBranchMismatchBanner || !activeBranchMismatchKey) {
       return [
+        ...(descendantApprovalBanner === null ? [] : [descendantApprovalBanner]),
         ...feedbackBannerItems,
         ...limitRecoveryItems,
         ...usageLimitsItems,
@@ -2519,6 +2521,7 @@ export default function ChatView(props: ChatViewProps) {
       ];
     }
     return [
+      ...(descendantApprovalBanner === null ? [] : [descendantApprovalBanner]),
       ...feedbackBannerItems,
       ...limitRecoveryItems,
       ...usageLimitsItems,

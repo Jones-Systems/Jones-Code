@@ -2455,6 +2455,33 @@
         "packages/client-runtime/src/state/threadCommands.test.ts"
       ],
       "scope": "Web and desktop renderer pending sends admit before asynchronous preparation, survive navigation in memory, preserve monotonic authoritative acceptance, retry only the exact frozen request by explicit action, and hand local Working and previews to correlated server evidence. Composer, plan followup, lifecycle text commands and fanout targets share the prepared-turn seam. Pending-only targets remain routable until correlated handoff, and fanout uncertainty guards clear only for the accepted target, including Retry and late failures. Synthetic whole-app connection coverage controls commit independently from acknowledgement; no real provider, installed runtime or mobile change."
+    },
+    {
+      "id": "delegated-task-supervision",
+      "tests": [
+        "packages/contracts/src/jones/delegatedTaskSupervision.test.ts",
+        "packages/provider-core/src/jones/orchestrationInstructions.test.ts",
+        "apps/server/src/jones/platformCompatibility/mcp/toolkits/orchestrator/tools.test.ts",
+        "apps/server/src/jones/mcp/delegatedTaskSupervision/DelegatedTaskSupervision.test.ts",
+        "apps/server/src/jones/platformCompatibility/mcp/OrchestratorMcpService.test.ts",
+        "apps/server/src/jones/remoteDelegation/IntentStore.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpService.test.ts",
+        "apps/server/src/mcp/toolkits/project/handlers.test.ts",
+        "apps/server/src/peer/RemoteDelegation.test.ts"
+      ],
+      "scope": "Explicit narrower delegated runtime modes and default-to-plan interaction require an optional user-supervision assertion. Jones-owned guard hooks into local and remote delegation after accepted replay, preserving provider restrictions and existing escalation ceilings. Authenticated linked delegation retains caller/link-resolved modes instead of reapplying project defaults. Existing service, peer and project handler test harnesses retain focused integration cases because they own dispatch/link fixtures; Jones cases otherwise live beside their modules. Accepted shared schema, MCP tool descriptions, provider instructions and orchestration documentation expose the optional field without a decoder default or persisted-event migration."
+    },
+    {
+      "id": "descendant-approval",
+      "tests": [
+        "packages/client-runtime/src/jones/descendantApproval/model.test.ts",
+        "apps/web/src/jones/descendantApproval/DescendantApprovalBanner.browser.test.tsx",
+        "apps/web/src/components/chat/ThreadActivityBanners.browser.test.tsx",
+        "apps/web/src/jones/threadMonitor/detail.test.ts",
+        "apps/mobile/src/jones/descendantApproval/DescendantApprovalCard.test.tsx",
+        "apps/mobile/src/jones/descendantApproval/PendingApprovalStack.test.tsx"
+      ],
+      "scope": "Shared selected-descendant approval atoms require current detail, current connected environment data, operate scope and an exact live pending request. Environment/thread/request scoped response guards preserve one-request actions and prevent duplicate dispatch. Web and mobile parent surfaces offer approval options, Next and Open while retaining parent input controls and stale-data explanations. Small lifecycle, ChatView, thread activity and mobile ThreadDetailScreen hooks connect Jones-owned controls. Existing ThreadActivityBanners browser harness proves parent-question coexistence; mobile Vite configuration registers the component interaction test in the native React harness. Monitor text and sidebar guidance point to the parent surface. Private package metadata exports the shared feature without a new wire contract. A bounded scrolling pending-request stack opts the existing iOS question card into in-flow expansion, preventing overlap; normal question-only overlay behavior remains. The existing PendingUserInputCard hook exposes this presentation option; its rendered regression uses the real card with native primitive mocks."
     }
   ]
 }

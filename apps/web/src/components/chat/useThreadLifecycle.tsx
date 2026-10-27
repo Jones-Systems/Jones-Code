@@ -41,6 +41,7 @@ import { useUiStateStore } from "../../uiStateStore";
 import { type ChatMessage } from "../../types";
 import { AlarmClockIcon, CheckCircle2Icon } from "lucide-react";
 import { stackedThreadToast, toastManager } from "../ui/toast";
+import { useDescendantApprovalBanner } from "../../jones/descendantApproval/useDescendantApprovalBanner";
 import { newMessageId } from "~/lib/utils";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { composerDraftHasUserContent, useComposerDraftStore } from "../../composerDraftStore";
@@ -451,8 +452,14 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     });
   });
   const childThreadInputs = useChildThreadInputs(activeThreadRef);
+  const descendantApprovalBanner = useDescendantApprovalBanner({
+    parentRef: activeThreadRef,
+    onOpenThread: onOpenChildInput,
+  });
   const childInputBanner = childInputBannerItem({
-    childThreadInputs,
+    childThreadInputs: descendantApprovalBanner
+      ? childThreadInputs.filter((child) => !child.hasPendingApprovals)
+      : childThreadInputs,
     parentAwaitingUser: Boolean(
       activePendingApproval || activePendingUserInput || activeThreadShell?.hasPendingUserInput,
     ),
@@ -609,6 +616,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     activeBranchMismatchKey,
     backgroundWorkBanner,
     childInputBanner,
+    descendantApprovalBanner,
     goalBanner,
     handleSwitchCheckoutToThread,
     handleSwitchCheckoutToThreadStable,

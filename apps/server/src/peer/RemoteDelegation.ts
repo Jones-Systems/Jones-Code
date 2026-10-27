@@ -45,6 +45,7 @@ import * as RemoteLifecycle from "../jones/remoteDelegation/Lifecycle.ts";
 import * as PeerMonitor from "../jones/remoteDelegation/PeerMonitor.ts";
 import * as FinalText from "../jones/remoteDelegation/FinalText.ts";
 import * as ObservationSupport from "../jones/remoteDelegation/ObservationSupport.ts";
+import { refuseUnsolicitedSupervision } from "../jones/mcp/delegatedTaskSupervision/DelegatedTaskSupervision.ts";
 
 /** How long one follow of a remote task waits on its thread there before checking again. */
 const FOLLOW_WAIT_MS = 50_000;
@@ -251,6 +252,7 @@ const make = Effect.gen(function* () {
           message: "Delegated tasks require an active run owned by this MCP provider session.",
         });
       }
+      yield* refuseUnsolicitedSupervision(parent.thread, input);
       const parentNodeId = parentRun.rootNodeId;
       const { target } = input;
       if (input.isolation !== undefined && input.workspaceStrategy !== undefined)
