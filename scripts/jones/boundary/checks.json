@@ -2,23 +2,18 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
-      "id": "jones-optimistic-send-feedback",
+      "id": "jones-migration-order",
       "tests": [
-        "apps/web/src/jones/pendingSends/PendingSendStatus.browser.test.tsx",
-        "apps/web/src/jones/pendingSends/send.test.ts",
-        "apps/web/src/jones/pendingSends/sidebar.test.ts",
-        "apps/web/src/jones/pendingSends/store.test.ts",
-        "apps/web/src/jones/pendingSends/app.browser.test.tsx",
-        "packages/client-runtime/src/operations/commands.test.ts",
-        "packages/client-runtime/src/state/threadCommands.test.ts"
+        "scripts/jones/ci/jones-migration-order.node-test.cjs",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/updates/migrationPlan.test.ts"
       ],
       "commands": [
-        "vp test run packages/client-runtime/src/operations/commands.test.ts packages/client-runtime/src/state/threadCommands.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run --root apps/web --config vite.config.ts src/jones/pendingSends/send.test.ts src/jones/pendingSends/sidebar.test.ts src/jones/pendingSends/store.test.ts --project unit --maxWorkers=1 --no-file-parallelism",
-        "vp test run --root apps/web --config vite.config.ts src/jones/pendingSends/PendingSendStatus.browser.test.tsx src/jones/pendingSends/app.browser.test.tsx --project browser --maxWorkers=1 --no-file-parallelism",
-        "vp run --filter @t3tools/web typecheck",
-        "vp lint apps/web/src/jones/pendingSends apps/web/src/components/ThreadRouteView.tsx apps/web/src/components/ChatView.tsx apps/web/src/components/ChatView.logic.ts apps/web/src/components/Sidebar.tsx apps/web/src/components/LegacySidebar.tsx apps/web/src/components/chat/QueuedRunsControl.tsx apps/web/src/components/chat/TimelineUserMessageRow.tsx apps/web/src/components/chat/chatViewSend.ts apps/web/src/components/chat/useAttachmentPreviewHandoff.ts apps/web/src/components/chat/useComposerSend.ts apps/web/src/components/chat/useComposerResume.ts apps/web/src/components/chat/useMultipleModelSend.ts apps/web/src/components/chat/useProposedPlanSend.ts apps/web/src/components/chat/useThreadLifecycle.tsx apps/web/src/components/sidebar/SidebarDraftBlock.tsx apps/web/src/components/sidebar/SidebarThreadRow.tsx apps/web/src/routes/__root.tsx apps/web/test/fakeEnvironment.ts",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node --test --test-concurrency=1 scripts/jones/ci/jones-migration-order.node-test.cjs scripts/jones/ci/check-results.node-test.cjs",
+        "vp test run apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/updates/migrationPlan.test.ts apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts",
+        "vp run --filter t3 typecheck",
+        "vp lint scripts/jones/ci/jones-migration-order.cjs scripts/jones/ci/jones-migration-order.node-test.cjs apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/updates/migrationPlan.test.ts",
+        "node scripts/jones/check-boundary.ts --strict --json"
       ]
     },
     {
@@ -3405,6 +3400,55 @@
       ]
     },
     {
+      "id": "jones-cli-signing",
+      "tests": ["scripts/jones/signing/cli.node-test.mjs", "scripts/jones/signing/policy.test.ts"],
+      "commands": [
+        "node --test --test-concurrency=1 scripts/jones/signing/cli.node-test.mjs",
+        "vp test run scripts/jones/signing/policy.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/scripts typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-desktop-signing",
+      "tests": [
+        "packages/shared/src/jones/jonesActions.test.ts",
+        "apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts",
+        "scripts/jones/signing/admission.node-test.mjs",
+        "scripts/jones/signing/policy.test.ts",
+        "scripts/jones/signing/profile.test.ts",
+        "scripts/jones/signing/sign.test.ts",
+        "apps/desktop/src/jones/updates/jonesSigningSource.test.ts",
+        "apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts",
+        "apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts",
+        "scripts/build-desktop-artifact.test.ts"
+      ],
+      "commands": [
+        "node --test --test-concurrency=1 scripts/jones/signing/admission.node-test.mjs",
+        "vp test run packages/shared/src/jones/jonesActions.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts scripts/jones/signing/policy.test.ts scripts/jones/signing/profile.test.ts scripts/jones/signing/sign.test.ts apps/desktop/src/jones/updates/jonesSigningSource.test.ts apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts scripts/build-desktop-artifact.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/shared typecheck",
+        "vp run --filter @t3tools/scripts typecheck",
+        "vp run --filter @t3tools/desktop typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-cli-archive-dependencies",
+      "tests": [
+        "scripts/jones/packaging/cliArchiveDependencies.test.ts",
+        "scripts/build-desktop-artifact.test.ts",
+        "scripts/jones/packaging/cliArchiveLockfile.test.ts"
+      ],
+      "commands": [
+        "vp test run scripts/jones/packaging/cliArchiveDependencies.test.ts scripts/jones/packaging/cliArchiveLockfile.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run scripts/build-desktop-artifact.test.ts --testNamePattern 'pins committed merged desktop dependencies|rejects a .* desktop stage lock before installation' --maxWorkers=1 --no-file-parallelism",
+        "vp lint scripts/build-cli-archive.ts scripts/jones/packaging/cliArchiveDependencies.ts scripts/jones/packaging/cliArchiveDependencies.test.ts scripts/jones/packaging/cliArchiveLockfile.test.ts packages/shared/src/jones/packaging/pnpmProjectLockfile.ts",
+        "vp lint scripts/build-desktop-artifact.ts scripts/build-desktop-artifact.test.ts",
+        "vp run --filter @t3tools/scripts typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-thread-metadata-reads-efficiency",
       "tests": [
         "apps/server/src/jones/orchestration/threadMetadataReads.test.ts",
@@ -3684,70 +3728,6 @@
       ]
     },
     {
-      "id": "jones-migration-order",
-      "tests": [
-        "scripts/jones/ci/jones-migration-order.node-test.cjs",
-        "apps/server/src/jones/persistence/Migrations.test.ts",
-        "apps/server/src/jones/updates/migrationPlan.test.ts"
-      ],
-      "commands": [
-        "node --test --test-concurrency=1 scripts/jones/ci/jones-migration-order.node-test.cjs scripts/jones/ci/check-results.node-test.cjs",
-        "vp test run apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/updates/migrationPlan.test.ts apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts",
-        "vp run --filter t3 typecheck",
-        "vp lint scripts/jones/ci/jones-migration-order.cjs scripts/jones/ci/jones-migration-order.node-test.cjs apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/updates/migrationPlan.test.ts",
-        "node scripts/jones/check-boundary.ts --strict --json"
-      ]
-    },
-    {
-      "id": "jones-cli-signing",
-      "tests": ["scripts/jones/signing/cli.node-test.mjs", "scripts/jones/signing/policy.test.ts"],
-      "commands": [
-        "node --test --test-concurrency=1 scripts/jones/signing/cli.node-test.mjs",
-        "vp test run scripts/jones/signing/policy.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp run --filter @t3tools/scripts typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
-      ]
-    },
-    {
-      "id": "jones-desktop-signing",
-      "tests": [
-        "packages/shared/src/jones/jonesActions.test.ts",
-        "apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts",
-        "scripts/jones/signing/admission.node-test.mjs",
-        "scripts/jones/signing/policy.test.ts",
-        "scripts/jones/signing/profile.test.ts",
-        "scripts/jones/signing/sign.test.ts",
-        "apps/desktop/src/jones/updates/jonesSigningSource.test.ts",
-        "apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts",
-        "apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts",
-        "scripts/build-desktop-artifact.test.ts"
-      ],
-      "commands": [
-        "node --test --test-concurrency=1 scripts/jones/signing/admission.node-test.mjs",
-        "vp test run packages/shared/src/jones/jonesActions.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts scripts/jones/signing/policy.test.ts scripts/jones/signing/profile.test.ts scripts/jones/signing/sign.test.ts apps/desktop/src/jones/updates/jonesSigningSource.test.ts apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts scripts/build-desktop-artifact.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp run --filter @t3tools/shared typecheck",
-        "vp run --filter @t3tools/scripts typecheck",
-        "vp run --filter @t3tools/desktop typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
-      ]
-    },
-    {
-      "id": "jones-cli-archive-dependencies",
-      "tests": [
-        "scripts/jones/packaging/cliArchiveDependencies.test.ts",
-        "scripts/build-desktop-artifact.test.ts",
-        "scripts/jones/packaging/cliArchiveLockfile.test.ts"
-      ],
-      "commands": [
-        "vp test run scripts/jones/packaging/cliArchiveDependencies.test.ts scripts/jones/packaging/cliArchiveLockfile.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run scripts/build-desktop-artifact.test.ts --testNamePattern 'pins committed merged desktop dependencies|rejects a .* desktop stage lock before installation' --maxWorkers=1 --no-file-parallelism",
-        "vp lint scripts/build-cli-archive.ts scripts/jones/packaging/cliArchiveDependencies.ts scripts/jones/packaging/cliArchiveDependencies.test.ts scripts/jones/packaging/cliArchiveLockfile.test.ts packages/shared/src/jones/packaging/pnpmProjectLockfile.ts",
-        "vp lint scripts/build-desktop-artifact.ts scripts/build-desktop-artifact.test.ts",
-        "vp run --filter @t3tools/scripts typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
-      ]
-    },
-    {
       "id": "jones-thread-result-dependencies",
       "tests": [
         "apps/server/src/mcp/toolkits/core.test.ts",
@@ -3807,6 +3787,26 @@
         "vp test run apps/server/src/jones/cloud/qualifiedRuntime.test.ts apps/server/src/jones/updates/recoverQualifiedStage.test.ts apps/server/src/jones/updates/stagedSelection.test.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/qualification.test.ts scripts/jones/updates/recover-qualified-stage.test.ts --maxWorkers=1",
         "vp lint apps/server/src/jones/cloud/qualifiedRuntime.ts apps/server/src/jones/cloud/qualifiedRuntime.test.ts apps/server/src/jones/updates/recoverQualifiedStage.ts apps/server/src/jones/updates/recoverQualifiedStage.test.ts apps/server/src/jones/updates/stagedSelection.ts apps/server/src/jones/updates/stagedSelection.test.ts scripts/jones/updates/recover-qualified-stage.ts scripts/jones/updates/recover-qualified-stage.test.ts",
         "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-optimistic-send-feedback",
+      "tests": [
+        "apps/web/src/jones/pendingSends/PendingSendStatus.browser.test.tsx",
+        "apps/web/src/jones/pendingSends/send.test.ts",
+        "apps/web/src/jones/pendingSends/sidebar.test.ts",
+        "apps/web/src/jones/pendingSends/store.test.ts",
+        "apps/web/src/jones/pendingSends/app.browser.test.tsx",
+        "packages/client-runtime/src/operations/commands.test.ts",
+        "packages/client-runtime/src/state/threadCommands.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/client-runtime/src/operations/commands.test.ts packages/client-runtime/src/state/threadCommands.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/web --config vite.config.ts src/jones/pendingSends/send.test.ts src/jones/pendingSends/sidebar.test.ts src/jones/pendingSends/store.test.ts --project unit --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/web --config vite.config.ts src/jones/pendingSends/PendingSendStatus.browser.test.tsx src/jones/pendingSends/app.browser.test.tsx --project browser --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/web typecheck",
+        "vp lint apps/web/src/jones/pendingSends apps/web/src/components/ThreadRouteView.tsx apps/web/src/components/ChatView.tsx apps/web/src/components/ChatView.logic.ts apps/web/src/components/Sidebar.tsx apps/web/src/components/LegacySidebar.tsx apps/web/src/components/chat/QueuedRunsControl.tsx apps/web/src/components/chat/TimelineUserMessageRow.tsx apps/web/src/components/chat/chatViewSend.ts apps/web/src/components/chat/useAttachmentPreviewHandoff.ts apps/web/src/components/chat/useComposerSend.ts apps/web/src/components/chat/useComposerResume.ts apps/web/src/components/chat/useMultipleModelSend.ts apps/web/src/components/chat/useProposedPlanSend.ts apps/web/src/components/chat/useThreadLifecycle.tsx apps/web/src/components/sidebar/SidebarDraftBlock.tsx apps/web/src/components/sidebar/SidebarThreadRow.tsx apps/web/src/routes/__root.tsx apps/web/test/fakeEnvironment.ts",
         "node scripts/jones/check-boundary.ts --strict"
       ]
     }

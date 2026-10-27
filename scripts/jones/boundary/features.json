@@ -4,17 +4,18 @@
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "features": [
     {
-      "id": "optimistic-send-feedback",
+      "id": "queue-removal",
+      "tests": ["apps/web/src/jones/queue/QueuedRunRemoval.browser.test.tsx"],
+      "scope": "Web and desktop queue header Clear All cancels the saved click snapshot through existing per-run commands. Independent removals reserve only their own IDs; failures retain authoritative rows and report unconfirmed removals. Send, steer, edit, reorder and imported-history review remain fenced during cancellation and until accepted cancellations leave the projection. Active queued drafts and unsaved optimistic rows disable Clear All. No server, wire, provider, mobile, MCP or scheduled-task behavior changes. QueuedRunsControl retains narrow presentation and safety hooks into Jones-owned removal logic."
+    },
+    {
+      "id": "migration-order",
       "tests": [
-        "apps/web/src/jones/pendingSends/PendingSendStatus.browser.test.tsx",
-        "apps/web/src/jones/pendingSends/send.test.ts",
-        "apps/web/src/jones/pendingSends/sidebar.test.ts",
-        "apps/web/src/jones/pendingSends/store.test.ts",
-        "apps/web/src/jones/pendingSends/app.browser.test.tsx",
-        "packages/client-runtime/src/operations/commands.test.ts",
-        "packages/client-runtime/src/state/threadCommands.test.ts"
+        "scripts/jones/ci/jones-migration-order.node-test.cjs",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/updates/migrationPlan.test.ts"
       ],
-      "scope": "Web and desktop renderer pending sends admit before asynchronous preparation, survive navigation in memory, preserve monotonic authoritative acceptance, retry only the exact frozen request by explicit action, and hand local Working and previews to correlated server evidence. Composer, plan followup, lifecycle text commands and fanout targets share the prepared-turn seam. Pending-only targets remain routable until correlated handoff, and fanout uncertainty guards clear only for the accepted target, including Retry and late failures. Synthetic whole-app connection coverage controls commit independently from acknowledgement; no real provider, installed runtime or mobile change."
+      "scope": "Append-only Jones manifest admission parses literal identities from exact Git revisions without executing their source. The existing ci-change-selection workflow hook adds one unconditional Lint step that fetches canonical main for PRs and compares pre-push main for pushes; only byte-unchanged manifests since the common ancestor are selected out. Private Git fixtures cover main advancing past a concurrent allocation. Fixed ff200fca history through 130 proves appended 131 runs once, late 125 still refuses without writes, and update preflight remains read-only. Released migrations and production guard/preflight behavior are unchanged. CI binds its observed revisions; the merge owner must requalify against fresh main immediately before merge."
     },
     {
       "id": "composer-quick-controls",
@@ -2137,6 +2138,37 @@
       "scope": "Focused browser acceptance of existing Pele integration: commit-only mounting, balanced cleanup through source changes, navigation and source toggle, unchanged rerenders, chunk-load retry, invalid-source recovery, and real SVG/MathML sanitization. The real components and DOMPurify run against a controlled Pele engine; navigation uses content replacement and native core-import rejection, parsing/layout, device behavior and live performance remain unqualified. No production behavior is changed."
     },
     {
+      "id": "macos-signing",
+      "tests": [
+        "scripts/jones/signing/cli.node-test.mjs",
+        "packages/shared/src/jones/jonesActions.test.ts",
+        "apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts",
+        "scripts/jones/signing/admission.node-test.mjs",
+        "scripts/jones/signing/policy.test.ts",
+        "scripts/jones/signing/profile.test.ts",
+        "scripts/jones/signing/sign.test.ts",
+        "apps/desktop/src/jones/updates/jonesSigningSource.test.ts",
+        "apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts",
+        "apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts",
+        "scripts/build-desktop-artifact.test.ts"
+      ],
+      "scope": "Explicit production Developer ID identities for desktop and CLI, component signing, protected default-branch workflow and credential lifecycle. CLI inventories all staged Mach-O files, preserves entitlements, requires full-distribution notarization acceptance and verifies unchanged payload bytes through tar packaging; optional native browser passkeys retain their configuration gates. Native swap and rollback enforce signatures without changing paired-state or provenance protocols. The production ID is owner-approved; the preview default remains unchanged and bootstrap activation remains held. Synthetic transaction signing commands are stubbed; actual signatures, notarization and permission continuity require trusted artifact qualification."
+    },
+    {
+      "id": "cli-archive-patched-dependencies",
+      "tests": [
+        "scripts/jones/packaging/cliArchiveDependencies.test.ts",
+        "scripts/build-desktop-artifact.test.ts",
+        "scripts/jones/packaging/cliArchiveLockfile.test.ts"
+      ],
+      "scope": "CLI archive and merged macOS/Linux desktop staging pin only patched external roots to the committed apps/server lock importer, preserving applicable patch mappings and all unpatched root specifications. Missing, stale, ambiguous or unsupported patch resolutions fail before installation. Thin builder hooks retain existing external selection, merge precedence, native platform packages, workspace policies and signing; Windows staging retains its existing projector. Pure planning fixtures and real-input desktop manifest regressions run in the existing scripts test route; platform installs, unsigned DMG completion and artifact smoke checks remain hosted qualification. Accepts the single workspace lock or the pnpm environment/workspace pair without merging bindings or falling back across malformed, ambiguous or stale documents."
+    },
+    {
+      "id": "workspace-content-search-slicing",
+      "tests": ["apps/server/src/jones/workspace/contentSearchPages.test.ts"],
+      "scope": "Enforced small native grep pages yield a cancellable Node macrotask between continuations, preserving zero-hit discovery, the original deadline after native hits, cursor/limit/truncation/fallback semantics and finder ownership. The Jones integration test imports the upstream service to prove its real mapping and typed error hook."
+    },
+    {
       "id": "thread-metadata-reads-efficiency",
       "tests": [
         "apps/server/src/jones/orchestration/threadMetadataReads.test.ts",
@@ -2161,16 +2193,6 @@
         "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts"
       ],
       "scope": "Narrow threads-only ID, metadata, count and watermark reads replace full-shell work for rename discovery, startup selection/counting and project deletion. Standalone rename/count reads select the reader; bootstrap/deletion retain writer read-your-writes. Rows and event watermark share a transaction, decode follows commit, deleted rows are excluded, and active-before-archived order is preserved. Existing integration harness exceptions retain production locking, cascade ordering and startup behavior; no database schema or installed-runtime change. PR discovery and single-thread refresh, relay catch-up, pin metadata, voice root IDs and thread listing use the existing narrow/read-only paths while retaining sequence guards, command shape, deletion filtering and ordering. Existing MCP, relay, voice and PR integration harness exceptions cover actual caller wiring; reader load still requires composed qualification."
-    },
-    {
-      "id": "queue-removal",
-      "tests": ["apps/web/src/jones/queue/QueuedRunRemoval.browser.test.tsx"],
-      "scope": "Web and desktop queue header Clear All cancels the saved click snapshot through existing per-run commands. Independent removals reserve only their own IDs; failures retain authoritative rows and report unconfirmed removals. Send, steer, edit, reorder and imported-history review remain fenced during cancellation and until accepted cancellations leave the projection. Active queued drafts and unsaved optimistic rows disable Clear All. No server, wire, provider, mobile, MCP or scheduled-task behavior changes. QueuedRunsControl retains narrow presentation and safety hooks into Jones-owned removal logic."
-    },
-    {
-      "id": "workspace-content-search-slicing",
-      "tests": ["apps/server/src/jones/workspace/contentSearchPages.test.ts"],
-      "scope": "Enforced small native grep pages yield a cancellable Node macrotask between continuations, preserving zero-hit discovery, the original deadline after native hits, cursor/limit/truncation/fallback semantics and finder ownership. The Jones integration test imports the upstream service to prove its real mapping and typed error hook."
     },
     {
       "id": "terminal-history-urgent-flush",
@@ -2348,41 +2370,6 @@
       "scope": "Bounded automatic title and quality assessment in one provider call using at most the first three accepted owner messages and one bounded completed root-provider reply. Jones-owned policy, provenance, context and sparse migration 130 state commit through a narrow EventSink hook with the existing title completion command and outbox effect. Manual rename/regenerate/cancel permanently stops automation, including same-text and pre-first-message edits. Common and Muse paths share the assessment verdict; unassessed manual prompts/schema and legacy retry behavior remain unchanged. The title worker and prompt builder are narrow hooks. Existing EventSink and Muse accepted-shared classifications remain; their private transaction/runner integration cannot be extracted without duplicating machinery. Existing title-worker and Muse tests retain small integration cases because those harnesses own the worker and SDK fixtures. Provider-core package metadata adds one private helper subpath. No wire/schema, upstream-table, CLI lifecycle, client UI, ancestor lookup or installed-runtime changes."
     },
     {
-      "id": "migration-order",
-      "tests": [
-        "scripts/jones/ci/jones-migration-order.node-test.cjs",
-        "apps/server/src/jones/persistence/Migrations.test.ts",
-        "apps/server/src/jones/updates/migrationPlan.test.ts"
-      ],
-      "scope": "Append-only Jones manifest admission parses literal identities from exact Git revisions without executing their source. The existing ci-change-selection workflow hook adds one unconditional Lint step that fetches canonical main for PRs and compares pre-push main for pushes; only byte-unchanged manifests since the common ancestor are selected out. Private Git fixtures cover main advancing past a concurrent allocation. Fixed ff200fca history through 130 proves appended 131 runs once, late 125 still refuses without writes, and update preflight remains read-only. Released migrations and production guard/preflight behavior are unchanged. CI binds its observed revisions; the merge owner must requalify against fresh main immediately before merge."
-    },
-    {
-      "id": "macos-signing",
-      "tests": [
-        "scripts/jones/signing/cli.node-test.mjs",
-        "packages/shared/src/jones/jonesActions.test.ts",
-        "apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts",
-        "scripts/jones/signing/admission.node-test.mjs",
-        "scripts/jones/signing/policy.test.ts",
-        "scripts/jones/signing/profile.test.ts",
-        "scripts/jones/signing/sign.test.ts",
-        "apps/desktop/src/jones/updates/jonesSigningSource.test.ts",
-        "apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts",
-        "apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts",
-        "scripts/build-desktop-artifact.test.ts"
-      ],
-      "scope": "Explicit production Developer ID identities for desktop and CLI, component signing, protected default-branch workflow and credential lifecycle. CLI inventories all staged Mach-O files, preserves entitlements, requires full-distribution notarization acceptance and verifies unchanged payload bytes through tar packaging; optional native browser passkeys retain their configuration gates. Native swap and rollback enforce signatures without changing paired-state or provenance protocols. The production ID is owner-approved; the preview default remains unchanged and bootstrap activation remains held. Synthetic transaction signing commands are stubbed; actual signatures, notarization and permission continuity require trusted artifact qualification."
-    },
-    {
-      "id": "cli-archive-patched-dependencies",
-      "tests": [
-        "scripts/jones/packaging/cliArchiveDependencies.test.ts",
-        "scripts/build-desktop-artifact.test.ts",
-        "scripts/jones/packaging/cliArchiveLockfile.test.ts"
-      ],
-      "scope": "CLI archive and merged macOS/Linux desktop staging pin only patched external roots to the committed apps/server lock importer, preserving applicable patch mappings and all unpatched root specifications. Missing, stale, ambiguous or unsupported patch resolutions fail before installation. Thin builder hooks retain existing external selection, merge precedence, native platform packages, workspace policies and signing; Windows staging retains its existing projector. Pure planning fixtures and real-input desktop manifest regressions run in the existing scripts test route; platform installs, unsigned DMG completion and artifact smoke checks remain hosted qualification. Accepts the single workspace lock or the pnpm environment/workspace pair without merging bindings or falling back across malformed, ambiguous or stale documents."
-    },
-    {
       "id": "thread-result-dependencies",
       "tests": [
         "apps/server/src/mcp/toolkits/core.test.ts",
@@ -2413,6 +2400,19 @@
         "apps/mobile/src/jones/threadResultDependencies/presentation.test.ts"
       ],
       "scope": "Explicit correlated cross-thread result requests persist sender waiting and receiver answer duties independently of foreground completion. Jones-owned storage, transaction fences and event-driven local/remote observation preserve multiple dependencies and release semantics. Additive opt-in shell refreshes retain replay ordering, persistence and producer isolation for shared web, desktop and mobile consumers; no ordinary message or navigation link creates a wait. The existing shell-sync test harness is the upstream-test exception for actual subscription and persistence behavior. MCP registration and production reuse one memoized request watcher and dependency bus; existing core and peer fixtures add only their missing Orchestrator port. New Jones composition regressions cover standalone durable fences and EventSink/MCP bus identity and publication."
+    },
+    {
+      "id": "optimistic-send-feedback",
+      "tests": [
+        "apps/web/src/jones/pendingSends/PendingSendStatus.browser.test.tsx",
+        "apps/web/src/jones/pendingSends/send.test.ts",
+        "apps/web/src/jones/pendingSends/sidebar.test.ts",
+        "apps/web/src/jones/pendingSends/store.test.ts",
+        "apps/web/src/jones/pendingSends/app.browser.test.tsx",
+        "packages/client-runtime/src/operations/commands.test.ts",
+        "packages/client-runtime/src/state/threadCommands.test.ts"
+      ],
+      "scope": "Web and desktop renderer pending sends admit before asynchronous preparation, survive navigation in memory, preserve monotonic authoritative acceptance, retry only the exact frozen request by explicit action, and hand local Working and previews to correlated server evidence. Composer, plan followup, lifecycle text commands and fanout targets share the prepared-turn seam. Pending-only targets remain routable until correlated handoff, and fanout uncertainty guards clear only for the accepted target, including Retry and late failures. Synthetic whole-app connection coverage controls commit independently from acknowledgement; no real provider, installed runtime or mobile change."
     }
   ]
 }
