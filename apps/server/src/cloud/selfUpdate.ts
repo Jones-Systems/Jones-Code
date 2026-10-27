@@ -30,7 +30,11 @@ import { HttpClient } from "effect/http";
 import { CLI_RELEASE_BASE_URL_ENV } from "@t3tools/shared/cliRelease";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
-import type { StagedQualifiedRuntime } from "../jones/cloud/qualifiedRuntime.ts";
+import {
+  QUALIFIED_RECOVERY_PROTOCOL,
+  RECOVERED_QUALIFIED_STAGE_PROTOCOL,
+  type StagedQualifiedRuntime,
+} from "../jones/cloud/qualifiedRuntime.ts";
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
@@ -582,7 +586,12 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     return launcher.currentVersion;
   };
   const validateQualifiedCandidate = Effect.fn("ServerSelfUpdate.validateQualifiedCandidate")(
-    function* (entryPath: string, databasePath: string, version: string) {
+    function* (
+      entryPath: string,
+      databasePath: string,
+      version: string,
+      requiredQualifiedRecoveryProtocol?: 1,
+    ) {
       const result = yield* runner
         .run({
           command: entryPath,
@@ -611,6 +620,9 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
         code: result.code,
         stdout: result.stdout,
         version,
+        ...(requiredQualifiedRecoveryProtocol === undefined
+          ? {}
+          : { requiredQualifiedRecoveryProtocol }),
       });
       if (reason !== undefined) return yield* failWith(reason);
       const parsed = yield* decodePreflightJson(result.stdout.trim()).pipe(
@@ -651,6 +663,13 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
               ),
           }),
         );
+        if (
+          staged.protocol === RECOVERED_QUALIFIED_STAGE_PROTOCOL &&
+          launcher.qualifiedRecovery !== true
+        )
+          return yield* failWith(
+            "bootstrap-required: The launcher cannot activate historical enrollment receipts. Refresh it on this host first.",
+          );
         const actualDatabase = yield* Effect.tryPromise({
           try: () => NodeFSP.realpath(serverConfig.dbPath),
           catch: (cause) => failWith("Could not bind the running database.", cause),
@@ -671,6 +690,9 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
             ),
             staged.binding.dbPath,
             staged.receipt.version,
+            staged.protocol === RECOVERED_QUALIFIED_STAGE_PROTOCOL
+              ? QUALIFIED_RECOVERY_PROTOCOL
+              : undefined,
           ),
         );
         yield* reportStep("capturing");
@@ -689,6 +711,9 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
               targetVersion: staged.receipt.version,
               dbPath: staged.binding.dbPath,
               stagedHandle: staged.stagedHandle,
+              ...(staged.protocol === RECOVERED_QUALIFIED_STAGE_PROTOCOL
+                ? { qualifiedRecoveryProtocol: QUALIFIED_RECOVERY_PROTOCOL }
+                : {}),
               ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
             })
             .pipe(

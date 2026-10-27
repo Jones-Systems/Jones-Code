@@ -2185,7 +2185,11 @@
     "apps/server/src/orchestration-v2/ThreadTitleRegenerationService.ts": "hook",
     "packages/provider-core/src/server/textGenerationPrompts.ts": "hook",
     "apps/server/src/orchestration-v2/ThreadTitleRegenerationService.test.ts": "jones-tests-in-upstream",
-    "packages/provider-muse/src/server/textGeneration.test.ts": "jones-tests-in-upstream"
+    "packages/provider-muse/src/server/textGeneration.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/updates/recoverQualifiedStage.ts": "jones-owned",
+    "apps/server/src/jones/updates/recoverQualifiedStage.test.ts": "jones-owned",
+    "scripts/jones/updates/recover-qualified-stage.ts": "jones-owned",
+    "scripts/jones/updates/recover-qualified-stage.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
