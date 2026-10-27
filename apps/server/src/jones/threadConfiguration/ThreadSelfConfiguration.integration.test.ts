@@ -2027,6 +2027,88 @@ it.live("P1 preparing same-instance owner selection reaches the first adapter in
 );
 
 it.live.each(["codex", "claude-code"] as const)(
+  "OWNER-REVIEW-1 preparing %s owner account and mode change reaches saved state and adapter input",
+  (preparingDriver) =>
+    scenario(
+      "owner-preparing-account-modes-" + preparingDriver,
+      true,
+      ({ threadId, state }) =>
+        Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* Worker.OrchestrationEffectWorkerV2;
+          const before = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(before.runs[0]?.status, "preparing");
+          assert.equal(before.thread.runtimeMode, "full-access");
+          assert.equal(before.thread.interactionMode, "default");
+          assert.lengthOf((yield* Ref.get(state)).started, 0);
+          const selection = {
+            ...replacement,
+            instanceId: ProviderInstanceId.make("target-provider"),
+          };
+          yield* orchestrator
+            .dispatch({
+              ...messageCommand(threadId, "preparing:owner-account-modes"),
+              modelSelection: selection,
+              runtimeMode: "approval-required",
+              interactionMode: "plan",
+            })
+            .pipe(withOwnerSelectionIngress);
+          const saved = yield* orchestrator.getThreadProjection(threadId);
+          assert.deepEqual(saved.thread.modelSelection, selection);
+          assert.equal(saved.thread.activeProviderThreadId, before.thread.activeProviderThreadId);
+          assert.lengthOf(saved.runs, 2);
+          assert.equal(saved.runs[0]?.id, before.runs[0]?.id);
+          assert.equal(saved.runs[0]?.status, "preparing");
+          assert.equal(saved.runs[1]?.status, "queued");
+          const done = yield* observeRun(threadId, 2, "completed");
+          yield* orchestrator.dispatch({
+            type: "prepared-run.release",
+            commandId: CommandId.make("preparing:release-account-modes"),
+            threadId,
+            runId: before.runs[0]!.id,
+          });
+          yield* Fiber.join(done);
+          yield* worker.drain();
+          const after = yield* orchestrator.getThreadProjection(threadId);
+          const invoked = (yield* Ref.get(state)).started;
+          assert.lengthOf(invoked, 2);
+          for (const start of invoked) {
+            assert.deepEqual(start.selection, selection);
+            assert.equal(start.instanceId, selection.instanceId);
+            assert.equal(start.input.providerThread.id, before.thread.activeProviderThreadId);
+          }
+          const modes = { runtimeMode: "approval-required", interactionMode: "plan" };
+          assert.deepEqual(
+            {
+              saved: {
+                runtimeMode: saved.thread.runtimeMode,
+                interactionMode: saved.thread.interactionMode,
+              },
+              after: {
+                runtimeMode: after.thread.runtimeMode,
+                interactionMode: after.thread.interactionMode,
+              },
+              invoked: invoked.map(({ input }) => ({
+                runtimeMode: input.runtimePolicy.runtimeMode,
+                interactionMode: input.runtimePolicy.interactionMode,
+              })),
+            },
+            { saved: modes, after: modes, invoked: [modes, modes] },
+          );
+        }),
+      { driver: preparingDriver, compatible: true },
+      undefined,
+      false,
+      {
+        driver: preparingDriver,
+        capabilities:
+          preparingDriver === "codex" ? CodexProviderCapabilitiesV2 : ClaudeProviderCapabilitiesV2,
+      },
+      true,
+    ),
+);
+
+it.live.each(["codex", "claude-code"] as const)(
   "P2 pristine preparing %s account rebind preserves the provider-thread ID and queued identity",
   (preparingDriver) =>
     scenario(
