@@ -413,7 +413,11 @@ const make = Effect.gen(function* () {
               )
               .pipe(Effect.mapError(unavailable));
             return yield* new OrchestratorMcpFailure({
-              ...error,
+              code: error.code,
+              message: error.message,
+              ...(error.remoteAdmission === undefined
+                ? {}
+                : { remoteAdmission: error.remoteAdmission }),
               dependency: {
                 dependencyId: tracked.dependencyId,
                 requestId: tracked.requestId,

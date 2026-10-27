@@ -175,7 +175,13 @@ for (const mode of ["held", "lost"] as const)
           })
           .pipe(Effect.result);
         assert.isTrue(Result.isFailure(result));
-        if (Result.isFailure(result)) assert.isDefined(result.failure.dependency);
+      if (Result.isFailure(result)) {
+        assert.isDefined(result.failure.dependency);
+        assert.equal(
+          result.failure.message,
+          mode === "held" ? "Owner review required" : "Lost response after possible dispatch",
+        );
+      }
         const dependency = (yield* f.store.dependencies(f.waiter.id))[0]!;
         assert.equal(
           dependency.observation,
