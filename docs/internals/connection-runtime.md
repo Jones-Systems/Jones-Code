@@ -75,6 +75,11 @@ older matches. A missing shell row therefore does not prove a thread is gone:
 code that deletes data or a worktree on absence must check the family or the
 server first.
 
+Reduced snapshots also retain existing active owners of bound remote tasks and
+their local ancestors, even after a task completes, so clients can classify the
+delegate beneath its parent after reload. These extra rows do not change the
+`olderSettled` counts.
+
 The Settled count is local Settled rows, minus local rows below the cut, plus the
 server's counts
 ([older settled threads](../../packages/client-runtime/src/state/olderSettledThreads.ts)).
