@@ -188,6 +188,7 @@ async function runPreparationWorker(jobDir: string): Promise<number> {
   process.stdin.resume();
 
   let phase: PreparationPhase = "waiting";
+  const currentPhase = (): PreparationPhase => phase;
   emit({ type: "ready", protocol: PREPARATION_PROTOCOL, pid: process.pid, priority });
   timers.push(setInterval(() => emit({ type: "heartbeat", phase }), HEARTBEAT_MS));
   timers.push(setTimeout(() => abort("deadline"), request.deadlineMs));
@@ -211,7 +212,9 @@ async function runPreparationWorker(jobDir: string): Promise<number> {
       jobId: request.jobId,
       ok: false,
       error: describePreparationFailure(
-        controller.signal.aborted && phase === "downloading" ? controller.signal.reason : error,
+        controller.signal.aborted && currentPhase() === "downloading"
+          ? controller.signal.reason
+          : error,
       ),
     };
   }

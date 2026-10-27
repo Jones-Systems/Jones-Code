@@ -8,9 +8,11 @@ import type {
 } from "@t3tools/contracts/jones/jonesOperations";
 import {
   executeJonesAction,
+  isNativeJonesInstallReview,
   prepareReviewedInstall,
   resolveDownloadAction,
   type JonesExecutorHost,
+  type JonesExecutorSnapshot,
 } from "./executor.ts";
 
 const env = EnvironmentId.make("executor-host");
@@ -19,15 +21,25 @@ const source = "a".repeat(40),
   tree = "c".repeat(40);
 const operationId = "11111111-1111-4111-8111-111111111111";
 const now = Date.parse("2026-10-27T05:00:00.000Z");
-function fixture(staged = false) {
+function fixture(staged = false, legacyHost = false) {
   let state: JonesUpdateState = {
     source: "jones-actions",
     channel: "jones-main",
     phase: staged ? "staged" : "available",
     environmentId: env,
     currentVersion: "old",
-    installedSource: { repository: "Jones-Systems/Jones-Code", sha: installed, tree },
-    capability: { check: true, download: true, install: true, exactSource: true, operations: 1 },
+    ...(legacyHost
+      ? {}
+      : {
+          installedSource: {
+            repository: "Jones-Systems/Jones-Code" as const,
+            sha: installed,
+            tree,
+          },
+        }),
+    capability: legacyHost
+      ? { check: true, download: true, install: true }
+      : { check: true, download: true, install: true, exactSource: true, operations: 1 },
     ...(staged ? { stagedHandle: "stage" } : {}),
     provenance: {
       repository: "Jones-Systems/Jones-Code",
@@ -43,8 +55,8 @@ function fixture(staged = false) {
       version: "new",
     },
   };
-  const readLatest = vi.fn(() => ({
-    observation: { freshness: "fresh" as const, state },
+  const readLatest = vi.fn<JonesExecutorHost["readLatest"]>(() => ({
+    observation: { freshness: "fresh", state },
     canOperate: true,
   }));
   const start = vi.fn<JonesExecutorHost["start"]>(
@@ -56,9 +68,9 @@ function fixture(staged = false) {
       updatedAt: new Date(now).toISOString(),
     }),
   );
-  const legacy = vi.fn<JonesExecutorHost["legacy"]>(async () => ({
+  const legacy = vi.fn<JonesExecutorHost["legacy"]>(async (request) => ({
     ...state,
-    phase: "downloading",
+    phase: request.action === "install" ? "installing" : "downloading",
   }));
   const confirm = vi.fn<JonesExecutorHost["confirm"]>(async () => true);
   const host = { readLatest, start, legacy, confirm };
@@ -71,6 +83,115 @@ function fixture(staged = false) {
   };
 }
 const download = { kind: "download-exact" as const, targetSource: source };
+
+function recoveryPreflightFixture(): JonesRecoveryPreflight {
+  return {
+    protocol: 1,
+    preflightId: operationId,
+    measuredAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + 300000).toISOString(),
+    binding: {
+      environmentId: env,
+      stagedHandle: "stage",
+      currentVersion: "old",
+      expectedInstalledSource: installed,
+    },
+    firstInstall: false,
+    stateBytes: 100,
+    volumes: [],
+    clone: { status: "proved" },
+    policies: {
+      cloneOrCopy: { admissible: false, reason: "Low copy space" },
+      cloneRequired: { admissible: true },
+    },
+  };
+}
+
+const legacyBindingChanges: ReadonlyArray<{
+  name: string;
+  change: (snapshot: JonesExecutorSnapshot) => JonesExecutorSnapshot;
+}> = [
+  {
+    name: "environment",
+    change: (snapshot) => ({
+      ...snapshot,
+      observation: {
+        ...snapshot.observation,
+        state: { ...snapshot.observation.state!, environmentId: EnvironmentId.make("other-host") },
+      },
+    }),
+  },
+  {
+    name: "stage",
+    change: (snapshot) => ({
+      ...snapshot,
+      observation: {
+        ...snapshot.observation,
+        state: { ...snapshot.observation.state!, stagedHandle: "another-stage" },
+      },
+    }),
+  },
+  {
+    name: "version",
+    change: (snapshot) => ({
+      ...snapshot,
+      observation: {
+        ...snapshot.observation,
+        state: { ...snapshot.observation.state!, currentVersion: "another-version" },
+      },
+    }),
+  },
+  {
+    name: "target source",
+    change: (snapshot) => ({
+      ...snapshot,
+      observation: {
+        ...snapshot.observation,
+        state: {
+          ...snapshot.observation.state!,
+          provenance: { ...snapshot.observation.state!.provenance!, sourceSha: tree },
+        },
+      },
+    }),
+  },
+  {
+    name: "newly reported installed source",
+    change: (snapshot) => ({
+      ...snapshot,
+      observation: {
+        ...snapshot.observation,
+        state: {
+          ...snapshot.observation.state!,
+          installedSource: { repository: "Jones-Systems/Jones-Code", sha: installed, tree },
+        },
+      },
+    }),
+  },
+  {
+    name: "permission",
+    change: (snapshot) => ({ ...snapshot, canOperate: false }),
+  },
+  {
+    name: "freshness",
+    change: (snapshot) => ({
+      ...snapshot,
+      observation: { ...snapshot.observation, freshness: "stale" },
+    }),
+  },
+  {
+    name: "install capability",
+    change: (snapshot) => ({
+      ...snapshot,
+      observation: {
+        ...snapshot.observation,
+        state: {
+          ...snapshot.observation.state!,
+          capability: { ...snapshot.observation.state!.capability, install: false },
+        },
+      },
+    }),
+  },
+];
 
 describe("shared Jones action execution", () => {
   it("keeps exact selection and matching legacy artifact fallback, and never turns Download into Install", () => {
@@ -233,6 +354,8 @@ describe("shared Jones action execution", () => {
       now: () => now,
     });
     if (prepared.kind !== "ready") throw new Error("Expected review");
+    expect(isNativeJonesInstallReview(prepared.review)).toBe(true);
+    expect(prepared.review).toMatchObject({ expectedInstalledSource: installed });
     expect(
       await executeJonesAction({
         environmentId: env,
@@ -265,29 +388,355 @@ describe("shared Jones action execution", () => {
     expect(f.host.start).toHaveBeenCalledTimes(1);
   });
 
+  it.each([undefined, false, true])(
+    "installs a reviewed legacy stage without installedSource (continueRunningThreads=%s)",
+    async (continueRunningThreads) => {
+      const f = fixture(true, true);
+      const preflight = vi.fn<NonNullable<JonesExecutorHost["preflight"]>>();
+      const chooseRecovery = vi.fn<NonNullable<JonesExecutorHost["chooseRecovery"]>>();
+      const host = { ...f.host, preflight, chooseRecovery };
+      const prepared = await prepareReviewedInstall({
+        environmentId: env,
+        targetSource: source,
+        label: "Legacy host",
+        host,
+        now: () => now,
+        ...(continueRunningThreads === undefined ? {} : { continueRunningThreads }),
+      });
+      if (prepared.kind !== "ready") throw new Error("Expected legacy review");
+      expect(isNativeJonesInstallReview(prepared.review)).toBe(false);
+      expect(prepared.review).toEqual({
+        kind: "legacy-staged",
+        environmentId: env,
+        reviewedAt: new Date(now).toISOString(),
+        stagedHandle: "stage",
+        targetSource: source,
+        currentVersion: "old",
+        ...(continueRunningThreads === undefined ? {} : { continueRunningThreads }),
+      });
+      expect(
+        await executeJonesAction({
+          environmentId: env,
+          targetSource: source,
+          operationId,
+          ...prepared,
+          host,
+        }),
+      ).toMatchObject({ kind: "accepted", state: { phase: "installing" } });
+      expect(f.host.confirm).toHaveBeenCalledTimes(1);
+      expect(f.host.legacy).toHaveBeenCalledExactlyOnceWith({
+        action: "install",
+        input: {
+          environmentId: env,
+          stagedHandle: "stage",
+          currentVersion: "old",
+          ...(continueRunningThreads === undefined ? {} : { continueRunningThreads }),
+        },
+      });
+      expect(f.host.start).not.toHaveBeenCalled();
+      expect(preflight).not.toHaveBeenCalled();
+      expect(chooseRecovery).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(legacyBindingChanges)(
+    "refuses a legacy $name change during confirmation",
+    async ({ change }) => {
+      const f = fixture(true, true);
+      f.host.confirm.mockImplementation(async () => {
+        f.host.readLatest.mockReturnValue(change(f.host.readLatest()));
+        return true;
+      });
+      expect(
+        await prepareReviewedInstall({
+          environmentId: env,
+          targetSource: source,
+          label: "Legacy host",
+          host: f.host,
+          now: () => now,
+        }),
+      ).toMatchObject({ kind: "refused", code: "changed" });
+      expect(f.host.confirm).toHaveBeenCalledTimes(1);
+      expect(f.host.legacy).not.toHaveBeenCalled();
+      expect(f.host.start).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(legacyBindingChanges)(
+    "refuses a legacy $name change after review",
+    async ({ change }) => {
+      const f = fixture(true, true);
+      const prepared = await prepareReviewedInstall({
+        environmentId: env,
+        targetSource: source,
+        label: "Legacy host",
+        host: f.host,
+        now: () => now,
+      });
+      if (prepared.kind !== "ready") throw new Error("Expected legacy review");
+      f.host.readLatest.mockReturnValue(change(f.host.readLatest()));
+      expect(
+        await executeJonesAction({
+          environmentId: env,
+          targetSource: source,
+          operationId,
+          ...prepared,
+          host: f.host,
+        }),
+      ).toMatchObject({ kind: "refused" });
+      expect(f.host.legacy).not.toHaveBeenCalled();
+      expect(f.host.start).not.toHaveBeenCalled();
+    },
+  );
+
+  it("cannot reuse a legacy review for another host with the same stage and version", async () => {
+    const f = fixture(true, true);
+    const prepared = await prepareReviewedInstall({
+      environmentId: env,
+      targetSource: source,
+      label: "Legacy host",
+      host: f.host,
+      now: () => now,
+    });
+    if (prepared.kind !== "ready") throw new Error("Expected legacy review");
+    const other = EnvironmentId.make("other-host");
+    f.setState({ ...f.state(), environmentId: other });
+    expect(
+      await executeJonesAction({
+        environmentId: other,
+        targetSource: source,
+        operationId,
+        ...prepared,
+        host: f.host,
+      }),
+    ).toMatchObject({ kind: "refused", code: "review-required" });
+    expect(f.host.legacy).not.toHaveBeenCalled();
+    expect(f.host.start).not.toHaveBeenCalled();
+  });
+
+  it.each(["operations", "recoveryPolicy", "planGate"] as const)(
+    "requires installedSource before reviewing a %s route",
+    async (route) => {
+      const f = fixture(true, true);
+      const planGate = vi.fn<NonNullable<JonesExecutorHost["planGate"]>>();
+      const preflight = vi.fn<NonNullable<JonesExecutorHost["preflight"]>>();
+      const chooseRecovery = vi.fn<NonNullable<JonesExecutorHost["chooseRecovery"]>>();
+      if (route !== "planGate")
+        f.setState({ ...f.state(), capability: { ...f.state().capability, [route]: 1 } });
+      const host = {
+        ...f.host,
+        preflight,
+        chooseRecovery,
+        ...(route === "planGate" ? { planGate } : {}),
+      };
+      expect(
+        await prepareReviewedInstall({
+          environmentId: env,
+          targetSource: source,
+          label: "Host",
+          host,
+          now: () => now,
+        }),
+      ).toMatchObject({ kind: "refused", code: "changed" });
+      expect(f.host.confirm).not.toHaveBeenCalled();
+      expect(f.host.start).not.toHaveBeenCalled();
+      expect(f.host.legacy).not.toHaveBeenCalled();
+      expect(preflight).not.toHaveBeenCalled();
+      expect(chooseRecovery).not.toHaveBeenCalled();
+      expect(planGate).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["operations", "recoveryPolicy", "planGate"] as const)(
+    "refuses a legacy route upgrade to %s during confirmation",
+    async (route) => {
+      const f = fixture(true, true);
+      const planGate = vi.fn<NonNullable<JonesExecutorHost["planGate"]>>();
+      const preflight = vi.fn<NonNullable<JonesExecutorHost["preflight"]>>();
+      const chooseRecovery = vi.fn<NonNullable<JonesExecutorHost["chooseRecovery"]>>();
+      const host: JonesExecutorHost = { ...f.host, preflight, chooseRecovery };
+      f.host.confirm.mockImplementation(async () => {
+        if (route === "planGate") Object.assign(host, { planGate });
+        else f.setState({ ...f.state(), capability: { ...f.state().capability, [route]: 1 } });
+        return true;
+      });
+      expect(
+        await prepareReviewedInstall({
+          environmentId: env,
+          targetSource: source,
+          label: "Legacy host",
+          host,
+          now: () => now,
+        }),
+      ).toMatchObject({ kind: "refused", code: "changed" });
+      expect(f.host.legacy).not.toHaveBeenCalled();
+      expect(f.host.start).not.toHaveBeenCalled();
+      expect(preflight).not.toHaveBeenCalled();
+      expect(chooseRecovery).not.toHaveBeenCalled();
+      expect(planGate).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["operations", "recoveryPolicy", "planGate"] as const)(
+    "refuses a legacy review when a later dispatch uses %s",
+    async (route) => {
+      const f = fixture(true, true);
+      const prepared = await prepareReviewedInstall({
+        environmentId: env,
+        targetSource: source,
+        label: "Legacy host",
+        host: f.host,
+        now: () => now,
+      });
+      if (prepared.kind !== "ready") throw new Error("Expected legacy review");
+      const planGate = vi.fn<NonNullable<JonesExecutorHost["planGate"]>>();
+      if (route !== "planGate")
+        f.setState({
+          ...f.state(),
+          installedSource: { repository: "Jones-Systems/Jones-Code", sha: installed, tree },
+          capability: { ...f.state().capability, [route]: 1 },
+        });
+      const host = { ...f.host, ...(route === "planGate" ? { planGate } : {}) };
+      expect(
+        await executeJonesAction({
+          environmentId: env,
+          targetSource: source,
+          operationId,
+          ...prepared,
+          host,
+        }),
+      ).toMatchObject({ kind: "refused", code: "review-required" });
+      expect(f.host.legacy).not.toHaveBeenCalled();
+      expect(f.host.start).not.toHaveBeenCalled();
+      expect(planGate).not.toHaveBeenCalled();
+    },
+  );
+
+  it("refuses a native operations downgrade during confirmation even with the same installed source", async () => {
+    const f = fixture(true);
+    f.host.confirm.mockImplementation(async () => {
+      f.setState({
+        ...f.state(),
+        capability: { check: true, download: true, install: true },
+      });
+      return true;
+    });
+    expect(
+      await prepareReviewedInstall({
+        environmentId: env,
+        targetSource: source,
+        label: "Host",
+        host: f.host,
+        now: () => now,
+      }),
+    ).toMatchObject({ kind: "refused", code: "changed" });
+    expect(f.host.confirm).toHaveBeenCalledTimes(1);
+    expect(f.host.start).not.toHaveBeenCalled();
+    expect(f.host.legacy).not.toHaveBeenCalled();
+  });
+
+  it("rechecks the legacy route on the dispatch snapshot", async () => {
+    const f = fixture(true, true);
+    const prepared = await prepareReviewedInstall({
+      environmentId: env,
+      targetSource: source,
+      label: "Legacy host",
+      host: f.host,
+      now: () => now,
+    });
+    if (prepared.kind !== "ready") throw new Error("Expected legacy review");
+    const initial = f.host.readLatest();
+    const upgraded: JonesExecutorSnapshot = {
+      ...initial,
+      observation: {
+        ...initial.observation,
+        state: {
+          ...f.state(),
+          installedSource: { repository: "Jones-Systems/Jones-Code", sha: installed, tree },
+          capability: { ...f.state().capability, operations: 1 },
+        },
+      },
+    };
+    f.host.readLatest.mockReset().mockReturnValueOnce(initial).mockReturnValue(upgraded);
+    expect(
+      await executeJonesAction({
+        environmentId: env,
+        targetSource: source,
+        operationId,
+        ...prepared,
+        host: f.host,
+      }),
+    ).toMatchObject({ kind: "refused", code: "changed" });
+    expect(f.host.legacy).not.toHaveBeenCalled();
+    expect(f.host.start).not.toHaveBeenCalled();
+  });
+
+  it("retains a lost legacy install reply as unknown without resending", async () => {
+    const f = fixture(true, true);
+    const prepared = await prepareReviewedInstall({
+      environmentId: env,
+      targetSource: source,
+      label: "Legacy host",
+      host: f.host,
+      now: () => now,
+    });
+    if (prepared.kind !== "ready") throw new Error("Expected legacy review");
+    f.host.legacy.mockRejectedValue(new Error("lost install reply"));
+    const input = {
+      environmentId: env,
+      targetSource: source,
+      operationId,
+      ...prepared,
+      host: f.host,
+    };
+    expect(await executeJonesAction(input)).toMatchObject({ kind: "unknown" });
+    expect(await executeJonesAction({ ...input, unresolved: true })).toMatchObject({
+      kind: "unknown",
+      code: "unresolved",
+    });
+    expect(f.host.legacy).toHaveBeenCalledTimes(1);
+    expect(f.host.start).not.toHaveBeenCalled();
+  });
+
+  it.each(["preflight", "choice"] as const)(
+    "refuses a native operations downgrade during recovery %s",
+    async (boundary) => {
+      const f = fixture(true);
+      f.setState({ ...f.state(), capability: { ...f.state().capability, recoveryPolicy: 1 } });
+      const downgrade = () => {
+        f.setState({
+          ...f.state(),
+          capability: { check: true, download: true, install: true, recoveryPolicy: 1 },
+        });
+      };
+      const preflight = vi.fn<NonNullable<JonesExecutorHost["preflight"]>>(async () => {
+        if (boundary === "preflight") downgrade();
+        return recoveryPreflightFixture();
+      });
+      const chooseRecovery = vi.fn<NonNullable<JonesExecutorHost["chooseRecovery"]>>(async () => {
+        if (boundary === "choice") downgrade();
+        return "clone-required";
+      });
+      expect(
+        await prepareReviewedInstall({
+          environmentId: env,
+          targetSource: source,
+          label: "Host",
+          host: { ...f.host, preflight, chooseRecovery },
+          now: () => now,
+        }),
+      ).toMatchObject({ kind: "refused", code: "changed" });
+      expect(preflight).toHaveBeenCalledTimes(1);
+      expect(chooseRecovery).toHaveBeenCalledTimes(boundary === "choice" ? 1 : 0);
+      expect(f.host.start).not.toHaveBeenCalled();
+      expect(f.host.legacy).not.toHaveBeenCalled();
+    },
+  );
+
   it("binds recovery choice to measured capacity, clone proof, expiry and capability", async () => {
     const f = fixture(true);
     f.setState({ ...f.state(), capability: { ...f.state().capability, recoveryPolicy: 1 } });
-    const preflight: JonesRecoveryPreflight = {
-      protocol: 1,
-      preflightId: operationId,
-      measuredAt: new Date(now).toISOString(),
-      expiresAt: new Date(now + 300000).toISOString(),
-      binding: {
-        environmentId: env,
-        stagedHandle: "stage",
-        currentVersion: "old",
-        expectedInstalledSource: installed,
-      },
-      firstInstall: false,
-      stateBytes: 100,
-      volumes: [],
-      clone: { status: "proved" },
-      policies: {
-        cloneOrCopy: { admissible: false, reason: "Low copy space" },
-        cloneRequired: { admissible: true },
-      },
-    };
+    const preflight = recoveryPreflightFixture();
     const host: JonesExecutorHost = {
       ...f.host,
       preflight: async () => preflight,

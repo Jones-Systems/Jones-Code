@@ -591,6 +591,10 @@
       "types": "./src/jones/installPlan/model.ts",
       "default": "./src/jones/installPlan/model.ts"
     },
+    "./jones/updates/action-journal": {
+      "types": "./src/jones/updates/actionJournal.ts",
+      "default": "./src/jones/updates/actionJournal.ts"
+    },
     "./jones/updates/executor": {
       "types": "./src/jones/updates/executor.ts",
       "default": "./src/jones/updates/executor.ts"

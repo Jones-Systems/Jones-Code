@@ -1,14 +1,13 @@
 import type { EnvironmentId } from "@t3tools/contracts";
-import type {
-  JonesInstallPlanGrant,
-  JonesInstallPlanReview,
-} from "@t3tools/contracts/jones/installPlan";
+import type { JonesInstallPlanGrant } from "@t3tools/contracts/jones/installPlan";
 import {
   executeJonesAction,
   prepareReviewedInstall,
   resolveDownloadAction,
   type JonesDownloadResolution,
   type JonesExecutorHost,
+  type JonesReviewedInstall,
+  isNativeJonesInstallReview,
 } from "@t3tools/client-runtime/jones/updates/executor";
 import { validateReceipt } from "@t3tools/client-runtime/jones/install-plan";
 import { claimantId, routeLaptopDownload, routeLaptopInstall } from "./entrypoints";
@@ -209,7 +208,7 @@ export async function performPanelAction(
     return;
   }
   const host = executorHostFor(environmentId);
-  const proposed: JonesDownloadResolution & { readonly review?: JonesInstallPlanReview } =
+  const proposed: JonesDownloadResolution & { readonly review?: JonesReviewedInstall } =
     action === "install"
       ? await prepareReviewedInstall({
           environmentId,
@@ -220,6 +219,12 @@ export async function performPanelAction(
         })
       : resolveDownloadAction({ ...observed, environmentId, targetSource: plan.target.sourceSha });
   if (proposed.kind !== "ready") throw new Error(proposed.message);
+  if (proposed.review !== undefined && !isNativeJonesInstallReview(proposed.review))
+    throw new Error("A native plan requires its full native install review.");
+  const nativeReview =
+    proposed.review !== undefined && isNativeJonesInstallReview(proposed.review)
+      ? proposed.review
+      : undefined;
   const latest = host.readLatest();
   const result = await requestInstallPlan(
     {
@@ -230,7 +235,7 @@ export async function performPanelAction(
       step: action,
       explicit: true,
       action: proposed.action,
-      ...(proposed.review === undefined ? {} : { review: proposed.review }),
+      ...(nativeReview === undefined ? {} : { review: nativeReview }),
       ...(latest.observation.state?.installedSource === undefined
         ? {}
         : { expectedInstalledSource: latest.observation.state.installedSource.sha }),

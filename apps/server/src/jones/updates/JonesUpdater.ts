@@ -291,6 +291,7 @@ export class JonesUpdater {
       current?.reviewTarget?.directiveId === policy?.reviewTarget?.directiveId
     )
       return this.snapshot();
+    const retainedState = this.snapshot();
     const { policy: _previous, ...rest } = this.state;
     this.state = policy === undefined ? rest : { ...rest, policy };
     // Latest wins: a follower stops preparing a build its laptop no longer runs.
@@ -316,6 +317,9 @@ export class JonesUpdater {
       this.state.stagedHandle === undefined &&
       !this.busy &&
       !["preparing", "installing"].includes(this.state.phase);
+    // A policy refresh must not replace a retained startup failure with a generic waiting state.
+    if (idle && retainedState.phase === "error" && retainedState.outcome?.status === "blocked")
+      return this.publish({ phase: "error" });
     return this.publish(
       offeredOther || (idle && policy?.leaderSource === null)
         ? {

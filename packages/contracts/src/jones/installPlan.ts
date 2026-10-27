@@ -65,6 +65,28 @@ export const JonesInstallPlanReview = Schema.Struct({
 });
 export type JonesInstallPlanReview = typeof JonesInstallPlanReview.Type;
 
+export const JonesInstallPlanClientCommand = Schema.Struct({
+  commandId: JonesOperationId,
+  environmentId: EnvironmentId,
+  targetSource: JonesSourceSha,
+  action: Schema.Literals(["download", "download-exact", "install"]),
+  stagedHandle: Schema.optionalKey(Bounded(1024)),
+  planId: Schema.optionalKey(JonesOperationId),
+  expectedRevision: Schema.optionalKey(Schema.Number),
+});
+export type JonesInstallPlanClientCommand = typeof JonesInstallPlanClientCommand.Type;
+
+export const JonesInstallPlanCommandReceipt = Schema.Struct({
+  command: JonesInstallPlanClientCommand,
+  bodyHash: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/))),
+  requestType: Schema.Literals(["start", "edit", "laptop", "claim"]),
+  planId: Schema.optionalKey(JonesOperationId),
+  operationId: Schema.optionalKey(JonesOperationId),
+  outcome: Schema.Literals(["reserved", "applied", "terminal", "refused"]),
+  code: Schema.optionalKey(JonesOperationCode),
+});
+export type JonesInstallPlanCommandReceipt = typeof JonesInstallPlanCommandReceipt.Type;
+
 export const JonesInstallPlanLease = Schema.Struct({
   claimant: Bounded(64),
   reservedAt: Schema.String,
@@ -224,6 +246,7 @@ export const JonesInstallPlanState = Schema.Struct({
   last: Schema.NullOr(JonesInstallPlan),
   laptop: JonesInstallPlanLaptopEvidence,
   view: Schema.Struct({ complete: Schema.Boolean }),
+  clientCommands: Schema.optionalKey(Schema.Literal(1)),
   readOnly: Schema.optionalKey(
     Schema.Struct({ code: Schema.Literals(["newer-schema", "invalid"]), message: Bounded(512) }),
   ),
@@ -240,11 +263,12 @@ const Evidence = Schema.Union([
   }),
 ]);
 export const JonesInstallPlanRequest = Schema.Union([
-  Schema.Struct({ type: Schema.Literal("read") }),
+  Schema.Struct({ type: Schema.Literal("read"), commandId: Schema.optionalKey(JonesOperationId) }),
   Schema.Struct({ type: Schema.Literal("publication") }),
   Schema.Struct({ type: Schema.Literal("recovery-preflight"), input: JonesRecoveryPreflightInput }),
   Schema.Struct({
     type: Schema.Literal("start"),
+    command: Schema.optionalKey(JonesInstallPlanClientCommand),
     origin: JonesInstallPlanOrigin,
     target: JonesInstallPlanTarget,
     select: Schema.Array(JonesInstallPlanSelection).check(Schema.isMaxLength(16)),
@@ -257,6 +281,7 @@ export const JonesInstallPlanRequest = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("edit"),
+    command: Schema.optionalKey(JonesInstallPlanClientCommand),
     planId: JonesOperationId,
     expectedRevision: Schema.Number,
     select: Schema.Array(JonesInstallPlanSelection).check(Schema.isMaxLength(16)),
@@ -264,12 +289,14 @@ export const JonesInstallPlanRequest = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("laptop"),
+    command: Schema.optionalKey(JonesInstallPlanClientCommand),
     planId: JonesOperationId,
     action: Schema.Literals(["download", "stop", "install", "preflight"]),
     review: Schema.optionalKey(JonesInstallPlanReview),
   }),
   Schema.Struct({
     type: Schema.Literal("claim"),
+    command: Schema.optionalKey(JonesInstallPlanClientCommand),
     planId: JonesOperationId,
     environmentId: EnvironmentId,
     claimant: Bounded(64),
@@ -340,6 +367,7 @@ export type JonesInstallPlanRefusal = typeof JonesInstallPlanRefusal.Type;
 
 export const JonesInstallPlanResult = Schema.Struct({
   state: JonesInstallPlanState,
+  command: Schema.optionalKey(JonesInstallPlanCommandReceipt),
   grant: Schema.optionalKey(JonesInstallPlanGrant),
   applied: Schema.optionalKey(
     Schema.Array(

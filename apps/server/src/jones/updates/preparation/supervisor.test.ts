@@ -509,6 +509,9 @@ it("retains an exited worker's still-live captured descendant through the reap d
   let descendantAlive = true;
   let sweepPid = pid;
   const exits: PreparationWorkerExit[] = [];
+  const supervisors: Array<ReturnType<typeof makePreparationSupervisor>> = [];
+  const workers: Promise<unknown>[] = [];
+  let completed = false;
   const kill = vi.spyOn(process, "kill").mockImplementation((requested, signal) => {
     if (signal !== 0) {
       expect(requested).toBeLessThan(0);
@@ -528,7 +531,7 @@ it("retains an exited worker's still-live captured descendant through the reap d
       stderr: new NodeStream.PassThrough(),
     });
     queueMicrotask(() => {
-      void (async () => {
+      const worker = (async () => {
         child.stdout.write(
           `${JSON.stringify({ type: "ready", protocol: PREPARATION_PROTOCOL, pid: childPid, priority: 19 })}\n`,
         );
@@ -555,6 +558,7 @@ it("retains an exited worker's still-live captured descendant through the reap d
         child.emit("exit", 0, null);
         child.emit("close", 0, null);
       })().catch(() => child.emit("exit", 1, null));
+      workers.push(worker);
     });
     return child;
   });
@@ -565,7 +569,10 @@ it("retains an exited worker's still-live captured descendant through the reap d
     setPriority: vi.fn(),
   }));
   try {
-    const { makePreparationSupervisor: makeSynthetic } = await import("./supervisor.ts");
+    const {
+      makePreparationSupervisor: makeSynthetic,
+      PreparationWorkerError: SyntheticPreparationWorkerError,
+    } = await import("./supervisor.ts");
     const supervisor = makeSynthetic({
       baseDir: fixture.base,
       cacheRoot: fixture.cacheRoot,
@@ -573,6 +580,7 @@ it("retains an exited worker's still-live captured descendant through the reap d
       limits: { reapMs: 1 },
       observe: (exit) => exits.push(exit),
     });
+    supervisors.push(supervisor);
     const job = supervisor.start(
       {
         kind: "stage",
@@ -603,7 +611,10 @@ it("retains an exited worker's still-live captured descendant through the reap d
       },
       { jobId },
     );
-    await expect(job.outcome).rejects.toSatisfy(stoppedFor("unreaped"));
+    await expect(job.outcome).rejects.toSatisfy(
+      (cause: unknown) =>
+        cause instanceof SyntheticPreparationWorkerError && cause.reason === "unreaped",
+    );
     expect(await job.settled).toMatchObject({ jobId, kind: "unreaped" });
     expect(exits[0]).toMatchObject({ jobId, pid, code: 0, reaped: false });
     await supervisor.sweep();
@@ -614,15 +625,25 @@ it("retains an exited worker's still-live captured descendant through the reap d
       cacheRoot: fixture.cacheRoot,
       command: { file: "synthetic", args: [] },
     });
+    supervisors.push(restarted);
     expect(await restarted.reconcile?.(jobId)).toMatchObject({ kind: "unreaped" });
     descendantAlive = false;
     await restarted.sweep();
     expect(await restarted.reconcile?.(jobId)).toMatchObject({ kind: "stopped" });
     expect(await jobsLeft(fixture)).not.toContain(jobId);
+    completed = true;
   } finally {
+    // Drain queued sweeps before restoring their process mocks or disposing this synthetic home.
+    const drains: PromiseSettledResult<unknown>[] = [];
+    for (const supervisor of supervisors)
+      drains.push(...(await Promise.allSettled([supervisor.sweep()])));
+    const workerResults = await Promise.allSettled(workers);
     kill.mockRestore();
     vi.doUnmock("node:child_process");
     vi.doUnmock("node:os");
     vi.resetModules();
+    if (completed)
+      for (const result of [...drains, ...workerResults])
+        expect(result).toMatchObject({ status: "fulfilled" });
   }
 });

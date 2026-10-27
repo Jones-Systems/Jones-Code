@@ -45,6 +45,41 @@ async function fixture() {
   return { home, directory, store, read };
 }
 describe("native install plan storage", () => {
+  it("retains the exact client command binding beside its native reservation across store recreation", async () => {
+    const f = await fixture(),
+      current = plan();
+    const entry = {
+      body: "e".repeat(64),
+      receipt: {
+        command: {
+          commandId: "22222222-2222-4222-8222-222222222222",
+          environmentId: current.laptop.environmentId,
+          targetSource: target.sourceSha,
+          action: "download" as const,
+        },
+        requestType: "start" as const,
+        planId: current.planId,
+        operationId: "33333333-3333-4333-8333-333333333333",
+        outcome: "reserved" as const,
+      },
+    };
+    await f.store.transact(async (s) => ({
+      ...s,
+      document: { ...s.document, current, commands: [entry] },
+      result: undefined,
+    }));
+    const restarted = createInstallPlanStore({ home: f.home, profile: undefined });
+    const saved = await restarted.transact(async (s) => ({ ...s, result: s.document }));
+    expect(saved.commands).toEqual([entry]);
+    await expect(
+      restarted.transact(async (s) => ({
+        ...s,
+        document: { ...s.document, commands: [entry, entry] },
+        result: undefined,
+      })),
+    ).rejects.toThrow("bound");
+    expect((await f.read()).document.commands).toEqual([entry]);
+  });
   it("keeps the plan, last result and stop disposition across store recreation without touching fleet state", async () => {
     const f = await fixture();
     const current = plan();

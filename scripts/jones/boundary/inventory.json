@@ -2318,6 +2318,8 @@
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
+    "apps/mobile/src/jones/updates/actionJournal.test.ts",
+    "apps/mobile/src/jones/updates/actionJournal.ts",
     "apps/server/src/conversations/",
     "apps/server/src/hostStatus/",
     "apps/server/src/nativeCreation/",
@@ -2326,7 +2328,15 @@
     "apps/web/src/components/conversations/",
     "apps/web/src/components/voiceReview/",
     "apps/web/src/components/workQueue/",
+    "apps/web/src/jones/installStatus/execution.test.ts",
+    "apps/web/src/jones/installStatus/executionJournal.test.ts",
+    "apps/web/src/jones/installStatus/executionJournal.ts",
+    "apps/web/src/jones/installStatus/webReviewAuthority.test.ts",
+    "apps/web/src/jones/installStatus/webReviewAuthority.ts",
+    "apps/web/src/jones/updates/productionReview.browser.test.tsx",
     "packages/client-runtime/src/conversations/",
+    "packages/client-runtime/src/jones/updates/actionJournal.test.ts",
+    "packages/client-runtime/src/jones/updates/actionJournal.ts",
     "scripts/jones/"
   ],
   "tombstones": [

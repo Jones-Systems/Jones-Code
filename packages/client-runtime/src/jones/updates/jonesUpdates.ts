@@ -106,7 +106,7 @@ const requestImpl = Effect.fn("clientRuntime.jonesUpdates.request")(function* (
           ? 60_000
           : 20 * 60_000,
     request: ({ client, headers }) =>
-      Effect.fn("clientRuntime.jonesUpdates.dispatch")(function* () {
+      Effect.gen(function* () {
         switch (input.action) {
           case "state":
             return yield* client.state({
@@ -134,7 +134,7 @@ const requestImpl = Effect.fn("clientRuntime.jonesUpdates.request")(function* (
           case "recoveryPreflight":
             return yield* client.recoveryPreflight({ headers, payload: input.input });
         }
-      })(),
+      }).pipe(Effect.withSpan("clientRuntime.jonesUpdates.dispatch")),
   });
 });
 

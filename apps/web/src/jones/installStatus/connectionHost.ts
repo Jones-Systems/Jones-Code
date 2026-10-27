@@ -9,17 +9,29 @@ import { installPlanServices, requestInstallPlan } from "./services";
 import { validateReceipt } from "@t3tools/client-runtime/jones/install-plan";
 import { chooseRecoveryPolicy } from "./recoveryReview";
 import { pendingJonesOperationId, reconcileJonesExecution } from "./execution";
+import type { WebReviewAuthority } from "./webReviewAuthority";
+import { webJonesJournal, reconcileNativeJonesDuty } from "./executionJournal";
 
 export function connectionExecutorHost(
   environmentId: EnvironmentId,
   readLatest: JonesExecutorHost["readLatest"],
   legacy: (input: JonesAction) => ReturnType<JonesExecutorHost["legacy"]>,
+  authority?: WebReviewAuthority,
 ): JonesExecutorHost {
   return {
     readLatest,
-    legacy,
-    confirm: async (message) => (await requestConfirmDialog(message)) ?? false,
+    legacy: (input) => {
+      if (!readLatest().canOperate)
+        throw new Error("This control no longer authorizes the action.");
+      return legacy(input);
+    },
+    confirm: (message) =>
+      authority === undefined
+        ? Promise.resolve(requestConfirmDialog(message)).then((result) => result ?? false)
+        : authority.wait(async () => (await requestConfirmDialog(message)) ?? false, false),
     start: async (input) => {
+      if (!readLatest().canOperate)
+        throw new Error("This control no longer authorizes the action.");
       const result = await runAtomCommand(
         appAtomRegistry,
         jonesUpdates.operation,
@@ -58,10 +70,21 @@ export function connectionExecutorHost(
         throw new Error("Recovery preflight is unavailable.");
       return result.value;
     },
-    chooseRecovery: chooseRecoveryPolicy,
+    chooseRecovery: (input) =>
+      authority === undefined
+        ? chooseRecoveryPolicy(input)
+        : authority.wait(() => chooseRecoveryPolicy(input), null),
   };
 }
 export async function readUnresolvedJonesExecution(environmentId: EnvironmentId) {
+  await webJonesJournal.load();
+  const native = webJonesJournal
+    .getSnapshot()
+    .duties.find((d) => d.environmentId === environmentId && d.kind === "native");
+  if (native?.native !== undefined) {
+    const result = await requestInstallPlan({ type: "read", commandId: native.native.commandId });
+    await reconcileNativeJonesDuty(result);
+  }
   const operationId = pendingJonesOperationId(environmentId);
   if (operationId === undefined) return;
   const result = await runAtomCommand(
@@ -75,6 +98,6 @@ export async function readUnresolvedJonesExecution(environmentId: EnvironmentId)
   );
   if (result._tag === "Success" && "receipts" in result.value) {
     const receipt = result.value.receipts.find((r) => r.operationId === operationId)?.receipt;
-    if (receipt != null) reconcileJonesExecution(environmentId, receipt);
+    if (receipt != null) await reconcileJonesExecution(environmentId, receipt);
   }
 }

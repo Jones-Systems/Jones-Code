@@ -201,6 +201,129 @@ function fixture() {
   };
 }
 afterEach(() => vi.restoreAllMocks());
+describe("native client command reservations", () => {
+  it("reconciles a lost Laptop handoff across coordinator recreation, refuses changed-body reuse and never starts twice", async () => {
+    const f = fixture();
+    let finish!: (value: { accepted: boolean; completed: boolean }) => void;
+    let settled!: () => void;
+    const terminal = new Promise<void>((resolve) => {
+      settled = resolve;
+    });
+    f.controller.download.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const native = createInstallPlanCoordinator({
+      ...f.options,
+      broadcast: (state) => {
+        if (state.current?.laptop.operations.at(-1)?.result?.status === "completed") settled();
+      },
+    });
+    const request = {
+      type: "start",
+      origin: "connections",
+      target,
+      select: [],
+      laptop: { action: "download" },
+      command: {
+        commandId: id(90),
+        environmentId: laptop,
+        targetSource: source,
+        action: "download",
+      },
+    } as const;
+    const accepted = await native.request(request);
+    expect(accepted.command?.outcome).toBe("reserved");
+    expect(accepted.command?.bodyHash).toMatch(/^[a-f0-9]{64}$/);
+    const restored = createInstallPlanCoordinator(f.options);
+    expect((await restored.request({ type: "read", commandId: id(90) })).command?.outcome).toBe(
+      "reserved",
+    );
+    expect((await restored.request(request)).grant).toBeUndefined();
+    expect(f.controller.download).toHaveBeenCalledTimes(1);
+    expect((await restored.request({ ...request, select: [selection] })).refused?.code).toBe(
+      "invalid-evidence",
+    );
+    finish({ accepted: true, completed: true });
+    await terminal;
+    const proof = await restored.request({ type: "read", commandId: id(90) });
+    expect(proof.command).toMatchObject({
+      command: request.command,
+      outcome: "terminal",
+      operationId: accepted.command?.operationId,
+    });
+    expect(f.controller.download).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a lost remote claim reserved until its exact target fence, then allows a new explicit identity", async () => {
+    const f = fixture(),
+      plan = await f.start();
+    const request = {
+      type: "claim",
+      planId: plan.planId,
+      environmentId: remote,
+      claimant: "window-command",
+      step: "download",
+      explicit: true,
+      action: { kind: "download-exact", targetSource: source },
+      expectedInstalledSource: old,
+      command: {
+        commandId: id(91),
+        environmentId: remote,
+        targetSource: source,
+        action: "download-exact",
+        planId: plan.planId,
+        expectedRevision: plan.revision,
+      },
+    } as const;
+    const accepted = await f.coordinator.request(request);
+    expect(accepted.grant).toBeDefined();
+    const restored = createInstallPlanCoordinator(f.options);
+    expect((await restored.request({ type: "read", commandId: id(91) })).command?.outcome).toBe(
+      "reserved",
+    );
+    expect((await restored.request(request)).grant).toBeUndefined();
+    f.advance();
+    const fence = await restored.request({
+      type: "claim",
+      planId: plan.planId,
+      environmentId: remote,
+      claimant: "window-fence",
+      step: "fence",
+      explicit: false,
+      operationId: accepted.grant!.operationId,
+    });
+    expect(fence.grant?.request.kind).toBe("operation-fence");
+    if (fence.grant?.request.kind !== "operation-fence") throw new Error("No fence granted");
+    const fenced: JonesOperationReceipt = {
+      protocol: 1,
+      ...fence.grant.request.input,
+      phase: "fenced",
+      updatedAt: "2026-10-27T00:02:00.001Z",
+    };
+    await restored.request({
+      type: "report",
+      planId: plan.planId,
+      environmentId: remote,
+      operationId: fenced.operationId,
+      evidence: { kind: "receipt", receipt: fenced },
+    });
+    const proof = await restored.request({ type: "read", commandId: id(91) });
+    expect(proof.command?.outcome).toBe("terminal");
+    const next = await restored.request({
+      ...request,
+      command: {
+        ...request.command,
+        commandId: id(92),
+        expectedRevision: proof.state.current!.revision,
+      },
+    });
+    expect(next.grant).toBeDefined();
+    expect(next.grant!.operationId).not.toBe(accepted.grant!.operationId);
+  });
+});
 describe("native install plan coordinator", () => {
   it("requires native committed evidence; renderer reports and source equality cannot open the Laptop gate", async () => {
     const f = fixture();

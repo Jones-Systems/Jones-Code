@@ -102,6 +102,7 @@ describe("failed native attempt settlement", () => {
       const f = fixture({
         startupOutcome: () => ({ ...terminal, settlement, cause: "backup refused" }),
       });
+      f.updater.setPolicy({ role: "follower", leaderSource: null });
       expect(f.updater.snapshot()).toMatchObject({
         updateId: terminal.id,
         phase: "error",
@@ -122,6 +123,55 @@ describe("failed native attempt settlement", () => {
       message: "Previous attempt needs reconciliation",
       outcome: { status: "blocked" },
     });
+  });
+
+  it("retains a startup refusal through follower policy changes and later settlement", () => {
+    let noEffectProved = false;
+    const publications: JonesUpdateState[] = [];
+    const f = fixture({
+      initialState: {
+        ...fixture().updater.snapshot(),
+        phase: "error",
+        message: "Native installation requires reconciliation.",
+      },
+      startupOutcome: () => ({
+        ...terminal,
+        settlement: noEffectProved ? "legacy-reconciled" : "none",
+        cause: "backup refused",
+      }),
+      stateChanged: (state) => publications.push(state),
+    });
+    expect(f.updater.setPolicy({ role: "follower", leaderSource: null })).toMatchObject({
+      phase: "error",
+      updateId: terminal.id,
+      settlement: "none",
+      message: "Previous attempt needs reconciliation",
+      outcome: { status: "blocked", reason: "launcher-restarted" },
+      policy: { role: "follower", leaderSource: null },
+    });
+    noEffectProved = true;
+    expect(f.updater.refreshStartupOutcome()).toMatchObject({
+      phase: "error",
+      updateId: terminal.id,
+      settlement: "legacy-reconciled",
+      cause: "backup refused",
+      message: "Update did not start: backup refused. Nothing changed.",
+      outcome: { status: "blocked", reason: "launcher-restarted" },
+    });
+    f.updater.setPolicy({
+      role: "follower",
+      leaderSource: candidate.source,
+      leaderTree: candidate.tree,
+    });
+    const waiting = f.updater.setPolicy({ role: "follower", leaderSource: null });
+    expect(waiting).toMatchObject({
+      phase: "error",
+      settlement: "legacy-reconciled",
+      message: "Update did not start: backup refused. Nothing changed.",
+      policy: { role: "follower", leaderSource: null },
+    });
+    expect(publications.at(-1)).toEqual(waiting);
+    expect(f.effects).toEqual([]);
   });
 });
 

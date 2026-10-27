@@ -2,7 +2,11 @@
 import * as NodeCrypto from "node:crypto";
 import * as NodePath from "node:path";
 import * as Schema from "effect/Schema";
-import { JonesInstallPlan, type JonesInstallPlanState } from "@t3tools/contracts/jones/installPlan";
+import {
+  JonesInstallPlan,
+  JonesInstallPlanCommandReceipt,
+  type JonesInstallPlanState,
+} from "@t3tools/contracts/jones/installPlan";
 import { JonesOperationId, JonesSourceSha } from "@t3tools/contracts/jones/jonesOperations";
 import {
   ownedDirectory,
@@ -16,6 +20,14 @@ const Document = Schema.Struct({
   schema: Schema.Literal(1),
   current: Schema.NullOr(JonesInstallPlan),
   last: Schema.NullOr(JonesInstallPlan),
+  commands: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        body: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+        receipt: JonesInstallPlanCommandReceipt,
+      }),
+    ).check(Schema.isMaxLength(64)),
+  ),
 });
 const Dispositions = Schema.Struct({
   schema: Schema.Literal(1),
@@ -30,6 +42,13 @@ const Dispositions = Schema.Struct({
   ).check(Schema.isMaxLength(64)),
 });
 export type PlanDocument = typeof Document.Type;
+const validDocument = (value: unknown): value is PlanDocument =>
+  Schema.is(Document)(value) &&
+  new Set(value.commands?.map((entry) => entry.receipt.command.commandId)).size ===
+    (value.commands?.length ?? 0) &&
+  (value.commands ?? []).every(
+    (entry) => entry.receipt.bodyHash === undefined || entry.receipt.bodyHash === entry.body,
+  );
 export type PlanDispositions = typeof Dispositions.Type;
 export interface PlanSnapshot {
   readonly document: PlanDocument;
@@ -104,7 +123,7 @@ export function createInstallPlanStore(options: {
               };
             else if (
               (document !== null && dispositions === null) ||
-              (document !== null && !Schema.is(Document)(document)) ||
+              (document !== null && !validDocument(document)) ||
               (dispositions !== null && !Schema.is(Dispositions)(dispositions))
             )
               snapshot = {
@@ -137,7 +156,7 @@ export function createInstallPlanStore(options: {
           if (snapshot.readOnly !== undefined && changed)
             throw new PlanStorageError("storage", "Read-only plan evidence cannot be replaced.");
           if (
-            !Schema.is(Document)(next.document) ||
+            !validDocument(next.document) ||
             !Schema.is(Dispositions)(next.dispositions) ||
             Buffer.byteLength(JSON.stringify(next.document)) + 1 > PLAN_BYTES ||
             Buffer.byteLength(JSON.stringify(next.dispositions)) + 1 > PLAN_BYTES

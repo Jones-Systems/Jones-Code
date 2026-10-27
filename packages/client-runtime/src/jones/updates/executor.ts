@@ -101,10 +101,53 @@ export interface JonesExecutorHost {
   ) => Promise<JonesPlanGateResult>;
 }
 
+export interface JonesLegacyInstallReview {
+  readonly kind: "legacy-staged";
+  readonly environmentId: EnvironmentId;
+  readonly reviewedAt: string;
+  readonly stagedHandle: string;
+  readonly targetSource: string;
+  readonly currentVersion: string;
+  readonly continueRunningThreads?: boolean;
+  readonly expectedInstalledSource?: never;
+  readonly recovery?: never;
+}
+
+export type JonesReviewedInstall = JonesInstallPlanReview | JonesLegacyInstallReview;
+
+export function isNativeJonesInstallReview(
+  review: JonesReviewedInstall,
+): review is JonesInstallPlanReview {
+  return !("kind" in review && review.kind === "legacy-staged");
+}
+
+function installRoute(state: JonesUpdateState | null, host: JonesExecutorHost) {
+  return {
+    operations: state?.capability.operations,
+    recoveryPolicy: state?.capability.recoveryPolicy,
+    planGate: host.planGate,
+  };
+}
+
+function sameInstallRoute(
+  left: ReturnType<typeof installRoute>,
+  right: ReturnType<typeof installRoute>,
+): boolean {
+  return (
+    left.operations === right.operations &&
+    left.recoveryPolicy === right.recoveryPolicy &&
+    left.planGate === right.planGate
+  );
+}
+
+function requiresNativeInstallReview(route: ReturnType<typeof installRoute>): boolean {
+  return route.operations === 1 || route.recoveryPolicy === 1 || route.planGate !== undefined;
+}
+
 export type JonesReviewedInstallResult =
   | {
       readonly kind: "ready";
-      readonly review: JonesInstallPlanReview;
+      readonly review: JonesReviewedInstall;
       readonly action: Extract<JonesOperationAction, { kind: "install" }>;
     }
   | { readonly kind: "refused"; readonly code: string; readonly message: string };
@@ -125,13 +168,14 @@ export async function prepareReviewedInstall(input: {
   });
   const initial = input.host.readLatest();
   const state = initial.observation.state;
+  const route = installRoute(state, input.host);
   if (
     initial.observation.freshness !== "fresh" ||
     !initial.canOperate ||
     state?.environmentId !== input.environmentId ||
     state.stagedHandle === undefined ||
     state.currentVersion === undefined ||
-    state.installedSource === undefined ||
+    (state.installedSource === undefined && requiresNativeInstallReview(route)) ||
     state.provenance?.sourceSha !== input.targetSource ||
     !state.capability.install
   )
@@ -141,6 +185,15 @@ export async function prepareReviewedInstall(input: {
     stagedHandle: state.stagedHandle,
     currentVersion: state.currentVersion,
   };
+  const installedSource = state.installedSource?.sha;
+  const stillReviewed = (latest: JonesExecutorSnapshot): boolean =>
+    latest.canOperate &&
+    jonesInstallRefusal(clicked, latest.observation) === undefined &&
+    latest.observation.state?.installedSource?.sha === installedSource &&
+    latest.observation.state?.provenance?.sourceSha === input.targetSource &&
+    sameInstallRoute(route, installRoute(latest.observation.state, input.host));
+  if (!stillReviewed(initial))
+    return refuse("changed", "Fresh host identity and a matching downloaded source are required.");
   if (
     !(await input.host.confirm(
       `Install source ${input.targetSource.slice(0, 7)} on ${input.label}? The host restarts and disconnects briefly.`,
@@ -148,22 +201,20 @@ export async function prepareReviewedInstall(input: {
   )
     return refuse("cancelled", "Nothing was sent.");
   let recovery: JonesInstallPlanReview["recovery"];
-  const afterConfirm = input.host.readLatest();
-  if (
-    !afterConfirm.canOperate ||
-    jonesInstallRefusal(clicked, afterConfirm.observation) !== undefined ||
-    afterConfirm.observation.state?.installedSource?.sha !== state.installedSource.sha ||
-    afterConfirm.observation.state.provenance?.sourceSha !== input.targetSource
-  )
+  if (!stillReviewed(input.host.readLatest()))
     return refuse("changed", "The host or downloaded build changed during review.");
-  if (afterConfirm.observation.state.capability.recoveryPolicy === 1) {
+  if (route.recoveryPolicy === 1) {
+    if (installedSource === undefined)
+      return refuse("changed", "The installed source is unavailable.");
     if (input.host.preflight === undefined || input.host.chooseRecovery === undefined)
       return refuse("unsupported", "This client cannot review the host's recovery policy.");
     const binding: JonesRecoveryPreflightInput = {
       ...clicked,
-      expectedInstalledSource: state.installedSource.sha,
+      expectedInstalledSource: installedSource,
     };
     const measured = await input.host.preflight(binding);
+    if (!stillReviewed(input.host.readLatest()))
+      return refuse("changed", "The host changed during recovery preflight. Review again.");
     if (
       measured.protocol !== 1 ||
       measured.binding.environmentId !== binding.environmentId ||
@@ -176,6 +227,8 @@ export async function prepareReviewedInstall(input: {
       return refuse("stale-preflight", "Recovery preflight changed or expired. Review again.");
     const policy = await input.host.chooseRecovery(measured);
     if (policy === null) return refuse("cancelled", "Nothing was sent.");
+    if (!stillReviewed(input.host.readLatest()))
+      return refuse("changed", "The host changed during recovery review. Nothing was sent.");
     if (
       (policy === "clone-required"
         ? measured.clone.status !== "proved" || !measured.policies.cloneRequired.admissible
@@ -185,26 +238,25 @@ export async function prepareReviewedInstall(input: {
       return refuse("recovery-refused", "The selected recovery policy is unavailable or expired.");
     recovery = { policy, preflightId: measured.preflightId };
   }
-  const latest = input.host.readLatest();
-  if (
-    !latest.canOperate ||
-    jonesInstallRefusal(clicked, latest.observation) !== undefined ||
-    latest.observation.state?.installedSource?.sha !== state.installedSource.sha ||
-    latest.observation.state.provenance?.sourceSha !== input.targetSource ||
-    (recovery !== undefined && latest.observation.state.capability.recoveryPolicy !== 1)
-  )
+  if (!stillReviewed(input.host.readLatest()))
     return refuse("changed", "The host changed during review. Nothing was sent.");
-  const review: JonesInstallPlanReview = {
+  const reviewed = {
     stagedHandle: clicked.stagedHandle,
     currentVersion: clicked.currentVersion,
     reviewedAt: new Date(input.now()).toISOString(),
     targetSource: input.targetSource,
-    expectedInstalledSource: state.installedSource.sha,
     ...(input.continueRunningThreads === undefined
       ? {}
       : { continueRunningThreads: input.continueRunningThreads }),
-    ...(recovery === undefined ? {} : { recovery }),
   };
+  const review: JonesReviewedInstall =
+    installedSource === undefined
+      ? { kind: "legacy-staged", environmentId: input.environmentId, ...reviewed }
+      : {
+          ...reviewed,
+          expectedInstalledSource: installedSource,
+          ...(recovery === undefined ? {} : { recovery }),
+        };
   return {
     kind: "ready",
     review,
@@ -235,7 +287,7 @@ export async function executeJonesAction(input: {
   readonly action: JonesOperationAction;
   readonly operationId: string;
   readonly host: JonesExecutorHost;
-  readonly review?: JonesInstallPlanReview;
+  readonly review?: JonesReviewedInstall;
   /** Retained by the entrypoint until receipt reconciliation, independent of revision changes. */
   readonly unresolved?: boolean;
   readonly cancelled?: () => boolean;
@@ -257,8 +309,9 @@ export async function executeJonesAction(input: {
     input.action.kind === "download" ? input.action.sourceSha : input.action.targetSource;
   if (target !== input.targetSource)
     return refused("binding", "The action does not match the reviewed target.");
-  const validate = (): JonesExecutionResult | undefined => {
-    const latest = input.host.readLatest();
+  const initial = input.host.readLatest();
+  const route = installRoute(initial.observation.state, input.host);
+  const validate = (latest: JonesExecutorSnapshot): JonesExecutionResult | undefined => {
     const state = latest.observation.state;
     if (
       !latest.canOperate ||
@@ -281,13 +334,22 @@ export async function executeJonesAction(input: {
           "The host still has an outstanding operation. Read its exact outcome before another action.",
       };
     if (input.action.kind === "install") {
+      if (!sameInstallRoute(route, installRoute(state, input.host)))
+        return refused("changed", "The host's install capability changed. Review again.");
       const review = input.review;
       if (
         review === undefined ||
         review.targetSource !== input.targetSource ||
         review.stagedHandle !== input.action.stagedHandle ||
         review.currentVersion !== input.action.currentVersion ||
-        state.installedSource?.sha !== review.expectedInstalledSource ||
+        (isNativeJonesInstallReview(review)
+          ? state.installedSource === undefined ||
+            state.installedSource.sha !== review.expectedInstalledSource
+          : review.environmentId !== input.environmentId ||
+            requiresNativeInstallReview(route) ||
+            state.installedSource !== undefined ||
+            review.expectedInstalledSource !== undefined ||
+            review.recovery !== undefined) ||
         state.provenance?.sourceSha !== input.targetSource ||
         review.recovery?.policy !== input.action.recovery?.policy ||
         review.recovery?.preflightId !== input.action.recovery?.preflightId ||
@@ -321,7 +383,7 @@ export async function executeJonesAction(input: {
     }
     return undefined;
   };
-  const problem = validate();
+  const problem = validate(initial);
   if (problem !== undefined) return problem;
   let grant: JonesInstallPlanGrant | undefined;
   if (input.host.planGate !== undefined) {
@@ -350,9 +412,10 @@ export async function executeJonesAction(input: {
       return refused("plan-gate", "The native grant does not match this action.");
   }
   if (input.cancelled?.()) return refused("cancelled", "Nothing was sent.");
-  const changed = validate();
+  const latest = input.host.readLatest();
+  const changed = validate(latest);
   if (changed !== undefined) return changed;
-  const state = input.host.readLatest().observation.state!;
+  const state = latest.observation.state!;
   let dispatched = false;
   try {
     if (state.capability.operations === 1) {

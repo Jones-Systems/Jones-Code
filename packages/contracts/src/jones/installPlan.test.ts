@@ -101,6 +101,38 @@ const receipt = {
 
 describe("install-plan renderer authority", () => {
   const decode = Schema.decodeUnknownSync(JonesInstallPlanRequest);
+  it("keeps old plan reads decodable and adds only optional client correlation", () => {
+    expect(decode({ type: "read" })).toEqual({ type: "read" });
+    expect(decode({ type: "read", commandId: operationId })).toEqual({
+      type: "read",
+      commandId: operationId,
+    });
+    const command = {
+      commandId: stopId,
+      environmentId,
+      targetSource: source,
+      action: "install",
+      stagedHandle: review.stagedHandle,
+      planId,
+      expectedRevision: 1,
+    };
+    expect(decode({ type: "laptop", planId, action: "install", review, command })).toMatchObject({
+      command,
+      review,
+    });
+    const { expectedInstalledSource: _installed, ...legacy } = review;
+    expect(() =>
+      decode({
+        type: "laptop",
+        planId,
+        action: "install",
+        review: { ...legacy, kind: "legacy-staged" },
+        command,
+      }),
+    ).toThrow();
+    expect(Schema.is(JonesInstallPlanState)(state)).toBe(true);
+    expect(Schema.is(JonesInstallPlanState)({ ...state, clientCommands: 1 })).toBe(true);
+  });
 
   it("accepts the bounded request vocabulary and retains CAS and review bindings", () => {
     const requests = [

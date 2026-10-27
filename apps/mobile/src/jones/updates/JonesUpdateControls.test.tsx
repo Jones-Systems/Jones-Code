@@ -38,6 +38,19 @@ vi.mock("@t3tools/client-runtime/jones/updates", async (importOriginal) => ({
   }),
 }));
 vi.mock("../../connection/runtime", () => ({ connectionAtomRuntime: {} }));
+vi.mock("./actionJournal", async () => {
+  const { createJonesActionJournal } =
+    await import("@t3tools/client-runtime/jones/updates/action-journal");
+  const disk = new Map<string, string>();
+  return {
+    mobileJonesJournal: createJonesActionJournal({
+      getItem: (key) => disk.get(key) ?? null,
+      setItem: (key, value) => {
+        disk.set(key, value);
+      },
+    }),
+  };
+});
 vi.mock("../../lib/uuid", () => ({
   uuidv4: () => `11111111-1111-4111-8111-${String(harness.nextId++).padStart(12, "0")}`,
 }));

@@ -259,8 +259,12 @@ it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
           );
           if (restoreStage) expect((yield* updates.state())?.phase).toBe("staged");
           expect(yield* updates.state()).toMatchObject({
+            phase: restoreStage ? "staged" : "error",
             settlement: "none",
             cause: "backup refused",
+            message: restoreStage
+              ? "Downloaded and verified. Install is a separate action."
+              : "Previous attempt needs reconciliation",
             childVersion: version,
             launcherSettlement: supported ? "supported" : "unsupported",
             launcherRefresh: supported ? "none" : "recommended",
@@ -314,6 +318,7 @@ it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
             expect(settled.migrationPlan).toBeUndefined();
           }
           expect(settled.settlementRefusal).toBeUndefined();
+          expect(yield* updates.state()).toEqual(settled);
           expect((yield* updates.reconcileOperation(operationId)).state).toBe("blocked");
           expect(
             (yield* updates.installForOperation({
@@ -330,7 +335,13 @@ it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
           expect(yield* fs.readFileString(`${ledger}.outcome.json`)).toBe(failedBytes);
           latestOutcome = { ...latestOutcome, id: "44444444-4444-4444-8444-444444444444" };
           const next = yield* updates.state();
-          expect(next).toMatchObject({ updateId: latestOutcome.id, settlement: "none" });
+          expect(next).toMatchObject({
+            updateId: latestOutcome.id,
+            settlement: "none",
+            message: restoreStage
+              ? "Downloaded and verified. Install is a separate action."
+              : "Previous attempt needs reconciliation",
+          });
           expect(next?.cause).toBeUndefined();
           expect(next?.settlementRefusal).toBeUndefined();
         }).pipe(Effect.provide(JonesUpdates.layer.pipe(Layer.provide(dependencies))));

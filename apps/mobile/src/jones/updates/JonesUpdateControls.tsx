@@ -69,7 +69,7 @@ export function JonesUpdateControls({
   useEffect(() => {
     const receipt = observed.state?.operation;
     if (observed.freshness === "fresh" && receipt?.environmentId === environmentId)
-      session.observe(receipt);
+      void session.observe(receipt).catch(() => undefined);
   }, [observed, session, environmentId]);
   const actions = useMemo(
     () =>
@@ -132,7 +132,12 @@ export function JonesUpdateControls({
     ["accepted", "running", "stop-requested", "adopting", "handed-off", "held"].includes(
       status.operation.phase,
     );
-  const busy = saved.busy || saved.uncertainty !== undefined || observation.freshness !== "fresh";
+  const busy =
+    !saved.ready ||
+    saved.fault !== undefined ||
+    saved.busy ||
+    saved.uncertainty !== undefined ||
+    observation.freshness !== "fresh";
   const followerHold = state === null ? undefined : jonesFollowerHold(state);
   const followerSummary = state === null ? undefined : jonesFollowerSummary(state);
   const candidate = state === null ? undefined : jonesCandidatePresentation(state);
@@ -163,6 +168,11 @@ export function JonesUpdateControls({
           <JonesBuildVersion key={title} title={title} build={build} label={labels[index]!} />
         ))}
         <Text className="text-sm text-foreground-muted">{status.headline}</Text>
+        {!saved.ready || saved.fault !== undefined ? (
+          <Text accessibilityRole="alert" className="text-sm text-foreground-muted">
+            {saved.fault ?? "Reading update request history…"}
+          </Text>
+        ) : null}
         {status.check !== undefined ? (
           <Text className="text-sm text-foreground-muted">{status.check.text}</Text>
         ) : null}
@@ -188,7 +198,7 @@ export function JonesUpdateControls({
         ) : null}
         {saved.uncertainty !== undefined ? (
           <Text accessibilityRole="alert" selectable className="text-sm text-foreground-muted">
-            Not confirmed · Operation{" "}
+            Not confirmed · {saved.uncertainty === "legacy" ? "Request" : "Operation"}{" "}
             {saved.request?.operationId ?? saved.receipt?.operationId ?? saved.operationId}. Nothing
             will be resent.
           </Text>
@@ -264,7 +274,10 @@ export function JonesUpdateControls({
             saved.stopping ||
             saved.stopId !== undefined ||
             state.operation.stop !== undefined ||
-            saved.uncertainty !== undefined
+            !saved.ready ||
+            saved.fault !== undefined ||
+            saved.uncertainty === "stop" ||
+            saved.uncertainty === "legacy"
           }
           onPress={() => void actions.stop()}
         />

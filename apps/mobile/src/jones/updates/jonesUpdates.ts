@@ -9,11 +9,14 @@ import {
   resolveDownloadAction,
   type JonesDownloadResolution,
   type JonesExecutorHost,
+  type JonesReviewedInstall,
 } from "@t3tools/client-runtime/jones/updates/executor";
 import { jonesTargetStatus } from "@t3tools/client-runtime/jones/updates/target-status";
 import { validateReceipt } from "@t3tools/client-runtime/jones/install-plan/model";
 import type { EnvironmentId } from "@t3tools/contracts";
-import type { JonesInstallPlanReview } from "@t3tools/contracts/jones/installPlan";
+import type { JonesActionJournal } from "@t3tools/client-runtime/jones/updates/action-journal";
+import { validateJonesStopReceipt } from "@t3tools/client-runtime/jones/updates/action-journal";
+import { mobileJonesJournal } from "./actionJournal";
 import type {
   JonesOperationReceipt,
   JonesOperationReadResult,
@@ -77,6 +80,8 @@ export function chooseJonesHostRecovery(
 }
 
 interface MobileJonesSessionState {
+  readonly ready: boolean;
+  readonly fault?: string;
   readonly busy: boolean;
   readonly reading: boolean;
   readonly stopping: boolean;
@@ -99,22 +104,73 @@ const terminal = new Set<JonesOperationReceipt["phase"]>([
   "interrupted",
 ]);
 
-function createSession() {
-  let state: MobileJonesSessionState = { busy: false, reading: false, stopping: false };
+function createSession(environmentId: EnvironmentId, journal: JonesActionJournal) {
+  let state: MobileJonesSessionState = {
+    ready: false,
+    busy: false,
+    reading: false,
+    stopping: false,
+  };
   const listeners = new Set<() => void>();
   const patch = (next: Partial<MobileJonesSessionState>) => {
     state = { ...state, ...next };
     for (const listener of listeners) listener();
   };
-  const reconcile = (receipt: JonesOperationReceipt) => {
+  const sync = () => {
+    const saved = journal.getSnapshot();
+    const primary = saved.duties.find(
+      (d) => d.environmentId === environmentId && d.kind !== "stop",
+    );
+    const stop = saved.duties.find((d) => d.environmentId === environmentId && d.kind === "stop");
+    const settled = [...saved.history]
+      .reverse()
+      .find((d) => d.environmentId === environmentId && d.receipt !== undefined);
+    const retained =
+      stop?.receipt ?? primary?.receipt ?? (primary === undefined ? settled?.receipt : undefined);
+    patch({
+      ready: saved.ready,
+      fault: saved.fault,
+      uncertainty:
+        stop !== undefined
+          ? "stop"
+          : primary?.kind === "legacy"
+            ? "legacy"
+            : primary !== undefined
+              ? "start"
+              : undefined,
+      ...(primary === undefined ? {} : { operationId: primary.operationId ?? primary.id }),
+      ...(primary?.kind === "legacy"
+        ? {
+            message:
+              "This request is not confirmed. The host cannot provide a bound receipt; nothing will be resent.",
+          }
+        : {}),
+      ...(primary?.request === undefined
+        ? {}
+        : { request: primary.request, operationId: primary.request.operationId }),
+      ...(stop !== undefined
+        ? { stopId: stop.stopId }
+        : primary === undefined && settled?.kind === "stop"
+          ? { stopId: settled.stopId }
+          : {}),
+      ...(retained === undefined ? {} : { receipt: retained }),
+    });
+  };
+  journal.subscribe(sync);
+  void journal.load().then(sync).catch(sync);
+  const reconcile = async (receipt: JonesOperationReceipt) => {
     if (state.request === undefined && state.receipt === undefined) return false;
     if (state.request !== undefined && !validateReceipt(state.request, receipt)) return false;
-    if (state.receipt !== undefined && !validateReceipt(state.receipt, receipt)) return false;
+    if (
+      state.receipt !== undefined &&
+      !(state.stopId === undefined
+        ? validateReceipt(state.receipt, receipt)
+        : validateJonesStopReceipt(state.receipt, receipt))
+    )
+      return false;
     if (state.stopId !== undefined && receipt.stop?.stopId !== state.stopId) return false;
-    const resolved =
-      state.uncertainty !== "legacy" &&
-      (state.uncertainty !== "stop" || receipt.stop?.stopId === state.stopId);
-    patch({ receipt, ...(resolved ? { uncertainty: undefined } : {}) });
+    await journal.reconcileReceipt(receipt);
+    patch({ receipt });
     return true;
   };
   return {
@@ -127,7 +183,8 @@ function createSession() {
     },
     patch,
     reconcile,
-    observe(receipt: JonesOperationReceipt) {
+    async observe(receipt: JonesOperationReceipt) {
+      if (receipt.environmentId !== environmentId) return;
       if (state.request === undefined && state.receipt === undefined) patch({ receipt });
       else if (
         state.receipt !== undefined &&
@@ -137,21 +194,29 @@ function createSession() {
         state.receipt.operationId !== receipt.operationId
       ) {
         patch({ receipt, request: undefined, stopId: undefined });
-      } else reconcile(receipt);
+      } else await reconcile(receipt);
     },
   };
 }
 
-// Retain uncertainty across screen closes and revision/source changes. Only exact receipts reconcile it.
-const sessions = new Map<EnvironmentId, ReturnType<typeof createSession>>();
-export function mobileJonesUpdateSession(environmentId: EnvironmentId) {
-  let session = sessions.get(environmentId);
-  if (session === undefined) {
-    session = createSession();
-    sessions.set(environmentId, session);
-  }
-  return session;
+export function createMobileJonesRuntime(journal: JonesActionJournal) {
+  const sessions = new Map<EnvironmentId, ReturnType<typeof createSession>>();
+  const session = (environmentId: EnvironmentId) => {
+    let current = sessions.get(environmentId);
+    if (current === undefined) {
+      current = createSession(environmentId, journal);
+      sessions.set(environmentId, current);
+    }
+    return current;
+  };
+  return {
+    session,
+    actions: (input: MobileJonesActionsInput) =>
+      buildMobileJonesActions(input, session(input.environmentId), journal),
+  };
 }
+const mobileRuntime = createMobileJonesRuntime(mobileJonesJournal);
+export const mobileJonesUpdateSession = mobileRuntime.session;
 
 export interface MobileJonesTransport {
   readonly legacy: JonesExecutorHost["legacy"];
@@ -177,13 +242,19 @@ export function mobileJonesObservation(
   return { ...observation, state: { ...observation.state, operation } };
 }
 
-export function createMobileJonesActions(input: {
+export interface MobileJonesActionsInput {
   readonly environmentId: EnvironmentId;
   readonly readLatest: JonesExecutorHost["readLatest"];
   readonly transport: MobileJonesTransport;
-}) {
+}
+export const createMobileJonesActions = (input: MobileJonesActionsInput) =>
+  mobileRuntime.actions(input);
+function buildMobileJonesActions(
+  input: MobileJonesActionsInput,
+  session: ReturnType<typeof createSession>,
+  journal: JonesActionJournal,
+) {
   const { environmentId, transport, readLatest } = input;
-  const session = mobileJonesUpdateSession(environmentId);
   const effective = () => {
     const latest = readLatest();
     return {
@@ -216,13 +287,20 @@ export function createMobileJonesActions(input: {
   return {
     async run(kind: "download" | "install") {
       const saved = session.getSnapshot();
-      if (saved.busy || saved.uncertainty !== undefined || !status().actions[kind]) return;
+      if (
+        !saved.ready ||
+        saved.fault !== undefined ||
+        saved.busy ||
+        saved.uncertainty !== undefined ||
+        !status().actions[kind]
+      )
+        return;
       const targetSource = effective().observation.state?.provenance?.sourceSha;
       if (targetSource === undefined) return;
       const operationId = uuidv4();
       session.patch({ busy: true, message: undefined });
       try {
-        const prepared: JonesDownloadResolution & { readonly review?: JonesInstallPlanReview } =
+        const prepared: JonesDownloadResolution & { readonly review?: JonesReviewedInstall } =
           kind === "install"
             ? await prepareReviewedInstall({
                 environmentId,
@@ -242,12 +320,64 @@ export function createMobileJonesActions(input: {
           targetSource,
           operationId,
           action: prepared.action,
-          host,
+          host: {
+            ...host,
+            legacy: async (request) => {
+              const before = effective();
+              await journal.reserve({
+                id: operationId,
+                environmentId,
+                kind: "legacy",
+                action: prepared.action.kind,
+                targetSource,
+                ...(prepared.action.kind === "install"
+                  ? {
+                      stagedHandle: prepared.action.stagedHandle,
+                      currentVersion: prepared.action.currentVersion,
+                    }
+                  : {}),
+              });
+              if (
+                !effective().canOperate ||
+                JSON.stringify(effective().observation.state) !==
+                  JSON.stringify(before.observation.state)
+              ) {
+                await journal.notSent(operationId);
+                throw new Error("The selected host changed before dispatch.");
+              }
+              const result = await transport.legacy(request);
+              if (result !== null) await journal.acknowledge(operationId);
+              return result;
+            },
+            start: async (request) => {
+              const before = effective();
+              await journal.reserve({
+                id: operationId,
+                environmentId,
+                kind: "operation",
+                action: request.action.kind,
+                targetSource,
+                operationId: request.operationId,
+                request,
+              });
+              if (
+                !effective().canOperate ||
+                JSON.stringify(effective().observation.state) !==
+                  JSON.stringify(before.observation.state)
+              ) {
+                await journal.notSent(operationId);
+                throw new Error("The selected host changed before dispatch.");
+              }
+              session.patch({ request });
+              return transport.start(request);
+            },
+          },
           ...(prepared.review === undefined ? {} : { review: prepared.review }),
           unresolved: session.getSnapshot().uncertainty !== undefined,
         });
         const current = session.getSnapshot();
-        const reconciled = result.receipt !== undefined && session.reconcile(result.receipt);
+        const reconciled =
+          result.receipt !== undefined && (await session.reconcile(result.receipt));
         if (
           result.receipt !== undefined &&
           current.request === undefined &&
@@ -261,9 +391,7 @@ export function createMobileJonesActions(input: {
           !reconciled &&
           session.getSnapshot().receipt === undefined
         ) {
-          session.patch({
-            uncertainty: session.getSnapshot().request === undefined ? "legacy" : "start",
-          });
+          session.patch({ message: result.message });
         }
       } catch {
         session.patch({ message: "The review could not finish. Nothing new was sent." });
@@ -272,7 +400,13 @@ export function createMobileJonesActions(input: {
       }
     },
     async check() {
-      if (session.getSnapshot().busy || session.getSnapshot().uncertainty !== undefined) return;
+      if (
+        !session.getSnapshot().ready ||
+        session.getSnapshot().fault !== undefined ||
+        session.getSnapshot().busy ||
+        session.getSnapshot().uncertainty !== undefined
+      )
+        return;
       const latest = effective();
       const receipt = latest.observation.state?.operation;
       if (
@@ -315,7 +449,7 @@ export function createMobileJonesActions(input: {
       try {
         const result = await transport.read(operationId);
         const receipt = result.receipts.find((entry) => entry.operationId === operationId)?.receipt;
-        if (receipt == null || !session.reconcile(receipt)) {
+        if (receipt == null || !(await session.reconcile(receipt))) {
           session.patch({
             message: "The exact operation is still not confirmed. Nothing will be resent.",
           });
@@ -336,7 +470,10 @@ export function createMobileJonesActions(input: {
       if (
         saved.stopping ||
         saved.stopId !== undefined ||
-        saved.uncertainty !== undefined ||
+        !saved.ready ||
+        saved.fault !== undefined ||
+        saved.uncertainty === "stop" ||
+        saved.uncertainty === "legacy" ||
         !status().actions.stop ||
         receipt === undefined ||
         receipt.stop !== undefined
@@ -345,12 +482,33 @@ export function createMobileJonesActions(input: {
       const stopId = uuidv4();
       session.patch({ stopping: true, stopId, receipt, message: "Stop requested…" });
       try {
+        await journal.reserve({
+          id: stopId,
+          environmentId,
+          kind: "stop",
+          action: "stop",
+          stopId,
+          operationId: receipt.operationId,
+          receipt,
+          targetSource:
+            receipt.action.kind === "download"
+              ? receipt.action.sourceSha
+              : receipt.action.targetSource,
+        });
+        if (!effective().canOperate) {
+          await journal.notSent(stopId);
+          session.patch({
+            stopId: undefined,
+            message: "The control changed before Stop was sent.",
+          });
+          return;
+        }
         const result = await transport.stop({
           environmentId,
           operationId: receipt.operationId,
           stopId,
         });
-        if (result.stop?.stopId !== stopId || !session.reconcile(result)) {
+        if (result.stop?.stopId !== stopId || !(await session.reconcile(result))) {
           session.patch({
             uncertainty: "stop",
             message: "Stop is not confirmed. Read the exact operation before continuing.",

@@ -15,8 +15,13 @@ import type { JonesOperationAction } from "@t3tools/contracts/jones/jonesOperati
 import type {
   JonesExecutorHost,
   JonesPlanGateResult,
+  JonesReviewedInstall,
 } from "@t3tools/client-runtime/jones/updates/executor";
-import { prepareReviewedInstall } from "@t3tools/client-runtime/jones/updates/executor";
+import {
+  prepareReviewedInstall,
+  isNativeJonesInstallReview,
+} from "@t3tools/client-runtime/jones/updates/executor";
+import type { NativeJonesDispatch } from "./executionJournal";
 import { selectability } from "@t3tools/client-runtime/jones/install-plan";
 import {
   installStatusStore,
@@ -129,6 +134,7 @@ async function routeLaptop(
   action: "download" | "install",
   review?: JonesInstallPlanReview,
   origin: JonesInstallPlanOrigin = "settings",
+  dispatch?: NativeJonesDispatch,
 ): Promise<void> {
   if (bridge.installPlan === undefined) throw new Error("Install plans are unsupported.");
   const target = targetForDesktop(desktop);
@@ -137,22 +143,24 @@ async function routeLaptop(
   const store = installPlanServices()?.store ?? installStatusStore;
   store.update({ native: read.state, desktop });
   const current = read.state.current;
-  const result = await bridge.installPlan(
+  const request =
     current?.target.sourceSha === target.sourceSha
       ? {
-          type: "laptop",
+          type: "laptop" as const,
           planId: current.planId,
           action,
           ...(review === undefined ? {} : { review }),
         }
       : {
-          type: "start",
+          type: "start" as const,
           origin,
           target,
           select: store.get().previewSelection,
           laptop: { action, ...(review === undefined ? {} : { review }) },
-        },
-  );
+        };
+  const result = await (dispatch === undefined
+    ? bridge.installPlan(request)
+    : dispatch(request, read.state));
   store.update({
     native: result.state,
     error: result.refused?.message ?? null,
@@ -165,14 +173,16 @@ async function routeLaptop(
 export async function routeLaptopDownload(
   bridge: Pick<DesktopBridge, "installPlan">,
   state: DesktopUpdateState,
+  dispatch?: NativeJonesDispatch,
 ) {
-  await routeLaptop(bridge, state, "download");
+  await routeLaptop(bridge, state, "download", undefined, "settings", dispatch);
   return { accepted: true, completed: false, state } satisfies DesktopUpdateActionResult;
 }
 export async function routeLaptopInstall(
   bridge: Pick<DesktopBridge, "installPlan">,
   state: DesktopUpdateState,
-  review?: JonesInstallPlanReview,
+  review?: JonesReviewedInstall,
+  dispatch?: NativeJonesDispatch,
 ) {
   let reviewed = review;
   if (reviewed === undefined) {
@@ -231,7 +241,9 @@ export async function routeLaptopInstall(
     if (result.kind !== "ready") throw new Error(result.message);
     reviewed = result.review;
   }
-  await routeLaptop(bridge, state, "install", reviewed);
+  if (!isNativeJonesInstallReview(reviewed))
+    throw new Error("A native Laptop install requires its full native review.");
+  await routeLaptop(bridge, state, "install", reviewed, "settings", dispatch);
   return { accepted: true, completed: false, state } satisfies DesktopUpdateActionResult;
 }
 
@@ -254,6 +266,7 @@ export function partitionUpdateEverything<T extends { readonly environmentId: En
 }
 export async function handOffJonesTargets(
   targets: readonly JonesHandoffTarget[],
+  dispatch?: NativeJonesDispatch,
 ): Promise<readonly JonesHandoffResult[]> {
   const binding = installPlanServices();
   if (binding?.services.bridge.installPlan === undefined)
@@ -309,30 +322,28 @@ export async function handOffJonesTargets(
     }
   }
   const current = read.state.current;
-  const result =
+  if (selections.length === 0) return results;
+  const request =
     current !== null
-      ? await requestInstallPlan(
-          {
-            type: "edit",
-            planId: current.planId,
-            expectedRevision: current.revision,
-            select: selections,
-            deselect: [],
-          },
-          binding,
-        )
-      : await requestInstallPlan(
-          {
-            type: "start",
-            origin: "update-everything",
-            target,
-            select: selections,
-            ...(desktop.jones?.phase === "available" && desktop.jones.capability.download
-              ? { laptop: { action: "download" as const } }
-              : {}),
-          },
-          binding,
-        );
+      ? {
+          type: "edit" as const,
+          planId: current.planId,
+          expectedRevision: current.revision,
+          select: selections,
+          deselect: [],
+        }
+      : {
+          type: "start" as const,
+          origin: "update-everything" as const,
+          target,
+          select: selections,
+          ...(desktop.jones?.phase === "available" && desktop.jones.capability.download
+            ? { laptop: { action: "download" as const } }
+            : {}),
+        };
+  const result = await (dispatch === undefined
+    ? requestInstallPlan(request, binding)
+    : dispatch(request, read.state));
   binding.store.open();
   return results.map((entry) => {
     const applied = result.applied?.find((a) => a.environmentId === entry.environmentId);
@@ -369,7 +380,9 @@ export async function legacyConnectionsGate(targetSource: string): Promise<strin
 }
 export function planGateFor(
   action: JonesOperationAction,
-  review?: JonesInstallPlanReview,
+  review?: JonesReviewedInstall,
+  dispatch?: NativeJonesDispatch,
+  canOperate = () => true,
 ): NonNullable<JonesExecutorHost["planGate"]> {
   return async (environmentId, targetSource): Promise<JonesPlanGateResult> => {
     const binding = installPlanServices();
@@ -385,9 +398,10 @@ export function planGateFor(
       };
     if (action.kind !== "install") {
       const device = binding.services.devices().find((d) => d.environmentId === environmentId);
-      const results = await handOffJonesTargets([
-        { environmentId, label: device?.label ?? "Device" },
-      ]);
+      const results = await handOffJonesTargets(
+        [{ environmentId, label: device?.label ?? "Device" }],
+        dispatch,
+      );
       return results[0]?.handedOff
         ? { kind: "handled", message: results[0].message }
         : { kind: "refused", message: results[0]?.message ?? "The plan handoff was refused." };
@@ -399,22 +413,27 @@ export function planGateFor(
         message: "Open this source's current plan to review installation.",
       };
     const observed = await binding.services.observe(environmentId);
-    const result = await requestInstallPlan(
-      {
-        type: "claim",
-        planId: read.state.current.planId,
-        environmentId,
-        claimant: `window:${claimantId()}`,
-        step: "install",
-        explicit: true,
-        action,
-        ...(review === undefined ? {} : { review }),
-        ...(observed.observation.state?.installedSource === undefined
-          ? {}
-          : { expectedInstalledSource: observed.observation.state.installedSource.sha }),
-      },
-      binding,
-    );
+    if (!canOperate() || review === undefined || !isNativeJonesInstallReview(review))
+      return {
+        kind: "refused",
+        message: "Fresh control authority and a native install review are required.",
+      };
+    const request = {
+      type: "claim" as const,
+      planId: read.state.current.planId,
+      environmentId,
+      claimant: `window:${claimantId()}`,
+      step: "install" as const,
+      explicit: true,
+      action,
+      ...(review === undefined ? {} : { review }),
+      ...(observed.observation.state?.installedSource === undefined
+        ? {}
+        : { expectedInstalledSource: observed.observation.state.installedSource.sha }),
+    };
+    const result = await (dispatch === undefined
+      ? requestInstallPlan(request, binding)
+      : dispatch(request, read.state));
     return result.grant === undefined
       ? { kind: "refused", message: result.refused?.message ?? "Install was not granted." }
       : { kind: "grant", grant: result.grant };
@@ -430,7 +449,9 @@ export async function routeNativeLaptopAction(
   environmentId: EnvironmentId,
   targetSource: string,
   action: JonesOperationAction,
-  review?: JonesInstallPlanReview,
+  review?: JonesReviewedInstall,
+  dispatch?: NativeJonesDispatch,
+  canOperate = () => true,
 ): Promise<JonesPlanGateResult | undefined> {
   const binding = installPlanServices();
   if (binding?.services.bridge.installPlan === undefined) return undefined;
@@ -442,8 +463,16 @@ export async function routeNativeLaptopAction(
       kind: "refused",
       message: "The Laptop's native candidate no longer matches this source.",
     };
-  if (action.kind === "install") await routeLaptopInstall(binding.services.bridge, desktop, review);
-  else await routeLaptopDownload(binding.services.bridge, desktop);
+  if (!canOperate())
+    return { kind: "refused", message: "This control no longer authorizes the action." };
+  if (action.kind === "install") {
+    if (review === undefined || !isNativeJonesInstallReview(review))
+      return {
+        kind: "refused",
+        message: "A native Laptop install requires its full native review.",
+      };
+    await routeLaptopInstall(binding.services.bridge, desktop, review, dispatch);
+  } else await routeLaptopDownload(binding.services.bridge, desktop, dispatch);
   return {
     kind: "handled",
     message: "Handed to Install status on Laptop. Every install requires review.",

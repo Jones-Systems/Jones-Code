@@ -130,7 +130,9 @@ export class JonesUpdates extends Context.Service<
         readonly operationId: string;
         readonly targetSource: string;
         readonly expectedInstalledSource: string;
-        readonly onBeforeDispatchRefusal?: JonesUpdaterInstallInput["onBeforeDispatchRefusal"];
+        readonly onBeforeDispatchRefusal?: NonNullable<
+          JonesUpdaterInstallInput["onBeforeDispatchRefusal"]
+        >;
         /** Rechecked just before the launcher handoff; a reason withdraws the activation. */
         readonly admit?: () => Promise<string | undefined>;
       },

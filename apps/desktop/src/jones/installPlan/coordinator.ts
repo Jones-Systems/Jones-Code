@@ -1,5 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off - Native coordinator supplies clocks and validates captured worker exit evidence.
 import * as Schema from "effect/Schema";
+import * as NodeCrypto from "node:crypto";
+import { canonicalJonesCommand } from "@t3tools/client-runtime/jones/updates/action-journal";
 import type { EnvironmentId } from "@t3tools/contracts";
 import {
   JonesInstallPlanRequest as RequestSchema,
@@ -80,6 +82,50 @@ const sameKeys = (a: readonly string[], b: readonly string[]) =>
 const MAX_OPERATIONS = 16;
 const LEASE_MS = 120_000;
 
+const commandBody = (request: JonesInstallPlanRequest) =>
+  NodeCrypto.createHash("sha256").update(canonicalJonesCommand(request)).digest("hex");
+
+function refreshCommands(document: PlanDocument): PlanDocument {
+  if (document.commands === undefined) return document;
+  let changed = false;
+  const commands = document.commands.map((entry) => {
+    const receipt =
+      entry.receipt.bodyHash === undefined
+        ? { ...entry.receipt, bodyHash: entry.body }
+        : entry.receipt;
+    if (receipt !== entry.receipt) changed = true;
+    if (receipt.outcome !== "reserved")
+      return receipt === entry.receipt ? entry : { ...entry, receipt };
+    const plan = [document.current, document.last].find((p) => p?.planId === receipt.planId);
+    if (plan == null) return receipt === entry.receipt ? entry : { ...entry, receipt };
+    const local = plan.laptop.operations.find((o) => o.operationId === receipt.operationId);
+    const remote = plan.devices
+      .find((d) => d.environmentId === receipt.command.environmentId)
+      ?.operations.find((o) => o.operationId === receipt.operationId)?.receipt;
+    const settled =
+      local !== undefined
+        ? local.result !== undefined &&
+          !localPending(local) &&
+          local.result.code !== "native-unconfirmed"
+        : remote !== undefined &&
+          terminal.has(remote.phase) &&
+          remote.code !== "launcher-unconfirmed";
+    if (!settled) return receipt === entry.receipt ? entry : { ...entry, receipt };
+    changed = true;
+    return {
+      ...entry,
+      receipt: {
+        ...receipt,
+        outcome: "terminal" as const,
+        ...((local?.result?.code ?? remote?.code) === undefined
+          ? {}
+          : { code: local?.result?.code ?? remote?.code }),
+      },
+    };
+  });
+  return changed ? { ...document, commands } : document;
+}
+
 /** Only ESRCH for both captured identities proves a stopped transfer after restart. No signals are sent. */
 function workerAbsent(worker: { readonly pid: number; readonly processGroup: number }): boolean {
   if (![worker.pid, worker.processGroup].every((pid) => Number.isSafeInteger(pid) && pid > 1))
@@ -125,7 +171,10 @@ export function createInstallPlanCoordinator(options: {
     evidence: JonesInstallPlanLaptopEvidence,
     document = snapshot.document,
   ): JonesInstallPlanState => ({
-    ...document,
+    schema: 1,
+    current: document.current,
+    last: document.last,
+    clientCommands: 1,
     laptop: evidence,
     view: {
       complete:
@@ -271,7 +320,9 @@ export function createInstallPlanCoordinator(options: {
       const plan = snapshot.document.current;
       if (required && plan === null) throw new Error("The native install has no current plan.");
       const next = plan === null ? null : change(plan);
-      const document = next === plan ? snapshot.document : { ...snapshot.document, current: next };
+      const document = refreshCommands(
+        next === plan ? snapshot.document : { ...snapshot.document, current: next },
+      );
       return {
         document,
         dispositions: snapshot.dispositions,
@@ -499,6 +550,50 @@ export function createInstallPlanCoordinator(options: {
               };
           }
         }
+        document = refreshCommands(document);
+        const command = "command" in req ? req.command : undefined;
+        if (Schema.is(RequestSchema)(req) && command !== undefined) {
+          const recorded = document.commands?.find(
+            (entry) => entry.receipt.command.commandId === command.commandId,
+          );
+          if (recorded !== undefined) {
+            return {
+              document,
+              dispositions,
+              result:
+                recorded.body === commandBody(req)
+                  ? { state: stateOf(snapshot, evidence, document), command: recorded.receipt }
+                  : {
+                      state: stateOf(snapshot, evidence, document),
+                      refused: {
+                        code: "invalid-evidence" as const,
+                        message:
+                          "This client command identity is already bound to a different request.",
+                      },
+                    },
+            };
+          }
+          if ((document.commands?.length ?? 0) >= 64)
+            return {
+              document,
+              dispositions,
+              result: {
+                state: stateOf(snapshot, evidence, document),
+                command: {
+                  command,
+                  bodyHash: commandBody(req),
+                  requestType: req.type as "start" | "edit" | "laptop" | "claim",
+                  ...(command.planId === undefined ? {} : { planId: command.planId }),
+                  outcome: "refused" as const,
+                  code: "command-capacity",
+                },
+                refused: {
+                  code: "bounds" as const,
+                  message: "The retained client command history is full; no action was granted.",
+                },
+              },
+            };
+        }
         let extras: Omit<JonesInstallPlanResult, "state"> = {};
         const refuse = (
           code: NonNullable<JonesInstallPlanResult["refused"]>["code"],
@@ -633,6 +728,50 @@ export function createInstallPlanCoordinator(options: {
               : { artifactId: native.provenance.artifactId }),
           };
         };
+        const commandMatches = () => {
+          if (command === undefined) return true;
+          if (req.type === "start")
+            return (
+              command.targetSource === req.target.sourceSha &&
+              command.planId === undefined &&
+              command.expectedRevision === undefined &&
+              (command.environmentId === evidence.environmentId
+                ? req.laptop !== undefined &&
+                  (command.action === "install") === (req.laptop.action === "install") &&
+                  command.stagedHandle === req.laptop.review?.stagedHandle
+                : req.select.some((s) => s.environmentId === command.environmentId) &&
+                  command.action !== "install")
+            );
+          if (
+            plan === null ||
+            command.targetSource !== plan.target.sourceSha ||
+            command.planId !== plan.planId
+          )
+            return false;
+          if (req.type === "edit")
+            return (
+              command.action !== "install" &&
+              command.expectedRevision === req.expectedRevision &&
+              req.select.some((s) => s.environmentId === command.environmentId)
+            );
+          if (req.type === "laptop")
+            return (
+              command.environmentId === plan.laptop.environmentId &&
+              command.expectedRevision === plan.revision &&
+              (command.action === "install") === (req.action === "install") &&
+              (req.action === "download" || req.action === "install") &&
+              command.stagedHandle === req.review?.stagedHandle
+            );
+          if (req.type === "claim")
+            return (
+              command.environmentId === req.environmentId &&
+              command.expectedRevision === plan.revision &&
+              (command.action === "install") === (req.step === "install") &&
+              (req.step === "download" || req.step === "install") &&
+              command.stagedHandle === req.review?.stagedHandle
+            );
+          return false;
+        };
         if (!Schema.is(RequestSchema)(req)) refuse("invalid-evidence", "Invalid plan request.");
         else if (snapshot.readOnly !== undefined) {
           if (req.type !== "read")
@@ -640,7 +779,12 @@ export function createInstallPlanCoordinator(options: {
               snapshot.readOnly.code === "newer-schema" ? "newer-schema" : "storage",
               snapshot.readOnly.message,
             );
-        } else if (req.type === "read") {
+        } else if (!commandMatches())
+          refuse(
+            "invalid-evidence",
+            "The client command does not match the current native action binding.",
+          );
+        else if (req.type === "read") {
           /* Gate and native reconciliation above are the only changes. */
         } else if (req.type === "publication") {
           const code = evidence.activationBlocked
@@ -1154,9 +1298,46 @@ export function createInstallPlanCoordinator(options: {
             }
           }
         }
+        if (
+          command !== undefined &&
+          Schema.is(RequestSchema)(req) &&
+          snapshot.readOnly === undefined &&
+          ["start", "edit", "laptop", "claim"].includes(req.type)
+        ) {
+          const local = effect;
+          const receipt = {
+            command,
+            bodyHash: commandBody(req),
+            requestType: req.type as "start" | "edit" | "laptop" | "claim",
+            ...(plan === null ? {} : { planId: plan.planId }),
+            ...(local !== undefined
+              ? { operationId: local.operationId }
+              : extras.grant === undefined
+                ? {}
+                : { operationId: extras.grant.operationId }),
+            outcome:
+              extras.refused !== undefined
+                ? ("refused" as const)
+                : local !== undefined || extras.grant !== undefined
+                  ? ("reserved" as const)
+                  : ("applied" as const),
+          };
+          document = {
+            ...document,
+            commands: [...(document.commands ?? []), { body: commandBody(req), receipt }],
+          };
+          extras = { ...extras, command: receipt };
+        }
+        document = refreshCommands(document);
+        const queried =
+          req.type === "read" && req.commandId !== undefined
+            ? document.commands?.find((entry) => entry.receipt.command.commandId === req.commandId)
+                ?.receipt
+            : undefined;
         const result: JonesInstallPlanResult = {
           state: stateOf(snapshot, evidence, document),
           ...extras,
+          ...(queried === undefined ? {} : { command: queried }),
         };
         return { document, dispositions, result };
       });

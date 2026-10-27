@@ -355,6 +355,22 @@ unindexed attempt installable. Background cleanup retains its handle until both 
 and artifact roots are proved reclaimed or absent. Unknown or conflicting evidence
 still holds replacement.
 
+## Client update uncertainty
+
+Web and mobile controls persist bounded operation bindings before sending an update
+mutation. Stop records include the exact Stop ID; only a matching monotone receipt
+can settle that request. Unknown legacy results survive client restart, and source
+or revision equality cannot clear them. Storage failures and unresolved capacity
+limits block new mutations rather than discard pending evidence.
+
+A native handoff additionally binds a client command ID to the canonical request
+body digest. Native main reserves that command in the existing plan CAS document
+before effects and reports its own result; changed-body replay is refused. A
+reservation alone is not completion. Each web review is revoked when its initiating
+control changes target, loses permission or unmounts. Legacy staged reviews remain
+available through negotiated legacy paths without supplying invented installed
+source evidence or weakening native review requirements.
+
 ## Desktop activation and startup refusal
 
 Desktop preparation uses an admission handshake after transfer and hashing but

@@ -12,6 +12,7 @@ import { bindInstallPlanServices, requestInstallPlan, type InstallPlanServices }
 import { claimantId, openInstallStatus } from "./entrypoints";
 import { productionInstallPlanServices } from "./production";
 import { RecoveryReview } from "./recoveryReview";
+import { webJonesJournal, reconcileNativeJonesDuty } from "./executionJournal";
 
 /** One pass per wakeup. Native leases arbitrate windows; this loop never retries a mutation. */
 export function startInstallPlanController(
@@ -83,6 +84,18 @@ export function startInstallPlanController(
           }),
         });
       if (!cancelled) await advanceInstallPlan(driver);
+      if (!cancelled) {
+        await webJonesJournal.load();
+        const duties = webJonesJournal.getSnapshot().duties.filter((d) => d.kind === "native");
+        for (const duty of duties) {
+          if (cancelled || duty.native === undefined) break;
+          const result = await requestInstallPlan(
+            { type: "read", commandId: duty.native.commandId },
+            binding,
+          );
+          await reconcileNativeJonesDuty(result);
+        }
+      }
     })()
       .catch((error: unknown) => {
         if (!cancelled)

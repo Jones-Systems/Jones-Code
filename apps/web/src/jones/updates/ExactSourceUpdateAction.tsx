@@ -5,8 +5,10 @@ import {
 import {
   executeWebJonesAction,
   unresolvedJonesExecution,
-  retainUnknownJonesExecution,
+  executeWebJonesReplacement,
+  reconcileJonesExecution,
 } from "../installStatus/execution";
+import { useJonesExecutionJournal, webJonesJournal } from "../installStatus/executionJournal";
 import { legacyConnectionsGate } from "../installStatus/entrypoints";
 import {
   jonesExactSourceResultError,
@@ -23,7 +25,7 @@ import type {
   JonesUpdateInstallInput,
   JonesUpdateState,
 } from "@t3tools/contracts/jones/jonesUpdates";
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Button } from "../../components/ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
 import { randomUUID } from "../../lib/utils";
@@ -139,6 +141,11 @@ export async function performExactSourceStep({
   readonly unresolvedInstall?: UnresolvedInstall | undefined;
   readonly host: Pick<ExactSourceHost, "readLatest" | "run" | "confirm" | "executor">;
 }): Promise<ExactSourceOutcome> {
+  try {
+    await webJonesJournal.load();
+  } catch {
+    return { kind: "refused", message: "Update request history is unavailable. Nothing was sent." };
+  }
   if (unresolvedJonesExecution(environmentId) !== undefined)
     return {
       kind: "refused",
@@ -179,11 +186,22 @@ export async function performExactSourceStep({
       };
     const gate = await legacyConnectionsGate(targetSource);
     if (gate !== null) return { kind: "refused", message: gate };
-    const result = await host.run(request(fresh.step, operationId)).catch(() => null);
-    if (result === null || result._tag === "Failure") {
+    const reply: { value: Awaited<ReturnType<ExactSourceHost["run"]>> | null } = { value: null };
+    const acknowledged = await executeWebJonesReplacement({
+      environmentId,
+      operationId,
+      targetSource,
+      stagedHandle: step.replace.stagedHandle,
+      host,
+      send: async () => {
+        reply.value = await host.run(request(fresh.step, operationId));
+        return reply.value._tag === "Success" && reply.value.value !== null;
+      },
+    });
+    const result = reply.value;
+    if (!acknowledged || result === null || result._tag === "Failure") {
       const message =
         "The replacement request may have been accepted. Its effect is unknown. Read the exact outcome; nothing is resent automatically.";
-      retainUnknownJonesExecution(environmentId, { kind: "unknown", message });
       return { kind: "failed", message };
     }
     const problem = jonesExactSourceResultError(fresh.step, result, targetSource);
@@ -316,6 +334,14 @@ export function ExactSourceUpdateAction({
   compact = false,
   host,
 }: ExactSourceTarget & { readonly host: ExactSourceHost }) {
+  const journal = useJonesExecutionJournal();
+  const observedReceipt = host.snapshot.observation.state?.operation;
+  const observedFreshness = host.snapshot.observation.freshness;
+  // oxlint-disable-next-line t3code/react-effect-budget -- A fresh exact receipt can settle only its persisted duty; rendering and source changes grant no settlement authority.
+  useEffect(() => {
+    if (observedFreshness === "fresh" && observedReceipt !== undefined)
+      void reconcileJonesExecution(environmentId, observedReceipt).catch(() => undefined);
+  }, [environmentId, observedFreshness, observedReceipt]);
   const [working, setWorking] = useState<"download" | "install" | null>(null);
   const [report, setReport] = useState<Report | null>(null);
   const inFlight = useRef(false);
@@ -333,6 +359,7 @@ export function ExactSourceUpdateAction({
   const unresolved = unresolvedJonesExecution(
     environmentId,
     host.snapshot.observation.state?.operation,
+    journal,
   );
   const start = async () => {
     if (unresolved !== undefined || decision.status !== "ready" || inFlight.current) return;
@@ -447,11 +474,33 @@ function ExactActionButton({
             {...triggerProps}
             size="xs"
             variant="outline"
-            aria-disabled={reason === undefined ? undefined : true}
-            aria-describedby={reason === undefined ? undefined : reasonId}
-          >
-            {label}
-          </Button>
+            render={(buttonProps) => (
+              <button
+                {...buttonProps}
+                type="button"
+                disabled={false}
+                tabIndex={0}
+                aria-disabled={reason === undefined ? undefined : true}
+                aria-describedby={reason === undefined ? undefined : reasonId}
+                onClick={(event) => {
+                  if (reason !== undefined) {
+                    event.preventDefault();
+                    return;
+                  }
+                  buttonProps.onClick?.(event);
+                }}
+                onKeyDown={(event) => {
+                  if (reason !== undefined && (event.key === "Enter" || event.key === " ")) {
+                    event.preventDefault();
+                    return;
+                  }
+                  buttonProps.onKeyDown?.(event);
+                }}
+              >
+                {label}
+              </button>
+            )}
+          />
         )}
       />
       <TooltipPopup side="top" role="tooltip" id={reasonId}>

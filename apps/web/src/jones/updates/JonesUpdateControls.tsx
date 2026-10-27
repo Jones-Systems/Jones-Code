@@ -3,13 +3,20 @@ import {
   prepareReviewedInstall,
   resolveDownloadAction,
   type JonesDownloadResolution,
+  type JonesReviewedInstall,
 } from "@t3tools/client-runtime/jones/updates/executor";
-import type { JonesInstallPlanReview } from "@t3tools/contracts/jones/installPlan";
 import {
   connectionExecutorHost,
   readUnresolvedJonesExecution,
 } from "../installStatus/connectionHost";
-import { executeWebJonesAction, unresolvedJonesExecution } from "../installStatus/execution";
+import {
+  executeWebJonesAction,
+  unresolvedJonesExecution,
+  reconcileJonesExecution,
+  stopWebJonesDownload,
+} from "../installStatus/execution";
+import { useJonesExecutionJournal } from "../installStatus/executionJournal";
+import { useWebReviewAuthority } from "../installStatus/webReviewAuthority";
 import { Button } from "../../components/ui/button";
 import { randomUUID } from "../../lib/utils";
 import {
@@ -26,7 +33,7 @@ import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import * as Effect from "effect/Effect";
 import { layerRemoteHttpClient } from "@t3tools/client-runtime/rpc";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { ProductionExactSourceUpdateAction } from "./ProductionExactSourceUpdateAction";
 import { jonesUpdates } from "./jonesUpdates";
@@ -114,7 +121,36 @@ export function JonesUpdateControls({
   /** Compares this host with the verified laptop build and offers an explicit matching download. */
   readonly compareWithLaptop?: boolean;
 }) {
-  const observation = useAtomValue(jonesUpdates.observation(environmentId));
+  const observed = useAtomValue(jonesUpdates.observation(environmentId));
+  const journal = useJonesExecutionJournal();
+  const stopDuty = journal.duties.find(
+    (d) => d.environmentId === environmentId && d.kind === "stop",
+  );
+  const settled = [...journal.history]
+    .reverse()
+    .find(
+      (d) =>
+        d.environmentId === environmentId &&
+        d.receipt !== undefined &&
+        (observed.state?.operation === undefined ||
+          observed.state.operation.operationId === d.operationId),
+    );
+  const retained =
+    stopDuty?.receipt ??
+    journal.duties.find((d) => d.environmentId === environmentId)?.receipt ??
+    settled?.receipt;
+  const observation =
+    observed.state === null || retained === undefined
+      ? observed
+      : {
+          ...observed,
+          state: { ...observed.state, operation: retained },
+        };
+  // oxlint-disable-next-line t3code/react-effect-budget -- Exact fresh receipts reconcile persisted duties; rendering never clears an unknown request.
+  useEffect(() => {
+    if (observed.freshness === "fresh" && observed.state?.operation !== undefined)
+      void reconcileJonesExecution(environmentId, observed.state.operation).catch(() => undefined);
+  }, [observed, environmentId]);
   const laptop = useAtomValue(compareWithLaptop ? laptopInstalledSourceAtom : noLaptopSourceAtom);
   const hostInstalledSource =
     observation.freshness === "fresh" ? observation.state?.installedSource : undefined;
@@ -137,11 +173,13 @@ export function JonesUpdateControls({
   const [stopping, setStopping] = useState(false);
   const stop = useAtomCommand(jonesUpdates.stop, { reportFailure: false });
   const session = useAtomValue(environmentSession.sessionStateAtom(environmentId));
+  const allowed =
+    session._tag === "Success" &&
+    session.value.authenticated &&
+    sessionGrantsScope(session.value, AuthOrchestrationOperateScope);
+  const authority = useWebReviewAuthority(environmentId, allowed);
   const status = jonesTargetStatus(observation, {
-    canOperate:
-      session._tag === "Success" &&
-      session.value.authenticated &&
-      sessionGrantsScope(session.value, AuthOrchestrationOperateScope),
+    canOperate: allowed,
     ...(observation.state?.operation?.correlation === undefined
       ? {}
       : { planId: observation.state.operation.correlation.planId }),
@@ -162,6 +200,7 @@ export function JonesUpdateControls({
             return {
               observation: appAtomRegistry.get(jonesUpdates.observation(environmentId)),
               canOperate:
+                authority.isCurrent() &&
                 session._tag === "Success" &&
                 session.value.authenticated &&
                 sessionGrantsScope(session.value, AuthOrchestrationOperateScope),
@@ -172,6 +211,7 @@ export function JonesUpdateControls({
             if (result._tag !== "Success") throw new Error("Request not confirmed.");
             return result.value;
           },
+          authority,
         );
         if (input.action === "install") {
           const refusal = jonesInstallRefusal(input.input, host.readLatest().observation);
@@ -185,7 +225,7 @@ export function JonesUpdateControls({
           setActionError("Fresh downloaded or offered source is required.");
           return;
         }
-        const proposed: JonesDownloadResolution & { readonly review?: JonesInstallPlanReview } =
+        const proposed: JonesDownloadResolution & { readonly review?: JonesReviewedInstall } =
           input.action === "install"
             ? await prepareReviewedInstall({
                 environmentId,
@@ -213,7 +253,11 @@ export function JonesUpdateControls({
         setActionError(result.message);
         return;
       }
-      if (input.action === "check") await readUnresolvedJonesExecution(environmentId);
+      if (input.action === "check") {
+        await readUnresolvedJonesExecution(environmentId);
+        if (unresolvedJonesExecution(environmentId) !== undefined) return;
+      }
+      if (!authority.isCurrent()) return;
       setActionError(jonesUpdateActionError(await action({ environmentId, input })));
       // Check is the explicit refresh: retry an ancestry this laptop's server could not prove.
       if (input.action === "check" && pair !== undefined && ancestry === undefined)
@@ -260,7 +304,9 @@ export function JonesUpdateControls({
         freshnessMessage={observation.message}
         comparison={comparison}
         installedComparison={installedComparison}
-        pending={pending || unresolvedJonesExecution(environmentId) !== undefined}
+        pending={
+          pending || unresolvedJonesExecution(environmentId, undefined, journal) !== undefined
+        }
         actionError={actionError}
         layout={layout}
         extraAction={
@@ -295,38 +341,61 @@ export function JonesUpdateControls({
         <Button
           size="xs"
           variant="outline"
-          disabled={stopping}
+          disabled={
+            stopping ||
+            stopDuty !== undefined ||
+            settled?.kind === "stop" ||
+            !journal.ready ||
+            journal.fault !== undefined
+          }
           onClick={() => {
             const receipt = observation.state?.operation;
-            if (receipt === undefined || stopping) return;
+            if (receipt === undefined || stopping || stopDuty !== undefined) return;
             setStopping(true);
-            void stop({
+            void stopWebJonesDownload({
               environmentId,
-              input: {
-                action: "operationStop",
-                input: { environmentId, operationId: receipt.operationId, stopId: randomUUID() },
+              receipt,
+              uuid: randomUUID,
+              canOperate: () =>
+                authority.isCurrent() &&
+                (() => {
+                  const latest = appAtomRegistry.get(
+                    environmentSession.sessionStateAtom(environmentId),
+                  );
+                  return (
+                    latest._tag === "Success" &&
+                    latest.value.authenticated &&
+                    sessionGrantsScope(latest.value, AuthOrchestrationOperateScope)
+                  );
+                })(),
+              send: async (input) => {
+                const result = await stop({
+                  environmentId,
+                  input: { action: "operationStop", input },
+                });
+                if (result._tag !== "Success") throw new Error("Stop is not confirmed.");
+                return result.value;
               },
             })
-              .then((result) => {
-                setActionError(
-                  result._tag !== "Success"
-                    ? "Stop not confirmed. Check the exact operation receipt."
-                    : (result.value.message ??
-                        (result.value.phase === "stop-requested"
-                          ? "Stop requested. Waiting for the bound operation receipt."
-                          : result.value.phase === "stopped"
-                            ? "Download stopped. Nothing was installed."
-                            : result.value.phase === "held"
-                              ? "Stop not confirmed. No new work starts."
-                              : result.value.stop?.result === "too-late"
-                                ? "Download completed before Stop. Review installation separately."
-                                : "This phase cannot be stopped. Read the current operation status.")),
-                );
-              })
+              .then(setActionError)
+              .catch(() => setActionError("Stop is not confirmed. Read its exact operation."))
               .finally(() => setStopping(false));
           }}
         >
           Stop download
+        </Button>
+      ) : null}
+      {journal.duties.some((d) => d.environmentId === environmentId && d.kind !== "legacy") ? (
+        <Button
+          size="xs"
+          variant="outline"
+          onClick={() => {
+            void readUnresolvedJonesExecution(environmentId).catch(() =>
+              setActionError("The exact outcome is unavailable. Nothing will be resent."),
+            );
+          }}
+        >
+          Read operation status
         </Button>
       ) : null}
     </div>

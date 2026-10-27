@@ -82,6 +82,20 @@ const desktop: DesktopUpdateState = {
 };
 
 describe("install entrypoint routing", () => {
+  it("never serializes a client-only legacy review into native Laptop IPC", async () => {
+    const bridge = { installPlan: vi.fn() };
+    await expect(
+      routeLaptopInstall(bridge, desktop, {
+        kind: "legacy-staged",
+        environmentId,
+        reviewedAt: "2026-10-27T04:00:00Z",
+        stagedHandle: "legacy-stage",
+        currentVersion: "old",
+        targetSource: source,
+      }),
+    ).rejects.toThrow("full native review");
+    expect(bridge.installPlan).not.toHaveBeenCalled();
+  });
   it.each(["downloading", "preparing", "installing", "blocked"] as const)(
     "opens a current plan during %s without a Laptop or host mutation",
     async (phase) => {
