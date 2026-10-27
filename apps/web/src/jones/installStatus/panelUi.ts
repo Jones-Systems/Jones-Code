@@ -9,6 +9,7 @@ export interface InstallStatusDevice extends InstallPlanDeviceObservation {
   readonly lastObservedAt?: string;
 }
 export interface InstallStatusSnapshot {
+  readonly updatedAt: number;
   readonly previewId: string;
   readonly previewTargetSource: string | null;
   readonly native: JonesInstallPlanState | null;
@@ -22,7 +23,7 @@ export interface InstallStatusSnapshot {
 }
 
 export function createInstallStatusStore() {
-  let snapshot: InstallStatusSnapshot = { previewId: randomUUID(), previewTargetSource: null, native: null, desktop: null, devices: [], open: false,
+  let snapshot: InstallStatusSnapshot = { updatedAt: Date.now(), previewId: randomUUID(), previewTargetSource: null, native: null, desktop: null, devices: [], open: false,
     collapsed: false, showLast: false, previewSelection: [], error: null };
   const listeners = new Set<() => void>();
   const collapsedByPlan = new Map<string, boolean>();
@@ -36,7 +37,7 @@ export function createInstallStatusStore() {
       const stale = incoming != null && ((current?.planId === incoming.planId && current.revision > incoming.revision) ||
         (dismissed?.planId === incoming.planId && dismissed.dismissedAt !== undefined) ||
         (current != null && current.planId !== incoming.planId && Date.parse(current.createdAt) > Date.parse(incoming.createdAt)));
-      snapshot = { ...snapshot, ...patch, ...(stale ? { native: snapshot.native } : {}) };
+      snapshot = { ...snapshot, ...patch, updatedAt: Date.now(), ...(stale ? { native: snapshot.native } : {}) };
       for (const listener of listeners) listener();
     },
     open(showLast = false) {

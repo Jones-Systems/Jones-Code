@@ -11,6 +11,7 @@ import { createInstallStatusStore, type InstallStatusStore } from "../../install
 import type { InstallPlanServices } from "../../installStatus/services";
 
 const FIXTURE_LAPTOP = EnvironmentId.make("install-fixture-laptop");
+const decodePlanState = Schema.decodeUnknownSync(PlanStateSchema);
 export const FIXTURE_HOSTS = ["VPS", "Mini", "Test"].map((label) => ({ label, environmentId: EnvironmentId.make(`install-fixture-${label.toLowerCase()}`) }));
 
 /** Scripted receipts exercise renderer boundaries only; none proves a native or host effect. */
@@ -40,7 +41,7 @@ export function createScriptedInstallPlan(input: {
     laptop: { environmentId: FIXTURE_LAPTOP, observedAt: iso(), activationBlocked: false }, view: { complete: false } };
   if (input.storageKey !== undefined) {
     const saved = sessionStorage.getItem(input.storageKey);
-    if (saved !== null) native = Schema.decodeUnknownSync(PlanStateSchema)(JSON.parse(saved));
+    if (saved !== null) native = decodePlanState(JSON.parse(saved));
     for (const device of native.current?.devices ?? []) {
       for (const operation of device.operations) if (operation.receipt !== undefined) receipts.set(operation.operationId, operation.receipt);
       const latest = device.operations.at(-1)?.receipt;

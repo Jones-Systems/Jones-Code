@@ -171,14 +171,17 @@ describe("Install status receipt fixture", () => {
       const gate = screen.container.querySelector<HTMLElement>("[data-install-gate]")!;
       const before = getComputedStyle(gate);
       expect(before.borderTopStyle).toBe("dashed");
-      const probe = document.createElement("div"); probe.style.borderTop = "1px solid var(--sidebar-border)"; gate.append(probe);
-      expect(before.borderTopColor).toBe(getComputedStyle(probe).borderTopColor); probe.remove();
+      // Match the app's contrast-adjusted border token rather than the raw palette value.
+      const probe = document.createElement("div"); probe.style.borderTop = "1px dashed var(--color-sidebar-border)"; gate.append(probe);
+      const neutralBorder = getComputedStyle(probe).borderTopColor;
+      expect(before.borderTopColor).toBe(neutralBorder); probe.remove();
       const neutral = before.color;
       await click(screen, "Edit"); await click(screen, "None"); await click(screen, "Done");
       await click(screen, "Download on Laptop"); await world.stageLaptop(); await click(screen, "Install on Laptop"); await world.commitLaptop();
       expect(screen.container.textContent).toContain("Laptop verified · Others go");
       expect(getComputedStyle(gate).color).toBe(neutral);
       expect(getComputedStyle(gate).borderTopStyle).toBe("dashed");
+      expect(getComputedStyle(gate).borderTopColor).toBe(neutralBorder);
       expect(screen.container.querySelector('[role="progressbar"]')).toBeNull();
     } finally { document.documentElement.className = oldClass; document.documentElement.style.cssText = oldStyle; if (oldTheme === null) document.documentElement.removeAttribute("data-theme-id"); else document.documentElement.setAttribute("data-theme-id", oldTheme); }
   });

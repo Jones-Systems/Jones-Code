@@ -165,8 +165,8 @@ export const JonesInstallPlanRequest = Schema.Union([
     step: Schema.Literals(["directive", "download", "install", "stop", "fence"]),
     explicit: Schema.Boolean,                                   // true only for owner clicks
     operationId: Schema.optionalKey(JonesOperationId),          // stop/fence: target operation
-    action: Schema.optionalKey(JonesOperationAction),           // download/install: resolved for the plan target
-    expectedInstalledSource: Schema.optionalKey(JonesSourceSha),// download/install: fresh observation
+    action: Schema.optionalKey(JonesOperationAction),
+    expectedInstalledSource: Schema.optionalKey(JonesSourceSha),// download/install: plan-target action and fresh installed source
     enrollmentId: Schema.optionalKey(FleetOperationId),         // directive: fresh fleet status
     expectedDirectiveId: Schema.optionalKey(Schema.NullOr(FleetOperationId)),
     review: Schema.optionalKey(JonesInstallPlanReview) }),

@@ -6,7 +6,7 @@ import type {
   JonesOperationReadInput, JonesOperationReadResult, JonesOperationReceipt, JonesRecoveryPreflightInput,
 } from "@t3tools/contracts/jones/jonesOperations";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
-import { JonesUpdater, PreparationStopRequested, type JonesUpdaterInstallInput } from "../JonesUpdater.ts";
+import { JonesUpdater, PreparationStopRequested, type JonesUpdaterInstallInput, type JonesInstallBeforeDispatchRefusal } from "../JonesUpdater.ts";
 import { followerTargetRefusal } from "../followerPolicy.ts";
 import type { OperationReconciliation } from "../launcherOperation.ts";
 import type { PreparationSupervisor } from "../preparation/supervisor.ts";
@@ -36,19 +36,25 @@ export function createTargetOperations(options: {
 }) {
   const { ledger, updater, preparation } = options;
   const active = new Map<string, AbortController>();
-  const released = new Set<string>();
+  const lifecycleHolds = new Set<string>();
   let recoveryFailed = false;
   const gate = <A>(f: () => Promise<A>) => serialized(`target-operations:${options.key}`, f);
   const publish = (receipt: JonesOperationReceipt) => { updater.recordOperation(receipt); return receipt; };
   const change = async (id: string, f: (old: JonesOperationReceipt) => JonesOperationReceipt) => publish(await ledger.transition(id, f));
   const patch = (id: string, fields: Partial<JonesOperationReceipt>) => change(id, (old) => ({ ...old, ...fields }));
-  const finishStop = (r: JonesOperationReceipt, phase: JonesOperationReceipt["phase"], result: "stopped" | "too-late" | "held") => ({
-    ...r, phase, ...(r.stop === undefined ? {} : { stop: { ...r.stop, result } }),
+  const finishStop = (r: JonesOperationReceipt, phase: JonesOperationReceipt["phase"], result: "stopped" | "too-late" | "held") => {
+    const { code, message: _message, ...released } = r;
+    return { ...(result !== "held" && (code === "unreaped" || code === "cleanup-unconfirmed") ? released : r),
+      phase, ...(r.stop === undefined ? {} : { stop: { ...r.stop, result } }) };
+  };
+  const confirmInstall = (id: string, fields: Partial<JonesOperationReceipt>) => change(id, (old) => {
+    const { code, message: _message, ...confirmed } = old;
+    return { ...(code === "launcher-unconfirmed" || code === "launcher-unreadable" ? confirmed : old), ...fields };
   });
-  const held = (r: JonesOperationReceipt) => {
+  const held = (r: JonesOperationReceipt, code: "unreaped" | "cleanup-unconfirmed" = "unreaped") => {
     if (r.jobId !== undefined) updater.setHeldJobs([r.jobId]);
-    return change(r.operationId, (old) => ({ ...finishStop(old, "held", "held"), code: "unreaped",
-      message: "The preparation exit is unproved. Nothing new starts until release is proved." }));
+    return change(r.operationId, (old) => ({ ...finishStop(old, "held", "held"), code,
+      message: "Preparation exit or native cleanup is unproved. Nothing new starts until release is proved." }));
   };
   const stageReceipt = (r: JonesOperationReceipt, state: JonesUpdateState) => {
     const p = state.provenance;
@@ -57,12 +63,17 @@ export function createTargetOperations(options: {
     return { stagedHandle: state.stagedHandle, sourceSha: p.sourceSha, sourceTree: p.sourceTree,
       artifactId: p.artifactId, ...(p.version === undefined ? {} : { version: p.version }) };
   };
-  const reconcileInstall = async (r: JonesOperationReceipt, returned?: JonesUpdateState) => {
+  const reconcileInstall = async (r: JonesOperationReceipt, refusal?: JonesInstallBeforeDispatchRefusal) => {
     const native = await options.reconcileNative(r.operationId);
     if (native.state === "absent") {
-      if (returned !== undefined && ["blocked", "error", "staged"].includes(returned.phase))
+      const a = r.action;
+      if (a.kind === "install" && refusal?.kind === "before-dispatch" && refusal.operationId === r.operationId &&
+        refusal.environmentId === r.environmentId && refusal.expectedInstalledSource === r.expectedInstalledSource &&
+        refusal.targetSource === a.targetSource && refusal.stagedHandle === a.stagedHandle && refusal.currentVersion === a.currentVersion) {
+        updater.releaseHeldJob(r.operationId);
         return patch(r.operationId, { phase: "refused", code: bindingMatches(r, updater.snapshot()) ? "install-refused" : "stale-binding",
           message: "The installation was refused before native acceptance. The staged selection was retained." });
+      }
       updater.setHeldJobs([r.operationId]);
       return patch(r.operationId, { code: "launcher-unconfirmed", message: "Native acceptance is unknown. This operation will not be sent again." });
     }
@@ -77,10 +88,10 @@ export function createTargetOperations(options: {
     }
     if (native.state === "pending") {
       updater.setHeldJobs([r.operationId]);
-      return patch(r.operationId, { phase: "handed-off", updateId: r.operationId });
+      return confirmInstall(r.operationId, { phase: "handed-off", updateId: r.operationId });
     }
     updater.releaseHeldJob(r.operationId);
-    if (native.state === "rejected") return patch(r.operationId, { phase: "refused", code: "launcher-rejected" });
+    if (native.state === "rejected") return confirmInstall(r.operationId, { phase: "refused", code: "launcher-rejected" });
     if (a.kind === "install" && a.recovery !== undefined && r.recovery === undefined) {
       const observed = await options.recovery?.observed(r.operationId);
       await patch(r.operationId, { recovery: { requested: a.recovery.policy,
@@ -88,7 +99,7 @@ export function createTargetOperations(options: {
     }
     const snapshot = updater.snapshot();
     const outcome = snapshot.updateId === r.operationId ? snapshot.outcome : undefined;
-    return patch(r.operationId, {
+    return confirmInstall(r.operationId, {
       phase: native.state === "committed" ? "completed" : native.state,
       updateId: r.operationId,
       ...(outcome === undefined ? {} : { outcome }),
@@ -101,15 +112,19 @@ export function createTargetOperations(options: {
     if (input.action.kind === "install") {
       receipt = await patch(id, { phase: "running" }); // durable dispatch marker, before the native call
       const action = input.action;
-      const returned = await options.install({ ...action, operationId: id, environmentId: input.environmentId,
-        expectedInstalledSource: input.expectedInstalledSource, origin: "manual" });
-      await reconcileInstall(receipt, returned);
+      let refusal: JonesInstallBeforeDispatchRefusal | undefined;
+      await options.install({ ...action, operationId: id, environmentId: input.environmentId,
+        expectedInstalledSource: input.expectedInstalledSource, origin: "manual",
+        onBeforeDispatchRefusal: (proof) => { refusal = proof; } });
+      await reconcileInstall(receipt, refusal);
       return;
     }
     const jobId = NodeCrypto.randomUUID();
     receipt = await change(id, (r) => r.stop !== undefined ? finishStop(r, "stopped", "stopped") : { ...r, phase: "running", jobId });
     if (receipt.phase === "stopped") return;
+    let preparationStarted = false;
     const operation = { operationId: id, jobId, signal: controller.signal,
+      onStarting: () => { preparationStarted = true; },
       onAdopting: async () => {
         await change(id, (r) => {
           if (r.stop !== undefined || controller.signal.aborted) throw new PreparationStopRequested(id);
@@ -120,8 +135,10 @@ export function createTargetOperations(options: {
       ? await updater.stageExact(input.action.targetSource, undefined, operation)
       : await updater.download(input.action, operation);
     receipt = (await ledger.read(id))!;
-    const join = preparation.inspect(jobId);
-    if (join !== "unknown" && join !== "running" && join.kind === "unreaped") { await held(receipt); return; }
+    const join = preparationStarted ? preparation.inspect(jobId) : { jobId, kind: "not-started" as const };
+    if (join === "unknown" || join === "running" || join.kind === "unreaped" || join.kind === "cleanup-unconfirmed") {
+      await held(receipt, typeof join !== "string" && join.kind === "cleanup-unconfirmed" ? "cleanup-unconfirmed" : "unreaped"); return;
+    }
     const staged = stageReceipt(receipt, state);
     if (staged !== undefined) {
       if (receipt.phase !== "adopting") receipt = await patch(id, { phase: "adopting" });
@@ -129,13 +146,19 @@ export function createTargetOperations(options: {
     } else if (receipt.phase === "adopting") {
       updater.setHeldJobs([jobId]);
       await patch(id, { phase: "held", code: "adoption-unconfirmed", message: "Stage publication needs reconciliation on this host." });
-    } else if (join === "running") await held(receipt);
-    else if (receipt.stop !== undefined || controller.signal.aborted)
+    } else if (receipt.stop !== undefined || controller.signal.aborted)
       await change(id, (r) => finishStop(r, "stopped", "stopped"));
     else await patch(id, { phase: "failed", code: "download-failed", message: "The selected source was not staged. Nothing was installed." });
   };
   const reconcile = () => gate(async () => {
     try {
+      if (preparation.unreleasedJobs !== undefined) {
+        const unresolved = new Set(await preparation.unreleasedJobs());
+        for (const id of lifecycleHolds) if (!unresolved.has(id)) updater.releaseHeldJob(id);
+        lifecycleHolds.clear();
+        for (const id of unresolved) lifecycleHolds.add(id);
+        updater.setHeldJobs([...unresolved]);
+      }
       for await (const r of ledger.listUnsettled()) {
         if (active.has(r.operationId)) continue;
         if (r.phase === "accepted" && r.jobId === undefined) { await patch(r.operationId, { phase: "interrupted" }); continue; }
@@ -155,12 +178,12 @@ export function createTargetOperations(options: {
           await change(r.operationId, (old) => finishStop(old, old.stop === undefined ? "interrupted" : "stopped", "stopped"));
           continue;
         }
-        const join = preparation.inspect(r.jobId);
+        const join = preparation.reconcile === undefined ? preparation.inspect(r.jobId) : await preparation.reconcile(r.jobId);
         if (join === "running") continue;
-        if (released.has(r.jobId) || (join !== "unknown" && join.kind !== "unreaped")) {
+        if (join !== "unknown" && join.kind !== "unreaped" && join.kind !== "cleanup-unconfirmed") {
           updater.releaseHeldJob(r.jobId);
           await change(r.operationId, (old) => finishStop(old, old.stop === undefined ? "interrupted" : "stopped", "stopped"));
-        } else await held(r); // directory/receipt absence is never worker-exit proof
+        } else await held(r, join !== "unknown" && join.kind === "cleanup-unconfirmed" ? "cleanup-unconfirmed" : "unreaped"); // directory/receipt absence is never worker-exit proof
       }
       recoveryFailed = false;
       updater.releaseHeldJob("ledger-unreadable");
@@ -240,8 +263,7 @@ export function createTargetOperations(options: {
     reconcile,
     sweep: async () => {
       try {
-        const result = await preparation.sweep();
-        for (const id of result.removedJobIds ?? []) released.add(id);
+        await preparation.sweep();
       } finally { await reconcile(); }
     },
   };

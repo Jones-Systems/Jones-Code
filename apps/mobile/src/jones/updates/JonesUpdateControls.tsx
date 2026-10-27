@@ -8,7 +8,7 @@ import {
 } from "@t3tools/client-runtime/jones/updates";
 import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId } from "@t3tools/contracts";
-import { useContext, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import * as Schema from "effect/Schema";
 import { JonesOperationReceipt, JonesOperationReadResult, JonesRecoveryPreflight } from "@t3tools/contracts/jones/jonesOperations";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
@@ -19,6 +19,10 @@ import { createMobileJonesActions, jonesUpdates, mobileJonesObservation, mobileJ
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsSection } from "../../features/settings/components/SettingsSection";
 import { SettingsActionRow } from "../../features/settings/components/SettingsActionRow";
+
+const decodeOperationReceipt = Schema.decodeUnknownSync(JonesOperationReceipt);
+const decodeRecoveryPreflight = Schema.decodeUnknownSync(JonesRecoveryPreflight);
+const decodeOperationReadResult = Schema.decodeUnknownSync(JonesOperationReadResult);
 
 export function JonesUpdateControls({
   environmentId,
@@ -34,13 +38,13 @@ export function JonesUpdateControls({
   const stop = useAtomCommand(jonesUpdates.stop, { reportFailure: false, reportDefect: false });
   const session = mobileJonesUpdateSession(environmentId);
   const saved = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
-  const authority = useRef({ environmentId, allowed, mounted: true });
-  authority.current.environmentId = environmentId;
-  authority.current.allowed = allowed;
-  useEffect(() => {
-    authority.current.mounted = true;
+  const authority = useRef({ environmentId, allowed, mounted: false });
+  // oxlint-disable-next-line t3code/react-effect-budget -- Native Alert callbacks must see committed host/permission authority and lose it synchronously on unmount.
+  useLayoutEffect(() => {
+    authority.current = { environmentId, allowed, mounted: true };
     return () => { authority.current.mounted = false; };
-  }, []);
+  }, [environmentId, allowed]);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Fresh subscription receipts reconcile the external session retained across screen remounts and lost replies.
   useEffect(() => {
     const receipt = observed.state?.operation;
     if (observed.freshness === "fresh" && receipt?.environmentId === environmentId) session.observe(receipt);
@@ -53,10 +57,10 @@ export function JonesUpdateControls({
     }),
     transport: {
       legacy: async (input) => commandValue(await action({ environmentId, input })),
-      start: async (input) => Schema.decodeUnknownSync(JonesOperationReceipt)(commandValue(await operation({ environmentId, input: { action: "operationStart", input } }))),
-      preflight: async (input) => Schema.decodeUnknownSync(JonesRecoveryPreflight)(commandValue(await operation({ environmentId, input: { action: "recoveryPreflight", input } }))),
-      read: async (operationId) => Schema.decodeUnknownSync(JonesOperationReadResult)(commandValue(await operation({ environmentId, input: { action: "operationRead", input: { environmentId, operationIds: [operationId] } } }))),
-      stop: async (input) => Schema.decodeUnknownSync(JonesOperationReceipt)(commandValue(await stop({ environmentId, input: { action: "operationStop", input } }))),
+      start: async (input) => decodeOperationReceipt(commandValue(await operation({ environmentId, input: { action: "operationStart", input } }))),
+      preflight: async (input) => decodeRecoveryPreflight(commandValue(await operation({ environmentId, input: { action: "recoveryPreflight", input } }))),
+      read: async (operationId) => decodeOperationReadResult(commandValue(await operation({ environmentId, input: { action: "operationRead", input: { environmentId, operationIds: [operationId] } } }))),
+      stop: async (input) => decodeOperationReceipt(commandValue(await stop({ environmentId, input: { action: "operationStop", input } }))),
     },
   }), [environmentId, registry, action, operation, stop]);
   const observation = mobileJonesObservation(observed, saved);

@@ -96,7 +96,7 @@ export function useUpdateEverything(localUpdateVersion: string | null) {
   return {
     hasUpdates: servers.length > 0 || providers.machines.length > 0 || jones.hasUpdates,
     summary,
-    lines: jones.managesLocal ? ["Laptop: Install status — Download first, review every Install", ...lines] : lines,
+    lines: jones.managesLocal ? ["Laptop: Install status. Download first, review every Install", ...lines] : lines,
     restarts,
     skipped,
     run: async ({

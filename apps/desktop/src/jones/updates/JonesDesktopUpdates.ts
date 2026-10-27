@@ -463,6 +463,12 @@ export interface JonesDesktopUpdateOptions {
 
 export type JonesSupersedeResult = "replaced" | "refused" | "uncertain" | "download-failed";
 
+type DesktopDownloadWork = {
+  token: string; operationId?: string; source: string; stopRequested: boolean; admitted: boolean;
+  pending: Promise<JonesDesktopDownloadResult> | undefined; binding: Promise<void>;
+  worker?: { readonly pid: number; readonly processGroup: number };
+};
+
 /** One host-owned checker. Downloads retain a fixed candidate; later checks cannot replace Install. */
 export class JonesDesktopUpdateController {
   readonly #recoveryPreflights = new NativeRecoveryPreflights();
@@ -487,7 +493,7 @@ export class JonesDesktopUpdateController {
   #lastJournal: typeof ActivationJournal.Type | undefined;
   #activeCommittedTransaction: string | undefined;
   #checkClassification: JonesUpdateState["checkClassification"];
-  #download: { token: string; operationId?: string; source: string; stopRequested: boolean; admitted: boolean; pending: Promise<JonesDesktopDownloadResult> | undefined; worker?: { readonly pid: number; readonly processGroup: number } } | undefined;
+  #download: DesktopDownloadWork | undefined;
   #heldDownload: { readonly pid: number; readonly processGroup: number } | undefined;
   #heldCopy = false;
   readonly #options: JonesDesktopUpdateOptions;
@@ -1350,19 +1356,46 @@ export class JonesDesktopUpdateController {
     }
   }
 
+  #serializeDownloadBinding(work: DesktopDownloadWork, change: () => Promise<void>): Promise<void> {
+    const pending = work.binding.then(change);
+    work.binding = pending;
+    // A failed binding fences later admission too; retain the rejection without an unhandled promise.
+    void pending.catch(() => undefined);
+    return pending;
+  }
+
   async download(selection?: JonesDesktopDownloadSelection, operation?: { readonly operationId: string }): Promise<JonesDesktopDownloadResult> {
     const active = this.#download;
     if (active !== undefined && selection?.sourceSha === active.source && this.#candidate?.artifactId === selection.artifactId) {
       if (operation !== undefined && active.operationId === undefined) {
-        active.operationId = operation.operationId;
-        if (active.worker !== undefined) await this.#options.plan?.recordLaptopWorker?.({ operationId: operation.operationId, ...active.worker });
+        try {
+          await this.#serializeDownloadBinding(active, async () => {
+            if (active.operationId !== undefined) return;
+            // Persist admission first: a crash between these writes must never leave an admitted
+            // copy represented by a transfer-only worker, even when admission preceded this plan.
+            if (active.admitted) {
+              if (this.#options.plan?.recordLaptopAdmission === undefined) throw new Error("Copy admission cannot be bound to the plan.");
+              await this.#options.plan.recordLaptopAdmission(operation.operationId);
+            }
+            if (active.worker !== undefined) {
+              if (this.#options.plan?.recordLaptopWorker === undefined) throw new Error("The preparation worker cannot be bound to the plan.");
+              await this.#options.plan.recordLaptopWorker({ operationId: operation.operationId, ...active.worker });
+            }
+            active.operationId = operation.operationId;
+          });
+        } catch (cause) {
+          if (active.worker === undefined) throw cause;
+          this.#heldDownload = active.worker;
+          this.#heldCopy = active.admitted;
+          return { accepted: true, completed: false, held: active.worker, heldCode: active.admitted ? "copy-unconfirmed" : "exit-unproved" };
+        }
       }
       if (operation === undefined || active.operationId === operation.operationId) return active.pending ?? { accepted: false, completed: false };
     }
     if (this.#busy !== null || this.#heldDownload !== undefined) return { accepted: false, completed: false };
-    const work = { token: operation?.operationId ?? NodeCrypto.randomUUID(), source: selection?.sourceSha ?? this.#candidate?.source ?? "",
+    const work: DesktopDownloadWork = { token: operation?.operationId ?? NodeCrypto.randomUUID(), source: selection?.sourceSha ?? this.#candidate?.source ?? "",
       ...(operation === undefined ? {} : { operationId: operation.operationId }), stopRequested: false, admitted: false,
-      pending: undefined as Promise<JonesDesktopDownloadResult> | undefined };
+      pending: undefined, binding: Promise.resolve() };
     this.#download = work;
     work.pending = this.#performDownload(selection);
     try { return await work.pending; } finally { if (this.#download === work && this.#heldDownload === undefined) this.#download = undefined; }
@@ -1405,7 +1438,9 @@ export class JonesDesktopUpdateController {
       if (work.stopRequested) throw new JonesStagingStopped();
       const onVerifying = async () => {
         work.admitted = true;
-        if (work.operationId !== undefined) await this.#options.plan?.recordLaptopAdmission?.(work.operationId);
+        await this.#serializeDownloadBinding(work, async () => {
+          if (work.operationId !== undefined) await this.#options.plan?.recordLaptopAdmission?.(work.operationId);
+        });
         await this.#publish("verifying", "downloading");
       };
       const prepared = await (this.#options.prepareStage === undefined
@@ -1417,7 +1452,9 @@ export class JonesDesktopUpdateController {
           })
         : this.#options.prepareStage(candidate, roots, onVerifying, { token: work.token, onStarted: async (worker) => {
             work.worker = worker;
-            if (work.operationId !== undefined) await this.#options.plan?.recordLaptopWorker?.({ operationId: work.operationId, ...worker });
+            await this.#serializeDownloadBinding(work, async () => {
+              if (work.operationId !== undefined) await this.#options.plan?.recordLaptopWorker?.({ operationId: work.operationId, ...worker });
+            });
           } }));
       const artifact = prepared.artifact;
       this.#staged = await this.#bindPreparedStage(candidate, prepared);

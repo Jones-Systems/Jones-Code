@@ -30,6 +30,7 @@ afterEach(async () => {
 
 /** A scripted child: the test decides what it replies and when it exits. */
 function fakeChild() {
+  let groupAlive = true;
   const messageListeners: Array<(message: unknown) => void> = [];
   const exitListeners: Array<(code: number | null, signal: string | null) => void> = [];
   const errorListeners: Array<(error: Error) => void> = [];
@@ -45,6 +46,7 @@ function fakeChild() {
     onMessage: (listener) => messageListeners.push(listener),
     onExit: (listener) => exitListeners.push(listener),
     onError: (listener) => errorListeners.push(listener),
+    groupAbsent: () => !groupAlive,
     signal: (signal) => signals.push(signal),
   };
   return {
@@ -57,8 +59,12 @@ function fakeChild() {
       messageListeners.forEach((listener) => listener({ jobId: job?.token, ...message }));
     },
     error: (error: Error) => errorListeners.forEach((listener) => listener(error)),
-    exit: (code: number | null, signal: string | null = null) =>
-      exitListeners.forEach((listener) => listener(code, signal)),
+    groupAlive: (alive: boolean) => { groupAlive = alive; },
+    leaderExit: (code: number | null, signal: string | null = null) => exitListeners.forEach((listener) => listener(code, signal)),
+    exit: (code: number | null, signal: string | null = null) => {
+      groupAlive = false;
+      exitListeners.forEach((listener) => listener(code, signal));
+    },
   };
 }
 
@@ -131,6 +137,73 @@ describe("createJonesStagingWorker", () => {
     child.reply({ type: "admit-request" }); expect(verifying).toHaveBeenCalledTimes(1);
     child.reply({ type: "result", value: {} }); expect(await worker.cancel(token)).toBe("completed");
     child.exit(0); await pending;
+  });
+
+  it("holds Stop and queued work when the leader exits before its group, then releases only on positive absence", async () => {
+    vi.useFakeTimers();
+    const children = [fakeChild(), fakeChild()]; let spawned = 0;
+    const worker = createJonesStagingWorker(() => children[spawned++]!.child, { stopGraceMs: 15, reapMs: 5 });
+    const child = children[0]!;
+    try {
+      const failure = expect(worker.run(prepareJob)).rejects.toMatchObject({ name: "JonesStagingExitUnproved", copyAdmitted: false });
+      const queued = worker.run({ ...reclaim, token: "22222222-2222-4222-8222-222222222222" });
+      await child.ready;
+      const stopping = worker.cancel(token); let settled = false;
+      void stopping.then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(10); child.leaderExit(null, "SIGTERM");
+      expect(worker.reaped(token)).toBe(false); expect(spawned).toBe(1); expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(5);
+      expect(child.signals).toEqual(["SIGTERM", "SIGKILL"]);
+      await vi.advanceTimersByTimeAsync(5);
+      expect(await stopping).toBe("exit-unproved"); await failure;
+      expect(worker.reaped(token)).toBe(false); expect(spawned).toBe(1);
+      expect(worker.heldWorker()).toEqual({ pid: 4242, processGroup: 4242 });
+      await expect(worker.run(reclaim)).rejects.toThrow("exit is unproved");
+      child.groupAlive(false);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(worker.reaped(token)).toBe(true);
+      await children[1]!.ready; expect(spawned).toBe(2);
+      children[1]!.reply({ type: "result", value: { status: "absent" } }); children[1]!.exit(0); await queued;
+    } finally { child.groupAlive(false); child.exit(null, "SIGKILL"); children[1]!.exit(0); await worker.close(); vi.useRealTimers(); }
+  });
+
+  it.each(["EPERM", "EIO"])("retains a leader-exited group when its absence witness fails with %s", async (code) => {
+    vi.useFakeTimers();
+    const child = fakeChild(); let absent = false;
+    const groupAbsent = () => {
+      if (absent) return true;
+      throw Object.assign(new Error("unproved"), { code });
+    };
+    const worker = createJonesStagingWorker(() => ({ ...child.child, groupAbsent }), { graceMs: 5, reapMs: 5 });
+    try {
+      const failure = expect(worker.run(prepareJob)).rejects.toMatchObject({ name: "JonesStagingExitUnproved" });
+      await child.ready; child.leaderExit(0);
+      await vi.advanceTimersByTimeAsync(10); await failure;
+      expect(worker.reaped(token)).toBe(false);
+      expect(child.signals).toEqual(["SIGTERM", "SIGKILL"]);
+      absent = true; expect(worker.reaped(token)).toBe(true);
+    } finally { absent = true; child.exit(0); await worker.close(); vi.useRealTimers(); }
+  });
+
+  it("releases a proved never-spawned job without inferring a group from a missing PID", async () => {
+    const child = fakeChild(); const groupAbsent = vi.fn(() => false);
+    const worker = createJonesStagingWorker(() => ({ ...child.child, pid: undefined, groupAbsent }));
+    const failure = expect(worker.run(prepareJob)).rejects.toThrow("spawn failed");
+    await child.ready; child.error(new Error("spawn failed")); await failure;
+    expect(worker.reaped(token)).toBe(true); expect(groupAbsent).not.toHaveBeenCalled(); await worker.close();
+  });
+
+  it("retains admitted copy uncertainty independently of group release and never forces that group", async () => {
+    const child = fakeChild(); const worker = createJonesStagingWorker(() => child.child);
+    try {
+      const failure = expect(worker.run(prepareJob)).rejects.toMatchObject({ name: "JonesStagingExitUnproved", copyAdmitted: true });
+      await child.ready; child.reply({ type: "admit-request" });
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+      child.leaderExit(1); await failure;
+      expect(worker.reaped(token)).toBe(false); expect(child.signals).toEqual([]);
+      expect(await worker.cancel(token)).toBe("not-stoppable-phase");
+      child.groupAlive(false); expect(worker.reaped(token)).toBe(true);
+    } finally { child.groupAlive(false); child.exit(1); await worker.close(); }
   });
 
   it("proves cooperative Stop only on exit and remembers cancellation before a queued spawn", async () => {

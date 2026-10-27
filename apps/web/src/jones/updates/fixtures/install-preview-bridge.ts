@@ -35,6 +35,8 @@ const StoredFixture = Schema.Struct({
   ),
 });
 type StoredFixture = typeof StoredFixture.Type;
+const decodeScenario = Schema.decodeUnknownSync(Schema.Literals(SCENARIOS));
+const decodeStoredFixture = Schema.decodeUnknownSync(StoredFixture);
 
 function initialState(staged: boolean, blocked = false): DesktopUpdateState {
   return decodeState({
@@ -94,11 +96,11 @@ function initialState(staged: boolean, blocked = false): DesktopUpdateState {
 export function installPreviewBridge(runId: string, scenario: string, sourceSha: string) {
   if (!/^[a-zA-Z0-9_-]{1,80}$/.test(runId))
     throw new Error("A bounded fixture run ID is required.");
-  const selectedScenario = Schema.decodeUnknownSync(Schema.Literals(SCENARIOS))(scenario);
+  const selectedScenario = decodeScenario(scenario);
   const key = `jones:install-preview:v1:${runId}:${selectedScenario}`;
   const saved = sessionStorage.getItem(key);
   let stored: StoredFixture = saved
-    ? Schema.decodeUnknownSync(StoredFixture)(JSON.parse(saved))
+    ? decodeStoredFixture(JSON.parse(saved))
     : {
         schema: 1,
         runId,

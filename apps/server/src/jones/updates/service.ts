@@ -62,6 +62,7 @@ import { createRecoveryPreflights } from "./operations/recoveryPreflight.ts";
 import {
   readCurrentJonesBuildStartedAt,
   JonesUpdater,
+  type JonesUpdaterInstallInput,
   type JonesStagedRetirementInput,
 } from "./JonesUpdater.ts";
 import {
@@ -113,6 +114,7 @@ export class JonesUpdates extends Context.Service<
         readonly operationId: string;
         readonly targetSource: string;
         readonly expectedInstalledSource: string;
+        readonly onBeforeDispatchRefusal?: JonesUpdaterInstallInput["onBeforeDispatchRefusal"];
         /** Rechecked just before the launcher handoff; a reason withdraws the activation. */
         readonly admit?: () => Promise<string | undefined>;
       },
@@ -1003,10 +1005,12 @@ export const layer = Layer.effect(
         launcher.qualifiedRetirement !== true ||
         runtimeReceipt?.sourceSha !== input.expectedInstalledSource ||
         updater.snapshot().provenance?.sourceSha !== input.targetSource
-      )
+      ) {
+        input.onBeforeDispatchRefusal?.({ ...input, kind: "before-dispatch" });
         return blocked(
           "The installed source, staged source, or operation-capable launcher changed.",
         );
+      }
       return yield* Effect.promise(() => updater.install({ ...input, origin: input.origin ?? "fleet" }));
     });
     const targetOperations = fleetOperationsSupported && preparation !== undefined ? createTargetOperations({

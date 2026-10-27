@@ -106,11 +106,11 @@ export function partitionUpdateEverything<T extends { readonly environmentId: En
 export async function handOffJonesTargets(targets: readonly JonesHandoffTarget[]): Promise<readonly JonesHandoffResult[]> {
   const binding = installPlanServices();
   if (binding?.services.bridge.installPlan === undefined) return targets.map((target) => ({ ...target, handedOff: false,
-    message: "Update from Connections after Laptop is verified — this client has no native plan." }));
+    message: "Update from Connections after Laptop is verified: this client has no native plan." }));
   const read = await requestInstallPlan({ type: "read" }, binding);
   const desktop = await binding.services.bridge.getUpdateState();
   const target = read.state.current?.target ?? targetForDesktop(desktop);
-  if (target === undefined) return targets.map((t) => ({ ...t, handedOff: false, message: "Update from Connections after Laptop is verified — no qualified Laptop target." }));
+  if (target === undefined) return targets.map((t) => ({ ...t, handedOff: false, message: "Update from Connections after Laptop is verified: no qualified Laptop target." }));
   const selections: JonesInstallPlanSelection[] = [];
   const results: JonesHandoffResult[] = [];
   const observations = await Promise.allSettled(targets.map((entry) => binding.services.observe(entry.environmentId)));
@@ -125,9 +125,9 @@ export async function handOffJonesTargets(targets: readonly JonesHandoffTarget[]
       const selection = selectionFor(device);
       if (selection === undefined) {
         const route = selectability(device.observation, device.fleetStatus);
-        results.push({ ...entry, handedOff: false, message: `Update from Connections after Laptop is verified — ${!device.canOperate ? "no permission" : route.selectable ? "unavailable" : route.reason}` });
+        results.push({ ...entry, handedOff: false, message: `Update from Connections after Laptop is verified: ${!device.canOperate ? "no permission" : route.selectable ? "unavailable" : route.reason}` });
       } else { selections.push(selection); results.push({ ...entry, handedOff: true, message: "Handed to Install status" }); }
-    } catch { results.push({ ...entry, handedOff: false, message: "Update from Connections after Laptop is verified — fresh host status unavailable." }); }
+    } catch { results.push({ ...entry, handedOff: false, message: "Update from Connections after Laptop is verified: fresh host status unavailable." }); }
   }
   const current = read.state.current;
   const result = current !== null ? await requestInstallPlan({ type: "edit", planId: current.planId, expectedRevision: current.revision, select: selections, deselect: [] }, binding)
@@ -137,7 +137,7 @@ export async function handOffJonesTargets(targets: readonly JonesHandoffTarget[]
   return results.map((entry) => {
     const applied = result.applied?.find((a) => a.environmentId === entry.environmentId);
     const refusal = result.refused?.message ?? (applied?.result === "not-selectable" ? applied.reason ?? "Can't join this plan." : undefined);
-    return !entry.handedOff || refusal === undefined ? entry : { ...entry, handedOff: false, message: `Update from Connections after Laptop is verified — ${refusal}` };
+    return !entry.handedOff || refusal === undefined ? entry : { ...entry, handedOff: false, message: `Update from Connections after Laptop is verified: ${refusal}` };
   });
 }
 

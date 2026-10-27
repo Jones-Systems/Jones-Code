@@ -2,7 +2,7 @@
 // Receipts are outside rollback state. No receipt is removed: external plan references are unknown.
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
-import { isDeepStrictEqual } from "node:util";
+import * as NodeUtil from "node:util";
 import * as Schema from "effect/Schema";
 import {
   JonesOperationId, JonesOperationReceipt,
@@ -26,7 +26,7 @@ const legal: Partial<Record<JonesOperationPhase, readonly JonesOperationPhase[]>
 };
 const sameIntent = (a: JonesOperationReceipt, b: JonesOperationStartInput) =>
   a.environmentId === b.environmentId && a.expectedInstalledSource === b.expectedInstalledSource &&
-  isDeepStrictEqual(a.action, b.action) && isDeepStrictEqual(a.correlation, b.correlation);
+  NodeUtil.isDeepStrictEqual(a.action, b.action) && NodeUtil.isDeepStrictEqual(a.correlation, b.correlation);
 export function operationReceipt(input: JonesOperationStartInput, phase: JonesOperationPhase): JonesOperationReceipt {
   const now = new Date().toISOString();
   return { ...input, protocol: 1, phase, updatedAt: now,
@@ -84,7 +84,7 @@ export function createOperationLedger(baseDir: string) {
         (old.phase !== next.phase && !legal[old.phase]?.includes(next.phase)))
         throw new Error("Illegal operation transition.");
       for (const key of ["jobId", "staged", "updateId", "recovery"] as const)
-        if (old[key] !== undefined && !isDeepStrictEqual(old[key], next[key]))
+        if (old[key] !== undefined && !NodeUtil.isDeepStrictEqual(old[key], next[key]))
           throw new Error("Stable operation evidence changed.");
       if (old.stop !== undefined && (next.stop?.stopId !== old.stop.stopId || next.stop.requestedAt !== old.stop.requestedAt))
         throw new Error("Stop identity changed.");

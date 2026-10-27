@@ -13,6 +13,7 @@ export interface JonesStagingChild {
   readonly onMessage: (listener: (message: unknown) => void) => void;
   readonly onExit: (listener: (code: number | null, signal: string | null) => void) => void;
   readonly onError?: (listener: (error: Error) => void) => void;
+  readonly groupAbsent: () => boolean;
   readonly signal: (signal: NodeJS.Signals) => void;
 }
 export function forkJonesStagingChild(workerPath: string, options: { readonly execPath?: string; readonly electron?: boolean } = {}): JonesStagingChild {
@@ -27,10 +28,15 @@ export function forkJonesStagingChild(workerPath: string, options: { readonly ex
     onMessage: (listener) => { child.on("message", listener); },
     onExit: (listener) => { child.once("exit", listener); },
     onError: (listener) => { child.on("error", listener); },
+    groupAbsent: () => {
+      if (child.pid === undefined || !Number.isSafeInteger(child.pid) || child.pid <= 1) return false;
+      try { process.kill(-child.pid, 0); return false; }
+      catch (cause) { return (cause as NodeJS.ErrnoException).code === "ESRCH"; }
+    },
     signal: (signal) => {
       // Only this captured disposable preparation group; never fall back to a different process.
       if (child.pid !== undefined) {
-        try { process.kill(-child.pid, signal); } catch { /* Absence is observed through exit, never inferred here. */ }
+        try { process.kill(-child.pid, signal); } catch { /* Only a separate absence witness can release the group. */ }
       }
     },
   };
@@ -60,24 +66,32 @@ export function createJonesStagingWorker(spawn: () => JonesStagingChild, options
   const cancelledTokens = new Set<string>();
   const reapedTokens = new Set<string>();
   type Running = {
-    child: JonesStagingChild; token: string; kind: JonesStagingJob["kind"]; exited: Promise<void>; exit: () => void;
+    child: JonesStagingChild; token: string; kind: JonesStagingJob["kind"]; released: Promise<void>; releaseJoin: () => void;
     didExit: boolean; admitted: boolean; stopRequested: boolean; held: boolean; hasResult: boolean;
     value?: unknown; failure?: Error; reject: (error: Error) => void; clearDeadline: () => void; cancellation?: Promise<JonesPreparationCancel>;
+    release: () => boolean; termination?: Promise<boolean>;
   };
   let running: Running | undefined;
-  const waitExit = async (target: Running, ms: number) => {
+  const waitRelease = async (target: Running, ms: number) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await Promise.race([target.exited, new Promise<void>((resolve) => { timer = setTimeout(resolve, ms); })]);
-      return target.didExit;
+      await Promise.race([target.released, new Promise<void>((resolve) => { timer = setTimeout(resolve, ms); })]);
+      return target.release();
     } finally { clearTimeout(timer); }
   };
   const terminate = async (target: Running, grace: number, reap: number): Promise<boolean> => {
-    if (target.didExit) return true;
-    target.child.signal("SIGTERM");
-    if (await waitExit(target, grace)) return true;
-    target.child.signal("SIGKILL");
-    return waitExit(target, reap);
+    if (target.release()) return true;
+    if (target.admitted) return false;
+    if (target.termination !== undefined) return target.termination;
+    const completion = Promise.withResolvers<boolean>();
+    target.termination = completion.promise;
+    void (async () => {
+      try { target.child.signal("SIGTERM"); } catch { /* Signal failure leaves release unproved. */ }
+      if (await waitRelease(target, grace)) return true;
+      try { target.child.signal("SIGKILL"); } catch { /* Continue to require positive absence. */ }
+      return waitRelease(target, reap);
+    })().then(completion.resolve, () => completion.resolve(false));
+    return completion.promise;
   };
   const execute = (job: JonesStagingJob, onVerifying?: () => void | Promise<void>, hooks?: { readonly onStarted?: (worker: { readonly pid: number; readonly processGroup: number }) => Promise<void> }) => {
     let current: Running | undefined;
@@ -92,8 +106,8 @@ export function createJonesStagingWorker(spawn: () => JonesStagingChild, options
       if (job.token !== undefined) pendingTokens.delete(job.token);
       const child = spawn();
       const joined = Promise.withResolvers<void>();
-      const target: Running = { child, token: job.token ?? randomUUID(), kind: job.kind, exited: joined.promise, exit: () => joined.resolve(),
-        didExit: false, admitted: false, stopRequested: false, held: false, hasResult: false, reject, clearDeadline: () => undefined };
+      const target: Running = { child, token: job.token ?? randomUUID(), kind: job.kind, released: joined.promise, releaseJoin: () => joined.resolve(),
+        didExit: false, admitted: false, stopRequested: false, held: false, hasResult: false, reject, clearDeadline: () => undefined, release: () => false };
       current = target;
       running = target;
       const timer = setTimeout(() => {
@@ -103,16 +117,42 @@ export function createJonesStagingWorker(spawn: () => JonesStagingChild, options
         });
       }, options.jobTimeoutMs ?? JOB_TIMEOUT_MS);
       target.clearDeadline = () => clearTimeout(timer);
-      const onExit = (code: number | null, signal: string | null) => {
-        if (target.didExit) return;
-        target.didExit = true;
+      let exitDescription = "unknown";
+      let released = false;
+      let releaseTimer: ReturnType<typeof setInterval> | undefined;
+      target.release = () => {
+        if (released) return true;
+        if (!target.didExit) return false;
+        // The exit event joins only the leader. A descendant can still own this exact group.
+        if (child.pid !== undefined) {
+          try { if (!child.groupAbsent()) return false; } catch { return false; }
+        }
+        released = true;
         reapedTokens.add(target.token);
         clearTimeout(timer);
-        target.exit();
+        clearInterval(releaseTimer);
+        target.releaseJoin();
         if (running === target) running = undefined;
         if (target.hasResult) resolve(target.value);
         else if (target.admitted && child.pid !== undefined) reject(new JonesStagingExitUnproved({ pid: child.pid, processGroup: child.pid }, true));
-        else reject(target.stopRequested ? new JonesStagingStopped() : target.failure ?? new Error(`The preparation worker exited before replying (${signal ?? `code ${code ?? "unknown"}`}).`));
+        else reject(target.stopRequested ? new JonesStagingStopped() : target.failure ?? new Error(`The preparation worker exited before replying (${exitDescription}).`));
+        return true;
+      };
+      const onExit = (code: number | null, signal: string | null) => {
+        if (target.didExit) return;
+        target.didExit = true;
+        exitDescription = signal ?? `code ${code ?? "unknown"}`;
+        clearTimeout(timer);
+        if (target.release()) return;
+        // Keep the join and queue held after a bounded reap; later positive absence can release them.
+        releaseTimer = setInterval(() => { target.release(); }, 100);
+        releaseTimer.unref?.();
+        void terminate(target, options.graceMs ?? TERMINATION_GRACE_MS, options.reapMs ?? 5_000).then((exited) => {
+          if (!exited) {
+            target.held = true;
+            if (child.pid !== undefined) reject(new JonesStagingExitUnproved({ pid: child.pid, processGroup: child.pid }, target.admitted));
+          }
+        });
       };
       child.onExit(onExit);
       child.onError?.((error) => {
@@ -124,7 +164,7 @@ export function createJonesStagingWorker(spawn: () => JonesStagingChild, options
         if (typeof raw !== "object" || raw === null || !("jobId" in raw) || raw.jobId !== target.token || target.didExit) return;
         const message = raw as JonesStagingWorkerMessage;
         if (message.type === "admit-request" && target.kind === "prepare" && !target.admitted) {
-          if (target.stopRequested) child.send({ type: "admit", jobId: target.token, decision: "stop" });
+          if (target.stopRequested || target.termination !== undefined) child.send({ type: "admit", jobId: target.token, decision: "stop" });
           else {
             // Admission is recorded before replying; Stop cannot race a granted mount/copy.
             target.admitted = true;
@@ -160,7 +200,7 @@ export function createJonesStagingWorker(spawn: () => JonesStagingChild, options
       })();
     });
     // Even a timeout's early outcome cannot release the serialized worker slot.
-    const joined = outcome.then(() => current?.exited, () => current?.exited);
+    const joined = outcome.then(() => current?.released, () => current?.released);
     return { outcome, joined };
   };
   return {
@@ -191,7 +231,7 @@ export function createJonesStagingWorker(spawn: () => JonesStagingChild, options
       })();
       return target.cancellation;
     },
-    reaped: (token) => reapedTokens.has(token),
+    reaped: (token) => { if (running?.token === token) running.release(); return reapedTokens.has(token); },
     heldWorker: () => running?.held && running.child.pid !== undefined ? { pid: running.child.pid, processGroup: running.child.pid } : undefined,
     close: async () => {
       closed = true;

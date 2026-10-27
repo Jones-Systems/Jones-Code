@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 // @effect-diagnostics globalDate:off - Synthetic receipts use fixed timestamps; no host or filesystem is accessed.
 import type { JonesUpdateObservation } from "@t3tools/client-runtime/jones/updates";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
@@ -173,6 +172,29 @@ describe("mobile host update controls", () => {
     expect(harness.operation).not.toHaveBeenCalled();
     expect(harness.action).not.toHaveBeenCalled();
     expect(container.textContent).toMatch(/changed|Fresh/);
+  });
+
+  it("revokes an open install review when the selected environment changes before its observation catches up", async () => {
+    await render(state(true));
+    await click("Install downloaded build");
+    const previousHost = latestState();
+    environmentId = EnvironmentId.make(`${environmentId}-switched`);
+    await render(previousHost);
+    await answer("Install");
+    expect(harness.operation).not.toHaveBeenCalled();
+    expect(harness.action).not.toHaveBeenCalled();
+    expect(harness.alert).toHaveBeenCalledTimes(1);
+  });
+
+  it("revokes an open install review synchronously when the controls unmount", async () => {
+    await render(state(true));
+    await click("Install downloaded build");
+    act(() => root.unmount());
+    root = createRoot(container);
+    await answer("Install");
+    expect(harness.operation).not.toHaveBeenCalled();
+    expect(harness.action).not.toHaveBeenCalled();
+    expect(harness.alert).toHaveBeenCalledTimes(1);
   });
 
   it("retains a lost mutation through source equality, revision reset and screen remount; only its exact receipt resolves it", async () => {

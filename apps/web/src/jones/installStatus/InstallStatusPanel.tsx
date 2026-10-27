@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { JonesInstallPlanSelection } from "@t3tools/contracts/jones/installPlan";
 import { ChevronDownIcon, ChevronRightIcon, Clock3Icon, InfoIcon, LaptopIcon, TriangleAlertIcon } from "lucide-react";
 import { Button } from "../../components/ui/button";
 import { Checkbox } from "../../components/ui/checkbox";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
 import { cn } from "../../lib/utils";
 import { useInstallPlan } from "./useInstallPlan";
 import { installStatusStore, type InstallStatusStore } from "./panelUi";
@@ -20,7 +21,8 @@ export function InstallStatusPanel({ store = installStatusStore }: { readonly st
   const [draft, setDraft] = useState<EditDraft | null>(null);
   const [detail, setDetail] = useState<EnvironmentId | "laptop" | null>(null);
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
-  const view = panelPresentation(snapshot, Date.now());
+  const descriptionId = useId();
+  const view = panelPresentation(snapshot, snapshot.updatedAt);
   if (!snapshot.open || snapshot.native === null) return null;
   if (view?.plan == null) return snapshot.native.readOnly === undefined && snapshot.error === null ? null :
     <section aria-label="Install status" className="shrink-0 rounded-lg border border-sidebar-border p-2 text-xs text-muted-foreground"><h2>Install status</h2><p role="status">{snapshot.native.readOnly?.message ?? snapshot.error}</p></section>;
@@ -73,9 +75,12 @@ export function InstallStatusPanel({ store = installStatusStore }: { readonly st
     onKeyDown={(event) => { if (event.key === "Escape") { setDraft(null); setDetail(null); } }}>
     <header className="grid min-h-9 shrink-0 grid-cols-[auto_minmax(0,1fr)_2.5rem_1.5rem] items-center gap-1 px-2" data-install-header>
       <h2 className="whitespace-nowrap text-xs font-medium" data-install-title>Install status</h2>
-      <span className="truncate text-[11px] text-muted-foreground" title={view.readOnly ? lastUpdateLabel(plan.dismissedAt ?? plan.createdAt) : view.summary}>
-        {view.readOnly ? lastUpdateLabel(plan.dismissedAt ?? plan.createdAt) : view.preview ? "Laptop first" : view.summary}
-      </span>
+      <Tooltip>
+        <TooltipTrigger render={<span tabIndex={0} className="truncate text-2xs text-muted-foreground" />}>
+          {view.readOnly ? lastUpdateLabel(plan.dismissedAt ?? plan.createdAt) : view.preview ? "Laptop first" : view.summary}
+        </TooltipTrigger>
+        <TooltipPopup>{view.readOnly ? lastUpdateLabel(plan.dismissedAt ?? plan.createdAt) : view.preview ? "Laptop first" : view.summary}</TooltipPopup>
+      </Tooltip>
       <span data-install-done-slot aria-hidden={!complete} inert={!complete} style={{ visibility: complete ? "visible" : "hidden" }} className="flex w-10 justify-end">
         <Button variant="ghost" size="micro" aria-label="Done with update plan" disabled={pending.has("dismiss")} onClick={() => void perform("dismiss", async () => {
           const result = await requestInstallPlan({ type: "dismiss", planId: plan.planId, expectedRevision: plan.revision });
@@ -83,9 +88,11 @@ export function InstallStatusPanel({ store = installStatusStore }: { readonly st
           store.update({ open: false, showLast: true, previewSelection: [] });
         })}>Done</Button>
       </span>
-      <Button variant="ghost-muted" size="micro" className="size-6 p-0" aria-label={snapshot.collapsed ? "Expand Install status" : "Collapse Install status"} aria-expanded={!snapshot.collapsed} data-install-chevron onClick={collapse}>
-        <ChevronDownIcon className={cn("size-3.5", snapshot.collapsed && "-rotate-90")} />
-      </Button>
+      <span className="flex size-6 items-center justify-center">
+        <Button variant="ghost-muted" size="icon-micro" aria-label={snapshot.collapsed ? "Expand Install status" : "Collapse Install status"} aria-expanded={!snapshot.collapsed} data-install-chevron onClick={collapse}>
+          <ChevronDownIcon className={cn("size-3.5", snapshot.collapsed && "-rotate-90")} />
+        </Button>
+      </span>
     </header>
     {!snapshot.collapsed ? <div className="min-h-0 overflow-y-auto overscroll-contain px-1 pb-1" data-install-body>
       <button type="button" className={rowClass} onClick={() => setDetail(detail === "laptop" ? null : "laptop")} aria-expanded={detail === "laptop"} aria-label="Laptop update details">
@@ -96,7 +103,7 @@ export function InstallStatusPanel({ store = installStatusStore }: { readonly st
         {availableLaptop?.install ? <Button size="micro" variant="outline" disabled={pending.has("laptop:install")} onClick={() => action("laptop", "install")}>Install on Laptop</Button> : null}
         {availableLaptop?.stop ? <Button size="micro" variant="outline" disabled={pending.has("laptop:stop")} onClick={() => action("laptop", "stop")}>Stop download</Button> : null}
       </div> : null}
-      {detail === "laptop" ? <div className="space-y-1 px-2 pb-2 text-[11px] text-muted-foreground">
+      {detail === "laptop" ? <div className="space-y-1 px-2 pb-2 text-2xs text-muted-foreground">
         <p>{view.laptop?.text}</p>
         {view.laptop?.operationId ? <OperationId value={view.laptop.operationId} /> : null}
         {plan.laptop.operations.at(-1)?.result?.code ? <p>Code: {plan.laptop.operations.at(-1)!.result!.code}</p> : null}
@@ -104,13 +111,13 @@ export function InstallStatusPanel({ store = installStatusStore }: { readonly st
         {view.laptop?.phase === "held" ? <p>The download process has not proved exit. Existing app and data are preserved; no new work starts. Check again for an exact outcome.</p> : null}
         {!view.readOnly ? <Button variant="ghost-muted" size="micro" onClick={() => action("laptop", "check")}>Check again</Button> : null}
       </div> : null}
-      <div data-install-gate className="flex min-h-8 items-center gap-1.5 border-t border-dashed border-sidebar-border px-2 text-[11px] text-muted-foreground">
+      <div data-install-gate className="flex min-h-8 items-center gap-1.5 border-t border-dashed border-sidebar-border px-2 text-2xs text-muted-foreground">
         <Clock3Icon className="size-3 shrink-0" /><span className="min-w-0 flex-1 truncate">{plan.laptop.gate !== undefined && plan.laptop.gateClosed === undefined ? INSTALL_PLAN_GO : INSTALL_PLAN_WAIT}</span>
-        {!view.readOnly ? editing ? <>
-          <Button variant="link" size="micro" className="px-1 text-primary" onClick={() => setDraft({ ...draft!, selected: new Set(choices.filter((c) => c.locked ? selected.has(c.environmentId) : c.selection !== undefined).map((c) => c.environmentId)) })}>All</Button>
-          <Button variant="link" size="micro" className="px-1 text-primary" onClick={() => setDraft({ ...draft!, selected: new Set(choices.filter((c) => c.locked && selected.has(c.environmentId)).map((c) => c.environmentId)) })}>None</Button>
-          <Button variant="link" size="micro" className="px-1 text-primary" disabled={pending.has("edit")} onClick={editDone}>Done</Button>
-        </> : <Button variant="link" size="micro" className="px-1 text-primary" onClick={() => setDraft({ planId: plan.planId, revision: plan.revision, selected: new Set(selected) })}>Edit</Button> : null}
+        {!view.readOnly ? <span className="flex shrink-0 items-center text-primary">{editing ? <>
+          <Button variant="link" size="micro" onClick={() => setDraft({ ...draft!, selected: new Set(choices.filter((c) => c.locked ? selected.has(c.environmentId) : c.selection !== undefined).map((c) => c.environmentId)) })}>All</Button>
+          <Button variant="link" size="micro" onClick={() => setDraft({ ...draft!, selected: new Set(choices.filter((c) => c.locked && selected.has(c.environmentId)).map((c) => c.environmentId)) })}>None</Button>
+          <Button variant="link" size="micro" disabled={pending.has("edit")} onClick={editDone}>Done</Button>
+        </> : <Button variant="link" size="micro" onClick={() => setDraft({ planId: plan.planId, revision: plan.revision, selected: new Set(selected) })}>Edit</Button>}</span> : null}
       </div>
       <ul className="m-0 list-none p-0">
         {choices.map((choice) => {
@@ -123,15 +130,18 @@ export function InstallStatusPanel({ store = installStatusStore }: { readonly st
           return <li key={environmentId}>
             <div className="flex min-w-0 items-center gap-1">
               {editing ? <Checkbox aria-label={`Include ${label}`} checked={included} disabled={choice.locked || choice.selection === undefined}
-                title={choice.reason} className="ml-2" onCheckedChange={(checked) => { const next = new Set(selected); if (checked) next.add(environmentId); else next.delete(environmentId); setDraft({ ...draft!, selected: next }); }} /> : null}
-              <button type="button" className={rowClass} aria-label={`${label} update details`} aria-expanded={open} onClick={() => { if (!editing) setDetail(open ? null : environmentId); }}>
-                {held ? <TriangleAlertIcon className="size-3 shrink-0 text-warning" /> : <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full border border-muted-foreground", !included && "bg-muted-foreground opacity-50")} />}
-                <span className={cn("shrink-0", !included && "text-muted-foreground")}>{label}</span>
-                <span className="ml-auto min-w-0 truncate text-right text-[11px] text-muted-foreground" title={editing && choice.reason !== undefined ? choice.reason : text}>{text}</span><ChevronRightIcon className="size-3 shrink-0 text-muted-foreground" />
-              </button>
+                aria-describedby={choice.reason === undefined ? undefined : `${descriptionId}-${environmentId}`} className="ml-2" onCheckedChange={(checked) => { const next = new Set(selected); if (checked) next.add(environmentId); else next.delete(environmentId); setDraft({ ...draft!, selected: next }); }} /> : null}
+              <Tooltip>
+                <TooltipTrigger render={<button type="button" className={rowClass} />} aria-label={`${label} update details`} aria-expanded={open} onClick={() => { if (!editing) setDetail(open ? null : environmentId); }}>
+                  {held ? <TriangleAlertIcon className="size-3 shrink-0 text-warning" /> : <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full border border-muted-foreground", !included && "bg-muted-foreground opacity-50")} />}
+                  <span className={cn("shrink-0", !included && "text-muted-foreground")}>{label}</span>
+                  <span className="ml-auto min-w-0 truncate text-right text-2xs text-muted-foreground">{text}</span><ChevronRightIcon className="size-3 shrink-0 text-muted-foreground" />
+                </TooltipTrigger>
+                <TooltipPopup>{editing && choice.reason !== undefined ? choice.reason : text}</TooltipPopup>
+              </Tooltip>
             </div>
-            {editing && choice.reason !== undefined ? <p className="px-2 pb-1 text-[11px] text-muted-foreground">{choice.reason}</p> : null}
-            {open ? <div className="space-y-1 px-3 pb-2 text-[11px] text-muted-foreground" aria-label={`${label} update status`}>
+            {editing && choice.reason !== undefined ? <p id={`${descriptionId}-${environmentId}`} className="px-2 pb-1 text-2xs text-muted-foreground">{choice.reason}</p> : null}
+            {open ? <div className="space-y-1 px-3 pb-2 text-2xs text-muted-foreground" aria-label={`${label} update status`}>
               <p>{text}</p>
               {device?.observation.freshness !== "fresh" ? <p>{device?.observation.message ?? "Fresh status unavailable."} {lastSeenLabel(device?.lastObservedAt)}</p> : null}
               {row?.status?.check ? <p>{row.status.check.text}</p> : null}
@@ -151,11 +161,11 @@ export function InstallStatusPanel({ store = installStatusStore }: { readonly st
           </li>;
         })}
       </ul>
-      {editing ? <p className="flex gap-1.5 px-2 pt-1 text-[11px] leading-relaxed text-muted-foreground"><InfoIcon className="mt-0.5 size-3 shrink-0" />{INSTALL_PLAN_INFO}</p> : null}
-      {snapshot.error ? <p role="status" className="px-2 py-1 text-[11px] text-muted-foreground">{snapshot.error}</p> : null}
+      {editing ? <p className="flex gap-1.5 px-2 pt-1 text-2xs leading-relaxed text-muted-foreground"><InfoIcon className="mt-0.5 size-3 shrink-0" />{INSTALL_PLAN_INFO}</p> : null}
+      {snapshot.error ? <p role="status" className="px-2 py-1 text-2xs text-muted-foreground">{snapshot.error}</p> : null}
     </div> : null}
   </section>;
 }
 function OperationId({ value }: { readonly value: string }) {
-  return <label className="block">Operation <input aria-label="Operation ID" readOnly value={value} className="w-full select-all rounded border border-sidebar-border bg-transparent px-1 font-mono text-[10px]" onFocus={(event) => event.currentTarget.select()} /></label>;
+  return <label className="block">Operation <input aria-label="Operation ID" readOnly value={value} className="w-full select-all rounded border border-sidebar-border bg-transparent px-1 font-mono text-3xs" onFocus={(event) => event.currentTarget.select()} /></label>;
 }

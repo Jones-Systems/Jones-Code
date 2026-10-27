@@ -48,11 +48,11 @@ export function isPreparationJobId(value: string): boolean {
 }
 
 /**
- * Runtime lock name, inside the job directory, that the job's owner holds for the job's whole
- * life. A sweep removes a job directory only after taking this lock, so never a live job's.
+ * This owner's lock inode outlives job scratch, so restart reconciliation uses the same lock.
+ * The lock serializes lifecycle evidence; captured group absence is separately required.
  */
 export function preparationJobLock(jobId: string): string {
-  return NodePath.join("jones-preparation", "jobs", jobId, "owner");
+  return NodePath.join("jones-preparation", `job-owner-${jobId}`);
 }
 
 export interface PreparationHost {

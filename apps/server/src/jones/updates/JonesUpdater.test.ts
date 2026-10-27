@@ -9,6 +9,7 @@ import {
   JonesUpdater,
   readCurrentJonesBuildStartedAt,
   type JonesUpdaterHost,
+  type JonesInstallBeforeDispatchRefusal,
 } from "./JonesUpdater.ts";
 import { AutomaticActivationWithdrawn } from "./followerPolicy.ts";
 
@@ -1343,4 +1344,26 @@ it("blocks new work while an earlier job's exit is unproved and releases only th
   f.updater.releaseHeldJob("held-b");
   expect(f.updater.admissionHeld()).toBe(false);
   expect((await f.updater.check()).phase).toBe("available");
+});
+
+it("reports a typed exact refusal only before invoking the install adapter", async () => {
+  const native = vi.fn(async () => { throw new Error("Synthetic lost native reply after possible dispatch."); });
+  const f = fixture({ install: native });
+  await f.updater.check();
+  await f.updater.download({ artifactId: candidate.artifactId, sourceSha: candidate.source });
+  const proof = vi.fn<(refusal: JonesInstallBeforeDispatchRefusal) => void>();
+  const request = { operationId: "11111111-1111-4111-8111-111111111111", stagedHandle: "fixed-handle",
+    environmentId: EnvironmentId.make("fixture"), currentVersion: "0.0.0-preview.20261002.1",
+    expectedInstalledSource: "a".repeat(40), targetSource: candidate.source, onBeforeDispatchRefusal: proof };
+  f.updater.setHeldJobs(["earlier-job"]);
+  await f.updater.install(request);
+  expect(proof).toHaveBeenCalledExactlyOnceWith({ kind: "before-dispatch", operationId: request.operationId,
+    environmentId: request.environmentId, currentVersion: request.currentVersion, stagedHandle: request.stagedHandle,
+    expectedInstalledSource: request.expectedInstalledSource, targetSource: request.targetSource });
+  expect(native).not.toHaveBeenCalled();
+  proof.mockClear();
+  f.updater.releaseHeldJob("earlier-job");
+  expect((await f.updater.install(request)).phase).toBe("blocked");
+  expect(native).toHaveBeenCalledOnce();
+  expect(proof).not.toHaveBeenCalled();
 });

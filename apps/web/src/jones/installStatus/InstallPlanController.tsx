@@ -97,7 +97,8 @@ export function InstallPlanController() {
     const bridge = window.desktopBridge;
     if (bridge?.installPlan === undefined) return;
     const controller = startInstallPlanController(productionInstallPlanServices(bridge, () => current.current));
-    const stops = current.current.flatMap(({ environmentId }) => [
+    const subscribedIds: readonly string[] = JSON.parse(ids);
+    const stops = current.current.filter(({ environmentId }) => subscribedIds.includes(environmentId)).flatMap(({ environmentId }) => [
       appAtomRegistry.subscribe(jonesUpdates.observation(environmentId), controller.wake),
       appAtomRegistry.subscribe(environmentSession.sessionStateAtom(environmentId), controller.wake),
     ]);

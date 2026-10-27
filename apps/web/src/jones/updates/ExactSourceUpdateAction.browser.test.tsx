@@ -9,6 +9,8 @@ import type {
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { page, userEvent } from "vite-plus/test/browser";
+import "../../index.css";
 import {
   ExactSourceUpdateAction,
   performExactSourceStep,
@@ -229,6 +231,13 @@ describe("exact-source action", () => {
     expect(buttons()).toEqual([]);
     expect(status()).toContain("may have been accepted");
     expect(world.requests).toHaveLength(1);
+    await root.rerender(null);
+    await mount(world);
+    await world.set(stagedTarget(6));
+    expect(container.querySelector("button")?.getAttribute("aria-disabled")).toBe("true");
+    await click("Install aaaaaaa");
+    expect(status()).toContain("may have been accepted");
+    expect(world.requests).toHaveLength(1);
   });
 
   it("stays in the notice with the host's progress while a download transitions", async () => {
@@ -344,6 +353,11 @@ describe("exact-source action", () => {
     await click("Match laptop");
     expect(world.requests).toHaveLength(1);
     expect(container.querySelector("button")?.getAttribute("aria-disabled")).toBe("true");
+    await act(() => container.querySelector("button")!.focus());
+    await expect.element(page.getByRole("tooltip")).toHaveTextContent("Its effect is unknown");
+    expect(container.querySelector("button")?.getAttribute("aria-describedby")).toBe(page.getByRole("tooltip").element().id);
+    await userEvent.keyboard("{Enter} ");
+    expect(world.requests).toHaveLength(1);
     expect(world.requests[0]).toMatchObject({
       action: "downloadExact",
       input: {
@@ -367,6 +381,11 @@ describe("exact-source action", () => {
     await click("Match laptop");
     expect(world.requests).toHaveLength(1);
     expect(world.requests.every((request) => request.action === "downloadExact")).toBe(true);
+    await root.rerender(null);
+    await mount(world, { targetSource: "c".repeat(40), allowReplace: true, allowInstall: false, buttonLabel: "Match laptop" });
+    expect(container.querySelector("button")?.getAttribute("aria-disabled")).toBe("true");
+    await click("Match laptop");
+    expect(world.requests).toHaveLength(1);
   });
 
   it("refuses replacement if the laptop target or selected host binding changes during confirmation", async () => {

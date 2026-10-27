@@ -140,7 +140,9 @@ export async function performExactSourceStep({
   if (step.kind === "replace-exact") {
     if (!(await host.confirm(`Replace downloaded source ${shortJonesSource(step.replace.sourceSha)} on ${label} with ${shortJonesSource(targetSource)}? The old download is retired; its files are retained. Nothing installs until you choose Install.`))) return { kind: "cancelled" };
     const fresh = resolveJonesExactSourceAction({ environmentId, ...host.readLatest(), targetSource, allowReplace, allowInstall, subject, unresolvedInstall });
-    if (fresh.status !== "ready" || !sameStep(step, fresh.step) || (readTargetSource !== undefined && readTargetSource() !== targetSource))
+    if (readTargetSource !== undefined && readTargetSource() !== targetSource)
+      return { kind: "refused", message: "Nothing was sent: the laptop's verified installed build changed or is unavailable." };
+    if (fresh.status !== "ready" || !sameStep(step, fresh.step))
       return { kind: "refused", message: `Nothing was sent: ${label} changed while this was pending.` };
     const gate = await legacyConnectionsGate(targetSource);
     if (gate !== null) return { kind: "refused", message: gate };
@@ -342,19 +344,12 @@ function ExactActionButton({
   return (
     <Tooltip disabled={reason === undefined}>
       <TooltipTrigger
-        render={
-          <Button
-            size="xs"
-            variant="outline"
-            aria-disabled={reason === undefined ? undefined : true}
-            aria-describedby={reason === undefined ? undefined : reasonId}
-            onClick={() => {
-              if (reason === undefined) onClick();
-            }}
-          >
-            {label}
-          </Button>
-        }
+        aria-disabled={reason === undefined ? undefined : true}
+        aria-describedby={reason === undefined ? undefined : reasonId}
+        onClick={() => {
+          if (reason === undefined) onClick();
+        }}
+        render={<Button size="xs" variant="outline">{label}</Button>}
       />
       <TooltipPopup side="top" role="tooltip" id={reasonId}>
         {reason}

@@ -12,8 +12,15 @@ export async function chooseRecoveryPolicy(preflight: JonesRecoveryPreflight): P
   return new Promise((resolve) => { pending = { preflight, resolve }; publish(); });
 }
 function finish(policy: JonesRecoveryPolicy | null) { const p = pending; pending = null; publish(); p?.resolve(policy); }
+function subscribe(listener: () => void) {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0) finish(null);
+  };
+}
 export function RecoveryReview() {
-  const choice = useSyncExternalStore((listener) => { listeners.add(listener); return () => { listeners.delete(listener); }; }, () => pending, () => null);
+  const choice = useSyncExternalStore(subscribe, () => pending, () => null);
   const preflight = choice?.preflight;
   const clone = preflight?.clone.status === "proved" && preflight.policies.cloneRequired.admissible;
   const first = preflight?.firstInstall === true;
@@ -22,7 +29,7 @@ export function RecoveryReview() {
     <DialogPopup>
       <DialogTitle>{first ? "First install" : clone ? "Not enough space for a full backup copy" : "Installation cannot continue"}</DialogTitle>
       <DialogDescription>{first ? "There is no existing data to back up." : clone ? "A clone was proved for this target. Clone the database, WAL, SHM and required settings, or stop this installation. A failed clone never falls back to copying." : preflight?.policies.cloneOrCopy.reason ?? preflight?.clone.reason ?? "Recovery could not be proved for this target."}</DialogDescription>
-      {preflight !== undefined ? <div className="space-y-1 text-xs text-muted-foreground">{preflight.volumes.map((volume, index) => <p key={`${volume.role}-${index}`}>{volume.role}: {volume.availableBytes.toLocaleString()} bytes available · copy needs {volume.copyRequiredBytes.toLocaleString()} bytes · clone needs {volume.cloneRequiredBytes.toLocaleString()} bytes</p>)}</div> : null}
+      {preflight !== undefined ? <div className="space-y-1 text-xs text-muted-foreground">{preflight.volumes.map((volume) => <p key={volume.role}>{volume.role}: {volume.availableBytes.toLocaleString()} bytes available · copy needs {volume.copyRequiredBytes.toLocaleString()} bytes · clone needs {volume.cloneRequiredBytes.toLocaleString()} bytes</p>)}</div> : null}
       <DialogFooter>
         <Button variant="outline" onClick={() => finish(null)}>Stop</Button>
         {first && policy !== null ? <Button onClick={() => finish(policy)}>Continue</Button> : clone ? <Button onClick={() => finish("clone-required")}>Clone</Button> : null}

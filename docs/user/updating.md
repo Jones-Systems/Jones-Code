@@ -30,7 +30,7 @@ work without installing the downloaded build.
 On Laptop, **Stop download** is available only during transfer. Once checking
 has entered mount or copy work, or installation has begun, it cannot be stopped
 from the panel. A Stop request on a supported host remains pending until its
-worker is proved stopped; a late Stop can leave a completed download ready to
+worker and any native cleanup are proved finished; a late Stop can leave a completed download ready to
 install. **Held** or **Not confirmed** means the result is unresolved. Keep the
 operation ID and use **Check again** to read fresh evidence; it does not retry
 the operation. Closing the panel or restarting the app does not clear a hold.

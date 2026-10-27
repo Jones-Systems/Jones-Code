@@ -22,7 +22,11 @@ import {
 } from "./JonesDesktopUpdates.ts";
 import { createInitialDesktopUpdateState } from "../../updates/updateMachine.ts";
 import { hashMacApp, hashMacFile, preflightJonesCandidateStartupGate } from "./jonesMacStaging.ts";
-import { prepareJonesStage } from "./stagingJobs.ts";
+import { prepareJonesStage, type JonesPreparedStage } from "./stagingJobs.ts";
+import { createJonesStagingWorker, type JonesStagingChild } from "./stagingWorkerClient.ts";
+import { JonesStagingExitUnproved } from "./stagingWorkerProtocol.ts";
+import { createInstallPlanCoordinator } from "../installPlan/coordinator.ts";
+import type { InstallPlanStore, PlanSnapshot } from "../installPlan/store.ts";
 
 vi.mock("node:child_process", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:child_process")>();
@@ -323,6 +327,57 @@ async function fixture(
     stages: () => stages,
     cleanup: () => cleanupFixture(home),
   };
+}
+
+function planControllerFixture(
+  f: Awaited<ReturnType<typeof fixture>>,
+  overrides: Partial<JonesDesktopUpdateOptions>,
+  options: {
+    readonly persisted?: PlanSnapshot;
+    readonly workerAbsent?: () => boolean;
+    readonly beforeWorkerRecord?: (snapshot: PlanSnapshot) => Promise<void>;
+  } = {},
+) {
+  let snapshot: PlanSnapshot = structuredClone(options.persisted ?? {
+    document: { schema: 1, current: null, last: null }, dispositions: { schema: 1, targets: [] },
+  });
+  let queue: Promise<unknown> = Promise.resolve();
+  const store: InstallPlanStore = { transact: (change) => {
+    const pending = queue.then(async () => {
+      const next = await change(snapshot);
+      snapshot = { ...snapshot, document: next.document, dispositions: next.dispositions };
+      return next.result;
+    });
+    queue = pending.catch(() => undefined);
+    return pending;
+  } };
+  const admissionRecorded = Promise.withResolvers<void>(), workerRecorded = Promise.withResolvers<void>();
+  let coordinator: ReturnType<typeof createInstallPlanCoordinator>;
+  const controller = new JonesDesktopUpdateController({ ...f.options,
+    client: { ...f.options.client!, check: async () => ({ state: "available", candidate }) },
+    ...overrides, plan: {
+    bindLaptopInstall: (binding) => coordinator.bindLaptopInstall(binding),
+    recordLaptopOutcome: (outcome) => coordinator.recordLaptopOutcome(outcome),
+    preparationHeld: () => coordinator.preparationHeld(),
+    recordLaptopAdmission: async (operationId) => {
+      await coordinator.recordLaptopAdmission(operationId); admissionRecorded.resolve();
+    },
+    recordLaptopWorker: async (worker) => {
+      await options.beforeWorkerRecord?.(structuredClone(snapshot));
+      await coordinator.recordLaptopWorker(worker); workerRecorded.resolve();
+    },
+  } });
+  coordinator = createInstallPlanCoordinator({ store, controller,
+    localEnvironmentId: () => EnvironmentId.make(f.active.environmentId),
+    track: (work) => work(), broadcast: () => {}, now: () => Date.parse("2026-10-02T00:00:00Z"),
+    uuid: () => NodeCrypto.randomUUID(), workerAbsent: options.workerAbsent ?? (() => false),
+  });
+  const start = () => coordinator.request({ type: "start", origin: "update-button",
+    target: { repository: candidate.repository, sourceSha: candidate.source, sourceTree: candidate.tree, version: candidate.version },
+    select: [], laptop: { action: "download" },
+  });
+  return { controller, coordinator, start, admissionRecorded: admissionRecorded.promise, workerRecorded: workerRecorded.promise,
+    persisted: () => JSON.parse(JSON.stringify(snapshot)) as PlanSnapshot };
 }
 
 describe("Jones desktop updates", () => {
@@ -2268,7 +2323,178 @@ it("publishes a stopped transfer without Download failed and retains an unproved
     expect(held.busy).toBe("download"); expect(held.state.jones?.phase).toBe("blocked");
     expect(held.state.message).not.toContain("reopen");
     expect(await held.download()).toEqual({ accepted: false, completed: false });
+    const copy = new JonesDesktopUpdateController({ ...f.options,
+      prepareStage: async () => { throw new JonesStagingExitUnproved({ pid: 4242, processGroup: 4242 }, true); },
+      preparationExited: () => true,
+    });
+    await copy.configure(); await copy.check();
+    expect(await copy.download()).toMatchObject({ heldCode: "copy-unconfirmed" });
+    expect((await copy.laptopEvidence()).activationBlocked).toBe(true);
+    expect(copy.busy).toBe("download");
+    expect(await copy.download()).toEqual({ accepted: false, completed: false });
   } finally { await f.cleanup(); }
+});
+
+it("keeps the controller and plan held when a stopped leader exits but its preparation group survives", async () => {
+  const f = await fixture();
+  let message: ((raw: unknown) => void) | undefined;
+  let exit: ((code: number | null, signal: string | null) => void) | undefined;
+  let groupAlive = true, leaderExited = false;
+  const ready = Promise.withResolvers<void>();
+  const signal = vi.fn();
+  const child: JonesStagingChild = {
+    pid: 4242, send: () => ready.resolve(), onMessage: (listener) => { message = listener; },
+    onExit: (listener) => { exit = listener; }, groupAbsent: () => !groupAlive, signal,
+  };
+  const worker = createJonesStagingWorker(() => child, { stopGraceMs: 15, reapMs: 5 });
+  const h = planControllerFixture(f, {
+    prepareStage: (selected, roots, onVerifying, hooks) => worker.run({ kind: "prepare", token: hooks.token,
+      candidate: selected, roots, platform: "darwin" }, onVerifying, hooks),
+    cancelPreparation: worker.cancel, preparationExited: worker.reaped, preparationWorker: worker.heldWorker,
+  }, { workerAbsent: () => leaderExited && !groupAlive });
+  try {
+    await h.controller.configure(); await h.controller.check();
+    vi.useFakeTimers();
+    const started = await h.start(); await ready.promise;
+    const planId = started.state.current!.planId;
+    const downloadId = started.state.current!.laptop.operations[0]!.operationId;
+    await h.coordinator.request({ type: "laptop", planId, action: "stop" });
+    await vi.advanceTimersByTimeAsync(10);
+    leaderExited = true; exit?.(null, "SIGTERM");
+    expect(message).toBeDefined(); expect(worker.reaped(downloadId)).toBe(false);
+    expect((await h.coordinator.request({ type: "read" })).state.view.complete).toBe(false);
+    expect(h.controller.busy).toBe("download");
+    await vi.advanceTimersByTimeAsync(10);
+    const held = await h.coordinator.request({ type: "read" });
+    expect(signal.mock.calls).toEqual([["SIGTERM"], ["SIGKILL"]]);
+    expect(held.state.current!.laptop.operations.every((operation) => operation.result?.status === "held")).toBe(true);
+    expect(held.state.view.complete).toBe(false); expect(await h.coordinator.preparationHeld()).toBe(true);
+    expect((await h.controller.laptopEvidence()).activationBlocked).toBe(true);
+    expect((await h.coordinator.request({ type: "laptop", planId, action: "download" })).refused?.code).toBe("outstanding-operation");
+    expect((await h.coordinator.request({ type: "dismiss", planId, expectedRevision: held.state.current!.revision })).refused?.code).toBe("not-complete");
+    expect(await h.controller.download()).toMatchObject({ accepted: false, completed: false });
+    expect(worker.reaped(downloadId)).toBe(false);
+
+    groupAlive = false; await vi.advanceTimersByTimeAsync(100);
+    expect(worker.reaped(downloadId)).toBe(true);
+    const released = await h.coordinator.request({ type: "read" });
+    expect(h.controller.busy).toBeNull(); expect(await h.coordinator.preparationHeld()).toBe(false);
+    expect(released.state.current!.laptop.operations.every((operation) => operation.result?.status === "stopped")).toBe(true);
+    expect(released.state.view.complete).toBe(true);
+  } finally {
+    groupAlive = false; exit?.(null, "SIGKILL"); worker.reaped(h.persisted().document.current?.laptop.operations[0]?.operationId ?? "");
+    await worker.close(); vi.useRealTimers(); await f.cleanup();
+  }
+});
+
+it.each(["before", "during", "after"] as const)("persists background copy admission when the plan adopts %s admission", async (timing) => {
+  const f = await fixture();
+  const stage = Promise.withResolvers<JonesPreparedStage>();
+  void stage.promise.catch(() => undefined);
+  const ready = Promise.withResolvers<() => Promise<void>>();
+  const verifyingEntered = Promise.withResolvers<void>(), publishGate = Promise.withResolvers<void>();
+  const workerWriteEntered = Promise.withResolvers<void>(), workerWriteGate = Promise.withResolvers<void>();
+  const worker = { pid: 4242, processGroup: 4242 };
+  let adoptionBoundary: PlanSnapshot | undefined;
+  const h = planControllerFixture(f, {
+    prepareStage: async (_candidate, _roots, onVerifying, hooks) => {
+      await hooks.onStarted?.(worker); ready.resolve(onVerifying); return stage.promise;
+    },
+    onState: async (state) => {
+      if (timing === "during" && state.jones?.phase === "verifying") {
+        verifyingEntered.resolve(); await publishGate.promise;
+      }
+    },
+  }, { beforeWorkerRecord: async (snapshot) => {
+    adoptionBoundary = snapshot;
+    if (timing === "before") { workerWriteEntered.resolve(); await workerWriteGate.promise; }
+  } });
+  let background: ReturnType<JonesDesktopUpdateController["download"]> | undefined;
+  try {
+    await h.controller.configure(); await h.controller.check();
+    background = h.controller.download({ artifactId: candidate.artifactId, sourceSha: candidate.source });
+    const admit = await ready.promise;
+    expect(h.persisted().document.current).toBeNull();
+    let admission: Promise<void>;
+    let started: Awaited<ReturnType<typeof h.start>>;
+    if (timing === "after") {
+      await admit();
+      started = await h.start();
+      await h.workerRecorded;
+    } else if (timing === "during") {
+      admission = admit(); await verifyingEntered.promise;
+      started = await h.start(); await h.workerRecorded;
+      publishGate.resolve(); await admission;
+    } else {
+      started = await h.start(); await workerWriteEntered.promise;
+      let admitted = false;
+      admission = admit().then(() => { admitted = true; });
+      await Promise.resolve(); expect(admitted).toBe(false);
+      workerWriteGate.resolve(); await admission;
+    }
+    expect(started.refused).toBeUndefined();
+    await h.admissionRecorded;
+    const persisted = h.persisted();
+    const operation = persisted.document.current!.laptop.operations[0]!;
+    expect(operation.worker).toEqual(worker);
+    expect(operation.result).toMatchObject({ status: "running", code: "copy-admitted" });
+    if (timing !== "before") {
+      expect(adoptionBoundary?.document.current?.laptop.operations[0]?.result?.code).toBe("copy-admitted");
+      expect(adoptionBoundary?.document.current?.laptop.operations[0]?.worker).toBeUndefined();
+    }
+    await vi.waitFor(async () => expect(await h.controller.stopDownload({ operationId: operation.operationId, sourceSha: candidate.source })).toBe("not-stoppable-phase"));
+
+    // Reconstruct both owners from saved bytes, with no stage and positive process/group absence.
+    const prepareStage = vi.fn<NonNullable<JonesDesktopUpdateOptions["prepareStage"]>>();
+    const restarted = planControllerFixture(f, { prepareStage }, { persisted, workerAbsent: () => true });
+    await restarted.controller.configure(); await restarted.controller.check();
+    expect(restarted.controller.state.jones?.provenance?.sourceSha).toBe(candidate.source);
+    const read = await restarted.coordinator.request({ type: "read" });
+    const planId = read.state.current!.planId;
+    expect(read.state.current!.laptop.operations[0]!.result).toMatchObject({ status: "held", code: "copy-unconfirmed" });
+    expect(read.state.view.complete).toBe(false);
+    expect(await restarted.coordinator.preparationHeld()).toBe(true);
+    expect(await restarted.coordinator.backgroundSuppressed(candidate.source)).toBe(true);
+    expect((await restarted.coordinator.request({ type: "dismiss", planId, expectedRevision: read.state.current!.revision })).refused?.code).toBe("not-complete");
+    for (const action of ["download", "install"] as const)
+      expect((await restarted.coordinator.request({ type: "laptop", planId, action })).refused?.code).toBe("outstanding-operation");
+    expect(await restarted.controller.download()).toMatchObject({ accepted: false, completed: false });
+    expect((await restarted.controller.install(handle)).accepted).toBe(false);
+    expect(prepareStage).not.toHaveBeenCalled();
+  } finally {
+    publishGate.resolve(); workerWriteGate.resolve();
+    stage.reject(new JonesStagingExitUnproved(worker, true));
+    if (background !== undefined) await background;
+    await f.cleanup();
+  }
+});
+
+it("keeps admitted adoption held if worker binding fails after its admission marker was stored", async () => {
+  const f = await fixture();
+  const stage = Promise.withResolvers<JonesPreparedStage>(), ready = Promise.withResolvers<() => Promise<void>>();
+  void stage.promise.catch(() => undefined);
+  const worker = { pid: 4242, processGroup: 4242 };
+  const h = planControllerFixture(f, { prepareStage: async (_candidate, _roots, onVerifying, hooks) => {
+    await hooks.onStarted?.(worker); ready.resolve(onVerifying); return stage.promise;
+  } }, { beforeWorkerRecord: async () => { throw new Error("binding unavailable"); } });
+  let background: ReturnType<JonesDesktopUpdateController["download"]> | undefined;
+  try {
+    await h.controller.configure(); await h.controller.check();
+    background = h.controller.download({ artifactId: candidate.artifactId, sourceSha: candidate.source });
+    await (await ready.promise)();
+    await h.start(); await h.admissionRecorded;
+    await vi.waitFor(() => expect(h.persisted().document.current?.laptop.operations[0]?.result).toMatchObject({ status: "held", code: "copy-unconfirmed" }));
+    expect(h.controller.busy).toBe("download");
+    const restarted = planControllerFixture(f, {}, { persisted: h.persisted(), workerAbsent: () => true });
+    await restarted.controller.configure();
+    const read = await restarted.coordinator.request({ type: "read" });
+    expect(read.state.current?.laptop.operations[0]?.result).toMatchObject({ status: "held", code: "copy-unconfirmed" });
+    expect(read.state.view.complete).toBe(false); expect(await restarted.coordinator.preparationHeld()).toBe(true);
+  } finally {
+    stage.reject(new JonesStagingExitUnproved(worker, true));
+    if (background !== undefined) await background;
+    await f.cleanup();
+  }
 });
 
 it("uses the current selected native helper for opaque recovery inspection and refuses a changed generation without activation", async () => {

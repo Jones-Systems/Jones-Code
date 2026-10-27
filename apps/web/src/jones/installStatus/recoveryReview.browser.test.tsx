@@ -1,9 +1,10 @@
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it } from "vite-plus/test";
 import type { JonesRecoveryPreflight } from "@t3tools/contracts/jones/jonesOperations";
 import { EnvironmentId } from "@t3tools/contracts";
 import { act, render } from "../../../test/render";
 import { chooseRecoveryPolicy, RecoveryReview } from "./recoveryReview";
+import "../../index.css";
 
 function preflight(overrides: Partial<JonesRecoveryPreflight> = {}): JonesRecoveryPreflight {
   return { protocol: 1, preflightId: "11111111-1111-4111-8111-111111111111", measuredAt: "2026-10-27T04:00:00Z", expiresAt: "2026-10-27T04:05:00Z",
@@ -36,5 +37,29 @@ describe("negotiated recovery review", () => {
     expect(document.body.textContent).toContain("There is no existing data to back up.");
     await page.getByRole("button", { name: "Continue", exact: true }).click();
     expect(await result!).toBe("clone-or-copy");
+  });
+  it("settles an abandoned review as Stop and accepts a fresh review after remount", async () => {
+    await using screen = await render(<RecoveryReview />, { router: false });
+    let abandoned!: ReturnType<typeof chooseRecoveryPolicy>;
+    await act(() => { abandoned = chooseRecoveryPolicy(preflight()); });
+    await screen.unmount();
+    expect(await abandoned).toBeNull();
+
+    await using _fresh = await render(<RecoveryReview />, { router: false });
+    let current!: ReturnType<typeof chooseRecoveryPolicy>;
+    await act(() => { current = chooseRecoveryPolicy(preflight({ clone: { status: "unsupported" }, policies: { cloneOrCopy: { admissible: false, reason: "Fresh clone proof unavailable." }, cloneRequired: { admissible: false } } })); });
+    await expect.element(page.getByText("Fresh clone proof unavailable.")).toBeVisible();
+    expect([...document.querySelectorAll("button")].some((node) => node.textContent === "Clone")).toBe(false);
+    await page.getByRole("button", { name: "Stop", exact: true }).click();
+    expect(await current).toBeNull();
+  });
+  it("keeps the current review bound when another request arrives and Escape stops it", async () => {
+    await using _screen = await render(<RecoveryReview />, { router: false });
+    let current!: ReturnType<typeof chooseRecoveryPolicy>;
+    await act(() => { current = chooseRecoveryPolicy(preflight()); });
+    expect(await chooseRecoveryPolicy(preflight({ firstInstall: true }))).toBeNull();
+    await expect.element(page.getByText("Not enough space for a full backup copy", { exact: true })).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    expect(await current).toBeNull();
   });
 });

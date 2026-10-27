@@ -7,6 +7,7 @@ import { withQualifiedRuntimeLock } from "../../cloud/qualifiedRuntime.ts";
 import { preparationJobLock, preparationJobsDirectory } from "./protocol.ts";
 import { RETAINED_COMPLETED_STAGES, sweepPreparationLeftovers } from "./sweep.ts";
 import { makePreparationHome, type PreparationHome } from "./Preparation.testkit.ts";
+import { preparationLifecycle } from "./lifecycle.ts";
 
 const homes: PreparationHome[] = [];
 afterEach(async () => {
@@ -55,6 +56,7 @@ describe("preparation sweep", () => {
     ];
     for (const id of [keep, dead, live])
       await file(NodePath.join(jobs, id, "tmp", ".jones-extract-1", "payload", "t3"));
+    for (const id of [dead, live]) await preparationLifecycle(fixture.base, id).reserve("stage");
     await NodeFSP.mkdir(NodePath.join(jobs, "not-a-job"));
     await NodeFSP.mkdir(fixture.cacheRoot, { recursive: true });
     const cacheRoot = await NodeFSP.realpath(fixture.cacheRoot);
@@ -79,13 +81,18 @@ describe("preparation sweep", () => {
       }),
     );
 
-    expect(sweep).toMatchObject({ removed: 3, retained: 7, failed: 0 });
+    expect(sweep).toMatchObject({ removed: 1, retained: 2, failed: 0 });
     expect(sweep.removedJobIds).toEqual([dead]);
     expect(sweep.retainedJobIds).toEqual([live]);
     expect(await NodeFSP.readdir(jobs).then((names) => names.sort())).toEqual(
       [keep, live, "not-a-job"].sort(),
     );
     expect(await exists(NodePath.join(jobs, live, "tmp", ".jones-extract-1"))).toBe(true);
+    expect(await exists(unselected)).toBe(true);
+    expect(await NodeFSP.readdir(NodePath.join(runtime, "versions"))).toContain(".jones-stage-1");
+    // Once the owner lock is free, positive never-started evidence permits normal cleanup.
+    const released = await sweepPreparationLeftovers({ baseDir: fixture.base, cacheRoot: fixture.cacheRoot, keepJob: keep });
+    expect(released).toMatchObject({ removed: 3, retained: 6, failed: 0, removedJobIds: [live] });
     expect(await exists(selected)).toBe(true);
     expect(await exists(unreadable)).toBe(true);
     expect(await exists(unselected)).toBe(false);

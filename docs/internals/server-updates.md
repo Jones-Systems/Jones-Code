@@ -262,7 +262,8 @@ proof; it is not a synthetic operation fence.
 
 Stop records a request separately from actual worker closure. The preparation
 outcome promise can settle before the captured worker and process group have
-joined; only positive exit/reap evidence releases admission. A completed download
+joined; release also requires proof that any native effects were cleaned up.
+A completed download
 can win a late Stop, and an admitted copy without a validated stage remains held.
 Completion covers Laptop and every chosen device with no outstanding operation;
 staging, supersession, handoff and unknown results do not settle a plan. Dismissing
@@ -296,18 +297,20 @@ its next update without it. Darwin candidates are never launched while staging, 
 only the desktop artifact smoke proves their packaged worker.
 
 Each job lives in `runtime/jones-preparation/jobs/<id>` on the home's own disk.
-That directory holds the worker's `TMPDIR` and extraction scratch, and the parent
-holds the job's owner lock while the worker runs. Cancellation, a deadline, a
-missed heartbeat or an output bound requests termination of the captured worker's
-process group. The supervisor exposes outcome and settled/join separately; an
-unproved exit retains the busy/admission hold. A worker whose parent exits sees
-end-of-file on stdin and stops itself. A sweep job
-at startup and after every failed job removes what a killed worker left. It takes
-a job directory only when its owner lock is free, and it also removes unpublished
-Actions attempts and abandoned `.jones-stage-*` runtime copies. Only exact removed
-job IDs provide sweep release evidence; retained IDs preserve the hold and a
-missing job alone releases nothing. It keeps only the two newest
-completed downloads, so failing candidates do not accumulate.
+That directory holds the worker's `TMPDIR` and extraction scratch. The parent
+holds a retained `job-owner-<id>.sqlite` lock outside that directory. Cancellation,
+a deadline, a missed heartbeat or an output bound requests termination of the
+captured worker process group. Outcome and settled/join are separate: leader exit
+alone does not release admission. A worker whose parent exits sees end-of-file on
+stdin and stops itself.
+
+Parent launch records and worker effect records in `runtime/jones-preparation/lifecycle`
+survive scratch deletion and restart. A sweep removes scratch only after positive
+process-group and effect-release evidence; a free lock, deleted directory or
+removed-job list is not release proof. Unknown exit or mount cleanup retains the
+admission hold and defers shared cleanup. Once release is proved, sweep can remove
+unpublished Actions attempts and abandoned `.jones-stage-*` runtime copies, keeping
+the two newest completed downloads.
 
 ### Verification cost evidence
 

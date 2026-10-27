@@ -28,6 +28,7 @@ import {
 } from "./protocol.ts";
 import { stageQualifiedArtifact } from "./stageArtifact.ts";
 import { sweepPreparationLeftovers } from "./sweep.ts";
+import { preparationLifecycle } from "./lifecycle.ts";
 
 const HEARTBEAT_MS = 2_000;
 /** Below the supervisor's grace, so a worker that cannot unwind still ends its own group first. */
@@ -117,6 +118,7 @@ async function runJob(
     host: job.host,
     scratchParent: jobDir,
     signal,
+    onNativeEffects: (phase) => preparationLifecycle(request.baseDir, request.jobId).effects(process.pid, phase),
   });
   const { migrationPlan, ...staged } = value;
   return {
@@ -195,6 +197,9 @@ async function runPreparationWorker(jobDir: string): Promise<number> {
 
   let result: PreparationResult;
   try {
+    // This is durable before any transfer or native effect; a lost result cannot erase the phase.
+    await preparationLifecycle(request.baseDir, request.jobId).effects(process.pid, "transfer");
+    controller.signal.throwIfAborted();
     const outcome = await withQualifiedRuntimeLock(request.baseDir, PREPARATION_LOCK, () =>
       runJob(request, jobDir, controller.signal, setPhase),
     );
@@ -204,9 +209,7 @@ async function runPreparationWorker(jobDir: string): Promise<number> {
       protocol: PREPARATION_PROTOCOL,
       jobId: request.jobId,
       ok: false,
-      error: describePreparationFailure(
-        controller.signal.aborted ? controller.signal.reason : error,
-      ),
+      error: describePreparationFailure(controller.signal.aborted && phase === "downloading" ? controller.signal.reason : error),
     };
   }
   try {

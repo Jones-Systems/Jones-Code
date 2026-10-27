@@ -20,6 +20,8 @@
     "apps/server/src/jones/updates/operations/operations.ts",
     "apps/server/src/jones/updates/operations/recoveryPreflight.test.ts",
     "apps/server/src/jones/updates/operations/recoveryPreflight.ts",
+    "apps/server/src/jones/updates/preparation/lifecycle.test.ts",
+    "apps/server/src/jones/updates/preparation/lifecycle.ts",
     "apps/web/src/jones/fleetUpdates/FleetController.test.tsx",
     "apps/web/src/jones/installStatus/InstallPlanController.tsx",
     "apps/web/src/jones/installStatus/InstallStatusPanel.browser.test.tsx",

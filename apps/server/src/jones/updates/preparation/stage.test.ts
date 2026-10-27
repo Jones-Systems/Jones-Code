@@ -37,7 +37,7 @@ afterEach(async () => {
   for (const home of homes.splice(0)) await home.remove();
 });
 
-it("preserves bounded Darwin cleanup and diagnostic streams after preparation cancellation", async () => {
+it.each([false, true])("preserves bounded Darwin cancellation cleanup evidence (proved: %s)", async (cleanupProved) => {
   const fixture = await home();
   const actions = await actionsFixture(fixture);
   const controller = new AbortController();
@@ -45,6 +45,7 @@ it("preserves bounded Darwin cleanup and diagnostic streams after preparation ca
   const primary = new Error("Synthetic preparation cancellation.");
   const mount = NodePath.join(fixture.base, "runtime", "owned-mount", "volume");
   const written: string[] = [];
+  const effects: string[] = [];
   let sequence = 0;
   const spawn = vi.fn(() => {
     const index = ++sequence;
@@ -121,7 +122,7 @@ it("preserves bounded Darwin cleanup and diagnostic streams after preparation ca
         signal: cleanup.signal,
       });
       expect(pipe.inputFailed).toBe(true);
-      throw primary;
+      if (!cleanupProved) throw primary;
     },
   }));
   try {
@@ -137,8 +138,10 @@ it("preserves bounded Darwin cleanup and diagnostic streams after preparation ca
         host: { platform: "darwin", architecture: "arm64" },
         scratchParent: fixture.root,
         signal: controller.signal,
+        onNativeEffects: async (phase) => { effects.push(phase); },
       }),
     ).rejects.toBe(primary);
+    expect(effects).toEqual(["native-effects", ...(cleanupProved ? ["clean"] : [])]);
     expect(spawn).toHaveBeenCalledTimes(5);
     expect(spawn.mock.calls[0]).toEqual([
       "/usr/bin/hdiutil",

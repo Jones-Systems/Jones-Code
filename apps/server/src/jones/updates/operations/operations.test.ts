@@ -9,7 +9,10 @@ import type { JonesOperationStartInput } from "@t3tools/contracts/jones/jonesOpe
 import type { JonesActionsCandidate } from "@t3tools/shared/jones/jonesActions";
 import { JonesUpdater, type JonesPreparedStage } from "../JonesUpdater.ts";
 import type { OperationReconciliation } from "../launcherOperation.ts";
-import type { PreparationJoin, PreparationSupervisor } from "../preparation/supervisor.ts";
+import { makePreparationSupervisor, type PreparationJoin, type PreparationSupervisor } from "../preparation/supervisor.ts";
+import { preparationLifecycle } from "../preparation/lifecycle.ts";
+import { preparationJobsDirectory } from "../preparation/protocol.ts";
+import { sweepPreparationLeftovers } from "../preparation/sweep.ts";
 import { createOperationLedger } from "./ledger.ts";
 import { createTargetOperations } from "./operations.ts";
 import { createRecoveryPreflights } from "./recoveryPreflight.ts";
@@ -97,7 +100,8 @@ async function make(base: string, recoveryEnabled: boolean) {
       if (kind === "completed") outcome.resolve({ stagedHandle: "stage", version: candidate.version!, payloadSha256: "f".repeat(64) });
       else outcome.reject(new Error("External worker ended."));
     },
-    release: () => { removedJobIds = [jobId!]; },
+    scratchDeleted: () => { removedJobIds = [jobId!]; },
+    release: () => { joins.set(jobId!, { kind: "stopped", jobId: jobId! }); },
   };
 }
 describe("target operations", () => {
@@ -123,13 +127,16 @@ describe("target operations", () => {
     expect(f.updater.snapshot().phase).toBe("available");
     expect(f.prepareCalls()).toBe(1);
   }));
-  it("holds an unreaped worker across reconciliation and releases only with sweep evidence", async () => fixture(async (f) => {
+  it("keeps scratch deletion separate from positive worker release", async () => fixture(async (f) => {
     await f.operations.start(input);
     await vi.waitFor(() => expect(f.prepareCalls()).toBe(1));
     await f.operations.stop({ ...input, stopId: NodeCrypto.randomUUID() });
     f.finish("unreaped");
     await vi.waitFor(async () => expect((await f.receipt())?.phase).toBe("held"));
     await f.operations.reconcile();
+    expect(f.updater.admissionHeld()).toBe(true);
+    f.scratchDeleted(); await f.operations.sweep();
+    expect((await f.receipt())?.phase).toBe("held");
     expect(f.updater.admissionHeld()).toBe(true);
     f.release(); await f.operations.sweep();
     expect((await f.receipt())?.phase).toBe("stopped");
@@ -235,6 +242,129 @@ it("settles a restart before dispatch without replaying its effect", async () =>
   expect((await f.receipt())?.phase).toBe("interrupted");
   expect(f.prepareCalls()).toBe(0);
   expect(f.install).not.toHaveBeenCalled();
+}));
+
+it("keeps a generic blocked lost reply held through absent, restart, pending and committed without redispatch", async () => fixture(async (f) => {
+  await f.operations.start(input);
+  await vi.waitFor(() => expect(f.prepareCalls()).toBe(1));
+  f.finish("completed");
+  await vi.waitFor(async () => expect((await f.receipt())?.phase).toBe("completed"));
+  f.install.mockImplementation(async () => ({ ...f.updater.snapshot(), phase: "blocked" }));
+  const request: JonesOperationStartInput = { ...input, operationId: NodeCrypto.randomUUID(), action: {
+    kind: "install", stagedHandle: "stage", currentVersion: f.updater.snapshot().currentVersion!, targetSource: candidate.source,
+  } };
+  await f.operations.start(request);
+  await vi.waitFor(async () => expect(await f.ledger.read(request.operationId)).toMatchObject({ phase: "running", code: "launcher-unconfirmed" }));
+  expect(f.updater.admissionHeld()).toBe(true);
+  await f.operations.read({ environmentId: input.environmentId, operationIds: [request.operationId] });
+  await f.operations.start(request);
+  expect(f.install).toHaveBeenCalledOnce();
+  const restarted = await make(f.base, false);
+  await restarted.operations.reconcile();
+  expect(await restarted.ledger.read(request.operationId)).toMatchObject({ phase: "running", code: "launcher-unconfirmed" });
+  expect(restarted.updater.admissionHeld()).toBe(true);
+  if (request.action.kind !== "install") throw new Error("Expected install fixture.");
+  const binding = { environmentId: request.environmentId, expectedInstalledSource: request.expectedInstalledSource,
+    stagedHandle: request.action.stagedHandle, currentVersion: request.action.currentVersion, targetSource: request.action.targetSource };
+  restarted.setNative({ state: "pending", operationId: request.operationId, binding });
+  await restarted.operations.reconcile();
+  expect(await restarted.ledger.read(request.operationId)).toMatchObject({ phase: "handed-off", updateId: request.operationId });
+  restarted.setNative({ state: "committed", operationId: request.operationId, binding, updateId: request.operationId });
+  await restarted.operations.reconcile();
+  expect(await restarted.ledger.read(request.operationId)).toMatchObject({ phase: "completed", updateId: request.operationId });
+  expect((await restarted.ledger.read(request.operationId))?.code).toBeUndefined();
+  expect(restarted.updater.admissionHeld()).toBe(false);
+  expect(f.install).toHaveBeenCalledOnce();
+  expect(restarted.install).not.toHaveBeenCalled();
+}));
+
+it("settles an exactly bound typed refusal proved before dispatch", async () => fixture(async (f) => {
+  await f.operations.start(input);
+  await vi.waitFor(() => expect(f.prepareCalls()).toBe(1));
+  f.finish("completed");
+  await vi.waitFor(async () => expect((await f.receipt())?.phase).toBe("completed"));
+  f.install.mockImplementation(async (request) => {
+    request.onBeforeDispatchRefusal?.({ ...request, kind: "before-dispatch" });
+    return { ...f.updater.snapshot(), phase: "blocked" };
+  });
+  const request: JonesOperationStartInput = { ...input, operationId: NodeCrypto.randomUUID(), action: {
+    kind: "install", stagedHandle: "stage", currentVersion: f.updater.snapshot().currentVersion!, targetSource: candidate.source,
+  } };
+  await f.operations.start(request);
+  await vi.waitFor(async () => expect(await f.ledger.read(request.operationId)).toMatchObject({ phase: "refused", code: "install-refused" }));
+  expect(f.updater.admissionHeld()).toBe(false);
+  await f.operations.start(request);
+  expect(f.install).toHaveBeenCalledOnce();
+}));
+
+it("holds a reaped preparation whose native cleanup is unconfirmed", async () => fixture(async (f) => {
+  await f.operations.start(input);
+  await vi.waitFor(() => expect(f.prepareCalls()).toBe(1));
+  await f.operations.stop({ ...input, stopId: NodeCrypto.randomUUID() });
+  f.finish("cleanup-unconfirmed");
+  await vi.waitFor(async () => expect(await f.receipt()).toMatchObject({ phase: "held", code: "cleanup-unconfirmed", stop: { result: "held" } }));
+  expect(f.updater.snapshot().phase).toBe("blocked");
+  f.scratchDeleted(); await f.operations.sweep();
+  expect(f.updater.admissionHeld()).toBe(true);
+  expect((await f.operations.start({ ...input, operationId: NodeCrypto.randomUUID() })).code).toBe("busy");
+  expect(f.prepareCalls()).toBe(1);
+  expect(f.install).not.toHaveBeenCalled();
+  f.release(); await f.operations.reconcile();
+  expect(await f.receipt()).toMatchObject({ phase: "stopped", stop: { result: "stopped" } });
+  expect((await f.receipt())?.code).toBeUndefined();
+  expect(f.updater.admissionHeld()).toBe(false);
+}));
+
+it.each(["transfer", "native-effects"] as const)("reconciles durable %s evidence through supervisor, free-lock sweep, scratch loss and restart", async (phase) => fixture(async (f) => {
+  const jobId = NodeCrypto.randomUUID();
+  const pid = 54321;
+  let descendantAlive = phase === "transfer";
+  const kill = vi.spyOn(process, "kill").mockImplementation((requested, signal) => {
+    if (signal !== 0 || (requested !== pid && requested !== -pid)) throw new Error("Unexpected synthetic process probe.");
+    if (requested === -pid && descendantAlive) return true;
+    throw Object.assign(new Error("Synthetic process absence."), { code: "ESRCH" });
+  });
+  try {
+    const lifecycle = preparationLifecycle(f.base, jobId);
+    await lifecycle.reserve("stage");
+    await lifecycle.launch({ kind: "stage", state: "started", worker: { pid, processGroup: pid } });
+    await lifecycle.effects(pid, phase);
+    const scratch = NodePath.join(preparationJobsDirectory(f.base), jobId);
+    await NodeFSP.mkdir(scratch, { recursive: true });
+    await f.ledger.accept(input);
+    await f.ledger.transition(input.operationId, (r) => ({ ...r, phase: "running", jobId }));
+    const supervisor = () => makePreparationSupervisor({ baseDir: f.base, cacheRoot: NodePath.join(f.base, "cache"),
+      command: { file: "unused-synthetic-worker", args: [] } });
+    const bind = (owner: typeof f, preparation: PreparationSupervisor) => createTargetOperations({ key: f.base,
+      ledger: owner.ledger, updater: owner.updater, preparation, install: owner.install,
+      refreshPolicy: async () => {}, reconcileNative: async () => ({ state: "absent", operationId: input.operationId }), onFailure: () => {} });
+    const preparation = supervisor();
+    const operations = bind(f, preparation);
+    await operations.stop({ ...input, stopId: NodeCrypto.randomUUID() });
+    await operations.reconcile();
+    expect(await f.receipt()).toMatchObject({ phase: "held", stop: { result: "held" } });
+    expect(await preparation.reconcile?.(jobId)).toMatchObject({ jobId, kind: descendantAlive ? "unreaped" : "cleanup-unconfirmed" });
+    // Both old owner locks are free. The real sweep must retain unresolved scratch.
+    expect(await sweepPreparationLeftovers({ baseDir: f.base, cacheRoot: NodePath.join(f.base, "cache"), keepJob: NodeCrypto.randomUUID() }))
+      .toMatchObject({ removedJobIds: [], retainedJobIds: [jobId] });
+    await NodeFSP.rm(scratch, { recursive: true });
+    const restarted = await make(f.base, false);
+    const nextPreparation = supervisor();
+    const next = bind(restarted, nextPreparation);
+    await next.reconcile();
+    expect(await restarted.receipt()).toMatchObject({ phase: "held", stop: { result: "held" } });
+    expect(restarted.updater.admissionHeld()).toBe(true);
+    expect((await next.start({ ...input, operationId: NodeCrypto.randomUUID() })).code).toBe("busy");
+    await restarted.updater.install({ stagedHandle: "not-admitted", environmentId: input.environmentId, currentVersion: "old" });
+    expect(restarted.prepareCalls()).toBe(0);
+    expect(restarted.install).not.toHaveBeenCalled();
+    descendantAlive = false;
+    if (phase === "native-effects") await lifecycle.effects(pid, "clean");
+    await next.reconcile();
+    expect(await restarted.receipt()).toMatchObject({ phase: "stopped", stop: { result: "stopped" } });
+    expect(restarted.updater.admissionHeld()).toBe(false);
+    expect(await nextPreparation.reconcile?.(jobId)).toMatchObject({ jobId, kind: "stopped" });
+  } finally { kill.mockRestore(); }
 }));
 
 it("holds interrupted stage publication even after the worker is gone", async () => fixture(async (f) => {
