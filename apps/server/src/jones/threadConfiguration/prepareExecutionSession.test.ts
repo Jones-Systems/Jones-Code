@@ -67,8 +67,9 @@ it.effect(
 );
 
 function makeFixture(
-  transition: "restart_and_resume" | "create_with_handoff",
+  transition: "restart_and_resume" | "create_with_handoff" | "switch_model_in_session",
   fault?: "detach" | "persist" | "stale",
+  continuation = false,
 ) {
   const projection = {
     thread: { id: ThreadId.make("retirement-thread") },
@@ -79,6 +80,7 @@ function makeFixture(
         activeAttemptId: RunAttemptId.make("retirement-attempt"),
         providerInstanceId: ProviderInstanceId.make("target"),
         modelSelection: { instanceId: ProviderInstanceId.make("target"), model: "synthetic" },
+        ...(continuation ? { restartContinuationOfRunId: RunId.make("crashed-source") } : {}),
       },
     ],
     providerThreads: [{ providerSessionId: ProviderSessionId.make("target-session") }],
@@ -110,7 +112,10 @@ function makeFixture(
               instanceChanged: true,
               modelChanged: true,
               targetProviderThreadId: null,
-              releaseProviderSessionIds: [projection.providerSessions[0]!.id],
+              releaseProviderSessionIds:
+                transition === "switch_model_in_session"
+                  ? []
+                  : [projection.providerSessions[0]!.id],
               transition: { type: transition },
             }),
         }),
@@ -142,3 +147,27 @@ function makeFixture(
   );
   return { projection, start, order, writes };
 }
+
+it.effect.each(["switch_model_in_session", "create_with_handoff"] as const)(
+  "a %s owner continuation reserves a fresh logical session",
+  (transition) =>
+    Effect.gen(function* () {
+      const fixture = makeFixture(transition, undefined, true);
+      yield* fixture.start;
+      const update = fixture.writes[0]!.events.find(
+        (event) => event.type === "provider-thread.updated",
+      );
+      assert.isDefined(update);
+      if (update?.type === "provider-thread.updated") {
+        assert.notEqual(
+          update.payload.providerSessionId,
+          fixture.projection.providerThreads[0]!.providerSessionId,
+        );
+        assert.equal(
+          update.payload.providerSessionId,
+          `self-configure:${fixture.projection.runs[0]!.id}:${fixture.projection.runs[0]!.activeAttemptId}`,
+        );
+      }
+      assert.equal(fixture.writes[0]!.expectedStatus, "starting");
+    }),
+);

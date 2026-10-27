@@ -187,6 +187,10 @@
       "types": "./src/server/jones/ProviderEventOrigin.ts",
       "import": "./src/server/jones/ProviderEventOrigin.ts"
     },
+    "./server/jones/GoalContinuityContext": {
+      "types": "./src/server/jones/GoalContinuityContext.ts",
+      "import": "./src/server/jones/GoalContinuityContext.ts"
+    },
     "./server/jones/ProviderRuntimeBindingDiagnostics": {
       "types": "./src/server/jones/ProviderRuntimeBindingDiagnostics.ts",
       "import": "./src/server/jones/ProviderRuntimeBindingDiagnostics.ts"
