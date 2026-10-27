@@ -7,8 +7,7 @@ import {
 import * as DesktopIpc from "../../ipc/DesktopIpc.ts";
 import { DesktopUpdates } from "../../updates/DesktopUpdates.ts";
 
-export const INSTALL_PLAN_CHANNEL = "desktop:jones-install-plan";
-export const INSTALL_PLAN_STATE_CHANNEL = "desktop:jones-install-plan-state";
+const INSTALL_PLAN_CHANNEL = "desktop:jones-install-plan";
 export const installPlan = DesktopIpc.makeIpcMethod({
   channel: INSTALL_PLAN_CHANNEL,
   payload: JonesInstallPlanRequest,

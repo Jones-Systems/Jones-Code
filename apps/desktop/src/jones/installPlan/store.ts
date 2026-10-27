@@ -15,7 +15,7 @@ import {
   withPrivateJournalLock,
 } from "../storage/privateJsonStore.ts";
 
-export const PLAN_BYTES = 1024 * 1024;
+const PLAN_BYTES = 1024 * 1024;
 const Document = Schema.Struct({
   schema: Schema.Literal(1),
   current: Schema.NullOr(JonesInstallPlan),

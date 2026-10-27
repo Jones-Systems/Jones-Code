@@ -1,10 +1,5 @@
 import type { EnvironmentId } from "@t3tools/contracts";
-import type {
-  JonesInstallPlan,
-  JonesInstallPlanSelection,
-  JonesInstallPlanState,
-  JonesInstallPlanTarget,
-} from "@t3tools/contracts/jones/installPlan";
+import type { JonesInstallPlanState } from "@t3tools/contracts/jones/installPlan";
 import type { JonesRecoveryPreflight } from "@t3tools/contracts/jones/jonesOperations";
 import type { FleetHostStatus } from "@t3tools/contracts/jones/fleet-updates";
 import type { JonesUpdateObservation } from "../updates/jonesUpdates.ts";
@@ -13,8 +8,6 @@ import {
   deviceSettled,
   deviceState,
   isPlanComplete,
-  selectability,
-  startPlan,
   type InstallPlanDeviceState,
 } from "./model.ts";
 
@@ -45,45 +38,6 @@ export interface InstallPlanDeviceObservation {
   readonly observation: JonesUpdateObservation;
   readonly fleetStatus?: FleetHostStatus | null;
   readonly canOperate: boolean;
-}
-
-/** A client-side preview; this never creates native evidence or dispatch authority. */
-export function previewInstallPlan(input: {
-  readonly planId: string;
-  readonly target: JonesInstallPlanTarget;
-  readonly from: JonesInstallPlan["from"];
-  readonly laptopEnvironmentId: EnvironmentId;
-  readonly now: string;
-  readonly devices: readonly {
-    readonly environmentId: EnvironmentId;
-    readonly label: string;
-    readonly status: InstallPlanDeviceObservation;
-  }[];
-}) {
-  const select: JonesInstallPlanSelection[] = [];
-  const unavailable: { environmentId: EnvironmentId; label: string; reason: string }[] = [];
-  for (const device of input.devices) {
-    if (device.environmentId === input.laptopEnvironmentId) continue;
-    const selectable = selectability(device.status.observation, device.status.fleetStatus);
-    if (selectable.selectable && device.status.canOperate && select.length < 16)
-      select.push({
-        environmentId: device.environmentId,
-        label: device.label,
-        route: selectable.route,
-        ...(selectable.enrollmentId === undefined ? {} : { enrollmentId: selectable.enrollmentId }),
-      });
-    else
-      unavailable.push({
-        environmentId: device.environmentId,
-        label: device.label,
-        reason: !device.status.canOperate
-          ? "This session cannot change updates."
-          : selectable.selectable
-            ? "The plan already has 16 devices."
-            : selectable.reason,
-      });
-  }
-  return { plan: startPlan({ ...input, origin: "update-button", select }), unavailable };
 }
 
 export function installPlanPresentation(

@@ -45,7 +45,7 @@ const Document = Schema.Struct({
   history: Schema.optionalKey(Schema.Array(JonesActionDuty).check(Schema.isMaxLength(64))),
 });
 export const JONES_ACTION_JOURNAL_KEY = "jones.update-duties.v1";
-export const JONES_ACTION_JOURNAL_BYTES = 128 * 1024;
+const JONES_ACTION_JOURNAL_BYTES = 128 * 1024;
 const terminal = new Set([
   "completed",
   "rolled-back",
@@ -68,7 +68,7 @@ export function canonicalJonesCommand(value: unknown): string {
     )
     .join(",")}}`;
 }
-export const settledJonesReceipt = (receipt: JonesOperationReceipt) =>
+const settledJonesReceipt = (receipt: JonesOperationReceipt) =>
   terminal.has(receipt.phase) && receipt.code !== "launcher-unconfirmed";
 
 export function validateJonesStopReceipt(
