@@ -34,7 +34,11 @@ function automaticMessageIds(projection: SettlementProjection): ReadonlySet<stri
   );
 }
 
-function blocksSettlement(projection: SettlementProjection, exceptRunId: RunId, dependencies?: { readonly outgoing: number; readonly owed: number }): boolean {
+function blocksSettlement(
+  projection: SettlementProjection,
+  exceptRunId: RunId,
+  dependencies?: { readonly outgoing: number; readonly owed: number },
+): boolean {
   if (dependencies && (dependencies.outgoing > 0 || dependencies.owed > 0)) return true;
   const automatic = automaticMessageIds(projection);
   return (

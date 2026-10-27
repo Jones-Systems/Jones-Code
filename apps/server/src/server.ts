@@ -807,7 +807,9 @@ const layerMakeRoutes = Layer.mergeAll(
     Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
     Layer.provide(McpOAuth.layerMcpClientAuthenticator),
   ),
-  Layer.effectDiscard(DependencyReactor.DependencyReactor.pipe(Effect.flatMap((reactor) => reactor.start()))),
+  Layer.effectDiscard(
+    DependencyReactor.DependencyReactor.pipe(Effect.flatMap((reactor) => reactor.start())),
+  ),
   // Follows delegated tasks running in linked environments, including after a restart.
   Layer.effectDiscard(
     RemoteDelegation.RemoteDelegation.pipe(Effect.flatMap((remote) => remote.start())),

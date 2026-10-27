@@ -1,4 +1,8 @@
-import { threadRequestFulfillHandler, threadDependencyReleaseHandler, threadRequestObserveHandler } from "../../../jones/threadResultDependencies/tools.ts";
+import {
+  threadRequestFulfillHandler,
+  threadDependencyReleaseHandler,
+  threadRequestObserveHandler,
+} from "../../../jones/threadResultDependencies/tools.ts";
 import {
   threadLinksHandler,
   threadLinkHandler,

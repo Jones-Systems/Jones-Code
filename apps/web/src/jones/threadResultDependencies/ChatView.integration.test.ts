@@ -27,15 +27,18 @@ describe("ChatView result dependency integration", () => {
     expect(resolveThreadStatusPill({ thread })?.label).toBe("Waiting");
     const request = { id: RuntimeRequestId.make("own-request"), createdAt: source.updatedAt };
     const input = presentThreadShell(fixture.environmentId, {
-      ...source, pendingRuntimeRequest: { ...request, kind: "user_input" },
+      ...source,
+      pendingRuntimeRequest: { ...request, kind: "user_input" },
     });
     expect(resolveThreadStatusPill({ thread: input })?.label).toBe("Awaiting Input");
     const approval = presentThreadShell(fixture.environmentId, {
-      ...source, pendingRuntimeRequest: { ...request, kind: "permission" },
+      ...source,
+      pendingRuntimeRequest: { ...request, kind: "permission" },
     });
     expect(resolveThreadStatusPill({ thread: approval })?.label).toBe("Pending Approval");
     const cleared = presentThreadShell(fixture.environmentId, {
-      ...source, pendingBackgroundTasks: [],
+      ...source,
+      pendingBackgroundTasks: [],
     });
     expect(resolveThreadStatusPill({ thread: cleared })?.label).toBe("Completed");
   });
@@ -61,20 +64,30 @@ describe("ChatView result dependency integration", () => {
     };
     const detail = { ...projection, runs: [run] };
     const task = {
-      taskId: "jones-dependency:review", kind: "monitor", awaited: true,
+      taskId: "jones-dependency:review",
+      kind: "monitor",
+      awaited: true,
       description: "Waiting for VPS review",
     } as const;
     const shell = {
-      id: projection.thread.id, status: "completed" as const,
-      activityRunStatus: null, pendingBackgroundTasks: [task],
+      id: projection.thread.id,
+      status: "completed" as const,
+      activityRunStatus: null,
+      pendingBackgroundTasks: [task],
     };
     expect(deriveThreadPendingBackgroundTasks(detail, shell)).toEqual([task]);
     expect(
       deriveThreadPendingBackgroundTasks(detail, { ...shell, pendingBackgroundTasks: [] }),
     ).toEqual([]);
-    expect(deriveThreadPendingBackgroundTasks({
-      ...detail, runs: [{ ...run, status: "running", completedAt: null }],
-    }, shell)).toEqual([]);
+    expect(
+      deriveThreadPendingBackgroundTasks(
+        {
+          ...detail,
+          runs: [{ ...run, status: "running", completedAt: null }],
+        },
+        shell,
+      ),
+    ).toEqual([]);
     expect(deriveThreadPendingBackgroundTasks(null, shell)).toEqual([]);
   });
 });

@@ -18,11 +18,17 @@ export interface OpenRequest {
     readonly targetLabel: string;
   };
 }
-export const DependencyCommit = Context.Reference<OpenRequest | undefined>("jones/threadResultDependencies/DependencyCommit", { defaultValue: () => undefined });
+export const DependencyCommit = Context.Reference<OpenRequest | undefined>(
+  "jones/threadResultDependencies/DependencyCommit",
+  { defaultValue: () => undefined },
+);
 export interface WakeCommit {
   readonly dependencyId: string;
   readonly generation: number;
   readonly waiterThreadId: ThreadId;
   readonly messageId: MessageId;
 }
-export const DependencyWakeCommit = Context.Reference<WakeCommit | undefined>("jones/threadResultDependencies/DependencyWakeCommit", { defaultValue: () => undefined });
+export const DependencyWakeCommit = Context.Reference<WakeCommit | undefined>(
+  "jones/threadResultDependencies/DependencyWakeCommit",
+  { defaultValue: () => undefined },
+);

@@ -1,4 +1,9 @@
-import { ThreadResultRequestDescriptor, ThreadResultDependencyBinding, ThreadResultDependency, ThreadResultRequest } from "./jones/threadResultDependency.ts";
+import {
+  ThreadResultRequestDescriptor,
+  ThreadResultDependencyBinding,
+  ThreadResultDependency,
+  ThreadResultRequest,
+} from "./jones/threadResultDependency.ts";
 import { LinkedMessagePolicy, RemoteTaskObservation } from "./jones/remoteTaskObservation.ts";
 import { RemoteAdmissionDigest, RemoteAdmissionStatus } from "./jones/remoteAdmission.ts";
 import { SettlementProjectRemaining } from "./jones/settlementOrigins.ts";

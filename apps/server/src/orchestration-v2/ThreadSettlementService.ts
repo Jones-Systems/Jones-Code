@@ -693,7 +693,12 @@ export const make = Effect.gen(function* () {
     const dependencyChanges = yield* Effect.serviceOption(DependencyChanges.DependencyChanges);
     if (Option.isSome(dependencyChanges)) {
       const subscription = yield* dependencyChanges.value.subscribe;
-      yield* Stream.fromSubscription(subscription).pipe(Stream.runForEach((change) => Effect.forEach(change.threadIds, enqueueThread, { discard: true })), Effect.forkScoped);
+      yield* Stream.fromSubscription(subscription).pipe(
+        Stream.runForEach((change) =>
+          Effect.forEach(change.threadIds, enqueueThread, { discard: true }),
+        ),
+        Effect.forkScoped,
+      );
     }
     const settingsChanges = yield* settingsService.subscribeChanges;
     const mergedPullRequests = yield* pullRequests.subscribeMerges;

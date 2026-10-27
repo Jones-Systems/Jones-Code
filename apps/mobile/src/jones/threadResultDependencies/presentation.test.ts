@@ -34,18 +34,20 @@ describe("mobile result dependency presentation", () => {
     });
   });
 
-  it.each([["user_input", "input"], ["command", "approval"]] as const)(
-    "prioritizes the waiter's own %s request over the dependency",
-    (kind, status) => {
-      const thread = presentThreadShell(environmentId, {
-        ...terminal,
-        pendingRuntimeRequest: {
-          id: RuntimeRequestId.make("own-request"), kind, createdAt: terminal.updatedAt,
-        },
-      });
-      expect(resolveThreadListV2Status(thread)).toBe(status);
-    },
-  );
+  it.each([
+    ["user_input", "input"],
+    ["command", "approval"],
+  ] as const)("prioritizes the waiter's own %s request over the dependency", (kind, status) => {
+    const thread = presentThreadShell(environmentId, {
+      ...terminal,
+      pendingRuntimeRequest: {
+        id: RuntimeRequestId.make("own-request"),
+        kind,
+        createdAt: terminal.updatedAt,
+      },
+    });
+    expect(resolveThreadListV2Status(thread)).toBe(status);
+  });
 
   it("keeps active foreground work Working through the shared roster gate", () => {
     const active = { id: RunId.make("active"), ordinal: 2, status: "running" as const };

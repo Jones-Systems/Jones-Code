@@ -108,8 +108,11 @@ export const readMonitorSettlementBlocker = Effect.fn("ThreadMonitor.readSettlem
     expectedUpdatedAt: string,
   ) {
     const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
-    const dependencies = Option.isSome(sql) ? makeDependencyStore(sql.value, makeJonesTablePresence(sql.value)) : undefined;
-    if (dependencies && (yield* dependencies.duties(threadId)).outgoing > 0) return "dependency" as const;
+    const dependencies = Option.isSome(sql)
+      ? makeDependencyStore(sql.value, makeJonesTablePresence(sql.value))
+      : undefined;
+    if (dependencies && (yield* dependencies.duties(threadId)).outgoing > 0)
+      return "dependency" as const;
     const records = yield* store.getThreadRecords(threadId, fields, {
       turnItemTypes: [...executingItems],
       turnItemStatuses: ["pending", "running", "waiting"],
@@ -131,7 +134,8 @@ export const readMonitorSettlementBlocker = Effect.fn("ThreadMonitor.readSettlem
       if (seen.has(task.childThreadId)) continue;
       if (seen.size >= 64) return "unavailable" as const;
       seen.add(task.childThreadId);
-      if (dependencies && (yield* dependencies.duties(task.childThreadId)).outgoing > 0) return "dependency" as const;
+      if (dependencies && (yield* dependencies.duties(task.childThreadId)).outgoing > 0)
+        return "dependency" as const;
       const child = yield* store.getThreadRecords(task.childThreadId, fields, {
         turnItemTypes: [...executingItems],
         turnItemStatuses: ["pending", "running", "waiting"],
@@ -160,7 +164,8 @@ export const readMonitorSettlementBlocker = Effect.fn("ThreadMonitor.readSettlem
 );
 
 export const monitorSettlementBlockerMessage: Record<MonitorSettlementBlocker, string> = {
-  dependency: "Thread or descendant is waiting on an explicit result. Stop or release before settling.",
+  dependency:
+    "Thread or descendant is waiting on an explicit result. Stop or release before settling.",
   stale: "Thread changed after the monitor snapshot. Refresh before settling.",
   request: "Resolve every pending request before settling.",
   guest: "Review pending guest messages in Jones Code before settling.",

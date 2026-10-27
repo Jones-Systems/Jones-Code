@@ -6932,7 +6932,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           `;
             if (rows.length === 0) return [];
             const threadIds = rows.map((row) => ThreadId.make(row.thread_id));
-            const dependenciesByThreadId = dependencyRosterByThread(yield* resultDependencies.dependencies());
+            const dependenciesByThreadId = dependencyRosterByThread(
+              yield* resultDependencies.dependencies(),
+            );
             const { providerThreadsByThreadId, pendingTurnItemsByThreadId } =
               yield* pendingBackgroundDataByThreadId({
                 providerThreadRows: yield* selectShellProviderThreadRows(threadIds),
@@ -7340,7 +7342,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       const shellItemCountsByThreadId = shellItemCountMap(shellItemCountRows);
       const { providerThreadsByThreadId, pendingTurnItemsByThreadId } =
         yield* pendingBackgroundDataByThreadId({ providerThreadRows, pendingTurnItemRows });
-      const dependenciesByThreadId = dependencyRosterByThread(yield* resultDependencies.dependencies());
+      const dependenciesByThreadId = dependencyRosterByThread(
+        yield* resultDependencies.dependencies(),
+      );
       const states = yield* Effect.forEach(threadRows, (row) =>
         shellThreadStateFromRow({
           row,
@@ -7591,7 +7595,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             const { providerThreadsByThreadId, pendingTurnItemsByThreadId } =
               yield* pendingBackgroundDataByThreadId({ providerThreadRows, pendingTurnItemRows });
 
-            const dependenciesByThreadId = dependencyRosterByThread(yield* resultDependencies.dependencies());
+            const dependenciesByThreadId = dependencyRosterByThread(
+              yield* resultDependencies.dependencies(),
+            );
             const states = yield* Effect.forEach([...rowsByThreadId.values()], (row) =>
               shellThreadStateFromRow({
                 row,
@@ -7821,7 +7827,9 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
         const shells = yield* Effect.forEach(
           selectedThreadIds.toSorted((left, right) => String(left).localeCompare(String(right))),
           (threadId) =>
-            service.getThreadProjection(threadId).pipe(Effect.map((projection) => threadShellFromProjection(projection))),
+            service
+              .getThreadProjection(threadId)
+              .pipe(Effect.map((projection) => threadShellFromProjection(projection))),
         );
         const visible = shells.filter((thread) => thread.deletedAt === null);
         return {

@@ -1,4 +1,7 @@
-import type { OrchestrationV2PendingBackgroundTask, ThreadResultDependency } from "@t3tools/contracts";
+import type {
+  OrchestrationV2PendingBackgroundTask,
+  ThreadResultDependency,
+} from "@t3tools/contracts";
 
 const reasons = {
   admission_held: "Awaiting receiving owner approval",
@@ -12,16 +15,28 @@ const reasons = {
   unreachable: "Environment unreachable; observation continues",
   delivery_unknown: "Delivery unknown — checking",
 };
-export function roster(dependencies: ReadonlyArray<ThreadResultDependency>): ReadonlyArray<OrchestrationV2PendingBackgroundTask> {
-  return dependencies.filter((dependency) => ["sending", "awaiting", "resolved"].includes(dependency.state)).map((dependency) => ({
-    taskId: `jones-dependency:${dependency.dependencyId}`,
-    kind: "monitor" as const,
-    awaited: true,
-    description: `${dependency.state === "resolved" ? "Result ready — delivering" : reasons[dependency.observation]}: ${dependency.targetLabel}`.slice(0, 160),
-  }));
+export function roster(
+  dependencies: ReadonlyArray<ThreadResultDependency>,
+): ReadonlyArray<OrchestrationV2PendingBackgroundTask> {
+  return dependencies
+    .filter((dependency) => ["sending", "awaiting", "resolved"].includes(dependency.state))
+    .map((dependency) => ({
+      taskId: `jones-dependency:${dependency.dependencyId}`,
+      kind: "monitor" as const,
+      awaited: true,
+      description:
+        `${dependency.state === "resolved" ? "Result ready — delivering" : reasons[dependency.observation]}: ${dependency.targetLabel}`.slice(
+          0,
+          160,
+        ),
+    }));
 }
 
-export function byThread(dependencies: ReadonlyArray<ThreadResultDependency & { readonly waiterThreadId: import("@t3tools/contracts").ThreadId }>) {
+export function byThread(
+  dependencies: ReadonlyArray<
+    ThreadResultDependency & { readonly waiterThreadId: import("@t3tools/contracts").ThreadId }
+  >,
+) {
   const grouped = new Map<import("@t3tools/contracts").ThreadId, ThreadResultDependency[]>();
   for (const dependency of dependencies) {
     const group = grouped.get(dependency.waiterThreadId) ?? [];

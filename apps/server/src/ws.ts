@@ -1056,7 +1056,10 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
     const enrichmentChanges = yield* projectEnrichment.subscribeChanges;
     const resultDependencies = makeDependencyStore(sql, makeJonesTablePresence(sql));
     const dependencyChanges = yield* Effect.serviceOption(DependencyChanges.DependencyChanges);
-    const dependencySubscription = input.acceptThreadRefresh === true && Option.isSome(dependencyChanges) ? yield* dependencyChanges.value.subscribe : undefined;
+    const dependencySubscription =
+      input.acceptThreadRefresh === true && Option.isSome(dependencyChanges)
+        ? yield* dependencyChanges.value.subscribe
+        : undefined;
     const loadProjectMetadataSnapshot = Effect.fn("ws.orchestrationV2.loadProjectMetadataSnapshot")(
       function* (snapshotSequence: number) {
         const enriched = yield* enrichProjectShells(yield* projects.listShells());
@@ -1189,23 +1192,35 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
       ),
     );
 
-    const dependencyRefreshes = dependencySubscription === undefined ? Stream.empty : Stream.fromSubscription(dependencySubscription).pipe(
-      Stream.groupedWithin(128, Duration.millis(25)),
-      Stream.mapEffect((changes) => Effect.gen(function* () {
-        const ids = [...new Set(Array.from(changes).flatMap((change) => [...change.threadIds]))];
-        if (ids.length === 0) return [];
-        const loaded = yield* loadSnapshot();
-        return dependencyRefreshItems(loaded.snapshot, ids, loaded.currentThreads);
-      })),
-      Stream.flatMap(Stream.fromIterable),
-    );
+    const dependencyRefreshes =
+      dependencySubscription === undefined
+        ? Stream.empty
+        : Stream.fromSubscription(dependencySubscription).pipe(
+            Stream.groupedWithin(128, Duration.millis(25)),
+            Stream.mapEffect((changes) =>
+              Effect.gen(function* () {
+                const ids = [
+                  ...new Set(Array.from(changes).flatMap((change) => [...change.threadIds])),
+                ];
+                if (ids.length === 0) return [];
+                const loaded = yield* loadSnapshot();
+                return dependencyRefreshItems(loaded.snapshot, ids, loaded.currentThreads);
+              }),
+            ),
+            Stream.flatMap(Stream.fromIterable),
+          );
     const shellRefreshes = Stream.merge(enrichmentRefreshes, dependencyRefreshes);
-    const reconnectDependencies = input.acceptThreadRefresh !== true || input.afterSequence === undefined ? Stream.empty : Stream.fromEffect(Effect.gen(function* () {
-      const ids = yield* resultDependencies.changedThreads(input.afterSequence!);
-      if (ids.length === 0) return [];
-      const loaded = yield* loadSnapshot();
-      return dependencyRefreshItems(loaded.snapshot, ids, loaded.currentThreads);
-    })).pipe(Stream.flatMap(Stream.fromIterable));
+    const reconnectDependencies =
+      input.acceptThreadRefresh !== true || input.afterSequence === undefined
+        ? Stream.empty
+        : Stream.fromEffect(
+            Effect.gen(function* () {
+              const ids = yield* resultDependencies.changedThreads(input.afterSequence!);
+              if (ids.length === 0) return [];
+              const loaded = yield* loadSnapshot();
+              return dependencyRefreshItems(loaded.snapshot, ids, loaded.currentThreads);
+            }),
+          ).pipe(Stream.flatMap(Stream.fromIterable));
 
     // Subscribe before loading for racing enrichments; initial refresh covers pre-subscription completions and cold HTTP snapshots.
     const completionMarker =
@@ -1273,7 +1288,10 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
       );
       return composeShellStreamWithEnrichment({
         initial: initialEnrichmentItems(loaded),
-        tail: Stream.concat(Stream.concat(Stream.concat(replay, reconnectDependencies), completionMarker), liveFrom(highWater)),
+        tail: Stream.concat(
+          Stream.concat(Stream.concat(replay, reconnectDependencies), completionMarker),
+          liveFrom(highWater),
+        ),
         enrichment: shellRefreshes,
       });
     }).pipe(

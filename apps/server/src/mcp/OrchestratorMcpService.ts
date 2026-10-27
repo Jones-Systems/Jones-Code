@@ -1,7 +1,10 @@
 import * as SqlClient from "effect/sql/SqlClient";
 import { makeDependencyStore } from "../jones/threadResultDependencies/DependencyStore.ts";
 import { makeJonesTablePresence } from "../jones/persistence/JonesTablePresence.ts";
-import { DependencyCommit, type OpenRequest } from "../jones/threadResultDependencies/DependencyCommit.ts";
+import {
+  DependencyCommit,
+  type OpenRequest,
+} from "../jones/threadResultDependencies/DependencyCommit.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as LinkedThreads from "../jones/linkedThreads/LinkedThreads.ts";
 import { readTaskNativeSession } from "../jones/taskContinuation/provenance.ts";
@@ -973,7 +976,9 @@ function timelineItem(input: {
 
 const make = Effect.gen(function* () {
   const dependencySql = yield* Effect.serviceOption(SqlClient.SqlClient);
-  const resultDependencies = Option.isSome(dependencySql) ? makeDependencyStore(dependencySql.value, makeJonesTablePresence(dependencySql.value)) : undefined;
+  const resultDependencies = Option.isSome(dependencySql)
+    ? makeDependencyStore(dependencySql.value, makeJonesTablePresence(dependencySql.value))
+    : undefined;
   const linkedThreads = yield* Effect.serviceOption(LinkedThreads.LinkedThreads);
   const crypto = yield* Crypto.Crypto;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
@@ -1506,9 +1511,14 @@ const make = Effect.gen(function* () {
             .filter((run) => run.delegatedTaskId === task.id)
             .toSorted((a, b) => b.ordinal - a.ordinal)[0]
         : progress.resultRun;
-    const dependencyDuty = resultDependencies === undefined ? false : (yield* resultDependencies.duties(task.childThreadId).pipe(Effect.mapError(unavailable))).outgoing > 0;
-    const taskWorkState = dependencyDuty ? "waiting_for_children" :
-      childRun?.delegatedTaskId === task.id
+    const dependencyDuty =
+      resultDependencies === undefined
+        ? false
+        : (yield* resultDependencies.duties(task.childThreadId).pipe(Effect.mapError(unavailable)))
+            .outgoing > 0;
+    const taskWorkState = dependencyDuty
+      ? "waiting_for_children"
+      : childRun?.delegatedTaskId === task.id
         ? isTerminalTaskStatus(taskStatusForRun(taskResultRun))
           ? "result_available"
           : "working"
@@ -2300,7 +2310,10 @@ const make = Effect.gen(function* () {
         }),
         features: {
           remoteTaskObservationVersion: ObservationSupport.version,
-          ...(resultDependencies === undefined || !(yield* resultDependencies.available.pipe(Effect.mapError(unavailable))) ? {} : { threadResultRequestVersion: "t3.thread-result-request/v1" }),
+          ...(resultDependencies === undefined ||
+          !(yield* resultDependencies.available.pipe(Effect.mapError(unavailable)))
+            ? {}
+            : { threadResultRequestVersion: "t3.thread-result-request/v1" }),
           appOwnedSubagents: true,
           asyncPolling: true,
           cancellation: true,
@@ -2977,7 +2990,18 @@ const make = Effect.gen(function* () {
           page,
           (shell) =>
             Effect.gen(function* () {
-              const item = { ...listItemFromShell(shell, nowMs), ...(resultDependencies === undefined ? {} : { waitingOn: (yield* resultDependencies.dependencies(shell.id).pipe(Effect.mapError(unavailable))).filter((item) => ["sending", "awaiting", "resolved"].includes(item.state)).slice(0, 20) }) };
+              const item = {
+                ...listItemFromShell(shell, nowMs),
+                ...(resultDependencies === undefined
+                  ? {}
+                  : {
+                      waitingOn: (yield* resultDependencies
+                        .dependencies(shell.id)
+                        .pipe(Effect.mapError(unavailable)))
+                        .filter((item) => ["sending", "awaiting", "resolved"].includes(item.state))
+                        .slice(0, 20),
+                    }),
+              };
               if (
                 !Object.hasOwn(threadManagement, "observeThreadActivity") ||
                 threadManagement.observeThreadActivity === undefined
@@ -3081,11 +3105,22 @@ const make = Effect.gen(function* () {
                 input.childProgressForRunId,
               ),
             }),
-        thread: { ...threadDetail(target, timeline.totalItems, shell, yield* Clock.currentTimeMillis),
-          ...(resultDependencies === undefined ? {} : {
-            waitingOn: (yield* resultDependencies.dependencies(input.threadId).pipe(Effect.mapError(unavailable))).filter((item) => ["sending", "awaiting", "resolved"].includes(item.state)),
-            owedRequests: (yield* resultDependencies.requests(input.threadId).pipe(Effect.mapError(unavailable))).filter((item) => item.state === "pending" && !item.requesterReleased),
-          }),
+        thread: {
+          ...threadDetail(target, timeline.totalItems, shell, yield* Clock.currentTimeMillis),
+          ...(resultDependencies === undefined
+            ? {}
+            : {
+                waitingOn: (yield* resultDependencies
+                  .dependencies(input.threadId)
+                  .pipe(Effect.mapError(unavailable))).filter((item) =>
+                  ["sending", "awaiting", "resolved"].includes(item.state),
+                ),
+                owedRequests: (yield* resultDependencies
+                  .requests(input.threadId)
+                  .pipe(Effect.mapError(unavailable))).filter(
+                  (item) => item.state === "pending" && !item.requesterReleased,
+                ),
+              }),
         },
         recentRuns: target.runs
           .toSorted((left, right) => right.ordinal - left.ordinal)
@@ -3104,7 +3139,14 @@ const make = Effect.gen(function* () {
       } satisfies OrchestratorMcpThreadReadResult;
     }),
     sendToThread: Effect.fn("OrchestratorMcpService.sendToThread")(function* (scope, input) {
-      const waiterGeneration = scope.thread && resultDependencies && (yield* resultDependencies.available.pipe(Effect.mapError(unavailable))) ? yield* resultDependencies.waiterGeneration(scope.thread.threadId).pipe(Effect.mapError(unavailable)) : 0;
+      const waiterGeneration =
+        scope.thread &&
+        resultDependencies &&
+        (yield* resultDependencies.available.pipe(Effect.mapError(unavailable)))
+          ? yield* resultDependencies
+              .waiterGeneration(scope.thread.threadId)
+              .pipe(Effect.mapError(unavailable))
+          : 0;
       const { parent, limits, target } = yield* loadScopedThread(scope, input.threadId);
       yield* assertLiveCallerForOtherThread(scope, parent, target);
       yield* resolveRuntimeMode(limits.runtimeMode, target.thread.runtimeMode);
@@ -3115,28 +3157,74 @@ const make = Effect.gen(function* () {
       const { commandId, messageId } = threadSendIdentity(scope.requestNamespace, key);
       let resultRequest: OpenRequest | undefined;
       if (input.awaitResult === true || input.resultRequest !== undefined) {
-        if (resultDependencies === undefined || !(yield* resultDependencies.available.pipe(Effect.mapError(unavailable)))) return yield* failure("capability_denied", "Durable result requests are unavailable.");
+        if (
+          resultDependencies === undefined ||
+          !(yield* resultDependencies.available.pipe(Effect.mapError(unavailable)))
+        )
+          return yield* failure("capability_denied", "Durable result requests are unavailable.");
         const remote = scope.client?.remoteOrigin;
-        if (input.resultRequest !== undefined && (scope.client?.linked !== true || remote === undefined || remote.linkSessionId !== scope.client.sessionId))
-          return yield* failure("capability_denied", "Result descriptors are accepted only from an authenticated linked origin.");
-        if (input.awaitResult === true && (parent === undefined || parent.thread.id === input.threadId || (target.thread.lineage.relationshipToParent === "subagent" && target.thread.lineage.parentThreadId === parent.thread.id)))
-          return yield* failure("invalid_request", "A result dependency needs a different thread and cannot duplicate this thread's app-owned child task.");
+        if (
+          input.resultRequest !== undefined &&
+          (scope.client?.linked !== true ||
+            remote === undefined ||
+            remote.linkSessionId !== scope.client.sessionId)
+        )
+          return yield* failure(
+            "capability_denied",
+            "Result descriptors are accepted only from an authenticated linked origin.",
+          );
+        if (
+          input.awaitResult === true &&
+          (parent === undefined ||
+            parent.thread.id === input.threadId ||
+            (target.thread.lineage.relationshipToParent === "subagent" &&
+              target.thread.lineage.parentThreadId === parent.thread.id))
+        )
+          return yield* failure(
+            "invalid_request",
+            "A result dependency needs a different thread and cannot duplicate this thread's app-owned child task.",
+          );
         if (input.awaitResult === true && scope.client?.linked === true)
-          return yield* failure("invalid_request", "A linked sender must supply the peer result descriptor.");
+          return yield* failure(
+            "invalid_request",
+            "A linked sender must supply the peer result descriptor.",
+          );
         if (input.resultRequest !== undefined && remote?.thread === undefined)
-          return yield* failure("capability_denied", "A linked result request requires its authenticated originating thread.");
+          return yield* failure(
+            "capability_denied",
+            "A linked result request requires its authenticated originating thread.",
+          );
         const operationId = input.resultRequest?.operationId ?? `result:${messageId}`;
         resultRequest = {
-          requestId: `request:${messageId}`, operationId, targetThreadId: input.threadId, messageId,
+          requestId: `request:${messageId}`,
+          operationId,
+          targetThreadId: input.threadId,
+          messageId,
           commandId,
           originKind: input.resultRequest === undefined ? "local" : "linked",
-          originEnvironmentId: input.resultRequest === undefined ? scope.environmentId : remote!.environmentId,
-          originThreadId: input.resultRequest === undefined ? parent!.thread.id : ThreadId.make(remote!.thread!.threadId),
-          originLabel: input.resultRequest === undefined ? parent!.thread.title : remote!.thread!.title ?? "Linked thread",
-          ...(input.awaitResult !== true ? {} : { localDependency: {
-            dependencyId: `dependency:${messageId}`, waiterGeneration, waiterRunId: parent!.runs.filter(ThreadManagementService.isActiveRun).toSorted((a,b) => b.ordinal - a.ordinal)[0]?.id ?? null,
-            targetLabel: target.thread.title,
-          } }),
+          originEnvironmentId:
+            input.resultRequest === undefined ? scope.environmentId : remote!.environmentId,
+          originThreadId:
+            input.resultRequest === undefined
+              ? parent!.thread.id
+              : ThreadId.make(remote!.thread!.threadId),
+          originLabel:
+            input.resultRequest === undefined
+              ? parent!.thread.title
+              : (remote!.thread!.title ?? "Linked thread"),
+          ...(input.awaitResult !== true
+            ? {}
+            : {
+                localDependency: {
+                  dependencyId: `dependency:${messageId}`,
+                  waiterGeneration,
+                  waiterRunId:
+                    parent!.runs
+                      .filter(ThreadManagementService.isActiveRun)
+                      .toSorted((a, b) => b.ordinal - a.ordinal)[0]?.id ?? null,
+                  targetLabel: target.thread.title,
+                },
+              }),
         };
       }
       const result = yield* threadManagement
@@ -3147,7 +3235,10 @@ const make = Effect.gen(function* () {
           ...(parent === undefined ? {} : { senderThreadId: parent.thread.id }),
           messageId,
           text: composeAgentMessage({
-            body: resultRequest === undefined ? input.message : `Result requested (request ${resultRequest.requestId}). Answer with t3_thread_request_fulfill; ordinary replies do not fulfill this request.\n\n${input.message}`,
+            body:
+              resultRequest === undefined
+                ? input.message
+                : `Result requested (request ${resultRequest.requestId}). Answer with t3_thread_request_fulfill; ordinary replies do not fulfill this request.\n\n${input.message}`,
             acceptedAt: yield* Clock.currentTimeMillis,
             ...(parent === undefined ? {} : { sender: parent.thread }),
             ...(scope.client?.linked === true
@@ -3173,10 +3264,26 @@ const make = Effect.gen(function* () {
                   ),
           ),
         );
-      const acceptedRequest = resultRequest === undefined || resultDependencies === undefined ? undefined : yield* resultDependencies.requestByOperation(resultRequest.originEnvironmentId, resultRequest.operationId).pipe(Effect.mapError(unavailable));
-      if (resultRequest !== undefined && (acceptedRequest === undefined || acceptedRequest.messageId !== messageId))
-        return yield* failure("request_conflict", "The original send did not accept this result request. Use a new request key for new work.");
-      const acceptedDependency = resultRequest?.localDependency === undefined || resultDependencies === undefined ? undefined : yield* resultDependencies.get(resultRequest.localDependency.dependencyId).pipe(Effect.mapError(unavailable));
+      const acceptedRequest =
+        resultRequest === undefined || resultDependencies === undefined
+          ? undefined
+          : yield* resultDependencies
+              .requestByOperation(resultRequest.originEnvironmentId, resultRequest.operationId)
+              .pipe(Effect.mapError(unavailable));
+      if (
+        resultRequest !== undefined &&
+        (acceptedRequest === undefined || acceptedRequest.messageId !== messageId)
+      )
+        return yield* failure(
+          "request_conflict",
+          "The original send did not accept this result request. Use a new request key for new work.",
+        );
+      const acceptedDependency =
+        resultRequest?.localDependency === undefined || resultDependencies === undefined
+          ? undefined
+          : yield* resultDependencies
+              .get(resultRequest.localDependency.dependencyId)
+              .pipe(Effect.mapError(unavailable));
       return {
         threadId: input.threadId,
         link: formatThreadLink(input.threadId, target.thread.title),
@@ -3185,9 +3292,15 @@ const make = Effect.gen(function* () {
         ...(result.run.delegatedTaskId === undefined ? {} : { taskId: result.run.delegatedTaskId }),
         status: result.run.status,
         delivery: result.delivery,
-        ...(acceptedDependency === undefined ? {} : { dependency: {
-          dependencyId: acceptedDependency.dependencyId, requestId: acceptedDependency.requestId, state: acceptedDependency.state,
-        } }),
+        ...(acceptedDependency === undefined
+          ? {}
+          : {
+              dependency: {
+                dependencyId: acceptedDependency.dependencyId,
+                requestId: acceptedDependency.requestId,
+                state: acceptedDependency.state,
+              },
+            }),
       } satisfies OrchestratorMcpThreadSendResult;
     }),
     waitForThread: Effect.fn("OrchestratorMcpService.waitForThread")(function* (scope, input) {

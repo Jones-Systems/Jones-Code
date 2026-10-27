@@ -1153,14 +1153,25 @@ const make = Effect.gen(function* () {
       ...(current.resultRun === undefined ? {} : { resultRun: current.resultRun }),
     });
     const dependencyChanges = yield* Effect.serviceOption(DependencyChanges.DependencyChanges);
-    const dependencySubscription = Option.isSome(dependencyChanges) ? yield* dependencyChanges.value.subscribe : undefined;
+    const dependencySubscription = Option.isSome(dependencyChanges)
+      ? yield* dependencyChanges.value.subscribe
+      : undefined;
     const continuationSignals = yield* Queue.unbounded<void>();
     const watchingContinuations = new Set<RunId>();
-    const evaluateAndWatch = (runs: ReadonlyArray<OrchestrationV2Run>) => evaluate(runs).pipe(Effect.tap((current) => {
-      if (!current.pending || watchingContinuations.has(current.run.id)) return Effect.void;
-      watchingContinuations.add(current.run.id);
-      return orchestrator.awaitRestartContinuation(current.run).pipe(Effect.andThen(Queue.offer(continuationSignals, undefined)), Effect.forkScoped, Effect.asVoid);
-    }));
+    const evaluateAndWatch = (runs: ReadonlyArray<OrchestrationV2Run>) =>
+      evaluate(runs).pipe(
+        Effect.tap((current) => {
+          if (!current.pending || watchingContinuations.has(current.run.id)) return Effect.void;
+          watchingContinuations.add(current.run.id);
+          return orchestrator
+            .awaitRestartContinuation(current.run)
+            .pipe(
+              Effect.andThen(Queue.offer(continuationSignals, undefined)),
+              Effect.forkScoped,
+              Effect.asVoid,
+            );
+        }),
+      );
     const initial = yield* evaluateAndWatch(target.runs);
     if (initial.settled || initial.questionChanged) return settledResult(initial);
 
@@ -1205,7 +1216,11 @@ const make = Effect.gen(function* () {
       ),
       Stream.merge(
         Stream.fromQueue(continuationSignals),
-        dependencySubscription === undefined ? Stream.empty : Stream.fromSubscription(dependencySubscription).pipe(Stream.filter((change) => change.threadIds.includes(input.threadId))),
+        dependencySubscription === undefined
+          ? Stream.empty
+          : Stream.fromSubscription(dependencySubscription).pipe(
+              Stream.filter((change) => change.threadIds.includes(input.threadId)),
+            ),
       ),
     ).pipe(
       Stream.mapEffect(() =>

@@ -1,4 +1,8 @@
-import { ThreadRequestFulfillTool, ThreadDependencyReleaseTool, ThreadRequestObserveTool } from "../../../jones/threadResultDependencies/tools.ts";
+import {
+  ThreadRequestFulfillTool,
+  ThreadDependencyReleaseTool,
+  ThreadRequestObserveTool,
+} from "../../../jones/threadResultDependencies/tools.ts";
 import {
   ThreadLinksTool,
   ThreadLinkTool,
@@ -341,7 +345,9 @@ const EnvironmentLinksTool = Tool.make("t3_environment_links", {
   .annotate(Tool.Idempotent, true);
 
 export const OrchestratorToolkit = Toolkit.make(
-  ThreadRequestFulfillTool, ThreadDependencyReleaseTool, ThreadRequestObserveTool,
+  ThreadRequestFulfillTool,
+  ThreadDependencyReleaseTool,
+  ThreadRequestObserveTool,
   ThreadGoalTool,
   ThreadLinksTool,
   ThreadLinkTool,

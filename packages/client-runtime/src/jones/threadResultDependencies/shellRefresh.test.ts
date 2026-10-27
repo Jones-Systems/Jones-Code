@@ -3,7 +3,11 @@ import { describe, expect, it } from "vite-plus/test";
 import { v2ShellSnapshot, v2ThreadShell } from "../../state/orchestrationV2TestFixtures.ts";
 import { applyShellStreamEvent } from "../../state/shellReducer.ts";
 import { threadFamilyRowsMissingFromShell } from "../../state/threadFamilies.ts";
-import { advanceThreadRefreshWatermarks, shellRefreshSubscription } from "./shellRefresh.ts";
+import {
+  advanceThreadRefreshWatermarks,
+  shellRefreshSubscription,
+  threadOmissionRemoval,
+} from "./shellRefresh.ts";
 
 const task = {
   taskId: "jones-dependency:answer",
@@ -36,29 +40,57 @@ describe("dependency shell refresh", () => {
     expect([...cleared.threads, ...fallback][0]?.pendingBackgroundTasks).toEqual([]);
   });
 
-  it("CR-R3: removes an omitted child at equal sequence without skipping replay or treating it as deleted", () => {
+  it("CR-R3: records equal-sequence absence without skipping replay and permits newer reappearance", () => {
     const current = { ...snapshot, threads: [waiting] };
-    const omitted = { kind: "thread.omitted" as const, sequence: 10, location: "active" as const, threadId: waiting.id };
+    const omitted = {
+      kind: "thread.omitted" as const,
+      sequence: 10,
+      location: "active" as const,
+      threadId: waiting.id,
+    };
+    const removal = threadOmissionRemoval(current, omitted, new Map(), new Map());
+    expect(removal).toEqual({ threadId: waiting.id, sequence: 10 });
+    const removedAt = new Map([[waiting.id, removal!.sequence]]);
     const next = applyShellStreamEvent(current, omitted);
     expect(next.threads).toEqual([]);
     expect(next.snapshotSequence).toBe(10);
     expect(applyShellStreamEvent(next, omitted)).toBe(next);
-    expect(applyShellStreamEvent(next, refresh(10)).threads).toEqual([waiting]);
+    expect(applyShellStreamEvent(next, refresh(10), removedAt)).toBe(next);
+    expect(applyShellStreamEvent(next, refresh(11), removedAt).threads).toEqual([waiting]);
+    expect(threadOmissionRemoval(next, omitted, new Map(), new Map())).toEqual(removal);
+    expect(threadOmissionRemoval(next, omitted, removedAt, new Map())).toBeNull();
+    expect(
+      threadOmissionRemoval(current, omitted, new Map(), new Map([[waiting.id, 11]])),
+    ).toBeNull();
   });
 
   it("CR-R3: fences omission 12 against refresh and replay 11 while preserving newer reappearance", () => {
-    const omitted = { kind: "thread.omitted" as const, sequence: 12, location: "active" as const, threadId: waiting.id };
+    const omitted = {
+      kind: "thread.omitted" as const,
+      sequence: 12,
+      location: "active" as const,
+      threadId: waiting.id,
+    };
     const watermarks = advanceThreadRefreshWatermarks(new Map(), snapshot, omitted, new Map());
     const missing = applyShellStreamEvent({ ...snapshot, threads: [waiting] }, omitted);
     expect(missing.snapshotSequence).toBe(10);
     expect(applyShellStreamEvent(missing, refresh(11), new Map(), watermarks)).toBe(missing);
-    const replay = { kind: "thread.updated" as const, sequence: 11, location: "active" as const, thread: waiting };
+    const replay = {
+      kind: "thread.updated" as const,
+      sequence: 11,
+      location: "active" as const,
+      thread: waiting,
+    };
     const advanced = applyShellStreamEvent(missing, replay, new Map(), watermarks);
     expect(advanced.threads).toEqual([]);
     expect(advanced.snapshotSequence).toBe(11);
     expect(advanceThreadRefreshWatermarks(watermarks, missing, replay, new Map())).toBe(watermarks);
-    expect(applyShellStreamEvent(advanced, refresh(12), new Map(), watermarks).threads).toEqual([waiting]);
-    expect(applyShellStreamEvent(advanced, { ...omitted, sequence: 11 }, new Map(), watermarks)).toBe(advanced);
+    expect(applyShellStreamEvent(advanced, refresh(12), new Map(), watermarks).threads).toEqual([
+      waiting,
+    ]);
+    expect(
+      applyShellStreamEvent(advanced, { ...omitted, sequence: 11 }, new Map(), watermarks),
+    ).toBe(advanced);
   });
 
   it("opts in only for an advertised capability, omitting new keys for old servers", () => {
@@ -105,15 +137,25 @@ describe("dependency shell refresh", () => {
   it.each(["updated", "removed", "archived"] as const)(
     "keeps refresh 12 while advancing replay through the same thread's %s 11",
     (kind) => {
-      const watermarks = advanceThreadRefreshWatermarks(new Map(), snapshot, refresh(12), new Map());
+      const watermarks = advanceThreadRefreshWatermarks(
+        new Map(),
+        snapshot,
+        refresh(12),
+        new Map(),
+      );
       const next = applyShellStreamEvent(snapshot, refresh(12));
       const event =
         kind === "removed"
-          ? { kind: "thread.removed" as const, sequence: 11, location: "active" as const, threadId: waiting.id }
+          ? {
+              kind: "thread.removed" as const,
+              sequence: 11,
+              location: "active" as const,
+              threadId: waiting.id,
+            }
           : {
               kind: "thread.updated" as const,
               sequence: 11,
-              location: kind === "archived" ? "archive" as const : "active" as const,
+              location: kind === "archived" ? ("archive" as const) : ("active" as const),
               thread: v2ThreadShell,
             };
       const replay = applyShellStreamEvent(next, event, new Map(), watermarks);
@@ -130,10 +172,12 @@ describe("dependency shell refresh", () => {
     const released = { ...waiting, pendingBackgroundTasks: [] };
     expect(applyShellStreamEvent(next, refresh(11, released), new Map(), watermarks)).toBe(next);
     expect(next.snapshotSequence).toBe(10);
-    expect(advanceThreadRefreshWatermarks(watermarks, next, refresh(11), new Map())).toBe(watermarks);
+    expect(advanceThreadRefreshWatermarks(watermarks, next, refresh(11), new Map())).toBe(
+      watermarks,
+    );
     expect(
-      applyShellStreamEvent(next, refresh(12, released), new Map(), watermarks)
-        .threads[0]?.pendingBackgroundTasks,
+      applyShellStreamEvent(next, refresh(12, released), new Map(), watermarks).threads[0]
+        ?.pendingBackgroundTasks,
     ).toEqual([]);
   });
 
@@ -153,19 +197,38 @@ describe("dependency shell refresh", () => {
     expect(
       applyShellStreamEvent(replay, { ...event, sequence: 13 }).threads[0]?.pendingBackgroundTasks,
     ).toEqual([]);
-    const unrelated = { kind: "project.removed" as const, sequence: 13, projectId: waiting.projectId };
+    const unrelated = {
+      kind: "project.removed" as const,
+      sequence: 13,
+      projectId: waiting.projectId,
+    };
     expect(advanceThreadRefreshWatermarks(watermarks, current, unrelated, new Map()).size).toBe(0);
   });
 
   it.each(["removed", "archived"] as const)(
     "lets an equal-sequence %s supersede the refresh",
     (kind) => {
-      const watermarks = advanceThreadRefreshWatermarks(new Map(), snapshot, refresh(12), new Map());
+      const watermarks = advanceThreadRefreshWatermarks(
+        new Map(),
+        snapshot,
+        refresh(12),
+        new Map(),
+      );
       const next = applyShellStreamEvent(snapshot, refresh(12));
       const event =
         kind === "removed"
-          ? { kind: "thread.removed" as const, sequence: 12, location: "active" as const, threadId: waiting.id }
-          : { kind: "thread.updated" as const, sequence: 12, location: "archive" as const, thread: waiting };
+          ? {
+              kind: "thread.removed" as const,
+              sequence: 12,
+              location: "active" as const,
+              threadId: waiting.id,
+            }
+          : {
+              kind: "thread.updated" as const,
+              sequence: 12,
+              location: "archive" as const,
+              thread: waiting,
+            };
       expect(applyShellStreamEvent(next, event, new Map(), watermarks).threads).toEqual([]);
     },
   );

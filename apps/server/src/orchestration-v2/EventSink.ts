@@ -2,7 +2,10 @@ import { ChangedThreads as DependencyChangedThreads } from "../jones/threadResul
 import { makeDependencyStore } from "../jones/threadResultDependencies/DependencyStore.ts";
 import * as DependencyChanges from "../jones/threadResultDependencies/DependencyChanges.ts";
 import { acceptEvents as acceptDependencyEvents } from "../jones/threadResultDependencies/TransactionHooks.ts";
-import type { OpenRequest, WakeCommit } from "../jones/threadResultDependencies/DependencyCommit.ts";
+import type {
+  OpenRequest,
+  WakeCommit,
+} from "../jones/threadResultDependencies/DependencyCommit.ts";
 import type { ThreadTitleCommitContext } from "../jones/threadTitle/commitContext.ts";
 import type { CodexFailoverCommitContext } from "../jones/codexFailover/CodexFailover.ts";
 import type { ThreadSelfConfigurationCommitContext } from "../jones/threadConfiguration/ThreadSelfConfiguration.ts";
@@ -586,14 +589,33 @@ const layerBase: Layer.Layer<
         // every subscriber must hear about it before this writer can exit.
         // Otherwise a failed child run can leave its parent's task running.
         return sql
-          .withTransaction(restore(transaction).pipe(
-            Effect.provideService(DependencyChangedThreads, changedThreadIds),
-            Effect.tap(() => changedThreadIds.size === 0 ? Effect.void : dependencies.sequence.pipe(Effect.tap((sequence) => Effect.sync(() => { dependencySequence = sequence; })))),
-            Effect.tap(() => takeLane),
-          ))
+          .withTransaction(
+            restore(transaction).pipe(
+              Effect.provideService(DependencyChangedThreads, changedThreadIds),
+              Effect.tap(() =>
+                changedThreadIds.size === 0
+                  ? Effect.void
+                  : dependencies.sequence.pipe(
+                      Effect.tap((sequence) =>
+                        Effect.sync(() => {
+                          dependencySequence = sequence;
+                        }),
+                      ),
+                    ),
+              ),
+              Effect.tap(() => takeLane),
+            ),
+          )
           .pipe(
             Effect.tap(publish),
-            Effect.tap(() => changedThreadIds.size > 0 && Option.isSome(dependencyChanges) ? dependencyChanges.value.publish({ threadIds: [...changedThreadIds], sequence: dependencySequence }) : Effect.void),
+            Effect.tap(() =>
+              changedThreadIds.size > 0 && Option.isSome(dependencyChanges)
+                ? dependencyChanges.value.publish({
+                    threadIds: [...changedThreadIds],
+                    sequence: dependencySequence,
+                  })
+                : Effect.void,
+            ),
             Effect.ensuring(
               Effect.suspend(() => (holdsLane ? publishLane.release(1) : Effect.void)),
             ),
@@ -826,7 +848,10 @@ const layerBase: Layer.Layer<
               updated_at = excluded.updated_at
           `;
         }
-        yield* acceptDependencyEvents(dependencies, storedEvents.filter(isPublicStoredOrchestrationEvent).map((stored) => stored.event));
+        yield* acceptDependencyEvents(
+          dependencies,
+          storedEvents.filter(isPublicStoredOrchestrationEvent).map((stored) => stored.event),
+        );
         // Read lineage here, on the connection this transaction holds; see makeRunOutcomeRecorder.
         return yield* runOutcomes.prepare(storedEvents.filter(isPublicStoredOrchestrationEvent));
       });
@@ -1319,7 +1344,12 @@ const layerBase: Layer.Layer<
           const outcomes = yield* applyStoredEvents(storedEvents);
           if (input.resultRequest) yield* dependencies.open(input.resultRequest);
           if (input.dependencyWake) yield* dependencies.admitWake(input.dependencyWake);
-          yield* acceptDependencyEvents(dependencies, storedEvents.map((stored) => stored.event), input, false);
+          yield* acceptDependencyEvents(
+            dependencies,
+            storedEvents.map((stored) => stored.event),
+            input,
+            false,
+          );
           if (input.codexFailover?.accept) yield* input.codexFailover.accept(input);
           if (Option.isSome(admission)) yield* admission.value.admit(input.effects, input.events);
           yield* effectOutbox.enqueue(input.effects);

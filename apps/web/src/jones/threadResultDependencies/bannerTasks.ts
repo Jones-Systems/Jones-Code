@@ -14,7 +14,8 @@ export function deriveDependencyBannerTasks(
 ) {
   const shell = input.shell?.id === input.threadId ? input.shell : null;
   const activity = shell?.activityRunStatus === undefined ? shell?.status : shell.activityRunStatus;
-  const shellWorking = activity === "preparing" || activity === "starting" || activity === "running";
+  const shellWorking =
+    activity === "preparing" || activity === "starting" || activity === "running";
   return derivePendingBackgroundWork({
     ...input,
     ...(shellWorking ? { hasActiveRun: true } : {}),

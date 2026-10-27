@@ -76,22 +76,32 @@ describe("result dependencies in pending background work", () => {
       ["user_input", "Awaiting Input"],
       ["permission", "Pending Approval"],
     ] as const) {
-      expect(pill({
-        ...shell,
-        pendingBackgroundTasks: tasks,
-        pendingRuntimeRequest: { id: RuntimeRequestId.make("own"), kind, createdAt: shell.updatedAt },
-      })).toBe(expected);
+      expect(
+        pill({
+          ...shell,
+          pendingBackgroundTasks: tasks,
+          pendingRuntimeRequest: {
+            id: RuntimeRequestId.make("own"),
+            kind,
+            createdAt: shell.updatedAt,
+          },
+        }),
+      ).toBe(expected);
     }
     const active = run("running");
-    expect(pill({
-      ...shell,
-      status: "running",
-      activeRunId: active.id,
-      activityRunStatus: "running",
-      pendingBackgroundTasks: derivePendingBackgroundWork({
-        ...base, latestRun: active, runs: [active],
+    expect(
+      pill({
+        ...shell,
+        status: "running",
+        activeRunId: active.id,
+        activityRunStatus: "running",
+        pendingBackgroundTasks: derivePendingBackgroundWork({
+          ...base,
+          latestRun: active,
+          runs: [active],
+        }),
       }),
-    })).toBe("Working");
+    ).toBe("Working");
     expect(pill({ ...shell, pendingBackgroundTasks: [] })).toBe("Completed");
   });
 
@@ -115,13 +125,16 @@ describe("result dependencies in pending background work", () => {
 
   it.each(["preparing", "queued", "starting", "running", "rolled_back"] as const)(
     "preserves the latest-run presentation gate for %s",
-    (status) => expect(derivePendingBackgroundWork({ ...base, latestRun: run(status) })).toEqual([]),
+    (status) =>
+      expect(derivePendingBackgroundWork({ ...base, latestRun: run(status) })).toEqual([]),
   );
 
   it("suppresses dependencies during another activity run, including before the first latest run", () => {
     for (const latestRun of [null, run("completed")]) {
       expect(derivePendingBackgroundWork({ ...base, latestRun, hasActiveRun: true })).toEqual([]);
-      expect(derivePendingBackgroundWork({ ...base, latestRun, runs: [run("running")] })).toEqual([]);
+      expect(derivePendingBackgroundWork({ ...base, latestRun, runs: [run("running")] })).toEqual(
+        [],
+      );
     }
   });
 
@@ -130,36 +143,42 @@ describe("result dependencies in pending background work", () => {
     const tasks = derivePendingBackgroundWork({
       ...base,
       latestRun: run("completed"),
-      providerThreads: [{
-        id: ProviderThreadId.make("provider"),
-        pendingBackgroundTasks: [command, dependency],
-      }],
-      dependencies: [dependency, dependency],
-      pullRequests: [{
-        host: "github.com",
-        repository: "Jones-Systems/Jones-Code",
-        number: 720,
-        url: "https://github.com/Jones-Systems/Jones-Code/pull/720",
-        source: "agent",
-        watch: {
-          startedAt: "2026-10-26T00:00:00.000Z",
-          headSha: null,
-          failedChecks: [],
-          passed: false,
-          passedChecks: [],
-          remarksThrough: "2026-10-26T00:00:00.000Z",
-          remarkIds: [],
-          conflicting: false,
-          wakes: 0,
+      providerThreads: [
+        {
+          id: ProviderThreadId.make("provider"),
+          pendingBackgroundTasks: [command, dependency],
         },
-      }],
+      ],
+      dependencies: [dependency, dependency],
+      pullRequests: [
+        {
+          host: "github.com",
+          repository: "Jones-Systems/Jones-Code",
+          number: 720,
+          url: "https://github.com/Jones-Systems/Jones-Code/pull/720",
+          source: "agent",
+          watch: {
+            startedAt: "2026-10-26T00:00:00.000Z",
+            headSha: null,
+            failedChecks: [],
+            passed: false,
+            passedChecks: [],
+            remarksThrough: "2026-10-26T00:00:00.000Z",
+            remarkIds: [],
+            conflicting: false,
+            wakes: 0,
+          },
+        },
+      ],
     });
     expect(tasks.filter((task) => task.taskId === dependency.taskId)).toEqual([dependency]);
     expect(tasks).toContainEqual(command);
-    expect(tasks).toContainEqual(expect.objectContaining({
-      taskId: "pull-request-watch:github.com/jones-systems/jones-code#720",
-      kind: "monitor",
-      awaited: true,
-    }));
+    expect(tasks).toContainEqual(
+      expect.objectContaining({
+        taskId: "pull-request-watch:github.com/jones-systems/jones-code#720",
+        kind: "monitor",
+        awaited: true,
+      }),
+    );
   });
 });

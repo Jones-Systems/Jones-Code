@@ -1,7 +1,6 @@
 import * as Schema from "effect/Schema";
 import { ThreadId, MessageId, RunId } from "../baseSchemas.ts";
 
-export const THREAD_RESULT_REQUEST_VERSION = "t3.thread-result-request/v1";
 const Identity = Schema.NonEmptyString.check(Schema.isMaxLength(256));
 export const ThreadResultRequestDescriptor = Schema.Struct({
   schemaVersion: Schema.Literal("t3.thread-result-request/v1"),
@@ -9,12 +8,27 @@ export const ThreadResultRequestDescriptor = Schema.Struct({
 });
 export type ThreadResultRequestDescriptor = typeof ThreadResultRequestDescriptor.Type;
 export const ThreadResultOutcome = Schema.Literals([
-  "fulfilled", "declined", "refused", "withdrawn", "dropped", "unknown", "not_sent", "released",
+  "fulfilled",
+  "declined",
+  "refused",
+  "withdrawn",
+  "dropped",
+  "unknown",
+  "not_sent",
+  "released",
 ]);
 export type ThreadResultOutcome = typeof ThreadResultOutcome.Type;
 export const ThreadResultObservation = Schema.Literals([
-  "admission_held", "admission_dispatching", "queued", "queued_held", "receiver_working",
-  "receiver_needs_owner", "receiver_idle_unanswered", "receiver_stopped", "unreachable", "delivery_unknown",
+  "admission_held",
+  "admission_dispatching",
+  "queued",
+  "queued_held",
+  "receiver_working",
+  "receiver_needs_owner",
+  "receiver_idle_unanswered",
+  "receiver_stopped",
+  "unreachable",
+  "delivery_unknown",
 ]);
 export type ThreadResultObservation = typeof ThreadResultObservation.Type;
 export const ThreadResultDependencyBinding = Schema.Struct({
@@ -64,7 +78,9 @@ export const ThreadRequestObserveFields = {
   operationId: Identity,
   afterToken: Schema.optional(Schema.String.check(Schema.isMaxLength(4096))),
   fence: Schema.optional(Schema.Boolean),
-  timeoutMs: Schema.optional(Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 50_000 }))),
+  timeoutMs: Schema.optional(
+    Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 50_000 })),
+  ),
 };
 export const ThreadRequestObservation = Schema.Struct({
   token: Schema.String,

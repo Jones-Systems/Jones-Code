@@ -34,29 +34,45 @@ describe("dependency banner roster", () => {
     expect(
       deriveDependencyBannerTasks({ ...base, shell: { ...shell, id: ThreadId.make("other") } }),
     ).toEqual([]);
-    expect(deriveDependencyBannerTasks({
-      ...base,
-      shell: {
-        ...shell,
-        pendingBackgroundTasks: [task, { taskId: "unrelated", kind: "subagent" }],
-      },
-    })).toEqual([task]);
+    expect(
+      deriveDependencyBannerTasks({
+        ...base,
+        shell: {
+          ...shell,
+          pendingBackgroundTasks: [task, { taskId: "unrelated", kind: "subagent" }],
+        },
+      }),
+    ).toEqual([task]);
     expect(deriveDependencyBannerTasks(base)).toEqual([]);
   });
 
   it("preserves foreground suppression while detail and shell catch up independently", () => {
-    expect(deriveDependencyBannerTasks({
-      ...base, shell, runs: [{ ...base.latestRun, status: "running" }],
-    })).toEqual([]);
-    expect(deriveDependencyBannerTasks({
-      ...base, shell: { ...shell, activityRunStatus: "running" },
-    })).toEqual([]);
-    expect(deriveDependencyBannerTasks({
-      ...base, shell: { id: threadId, status: "running", pendingBackgroundTasks: [task] },
-    })).toEqual([]);
-    expect(deriveDependencyBannerTasks({
-      ...base, shell, latestRun: { ...base.latestRun, status: "queued" },
-    })).toEqual([]);
+    expect(
+      deriveDependencyBannerTasks({
+        ...base,
+        shell,
+        runs: [{ ...base.latestRun, status: "running" }],
+      }),
+    ).toEqual([]);
+    expect(
+      deriveDependencyBannerTasks({
+        ...base,
+        shell: { ...shell, activityRunStatus: "running" },
+      }),
+    ).toEqual([]);
+    expect(
+      deriveDependencyBannerTasks({
+        ...base,
+        shell: { id: threadId, status: "running", pendingBackgroundTasks: [task] },
+      }),
+    ).toEqual([]);
+    expect(
+      deriveDependencyBannerTasks({
+        ...base,
+        shell,
+        latestRun: { ...base.latestRun, status: "queued" },
+      }),
+    ).toEqual([]);
   });
 
   it("retains detail-derived commands and deduplicates repeated dependencies", () => {
@@ -64,9 +80,14 @@ describe("dependency banner roster", () => {
     const tasks = deriveDependencyBannerTasks({
       ...base,
       shell: { ...shell, pendingBackgroundTasks: [task, task] },
-      turnItems: [{
-        id: command.taskId, type: "command_execution", status: "running", title: null,
-      }],
+      turnItems: [
+        {
+          id: command.taskId,
+          type: "command_execution",
+          status: "running",
+          title: null,
+        },
+      ],
     });
     expect(tasks).toEqual([command, task]);
   });

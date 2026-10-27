@@ -13,7 +13,8 @@ type ShellDelta = Exclude<
   { readonly kind: "snapshot" } | { readonly kind: "synchronized" }
 >;
 type ThreadRefresh = Extract<ShellDelta, { readonly kind: "thread.refreshed" | "thread.omitted" }>;
-const refreshThreadId = (item: ThreadRefresh) => item.kind === "thread.omitted" ? item.threadId : item.thread.id;
+const refreshThreadId = (item: ThreadRefresh) =>
+  item.kind === "thread.omitted" ? item.threadId : item.thread.id;
 
 function acceptsThreadRefresh(
   snapshot: OrchestrationV2ShellSnapshot,
@@ -41,6 +42,20 @@ export function isThreadReplayBehindRefresh(
     (item.sequence < sequence ||
       (item.sequence === sequence && item.kind === "thread.updated" && item.location === "active"))
   );
+}
+
+export function threadOmissionRemoval(
+  snapshot: OrchestrationV2ShellSnapshot,
+  item: ShellDelta,
+  removedAt: ReadonlyMap<ThreadId, number>,
+  refreshedAt: ReadonlyMap<ThreadId, number>,
+): { readonly threadId: ThreadId; readonly sequence: number } | null {
+  // Omission means absence from the unfiltered active rows. Invalidate older
+  // mounted family copies even when the shell already lacks the row.
+  return item.kind === "thread.omitted" &&
+    acceptsThreadRefresh(snapshot, item, removedAt, refreshedAt)
+    ? { threadId: item.threadId, sequence: item.sequence }
+    : null;
 }
 
 // Only refreshes ahead of replay need a separate fence. Once replay catches up,
@@ -83,9 +98,12 @@ export function applyThreadRefresh(
 
   if (item.kind === "thread.omitted") {
     if (!snapshot.threads.some((thread) => thread.id === item.threadId)) return snapshot;
-    // A filtered row may reappear at the same application sequence. Do not record
-    // a deletion tombstone: on-demand family data still has its own authority.
-    return { ...snapshot, threads: snapshot.threads.filter((thread) => thread.id !== item.threadId) };
+    // The shell owner records this absence for mounted family rows separately;
+    // the derived fact must still leave the application replay cursor unchanged.
+    return {
+      ...snapshot,
+      threads: snapshot.threads.filter((thread) => thread.id !== item.threadId),
+    };
   }
 
   const existing = snapshot.threads.find((thread) => thread.id === item.thread.id);
@@ -102,6 +120,8 @@ export function applyThreadRefresh(
   };
 }
 
-export function shellRefreshSubscription(config: { readonly shellThreadRefresh?: boolean | undefined }) {
+export function shellRefreshSubscription(config: {
+  readonly shellThreadRefresh?: boolean | undefined;
+}) {
   return config.shellThreadRefresh === true ? { acceptThreadRefresh: true as const } : {};
 }

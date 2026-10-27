@@ -1,6 +1,9 @@
 import { makeDependencyStore } from "../jones/threadResultDependencies/DependencyStore.ts";
 import * as DependencyChanges from "../jones/threadResultDependencies/DependencyChanges.ts";
-import { DependencyCommit, DependencyWakeCommit } from "../jones/threadResultDependencies/DependencyCommit.ts";
+import {
+  DependencyCommit,
+  DependencyWakeCommit,
+} from "../jones/threadResultDependencies/DependencyCommit.ts";
 import * as AutomaticTitles from "../jones/threadTitle/automaticTitles.ts";
 import { titlePolicyApplies } from "../jones/threadTitle/policy.ts";
 import type { ThreadTitleCommitContext } from "../jones/threadTitle/commitContext.ts";
@@ -3315,10 +3318,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     if (command.type === "thread.settle") {
       const duties = yield* dependencies.duties(command.threadId).pipe(mapDispatchError(command));
-      if (duties.outgoing > 0) return yield* new OrchestratorDispatchError({
-        commandId: command.commandId, commandType: command.type,
-        cause: `Waiting on ${duties.outgoing} results; Stop or release them before settling.`,
-      });
+      if (duties.outgoing > 0)
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Waiting on ${duties.outgoing} results; Stop or release them before settling.`,
+        });
       if (command.guard !== undefined) {
         const blocker = yield* readMonitorSettlementBlocker(
           projectionStore,
@@ -14614,18 +14619,33 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           error: null,
         });
         const dependencyThreadIds = [commandThreadId(command)];
-        if (inserted && command.type === "thread.stop") yield* dependencies.release(command.threadId);
+        if (inserted && command.type === "thread.stop")
+          yield* dependencies.release(command.threadId);
         if (inserted && command.type === "subagent.stop") {
           const records = yield* projectionStore.getThreadRecords(command.threadId, ["subagents"]);
-          const child = records.subagents.find((task) => task.id === command.subagentId)?.childThreadId;
-          if (child) { yield* dependencies.release(child); dependencyThreadIds.push(child); }
+          const child = records.subagents.find(
+            (task) => task.id === command.subagentId,
+          )?.childThreadId;
+          if (child) {
+            yield* dependencies.release(child);
+            dependencyThreadIds.push(child);
+          }
         }
-        const dependencySequence = command.type === "thread.stop" || command.type === "subagent.stop" ? yield* dependencies.sequence : sequence;
+        const dependencySequence =
+          command.type === "thread.stop" || command.type === "subagent.stop"
+            ? yield* dependencies.sequence
+            : sequence;
         return { resultSequence: sequence, inserted, dependencyThreadIds, dependencySequence };
       }).pipe(
         sql.withTransaction,
-        Effect.tap(({ dependencySequence, inserted, dependencyThreadIds }) => inserted && Option.isSome(dependencyChanges)
-          ? dependencyChanges.value.publish({ threadIds: dependencyThreadIds, sequence: dependencySequence }) : Effect.void),
+        Effect.tap(({ dependencySequence, inserted, dependencyThreadIds }) =>
+          inserted && Option.isSome(dependencyChanges)
+            ? dependencyChanges.value.publish({
+                threadIds: dependencyThreadIds,
+                sequence: dependencySequence,
+              })
+            : Effect.void,
+        ),
         Effect.mapError(
           (cause) =>
             new OrchestratorDispatchError({
@@ -15174,7 +15194,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const projection = yield* projectionStore
       .getThreadRecords(threadId, ["runs", "messages", "runtimeRequests", "attempts"])
       .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
-    const disposition = selfSettlementTerminalDisposition(projection, runId, yield* dependencies.duties(threadId).pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause }))));
+    const disposition = selfSettlementTerminalDisposition(
+      projection,
+      runId,
+      yield* dependencies
+        .duties(threadId)
+        .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause }))),
+    );
     if (disposition === "ignore") return;
     if (disposition === "cancel") return yield* cancelSelfSettlement(threadId);
     yield* dispatchWithReceiptEffect({
@@ -15622,11 +15648,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (parentThreadId === undefined) return;
       yield* threadDispatch.withLock(parentThreadId, finalizeAppOwnedSubagent(threadId));
     },
-    (effect, threadId) => effect.pipe(Effect.catchCause((cause) =>
-      Effect.logWarning("Failed to finalize delegated task after its duties changed", {
-        childThreadId: threadId, cause,
-      }),
-    )),
+    (effect, threadId) =>
+      effect.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Failed to finalize delegated task after its duties changed", {
+            childThreadId: threadId,
+            cause,
+          }),
+        ),
+      ),
   );
 
   const recoverDelegatedTask = Effect.fn("Orchestrator.recoverDelegatedTask")(

@@ -192,7 +192,12 @@ const make = Effect.fn("RemoteAdmission.make")(function* <E>(
   const sql = yield* SqlClient.SqlClient;
   const dependencies = makeDependencyStore(sql, makeJonesTablePresence(sql));
   const changes = yield* Effect.serviceOption(DependencyChanges.DependencyChanges);
-  const publishDependencyChanges = Option.isNone(changes) ? Effect.void : dependencies.sequence.pipe(Effect.orDie, Effect.flatMap((sequence) => changes.value.publish({ threadIds: [], sequence })));
+  const publishDependencyChanges = Option.isNone(changes)
+    ? Effect.void
+    : dependencies.sequence.pipe(
+        Effect.orDie,
+        Effect.flatMap((sequence) => changes.value.publish({ threadIds: [], sequence })),
+      );
   const database = <A>(effect: Effect.Effect<A, AdmissionError | SqlError>) =>
     effect.pipe(
       Effect.catchTags({
@@ -258,8 +263,12 @@ const make = Effect.fn("RemoteAdmission.make")(function* <E>(
                   return { record, fresh: false };
                 }
                 const resultOperation = admissionOperation(decoded.envelope);
-                const resultTables = resultOperation !== undefined && (yield* dependencies.available);
-                if (resultTables && (yield* dependencies.fenced(resultOperation!.origin, resultOperation!.operation)))
+                const resultTables =
+                  resultOperation !== undefined && (yield* dependencies.available);
+                if (
+                  resultTables &&
+                  (yield* dependencies.fenced(resultOperation!.origin, resultOperation!.operation))
+                )
                   return yield* new RemoteAdmissionStateConflict({ status: "fenced" });
                 const id = NodeCrypto.randomUUID();
                 const now = yield* nowIso;
@@ -268,7 +277,8 @@ const make = Effect.fn("RemoteAdmission.make")(function* <E>(
         (id,client_id,idempotency_key,request_digest,binding_digest,envelope_json,status,created_at,updated_at)
         VALUES (${id},${decoded.envelope.identity.clientId},${decoded.idempotencyKey},${snapshot.requestDigest},
           ${snapshot.bindingDigest},${snapshot.envelopeJson},${status},${now},${now})`;
-                if (resultTables) yield* sql`UPDATE jones_remote_admissions SET origin_environment_id = ${resultOperation!.origin}, operation_id = ${resultOperation!.operation} WHERE id = ${id}`;
+                if (resultTables)
+                  yield* sql`UPDATE jones_remote_admissions SET origin_environment_id = ${resultOperation!.origin}, operation_id = ${resultOperation!.operation} WHERE id = ${id}`;
                 return { record: yield* required(id), fresh: true };
               }),
             ),
@@ -430,7 +440,8 @@ const make = Effect.fn("RemoteAdmission.make")(function* <E>(
     resolve: (input) => resolve(input).pipe(Effect.tap(() => publishDependencyChanges)),
     withdraw: (input) => withdraw(input).pipe(Effect.tap(() => publishDependencyChanges)),
     claimDispatch: (input) => claimDispatch(input).pipe(Effect.tap(() => publishDependencyChanges)),
-    markDispatched: (input) => markDispatched(input).pipe(Effect.tap(() => publishDependencyChanges)),
+    markDispatched: (input) =>
+      markDispatched(input).pipe(Effect.tap(() => publishDependencyChanges)),
     listPending: () =>
       database(
         Effect.gen(function* () {
