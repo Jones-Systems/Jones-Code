@@ -455,8 +455,11 @@ it("exposes a real settlement join independently of an aborted caller", async ()
   const actions = await actionsFixture(fixture, { hang: true });
   const exits: PreparationWorkerExit[] = [];
   const supervisor = makePreparationSupervisor({
-    baseDir: fixture.base, cacheRoot: fixture.cacheRoot, command: sourceWorkerCommand,
-    env: actions.env, observe: (exit) => exits.push(exit),
+    baseDir: fixture.base,
+    cacheRoot: fixture.cacheRoot,
+    command: sourceWorkerCommand,
+    env: actions.env,
+    observe: (exit) => exits.push(exit),
   });
   const jobId = "77777777-7777-4777-8777-777777777777";
   const controller = new AbortController();
@@ -481,11 +484,19 @@ it("exposes a real settlement join independently of an aborted caller", async ()
 it("reports a never-spawned cancelled job without starting a worker", async () => {
   const fixture = await home();
   const exits: PreparationWorkerExit[] = [];
-  const supervisor = makePreparationSupervisor({ baseDir: fixture.base, cacheRoot: fixture.cacheRoot,
-    command: sourceWorkerCommand, observe: (exit) => exits.push(exit) });
-  const controller = new AbortController(); controller.abort(new Error("before spawn"));
+  const supervisor = makePreparationSupervisor({
+    baseDir: fixture.base,
+    cacheRoot: fixture.cacheRoot,
+    command: sourceWorkerCommand,
+    observe: (exit) => exits.push(exit),
+  });
+  const controller = new AbortController();
+  controller.abort(new Error("before spawn"));
   const jobId = "88888888-8888-4888-8888-888888888888";
-  const job = supervisor.start({ kind: "sweep", cacheRoot: fixture.cacheRoot }, { jobId, signal: controller.signal });
+  const job = supervisor.start(
+    { kind: "sweep", cacheRoot: fixture.cacheRoot },
+    { jobId, signal: controller.signal },
+  );
   await expect(job.outcome).rejects.toThrow("before spawn");
   expect(await job.settled).toEqual({ jobId, kind: "not-started" });
   expect(exits).toEqual([]);
@@ -511,39 +522,98 @@ it("retains an exited worker's still-live captured descendant through the reap d
     const id = NodePath.basename(jobDir);
     const childPid = id === jobId ? pid : ++sweepPid;
     const child = Object.assign(new NodeEvents.EventEmitter(), {
-      pid: childPid, stdin: new NodeStream.PassThrough(), stdout: new NodeStream.PassThrough(), stderr: new NodeStream.PassThrough(),
+      pid: childPid,
+      stdin: new NodeStream.PassThrough(),
+      stdout: new NodeStream.PassThrough(),
+      stderr: new NodeStream.PassThrough(),
     });
-    queueMicrotask(() => { void (async () => {
-      child.stdout.write(`${JSON.stringify({ type: "ready", protocol: PREPARATION_PROTOCOL, pid: childPid, priority: 19 })}\n`);
-      if (id === jobId) await preparationLifecycle(fixture.base, id).effects(childPid, "transfer");
-      else await writeDurableJson(NodePath.join(jobDir, RESULT_FILE), { protocol: PREPARATION_PROTOCOL, jobId: id, ok: true,
-        outcome: { kind: "sweep", ...await sweepPreparationLeftovers({ baseDir: fixture.base, cacheRoot: fixture.cacheRoot, keepJob: id }) } }, 256 * 1024);
-      child.emit("exit", 0, null);
-      child.emit("close", 0, null);
-    })().catch(() => child.emit("exit", 1, null)); });
+    queueMicrotask(() => {
+      void (async () => {
+        child.stdout.write(
+          `${JSON.stringify({ type: "ready", protocol: PREPARATION_PROTOCOL, pid: childPid, priority: 19 })}\n`,
+        );
+        if (id === jobId)
+          await preparationLifecycle(fixture.base, id).effects(childPid, "transfer");
+        else
+          await writeDurableJson(
+            NodePath.join(jobDir, RESULT_FILE),
+            {
+              protocol: PREPARATION_PROTOCOL,
+              jobId: id,
+              ok: true,
+              outcome: {
+                kind: "sweep",
+                ...(await sweepPreparationLeftovers({
+                  baseDir: fixture.base,
+                  cacheRoot: fixture.cacheRoot,
+                  keepJob: id,
+                })),
+              },
+            },
+            256 * 1024,
+          );
+        child.emit("exit", 0, null);
+        child.emit("close", 0, null);
+      })().catch(() => child.emit("exit", 1, null));
+    });
     return child;
   });
   vi.resetModules();
   vi.doMock("node:child_process", () => ({ spawn }));
-  vi.doMock("node:os", async (importOriginal) => ({ ...await importOriginal<typeof import("node:os")>(), setPriority: vi.fn() }));
+  vi.doMock("node:os", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("node:os")>()),
+    setPriority: vi.fn(),
+  }));
   try {
     const { makePreparationSupervisor: makeSynthetic } = await import("./supervisor.ts");
-    const supervisor = makeSynthetic({ baseDir: fixture.base, cacheRoot: fixture.cacheRoot, command: { file: "synthetic", args: [] },
-      limits: { reapMs: 1 }, observe: (exit) => exits.push(exit) });
-    const job = supervisor.start({ kind: "stage", candidate: {
-      schema: 1, repository: "Jones-Systems/Jones-Code", source: "b".repeat(40), tree: "c".repeat(40), installedSource: "a".repeat(40),
-      workflow: ".github/workflows/artifact-cli-linux.yml", workflowId: 1, runId: 2, runAttempt: 1, ciRunId: 3,
-      artifactId: 4, artifactName: "synthetic", artifactDigest: `sha256:${"d".repeat(64)}`, artifactBytes: 1,
-      expiresAt: "2099-01-01T00:00:00Z", version: VERSION, platform: "linux", architecture: "x64",
-    }, cacheRoot: fixture.cacheRoot,
-      dbPath: fixture.dbPath, activeVersion: BASELINE, host: fixtureHost }, { jobId });
+    const supervisor = makeSynthetic({
+      baseDir: fixture.base,
+      cacheRoot: fixture.cacheRoot,
+      command: { file: "synthetic", args: [] },
+      limits: { reapMs: 1 },
+      observe: (exit) => exits.push(exit),
+    });
+    const job = supervisor.start(
+      {
+        kind: "stage",
+        candidate: {
+          schema: 1,
+          repository: "Jones-Systems/Jones-Code",
+          source: "b".repeat(40),
+          tree: "c".repeat(40),
+          installedSource: "a".repeat(40),
+          workflow: ".github/workflows/artifact-cli-linux.yml",
+          workflowId: 1,
+          runId: 2,
+          runAttempt: 1,
+          ciRunId: 3,
+          artifactId: 4,
+          artifactName: "synthetic",
+          artifactDigest: `sha256:${"d".repeat(64)}`,
+          artifactBytes: 1,
+          expiresAt: "2099-01-01T00:00:00Z",
+          version: VERSION,
+          platform: "linux",
+          architecture: "x64",
+        },
+        cacheRoot: fixture.cacheRoot,
+        dbPath: fixture.dbPath,
+        activeVersion: BASELINE,
+        host: fixtureHost,
+      },
+      { jobId },
+    );
     await expect(job.outcome).rejects.toSatisfy(stoppedFor("unreaped"));
     expect(await job.settled).toMatchObject({ jobId, kind: "unreaped" });
     expect(exits[0]).toMatchObject({ jobId, pid, code: 0, reaped: false });
     await supervisor.sweep();
     expect(supervisor.inspect(jobId)).toMatchObject({ jobId, kind: "unreaped" });
     expect(await jobsLeft(fixture)).toContain(jobId);
-    const restarted = makeSynthetic({ baseDir: fixture.base, cacheRoot: fixture.cacheRoot, command: { file: "synthetic", args: [] } });
+    const restarted = makeSynthetic({
+      baseDir: fixture.base,
+      cacheRoot: fixture.cacheRoot,
+      command: { file: "synthetic", args: [] },
+    });
     expect(await restarted.reconcile?.(jobId)).toMatchObject({ kind: "unreaped" });
     descendantAlive = false;
     await restarted.sweep();

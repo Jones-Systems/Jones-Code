@@ -91,7 +91,9 @@ export class FleetUpdates extends Context.Service<
     /** Records the laptop's committed source; a following host prepares and installs it itself. */
     readonly leader: (input: FleetLeaderInput) => Effect.Effect<FleetHostStatus, FleetHostError>;
     /** One pass of the following host's own updater; the layer runs it every minute. */
-    readonly planDirective: (input: FleetPlanDirectiveInput) => Effect.Effect<FleetHostStatus, FleetHostError>;
+    readonly planDirective: (
+      input: FleetPlanDirectiveInput,
+    ) => Effect.Effect<FleetHostStatus, FleetHostError>;
     readonly follow: Effect.Effect<void>;
   }
 >()("t3/jones/fleetUpdates/service/FleetUpdates") {}
@@ -265,7 +267,8 @@ export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(funct
       return undefined;
     if (followerView !== undefined) return followerView;
     const record = yield* storage(store.readFollower);
-    const directive = record?.directive?.enrollmentId === enrollment.enrollmentId ? record.directive : undefined;
+    const directive =
+      record?.directive?.enrollmentId === enrollment.enrollmentId ? record.directive : undefined;
     const leaderSource = leaderFor(record, enrollment)?.committedSource ?? null;
     return {
       protocol: 1,
@@ -284,7 +287,9 @@ export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(funct
       operationId === undefined ? null : yield* storage(() => store.readOperation(operationId));
     const follower = yield* followerStatus(enrollment);
     return {
-      ...(options.serviceMode && updates.fleetOperationsSupported ? { planDirectiveProtocol: 1 as const } : {}),
+      ...(options.serviceMode && updates.fleetOperationsSupported
+        ? { planDirectiveProtocol: 1 as const }
+        : {}),
       operationProtocol:
         options.serviceMode && updates.fleetOperationsSupported ? (1 as const) : null,
       environmentId,
@@ -326,10 +331,19 @@ export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(funct
     yield* Queue.offer(wakeups, undefined);
     return yield* status();
   });
-  const refusePlanTarget = Effect.fn("FleetUpdates.refusePlanTarget")(function* (enrollment: FleetEnrollment, targetSource: string) {
+  const refusePlanTarget = Effect.fn("FleetUpdates.refusePlanTarget")(function* (
+    enrollment: FleetEnrollment,
+    targetSource: string,
+  ) {
     const record = yield* storage(store.readFollower);
-    if (record?.directive?.enrollmentId === enrollment.enrollmentId && record.directive.targetSource === targetSource)
-      return yield* fail("conflict", "This source is managed by the Laptop's update plan and requires a reviewed operation.");
+    if (
+      record?.directive?.enrollmentId === enrollment.enrollmentId &&
+      record.directive.targetSource === targetSource
+    )
+      return yield* fail(
+        "conflict",
+        "This source is managed by the Laptop's update plan and requires a reviewed operation.",
+      );
   });
   const stage = Effect.fn("FleetUpdates.stage")(function* (input: FleetStageInput) {
     const enrollment = yield* requireEnrollment(input);
@@ -603,35 +617,72 @@ export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(funct
     return yield* status();
   });
 
-  const planDirective = Effect.fn("FleetUpdates.planDirective")(function* (input: FleetPlanDirectiveInput) {
+  const planDirective = Effect.fn("FleetUpdates.planDirective")(function* (
+    input: FleetPlanDirectiveInput,
+  ) {
     const enrollment = yield* requireEnrollment(input);
-    if (!options.serviceMode || !updates.fleetOperationsSupported || input.repository !== "Jones-Systems/Jones-Code")
-      return yield* fail("binding", "Only a qualified service host accepts an update-plan directive.");
+    if (
+      !options.serviceMode ||
+      !updates.fleetOperationsSupported ||
+      input.repository !== "Jones-Systems/Jones-Code"
+    )
+      return yield* fail(
+        "binding",
+        "Only a qualified service host accepts an update-plan directive.",
+      );
     const current = yield* storage(store.readFollower);
     if (current?.directive?.directiveId === input.directiveId) {
       const d = current.directive;
-      if (d.enrollmentId !== enrollment.enrollmentId || d.targetSource !== input.targetSource || d.targetTree !== input.targetTree)
+      if (
+        d.enrollmentId !== enrollment.enrollmentId ||
+        d.targetSource !== input.targetSource ||
+        d.targetTree !== input.targetTree
+      )
         return yield* fail("conflict", "This directive ID is already bound to another target.");
       return yield* status();
     }
     if ((current?.directive?.directiveId ?? null) !== input.expectedDirectiveId)
-      return yield* fail("conflict", "The update-plan directive changed; refresh before changing it.");
-    const operation = current?.operation == null ? null : yield* storage(() => store.readOperation(current.operation!.operationId));
+      return yield* fail(
+        "conflict",
+        "The update-plan directive changed; refresh before changing it.",
+      );
+    const operation =
+      current?.operation == null
+        ? null
+        : yield* storage(() => store.readOperation(current.operation!.operationId));
     const update = yield* updates.state();
-    if ((operation !== null && ["dispatching", "pending", "reconciling"].includes(operation.phase)) ||
-      update === null || ["downloading", "verifying", "preparing", "installing"].includes(update.phase))
-      return yield* fail("conflict", "An update is already active; its exact outcome must be reconciled first.");
+    if (
+      (operation !== null && ["dispatching", "pending", "reconciling"].includes(operation.phase)) ||
+      update === null ||
+      ["downloading", "verifying", "preparing", "installing"].includes(update.phase)
+    )
+      return yield* fail(
+        "conflict",
+        "An update is already active; its exact outcome must be reconciled first.",
+      );
     const issuedAt = isoAt(yield* Clock.currentTimeMillis);
-    yield* storage(() => store.editFollower((old) => {
-      if ((old?.directive?.directiveId ?? null) !== input.expectedDirectiveId)
-        throw fail("conflict", "The update-plan directive changed before it could be saved.");
-      const leader = old?.leader?.enrollmentId === enrollment.enrollmentId ? old.leader : null;
-      return { ...(old ?? emptyFollower), directive: {
-        directiveId: input.directiveId, enrollmentId: enrollment.enrollmentId,
-        targetSource: input.targetSource, targetTree: input.targetTree, mode: "manual-review", issuedAt,
-        leaderAtIssue: leader === null ? null : { committedSource: leader.committedSource, publishedAt: leader.publishedAt },
-      } };
-    }));
+    yield* storage(() =>
+      store.editFollower((old) => {
+        if ((old?.directive?.directiveId ?? null) !== input.expectedDirectiveId)
+          throw fail("conflict", "The update-plan directive changed before it could be saved.");
+        const leader = old?.leader?.enrollmentId === enrollment.enrollmentId ? old.leader : null;
+        return {
+          ...(old ?? emptyFollower),
+          directive: {
+            directiveId: input.directiveId,
+            enrollmentId: enrollment.enrollmentId,
+            targetSource: input.targetSource,
+            targetTree: input.targetTree,
+            mode: "manual-review",
+            issuedAt,
+            leaderAtIssue:
+              leader === null
+                ? null
+                : { committedSource: leader.committedSource, publishedAt: leader.publishedAt },
+          },
+        };
+      }),
+    );
     followerView = undefined;
     yield* updates.refreshPolicy;
     yield* Queue.offer(wakeups, undefined);
@@ -663,7 +714,8 @@ export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(funct
     yield* updates.refreshPolicy;
     const record = (yield* storage(store.readFollower)) ?? emptyFollower;
     const leaderRecord = leaderFor(record, enrollment);
-    const directive = record.directive?.enrollmentId === enrollment.enrollmentId ? record.directive : undefined;
+    const directive =
+      record.directive?.enrollmentId === enrollment.enrollmentId ? record.directive : undefined;
     const base = {
       ...(directive === undefined ? {} : { planDirective: directive }),
       protocol: 1 as const,
@@ -673,13 +725,21 @@ export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(funct
     const show = (view: Omit<FleetFollowerStatus, keyof typeof base>) => {
       followerView = { ...base, ...view };
     };
-    if (directive !== undefined && (leaderRecord === null ||
-      leaderRecord.committedSource === directive.targetSource ||
-      (leaderRecord.committedSource === directive.leaderAtIssue?.committedSource &&
-        leaderRecord.publishedAt === directive.leaderAtIssue.publishedAt))) {
+    if (
+      directive !== undefined &&
+      (leaderRecord === null ||
+        leaderRecord.committedSource === directive.targetSource ||
+        (leaderRecord.committedSource === directive.leaderAtIssue?.committedSource &&
+          leaderRecord.publishedAt === directive.leaderAtIssue.publishedAt))
+    ) {
       const update = yield* updates.state();
-      return show({ state: update?.installedSource?.sha === directive.targetSource ? "current" : "waiting-for-leader",
-        reason: `Managed by the Laptop's update plan for ${directive.targetSource.slice(0, 7)}; installs here need review.` });
+      return show({
+        state:
+          update?.installedSource?.sha === directive.targetSource
+            ? "current"
+            : "waiting-for-leader",
+        reason: `Managed by the Laptop's update plan for ${directive.targetSource.slice(0, 7)}; installs here need review.`,
+      });
     }
     if (!updates.fleetOperationsSupported)
       return show({

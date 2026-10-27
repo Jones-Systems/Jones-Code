@@ -1,8 +1,11 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off - Native plan adapter supplies UUIDs and its scheduling clock.
-import type { JonesInstallPlanRequest, JonesInstallPlanResult } from "@t3tools/contracts/jones/installPlan";
+import type {
+  JonesInstallPlanRequest,
+  JonesInstallPlanResult,
+} from "@t3tools/contracts/jones/installPlan";
 import { createInstallPlanStore } from "../jones/installPlan/store.ts";
 import { createInstallPlanCoordinator } from "../jones/installPlan/coordinator.ts";
-import { randomUUID } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import type {
   FleetDesktopRequest,
   FleetDesktopState,
@@ -220,7 +223,9 @@ export class DesktopUpdates extends Context.Service<
       handle: string,
       campaignId?: string,
     ) => Effect.Effect<DesktopUpdateActionResult>;
-    readonly installPlan?: (request: JonesInstallPlanRequest) => Effect.Effect<JonesInstallPlanResult>;
+    readonly installPlan?: (
+      request: JonesInstallPlanRequest,
+    ) => Effect.Effect<JonesInstallPlanResult>;
     readonly fleetUpdates?: (request: FleetDesktopRequest) => Effect.Effect<FleetDesktopState>;
     readonly installPrepared: (
       expectedVersion: string,
@@ -445,10 +450,14 @@ export const make = Effect.gen(function* () {
     const profile = yield* DesktopUserData.resolveUserDataPath(environment);
     let coordinator: ReturnType<typeof createInstallPlanCoordinator> | undefined;
     const planStore = createInstallPlanStore({ home: environment.baseDir, profile });
-    const fleet = createDesktopFleetStore({ home: environment.baseDir, profile,
-      isPlanManaged: (source) => coordinator === undefined ? Promise.resolve(true) : coordinator.isPlanManaged(source),
+    const fleet = createDesktopFleetStore({
+      home: environment.baseDir,
+      profile,
+      isPlanManaged: (source) =>
+        coordinator === undefined ? Promise.resolve(true) : coordinator.isPlanManaged(source),
       withUnmanagedTarget: (source, work) => {
-        if (coordinator === undefined) return Promise.reject(new Error("Native plan persistence is unavailable."));
+        if (coordinator === undefined)
+          return Promise.reject(new Error("Native plan persistence is unavailable."));
         return coordinator.withUnmanagedTarget(source, work);
       },
     });
@@ -467,17 +476,22 @@ export const make = Effect.gen(function* () {
       fleet,
       plan: {
         bindLaptopInstall: (binding) => {
-          if (coordinator === undefined) return Promise.reject(new Error("Native plan persistence is unavailable."));
+          if (coordinator === undefined)
+            return Promise.reject(new Error("Native plan persistence is unavailable."));
           return coordinator.bindLaptopInstall(binding);
         },
-        recordLaptopOutcome: (outcome) => coordinator?.recordLaptopOutcome(outcome) ?? Promise.resolve(),
-        preparationHeld: () => coordinator === undefined ? Promise.resolve(true) : coordinator.preparationHeld(),
+        recordLaptopOutcome: (outcome) =>
+          coordinator?.recordLaptopOutcome(outcome) ?? Promise.resolve(),
+        preparationHeld: () =>
+          coordinator === undefined ? Promise.resolve(true) : coordinator.preparationHeld(),
         recordLaptopAdmission: (operationId) => {
-          if (coordinator === undefined) return Promise.reject(new Error("Native plan persistence is unavailable."));
+          if (coordinator === undefined)
+            return Promise.reject(new Error("Native plan persistence is unavailable."));
           return coordinator.recordLaptopAdmission(operationId);
         },
         recordLaptopWorker: (input) => {
-          if (coordinator === undefined) return Promise.reject(new Error("Native plan persistence is unavailable."));
+          if (coordinator === undefined)
+            return Promise.reject(new Error("Native plan persistence is unavailable."));
           return coordinator.recordLaptopWorker(input);
         },
       },
@@ -525,12 +539,21 @@ export const make = Effect.gen(function* () {
         return backend.value.httpBaseUrl.origin;
       },
     });
-    const background = preparation.attach(controller, (source) => coordinator === undefined ? Promise.resolve(true) : coordinator.backgroundSuppressed(source));
+    const background = preparation.attach(controller, (source) =>
+      coordinator === undefined ? Promise.resolve(true) : coordinator.backgroundSuppressed(source),
+    );
     coordinator = createInstallPlanCoordinator({
-      store: planStore, controller,
+      store: planStore,
+      controller,
       localEnvironmentId: () => controller.state.jones?.environmentId,
-      track: (work) => background.track(work), now: Date.now, uuid: randomUUID,
-      broadcast: (state) => { void Effect.runPromiseWith(context)(electronWindow.sendAll("desktop:jones-install-plan-state", state)); },
+      track: (work) => background.track(work),
+      now: Date.now,
+      uuid: NodeCrypto.randomUUID,
+      broadcast: (state) => {
+        void Effect.runPromiseWith(context)(
+          electronWindow.sendAll("desktop:jones-install-plan-state", state),
+        );
+      },
     });
     const check = Effect.promise(() => background.check());
     const install = (handle?: string, campaignId?: string) =>

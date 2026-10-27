@@ -74,8 +74,19 @@ print('ok')
 `;
 
 describe("native recovery inspection", () => {
-  it.each(["first-install", "same-volume", "distinct-volumes", "unsupported", "unknown", "symlink"])("measures %s with owned ephemeral probes only", (mode) => {
-    const output = NodeChildProcess.execFileSync("python3", ["-", mode], { input: `${definitions}\n${scenario}`, encoding: "utf8", timeout: 15_000 });
+  it.each([
+    "first-install",
+    "same-volume",
+    "distinct-volumes",
+    "unsupported",
+    "unknown",
+    "symlink",
+  ])("measures %s with owned ephemeral probes only", (mode) => {
+    const output = NodeChildProcess.execFileSync("python3", ["-", mode], {
+      input: `${definitions}\n${scenario}`,
+      encoding: "utf8",
+      timeout: 15_000,
+    });
     expect(output.trim()).toBe("ok");
   });
 
@@ -92,10 +103,22 @@ with tempfile.TemporaryDirectory(prefix='jones-policy-refusal-') as scratch:
         assert {p.name for p in path.parent.iterdir()} == {'intent.json'}
 print('ok')
 `;
-    expect(NodeChildProcess.execFileSync("python3", ["-"], { input: `${definitions}\n${source}`, encoding: "utf8", timeout: 15_000 }).trim()).toBe("ok");
+    expect(
+      NodeChildProcess.execFileSync("python3", ["-"], {
+        input: `${definitions}\n${source}`,
+        encoding: "utf8",
+        timeout: 15_000,
+      }).trim(),
+    ).toBe("ok");
   });
 
-  it.each(["strict-failure", "strict-success", "ordinary-cp-success", "ordinary-copy-fallback", "empty-state"])("keeps policy and observed method truthful: %s", (mode) => {
+  it.each([
+    "strict-failure",
+    "strict-success",
+    "ordinary-cp-success",
+    "ordinary-copy-fallback",
+    "empty-state",
+  ])("keeps policy and observed method truthful: %s", (mode) => {
     const source = String.raw`
 import tempfile, ctypes, errno
 from types import SimpleNamespace
@@ -142,7 +165,13 @@ with tempfile.TemporaryDirectory(prefix='jones-pair-policy-') as scratch:
             assert snapshot['recovery']['copyFallback'] == (sys.argv[1] == 'ordinary-copy-fallback')
 print('ok')
 `;
-    expect(NodeChildProcess.execFileSync("python3", ["-", mode], { input: `${definitions}\n${source}`, encoding: "utf8", timeout: 15_000 }).trim()).toBe("ok");
+    expect(
+      NodeChildProcess.execFileSync("python3", ["-", mode], {
+        input: `${definitions}\n${source}`,
+        encoding: "utf8",
+        timeout: 15_000,
+      }).trim(),
+    ).toBe("ok");
   });
 });
 
@@ -197,5 +226,11 @@ with tempfile.TemporaryDirectory(prefix='jones-activation-recheck-') as scratch:
     assert not (tx / 'previous-pair').exists()
 print('ok')
 `;
-  expect(NodeChildProcess.execFileSync("python3", ["-"], { input: `${definitions}\n${source}`, encoding: "utf8", timeout: 15_000 }).trim()).toBe("ok");
+  expect(
+    NodeChildProcess.execFileSync("python3", ["-"], {
+      input: `${definitions}\n${source}`,
+      encoding: "utf8",
+      timeout: 15_000,
+    }).trim(),
+  ).toBe("ok");
 });

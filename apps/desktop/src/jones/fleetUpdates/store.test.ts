@@ -66,6 +66,8 @@ async function createTwoHostCampaign(
     if (offline.has(environmentId)) throw new Error("Synthetic host offline.");
     if (request.action === "enroll") throw new Error("Enrollment belongs to fixture setup.");
     if (request.action === "leader") throw new Error("This campaign publishes no laptop build.");
+    if (request.action === "planDirective")
+      throw new Error("Manual-review directives belong to plan fixtures.");
     const selectedEnrollment =
       environmentId === enrollment.environmentId ? enrollment : secondEnrollment;
     const operationId =
@@ -564,11 +566,26 @@ it("holds an old unaccepted stage for exact retirement instead of forgetting its
     const nextId = "33333333-3333-4333-8333-333333333333";
     const next = await store.request({
       action: "prepare",
-      input: { campaignId: nextId, targetSource: "c".repeat(40), desktopStagedHandle: "f".repeat(64) },
+      input: {
+        campaignId: nextId,
+        targetSource: "c".repeat(40),
+        desktopStagedHandle: "f".repeat(64),
+      },
     });
     expect(next.campaigns[0]?.members[0]?.phase).toBe("retiring");
-    await store.bindInstall({ campaignId: nextId, stagedHandle: "f".repeat(64), targetSource: "c".repeat(40), transactionId: "e".repeat(64), fromGeneration: "previous" });
-    await store.recordOutcome({ transactionId: "e".repeat(64), status: "committed", activeGeneration: "e".repeat(64), activeSource: "c".repeat(40) });
+    await store.bindInstall({
+      campaignId: nextId,
+      stagedHandle: "f".repeat(64),
+      targetSource: "c".repeat(40),
+      transactionId: "e".repeat(64),
+      fromGeneration: "previous",
+    });
+    await store.recordOutcome({
+      transactionId: "e".repeat(64),
+      status: "committed",
+      activeGeneration: "e".repeat(64),
+      activeSource: "c".repeat(40),
+    });
     const nextOperation = next.campaigns[1]!.members[0]!.operationId;
     await expect(
       store.request({
@@ -688,14 +705,39 @@ it("uses a fresh campaign and host operation after rollback without reusing the 
 it("refuses plan-managed campaign creation without changing enrollment or earlier campaigns", async () =>
   fixture(async (home, store) => {
     const before = await store.request({ action: "read" });
-    const guarded = createDesktopFleetStore({ home, profile: undefined, isPlanManaged: async (target) => target === "e".repeat(40) });
-    await expect(guarded.request({ action: "prepare", input: { campaignId: "66666666-6666-4666-8666-666666666666", targetSource: "e".repeat(40), desktopStagedHandle: "e".repeat(64) } })).rejects.toThrow("managed by the update plan");
+    const guarded = createDesktopFleetStore({
+      home,
+      profile: undefined,
+      isPlanManaged: async (target) => target === "e".repeat(40),
+    });
+    await expect(
+      guarded.request({
+        action: "prepare",
+        input: {
+          campaignId: "66666666-6666-4666-8666-666666666666",
+          targetSource: "e".repeat(40),
+          desktopStagedHandle: "e".repeat(64),
+        },
+      }),
+    ).rejects.toThrow("managed by the update plan");
     expect(await store.request({ action: "read" })).toEqual(before);
   }));
 
 it("requires native committed generation before remote staging as well as activation", async () =>
   fixture(async (_home, store) => {
     const state = await store.request({ action: "read" });
-    await expect(store.request({ action: "updateMember", input: { campaignId, operationId: state.campaigns[0]!.members[0]!.operationId, expectedPhase: "waiting", phase: "staging" } })).rejects.toThrow("has not committed");
-    expect((await store.request({ action: "read" })).campaigns[0]?.members[0]?.phase).toBe("waiting");
+    await expect(
+      store.request({
+        action: "updateMember",
+        input: {
+          campaignId,
+          operationId: state.campaigns[0]!.members[0]!.operationId,
+          expectedPhase: "waiting",
+          phase: "staging",
+        },
+      }),
+    ).rejects.toThrow("has not committed");
+    expect((await store.request({ action: "read" })).campaigns[0]?.members[0]?.phase).toBe(
+      "waiting",
+    );
   }));

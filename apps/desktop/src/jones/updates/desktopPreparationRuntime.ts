@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off - Resolves the bundled worker and settings paths.
-import { randomUUID } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import * as NodePath from "node:path";
 
 import {
@@ -29,16 +29,31 @@ export function createJonesDesktopPreparation(input: {
   );
   const controllerOptions = {
     prepareStage: (candidate, roots, onVerifying, { token, onStarted }) =>
-      worker.run({ kind: "prepare", token, candidate, roots, platform: input.platform }, onVerifying, onStarted === undefined ? {} : { onStarted }),
+      worker.run(
+        { kind: "prepare", token, candidate, roots, platform: input.platform },
+        onVerifying,
+        onStarted === undefined ? {} : { onStarted },
+      ),
     cancelPreparation: (token) => worker.cancel(token),
     preparationWorker: () => worker.heldWorker(),
     preparationExited: (token) => worker.reaped(token),
-    validateArtifact: (directory) => worker.run({ kind: "validate-artifact", token: randomUUID(), directory }),
-  } satisfies Pick<JonesDesktopUpdateOptions, "prepareStage" | "validateArtifact" | "cancelPreparation" | "preparationWorker" | "preparationExited">;
+    validateArtifact: (directory) =>
+      worker.run({ kind: "validate-artifact", token: NodeCrypto.randomUUID(), directory }),
+  } satisfies Pick<
+    JonesDesktopUpdateOptions,
+    | "prepareStage"
+    | "validateArtifact"
+    | "cancelPreparation"
+    | "preparationWorker"
+    | "preparationExited"
+  >;
   let background: JonesBackgroundPreparation | undefined;
   return {
     controllerOptions,
-    attach: (controller: BackgroundPreparationController & { readonly updaterRoot: string }, suppressed?: (source: string) => Promise<boolean>) =>
+    attach: (
+      controller: BackgroundPreparationController & { readonly updaterRoot: string },
+      suppressed?: (source: string) => Promise<boolean>,
+    ) =>
       (background = new JonesBackgroundPreparation({
         controller,
         ...(suppressed === undefined ? {} : { suppressed }),
@@ -46,7 +61,12 @@ export function createJonesDesktopPreparation(input: {
           NodePath.join(input.stateDirectory, JONES_DESKTOP_UPDATES_SETTINGS_FILE),
         ),
         reclaim: (handle) =>
-          worker.run({ kind: "reclaim", token: randomUUID(), updatesRoot: controller.updaterRoot, handle }),
+          worker.run({
+            kind: "reclaim",
+            token: NodeCrypto.randomUUID(),
+            updatesRoot: controller.updaterRoot,
+            handle,
+          }),
       })),
     /** Stops scheduling and the running job's process group; owned by the updater's scope. */
     close: async () => {

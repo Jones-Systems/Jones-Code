@@ -23,7 +23,14 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("electron", () => ({
   contextBridge: { exposeInMainWorld: mocks.expose },
-  ipcRenderer: { invoke: mocks.invoke, sendSync: vi.fn((channel: string) => channel === "desktop:jones-install-plan-available" ? true : undefined), on: mocks.on, removeListener: mocks.removeListener },
+  ipcRenderer: {
+    invoke: mocks.invoke,
+    sendSync: vi.fn((channel: string) =>
+      channel === "desktop:jones-install-plan-available" ? true : undefined,
+    ),
+    on: mocks.on,
+    removeListener: mocks.removeListener,
+  },
   webFrame: {},
   webUtils: {},
 }));
@@ -42,7 +49,8 @@ describe("desktop preload install bridge", () => {
   it("keeps native plan mutation limited to the typed request and disposes its event subscription", async () => {
     await bridge.installPlan!({ type: "read" });
     expect(mocks.invoke).toHaveBeenLastCalledWith("desktop:jones-install-plan", { type: "read" });
-    const listener = vi.fn(); const unsubscribe = bridge.onInstallPlan!(listener);
+    const listener = vi.fn();
+    const unsubscribe = bridge.onInstallPlan!(listener);
     const [channel, wrapped] = mocks.on.mock.calls.at(-1)!;
     expect(channel).toBe("desktop:jones-install-plan-state");
     unsubscribe();

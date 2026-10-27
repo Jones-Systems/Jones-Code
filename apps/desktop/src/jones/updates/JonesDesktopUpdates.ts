@@ -1,6 +1,10 @@
 // @effect-diagnostics nodeBuiltinImport:off - Native updater uses ordinary-UID filesystem and process operations.
 import type { JonesRecoveryPreflightInput } from "@t3tools/contracts/jones/jonesOperations";
-import { NativeRecoveryPreflights, RecoveryPreflightRefused, type RecoveryReview } from "./recoveryPreflight.ts";
+import {
+  NativeRecoveryPreflights,
+  RecoveryPreflightRefused,
+  type RecoveryReview,
+} from "./recoveryPreflight.ts";
 import type { JonesInstallPlanLaptopEvidence } from "@t3tools/contracts/jones/installPlan";
 import type { LaptopInstallBinding, LaptopNativeOutcome } from "../installPlan/coordinator.ts";
 import { JonesStagingStopped, JonesStagingExitUnproved } from "./stagingWorkerProtocol.ts";
@@ -94,7 +98,10 @@ const ActivationJournal = Schema.Struct({
       evidence: Schema.Record(Schema.String, Schema.Union([Schema.String, Schema.Boolean])),
     }),
   ),
-  intent: Schema.Struct({ ...JonesInstallIntent.fields, stateRecovery: Schema.optionalKey(Schema.Literal("clone-required")) }),
+  intent: Schema.Struct({
+    ...JonesInstallIntent.fields,
+    stateRecovery: Schema.optionalKey(Schema.Literal("clone-required")),
+  }),
   phase: Schema.String,
   message: Schema.optionalKey(Schema.String),
   recovery: Schema.optionalKey(
@@ -427,11 +434,17 @@ export interface JonesDesktopUpdateOptions {
     readonly recordLaptopOutcome: (outcome: LaptopNativeOutcome) => Promise<void>;
     readonly preparationHeld?: () => Promise<boolean>;
     readonly recordLaptopAdmission?: (operationId: string) => Promise<void>;
-    readonly recordLaptopWorker?: (input: { readonly operationId: string; readonly pid: number; readonly processGroup: number }) => Promise<void>;
+    readonly recordLaptopWorker?: (input: {
+      readonly operationId: string;
+      readonly pid: number;
+      readonly processGroup: number;
+    }) => Promise<void>;
   };
   readonly cancelPreparation?: (token: string) => Promise<JonesPreparationCancel>;
   readonly preparationExited?: (token: string) => boolean;
-  readonly preparationWorker?: () => { readonly pid: number; readonly processGroup: number } | undefined;
+  readonly preparationWorker?: () =>
+    | { readonly pid: number; readonly processGroup: number }
+    | undefined;
   readonly onState: (state: DesktopUpdateState) => Promise<void>;
   /** Resolves with the backend's state; its message explains a missing preparation receipt. */
   readonly prepareNative?: (
@@ -457,15 +470,26 @@ export interface JonesDesktopUpdateOptions {
     candidate: JonesActionsCandidate,
     roots: JonesStagingRoots,
     onVerifying: () => Promise<void>,
-    options: { readonly token: string; readonly onStarted?: (worker: { readonly pid: number; readonly processGroup: number }) => Promise<void> },
+    options: {
+      readonly token: string;
+      readonly onStarted?: (worker: {
+        readonly pid: number;
+        readonly processGroup: number;
+      }) => Promise<void>;
+    },
   ) => Promise<JonesPreparedStage>;
 }
 
 export type JonesSupersedeResult = "replaced" | "refused" | "uncertain" | "download-failed";
 
 type DesktopDownloadWork = {
-  token: string; operationId?: string; source: string; stopRequested: boolean; admitted: boolean;
-  pending: Promise<JonesDesktopDownloadResult> | undefined; binding: Promise<void>;
+  token: string;
+  operationId?: string;
+  source: string;
+  stopRequested: boolean;
+  admitted: boolean;
+  pending: Promise<JonesDesktopDownloadResult> | undefined;
+  binding: Promise<void>;
   worker?: { readonly pid: number; readonly processGroup: number };
 };
 
@@ -542,43 +566,102 @@ export class JonesDesktopUpdateController {
       };
     return undefined;
   }
-  isStaged(binding: { targetSource: string; targetTree: string; stagedHandle?: string; currentVersion?: string; expectedInstalledSource?: string }): boolean {
-    return this.#staged !== undefined && this.#staged.sourceSha === binding.targetSource && this.#staged.sourceTree === binding.targetTree &&
+  isStaged(binding: {
+    targetSource: string;
+    targetTree: string;
+    stagedHandle?: string;
+    currentVersion?: string;
+    expectedInstalledSource?: string;
+  }): boolean {
+    return (
+      this.#staged !== undefined &&
+      this.#staged.sourceSha === binding.targetSource &&
+      this.#staged.sourceTree === binding.targetTree &&
       (binding.stagedHandle === undefined || this.#staged.handle === binding.stagedHandle) &&
-      (binding.currentVersion === undefined || binding.currentVersion === this.#state.currentVersion) &&
-      (binding.expectedInstalledSource === undefined || binding.expectedInstalledSource === this.#source) && !this.#activationBlocked;
+      (binding.currentVersion === undefined ||
+        binding.currentVersion === this.#state.currentVersion) &&
+      (binding.expectedInstalledSource === undefined ||
+        binding.expectedInstalledSource === this.#source) &&
+      !this.#activationBlocked
+    );
   }
 
   async laptopEvidence(): Promise<JonesInstallPlanLaptopEvidence> {
-    if (!this.#heldCopy && this.#heldDownload !== undefined && this.#download !== undefined && this.#options.preparationExited?.(this.#download.token) === true) {
+    if (
+      !this.#heldCopy &&
+      this.#heldDownload !== undefined &&
+      this.#download !== undefined &&
+      this.#options.preparationExited?.(this.#download.token) === true
+    ) {
       this.#heldDownload = undefined;
       this.#download = undefined;
       if (this.#busy === "download") this.#busy = null;
     }
     const base: JonesInstallPlanLaptopEvidence = {
-      observedAt: await this.#options.timestamp(), activationBlocked: this.#activationBlocked || this.#heldDownload !== undefined,
+      observedAt: await this.#options.timestamp(),
+      activationBlocked: this.#activationBlocked || this.#heldDownload !== undefined,
       activeVersion: this.#state.currentVersion,
-      ...(this.#bootstrap === undefined ? {} : { environmentId: decodeEnvironmentId(this.#bootstrap.environmentId),
-        activeGeneration: this.#bootstrap.generation, activeSource: this.#bootstrap.sourceSha, activeTree: this.#bootstrap.sourceTree }),
+      ...(this.#bootstrap === undefined
+        ? {}
+        : {
+            environmentId: decodeEnvironmentId(this.#bootstrap.environmentId),
+            activeGeneration: this.#bootstrap.generation,
+            activeSource: this.#bootstrap.sourceSha,
+            activeTree: this.#bootstrap.sourceTree,
+          }),
     };
-    if (this.#bootstrap === undefined || this.#activeCommittedTransaction === undefined || base.activationBlocked) return base;
+    if (
+      this.#bootstrap === undefined ||
+      this.#activeCommittedTransaction === undefined ||
+      base.activationBlocked
+    )
+      return base;
     try {
-      const active = decodeActiveInstall(JSON.parse(await NodeFSP.readFile(this.manifestPath, "utf8")));
-      const journal = decodeActivationJournal(JSON.parse(await NodeFSP.readFile(NodePath.join(this.updaterRoot, "transactions", this.#activeCommittedTransaction, "journal.json"), "utf8")));
-      if (JSON.stringify(active) !== JSON.stringify(this.#bootstrap) || journal.phase !== "resumed" ||
-        active.generation !== journal.intent.transactionId || active.transactionId !== journal.intent.transactionId ||
-        journal.intent.staged.sourceSha !== active.sourceSha || journal.intent.staged.sourceTree !== active.sourceTree ||
-        journal.intent.staged.appDigest !== active.appDigest || journal.intent.expected.home !== active.home ||
-        journal.intent.expected.profile !== active.profile || journal.intent.expected.environmentId !== active.environmentId)
+      const active = decodeActiveInstall(
+        JSON.parse(await NodeFSP.readFile(this.manifestPath, "utf8")),
+      );
+      const journal = decodeActivationJournal(
+        JSON.parse(
+          await NodeFSP.readFile(
+            NodePath.join(
+              this.updaterRoot,
+              "transactions",
+              this.#activeCommittedTransaction,
+              "journal.json",
+            ),
+            "utf8",
+          ),
+        ),
+      );
+      if (
+        JSON.stringify(active) !== JSON.stringify(this.#bootstrap) ||
+        journal.phase !== "resumed" ||
+        active.generation !== journal.intent.transactionId ||
+        active.transactionId !== journal.intent.transactionId ||
+        journal.intent.staged.sourceSha !== active.sourceSha ||
+        journal.intent.staged.sourceTree !== active.sourceTree ||
+        journal.intent.staged.appDigest !== active.appDigest ||
+        journal.intent.expected.home !== active.home ||
+        journal.intent.expected.profile !== active.profile ||
+        journal.intent.expected.environmentId !== active.environmentId
+      )
         return { ...base, activationBlocked: true };
       return { ...base, committedTransactionId: journal.intent.transactionId };
-    } catch { return { ...base, activationBlocked: true }; }
+    } catch {
+      return { ...base, activationBlocked: true };
+    }
   }
 
-  async stopDownload(input: { readonly operationId?: string; readonly sourceSha: string }): Promise<JonesPreparationCancel> {
+  async stopDownload(input: {
+    readonly operationId?: string;
+    readonly sourceSha: string;
+  }): Promise<JonesPreparationCancel> {
     const work = this.#download;
-    if (work === undefined || work.source !== input.sourceSha ||
-      (input.operationId !== undefined && work.operationId !== input.operationId))
+    if (
+      work === undefined ||
+      work.source !== input.sourceSha ||
+      (input.operationId !== undefined && work.operationId !== input.operationId)
+    )
       return this.#staged?.sourceSha === input.sourceSha ? "completed" : "not-running";
     if (work.admitted) return "not-stoppable-phase";
     work.stopRequested = true;
@@ -587,7 +670,13 @@ export class JonesDesktopUpdateController {
     const result = await this.#options.cancelPreparation?.(work.token);
     if (result === "not-running") {
       const finished = await work.pending;
-      return finished?.stopped ? "stopped" : finished?.completed ? "completed" : finished?.held ? "exit-unproved" : "not-running";
+      return finished?.stopped
+        ? "stopped"
+        : finished?.completed
+          ? "completed"
+          : finished?.held
+            ? "exit-unproved"
+            : "not-running";
     }
     if (result === "exit-unproved") this.#heldDownload = this.#options.preparationWorker?.();
     return result ?? "not-stoppable-phase";
@@ -804,11 +893,13 @@ export class JonesDesktopUpdateController {
     const journal = this.#lastJournal;
     const measuredRecovery = journal?.recovery;
     // Older cp -c journals and new opportunistic copies cannot prove shared blocks.
-    const recovery = measuredRecovery !== undefined && (
-      (measuredRecovery.method === "clone" && measuredRecovery.strictClone === true) ||
-      measuredRecovery.method === "sqlite-backup" ||
-      (measuredRecovery.method === "copy" && measuredRecovery.copyFallback !== false)
-    ) ? measuredRecovery : undefined;
+    const recovery =
+      measuredRecovery !== undefined &&
+      ((measuredRecovery.method === "clone" && measuredRecovery.strictClone === true) ||
+        measuredRecovery.method === "sqlite-backup" ||
+        (measuredRecovery.method === "copy" && measuredRecovery.copyFallback !== false))
+        ? measuredRecovery
+        : undefined;
     const currentAttempt =
       this.#selectedAttempt?.stagedHandle === this.#staged?.handle
         ? this.#selectedAttempt?.transactionId
@@ -830,7 +921,9 @@ export class JonesDesktopUpdateController {
     const jones: JonesUpdateState = {
       source: "jones-actions",
       channel: "jones-main",
-      ...(this.#checkClassification === undefined ? {} : { checkClassification: this.#checkClassification }),
+      ...(this.#checkClassification === undefined
+        ? {}
+        : { checkClassification: this.#checkClassification }),
       phase,
       ...(this.#installedSource === undefined ? {} : { installedSource: this.#installedSource }),
       ...(updateId === undefined ? {} : { updateId }),
@@ -848,19 +941,23 @@ export class JonesDesktopUpdateController {
         ? {}
         : {
             recovery: {
-              method: recovery.strictClone === true && recovery.method === "clone" ? "clone" : "copy",
-              requested: journal?.intent.stateRecovery === "clone-required" ? "clone-required" : "clone-or-copy",
+              method:
+                recovery.strictClone === true && recovery.method === "clone" ? "clone" : "copy",
+              requested:
+                journal?.intent.stateRecovery === "clone-required"
+                  ? "clone-required"
+                  : "clone-or-copy",
               bytes: recovery.bytes,
-              completedAt: DateTime.formatIso(
-                DateTime.fromEpochSeconds(recovery.completedAt),
-              ),
-              durationMs: Math.round(
-                (recovery.completedAt - recovery.startedAt) * 1000,
-              ),
+              completedAt: DateTime.formatIso(DateTime.fromEpochSeconds(recovery.completedAt)),
+              durationMs: Math.round((recovery.completedAt - recovery.startedAt) * 1000),
             },
           }),
       capability: {
-        ...(this.#bootstrap === undefined || !this.#recoveryInspectorReady || this.#options.disabledByEnv ? {} : { recoveryPolicy: 1 as const }),
+        ...(this.#bootstrap === undefined ||
+        !this.#recoveryInspectorReady ||
+        this.#options.disabledByEnv
+          ? {}
+          : { recoveryPolicy: 1 as const }),
         check: this.#source !== undefined && !this.#options.disabledByEnv,
         download: this.#source !== undefined && !this.#options.disabledByEnv,
         install: reason === undefined && phase !== "installing",
@@ -1184,15 +1281,19 @@ export class JonesDesktopUpdateController {
           journal.intent.transactionId === active.transactionId &&
           journal.intent.staged.sourceSha === active.sourceSha &&
           journal.intent.staged.appDigest === active.appDigest &&
-          journal.intent.staged.sourceTree === active.sourceTree && active.generation === journal.intent.transactionId;
+          journal.intent.staged.sourceTree === active.sourceTree &&
+          active.generation === journal.intent.transactionId;
         const rolledBack =
           journal.phase === "rolled-back" &&
           JSON.stringify(journal.intent.expected) === JSON.stringify(active);
         if (committed) this.#activeCommittedTransaction = journal.intent.transactionId;
         if (committed || rolledBack) {
           await this.#options.plan?.recordLaptopOutcome({
-            transactionId: journal.intent.transactionId, status: committed ? "committed" : "rolled-back",
-            activeGeneration: active.generation, activeSource: active.sourceSha, activeTree: active.sourceTree,
+            transactionId: journal.intent.transactionId,
+            status: committed ? "committed" : "rolled-back",
+            activeGeneration: active.generation,
+            activeSource: active.sourceSha,
+            activeTree: active.sourceTree,
           });
           const outcomeTime = (await NodeFSP.stat(NodePath.join(directory, "journal.json")))
             .mtimeMs;
@@ -1364,9 +1465,16 @@ export class JonesDesktopUpdateController {
     return pending;
   }
 
-  async download(selection?: JonesDesktopDownloadSelection, operation?: { readonly operationId: string }): Promise<JonesDesktopDownloadResult> {
+  async download(
+    selection?: JonesDesktopDownloadSelection,
+    operation?: { readonly operationId: string },
+  ): Promise<JonesDesktopDownloadResult> {
     const active = this.#download;
-    if (active !== undefined && selection?.sourceSha === active.source && this.#candidate?.artifactId === selection.artifactId) {
+    if (
+      active !== undefined &&
+      selection?.sourceSha === active.source &&
+      this.#candidate?.artifactId === selection.artifactId
+    ) {
       if (operation !== undefined && active.operationId === undefined) {
         try {
           await this.#serializeDownloadBinding(active, async () => {
@@ -1374,12 +1482,17 @@ export class JonesDesktopUpdateController {
             // Persist admission first: a crash between these writes must never leave an admitted
             // copy represented by a transfer-only worker, even when admission preceded this plan.
             if (active.admitted) {
-              if (this.#options.plan?.recordLaptopAdmission === undefined) throw new Error("Copy admission cannot be bound to the plan.");
+              if (this.#options.plan?.recordLaptopAdmission === undefined)
+                throw new Error("Copy admission cannot be bound to the plan.");
               await this.#options.plan.recordLaptopAdmission(operation.operationId);
             }
             if (active.worker !== undefined) {
-              if (this.#options.plan?.recordLaptopWorker === undefined) throw new Error("The preparation worker cannot be bound to the plan.");
-              await this.#options.plan.recordLaptopWorker({ operationId: operation.operationId, ...active.worker });
+              if (this.#options.plan?.recordLaptopWorker === undefined)
+                throw new Error("The preparation worker cannot be bound to the plan.");
+              await this.#options.plan.recordLaptopWorker({
+                operationId: operation.operationId,
+                ...active.worker,
+              });
             }
             active.operationId = operation.operationId;
           });
@@ -1387,21 +1500,40 @@ export class JonesDesktopUpdateController {
           if (active.worker === undefined) throw cause;
           this.#heldDownload = active.worker;
           this.#heldCopy = active.admitted;
-          return { accepted: true, completed: false, held: active.worker, heldCode: active.admitted ? "copy-unconfirmed" : "exit-unproved" };
+          return {
+            accepted: true,
+            completed: false,
+            held: active.worker,
+            heldCode: active.admitted ? "copy-unconfirmed" : "exit-unproved",
+          };
         }
       }
-      if (operation === undefined || active.operationId === operation.operationId) return active.pending ?? { accepted: false, completed: false };
+      if (operation === undefined || active.operationId === operation.operationId)
+        return active.pending ?? { accepted: false, completed: false };
     }
-    if (this.#busy !== null || this.#heldDownload !== undefined) return { accepted: false, completed: false };
-    const work: DesktopDownloadWork = { token: operation?.operationId ?? NodeCrypto.randomUUID(), source: selection?.sourceSha ?? this.#candidate?.source ?? "",
-      ...(operation === undefined ? {} : { operationId: operation.operationId }), stopRequested: false, admitted: false,
-      pending: undefined, binding: Promise.resolve() };
+    if (this.#busy !== null || this.#heldDownload !== undefined)
+      return { accepted: false, completed: false };
+    const work: DesktopDownloadWork = {
+      token: operation?.operationId ?? NodeCrypto.randomUUID(),
+      source: selection?.sourceSha ?? this.#candidate?.source ?? "",
+      ...(operation === undefined ? {} : { operationId: operation.operationId }),
+      stopRequested: false,
+      admitted: false,
+      pending: undefined,
+      binding: Promise.resolve(),
+    };
     this.#download = work;
     work.pending = this.#performDownload(selection);
-    try { return await work.pending; } finally { if (this.#download === work && this.#heldDownload === undefined) this.#download = undefined; }
+    try {
+      return await work.pending;
+    } finally {
+      if (this.#download === work && this.#heldDownload === undefined) this.#download = undefined;
+    }
   }
 
-  async #performDownload(selection?: JonesDesktopDownloadSelection): Promise<JonesDesktopDownloadResult> {
+  async #performDownload(
+    selection?: JonesDesktopDownloadSelection,
+  ): Promise<JonesDesktopDownloadResult> {
     if (
       selection !== undefined &&
       (this.#candidate === undefined ||
@@ -1424,7 +1556,8 @@ export class JonesDesktopUpdateController {
     this.#busy = "download";
     this.#selectedAttempt = undefined;
     try {
-      if (await this.#options.plan?.preparationHeld?.()) return { accepted: false, completed: false };
+      if (await this.#options.plan?.preparationHeld?.())
+        return { accepted: false, completed: false };
       await NodeFSP.mkdir(NodePath.join(this.updaterRoot, "apps"), {
         recursive: true,
         mode: 0o700,
@@ -1439,7 +1572,8 @@ export class JonesDesktopUpdateController {
       const onVerifying = async () => {
         work.admitted = true;
         await this.#serializeDownloadBinding(work, async () => {
-          if (work.operationId !== undefined) await this.#options.plan?.recordLaptopAdmission?.(work.operationId);
+          if (work.operationId !== undefined)
+            await this.#options.plan?.recordLaptopAdmission?.(work.operationId);
         });
         await this.#publish("verifying", "downloading");
       };
@@ -1447,15 +1581,25 @@ export class JonesDesktopUpdateController {
         ? prepareJonesStage(candidate, roots, this.#options.platform, {
             actions: this.#client,
             stageApp: this.#options.stageApp ?? stageJonesMacApp,
-            admit: async () => { if (work.stopRequested) throw new JonesStagingStopped(); work.admitted = true; },
+            admit: async () => {
+              if (work.stopRequested) throw new JonesStagingStopped();
+              work.admitted = true;
+            },
             onVerifying,
           })
-        : this.#options.prepareStage(candidate, roots, onVerifying, { token: work.token, onStarted: async (worker) => {
-            work.worker = worker;
-            await this.#serializeDownloadBinding(work, async () => {
-              if (work.operationId !== undefined) await this.#options.plan?.recordLaptopWorker?.({ operationId: work.operationId, ...worker });
-            });
-          } }));
+        : this.#options.prepareStage(candidate, roots, onVerifying, {
+            token: work.token,
+            onStarted: async (worker) => {
+              work.worker = worker;
+              await this.#serializeDownloadBinding(work, async () => {
+                if (work.operationId !== undefined)
+                  await this.#options.plan?.recordLaptopWorker?.({
+                    operationId: work.operationId,
+                    ...worker,
+                  });
+              });
+            },
+          }));
       const artifact = prepared.artifact;
       this.#staged = await this.#bindPreparedStage(candidate, prepared);
       const selectionFile = await this.#selectionFile();
@@ -1483,8 +1627,19 @@ export class JonesDesktopUpdateController {
       if (cause instanceof JonesStagingExitUnproved) {
         this.#heldDownload = cause.worker;
         this.#heldCopy = cause.copyAdmitted;
-        await this.#publish("blocked", "available", cause.copyAdmitted ? "The admitted copy did not finish with a validated stage. Its files and any mount are held for native recovery proof." : "Stop not confirmed: the download process did not exit. Nothing new starts until its exit is proved.");
-        return { accepted: true, completed: false, held: cause.worker, heldCode: cause.copyAdmitted ? "copy-unconfirmed" : "exit-unproved" };
+        await this.#publish(
+          "blocked",
+          "available",
+          cause.copyAdmitted
+            ? "The admitted copy did not finish with a validated stage. Its files and any mount are held for native recovery proof."
+            : "Stop not confirmed: the download process did not exit. Nothing new starts until its exit is proved.",
+        );
+        return {
+          accepted: true,
+          completed: false,
+          held: cause.worker,
+          heldCode: cause.copyAdmitted ? "copy-unconfirmed" : "exit-unproved",
+        };
       }
       if (cause instanceof JonesStagingStopped) {
         await this.#publish("available", "available", "Download stopped. Nothing was installed.");
@@ -1917,42 +2072,105 @@ export class JonesDesktopUpdateController {
   }
 
   async #recoveryBinding(input: JonesRecoveryPreflightInput, allowClaimed = false) {
-    const staged = this.#staged, expected = this.#bootstrap;
-    if (staged === undefined || expected === undefined || this.#options.disabledByEnv || (this.#activationBlocked && !(allowClaimed && this.#busy === "install")) ||
-      input.environmentId !== expected.environmentId || input.stagedHandle !== staged.handle ||
-      input.currentVersion !== this.#state.currentVersion || input.currentVersion !== expected.version ||
-      input.expectedInstalledSource !== this.#source || input.expectedInstalledSource !== expected.sourceSha)
-      throw new RecoveryPreflightRefused("recovery-preflight-stale", "The staged Laptop environment, version or installed source changed. Review again.");
+    const staged = this.#staged,
+      expected = this.#bootstrap;
+    if (
+      staged === undefined ||
+      expected === undefined ||
+      this.#options.disabledByEnv ||
+      (this.#activationBlocked && !(allowClaimed && this.#busy === "install")) ||
+      input.environmentId !== expected.environmentId ||
+      input.stagedHandle !== staged.handle ||
+      input.currentVersion !== this.#state.currentVersion ||
+      input.currentVersion !== expected.version ||
+      input.expectedInstalledSource !== this.#source ||
+      input.expectedInstalledSource !== expected.sourceSha
+    )
+      throw new RecoveryPreflightRefused(
+        "recovery-preflight-stale",
+        "The staged Laptop environment, version or installed source changed. Review again.",
+      );
     const manifestRaw = await NodeFSP.readFile(this.manifestPath, "utf8");
     if (JSON.stringify(decodeActiveInstall(JSON.parse(manifestRaw))) !== JSON.stringify(expected))
-      throw new RecoveryPreflightRefused("recovery-preflight-stale", "The native generation changed. Review again.");
+      throw new RecoveryPreflightRefused(
+        "recovery-preflight-stale",
+        "The native generation changed. Review again.",
+      );
     const selectionPath = await this.#selectionFile();
     const selectionRaw = await NodeFSP.readFile(selectionPath, "utf8");
     const selection = decodeStageSelection(JSON.parse(selectionRaw));
-    if (JSON.stringify(selection.app) !== JSON.stringify(staged) || JSON.stringify(selection.active) !== JSON.stringify(expected))
-      throw new RecoveryPreflightRefused("recovery-preflight-stale", "The native stage selection changed. Review again.");
+    if (
+      JSON.stringify(selection.app) !== JSON.stringify(staged) ||
+      JSON.stringify(selection.active) !== JSON.stringify(expected)
+    )
+      throw new RecoveryPreflightRefused(
+        "recovery-preflight-stale",
+        "The native stage selection changed. Review again.",
+      );
     const selectionSha256 = NodeCrypto.createHash("sha256").update(selectionRaw).digest("hex");
-    return { input, nativeIdentity: NodeCrypto.createHash("sha256").update(JSON.stringify([manifestRaw, selectionPath, selectionRaw])).digest("hex"), selectionPath, selectionSha256 };
+    return {
+      input,
+      nativeIdentity: NodeCrypto.createHash("sha256")
+        .update(JSON.stringify([manifestRaw, selectionPath, selectionRaw]))
+        .digest("hex"),
+      selectionPath,
+      selectionSha256,
+    };
   }
 
   async recoveryPreflight(input: JonesRecoveryPreflightInput) {
-    if (this.#busy !== null || !this.#recoveryInspectorReady) throw new RecoveryPreflightRefused("recovery-unsupported", "Native update work is busy. Stop; wait for it to settle before reviewing.");
+    if (this.#busy !== null || !this.#recoveryInspectorReady)
+      throw new RecoveryPreflightRefused(
+        "recovery-unsupported",
+        "Native update work is busy. Stop; wait for it to settle before reviewing.",
+      );
     const binding = await this.#recoveryBinding(input);
     // Read the already materialized immutable helper; inspection never installs helper files.
-    const helperHash = NodeCrypto.createHash("sha256").update(jonesNativeHelperSource).digest("hex");
+    const helperHash = NodeCrypto.createHash("sha256")
+      .update(jonesNativeHelperSource)
+      .digest("hex");
     const helper = NodePath.join(this.updaterRoot, `activate-v1-${helperHash}.py`);
-    if (await NodeFSP.readFile(helper, "utf8") !== jonesNativeHelperSource)
-      throw new RecoveryPreflightRefused("recovery-unsupported", "Native recovery inspection helper is unavailable. Stop; restart after the current update work settles.");
-    const raw: unknown = JSON.parse(await runNativeCommand("/usr/bin/python3", [helper, "--manifest", this.manifestPath,
-      "--inspect-recovery", input.stagedHandle, "--selection", binding.selectionPath, "--selection-sha256", binding.selectionSha256]));
+    if ((await NodeFSP.readFile(helper, "utf8")) !== jonesNativeHelperSource)
+      throw new RecoveryPreflightRefused(
+        "recovery-unsupported",
+        "Native recovery inspection helper is unavailable. Stop; restart after the current update work settles.",
+      );
+    const raw: unknown = JSON.parse(
+      await runNativeCommand("/usr/bin/python3", [
+        helper,
+        "--manifest",
+        this.manifestPath,
+        "--inspect-recovery",
+        input.stagedHandle,
+        "--selection",
+        binding.selectionPath,
+        "--selection-sha256",
+        binding.selectionSha256,
+      ]),
+    );
     const fresh = await this.#recoveryBinding(input);
     if (fresh.nativeIdentity !== binding.nativeIdentity || this.#busy !== null)
-      throw new RecoveryPreflightRefused("recovery-preflight-stale", "Native update selection changed during inspection. Review again.");
-    return this.#recoveryPreflights.record(binding, raw, Date.parse(await this.#options.timestamp()), NodeCrypto.randomUUID());
+      throw new RecoveryPreflightRefused(
+        "recovery-preflight-stale",
+        "Native update selection changed during inspection. Review again.",
+      );
+    return this.#recoveryPreflights.record(
+      binding,
+      raw,
+      Date.parse(await this.#options.timestamp()),
+      NodeCrypto.randomUUID(),
+    );
   }
 
-  async validateRecoveryReview(input: JonesRecoveryPreflightInput, review: RecoveryReview): Promise<void> {
-    this.#recoveryPreflights.require(review, await this.#recoveryBinding(input), Date.parse(await this.#options.timestamp()));
+  async validateRecoveryReview(
+    input: JonesRecoveryPreflightInput,
+    review: RecoveryReview,
+  ): Promise<void> {
+    this.#recoveryPreflights.require(
+      review,
+      await this.#recoveryBinding(input),
+      Date.parse(await this.#options.timestamp()),
+    );
   }
 
   async install(
@@ -1963,7 +2181,11 @@ export class JonesDesktopUpdateController {
     accepted: boolean;
     completed: boolean;
     failed: boolean;
-    refusal?: "startup-gate-unavailable" | "recovery-preflight-stale" | "recovery-unsupported" | "recovery-capacity";
+    refusal?:
+      | "startup-gate-unavailable"
+      | "recovery-preflight-stale"
+      | "recovery-unsupported"
+      | "recovery-capacity";
   }> {
     const staged = this.#staged;
     const expected = this.#bootstrap;
@@ -1980,20 +2202,34 @@ export class JonesDesktopUpdateController {
     // Refuse an inadmissible review before claims, preparation, or any activation effect.
     if (plan?.recovery !== undefined) {
       try {
-        await this.validateRecoveryReview({ environmentId: decodeEnvironmentId(expected.environmentId), stagedHandle: handle,
-          currentVersion: this.#state.currentVersion, expectedInstalledSource: expected.sourceSha }, plan.recovery);
+        await this.validateRecoveryReview(
+          {
+            environmentId: decodeEnvironmentId(expected.environmentId),
+            stagedHandle: handle,
+            currentVersion: this.#state.currentVersion,
+            expectedInstalledSource: expected.sourceSha,
+          },
+          plan.recovery,
+        );
       } catch (cause) {
-        if (cause instanceof RecoveryPreflightRefused) return { accepted: false, completed: false, failed: false, refusal: cause.code };
+        if (cause instanceof RecoveryPreflightRefused)
+          return { accepted: false, completed: false, failed: false, refusal: cause.code };
         throw cause;
       }
     }
     // Review awaited filesystem I/O; another native action may have won admission.
-    if (this.#busy !== null || this.#staged !== staged || this.#bootstrap !== expected || this.#activationBlocked)
+    if (
+      this.#busy !== null ||
+      this.#staged !== staged ||
+      this.#bootstrap !== expected ||
+      this.#activationBlocked
+    )
       return { accepted: false, completed: false, failed: false };
     this.#busy = "install";
     this.#selectedAttempt = undefined;
     try {
-      if (await this.#options.plan?.preparationHeld?.()) throw new Error("A retained plan preparation still requires native recovery proof.");
+      if (await this.#options.plan?.preparationHeld?.())
+        throw new Error("A retained plan preparation still requires native recovery proof.");
       // The helper checks the fixed candidate digest before stopping writers; preparation binds this active manifest.
       const current = decodeActiveInstall(
         JSON.parse(await NodeFSP.readFile(this.manifestPath, "utf8")),
@@ -2026,9 +2262,16 @@ export class JonesDesktopUpdateController {
         if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
       }
       if (plan !== undefined) {
-        if (this.#options.plan === undefined) throw new Error("Native plan persistence is unavailable.");
-        await this.#options.plan.bindLaptopInstall({ operationId: plan.operationId, stagedHandle: handle,
-          targetSource: staged.sourceSha, targetTree: staged.sourceTree, transactionId, fromGeneration: expected.generation });
+        if (this.#options.plan === undefined)
+          throw new Error("Native plan persistence is unavailable.");
+        await this.#options.plan.bindLaptopInstall({
+          operationId: plan.operationId,
+          stagedHandle: handle,
+          targetSource: staged.sourceSha,
+          targetTree: staged.sourceTree,
+          transactionId,
+          fromGeneration: expected.generation,
+        });
       }
       // Every process that can carry this claim's one backend request, captured before the claim.
       const captured = await captureJonesNativeProcesses(
@@ -2116,9 +2359,22 @@ export class JonesDesktopUpdateController {
         );
       if (plan?.recovery !== undefined) {
         try {
-          this.#recoveryPreflights.require(plan.recovery, await this.#recoveryBinding({ environmentId: decodeEnvironmentId(expected.environmentId),
-            stagedHandle: handle, currentVersion: this.#state.currentVersion, expectedInstalledSource: expected.sourceSha }, true), Date.parse(await this.#options.timestamp()));
-        } catch (cause) { return await this.#preparationFailed(transactionId, tx, cause); }
+          this.#recoveryPreflights.require(
+            plan.recovery,
+            await this.#recoveryBinding(
+              {
+                environmentId: decodeEnvironmentId(expected.environmentId),
+                stagedHandle: handle,
+                currentVersion: this.#state.currentVersion,
+                expectedInstalledSource: expected.sourceSha,
+              },
+              true,
+            ),
+            Date.parse(await this.#options.timestamp()),
+          );
+        } catch (cause) {
+          return await this.#preparationFailed(transactionId, tx, cause);
+        }
       }
       const intent = {
         protocol: 1,
@@ -2126,7 +2382,9 @@ export class JonesDesktopUpdateController {
         staged,
         expected,
         continuationReceipt,
-        ...(plan?.recovery?.policy === "clone-required" ? { stateRecovery: "clone-required" as const } : {}),
+        ...(plan?.recovery?.policy === "clone-required"
+          ? { stateRecovery: "clone-required" as const }
+          : {}),
         processes: captured.processes,
         listener: await this.#options.listener(),
       };
@@ -2273,7 +2531,7 @@ export class JonesDesktopUpdateController {
       await this.#publish(
         "blocked",
         "downloaded",
-        `Update preparation stopped: ${reason}. Its retained attempt still requires native recovery proof before another install.`,
+        `Update preparation stopped: ${reason}. Its retained attempt still requires native recovery proof (${recovery.reason}). Quit Jones Code, then run the native helper's --retire-preparation recovery before another install.`,
       );
     }
     return { accepted: false, completed: false, failed: true };

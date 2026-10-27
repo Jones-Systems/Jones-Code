@@ -164,9 +164,13 @@ export async function sweepPreparationLeftovers(input: {
   for (const id of await preparationLifecycleJobIds(baseDir)) {
     if (id === input.keepJob) continue;
     try {
-      const release = await withQualifiedRuntimeLock(baseDir, preparationJobLock(id), () => preparationLifecycle(baseDir, id).release());
+      const release = await withQualifiedRuntimeLock(baseDir, preparationJobLock(id), () =>
+        preparationLifecycle(baseDir, id).release(),
+      );
       if (release !== "released" && release !== "not-started") unresolved = true;
-    } catch { unresolved = true; }
+    } catch {
+      unresolved = true;
+    }
   }
   // A descendant can outlive both locks and still write shared download/runtime scratch.
   if (unresolved) return { removed, retained, failed, removedJobIds, retainedJobIds };

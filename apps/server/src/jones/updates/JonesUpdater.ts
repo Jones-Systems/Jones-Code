@@ -1,6 +1,9 @@
 // @effect-diagnostics globalTimers:off globalDate:off
 // Promise boundary is also exercised without an Effect runtime; timers drive subscriptions and installation progress.
-import type { JonesOperationReceipt, JonesRecoveryPolicy } from "@t3tools/contracts/jones/jonesOperations";
+import type {
+  JonesOperationReceipt,
+  JonesRecoveryPolicy,
+} from "@t3tools/contracts/jones/jonesOperations";
 import * as Schema from "effect/Schema";
 import { JonesCheckClassification } from "@t3tools/contracts/jones/jonesUpdates";
 import type { PreparationJoin } from "./preparation/supervisor.ts";
@@ -48,7 +51,8 @@ export interface JonesUpdaterHost {
   readonly prepare: (
     candidate: JonesActionsCandidate,
     options: {
-      readonly signal: AbortSignal; readonly onVerifying: () => void;
+      readonly signal: AbortSignal;
+      readonly onVerifying: () => void;
       readonly jobId?: string;
       readonly onStarted?: (settled: Promise<PreparationJoin>) => void;
       readonly onAdopting?: () => Promise<void>;
@@ -147,9 +151,11 @@ export interface JonesPreparationOperation {
   readonly onAdopting: () => Promise<void>;
 }
 export class PreparationStopRequested extends Error {
-  constructor(readonly operationId: string) {
+  readonly operationId: string;
+  constructor(operationId: string) {
     super("Download stopped. Nothing was installed.");
     this.name = "PreparationStopRequested";
+    this.operationId = operationId;
   }
 }
 
@@ -187,9 +193,15 @@ export class JonesUpdater {
       }
     | undefined;
   private readonly heldJobs = new Set<string>();
-  setHeldJobs(jobIds: ReadonlyArray<string>): void { for (const id of jobIds) this.heldJobs.add(id); }
-  releaseHeldJob(jobId: string): void { this.heldJobs.delete(jobId); }
-  admissionHeld(): boolean { return this.heldJobs.size > 0 || this.busy; }
+  setHeldJobs(jobIds: ReadonlyArray<string>): void {
+    for (const id of jobIds) this.heldJobs.add(id);
+  }
+  releaseHeldJob(jobId: string): void {
+    this.heldJobs.delete(jobId);
+  }
+  admissionHeld(): boolean {
+    return this.heldJobs.size > 0 || this.busy;
+  }
   stopPreparation(operationId: string): "requested" | "not-running" | "not-stoppable-phase" {
     const preparation = this.preparation;
     if (preparation?.operationId !== operationId) return "not-running";
@@ -398,7 +410,8 @@ export class JonesUpdater {
       await running.promise.catch(() => undefined);
     }
     if (
-      this.heldJobs.size > 0 || this.busy ||
+      this.heldJobs.size > 0 ||
+      this.busy ||
       this.state.phase === "installing" ||
       this.state.phase === "preparing" ||
       !this.state.capability.check
@@ -511,7 +524,12 @@ export class JonesUpdater {
     replace?: JonesUpdateExactInput["replace"],
     operation?: JonesPreparationOperation,
   ): Promise<JonesUpdateState> {
-    if (this.heldJobs.size > 0) return { ...this.snapshot(), phase: "blocked", message: "An earlier preparation has not proved its exit." };
+    if (this.heldJobs.size > 0)
+      return {
+        ...this.snapshot(),
+        phase: "blocked",
+        message: "An earlier preparation has not proved its exit.",
+      };
     if (operation?.signal.aborted) return this.snapshot();
     const refusal = followerTargetRefusal(
       this.state.policy,
@@ -607,7 +625,10 @@ export class JonesUpdater {
         };
       return this.stageCandidate(candidate, run.buildStartedAt, true);
     }
-    return this.stagedOutcome(targetSource) ?? this.stageCandidate(candidate, run.buildStartedAt, false, operation);
+    return (
+      this.stagedOutcome(targetSource) ??
+      this.stageCandidate(candidate, run.buildStartedAt, false, operation)
+    );
   }
 
   private replacementRefusal(
@@ -620,7 +641,11 @@ export class JonesUpdater {
       this.host.retireStaged === undefined
     )
       return "Replacing a staged selection is unavailable on this host.";
-    if (this.heldJobs.size > 0 || this.busy || ["preparing", "installing"].includes(this.state.phase))
+    if (
+      this.heldJobs.size > 0 ||
+      this.busy ||
+      ["preparing", "installing"].includes(this.state.phase)
+    )
       return "An update operation is still active.";
     // An empty slot cannot prove that this replacement completed in an earlier server lifetime.
     if (this.state.stagedHandle === undefined)
@@ -652,14 +677,22 @@ export class JonesUpdater {
         };
   }
 
-  async download(input: JonesUpdateDownloadInput, operation?: JonesPreparationOperation): Promise<JonesUpdateState> {
+  async download(
+    input: JonesUpdateDownloadInput,
+    operation?: JonesPreparationOperation,
+  ): Promise<JonesUpdateState> {
     const refusal = followerTargetRefusal(
       this.state.policy,
       input.sourceSha,
       this.candidate?.source === input.sourceSha ? this.candidate.tree : undefined,
     );
     if (refusal !== undefined) return { ...this.snapshot(), phase: "blocked", message: refusal };
-    if (this.heldJobs.size > 0 || this.busy || !this.state.capability.download || this.state.stagedHandle !== undefined)
+    if (
+      this.heldJobs.size > 0 ||
+      this.busy ||
+      !this.state.capability.download ||
+      this.state.stagedHandle !== undefined
+    )
       return this.snapshot();
     const candidate = this.candidate;
     if (
@@ -685,7 +718,12 @@ export class JonesUpdater {
     const refusal = followerTargetRefusal(this.state.policy, candidate.source, candidate.tree);
     if (refusal !== undefined)
       return Promise.resolve({ ...this.snapshot(), phase: "blocked", message: refusal });
-    if (this.heldJobs.size > 0 || this.busy || !this.state.capability.download || this.state.stagedHandle !== undefined)
+    if (
+      this.heldJobs.size > 0 ||
+      this.busy ||
+      !this.state.capability.download ||
+      this.state.stagedHandle !== undefined
+    )
       return Promise.resolve(this.snapshot());
     this.busy = true;
     const controller = new AbortController();
@@ -694,8 +732,15 @@ export class JonesUpdater {
     const forwardStop = () => controller.abort(operation?.signal.reason);
     operation?.signal.addEventListener("abort", forwardStop, { once: true });
     if (operation?.signal.aborted) forwardStop();
-    this.preparation = { source: candidate.source, controller, done, adopting: false,
-      ...(operation === undefined ? {} : { operationId: operation.operationId, jobId: operation.jobId }) };
+    this.preparation = {
+      source: candidate.source,
+      controller,
+      done,
+      adopting: false,
+      ...(operation === undefined
+        ? {}
+        : { operationId: operation.operationId, jobId: operation.jobId }),
+    };
     this.publish({
       phase: "downloading",
       message: "Downloading the selected main build…",
@@ -707,13 +752,18 @@ export class JonesUpdater {
       this.busy = false;
       settle(state);
     };
-    void this.prepareCandidate(candidate, buildStartedAt, controller.signal, retiredSelection, operation).then(async (state) => {
-      await this.preparation?.join;
-      return state;
-    }).then(
-      finish,
-      (cause: unknown) => finish(this.fail(cause)),
-    );
+    void this.prepareCandidate(
+      candidate,
+      buildStartedAt,
+      controller.signal,
+      retiredSelection,
+      operation,
+    )
+      .then(async (state) => {
+        await this.preparation?.join;
+        return state;
+      })
+      .then(finish, (cause: unknown) => finish(this.fail(cause)));
     return done;
   }
 
@@ -733,7 +783,9 @@ export class JonesUpdater {
       const staged = await this.host.prepare(candidate, {
         signal,
         ...(operation === undefined ? {} : { jobId: operation.jobId }),
-        onStarted: (join) => { if (this.preparation !== undefined) this.preparation.join = join; },
+        onStarted: (join) => {
+          if (this.preparation !== undefined) this.preparation.join = join;
+        },
         onAdopting: async () => {
           signal.throwIfAborted();
           await operation?.onAdopting();
@@ -767,10 +819,17 @@ export class JonesUpdater {
       const join = await preparation?.join;
       if (join?.kind === "unreaped" || join?.kind === "cleanup-unconfirmed") {
         this.heldJobs.add(join.jobId);
-        return this.publish({ phase: "blocked", message: "Stop not confirmed: preparation exit or native cleanup is unproved. Nothing new starts until release is proved." });
+        return this.publish({
+          phase: "blocked",
+          message:
+            "Stop not confirmed: preparation exit or native cleanup is unproved. Nothing new starts until release is proved.",
+        });
       }
       if (signal.reason instanceof PreparationStopRequested && preparation?.adopting !== true)
-        return this.publish({ phase: "available", message: "Download stopped. Nothing was installed." });
+        return this.publish({
+          phase: "available",
+          message: "Download stopped. Nothing was installed.",
+        });
       if (signal.reason instanceof PreparationSuperseded) {
         const { provenance: _provenance, ...rest } = this.state;
         this.state = rest;
@@ -796,7 +855,11 @@ export class JonesUpdater {
     input: JonesStagedRetirementInput,
     admit?: () => string | undefined,
   ): Promise<{ retired: boolean; reason?: string }> {
-    if (this.heldJobs.size > 0 || this.busy || ["preparing", "installing"].includes(this.state.phase))
+    if (
+      this.heldJobs.size > 0 ||
+      this.busy ||
+      ["preparing", "installing"].includes(this.state.phase)
+    )
       return { retired: false, reason: "An update operation is still active." };
     if (this.host.retireStaged === undefined)
       return { retired: false, reason: "Exact staged retirement is unavailable on this host." };
@@ -846,28 +909,43 @@ export class JonesUpdater {
 
   async install(input: JonesUpdaterInstallInput): Promise<JonesUpdateState> {
     const refused = (state: JonesUpdateState) => {
-      if (input.operationId !== undefined && input.targetSource !== undefined && input.expectedInstalledSource !== undefined)
-        input.onBeforeDispatchRefusal?.({ kind: "before-dispatch", operationId: input.operationId,
-          targetSource: input.targetSource, expectedInstalledSource: input.expectedInstalledSource,
-          stagedHandle: input.stagedHandle, environmentId: input.environmentId, currentVersion: input.currentVersion });
+      if (
+        input.operationId !== undefined &&
+        input.targetSource !== undefined &&
+        input.expectedInstalledSource !== undefined
+      )
+        input.onBeforeDispatchRefusal?.({
+          kind: "before-dispatch",
+          operationId: input.operationId,
+          targetSource: input.targetSource,
+          expectedInstalledSource: input.expectedInstalledSource,
+          stagedHandle: input.stagedHandle,
+          environmentId: input.environmentId,
+          currentVersion: input.currentVersion,
+        });
       return state;
     };
     while (this.inflight !== undefined) await this.inflight.promise.catch(() => undefined);
-    if (this.heldJobs.size > 0 || this.busy || this.state.phase === "installing") return refused(this.snapshot());
+    if (this.heldJobs.size > 0 || this.busy || this.state.phase === "installing")
+      return refused(this.snapshot());
     if (!this.state.capability.install)
-      return refused(this.publish({
-        phase: "blocked",
-        message: "A qualified launcher bootstrap is required before Install.",
-      }));
+      return refused(
+        this.publish({
+          phase: "blocked",
+          message: "A qualified launcher bootstrap is required before Install.",
+        }),
+      );
     if (
       input.stagedHandle !== this.state.stagedHandle ||
       input.environmentId !== this.state.environmentId ||
       input.currentVersion !== this.state.currentVersion
     ) {
-      return refused(this.publish({
-        phase: "blocked",
-        message: "Install does not match this staged build and running environment.",
-      }));
+      return refused(
+        this.publish({
+          phase: "blocked",
+          message: "Install does not match this staged build and running environment.",
+        }),
+      );
     }
     // A manual Install skips the quiet window and spacing, never this check.
     const refusal = followerTargetRefusal(
@@ -875,7 +953,8 @@ export class JonesUpdater {
       this.state.provenance?.sourceSha,
       this.state.provenance?.sourceTree,
     );
-    if (refusal !== undefined) return refused({ ...this.snapshot(), phase: "blocked", message: refusal });
+    if (refusal !== undefined)
+      return refused({ ...this.snapshot(), phase: "blocked", message: refusal });
     this.busy = true;
     this.clearOutcome();
     this.publish({

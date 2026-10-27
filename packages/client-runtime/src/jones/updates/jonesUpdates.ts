@@ -9,9 +9,14 @@ import type {
   JonesUpdateReconcileInput,
 } from "@t3tools/contracts/jones/jonesUpdates";
 import type {
-  JonesOperationStartInput, JonesOperationStopInput, JonesOperationFenceInput,
-  JonesOperationReadInput, JonesRecoveryPreflightInput,
-  JonesOperationReceipt, JonesOperationReadResult, JonesRecoveryPreflight,
+  JonesOperationStartInput,
+  JonesOperationStopInput,
+  JonesOperationFenceInput,
+  JonesOperationReadInput,
+  JonesRecoveryPreflightInput,
+  JonesOperationReceipt,
+  JonesOperationReadResult,
+  JonesRecoveryPreflight,
 } from "@t3tools/contracts/jones/jonesOperations";
 import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
@@ -53,13 +58,25 @@ export type JonesOperationCommand =
   | { action: "recoveryPreflight"; input: JonesRecoveryPreflightInput };
 export type JonesStopCommand = { action: "operationStop"; input: JonesOperationStopInput };
 
-type JonesRequest = JonesAction | JonesOperationCommand | JonesStopCommand | { action: "state"; after?: number };
-type JonesRequestResult<I extends JonesRequest> = I extends { action: "operationRead" } ? JonesOperationReadResult :
-  I extends { action: "recoveryPreflight" } ? JonesRecoveryPreflight :
-  I extends { action: "operationStart" | "operationStop" | "operationFence" } ? JonesOperationReceipt : JonesUpdateState | null;
+type JonesRequest =
+  | JonesAction
+  | JonesOperationCommand
+  | JonesStopCommand
+  | { action: "state"; after?: number };
+type JonesRequestResult<I extends JonesRequest> = I extends { action: "operationRead" }
+  ? JonesOperationReadResult
+  : I extends { action: "recoveryPreflight" }
+    ? JonesRecoveryPreflight
+    : I extends { action: "operationStart" | "operationStop" | "operationFence" }
+      ? JonesOperationReceipt
+      : JonesUpdateState | null;
 
 const requestImpl = Effect.fn("clientRuntime.jonesUpdates.request")(function* (
-  input: JonesAction | JonesOperationCommand | JonesStopCommand | { action: "state"; after?: number },
+  input:
+    | JonesAction
+    | JonesOperationCommand
+    | JonesStopCommand
+    | { action: "state"; after?: number },
 ) {
   const supervisor = yield* EnvironmentSupervisor;
   const prepared = yield* SubscriptionRef.get(supervisor.prepared);
@@ -76,37 +93,48 @@ const requestImpl = Effect.fn("clientRuntime.jonesUpdates.request")(function* (
       input.action === "state"
         ? urls.state({ query: input.after === undefined ? {} : { after: input.after } })
         : urls[input.action](),
-    timeoutMs: input.action === "state" ? 35_000 :
-      ["operationStart", "operationStop", "operationFence", "operationRead", "recoveryPreflight"].includes(input.action) ? 60_000 : 20 * 60_000,
-    request: ({ client, headers }) => Effect.fn("clientRuntime.jonesUpdates.dispatch")(function* () {
-      switch (input.action) {
-        case "state":
-          return yield* client.state({
-            headers,
-            query: input.after === undefined ? {} : { after: input.after },
-          });
-        case "check":
-          return yield* client.check({ headers });
-        case "download":
-          return yield* client.download({ headers, payload: input.input });
-        case "downloadExact":
-          return yield* client.downloadExact({ headers, payload: input.input });
-        case "install":
-          return yield* client.install({ headers, payload: input.input });
-        case "reconcile":
-          return yield* client.reconcile({ headers, payload: input.input });
-        case "operationStart":
-          return yield* client.operationStart({ headers, payload: input.input });
-        case "operationStop":
-          return yield* client.operationStop({ headers, payload: input.input });
-        case "operationFence":
-          return yield* client.operationFence({ headers, payload: input.input });
-        case "operationRead":
-          return yield* client.operationRead({ headers, payload: input.input });
-        case "recoveryPreflight":
-          return yield* client.recoveryPreflight({ headers, payload: input.input });
-      }
-    })(),
+    timeoutMs:
+      input.action === "state"
+        ? 35_000
+        : [
+              "operationStart",
+              "operationStop",
+              "operationFence",
+              "operationRead",
+              "recoveryPreflight",
+            ].includes(input.action)
+          ? 60_000
+          : 20 * 60_000,
+    request: ({ client, headers }) =>
+      Effect.fn("clientRuntime.jonesUpdates.dispatch")(function* () {
+        switch (input.action) {
+          case "state":
+            return yield* client.state({
+              headers,
+              query: input.after === undefined ? {} : { after: input.after },
+            });
+          case "check":
+            return yield* client.check({ headers });
+          case "download":
+            return yield* client.download({ headers, payload: input.input });
+          case "downloadExact":
+            return yield* client.downloadExact({ headers, payload: input.input });
+          case "install":
+            return yield* client.install({ headers, payload: input.input });
+          case "reconcile":
+            return yield* client.reconcile({ headers, payload: input.input });
+          case "operationStart":
+            return yield* client.operationStart({ headers, payload: input.input });
+          case "operationStop":
+            return yield* client.operationStop({ headers, payload: input.input });
+          case "operationFence":
+            return yield* client.operationFence({ headers, payload: input.input });
+          case "operationRead":
+            return yield* client.operationRead({ headers, payload: input.input });
+          case "recoveryPreflight":
+            return yield* client.recoveryPreflight({ headers, payload: input.input });
+        }
+      })(),
   });
 });
 

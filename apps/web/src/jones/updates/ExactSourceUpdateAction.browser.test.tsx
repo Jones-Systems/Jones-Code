@@ -217,6 +217,11 @@ describe("exact-source action", () => {
     expect(world.requests).toHaveLength(1);
     expect(container.querySelectorAll("button:not([aria-disabled=true])")).toHaveLength(0);
     expect(status()).toContain("may have been accepted");
+    await act(() => container.querySelector("button")!.focus());
+    await expect.element(page.getByRole("tooltip")).toHaveTextContent("may have been accepted");
+    await userEvent.keyboard("{Enter} ");
+    expect(world.requests).toHaveLength(1);
+    expect(world.dialogs).toHaveLength(1);
     // The same staged state is not evidence that the install failed.
     await world.set(stagedTarget(2));
     expect(container.querySelectorAll("button:not([aria-disabled=true])")).toHaveLength(0);
@@ -231,6 +236,7 @@ describe("exact-source action", () => {
     expect(buttons()).toEqual([]);
     expect(status()).toContain("may have been accepted");
     expect(world.requests).toHaveLength(1);
+    expect(world.dialogs).toHaveLength(1);
     await root.rerender(null);
     await mount(world);
     await world.set(stagedTarget(6));
@@ -249,6 +255,7 @@ describe("exact-source action", () => {
     await click("Download aaaaaaa");
     // A second click while the request is outstanding must not send another.
     expect(buttons()).toEqual(["Downloading…"]);
+    expect(container.querySelector("button")?.getAttribute("aria-disabled")).toBe("true");
     await click("Downloading…");
     expect(world.requests).toHaveLength(1);
     await world.set(hostState({ phase: "downloading", revision: 2, message: "Downloading build" }));
@@ -355,9 +362,12 @@ describe("exact-source action", () => {
     expect(container.querySelector("button")?.getAttribute("aria-disabled")).toBe("true");
     await act(() => container.querySelector("button")!.focus());
     await expect.element(page.getByRole("tooltip")).toHaveTextContent("Its effect is unknown");
-    expect(container.querySelector("button")?.getAttribute("aria-describedby")).toBe(page.getByRole("tooltip").element().id);
+    expect(container.querySelector("button")?.getAttribute("aria-describedby")).toBe(
+      page.getByRole("tooltip").element().id,
+    );
     await userEvent.keyboard("{Enter} ");
     expect(world.requests).toHaveLength(1);
+    expect(world.dialogs).toHaveLength(2);
     expect(world.requests[0]).toMatchObject({
       action: "downloadExact",
       input: {
@@ -382,10 +392,16 @@ describe("exact-source action", () => {
     expect(world.requests).toHaveLength(1);
     expect(world.requests.every((request) => request.action === "downloadExact")).toBe(true);
     await root.rerender(null);
-    await mount(world, { targetSource: "c".repeat(40), allowReplace: true, allowInstall: false, buttonLabel: "Match laptop" });
+    await mount(world, {
+      targetSource: "c".repeat(40),
+      allowReplace: true,
+      allowInstall: false,
+      buttonLabel: "Match laptop",
+    });
     expect(container.querySelector("button")?.getAttribute("aria-disabled")).toBe("true");
     await click("Match laptop");
     expect(world.requests).toHaveLength(1);
+    expect(world.dialogs).toHaveLength(2);
   });
 
   it("refuses replacement if the laptop target or selected host binding changes during confirmation", async () => {

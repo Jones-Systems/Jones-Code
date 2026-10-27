@@ -14,13 +14,25 @@ export type JonesStagingWorkerMessage =
   | { readonly type: "error"; readonly jobId: string; readonly error: JonesStagingWorkerFailure };
 
 export class JonesStagingStopped extends Error {
-  constructor() { super("Download stopped. Nothing was installed."); this.name = "JonesStagingStopped"; }
+  constructor() {
+    super("Download stopped. Nothing was installed.");
+    this.name = "JonesStagingStopped";
+  }
 }
 export class JonesStagingExitUnproved extends Error {
   readonly worker: { readonly pid: number; readonly processGroup: number };
   readonly copyAdmitted: boolean;
-  constructor(worker: { readonly pid: number; readonly processGroup: number }, copyAdmitted = false) {
-    super(copyAdmitted ? "The admitted copy did not produce a validated stage." : "The preparation worker exit was not confirmed.");
-    this.name = "JonesStagingExitUnproved"; this.worker = worker; this.copyAdmitted = copyAdmitted;
+  constructor(
+    worker: { readonly pid: number; readonly processGroup: number },
+    copyAdmitted = false,
+  ) {
+    super(
+      copyAdmitted
+        ? "The admitted copy did not produce a validated stage."
+        : "The preparation worker exit was not confirmed.",
+    );
+    this.name = "JonesStagingExitUnproved";
+    this.worker = worker;
+    this.copyAdmitted = copyAdmitted;
   }
 }

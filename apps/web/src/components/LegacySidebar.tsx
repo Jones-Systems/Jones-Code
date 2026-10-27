@@ -3644,11 +3644,12 @@ export default function LegacySidebar({ routeReveal }: { routeReveal: SidebarRou
       let confirmed = false;
       try {
         // Native plans perform their own fresh install review.
-        confirmed = bridge.installPlan !== undefined && desktopUpdateState?.jones !== undefined
-          ? true
-          : await ensureLocalApi().dialogs.confirm(
-              getDesktopUpdateInstallConfirmationMessage(desktopUpdateState),
-            );
+        confirmed =
+          bridge.installPlan !== undefined && desktopUpdateState?.jones !== undefined
+            ? true
+            : await ensureLocalApi().dialogs.confirm(
+                getDesktopUpdateInstallConfirmationMessage(desktopUpdateState),
+              );
       } catch (error) {
         setDesktopUpdateActionPending(false);
         toastManager.add(

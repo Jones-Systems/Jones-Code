@@ -76,7 +76,11 @@ export function useUpdateEverything(localUpdateVersion: string | null) {
         reason: `t3@${targetVersion} is not on npm yet`,
       })),
   ];
-  const restarts = collectRestartingMachines(machines, servers, localUpdateVersion !== null && !jones.managesLocal);
+  const restarts = collectRestartingMachines(
+    machines,
+    servers,
+    localUpdateVersion !== null && !jones.managesLocal,
+  );
   const providers = useProviderUpdates();
   const updateServer = useServerUpdate();
 
@@ -96,7 +100,9 @@ export function useUpdateEverything(localUpdateVersion: string | null) {
   return {
     hasUpdates: servers.length > 0 || providers.machines.length > 0 || jones.hasUpdates,
     summary,
-    lines: jones.managesLocal ? ["Laptop: Install status. Download first, review every Install", ...lines] : lines,
+    lines: jones.managesLocal
+      ? ["Laptop: Install status. Download first, review every Install", ...lines]
+      : lines,
     restarts,
     skipped,
     run: async ({
@@ -151,7 +157,9 @@ export function useUpdateEverything(localUpdateVersion: string | null) {
       const finishedServers: Array<{ label: string; outcome: ServerUpdateOutcome }> = [];
       try {
         const outcome = await runUpdateEverything({
-          ...(!jones.managesLocal && downloadLocal ? { downloadLocal: () => downloadLocal(reportLocalError) } : {}),
+          ...(!jones.managesLocal && downloadLocal
+            ? { downloadLocal: () => downloadLocal(reportLocalError) }
+            : {}),
           updateProviders: async () => {
             const runs = await providers.updateAll({ quiet: true });
             const outcomes = runs.map((run) => {
@@ -212,13 +220,17 @@ export function useUpdateEverything(localUpdateVersion: string | null) {
           },
         });
         const jonesResults = await jonesResultsPromise;
-        const result = (finished: ReadonlyArray<{ label: string; outcome: ServerUpdateOutcome }>) =>
-          ({ ...collectUpdateEverythingResult({
+        const result = (
+          finished: ReadonlyArray<{ label: string; outcome: ServerUpdateOutcome }>,
+        ) => ({
+          ...collectUpdateEverythingResult({
             localVersion: null,
             localFailures,
             servers: finished,
             providers: outcome.providers,
-          }), jones: jonesResults });
+          }),
+          jones: jonesResults,
+        });
         if (!jones.managesLocal && outcome.localReady && installLocal) {
           if (await waitForUpdateRestart(UPDATE_RESTART_DELAY_MS)) {
             setUpdateEverythingRun(

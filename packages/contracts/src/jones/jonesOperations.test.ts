@@ -41,8 +41,13 @@ describe("durable Jones operation contracts", () => {
   it("requires UUID v4 identities and full lowercase source commits", () => {
     const decodeId = Schema.decodeUnknownSync(JonesOperationId);
     expect(decodeId(operationId)).toBe(operationId);
-    for (const id of ["", "operation-1", "AAAAAAAA-1111-4111-8111-111111111111",
-      "11111111-1111-5111-8111-111111111111", "11111111-1111-4111-7111-111111111111"])
+    for (const id of [
+      "",
+      "operation-1",
+      "AAAAAAAA-1111-4111-8111-111111111111",
+      "11111111-1111-5111-8111-111111111111",
+      "11111111-1111-4111-7111-111111111111",
+    ])
       expect(() => decodeId(id)).toThrow();
     const decodeSource = Schema.decodeUnknownSync(JonesSourceSha);
     expect(decodeSource(source)).toBe(source);
@@ -60,11 +65,16 @@ describe("durable Jones operation contracts", () => {
       delete incomplete[field];
       expect(() => decode(incomplete)).toThrow();
     }
-    for (const correlation of [{ planId }, { deviceKey: environmentId },
-      { planId, deviceKey: "x".repeat(129) }])
+    for (const correlation of [
+      { planId },
+      { deviceKey: environmentId },
+      { planId, deviceKey: "x".repeat(129) },
+    ])
       expect(() => decode({ ...start, correlation })).toThrow();
-    expect(decode({ ...start, correlation: { planId, deviceKey: "x".repeat(128) } })
-      .correlation?.deviceKey).toHaveLength(128);
+    expect(
+      decode({ ...start, correlation: { planId, deviceKey: "x".repeat(128) } }).correlation
+        ?.deviceKey,
+    ).toHaveLength(128);
     expect(() => decode({ ...start, environmentId: "" })).toThrow();
   });
 
@@ -81,15 +91,19 @@ describe("durable Jones operation contracts", () => {
     };
     expect(decode(download)).toEqual(download);
     expect(decode(install)).toEqual(install);
-    expect(decode({ ...install, recovery: { policy: "clone-or-copy", preflightId: planId } }))
-      .toEqual({ ...install, recovery: { policy: "clone-or-copy", preflightId: planId } });
+    expect(
+      decode({ ...install, recovery: { policy: "clone-or-copy", preflightId: planId } }),
+    ).toEqual({ ...install, recovery: { policy: "clone-or-copy", preflightId: planId } });
     for (const field of ["stagedHandle", "currentVersion", "targetSource"]) {
       const incomplete: Record<string, unknown> = { ...install };
       delete incomplete[field];
       expect(() => decode(incomplete)).toThrow();
     }
-    for (const recovery of [{ policy: "clone-required" }, { preflightId: planId },
-      { policy: "copy-required", preflightId: planId }])
+    for (const recovery of [
+      { policy: "clone-required" },
+      { preflightId: planId },
+      { policy: "copy-required", preflightId: planId },
+    ])
       expect(() => decode({ ...install, recovery })).toThrow();
     expect(() => decode({ kind: "download", artifactId: 42 })).toThrow();
     expect(() => decode({ kind: "install", version: "1.0.0" })).toThrow();
@@ -98,9 +112,11 @@ describe("durable Jones operation contracts", () => {
   it("binds repeatable Stop and fence requests to an exact operation and environment", () => {
     const stop = { operationId, stopId, environmentId };
     const fence = start;
-    expect(Schema.decodeUnknownSync(JonesOperationStopInput)(stop)).toEqual(stop);
-    expect(Schema.decodeUnknownSync(JonesOperationFenceInput)(fence)).toEqual(fence);
-    expect(() => Schema.decodeUnknownSync(JonesOperationFenceInput)({ operationId, environmentId })).toThrow();
+    expect(Schema.decodeSync(JonesOperationStopInput)(stop)).toEqual(stop);
+    expect(Schema.decodeSync(JonesOperationFenceInput)(fence)).toEqual(fence);
+    expect(() =>
+      Schema.decodeUnknownSync(JonesOperationFenceInput)({ operationId, environmentId }),
+    ).toThrow();
     expect(() => Schema.decodeUnknownSync(JonesOperationStopInput)(fence)).toThrow();
     for (const input of [{ operationId }, { environmentId }]) {
       expect(() => Schema.decodeUnknownSync(JonesOperationStopInput)(input)).toThrow();
@@ -110,8 +126,22 @@ describe("durable Jones operation contracts", () => {
 
   it("round-trips unresolved and terminal phases without conflating Stop request and outcome", () => {
     const decode = Schema.decodeUnknownSync(JonesOperationReceipt);
-    for (const phase of ["accepted", "running", "stop-requested", "adopting", "handed-off", "held",
-      "completed", "rolled-back", "stopped", "refused", "failed", "blocked", "fenced", "interrupted"])
+    for (const phase of [
+      "accepted",
+      "running",
+      "stop-requested",
+      "adopting",
+      "handed-off",
+      "held",
+      "completed",
+      "rolled-back",
+      "stopped",
+      "refused",
+      "failed",
+      "blocked",
+      "fenced",
+      "interrupted",
+    ])
       expect(decode({ ...receipt, phase }).phase).toBe(phase);
     const stopped = {
       ...receipt,
@@ -125,18 +155,28 @@ describe("durable Jones operation contracts", () => {
     const stopping = { ...receipt, phase: "stop-requested", stop: { stopId, requestedAt: at } };
     expect(decode(stopping)).toEqual(stopping);
     const { acceptedAt: _acceptedAt, ...neverAccepted } = receipt;
-    expect(decode({ ...neverAccepted, phase: "fenced" })).toEqual({ ...neverAccepted, phase: "fenced" });
+    expect(decode({ ...neverAccepted, phase: "fenced" })).toEqual({
+      ...neverAccepted,
+      phase: "fenced",
+    });
     expect(() => decode({ ...receipt, protocol: 2 })).toThrow();
     expect(() => decode({ ...receipt, phase: "unknown" })).toThrow();
-    expect(() => decode({ ...receipt, stop: { stopId, requestedAt: at, result: "cancelled" } })).toThrow();
+    expect(() =>
+      decode({ ...receipt, stop: { stopId, requestedAt: at, result: "cancelled" } }),
+    ).toThrow();
   });
 
   it("preserves host-specific stage provenance and requested versus observed recovery", () => {
     const completed = {
       ...receipt,
       phase: "completed",
-      staged: { stagedHandle: "host-stage", sourceSha: source, sourceTree: tree, artifactId: 91,
-        version: "2.0.0" },
+      staged: {
+        stagedHandle: "host-stage",
+        sourceSha: source,
+        sourceTree: tree,
+        artifactId: 91,
+        version: "2.0.0",
+      },
       updateId: operationId,
       outcome: { status: "committed", fromVersion: "1.0.0", targetVersion: "2.0.0" },
       recovery: { requested: "clone-or-copy", observed: "copy" },
@@ -144,12 +184,14 @@ describe("durable Jones operation contracts", () => {
     const decode = Schema.decodeUnknownSync(JonesOperationReceipt);
     expect(decode(completed)).toEqual(completed);
     const codec = Schema.toCodecJson(JonesOperationReceipt);
-    expect(Schema.decodeUnknownSync(codec)(Schema.encodeUnknownSync(codec)(completed)))
-      .toEqual(completed);
-    expect(decode({ ...completed, recovery: { requested: "clone-required" } }).recovery)
-      .toEqual({ requested: "clone-required" });
-    for (const staged of [{ stagedHandle: "host-stage" },
-      { ...completed.staged, sourceTree: "invalid" }])
+    expect(Schema.decodeSync(codec)(Schema.encodeUnknownSync(codec)(completed))).toEqual(completed);
+    expect(decode({ ...completed, recovery: { requested: "clone-required" } }).recovery).toEqual({
+      requested: "clone-required",
+    });
+    for (const staged of [
+      { stagedHandle: "host-stage" },
+      { ...completed.staged, sourceTree: "invalid" },
+    ])
       expect(() => decode({ ...completed, staged })).toThrow();
     expect(() => decode({ ...completed, recovery: { observed: "copy" } })).toThrow();
   });
@@ -163,7 +205,9 @@ describe("durable Jones operation contracts", () => {
     const missing = { operationId: stopId, receipt: null };
     const result = { receipts: [{ operationId, receipt }, missing] };
     expect(decodeResult(result)).toEqual(result);
-    expect(decodeResult({ receipts: Array.from({ length: 32 }, () => missing) }).receipts).toHaveLength(32);
+    expect(
+      decodeResult({ receipts: Array.from({ length: 32 }, () => missing) }).receipts,
+    ).toHaveLength(32);
     expect(() => decodeResult({ receipts: Array.from({ length: 33 }, () => missing) })).toThrow();
   });
 
@@ -180,8 +224,12 @@ describe("durable Jones operation contracts", () => {
 });
 
 describe("target-owned recovery preflight contracts", () => {
-  const binding = { environmentId, stagedHandle: "host-stage", currentVersion: "1.0.0",
-    expectedInstalledSource: "c".repeat(40) };
+  const binding = {
+    environmentId,
+    stagedHandle: "host-stage",
+    currentVersion: "1.0.0",
+    expectedInstalledSource: "c".repeat(40),
+  };
   const preflight = {
     protocol: 1,
     preflightId: planId,
@@ -191,14 +239,18 @@ describe("target-owned recovery preflight contracts", () => {
     firstInstall: false,
     stateBytes: 1024,
     candidateBytes: 2048,
-    volumes: [{ role: "state", availableBytes: 4096, copyRequiredBytes: 8192, cloneRequiredBytes: 2048 }],
+    volumes: [
+      { role: "state", availableBytes: 4096, copyRequiredBytes: 8192, cloneRequiredBytes: 2048 },
+    ],
     clone: { status: "proved" },
-    policies: { cloneOrCopy: { admissible: false, reason: "Low copy space" },
-      cloneRequired: { admissible: true } },
+    policies: {
+      cloneOrCopy: { admissible: false, reason: "Low copy space" },
+      cloneRequired: { admissible: true },
+    },
   };
 
   it("carries target binding, capacity and independently admissible recovery policies", () => {
-    expect(Schema.decodeUnknownSync(JonesRecoveryPreflightInput)(binding)).toEqual(binding);
+    expect(Schema.decodeSync(JonesRecoveryPreflightInput)(binding)).toEqual(binding);
     const decode = Schema.decodeUnknownSync(JonesRecoveryPreflight);
     expect(decode(preflight)).toEqual(preflight);
     for (const field of Object.keys(binding)) {
@@ -206,8 +258,12 @@ describe("target-owned recovery preflight contracts", () => {
       delete incomplete[field];
       expect(() => Schema.decodeUnknownSync(JonesRecoveryPreflightInput)(incomplete)).toThrow();
     }
-    const firstInstall = { ...preflight, firstInstall: true, stateBytes: 0,
-      clone: { status: "unsupported", reason: "No existing state" } };
+    const firstInstall = {
+      ...preflight,
+      firstInstall: true,
+      stateBytes: 0,
+      clone: { status: "unsupported", reason: "No existing state" },
+    };
     expect(decode(firstInstall)).toEqual(firstInstall);
     expect(decode({ ...preflight, clone: { status: "unknown" } }).clone.status).toBe("unknown");
     expect(() => decode({ ...preflight, protocol: 2 })).toThrow();
@@ -216,12 +272,23 @@ describe("target-owned recovery preflight contracts", () => {
   it("bounds volume observations and policy explanations", () => {
     const decode = Schema.decodeUnknownSync(JonesRecoveryPreflight);
     const volume = preflight.volumes[0];
-    expect(decode({ ...preflight, volumes: Array.from({ length: 4 }, () => volume) }).volumes)
-      .toHaveLength(4);
-    expect(() => decode({ ...preflight, volumes: Array.from({ length: 5 }, () => volume) })).toThrow();
-    expect(() => decode({ ...preflight, clone: { status: "proved", reason: "x".repeat(513) } }))
-      .toThrow();
-    expect(() => decode({ ...preflight, policies: { ...preflight.policies,
-      cloneRequired: { admissible: false, reason: "x".repeat(513) } } })).toThrow();
+    expect(
+      decode({ ...preflight, volumes: Array.from({ length: 4 }, () => volume) }).volumes,
+    ).toHaveLength(4);
+    expect(() =>
+      decode({ ...preflight, volumes: Array.from({ length: 5 }, () => volume) }),
+    ).toThrow();
+    expect(() =>
+      decode({ ...preflight, clone: { status: "proved", reason: "x".repeat(513) } }),
+    ).toThrow();
+    expect(() =>
+      decode({
+        ...preflight,
+        policies: {
+          ...preflight.policies,
+          cloneRequired: { admissible: false, reason: "x".repeat(513) },
+        },
+      }),
+    ).toThrow();
   });
 });

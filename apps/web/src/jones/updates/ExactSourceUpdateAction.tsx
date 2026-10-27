@@ -1,5 +1,12 @@
-import { prepareReviewedInstall, type JonesExecutorHost } from "@t3tools/client-runtime/jones/updates/executor";
-import { executeWebJonesAction, unresolvedJonesExecution, retainUnknownJonesExecution } from "../installStatus/execution";
+import {
+  prepareReviewedInstall,
+  type JonesExecutorHost,
+} from "@t3tools/client-runtime/jones/updates/executor";
+import {
+  executeWebJonesAction,
+  unresolvedJonesExecution,
+  retainUnknownJonesExecution,
+} from "../installStatus/execution";
 import { legacyConnectionsGate } from "../installStatus/entrypoints";
 import {
   jonesExactSourceResultError,
@@ -10,9 +17,7 @@ import {
   type JonesExactSourceStep,
   type JonesUpdateObservation,
 } from "@t3tools/client-runtime/jones/updates";
-import {
-  type AtomCommandResult,
-} from "@t3tools/client-runtime/state/runtime";
+import { type AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type {
   JonesUpdateInstallInput,
@@ -134,42 +139,122 @@ export async function performExactSourceStep({
   readonly unresolvedInstall?: UnresolvedInstall | undefined;
   readonly host: Pick<ExactSourceHost, "readLatest" | "run" | "confirm" | "executor">;
 }): Promise<ExactSourceOutcome> {
-  if (unresolvedJonesExecution(environmentId) !== undefined) return { kind: "refused", message: "The previous request is not confirmed. Read its exact receipt before another action." };
+  if (unresolvedJonesExecution(environmentId) !== undefined)
+    return {
+      kind: "refused",
+      message:
+        "The previous request is not confirmed. Read its exact receipt before another action.",
+    };
   if (readTargetSource !== undefined && readTargetSource() !== targetSource)
-    return { kind: "refused", message: "Nothing was sent: the laptop's verified installed build changed or is unavailable." };
+    return {
+      kind: "refused",
+      message: "Nothing was sent: the laptop's verified installed build changed or is unavailable.",
+    };
   if (step.kind === "replace-exact") {
-    if (!(await host.confirm(`Replace downloaded source ${shortJonesSource(step.replace.sourceSha)} on ${label} with ${shortJonesSource(targetSource)}? The old download is retired; its files are retained. Nothing installs until you choose Install.`))) return { kind: "cancelled" };
-    const fresh = resolveJonesExactSourceAction({ environmentId, ...host.readLatest(), targetSource, allowReplace, allowInstall, subject, unresolvedInstall });
+    if (
+      !(await host.confirm(
+        `Replace downloaded source ${shortJonesSource(step.replace.sourceSha)} on ${label} with ${shortJonesSource(targetSource)}? The old download is retired; its files are retained. Nothing installs until you choose Install.`,
+      ))
+    )
+      return { kind: "cancelled" };
+    const fresh = resolveJonesExactSourceAction({
+      environmentId,
+      ...host.readLatest(),
+      targetSource,
+      allowReplace,
+      allowInstall,
+      subject,
+      unresolvedInstall,
+    });
     if (readTargetSource !== undefined && readTargetSource() !== targetSource)
-      return { kind: "refused", message: "Nothing was sent: the laptop's verified installed build changed or is unavailable." };
+      return {
+        kind: "refused",
+        message:
+          "Nothing was sent: the laptop's verified installed build changed or is unavailable.",
+      };
     if (fresh.status !== "ready" || !sameStep(step, fresh.step))
-      return { kind: "refused", message: `Nothing was sent: ${label} changed while this was pending.` };
+      return {
+        kind: "refused",
+        message: `Nothing was sent: ${label} changed while this was pending.`,
+      };
     const gate = await legacyConnectionsGate(targetSource);
     if (gate !== null) return { kind: "refused", message: gate };
     const result = await host.run(request(fresh.step, operationId)).catch(() => null);
     if (result === null || result._tag === "Failure") {
-      const message = "The replacement request may have been accepted. Its effect is unknown. Read the exact outcome; nothing is resent automatically.";
+      const message =
+        "The replacement request may have been accepted. Its effect is unknown. Read the exact outcome; nothing is resent automatically.";
       retainUnknownJonesExecution(environmentId, { kind: "unknown", message });
       return { kind: "failed", message };
     }
     const problem = jonesExactSourceResultError(fresh.step, result, targetSource);
-    return problem === null ? { kind: "done", message: `Source ${shortJonesSource(targetSource)} replacement requested on ${label}.` } : { kind: "refused", message: problem };
+    return problem === null
+      ? {
+          kind: "done",
+          message: `Source ${shortJonesSource(targetSource)} replacement requested on ${label}.`,
+        }
+      : { kind: "refused", message: problem };
   }
   const executor: JonesExecutorHost = host.executor ?? {
-    readLatest: host.readLatest, confirm: host.confirm,
-    legacy: async (input) => { const result = await host.run(input); if (result._tag !== "Success") throw new Error("Request not confirmed."); return result.value; },
-    start: async () => { throw new Error("This control has no durable operation transport."); },
+    readLatest: host.readLatest,
+    confirm: host.confirm,
+    legacy: async (input) => {
+      const result = await host.run(input);
+      if (result._tag !== "Success") throw new Error("Request not confirmed.");
+      return result.value;
+    },
+    start: async () => {
+      throw new Error("This control has no durable operation transport.");
+    },
   };
-  const reviewed = step.kind === "install" ? await prepareReviewedInstall({ environmentId, targetSource, label, host: executor, now: Date.now }) : undefined;
-  if (reviewed?.kind === "refused") return reviewed.code === "cancelled" ? { kind: "cancelled" } : { kind: "refused", message: reviewed.message };
+  const reviewed =
+    step.kind === "install"
+      ? await prepareReviewedInstall({
+          environmentId,
+          targetSource,
+          label,
+          host: executor,
+          now: Date.now,
+        })
+      : undefined;
+  if (reviewed?.kind === "refused")
+    return reviewed.code === "cancelled"
+      ? { kind: "cancelled" }
+      : { kind: "refused", message: reviewed.message };
   if (readTargetSource !== undefined && readTargetSource() !== targetSource)
-    return { kind: "refused", message: "Nothing was sent: the laptop's verified installed build changed or is unavailable." };
-  const action = reviewed?.kind === "ready" ? reviewed.action : step.kind === "download-exact" ? { kind: "download-exact" as const, targetSource: step.targetSource } : step.kind === "download" ? { kind: "download" as const, ...step.input } : undefined;
-  if (action === undefined) return { kind: "refused", message: "Review the downloaded build again." };
-  const result = await executeWebJonesAction({ environmentId, targetSource, action, operationId, host: executor,
-    ...(reviewed?.kind === "ready" ? { review: reviewed.review } : {}) });
-  if (result.kind === "unknown") return { kind: "unknown", message: result.message, unresolvedInstall: { stagedHandle: step.kind === "install" ? step.input.stagedHandle : operationId, revision: host.readLatest().observation.state?.revision } };
-  return result.kind === "accepted" ? { kind: "done", message: result.message } : { kind: "refused", message: result.message };
+    return {
+      kind: "refused",
+      message: "Nothing was sent: the laptop's verified installed build changed or is unavailable.",
+    };
+  const action =
+    reviewed?.kind === "ready"
+      ? reviewed.action
+      : step.kind === "download-exact"
+        ? { kind: "download-exact" as const, targetSource: step.targetSource }
+        : step.kind === "download"
+          ? { kind: "download" as const, ...step.input }
+          : undefined;
+  if (action === undefined)
+    return { kind: "refused", message: "Review the downloaded build again." };
+  const result = await executeWebJonesAction({
+    environmentId,
+    targetSource,
+    action,
+    operationId,
+    host: executor,
+    ...(reviewed?.kind === "ready" ? { review: reviewed.review } : {}),
+  });
+  if (result.kind === "unknown")
+    return {
+      kind: "unknown",
+      message: result.message,
+      unresolvedInstall: {
+        stagedHandle: step.kind === "install" ? step.input.stagedHandle : operationId,
+        revision: host.readLatest().observation.state?.revision,
+      },
+    };
+  return result.kind === "accepted"
+    ? { kind: "done", message: result.message }
+    : { kind: "refused", message: result.message };
 }
 
 /** Confirms a Connections install and revalidates its host binding before sending. */
@@ -187,9 +272,16 @@ export async function performConfirmedInstall({
   const refusal = jonesInstallRefusal(input, latest.observation);
   if (refusal !== undefined || !latest.canOperate || source === undefined)
     return `Nothing was sent. ${refusal ?? "Fresh downloaded source and permission are required."}`;
-  const outcome = await performExactSourceStep({ environmentId: input.environmentId, label, targetSource: source,
-    step: { kind: "install", input }, host });
-  return outcome.kind === "cancelled" || outcome.kind === "done" ? null : `Nothing was sent or confirmed. ${outcome.message}`;
+  const outcome = await performExactSourceStep({
+    environmentId: input.environmentId,
+    label,
+    targetSource: source,
+    step: { kind: "install", input },
+    host,
+  });
+  return outcome.kind === "cancelled" || outcome.kind === "done"
+    ? null
+    : `Nothing was sent or confirmed. ${outcome.message}`;
 }
 
 type Report = { readonly tone: "error" | "info"; readonly text: string };
@@ -238,7 +330,10 @@ export function ExactSourceUpdateAction({
   });
   const short = shortJonesSource(targetSource);
 
-  const unresolved = unresolvedJonesExecution(environmentId, host.snapshot.observation.state?.operation);
+  const unresolved = unresolvedJonesExecution(
+    environmentId,
+    host.snapshot.observation.state?.operation,
+  );
   const start = async () => {
     if (unresolved !== undefined || decision.status !== "ready" || inFlight.current) return;
     const step = decision.step;
@@ -282,11 +377,11 @@ export function ExactSourceUpdateAction({
       ? null
       : unresolved !== undefined
         ? { tone: "info" as const, text: unresolved.message }
-      : report?.tone === "error"
-        ? report
-        : decision.status === "unavailable"
-          ? ({ tone: "info", text: decision.message } as const)
-          : report;
+        : report?.tone === "error"
+          ? report
+          : decision.status === "unavailable"
+            ? ({ tone: "info", text: decision.message } as const)
+            : report;
   return (
     <>
       {status && (!compact || report !== null) ? (
@@ -307,10 +402,10 @@ export function ExactSourceUpdateAction({
             unresolved !== undefined
               ? unresolved.message
               : working !== null
-              ? "An update request is in progress."
-              : decision.status === "unavailable"
-                ? decision.message
-                : undefined
+                ? "An update request is in progress."
+                : decision.status === "unavailable"
+                  ? decision.message
+                  : undefined
           }
           onClick={() => void start()}
           label={
@@ -344,12 +439,20 @@ function ExactActionButton({
   return (
     <Tooltip disabled={reason === undefined}>
       <TooltipTrigger
-        aria-disabled={reason === undefined ? undefined : true}
-        aria-describedby={reason === undefined ? undefined : reasonId}
         onClick={() => {
           if (reason === undefined) onClick();
         }}
-        render={<Button size="xs" variant="outline">{label}</Button>}
+        render={(triggerProps) => (
+          <Button
+            {...triggerProps}
+            size="xs"
+            variant="outline"
+            aria-disabled={reason === undefined ? undefined : true}
+            aria-describedby={reason === undefined ? undefined : reasonId}
+          >
+            {label}
+          </Button>
+        )}
       />
       <TooltipPopup side="top" role="tooltip" id={reasonId}>
         {reason}

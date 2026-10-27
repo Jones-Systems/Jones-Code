@@ -230,13 +230,14 @@ export function AboutVersionSection() {
       let confirmed = false;
       try {
         // Native plans perform their own fresh install review.
-        confirmed = bridge.installPlan !== undefined && updateState?.jones !== undefined
-          ? true
-          : await ensureLocalApi().dialogs.confirm(
-              getDesktopUpdateInstallConfirmationMessage(
-                updateState ?? { availableVersion: null, downloadedVersion: null },
-              ),
-            );
+        confirmed =
+          bridge.installPlan !== undefined && updateState?.jones !== undefined
+            ? true
+            : await ensureLocalApi().dialogs.confirm(
+                getDesktopUpdateInstallConfirmationMessage(
+                  updateState ?? { availableVersion: null, downloadedVersion: null },
+                ),
+              );
       } catch (error) {
         setIsUpdateActionPending(false);
         toastManager.add(

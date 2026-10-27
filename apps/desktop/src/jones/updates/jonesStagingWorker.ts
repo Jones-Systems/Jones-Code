@@ -39,21 +39,26 @@ process.once("message", (raw: unknown) => {
   const job = raw as { readonly protocol?: unknown; readonly job?: JonesStagingJob };
   const jobId = job.job?.token ?? "";
   void (async () => {
-    if (job.protocol !== JONES_STAGING_WORKER_PROTOCOL || job.job === undefined || !/^[a-f0-9-]{36}$/.test(jobId))
+    if (
+      job.protocol !== JONES_STAGING_WORKER_PROTOCOL ||
+      job.job === undefined ||
+      !/^[a-f0-9-]{36}$/.test(jobId)
+    )
       throw new Error("Unknown staging worker request.");
     const value = await runJonesStagingJob(job.job, {
-      admit: () => new Promise<void>((resolve, reject) => {
-        const listener = (raw: unknown) => {
-          if (typeof raw !== "object" || raw === null) return;
-          const reply = raw as { type?: string; jobId?: string; decision?: string };
-          if (reply.type !== "admit" || reply.jobId !== jobId) return;
-          process.removeListener("message", listener);
-          if (reply.decision === "continue") resolve();
-          else reject(new JonesStagingStopped());
-        };
-        process.on("message", listener);
-        void send({ type: "admit-request", jobId });
-      }),
+      admit: () =>
+        new Promise<void>((resolve, reject) => {
+          const listener = (raw: unknown) => {
+            if (typeof raw !== "object" || raw === null) return;
+            const reply = raw as { type?: string; jobId?: string; decision?: string };
+            if (reply.type !== "admit" || reply.jobId !== jobId) return;
+            process.removeListener("message", listener);
+            if (reply.decision === "continue") resolve();
+            else reject(new JonesStagingStopped());
+          };
+          process.on("message", listener);
+          void send({ type: "admit-request", jobId });
+        }),
     });
     await send({ type: "result", jobId, value });
   })()

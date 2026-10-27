@@ -183,8 +183,11 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 function decodeServiceUpdate(value: unknown): ServiceUpdateRecord | undefined {
   if (!isRecord(value)) return undefined;
   const { id, fromVersion, targetVersion, status } = value;
-  if (value.stateRecovery !== undefined &&
-    ((value.stateRecovery !== "clone-required" && value.stateRecovery !== "clone-or-copy") || value.qualified === undefined))
+  if (
+    value.stateRecovery !== undefined &&
+    ((value.stateRecovery !== "clone-required" && value.stateRecovery !== "clone-or-copy") ||
+      value.qualified === undefined)
+  )
     return undefined;
   const stateRecovery = value.stateRecovery as "clone-required" | "clone-or-copy" | undefined;
   const migrationPlan =
@@ -379,7 +382,8 @@ export function decodeServiceLauncherContext(value: string): ServiceLauncherCont
         ? decodeServiceUpdate(parsed.update)
         : decodeLegacyServiceUpdate(parsed.update);
   if (parsed.update !== undefined && update === undefined) return undefined;
-  if (update?.stateRecovery !== undefined && parsed.stateRecoveryPolicyProtocol !== 1) return undefined;
+  if (update?.stateRecovery !== undefined && parsed.stateRecoveryPolicyProtocol !== 1)
+    return undefined;
   if (
     update?.qualified?.protocol === RECOVERED_QUALIFIED_STAGE_PROTOCOL &&
     parsed.qualifiedRecoveryProtocol !== 1
@@ -409,7 +413,9 @@ export function decodeServiceLauncherContext(value: string): ServiceLauncherCont
       : {}),
     ...(parsed.qualifiedUpdatesProtocol === 1 ? { qualifiedUpdatesProtocol: 1 as const } : {}),
     ...(parsed.qualifiedRecoveryProtocol === 1 ? { qualifiedRecoveryProtocol: 1 as const } : {}),
-    ...(parsed.stateRecoveryPolicyProtocol === 1 ? { stateRecoveryPolicyProtocol: 1 as const } : {}),
+    ...(parsed.stateRecoveryPolicyProtocol === 1
+      ? { stateRecoveryPolicyProtocol: 1 as const }
+      : {}),
     ...(parsed.updateOperationsProtocol === 1 ? { updateOperationsProtocol: 1 as const } : {}),
     ...(parsed.updateRetirementProtocol === 1 ? { updateRetirementProtocol: 1 as const } : {}),
     ...(parsed.updateOutcomeProtocol === 1 ? { updateOutcomeProtocol: 1 as const } : {}),
@@ -424,7 +430,12 @@ function decodeLegacyServiceUpdate(
 ): ServiceUpdateRecord | LegacyPendingServiceUpdate | undefined {
   if (!isRecord(value)) return undefined;
   // Legacy decoding must reject qualified context, never erase its identity and permit ID-only recovery.
-  if (value.qualified !== undefined || value.startupReceipt !== undefined || value.stateRecovery !== undefined) return undefined;
+  if (
+    value.qualified !== undefined ||
+    value.startupReceipt !== undefined ||
+    value.stateRecovery !== undefined
+  )
+    return undefined;
   if (value.status !== "pending") return decodeServiceUpdate(value);
   const { id, fromVersion, targetVersion, dbPath, status } = value;
   return typeof id === "string" &&
@@ -503,9 +514,13 @@ export function decodeServiceLauncherChildMessage(
     typeof value.targetVersion === "string" &&
     typeof value.dbPath === "string"
   ) {
-    if (value.stateRecovery !== undefined &&
+    if (
+      value.stateRecovery !== undefined &&
       ((value.stateRecovery !== "clone-required" && value.stateRecovery !== "clone-or-copy") ||
-        typeof value.stagedHandle !== "string" || value.stagedHandle.trim() === "")) return undefined;
+        typeof value.stagedHandle !== "string" ||
+        value.stagedHandle.trim() === "")
+    )
+      return undefined;
     if (value.stagedHandle !== undefined && typeof value.stagedHandle !== "string")
       return undefined;
     if (
@@ -524,7 +539,9 @@ export function decodeServiceLauncherChildMessage(
       return undefined;
     return {
       type: value.type,
-      ...(value.stateRecovery === undefined ? {} : { stateRecovery: value.stateRecovery as "clone-required" | "clone-or-copy" }),
+      ...(value.stateRecovery === undefined
+        ? {}
+        : { stateRecovery: value.stateRecovery as "clone-required" | "clone-or-copy" }),
       targetVersion: value.targetVersion,
       dbPath: value.dbPath,
       ...(typeof value.stagedHandle === "string" ? { stagedHandle: value.stagedHandle } : {}),

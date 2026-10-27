@@ -13,12 +13,34 @@ export function panelPresentation(snapshot: InstallStatusSnapshot, now: number) 
     const environmentId = native.laptop.environmentId;
     if (target === undefined || environmentId === undefined) return null;
     preview = true;
-    state = { ...native, current: startPlan({ planId: snapshot.previewId, origin: "update-button", target,
-      from: { version: snapshot.desktop!.currentVersion }, laptopEnvironmentId: environmentId,
-      select: snapshot.previewSelection, now: native.laptop.observedAt }) };
+    state = {
+      ...native,
+      current: startPlan({
+        planId: snapshot.previewId,
+        origin: "update-button",
+        target,
+        from: { version: snapshot.desktop!.currentVersion },
+        laptopEnvironmentId: environmentId,
+        select: snapshot.previewSelection,
+        now: native.laptop.observedAt,
+      }),
+    };
   }
   const devices = new Map(snapshot.devices.map((d) => [d.environmentId, d]));
-  const presentation = installPlanPresentation(state, { now, devices,
-    ...(snapshot.desktop?.jones === undefined ? {} : { laptop: { state: snapshot.desktop.jones, freshness: "fresh" as const } }) });
-  return { ...presentation, summary: !presentation.complete && presentation.plan?.devices.every((d) => d.membership === "removed") ? "Laptop only" : presentation.summary, preview, headerDoneVisible: !preview && presentation.headerDoneVisible };
+  const presentation = installPlanPresentation(state, {
+    now,
+    devices,
+    ...(snapshot.desktop?.jones === undefined
+      ? {}
+      : { laptop: { state: snapshot.desktop.jones, freshness: "fresh" as const } }),
+  });
+  return {
+    ...presentation,
+    summary:
+      !presentation.complete && presentation.plan?.devices.every((d) => d.membership === "removed")
+        ? "Laptop only"
+        : presentation.summary,
+    preview,
+    headerDoneVisible: !preview && presentation.headerDoneVisible,
+  };
 }

@@ -118,7 +118,8 @@ async function runJob(
     host: job.host,
     scratchParent: jobDir,
     signal,
-    onNativeEffects: (phase) => preparationLifecycle(request.baseDir, request.jobId).effects(process.pid, phase),
+    onNativeEffects: (phase) =>
+      preparationLifecycle(request.baseDir, request.jobId).effects(process.pid, phase),
   });
   const { migrationPlan, ...staged } = value;
   return {
@@ -209,7 +210,9 @@ async function runPreparationWorker(jobDir: string): Promise<number> {
       protocol: PREPARATION_PROTOCOL,
       jobId: request.jobId,
       ok: false,
-      error: describePreparationFailure(controller.signal.aborted && phase === "downloading" ? controller.signal.reason : error),
+      error: describePreparationFailure(
+        controller.signal.aborted && phase === "downloading" ? controller.signal.reason : error,
+      ),
     };
   }
   try {

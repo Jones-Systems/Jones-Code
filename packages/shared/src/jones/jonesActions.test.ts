@@ -389,7 +389,10 @@ describe("Jones Actions qualification", () => {
       platform: "linux",
       architecture: "x64",
     } as const;
-    expect(await fixture().client.check(input)).toEqual({ state: "no-new", classification: expect.objectContaining({ kind: "target-already-running" }) });
+    expect(await fixture().client.check(input)).toEqual({
+      state: "no-new",
+      classification: expect.objectContaining({ kind: "target-already-running" }),
+    });
     expect(await fixture({ comparison: { status: "diverged" } }).client.check(input)).toMatchObject(
       { state: "blocked", reason: "unqualified" },
     );
@@ -524,7 +527,10 @@ describe("Jones Actions qualification", () => {
         platform: "linux",
         architecture: "x64",
       }),
-    ).toEqual({ state: "no-new", classification: expect.objectContaining({ kind: "target-already-running" }) });
+    ).toEqual({
+      state: "no-new",
+      classification: expect.objectContaining({ kind: "target-already-running" }),
+    });
   });
 });
 
@@ -735,7 +741,12 @@ describe("Jones Actions bounded event discovery", () => {
       ).toEqual(
         pending
           ? { state: "building", retryAfterMs: 240000, classification: expect.any(Object) }
-          : { state: "blocked", reason: "unavailable", retryAfterMs: 240000, classification: expect.any(Object) },
+          : {
+              state: "blocked",
+              reason: "unavailable",
+              retryAfterMs: 240000,
+              classification: expect.any(Object),
+            },
       );
       const queries = d.calls
         .filter(d.listing)
@@ -952,7 +963,10 @@ describe("Jones Actions check observations", () => {
     const observed = make();
     const observation = await observed.client.observeCheck(selection);
     const legacy = make();
-    expect(await legacy.client.check(selection)).toEqual({ ...expected, classification: classifyJonesActionsCheck(observation) });
+    expect(await legacy.client.check(selection)).toEqual({
+      ...expected,
+      classification: classifyJonesActionsCheck(observation),
+    });
     expect(legacy.calls).toEqual(observed.calls);
     return { observation, calls: observed.calls };
   }
@@ -1878,7 +1892,10 @@ describe("Jones Actions check observations", () => {
           : state === "error"
             ? { ...unavailable, reason: "rate-limited" as const }
             : unavailable;
-      expect(await legacy.client.check(macInput)).toEqual({ ...expected, classification: classifyJonesActionsCheck(observation) });
+      expect(await legacy.client.check(macInput)).toEqual({
+        ...expected,
+        classification: classifyJonesActionsCheck(observation),
+      });
       expect(legacy.calls).toEqual(observed.calls);
       expect(observation.checkedAt).toBe(new Date(NOW + (i + 1) * 1000).toISOString());
       expect(observation.mainObservedAt).toBe(observation.checkedAt);
@@ -2627,22 +2644,46 @@ describe("JonesActionsClient.relation", () => {
 
 describe("additive check classification", () => {
   it("publishes bounded discovery separately from unchanged legacy phases without private witnesses", async () => {
-    const cases = [fixture(), fixture({ ci: { status: "in_progress", conclusion: null } }), fixture({ ci: { conclusion: "failure" } })];
+    const cases = [
+      fixture(),
+      fixture({ ci: { status: "in_progress", conclusion: null } }),
+      fixture({ ci: { conclusion: "failure" } }),
+    ];
     const expected = ["available", "qualification-pending", "qualification-failed"];
     for (const [index, f] of cases.entries()) {
-      const result = await f.client.check({ installedSource: OLD, platform: "linux", architecture: "x64" });
+      const result = await f.client.check({
+        installedSource: OLD,
+        platform: "linux",
+        architecture: "x64",
+      });
       expect(result.classification?.kind).toBe(expected[index]);
       expect(result.state).toBe(index === 0 ? "available" : index === 1 ? "building" : "blocked");
-      expect(Object.keys(result.classification ?? {}).sort()).toEqual(["checkedAt", "discovery", "failedQualificationCount", "kind", "pendingCount"]);
+      expect(Object.keys(result.classification ?? {}).sort()).toEqual([
+        "checkedAt",
+        "discovery",
+        "failedQualificationCount",
+        "kind",
+        "pendingCount",
+      ]);
       expect(result.classification).not.toHaveProperty("pending");
       expect(result.classification).not.toHaveProperty("failure");
     }
     const f = fixture();
-    const observation = await f.client.observeCheck({ installedSource: CURRENT, platform: "linux", architecture: "x64" });
+    const observation = await f.client.observeCheck({
+      installedSource: CURRENT,
+      platform: "linux",
+      architecture: "x64",
+    });
     const classification = classifyJonesActionsCheck(observation);
-    expect(classification).toMatchObject({ kind: "target-already-running", pendingCount: 0, failedQualificationCount: 0,
-      discovery: { termination: "target-proved", bounded: false, unresolvedLimits: [] } });
-    expect(classification.discovery.unresolvedLimits).not.toBe(observation.discovery.unresolvedLimits);
+    expect(classification).toMatchObject({
+      kind: "target-already-running",
+      pendingCount: 0,
+      failedQualificationCount: 0,
+      discovery: { termination: "target-proved", bounded: false, unresolvedLimits: [] },
+    });
+    expect(classification.discovery.unresolvedLimits).not.toBe(
+      observation.discovery.unresolvedLimits,
+    );
   });
 });
 

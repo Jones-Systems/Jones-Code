@@ -1324,8 +1324,16 @@ it("strict recovery rejects unsupported and cross-volume clones without a copy f
           throw Object.assign(new Error("synthetic strict failure"), { code });
         },
       };
-      await NodeAssert.rejects(preflightQualifiedBackup(base, database, adapter, { cloneRequired: true }), /recovery-clone-unavailable/);
-      await NodeAssert.rejects(copyQualifiedBackupFile(database, NodePath.join(base, `strict-${code}`), adapter, { cloneRequired: true }), /recovery-clone-unavailable/);
+      await NodeAssert.rejects(
+        preflightQualifiedBackup(base, database, adapter, { cloneRequired: true }),
+        /recovery-clone-unavailable/,
+      );
+      await NodeAssert.rejects(
+        copyQualifiedBackupFile(database, NodePath.join(base, `strict-${code}`), adapter, {
+          cloneRequired: true,
+        }),
+        /recovery-clone-unavailable/,
+      );
       assert.equal(flags.length, 2);
       assert.isTrue(flags.every((flag) => !!(flag & NodeFS.constants.COPYFILE_FICLONE_FORCE)));
       assert.deepEqual(await NodeFSP.readdir(NodePath.join(base, "runtime", "db-backup")), []);
@@ -1345,7 +1353,9 @@ it("recovery inspection counts only the database pair and required settings, wit
       availableBytes: async () => 2 * 1024 * 1024,
       copyFile: async (source, target, flags) => {
         assert.equal(NodePath.basename(source), "source");
-        assert.isTrue(NodePath.dirname(source).startsWith(NodePath.join(base, "runtime", ".clone-probe-")));
+        assert.isTrue(
+          NodePath.dirname(source).startsWith(NodePath.join(base, "runtime", ".clone-probe-")),
+        );
         assert.isTrue(!!(flags & NodeFS.constants.COPYFILE_FICLONE_FORCE));
         await NodeFSP.copyFile(source, target, NodeFS.constants.COPYFILE_EXCL);
       },
@@ -1361,7 +1371,9 @@ it("recovery inspection counts only the database pair and required settings, wit
     await NodeFSP.rm(NodePath.join(base, "userdata", "settings.json"));
     const first = await inspectQualifiedBackup(base, database, {
       availableBytes: async () => 2 * 1024 * 1024,
-      copyFile: async () => { throw new Error("No probe or backup for a first install."); },
+      copyFile: async () => {
+        throw new Error("No probe or backup for a first install.");
+      },
     });
     assert.isTrue(first.firstInstall);
     assert.equal(first.bytes, 0);

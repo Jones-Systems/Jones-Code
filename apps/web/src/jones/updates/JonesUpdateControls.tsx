@@ -1,10 +1,22 @@
 import { jonesTargetStatus } from "@t3tools/client-runtime/jones/updates/target-status";
-import { prepareReviewedInstall, resolveDownloadAction } from "@t3tools/client-runtime/jones/updates/executor";
-import { connectionExecutorHost, readUnresolvedJonesExecution } from "../installStatus/connectionHost";
+import {
+  prepareReviewedInstall,
+  resolveDownloadAction,
+  type JonesDownloadResolution,
+} from "@t3tools/client-runtime/jones/updates/executor";
+import type { JonesInstallPlanReview } from "@t3tools/contracts/jones/installPlan";
+import {
+  connectionExecutorHost,
+  readUnresolvedJonesExecution,
+} from "../installStatus/connectionHost";
 import { executeWebJonesAction, unresolvedJonesExecution } from "../installStatus/execution";
 import { Button } from "../../components/ui/button";
 import { randomUUID } from "../../lib/utils";
-import { jonesUpdateActionError, jonesInstallRefusal, compareJonesSource } from "@t3tools/client-runtime/jones/updates";
+import {
+  jonesUpdateActionError,
+  jonesInstallRefusal,
+  compareJonesSource,
+} from "@t3tools/client-runtime/jones/updates";
 import {
   AuthOrchestrationOperateScope,
   sessionGrantsScope,
@@ -125,7 +137,15 @@ export function JonesUpdateControls({
   const [stopping, setStopping] = useState(false);
   const stop = useAtomCommand(jonesUpdates.stop, { reportFailure: false });
   const session = useAtomValue(environmentSession.sessionStateAtom(environmentId));
-  const status = jonesTargetStatus(observation, { canOperate: session._tag === "Success" && session.value.authenticated && sessionGrantsScope(session.value, AuthOrchestrationOperateScope), ...(observation.state?.operation?.correlation === undefined ? {} : { planId: observation.state.operation.correlation.planId }) });
+  const status = jonesTargetStatus(observation, {
+    canOperate:
+      session._tag === "Success" &&
+      session.value.authenticated &&
+      sessionGrantsScope(session.value, AuthOrchestrationOperateScope),
+    ...(observation.state?.operation?.correlation === undefined
+      ? {}
+      : { planId: observation.state.operation.correlation.planId }),
+  });
   const inFlight = useRef(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const run = async (input: JonesBuildRequest) => {
@@ -135,18 +155,61 @@ export function JonesUpdateControls({
     setActionError(null);
     await (async () => {
       if (input.action === "install" || input.action === "download") {
-        const host = connectionExecutorHost(environmentId, () => {
-          const session = appAtomRegistry.get(environmentSession.sessionStateAtom(environmentId));
-          return { observation: appAtomRegistry.get(jonesUpdates.observation(environmentId)), canOperate: session._tag === "Success" && session.value.authenticated && sessionGrantsScope(session.value, AuthOrchestrationOperateScope) };
-        }, async (request) => { const result = await action({ environmentId, input: request }); if (result._tag !== "Success") throw new Error("Request not confirmed."); return result.value; });
-        if (input.action === "install") { const refusal = jonesInstallRefusal(input.input, host.readLatest().observation); if (refusal !== undefined) { setActionError(refusal); return; } }
+        const host = connectionExecutorHost(
+          environmentId,
+          () => {
+            const session = appAtomRegistry.get(environmentSession.sessionStateAtom(environmentId));
+            return {
+              observation: appAtomRegistry.get(jonesUpdates.observation(environmentId)),
+              canOperate:
+                session._tag === "Success" &&
+                session.value.authenticated &&
+                sessionGrantsScope(session.value, AuthOrchestrationOperateScope),
+            };
+          },
+          async (request) => {
+            const result = await action({ environmentId, input: request });
+            if (result._tag !== "Success") throw new Error("Request not confirmed.");
+            return result.value;
+          },
+        );
+        if (input.action === "install") {
+          const refusal = jonesInstallRefusal(input.input, host.readLatest().observation);
+          if (refusal !== undefined) {
+            setActionError(refusal);
+            return;
+          }
+        }
         const targetSource = host.readLatest().observation.state?.provenance?.sourceSha;
-        if (targetSource === undefined) { setActionError("Fresh downloaded or offered source is required."); return; }
-        const proposed = input.action === "install" ? await prepareReviewedInstall({ environmentId, targetSource, label: "this host", host, now: Date.now,
-          ...(input.input.continueRunningThreads === undefined ? {} : { continueRunningThreads: input.input.continueRunningThreads }) }) : resolveDownloadAction({ environmentId, targetSource, ...host.readLatest() });
-        if (proposed.kind !== "ready") { setActionError(proposed.message); return; }
-        const result = await executeWebJonesAction({ environmentId, targetSource, action: proposed.action, operationId: randomUUID(), host,
-          ...("review" in proposed ? { review: proposed.review } : {}) });
+        if (targetSource === undefined) {
+          setActionError("Fresh downloaded or offered source is required.");
+          return;
+        }
+        const proposed: JonesDownloadResolution & { readonly review?: JonesInstallPlanReview } =
+          input.action === "install"
+            ? await prepareReviewedInstall({
+                environmentId,
+                targetSource,
+                label: "this host",
+                host,
+                now: Date.now,
+                ...(input.input.continueRunningThreads === undefined
+                  ? {}
+                  : { continueRunningThreads: input.input.continueRunningThreads }),
+              })
+            : resolveDownloadAction({ environmentId, targetSource, ...host.readLatest() });
+        if (proposed.kind !== "ready") {
+          setActionError(proposed.message);
+          return;
+        }
+        const result = await executeWebJonesAction({
+          environmentId,
+          targetSource,
+          action: proposed.action,
+          operationId: randomUUID(),
+          host,
+          ...(proposed.review === undefined ? {} : { review: proposed.review }),
+        });
         setActionError(result.message);
         return;
       }
@@ -155,10 +218,18 @@ export function JonesUpdateControls({
       // Check is the explicit refresh: retry an ancestry this laptop's server could not prove.
       if (input.action === "check" && pair !== undefined && ancestry === undefined)
         refreshAncestry();
-    })().catch((error: unknown) => setActionError(error instanceof Error ? error.message : "Request not confirmed. Read its exact receipt before continuing.")).finally(() => {
-      inFlight.current = false;
-      setPending(false);
-    });
+    })()
+      .catch((error: unknown) =>
+        setActionError(
+          error instanceof Error
+            ? error.message
+            : "Request not confirmed. Read its exact receipt before continuing.",
+        ),
+      )
+      .finally(() => {
+        inFlight.current = false;
+        setPending(false);
+      });
   };
   const comparison = compareWithLaptop
     ? compareJonesSource(
@@ -182,48 +253,82 @@ export function JonesUpdateControls({
     );
   return (
     <div className="min-w-0 space-y-1">
-    <JonesBuildStatus
-      environmentId={environmentId}
-      state={observation.state}
-      freshness={observation.freshness}
-      freshnessMessage={observation.message}
-      comparison={comparison}
-      installedComparison={installedComparison}
-      pending={pending || unresolvedJonesExecution(environmentId) !== undefined}
-      actionError={actionError}
-      layout={layout}
-      extraAction={
-        showMatch ? (
-          <ProductionExactSourceUpdateAction
-            environmentId={environmentId}
-            label="this host"
-            targetSource={laptop?.source.sha ?? ""}
-            readTargetSource={() => {
-              const latest = appAtomRegistry.get(laptopInstalledSourceAtom);
-              return latest !== undefined && latest.environmentId === laptop?.environmentId
-                ? latest.source.sha
-                : undefined;
-            }}
-            subject="this laptop"
-            allowInstall={false}
-            buttonLabel="Match laptop"
-            compact
-          />
-        ) : undefined
-      }
-      onRequest={(request) => void run(request)}
-    />
-    {status.check ? <p className="text-xs text-muted-foreground">{status.check.text}</p> : null}
-    {status.operation ? <p className="select-text text-xs text-muted-foreground" role="status">{status.headline} · Operation {status.operation.operationId}{status.operation.planCorrelated ? " · Part of the Laptop's update plan" : ""}</p> : null}
-    {status.actions.stop ? <Button size="xs" variant="outline" disabled={stopping} onClick={() => {
-      const receipt = observation.state?.operation;
-      if (receipt === undefined || stopping) return;
-      setStopping(true);
-      void stop({ environmentId, input: { action: "operationStop", input: { environmentId, operationId: receipt.operationId, stopId: randomUUID() } } }).then((result) => {
-        setActionError(result._tag !== "Success" ? "Stop not confirmed. Check the exact operation receipt." : result.value.message ??
-          (result.value.phase === "stop-requested" ? "Stop requested. Waiting for the bound operation receipt." : result.value.phase === "stopped" ? "Download stopped. Nothing was installed." : result.value.phase === "held" ? "Stop not confirmed. No new work starts." : result.value.stop?.result === "too-late" ? "Download completed before Stop. Review installation separately." : "This phase cannot be stopped. Read the current operation status."));
-      }).finally(() => setStopping(false));
-    }}>Stop download</Button> : null}
+      <JonesBuildStatus
+        environmentId={environmentId}
+        state={observation.state}
+        freshness={observation.freshness}
+        freshnessMessage={observation.message}
+        comparison={comparison}
+        installedComparison={installedComparison}
+        pending={pending || unresolvedJonesExecution(environmentId) !== undefined}
+        actionError={actionError}
+        layout={layout}
+        extraAction={
+          showMatch ? (
+            <ProductionExactSourceUpdateAction
+              environmentId={environmentId}
+              label="this host"
+              targetSource={laptop?.source.sha ?? ""}
+              readTargetSource={() => {
+                const latest = appAtomRegistry.get(laptopInstalledSourceAtom);
+                return latest !== undefined && latest.environmentId === laptop?.environmentId
+                  ? latest.source.sha
+                  : undefined;
+              }}
+              subject="this laptop"
+              allowInstall={false}
+              buttonLabel="Match laptop"
+              compact
+            />
+          ) : undefined
+        }
+        onRequest={(request) => void run(request)}
+      />
+      {status.check ? <p className="text-xs text-muted-foreground">{status.check.text}</p> : null}
+      {status.operation ? (
+        <p className="select-text text-xs text-muted-foreground" role="status">
+          {status.headline} · Operation {status.operation.operationId}
+          {status.operation.planCorrelated ? " · Part of the Laptop's update plan" : ""}
+        </p>
+      ) : null}
+      {status.actions.stop ? (
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={stopping}
+          onClick={() => {
+            const receipt = observation.state?.operation;
+            if (receipt === undefined || stopping) return;
+            setStopping(true);
+            void stop({
+              environmentId,
+              input: {
+                action: "operationStop",
+                input: { environmentId, operationId: receipt.operationId, stopId: randomUUID() },
+              },
+            })
+              .then((result) => {
+                setActionError(
+                  result._tag !== "Success"
+                    ? "Stop not confirmed. Check the exact operation receipt."
+                    : (result.value.message ??
+                        (result.value.phase === "stop-requested"
+                          ? "Stop requested. Waiting for the bound operation receipt."
+                          : result.value.phase === "stopped"
+                            ? "Download stopped. Nothing was installed."
+                            : result.value.phase === "held"
+                              ? "Stop not confirmed. No new work starts."
+                              : result.value.stop?.result === "too-late"
+                                ? "Download completed before Stop. Review installation separately."
+                                : "This phase cannot be stopped. Read the current operation status.")),
+                );
+              })
+              .finally(() => setStopping(false));
+          }}
+        >
+          Stop download
+        </Button>
+      ) : null}
     </div>
   );
 }

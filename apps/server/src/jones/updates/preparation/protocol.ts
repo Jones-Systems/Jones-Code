@@ -285,13 +285,23 @@ function decodeOutcome(
   const r = record(value);
   if (r === undefined || r.kind !== kind) return undefined;
   const jobIds = (value: unknown): value is string[] =>
-    Array.isArray(value) && value.length <= 64 && value.every((id) => typeof id === "string" && JOB_ID.test(id));
+    Array.isArray(value) &&
+    value.length <= 64 &&
+    value.every((id) => typeof id === "string" && JOB_ID.test(id));
   if (r.kind === "sweep")
     return (r.removedJobIds === undefined || jobIds(r.removedJobIds)) &&
-      (r.retainedJobIds === undefined || jobIds(r.retainedJobIds)) && count(r.removed) && count(r.retained) && count(r.failed)
-      ? { kind: "sweep", removed: r.removed, retained: r.retained, failed: r.failed,
-        ...(jobIds(r.removedJobIds) ? { removedJobIds: r.removedJobIds } : {}),
-        ...(jobIds(r.retainedJobIds) ? { retainedJobIds: r.retainedJobIds } : {}) }
+      (r.retainedJobIds === undefined || jobIds(r.retainedJobIds)) &&
+      count(r.removed) &&
+      count(r.retained) &&
+      count(r.failed)
+      ? {
+          kind: "sweep",
+          removed: r.removed,
+          retained: r.retained,
+          failed: r.failed,
+          ...(jobIds(r.removedJobIds) ? { removedJobIds: r.removedJobIds } : {}),
+          ...(jobIds(r.retainedJobIds) ? { retainedJobIds: r.retainedJobIds } : {}),
+        }
       : undefined;
   if (r.kind === "verify-runtime") {
     const receipt = decodeQualifiedRuntimeReceipt(r.receipt);

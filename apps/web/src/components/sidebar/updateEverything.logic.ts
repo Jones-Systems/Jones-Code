@@ -342,11 +342,16 @@ export function getUpdateEverythingToastView(
           `${joinList(result.restarting)} ${result.restarting.length === 1 ? "is" : "are"} still restarting.`,
         ];
   if (result.failures.length === 0) {
-    if (parts.length === 0) return handoffs.length === 0 ? null : { type: "info", title: "Install status handoff", description: handoffs.join("\n") };
+    if (parts.length === 0)
+      return handoffs.length === 0
+        ? null
+        : { type: "info", title: "Install status handoff", description: handoffs.join("\n") };
     return {
       type: "success",
       title: `Updated ${joinList(parts)}`,
-      ...([ ...handoffs, ...restarting ].length === 0 ? {} : { description: [...handoffs, ...restarting].join("\n") }),
+      ...([...handoffs, ...restarting].length === 0
+        ? {}
+        : { description: [...handoffs, ...restarting].join("\n") }),
     };
   }
   return {
@@ -357,7 +362,10 @@ export function getUpdateEverythingToastView(
 }
 
 export interface UpdateEverythingPlan {
-  readonly jonesMachines?: ReadonlyArray<{ readonly environmentId: EnvironmentId; readonly label: string }>;
+  readonly jonesMachines?: ReadonlyArray<{
+    readonly environmentId: EnvironmentId;
+    readonly label: string;
+  }>;
   readonly localVersion: string | null;
   readonly servers: ReadonlyArray<
     Pick<ServerUpdateTarget, "environmentId" | "serverLabel" | "selfUpdate" | "targetVersion">
@@ -411,7 +419,9 @@ export function describeUpdateEverything(plan: UpdateEverythingPlan): {
     );
   }
   for (const machine of plan.jonesMachines ?? []) {
-    itemsFor(machine.environmentId, machine.label).push("Install status after Laptop verification; every install needs review");
+    itemsFor(machine.environmentId, machine.label).push(
+      "Install status after Laptop verification; every install needs review",
+    );
   }
   for (const machine of plan.providerMachines) {
     itemsFor(machine.environmentId, machine.label).push(...machine.providers);

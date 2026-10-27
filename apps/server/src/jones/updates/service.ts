@@ -17,9 +17,15 @@ import {
 } from "@t3tools/contracts";
 
 import type {
-  JonesOperationStartInput, JonesOperationStopInput, JonesOperationFenceInput,
-  JonesOperationReadInput, JonesOperationReadResult, JonesOperationReceipt,
-  JonesRecoveryPreflightInput, JonesRecoveryPreflight, JonesRecoveryPolicy,
+  JonesOperationStartInput,
+  JonesOperationStopInput,
+  JonesOperationFenceInput,
+  JonesOperationReadInput,
+  JonesOperationReadResult,
+  JonesOperationReceipt,
+  JonesRecoveryPreflightInput,
+  JonesRecoveryPreflight,
+  JonesRecoveryPolicy,
 } from "@t3tools/contracts/jones/jonesOperations";
 import { createOperationLedger } from "./operations/ledger.ts";
 import { createTargetOperations, unsupportedTargetOperations } from "./operations/operations.ts";
@@ -85,11 +91,21 @@ import * as DesktopReceiver from "../../resourceTelemetry/DesktopTelemetryReceiv
 export class JonesUpdates extends Context.Service<
   JonesUpdates,
   {
-    readonly operationStart: (input: JonesOperationStartInput) => Effect.Effect<JonesOperationReceipt, EnvironmentInternalError>;
-    readonly operationStop: (input: JonesOperationStopInput) => Effect.Effect<JonesOperationReceipt, EnvironmentInternalError>;
-    readonly operationFence: (input: JonesOperationFenceInput) => Effect.Effect<JonesOperationReceipt, EnvironmentInternalError>;
-    readonly operationRead: (input: JonesOperationReadInput) => Effect.Effect<JonesOperationReadResult, EnvironmentInternalError>;
-    readonly recoveryPreflight: (input: JonesRecoveryPreflightInput) => Effect.Effect<JonesRecoveryPreflight, EnvironmentInternalError>;
+    readonly operationStart: (
+      input: JonesOperationStartInput,
+    ) => Effect.Effect<JonesOperationReceipt, EnvironmentInternalError>;
+    readonly operationStop: (
+      input: JonesOperationStopInput,
+    ) => Effect.Effect<JonesOperationReceipt, EnvironmentInternalError>;
+    readonly operationFence: (
+      input: JonesOperationFenceInput,
+    ) => Effect.Effect<JonesOperationReceipt, EnvironmentInternalError>;
+    readonly operationRead: (
+      input: JonesOperationReadInput,
+    ) => Effect.Effect<JonesOperationReadResult, EnvironmentInternalError>;
+    readonly recoveryPreflight: (
+      input: JonesRecoveryPreflightInput,
+    ) => Effect.Effect<JonesRecoveryPreflight, EnvironmentInternalError>;
     readonly fleetOperationsSupported: boolean;
     readonly state: (after?: number) => Effect.Effect<JonesUpdateState | null>;
     readonly check: Effect.Effect<JonesUpdateState>;
@@ -243,19 +259,46 @@ export const layer = Layer.effect(
             sha: runtimeReceipt.sourceSha,
             tree: runtimeReceipt.sourceTree,
           };
-    const operationCall = <A>(f: () => Promise<A>) => Effect.tryPromise({
-      try: f,
-      catch: () => new EnvironmentInternalError({ code: "internal_error", reason: "internal_error", traceId: NodeCrypto.randomUUID() }),
-    });
+    const operationCall = <A>(f: () => Promise<A>) =>
+      Effect.tryPromise({
+        try: f,
+        catch: () =>
+          new EnvironmentInternalError({
+            code: "internal_error",
+            reason: "internal_error",
+            traceId: NodeCrypto.randomUUID(),
+          }),
+      });
     const recoveryPreflight = Effect.fn("JonesUpdates.recoveryPreflight")(
-      (_input: JonesRecoveryPreflightInput): Effect.Effect<JonesRecoveryPreflight, EnvironmentInternalError> =>
-        Effect.fail(new EnvironmentInternalError({ code: "internal_error", reason: "internal_error", traceId: NodeCrypto.randomUUID() })),
+      (
+        _input: JonesRecoveryPreflightInput,
+      ): Effect.Effect<JonesRecoveryPreflight, EnvironmentInternalError> =>
+        Effect.fail(
+          new EnvironmentInternalError({
+            code: "internal_error",
+            reason: "internal_error",
+            traceId: NodeCrypto.randomUUID(),
+          }),
+        ),
     );
-    const operationMethods = (operations: Pick<ReturnType<typeof createTargetOperations>, "start" | "stop" | "fence" | "read">) => ({
-      operationStart: Effect.fn("JonesUpdates.operationStart")((input: JonesOperationStartInput) => operationCall(() => operations.start(input))),
-      operationStop: Effect.fn("JonesUpdates.operationStop")((input: JonesOperationStopInput) => operationCall(() => operations.stop(input))),
-      operationFence: Effect.fn("JonesUpdates.operationFence")((input: JonesOperationFenceInput) => operationCall(() => operations.fence(input))),
-      operationRead: Effect.fn("JonesUpdates.operationRead")((input: JonesOperationReadInput) => operationCall(() => operations.read(input))),
+    const operationMethods = (
+      operations: Pick<
+        ReturnType<typeof createTargetOperations>,
+        "start" | "stop" | "fence" | "read"
+      >,
+    ) => ({
+      operationStart: Effect.fn("JonesUpdates.operationStart")((input: JonesOperationStartInput) =>
+        operationCall(() => operations.start(input)),
+      ),
+      operationStop: Effect.fn("JonesUpdates.operationStop")((input: JonesOperationStopInput) =>
+        operationCall(() => operations.stop(input)),
+      ),
+      operationFence: Effect.fn("JonesUpdates.operationFence")((input: JonesOperationFenceInput) =>
+        operationCall(() => operations.fence(input)),
+      ),
+      operationRead: Effect.fn("JonesUpdates.operationRead")((input: JonesOperationReadInput) =>
+        operationCall(() => operations.read(input)),
+      ),
       recoveryPreflight,
     });
     const unsupportedOperations = {
@@ -655,28 +698,50 @@ export const layer = Layer.effect(
       hasEnvironment: environmentId !== undefined,
       restoreFailed: restoreFailure !== undefined,
     });
-    const fleetOperationsSupported = launcher.managed && launcher.qualifiedOperations === true &&
-      launcher.qualifiedRetirement === true && supported && nativeReceipt &&
-      serviceCapability.download && serviceCapability.install && preparation !== undefined;
-    const recoveryPolicySupported = fleetOperationsSupported && launcher.stateRecoveryPolicy === true &&
+    const fleetOperationsSupported =
+      launcher.managed &&
+      launcher.qualifiedOperations === true &&
+      launcher.qualifiedRetirement === true &&
+      supported &&
+      nativeReceipt &&
+      serviceCapability.download &&
+      serviceCapability.install &&
+      preparation !== undefined;
+    const recoveryPolicySupported =
+      fleetOperationsSupported &&
+      launcher.stateRecoveryPolicy === true &&
       launcher.withStateRecoveryPolicy !== undefined;
-    const recoveryPreflights: ReturnType<typeof createRecoveryPreflights> = createRecoveryPreflights({
-      snapshot: () => updater.snapshot(),
-      nativeSupported: () => recoveryPolicySupported,
-      measure: async (binding) => {
-        if (!isUpdateOperationId(binding.stagedHandle)) throw new Error("Invalid recovery staged handle.");
-        const staged = decodeStagedQualifiedRuntime(await readBoundedJson(
-          NodePath.join(config.baseDir, "runtime", "staged-updates", `${binding.stagedHandle}.json`), 64 * 1024));
-        if (staged === undefined || staged.stagedHandle !== binding.stagedHandle ||
-          staged.binding.environmentId !== binding.environmentId ||
-          staged.binding.activeVersion !== binding.currentVersion ||
-          staged.binding.activeSourceSha !== binding.expectedInstalledSource ||
-          staged.binding.baseDir !== await NodeFSP.realpath(config.baseDir) ||
-          staged.binding.dbPath !== await NodeFSP.realpath(config.dbPath))
-          throw new Error("recovery-stale-binding: Native stage binding changed.");
-        return inspectQualifiedBackup(config.baseDir, config.dbPath);
-      },
-    });
+    const recoveryPreflights: ReturnType<typeof createRecoveryPreflights> =
+      createRecoveryPreflights({
+        snapshot: () => updater.snapshot(),
+        nativeSupported: () => recoveryPolicySupported,
+        measure: async (binding) => {
+          if (!isUpdateOperationId(binding.stagedHandle))
+            throw new Error("Invalid recovery staged handle.");
+          const staged = decodeStagedQualifiedRuntime(
+            await readBoundedJson(
+              NodePath.join(
+                config.baseDir,
+                "runtime",
+                "staged-updates",
+                `${binding.stagedHandle}.json`,
+              ),
+              64 * 1024,
+            ),
+          );
+          if (
+            staged === undefined ||
+            staged.stagedHandle !== binding.stagedHandle ||
+            staged.binding.environmentId !== binding.environmentId ||
+            staged.binding.activeVersion !== binding.currentVersion ||
+            staged.binding.activeSourceSha !== binding.expectedInstalledSource ||
+            staged.binding.baseDir !== (await NodeFSP.realpath(config.baseDir)) ||
+            staged.binding.dbPath !== (await NodeFSP.realpath(config.dbPath))
+          )
+            throw new Error("recovery-stale-binding: Native stage binding changed.");
+          return inspectQualifiedBackup(config.baseDir, config.dbPath);
+        },
+      });
     const updater: JonesUpdater = new JonesUpdater({
       stateChanged: publishCapability,
       startupOutcome: () => {
@@ -740,8 +805,11 @@ export const layer = Layer.effect(
                 durationMs: recovery.durationMs,
               },
             }),
-        capability: { ...serviceCapability, ...(fleetOperationsSupported ? { operations: 1 as const } : {}),
-          ...(recoveryPolicySupported ? { recoveryPolicy: 1 as const } : {}) },
+        capability: {
+          ...serviceCapability,
+          ...(fleetOperationsSupported ? { operations: 1 as const } : {}),
+          ...(recoveryPolicySupported ? { recoveryPolicy: 1 as const } : {}),
+        },
       },
       platform: platform === "darwin" ? "darwin" : "linux",
       architecture: architecture === "arm64" ? "arm64" : "x64",
@@ -775,7 +843,11 @@ export const layer = Layer.effect(
             activeVersion,
             host: preparationHost,
           },
-          { jobId: jobId ?? NodeCrypto.randomUUID(), signal, onPhase: (phase) => (phase === "verifying" ? onVerifying() : undefined) },
+          {
+            jobId: jobId ?? NodeCrypto.randomUUID(),
+            signal,
+            onPhase: (phase) => (phase === "verifying" ? onVerifying() : undefined),
+          },
         );
         onStarted?.(job.settled);
         const outcome = await job.outcome;
@@ -818,98 +890,113 @@ export const layer = Layer.effect(
           input.operationId ??
           (launcher.qualifiedOperations === true ? NodeCrypto.randomUUID() : undefined);
         const installQualified = qualifiedSelfUpdate.installQualified;
-        const recoveryRefusal = () => input.recovery === undefined ? undefined : recoveryPreflights.validate(input.recovery, {
-          environmentId: input.environmentId, stagedHandle: input.stagedHandle,
-          currentVersion: input.currentVersion, expectedInstalledSource: updater.snapshot().installedSource?.sha ?? "",
-        });
+        const recoveryRefusal = () =>
+          input.recovery === undefined
+            ? undefined
+            : recoveryPreflights.validate(input.recovery, {
+                environmentId: input.environmentId,
+                stagedHandle: input.stagedHandle,
+                currentVersion: input.currentVersion,
+                expectedInstalledSource: updater.snapshot().installedSource?.sha ?? "",
+              });
         const refused = recoveryRefusal();
         if (refused !== undefined) throw new Error(refused);
-        const admit = input.admit === undefined && input.recovery === undefined ? undefined : async () =>
-          recoveryRefusal() ?? await input.admit?.();
+        const admit =
+          input.admit === undefined && input.recovery === undefined
+            ? undefined
+            : async () => recoveryRefusal() ?? (await input.admit?.());
         const installEffect = UpdateAdmissionFence.fencedInstall({
-            fence: admissionFence,
-            mode: input.origin === "fleet" ? "automatic" : "manual",
-            ...(admit === undefined
-              ? {}
-              : {
-                  finalCheck: Effect.promise(() =>
-                    admit().catch(() => "Running work on this host could not be read."),
+          fence: admissionFence,
+          mode: input.origin === "fleet" ? "automatic" : "manual",
+          ...(admit === undefined
+            ? {}
+            : {
+                finalCheck: Effect.promise(() =>
+                  admit().catch(() => "Running work on this host could not be read."),
+                ),
+              }),
+          handoffOutcome: (cause) =>
+            awaitHandoffOutcome({
+              operationId,
+              cause,
+              reconcile: reconcileOperation,
+              ...(launcher.qualifiedOutcomes === true && launcher.reconcileUpdate !== undefined
+                ? { query: launcher.reconcileUpdate }
+                : {}),
+            }).pipe(
+              Effect.tap((outcome) =>
+                outcome === "rejected" && operationId !== undefined
+                  ? qualifiedSelfUpdate
+                      .releaseRejectedHandoff(operationId)
+                      .pipe(
+                        Effect.catchCause((cause) =>
+                          Effect.logWarning(
+                            "Could not clear continuations of a rejected update handoff",
+                            { cause },
+                          ),
+                        ),
+                      )
+                  : Effect.void,
+              ),
+            ),
+          // Queued runs the fence refused to start stay queued; start them again here.
+          ...(Option.isNone(orchestrator)
+            ? {}
+            : {
+                reopened: orchestrator.value.resumeQueuedRuns.pipe(
+                  Effect.catchCause((cause) =>
+                    Effect.logWarning("Could not restart queued runs after an update stopped", {
+                      cause,
+                    }),
                   ),
-                }),
-            handoffOutcome: (cause) =>
-              awaitHandoffOutcome({
-                operationId,
-                cause,
-                reconcile: reconcileOperation,
-                ...(launcher.qualifiedOutcomes === true && launcher.reconcileUpdate !== undefined
-                  ? { query: launcher.reconcileUpdate }
-                  : {}),
-              }).pipe(
-                Effect.tap((outcome) =>
-                  outcome === "rejected" && operationId !== undefined
-                    ? qualifiedSelfUpdate
-                        .releaseRejectedHandoff(operationId)
-                        .pipe(
-                          Effect.catchCause((cause) =>
-                            Effect.logWarning(
-                              "Could not clear continuations of a rejected update handoff",
-                              { cause },
+                  Effect.asVoid,
+                ),
+              }),
+          install: ({ onPrepared, onAccepted }) =>
+            installQualified(
+              { ...input, ...(operationId === undefined ? {} : { operationId }), verifyStaged },
+              () => onAccepted,
+              (staged) =>
+                onPrepared(
+                  operationId === undefined
+                    ? Effect.void
+                    : startup.capturePlannedUpdate === undefined
+                      ? Effect.fail(
+                          new ServerSelfUpdateError({
+                            reason: "Planned update continuity is not configured.",
+                          }),
+                        )
+                      : startup
+                          .capturePlannedUpdate({
+                            operationId,
+                            binding: operationBinding(staged),
+                            continueRunningThreads: input.continueRunningThreads === true,
+                          })
+                          .pipe(
+                            Effect.mapError(
+                              (cause) =>
+                                new ServerSelfUpdateError({
+                                  reason: "Could not capture planned update continuity.",
+                                  cause,
+                                }),
                             ),
                           ),
-                        )
-                    : Effect.void,
                 ),
-              ),
-            // Queued runs the fence refused to start stay queued; start them again here.
-            ...(Option.isNone(orchestrator)
-              ? {}
-              : {
-                  reopened: orchestrator.value.resumeQueuedRuns.pipe(
-                    Effect.catchCause((cause) =>
-                      Effect.logWarning("Could not restart queued runs after an update stopped", {
-                        cause,
-                      }),
-                    ),
-                    Effect.asVoid,
-                  ),
-                }),
-            install: ({ onPrepared, onAccepted }) =>
-              installQualified(
-                { ...input, ...(operationId === undefined ? {} : { operationId }), verifyStaged },
-                () => onAccepted,
-                (staged) =>
-                  onPrepared(
-                    operationId === undefined
-                      ? Effect.void
-                      : startup.capturePlannedUpdate === undefined
-                        ? Effect.fail(
-                            new ServerSelfUpdateError({
-                              reason: "Planned update continuity is not configured.",
-                            }),
-                          )
-                        : startup
-                            .capturePlannedUpdate({
-                              operationId,
-                              binding: operationBinding(staged),
-                              continueRunningThreads: input.continueRunningThreads === true,
-                            })
-                            .pipe(
-                              Effect.mapError(
-                                (cause) =>
-                                  new ServerSelfUpdateError({
-                                    reason: "Could not capture planned update continuity.",
-                                    cause,
-                                  }),
-                              ),
-                            ),
-                  ),
-                (step) => Effect.sync(() => reportStep?.(step)),
-              ),
-          });
-        const accepted = await run(input.recovery === undefined ? installEffect :
-          launcher.withStateRecoveryPolicy === undefined || operationId === undefined
-            ? Effect.fail(new Error("recovery-policy-unsupported: The launcher cannot bind recovery policy."))
-            : launcher.withStateRecoveryPolicy(operationId, input.recovery.policy, installEffect));
+              (step) => Effect.sync(() => reportStep?.(step)),
+            ),
+        });
+        const accepted = await run(
+          input.recovery === undefined
+            ? installEffect
+            : launcher.withStateRecoveryPolicy === undefined || operationId === undefined
+              ? Effect.fail(
+                  new ServerSelfUpdateError({
+                    reason:
+                      "recovery-policy-unsupported: The launcher cannot bind recovery policy.",
+                  }),
+                )
+              : launcher.withStateRecoveryPolicy(operationId, input.recovery.policy, installEffect),
+        );
         return {
           ...(accepted.updateId === undefined ? {} : { updateId: accepted.updateId }),
           ...(launcher.qualifiedUpdateMigrationPlan === undefined
@@ -926,9 +1013,16 @@ export const layer = Layer.effect(
       const follower = await fleetStore.readFollower();
       const leader = follower?.leader;
       const directive = follower?.directive;
-      const review = directive?.enrollmentId === enrollment.enrollmentId ? {
-        reviewTarget: { source: directive.targetSource, tree: directive.targetTree, directiveId: directive.directiveId },
-      } : {};
+      const review =
+        directive?.enrollmentId === enrollment.enrollmentId
+          ? {
+              reviewTarget: {
+                source: directive.targetSource,
+                tree: directive.targetTree,
+                directiveId: directive.directiveId,
+              },
+            }
+          : {};
       // A leader recorded without its tree is not provenance; the host waits for a new report.
       return leader !== null &&
         leader !== undefined &&
@@ -1011,21 +1105,35 @@ export const layer = Layer.effect(
           "The installed source, staged source, or operation-capable launcher changed.",
         );
       }
-      return yield* Effect.promise(() => updater.install({ ...input, origin: input.origin ?? "fleet" }));
+      return yield* Effect.promise(() =>
+        updater.install({ ...input, origin: input.origin ?? "fleet" }),
+      );
     });
-    const targetOperations = fleetOperationsSupported && preparation !== undefined ? createTargetOperations({
-      key: config.baseDir,
-      ledger: createOperationLedger(config.baseDir), updater, preparation,
-      refreshPolicy: () => run(refreshPolicy),
-      install: (input) => run(installForOperation(input)),
-      reconcileNative: (operationId) => run(reconcileOperation(operationId)),
-      onFailure: () => { void run(Effect.logWarning("Target operation needs durable reconciliation.")); },
-      ...(recoveryPolicySupported ? { recovery: {
-        validate: recoveryPreflights.validate,
-        observed: async (id: string) => (await readQualifiedBackupReceipt(config.baseDir, id))?.method ??
-          (terminal?.id === id ? recovery?.method : undefined),
-      } } : {}),
-    }) : undefined;
+    const targetOperations =
+      fleetOperationsSupported && preparation !== undefined
+        ? createTargetOperations({
+            key: config.baseDir,
+            ledger: createOperationLedger(config.baseDir),
+            updater,
+            preparation,
+            refreshPolicy: () => run(refreshPolicy),
+            install: (input) => run(installForOperation(input)),
+            reconcileNative: (operationId) => run(reconcileOperation(operationId)),
+            onFailure: () => {
+              void run(Effect.logWarning("Target operation needs durable reconciliation."));
+            },
+            ...(recoveryPolicySupported
+              ? {
+                  recovery: {
+                    validate: recoveryPreflights.validate,
+                    observed: async (id: string) =>
+                      (await readQualifiedBackupReceipt(config.baseDir, id))?.method ??
+                      (terminal?.id === id ? recovery?.method : undefined),
+                  },
+                }
+              : {}),
+          })
+        : undefined;
     if (targetOperations !== undefined) {
       // Restore admission holds before any background checks or fleet pass can start.
       yield* Effect.tryPromise(() => targetOperations.reconcile()).pipe(
@@ -1034,13 +1142,19 @@ export const layer = Layer.effect(
       yield* Effect.sleep("60 seconds").pipe(
         Effect.andThen(Effect.tryPromise(() => targetOperations.sweep())),
         Effect.catch(() => Effect.logWarning("Target operation sweep requires reconciliation.")),
-        Effect.forever, Effect.forkScoped,
+        Effect.forever,
+        Effect.forkScoped,
       );
     }
     if (preparation !== undefined)
       yield* Effect.sleep("10 seconds").pipe(
-        Effect.andThen(Effect.tryPromise(() => targetOperations === undefined ? preparation.sweep() : targetOperations.sweep())),
-        Effect.ignore, Effect.forkScoped,
+        Effect.andThen(
+          Effect.tryPromise(async () => {
+            await (targetOperations === undefined ? preparation.sweep() : targetOperations.sweep());
+          }),
+        ),
+        Effect.ignore,
+        Effect.forkScoped,
       );
     const settleOperation = Effect.fn("JonesUpdates.settleOperation")(function* (
       input: JonesUpdateReconcileInput | JonesUpdateRecordRetiredInput,
@@ -1105,10 +1219,14 @@ export const layer = Layer.effect(
     });
     return JonesUpdates.of({
       ...operationMethods(targetOperations ?? unsupportedTargetOperations),
-      ...(recoveryPolicySupported ? {
-        recoveryPreflight: Effect.fn("JonesUpdates.recoveryPreflight")((input: JonesRecoveryPreflightInput) =>
-          operationCall(() => recoveryPreflights.preflight(input))),
-      } : {}),
+      ...(recoveryPolicySupported
+        ? {
+            recoveryPreflight: Effect.fn("JonesUpdates.recoveryPreflight")(
+              (input: JonesRecoveryPreflightInput) =>
+                operationCall(() => recoveryPreflights.preflight(input)),
+            ),
+          }
+        : {}),
       prepareQuit,
       reconcile: settleOperation,
       recordRetired: settleOperation,

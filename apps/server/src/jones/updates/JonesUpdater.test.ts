@@ -1326,8 +1326,15 @@ describe("follower policy on the host updater", () => {
 it("publishes bounded discovery classification without claiming an exhaustive check", async () => {
   const f = fixture();
   const classification = {
-    kind: "incomplete-discovery" as const, checkedAt: "2026-10-27T00:00:00Z",
-    discovery: { termination: "window-ended" as const, bounded: false, unresolvedLimits: ["producer-pages" as const] },
+    kind: "incomplete-discovery" as const,
+    checkedAt: "2026-10-27T00:00:00Z",
+    pendingCount: 0,
+    failedQualificationCount: 0,
+    discovery: {
+      termination: "window-ended" as const,
+      bounded: false,
+      unresolvedLimits: ["producer-pages" as const],
+    },
   };
   f.setCheckResult({ state: "no-new", classification });
   expect((await f.updater.check()).checkClassification).toEqual(classification);
@@ -1347,19 +1354,33 @@ it("blocks new work while an earlier job's exit is unproved and releases only th
 });
 
 it("reports a typed exact refusal only before invoking the install adapter", async () => {
-  const native = vi.fn(async () => { throw new Error("Synthetic lost native reply after possible dispatch."); });
+  const native = vi.fn(async () => {
+    throw new Error("Synthetic lost native reply after possible dispatch.");
+  });
   const f = fixture({ install: native });
   await f.updater.check();
   await f.updater.download({ artifactId: candidate.artifactId, sourceSha: candidate.source });
   const proof = vi.fn<(refusal: JonesInstallBeforeDispatchRefusal) => void>();
-  const request = { operationId: "11111111-1111-4111-8111-111111111111", stagedHandle: "fixed-handle",
-    environmentId: EnvironmentId.make("fixture"), currentVersion: "0.0.0-preview.20261002.1",
-    expectedInstalledSource: "a".repeat(40), targetSource: candidate.source, onBeforeDispatchRefusal: proof };
+  const request = {
+    operationId: "11111111-1111-4111-8111-111111111111",
+    stagedHandle: "fixed-handle",
+    environmentId: EnvironmentId.make("fixture"),
+    currentVersion: "0.0.0-preview.20261002.1",
+    expectedInstalledSource: "a".repeat(40),
+    targetSource: candidate.source,
+    onBeforeDispatchRefusal: proof,
+  };
   f.updater.setHeldJobs(["earlier-job"]);
   await f.updater.install(request);
-  expect(proof).toHaveBeenCalledExactlyOnceWith({ kind: "before-dispatch", operationId: request.operationId,
-    environmentId: request.environmentId, currentVersion: request.currentVersion, stagedHandle: request.stagedHandle,
-    expectedInstalledSource: request.expectedInstalledSource, targetSource: request.targetSource });
+  expect(proof).toHaveBeenCalledExactlyOnceWith({
+    kind: "before-dispatch",
+    operationId: request.operationId,
+    environmentId: request.environmentId,
+    currentVersion: request.currentVersion,
+    stagedHandle: request.stagedHandle,
+    expectedInstalledSource: request.expectedInstalledSource,
+    targetSource: request.targetSource,
+  });
   expect(native).not.toHaveBeenCalled();
   proof.mockClear();
   f.updater.releaseHeldJob("earlier-job");

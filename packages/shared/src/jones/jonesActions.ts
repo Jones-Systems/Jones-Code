@@ -112,7 +112,8 @@ export type JonesActionsCheckResult = { readonly classification?: JonesCheckClas
       readonly state: "blocked";
       readonly reason: JonesActionsBlockedReason;
       readonly retryAfterMs: number;
-    });
+    }
+);
 
 export type JonesSourceRelationKind = "ahead" | "behind" | "identical" | "diverged";
 
@@ -251,15 +252,21 @@ export interface JonesCheckClassification {
   readonly failedQualificationCount: number;
 }
 
-export function classifyJonesActionsCheck(observation: JonesActionsCheckObservation): JonesCheckClassification {
+export function classifyJonesActionsCheck(
+  observation: JonesActionsCheckObservation,
+): JonesCheckClassification {
   return {
-    kind: observation.kind, checkedAt: observation.checkedAt,
+    kind: observation.kind,
+    checkedAt: observation.checkedAt,
     discovery: {
       termination: observation.discovery.termination,
       bounded: observation.discovery.frontierWithinBudgetSatisfied,
       unresolvedLimits: [...observation.discovery.unresolvedLimits],
     },
-    pendingCount: Object.values(observation.pending).reduce((sum, witness) => sum + witness.count, 0),
+    pendingCount: Object.values(observation.pending).reduce(
+      (sum, witness) => sum + witness.count,
+      0,
+    ),
     failedQualificationCount: observation.failedQualification.count,
   };
 }
@@ -639,7 +646,10 @@ export class JonesActionsClient {
 
   async check(input: JonesActionsCheckInput): Promise<JonesActionsCheckResult> {
     const observation = await this.observeCheck(input);
-    return { ...projectJonesActionsCheck(observation), classification: classifyJonesActionsCheck(observation) };
+    return {
+      ...projectJonesActionsCheck(observation),
+      classification: classifyJonesActionsCheck(observation),
+    };
   }
 
   async observeCheck(input: JonesActionsCheckInput): Promise<JonesActionsCheckObservation> {

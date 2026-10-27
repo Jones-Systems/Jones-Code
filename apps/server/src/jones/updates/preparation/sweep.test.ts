@@ -91,7 +91,11 @@ describe("preparation sweep", () => {
     expect(await exists(unselected)).toBe(true);
     expect(await NodeFSP.readdir(NodePath.join(runtime, "versions"))).toContain(".jones-stage-1");
     // Once the owner lock is free, positive never-started evidence permits normal cleanup.
-    const released = await sweepPreparationLeftovers({ baseDir: fixture.base, cacheRoot: fixture.cacheRoot, keepJob: keep });
+    const released = await sweepPreparationLeftovers({
+      baseDir: fixture.base,
+      cacheRoot: fixture.cacheRoot,
+      keepJob: keep,
+    });
     expect(released).toMatchObject({ removed: 3, retained: 6, failed: 0, removedJobIds: [live] });
     expect(await exists(selected)).toBe(true);
     expect(await exists(unreadable)).toBe(true);

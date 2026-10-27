@@ -8,14 +8,30 @@ import {
 } from "@t3tools/client-runtime/jones/updates";
 import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId } from "@t3tools/contracts";
-import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import {
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useSyncExternalStore,
+} from "react";
 import * as Schema from "effect/Schema";
-import { JonesOperationReceipt, JonesOperationReadResult, JonesRecoveryPreflight } from "@t3tools/contracts/jones/jonesOperations";
+import {
+  JonesOperationReceipt,
+  JonesOperationReadResult,
+  JonesRecoveryPreflight,
+} from "@t3tools/contracts/jones/jonesOperations";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import { jonesTargetStatus } from "@t3tools/client-runtime/jones/updates/target-status";
 import { View } from "react-native";
 import { AppText as Text } from "../../components/ui/AppText";
-import { createMobileJonesActions, jonesUpdates, mobileJonesObservation, mobileJonesUpdateSession } from "./jonesUpdates";
+import {
+  createMobileJonesActions,
+  jonesUpdates,
+  mobileJonesObservation,
+  mobileJonesUpdateSession,
+} from "./jonesUpdates";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsSection } from "../../features/settings/components/SettingsSection";
 import { SettingsActionRow } from "../../features/settings/components/SettingsActionRow";
@@ -34,7 +50,10 @@ export function JonesUpdateControls({
   const observed = useAtomValue(jonesUpdates.observation(environmentId));
   const registry = useContext(RegistryContext);
   const action = useAtomCommand(jonesUpdates.action, { reportFailure: false, reportDefect: false });
-  const operation = useAtomCommand(jonesUpdates.operation, { reportFailure: false, reportDefect: false });
+  const operation = useAtomCommand(jonesUpdates.operation, {
+    reportFailure: false,
+    reportDefect: false,
+  });
   const stop = useAtomCommand(jonesUpdates.stop, { reportFailure: false, reportDefect: false });
   const session = mobileJonesUpdateSession(environmentId);
   const saved = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
@@ -42,37 +61,77 @@ export function JonesUpdateControls({
   // oxlint-disable-next-line t3code/react-effect-budget -- Native Alert callbacks must see committed host/permission authority and lose it synchronously on unmount.
   useLayoutEffect(() => {
     authority.current = { environmentId, allowed, mounted: true };
-    return () => { authority.current.mounted = false; };
+    return () => {
+      authority.current.mounted = false;
+    };
   }, [environmentId, allowed]);
   // oxlint-disable-next-line t3code/react-effect-budget -- Fresh subscription receipts reconcile the external session retained across screen remounts and lost replies.
   useEffect(() => {
     const receipt = observed.state?.operation;
-    if (observed.freshness === "fresh" && receipt?.environmentId === environmentId) session.observe(receipt);
+    if (observed.freshness === "fresh" && receipt?.environmentId === environmentId)
+      session.observe(receipt);
   }, [observed, session, environmentId]);
-  const actions = useMemo(() => createMobileJonesActions({
-    environmentId,
-    readLatest: () => ({
-      observation: registry.get(jonesUpdates.observation(environmentId)),
-      canOperate: authority.current.mounted && authority.current.environmentId === environmentId && authority.current.allowed,
-    }),
-    transport: {
-      legacy: async (input) => commandValue(await action({ environmentId, input })),
-      start: async (input) => decodeOperationReceipt(commandValue(await operation({ environmentId, input: { action: "operationStart", input } }))),
-      preflight: async (input) => decodeRecoveryPreflight(commandValue(await operation({ environmentId, input: { action: "recoveryPreflight", input } }))),
-      read: async (operationId) => decodeOperationReadResult(commandValue(await operation({ environmentId, input: { action: "operationRead", input: { environmentId, operationIds: [operationId] } } }))),
-      stop: async (input) => decodeOperationReceipt(commandValue(await stop({ environmentId, input: { action: "operationStop", input } }))),
-    },
-  }), [environmentId, registry, action, operation, stop]);
+  const actions = useMemo(
+    () =>
+      createMobileJonesActions({
+        environmentId,
+        readLatest: () => ({
+          observation: registry.get(jonesUpdates.observation(environmentId)),
+          canOperate:
+            authority.current.mounted &&
+            authority.current.environmentId === environmentId &&
+            authority.current.allowed,
+        }),
+        transport: {
+          legacy: async (input) => commandValue(await action({ environmentId, input })),
+          start: async (input) =>
+            decodeOperationReceipt(
+              commandValue(
+                await operation({ environmentId, input: { action: "operationStart", input } }),
+              ),
+            ),
+          preflight: async (input) =>
+            decodeRecoveryPreflight(
+              commandValue(
+                await operation({ environmentId, input: { action: "recoveryPreflight", input } }),
+              ),
+            ),
+          read: async (operationId) =>
+            decodeOperationReadResult(
+              commandValue(
+                await operation({
+                  environmentId,
+                  input: {
+                    action: "operationRead",
+                    input: { environmentId, operationIds: [operationId] },
+                  },
+                }),
+              ),
+            ),
+          stop: async (input) =>
+            decodeOperationReceipt(
+              commandValue(
+                await stop({ environmentId, input: { action: "operationStop", input } }),
+              ),
+            ),
+        },
+      }),
+    [environmentId, registry, action, operation, stop],
+  );
   const observation = mobileJonesObservation(observed, saved);
   const state = observation.state;
   const presentation = state === null ? undefined : jonesUpdatePresentation(state);
   const status = jonesTargetStatus(observation, {
     canOperate: allowed && state?.environmentId === environmentId,
     targetSource: state?.provenance?.sourceSha,
-    capability: observation.freshness === "fresh" ? state?.capability ?? null : null,
+    capability: observation.freshness === "fresh" ? (state?.capability ?? null) : null,
   });
   const displayedOperation = state?.operation ?? saved.receipt;
-  const outstanding = status.operation !== undefined && ["accepted", "running", "stop-requested", "adopting", "handed-off", "held"].includes(status.operation.phase);
+  const outstanding =
+    status.operation !== undefined &&
+    ["accepted", "running", "stop-requested", "adopting", "handed-off", "held"].includes(
+      status.operation.phase,
+    );
   const busy = saved.busy || saved.uncertainty !== undefined || observation.freshness !== "fresh";
   const followerHold = state === null ? undefined : jonesFollowerHold(state);
   const followerSummary = state === null ? undefined : jonesFollowerSummary(state);
@@ -112,18 +171,26 @@ export function JonesUpdateControls({
             <Text selectable className="text-sm text-foreground-muted">
               Operation {displayedOperation.operationId} · {displayedOperation.phase}
             </Text>
-            {displayedOperation.message ? <Text className="text-sm text-foreground-muted">{displayedOperation.message}</Text> : null}
+            {displayedOperation.message ? (
+              <Text className="text-sm text-foreground-muted">{displayedOperation.message}</Text>
+            ) : null}
             {displayedOperation.stop !== undefined ? (
-              <Text className="text-sm text-foreground-muted">Stop: {displayedOperation.stop.result ?? "requested"}</Text>
+              <Text className="text-sm text-foreground-muted">
+                Stop: {displayedOperation.stop.result ?? "requested"}
+              </Text>
             ) : null}
             {displayedOperation.correlation !== undefined ? (
-              <Text className="text-sm text-foreground-muted">Part of the Laptop’s update plan</Text>
+              <Text className="text-sm text-foreground-muted">
+                Part of the Laptop’s update plan
+              </Text>
             ) : null}
           </>
         ) : null}
         {saved.uncertainty !== undefined ? (
           <Text accessibilityRole="alert" selectable className="text-sm text-foreground-muted">
-            Not confirmed · Operation {saved.request?.operationId ?? saved.receipt?.operationId ?? saved.operationId}. Nothing will be resent.
+            Not confirmed · Operation{" "}
+            {saved.request?.operationId ?? saved.receipt?.operationId ?? saved.operationId}. Nothing
+            will be resent.
           </Text>
         ) : null}
         {followerSummary !== undefined ? (
@@ -166,11 +233,14 @@ export function JonesUpdateControls({
         <SettingsActionRow
           icon="arrow.clockwise"
           label="Check for builds"
-          disabled={!allowed || busy || outstanding || presentation?.busy || !state.capability.check}
+          disabled={
+            !allowed || busy || outstanding || presentation?.busy || !state.capability.check
+          }
           onPress={() => void actions.check()}
         />
       ) : null}
-      {state?.capability.operations === 1 && (saved.request !== undefined || state.operation !== undefined) ? (
+      {state?.capability.operations === 1 &&
+      (saved.request !== undefined || state.operation !== undefined) ? (
         <SettingsActionRow
           icon="arrow.clockwise"
           label="Read operation status"
@@ -178,11 +248,24 @@ export function JonesUpdateControls({
           onPress={() => void actions.read()}
         />
       ) : null}
-      {state?.capability.operations === 1 && state.operation !== undefined && state.operation.action.kind !== "install" && outstanding ? (
+      {state?.capability.operations === 1 &&
+      state.operation !== undefined &&
+      state.operation.action.kind !== "install" &&
+      outstanding ? (
         <SettingsActionRow
-          icon="stop.circle"
-          label={state.operation.phase === "stop-requested" || saved.stopping ? "Stop requested…" : "Stop download"}
-          disabled={!status.actions.stop || saved.stopping || saved.stopId !== undefined || state.operation.stop !== undefined || saved.uncertainty !== undefined}
+          icon="stop.fill"
+          label={
+            state.operation.phase === "stop-requested" || saved.stopping
+              ? "Stop requested…"
+              : "Stop download"
+          }
+          disabled={
+            !status.actions.stop ||
+            saved.stopping ||
+            saved.stopId !== undefined ||
+            state.operation.stop !== undefined ||
+            saved.uncertainty !== undefined
+          }
           onPress={() => void actions.stop()}
         />
       ) : null}

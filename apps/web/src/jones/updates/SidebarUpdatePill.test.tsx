@@ -376,13 +376,20 @@ describe("sidebar combined update install", () => {
   });
 });
 
-
 describe("classified sidebar check feedback", () => {
   it("distinguishes transport failure from a bounded window with no eligible package without changing legacy phase", () => {
     const state = checkedState();
-    const classified = (kind: "failure" | "no-eligible-package-in-window") => ({ ...state, jones: { ...state.jones!, checkClassification: { kind, checkedAt: "2026-10-27T04:00:00Z" } } });
-    expect(resolveSidebarUpdateCheckFeedback(classified("failure"))).toMatchObject({ type: "error", title: "Could not check for updates" });
-    expect(resolveSidebarUpdateCheckFeedback(classified("no-eligible-package-in-window"))?.description).toContain("this search window");
+    const classified = (kind: "failure" | "no-eligible-package-in-window") => ({
+      ...state,
+      jones: { ...state.jones!, checkClassification: { kind, checkedAt: "2026-10-27T04:00:00Z" } },
+    });
+    expect(resolveSidebarUpdateCheckFeedback(classified("failure"))).toMatchObject({
+      type: "error",
+      title: "Could not check for updates",
+    });
+    expect(
+      resolveSidebarUpdateCheckFeedback(classified("no-eligible-package-in-window"))?.description,
+    ).toContain("this search window");
     expect(classified("failure").jones.phase).toBe("no-new");
   });
 });

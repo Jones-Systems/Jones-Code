@@ -39,7 +39,8 @@ export type JonesStagingJob = { readonly token?: string } & (
       readonly platform: NodeJS.Platform;
     }
   | { readonly kind: "validate-artifact"; readonly directory: string }
-  | { readonly kind: "reclaim"; readonly updatesRoot: string; readonly handle: string });
+  | { readonly kind: "reclaim"; readonly updatesRoot: string; readonly handle: string }
+);
 
 export interface JonesPreparedStage {
   readonly artifact: JonesStagedArtifact;

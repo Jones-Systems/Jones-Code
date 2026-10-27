@@ -48,6 +48,10 @@ export function ProductionExactSourceUpdateAction(target: ExactSourceTarget) {
     return result.value;
   });
   return (
-    <ExactSourceUpdateAction {...target} allowReplace={target.allowReplace ?? true} host={{ ...host, executor }} />
+    <ExactSourceUpdateAction
+      {...target}
+      allowReplace={target.allowReplace ?? true}
+      host={{ ...host, executor }}
+    />
   );
 }

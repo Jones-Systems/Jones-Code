@@ -178,11 +178,15 @@ describe("fleet campaign driver", () => {
     await advanceFleetCampaigns(f.driver);
     expect(f.operation()).toBeNull();
     expect(f.state().campaigns[0]?.members[0]?.phase).toBe("waiting");
-    expect(f.state().campaigns[0]?.members[0]?.reason).toBe("Waits for the laptop update to commit.");
+    expect(f.state().campaigns[0]?.members[0]?.reason).toBe(
+      "Waits for the laptop update to commit.",
+    );
     expect(
       f.driver.host.mock.calls.filter(([, input]) => input.action === "activate"),
     ).toHaveLength(0);
-    expect(f.driver.host.mock.calls.filter(([, input]) => input.action === "stage")).toHaveLength(0);
+    expect(f.driver.host.mock.calls.filter(([, input]) => input.action === "stage")).toHaveLength(
+      0,
+    );
     const state = f.state();
     f.setState({
       ...state,
@@ -190,7 +194,9 @@ describe("fleet campaign driver", () => {
     });
     await advanceFleetCampaigns(f.driver);
     expect(f.operation()).toBeNull();
-    expect(f.state().campaigns[0]?.members[0]?.reason).toBe("Waits for the laptop update to commit.");
+    expect(f.state().campaigns[0]?.members[0]?.reason).toBe(
+      "Waits for the laptop update to commit.",
+    );
     f.setState({
       ...state,
       campaigns: state.campaigns.map((c) => {
@@ -200,7 +206,9 @@ describe("fleet campaign driver", () => {
     });
     await advanceFleetCampaigns(f.driver);
     expect(f.operation()).toBeNull();
-    expect(f.state().campaigns[0]?.members[0]?.reason).toBe("Waits for the laptop update to commit.");
+    expect(f.state().campaigns[0]?.members[0]?.reason).toBe(
+      "Waits for the laptop update to commit.",
+    );
     expect(f.driver.host.mock.calls.map(([, input]) => input.action)).toEqual([
       "status",
       "status",

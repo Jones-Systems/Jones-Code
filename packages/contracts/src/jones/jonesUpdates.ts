@@ -111,7 +111,12 @@ export const JonesCheckClassification = Schema.Struct({
       /** The discovery frontier fit its budget; this does not claim an exhaustive search. */
       bounded: Schema.Boolean,
       unresolvedLimits: Schema.Array(
-        Schema.Literals(["producer-pages", "ci-page", "artifact-page", "unknown-terminal-evidence"]),
+        Schema.Literals([
+          "producer-pages",
+          "ci-page",
+          "artifact-page",
+          "unknown-terminal-evidence",
+        ]),
       ).check(Schema.isMaxLength(4)),
     }),
   ),

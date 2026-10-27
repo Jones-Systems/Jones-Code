@@ -38,15 +38,19 @@ export const FleetFollowerRecord = Schema.Struct({
     }),
   ),
   lastAutomaticActivationAt: Schema.NullOr(Schema.String),
-  directive: Schema.optionalKey(Schema.Struct({
-    directiveId: FleetOperationId,
-    enrollmentId: FleetOperationId,
-    targetSource: FleetSourceSha,
-    targetTree: FleetSourceSha,
-    mode: Schema.Literal("manual-review"),
-    issuedAt: Schema.String,
-    leaderAtIssue: Schema.NullOr(Schema.Struct({ committedSource: FleetSourceSha, publishedAt: Schema.String })),
-  })),
+  directive: Schema.optionalKey(
+    Schema.Struct({
+      directiveId: FleetOperationId,
+      enrollmentId: FleetOperationId,
+      targetSource: FleetSourceSha,
+      targetTree: FleetSourceSha,
+      mode: Schema.Literal("manual-review"),
+      issuedAt: Schema.String,
+      leaderAtIssue: Schema.NullOr(
+        Schema.Struct({ committedSource: FleetSourceSha, publishedAt: Schema.String }),
+      ),
+    }),
+  ),
 });
 export type FleetFollowerRecord = typeof FleetFollowerRecord.Type;
 
@@ -90,7 +94,11 @@ export async function ownedDirectory(path: string, privateMode: boolean) {
   }
 }
 
-export async function read<T>(path: string, valid: (value: unknown) => value is T, limit = 64 * 1024): Promise<T | null> {
+export async function read<T>(
+  path: string,
+  valid: (value: unknown) => value is T,
+  limit = 64 * 1024,
+): Promise<T | null> {
   const file = await NodeFSP.open(
     path,
     NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,

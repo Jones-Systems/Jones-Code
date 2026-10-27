@@ -172,7 +172,9 @@ const SavedResult = Schema.Struct({
   updatedServers: Schema.Number,
   updatedProviders: Schema.Number,
   failures: Schema.Array(Schema.String),
-  jones: Schema.optionalKey(Schema.Array(Schema.Struct({ label: Schema.String, message: Schema.String }))),
+  jones: Schema.optionalKey(
+    Schema.Array(Schema.Struct({ label: Schema.String, message: Schema.String })),
+  ),
   handedOff: Schema.optional(Schema.Array(HandedOffServer)),
 });
 const decodeSavedResult = Schema.decodeUnknownOption(Schema.fromJsonString(SavedResult));

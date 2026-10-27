@@ -460,14 +460,37 @@ function fixture(scopes: ReadonlyArray<AuthEnvironmentScope>) {
       return state;
     });
   const service = Layer.succeed(JonesUpdates.JonesUpdates, {
-    operationStart: (input) => Effect.promise(() => { calls.push({ action: "operationStart", input }); return unsupportedTargetOperations.start(input); }),
-    operationStop: (input) => Effect.promise(() => { calls.push({ action: "operationStop", input }); return unsupportedTargetOperations.stop(input); }),
-    operationFence: (input) => Effect.promise(() => { calls.push({ action: "operationFence", input }); return unsupportedTargetOperations.fence(input); }),
-    operationRead: (input) => Effect.promise(() => { calls.push({ action: "operationRead", input }); return unsupportedTargetOperations.read(input); }),
-    recoveryPreflight: (input) => Effect.suspend(() => {
-      calls.push({ action: "recoveryPreflight", input });
-      return Effect.fail(new EnvironmentInternalError({ code: "internal_error", reason: "internal_error", traceId: "preflight-unsupported" }));
-    }),
+    operationStart: (input) =>
+      Effect.promise(() => {
+        calls.push({ action: "operationStart", input });
+        return unsupportedTargetOperations.start(input);
+      }),
+    operationStop: (input) =>
+      Effect.promise(() => {
+        calls.push({ action: "operationStop", input });
+        return unsupportedTargetOperations.stop(input);
+      }),
+    operationFence: (input) =>
+      Effect.promise(() => {
+        calls.push({ action: "operationFence", input });
+        return unsupportedTargetOperations.fence(input);
+      }),
+    operationRead: (input) =>
+      Effect.promise(() => {
+        calls.push({ action: "operationRead", input });
+        return unsupportedTargetOperations.read(input);
+      }),
+    recoveryPreflight: (input) =>
+      Effect.suspend(() => {
+        calls.push({ action: "recoveryPreflight", input });
+        return Effect.fail(
+          new EnvironmentInternalError({
+            code: "internal_error",
+            reason: "internal_error",
+            traceId: "preflight-unsupported",
+          }),
+        );
+      }),
     fleetOperationsSupported: false,
     refreshPolicy: Effect.undefined,
     retireStagedOperation: () => Effect.succeed({ retired: false }),
@@ -814,22 +837,50 @@ describe("durable operation HTTP scopes", () => {
       try {
         for (const [path, action, payload, read] of [
           ["operations/start", "operationStart", original, false],
-          ["operations/stop", "operationStop", { operationId, environmentId, stopId: "22222222-2222-4222-8222-222222222222" }, false],
+          [
+            "operations/stop",
+            "operationStop",
+            { operationId, environmentId, stopId: "22222222-2222-4222-8222-222222222222" },
+            false,
+          ],
           ["operations/fence", "operationFence", original, false],
-          ["operations/read", "operationRead", { environmentId, operationIds: [operationId] }, true],
-          ["recovery-preflight", "recoveryPreflight", { environmentId, stagedHandle: "stage", currentVersion: "old", expectedInstalledSource: "a".repeat(40) }, false],
+          [
+            "operations/read",
+            "operationRead",
+            { environmentId, operationIds: [operationId] },
+            true,
+          ],
+          [
+            "recovery-preflight",
+            "recoveryPreflight",
+            {
+              environmentId,
+              stagedHandle: "stage",
+              currentVersion: "old",
+              expectedInstalledSource: "a".repeat(40),
+            },
+            false,
+          ],
         ] as const) {
-          const permitted = scopes.some((scope) => scope === (read ? "orchestration:read" : "orchestration:operate"));
+          const permitted = scopes.some(
+            (scope) => scope === (read ? "orchestration:read" : "orchestration:operate"),
+          );
           const count = app.calls.length;
-          const response = await app.handler(new Request(`http://fixture/api/jones-updates/${path}`, {
-            method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
-          }));
+          const response = await app.handler(
+            new Request(`http://fixture/api/jones-updates/${path}`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(payload),
+            }),
+          );
           const unsupported = action === "recoveryPreflight" || action === "operationStop";
           expect(response.status).toBe(permitted ? (unsupported ? 500 : 200) : 403);
           expect(app.calls.slice(count)).toEqual(permitted ? [{ action, input: payload }] : []);
           if (permitted) expect(response.headers.get("cache-control")).toBe("no-store");
         }
-      } finally { await app.dispose(); }
+      } finally {
+        await app.dispose();
+      }
     }
   });
 

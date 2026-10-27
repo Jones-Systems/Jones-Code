@@ -535,17 +535,31 @@ it("keeps a stopped target suppressed after check and scheduler recreation, whil
   const { store } = memoryStore({ enabled: true, unreclaimed: [] });
   let clock = 1_000_000;
   const suppressed = vi.fn(async (source: string) => source === build(1).source);
-  const create = () => new JonesBackgroundPreparation({ controller, store, suppressed, now: () => clock, settleMs: 0,
-    reclaim: async () => ({ status: "absent" }) });
+  const create = () =>
+    new JonesBackgroundPreparation({
+      controller,
+      store,
+      suppressed,
+      now: () => clock,
+      settleMs: 0,
+      reclaim: async () => ({ status: "absent" }),
+    });
   let background = create();
   controller.published = build(1);
-  await background.start(); await background.check(); await background.idle();
+  await background.start();
+  await background.check();
+  await background.idle();
   expect(controller.downloads).toEqual([]);
-  background.close(); background = create(); clock += SETTLE;
-  await background.start(); await background.check(); await background.idle();
+  background.close();
+  background = create();
+  clock += SETTLE;
+  await background.start();
+  await background.check();
+  await background.idle();
   expect(controller.downloads).toEqual([]);
   controller.published = build(2);
-  await background.check(); await background.idle();
+  await background.check();
+  await background.idle();
   expect(controller.downloads).toEqual([build(2).version]);
   expect(suppressed).toHaveBeenCalledWith(build(1).source);
   background.close();

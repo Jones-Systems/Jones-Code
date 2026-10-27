@@ -1,7 +1,11 @@
 // @effect-diagnostics globalDate:off - Synthetic receipts use fixed timestamps; no host or filesystem is accessed.
 import type { JonesUpdateObservation } from "@t3tools/client-runtime/jones/updates";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
-import type { JonesOperationReceipt, JonesOperationStartInput, JonesRecoveryPreflight } from "@t3tools/contracts/jones/jonesOperations";
+import type {
+  JonesOperationReceipt,
+  JonesOperationStartInput,
+  JonesRecoveryPreflight,
+} from "@t3tools/contracts/jones/jonesOperations";
 import { EnvironmentId } from "@t3tools/contracts";
 import type { AlertButton } from "react-native";
 import type { ReactNode } from "react";
@@ -11,7 +15,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 
 const harness = vi.hoisted(() => ({
   observation: { state: null, freshness: "loading" } as JonesUpdateObservation,
-  action: vi.fn(), operation: vi.fn(), stop: vi.fn(), alert: vi.fn(), nextId: 1,
+  action: vi.fn(),
+  operation: vi.fn(),
+  stop: vi.fn(),
+  alert: vi.fn(),
+  nextId: 1,
 }));
 vi.mock("@effect/atom-react", async () => {
   const { createContext } = await import("react");
@@ -21,8 +29,13 @@ vi.mock("@effect/atom-react", async () => {
   };
 });
 vi.mock("@t3tools/client-runtime/jones/updates", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@t3tools/client-runtime/jones/updates")>(),
-  createJonesUpdateAtoms: () => ({ observation: () => "observation", action: "action", operation: "operation", stop: "stop" }),
+  ...(await importOriginal<typeof import("@t3tools/client-runtime/jones/updates")>()),
+  createJonesUpdateAtoms: () => ({
+    observation: () => "observation",
+    action: "action",
+    operation: "operation",
+    stop: "stop",
+  }),
 }));
 vi.mock("../../connection/runtime", () => ({ connectionAtomRuntime: {} }));
 vi.mock("../../lib/uuid", () => ({
@@ -42,14 +55,26 @@ vi.mock("../../features/settings/components/SettingsSection", () => ({
   SettingsSection: ({ children }: { children: ReactNode }) => <section>{children}</section>,
 }));
 vi.mock("../../features/settings/components/SettingsActionRow", () => ({
-  SettingsActionRow: ({ label, disabled, onPress }: { label: string; disabled?: boolean; onPress: () => void }) => (
-    <button type="button" disabled={disabled} onClick={onPress}>{label}</button>
+  SettingsActionRow: ({
+    label,
+    disabled,
+    onPress,
+  }: {
+    label: string;
+    disabled?: boolean;
+    onPress: () => void;
+  }) => (
+    <button type="button" disabled={disabled} onClick={onPress}>
+      {label}
+    </button>
   ),
 }));
 
 import { JonesUpdateControls } from "./JonesUpdateControls";
 
-const source = "a".repeat(40), installed = "b".repeat(40), tree = "c".repeat(40);
+const source = "a".repeat(40),
+  installed = "b".repeat(40),
+  tree = "c".repeat(40);
 const stamp = "2026-10-27T05:00:00.000Z";
 const planId = "22222222-2222-4222-8222-222222222222";
 let root: Root;
@@ -61,31 +86,65 @@ let allowed: boolean;
 const success = (value: unknown) => ({ _tag: "Success", value });
 function state(staged = false): JonesUpdateState {
   return {
-    source: "jones-actions", channel: "jones-main", phase: staged ? "staged" : "available",
-    environmentId, currentVersion: "old", installedSource: { repository: "Jones-Systems/Jones-Code", sha: installed, tree },
+    source: "jones-actions",
+    channel: "jones-main",
+    phase: staged ? "staged" : "available",
+    environmentId,
+    currentVersion: "old",
+    installedSource: { repository: "Jones-Systems/Jones-Code", sha: installed, tree },
     capability: { check: true, download: true, install: true, exactSource: true, operations: 1 },
     ...(staged ? { stagedHandle: "stage" } : {}),
-    provenance: { repository: "Jones-Systems/Jones-Code", sourceSha: source, sourceTree: tree, workflow: "linux",
-      runId: 1, runAttempt: 1, artifactId: 2, artifactDigest: "d".repeat(64), platform: "linux", architecture: "x64", version: "new" },
+    provenance: {
+      repository: "Jones-Systems/Jones-Code",
+      sourceSha: source,
+      sourceTree: tree,
+      workflow: "linux",
+      runId: 1,
+      runAttempt: 1,
+      artifactId: 2,
+      artifactDigest: "d".repeat(64),
+      platform: "linux",
+      architecture: "x64",
+      version: "new",
+    },
   };
 }
-function receipt(request: JonesOperationStartInput, phase: JonesOperationReceipt["phase"] = "accepted"): JonesOperationReceipt {
+function receipt(
+  request: JonesOperationStartInput,
+  phase: JonesOperationReceipt["phase"] = "accepted",
+): JonesOperationReceipt {
   return { ...request, protocol: 1, phase, acceptedAt: stamp, updatedAt: stamp };
 }
 function running(): JonesOperationReceipt {
-  return receipt({ environmentId, operationId: planId, expectedInstalledSource: installed,
-    action: { kind: "download-exact", targetSource: source } }, "running");
+  return receipt(
+    {
+      environmentId,
+      operationId: planId,
+      expectedInstalledSource: installed,
+      action: { kind: "download-exact", targetSource: source },
+    },
+    "running",
+  );
 }
-async function render(next?: JonesUpdateState, freshness: JonesUpdateObservation["freshness"] = "fresh") {
+async function render(
+  next?: JonesUpdateState,
+  freshness: JonesUpdateObservation["freshness"] = "fresh",
+) {
   if (next !== undefined) harness.observation = { state: next, freshness };
-  await act(async () => root.render(<JonesUpdateControls environmentId={environmentId} allowed={allowed} />));
+  await act(async () =>
+    root.render(<JonesUpdateControls environmentId={environmentId} allowed={allowed} />),
+  );
 }
 function button(label: string) {
-  const found = [...container.querySelectorAll("button")].find((entry) => entry.textContent === label);
+  const found = [...container.querySelectorAll("button")].find(
+    (entry) => entry.textContent === label,
+  );
   if (found === undefined) throw new Error(`Missing button: ${label}`);
   return found;
 }
-async function click(label: string) { await act(async () => button(label).click()); }
+async function click(label: string) {
+  await act(async () => button(label).click());
+}
 async function answer(label: string) {
   const buttons = harness.alert.mock.calls.at(-1)?.[2] as AlertButton[] | undefined;
   const choice = buttons?.find((entry) => entry.text === label);
@@ -105,7 +164,9 @@ beforeEach(() => {
   environmentId = EnvironmentId.make(`mobile-install-test-${++environmentSequence}`);
   allowed = true;
   harness.observation = { state: state(), freshness: "fresh" };
-  harness.action.mockReset().mockImplementation(async () => success({ ...latestState(), phase: "downloading" }));
+  harness.action
+    .mockReset()
+    .mockImplementation(async () => success({ ...latestState(), phase: "downloading" }));
   harness.operation.mockReset().mockImplementation(async ({ input }) => {
     if (input.action === "operationStart") return success(receipt(input.input));
     if (input.action === "operationRead") return success({ receipts: [] });
@@ -124,9 +185,17 @@ describe("mobile host update controls", () => {
     await render();
     await click("Download");
     const sent = harness.operation.mock.calls[0]?.[0];
-    expect(sent).toMatchObject({ environmentId, input: { action: "operationStart", input: {
-      environmentId, expectedInstalledSource: installed, action: { kind: "download-exact", targetSource: source },
-    } } });
+    expect(sent).toMatchObject({
+      environmentId,
+      input: {
+        action: "operationStart",
+        input: {
+          environmentId,
+          expectedInstalledSource: installed,
+          action: { kind: "download-exact", targetSource: source },
+        },
+      },
+    });
     expect(harness.operation).toHaveBeenCalledTimes(1);
     expect(harness.action).not.toHaveBeenCalled();
     expect(harness.alert).not.toHaveBeenCalled();
@@ -141,10 +210,22 @@ describe("mobile host update controls", () => {
     expect(harness.alert.mock.calls[0]?.[1]).toContain("on this host");
     await answer("Install");
     expect(harness.operation).toHaveBeenCalledTimes(1);
-    expect(harness.operation.mock.calls[0]?.[0]).toMatchObject({ environmentId, input: { action: "operationStart", input: {
-      environmentId, expectedInstalledSource: installed,
-      action: { kind: "install", stagedHandle: "stage", currentVersion: "old", targetSource: source },
-    } } });
+    expect(harness.operation.mock.calls[0]?.[0]).toMatchObject({
+      environmentId,
+      input: {
+        action: "operationStart",
+        input: {
+          environmentId,
+          expectedInstalledSource: installed,
+          action: {
+            kind: "install",
+            stagedHandle: "stage",
+            currentVersion: "old",
+            targetSource: source,
+          },
+        },
+      },
+    });
     expect(harness.action).not.toHaveBeenCalled();
   });
 
@@ -157,22 +238,28 @@ describe("mobile host update controls", () => {
     expect(container.textContent).toContain("Nothing was sent");
   });
 
-  it.each(["stage", "source", "version", "environment", "stale", "capability", "permission"])("revokes install authority when %s changes during Alert review", async (change) => {
-    await render(state(true));
-    await click("Install downloaded build");
-    let changed = latestState();
-    if (change === "stage") changed = { ...changed, stagedHandle: "different" };
-    if (change === "source") changed = { ...changed, provenance: { ...changed.provenance!, sourceSha: tree } };
-    if (change === "version") changed = { ...changed, currentVersion: "different" };
-    if (change === "environment") changed = { ...changed, environmentId: EnvironmentId.make("other-host") };
-    if (change === "capability") changed = { ...changed, capability: { check: true, download: false, install: false } };
-    if (change === "permission") allowed = false;
-    await render(changed, change === "stale" ? "stale" : "fresh");
-    await answer("Install");
-    expect(harness.operation).not.toHaveBeenCalled();
-    expect(harness.action).not.toHaveBeenCalled();
-    expect(container.textContent).toMatch(/changed|Fresh/);
-  });
+  it.each(["stage", "source", "version", "environment", "stale", "capability", "permission"])(
+    "revokes install authority when %s changes during Alert review",
+    async (change) => {
+      await render(state(true));
+      await click("Install downloaded build");
+      let changed = latestState();
+      if (change === "stage") changed = { ...changed, stagedHandle: "different" };
+      if (change === "source")
+        changed = { ...changed, provenance: { ...changed.provenance!, sourceSha: tree } };
+      if (change === "version") changed = { ...changed, currentVersion: "different" };
+      if (change === "environment")
+        changed = { ...changed, environmentId: EnvironmentId.make("other-host") };
+      if (change === "capability")
+        changed = { ...changed, capability: { check: true, download: false, install: false } };
+      if (change === "permission") allowed = false;
+      await render(changed, change === "stale" ? "stale" : "fresh");
+      await answer("Install");
+      expect(harness.operation).not.toHaveBeenCalled();
+      expect(harness.action).not.toHaveBeenCalled();
+      expect(container.textContent).toMatch(/changed|Fresh/);
+    },
+  );
 
   it("revokes an open install review when the selected environment changes before its observation catches up", async () => {
     await render(state(true));
@@ -201,12 +288,19 @@ describe("mobile host update controls", () => {
     let request: JonesOperationStartInput | undefined;
     let answerReceipt: JonesOperationReceipt | null = null;
     harness.operation.mockImplementation(async ({ input }) => {
-      if (input.action === "operationStart") { request = input.input; throw new Error("lost reply"); }
+      if (input.action === "operationStart") {
+        request = input.input;
+        throw new Error("lost reply");
+      }
       return success({ receipts: [{ operationId: request!.operationId, receipt: answerReceipt }] });
     });
     await render();
     await click("Download");
-    const changed = { ...latestState(), revision: 0, installedSource: { ...latestState().installedSource!, sha: source } };
+    const changed = {
+      ...latestState(),
+      revision: 0,
+      installedSource: { ...latestState().installedSource!, sha: source },
+    };
     act(() => root.unmount());
     root = createRoot(container);
     await render(changed);
@@ -222,7 +316,9 @@ describe("mobile host update controls", () => {
     await click("Read operation status");
     expect(container.textContent).not.toContain("Not confirmed");
     expect(container.textContent).toContain("stopped");
-    expect(harness.operation.mock.calls.filter(([call]) => call.input.action === "operationStart")).toHaveLength(1);
+    expect(
+      harness.operation.mock.calls.filter(([call]) => call.input.action === "operationStart"),
+    ).toHaveLength(1);
     expect(harness.action).not.toHaveBeenCalled();
   });
 
@@ -233,22 +329,37 @@ describe("mobile host update controls", () => {
     harness.operation.mockImplementation(({ input }) => {
       if (input.action === "operationStart") {
         request = input.input;
-        return new Promise((resolve) => { finishStart = resolve; });
+        return new Promise((resolve) => {
+          finishStart = resolve;
+        });
       }
-      return Promise.resolve(success({ receipts: [{ operationId: request!.operationId, receipt: current }] }));
+      return Promise.resolve(
+        success({ receipts: [{ operationId: request!.operationId, receipt: current }] }),
+      );
     });
     await render();
     await click("Download");
     current = receipt(request!, "running");
     await render({ ...latestState(), phase: "downloading", operation: current });
     harness.stop.mockImplementation(async ({ input }) => {
-      current = { ...current!, phase: "stop-requested", stop: { stopId: input.input.stopId, requestedAt: stamp } };
+      current = {
+        ...current!,
+        phase: "stop-requested",
+        stop: { stopId: input.input.stopId, requestedAt: stamp },
+      };
       return success(current);
     });
     await click("Stop download");
-    expect(harness.stop.mock.calls[0]?.[0]).toMatchObject({ environmentId, input: { action: "operationStop", input: {
-      environmentId, operationId: request!.operationId,
-    } } });
+    expect(harness.stop.mock.calls[0]?.[0]).toMatchObject({
+      environmentId,
+      input: {
+        action: "operationStop",
+        input: {
+          environmentId,
+          operationId: request!.operationId,
+        },
+      },
+    });
     expect(container.textContent).toContain("Stop requested");
     expect(container.textContent).not.toContain("· stopped");
     current = { ...current!, phase: "stopped", stop: { ...current!.stop!, result: "stopped" } };
@@ -265,12 +376,27 @@ describe("mobile host update controls", () => {
     harness.stop.mockRejectedValue(new Error("lost stop reply"));
     await click("Stop download");
     const stopId = harness.stop.mock.calls[0]?.[0].input.input.stopId;
-    harness.operation.mockResolvedValue(success({ receipts: [{ operationId: current.operationId, receipt: { ...current, phase: "stopped" } }] }));
+    harness.operation.mockResolvedValue(
+      success({
+        receipts: [{ operationId: current.operationId, receipt: { ...current, phase: "stopped" } }],
+      }),
+    );
     await click("Read operation status");
     expect(container.textContent).toContain("Not confirmed");
-    harness.operation.mockResolvedValue(success({ receipts: [{ operationId: current.operationId, receipt: {
-      ...current, phase: "stopped", stop: { stopId, requestedAt: stamp, result: "stopped" },
-    } }] }));
+    harness.operation.mockResolvedValue(
+      success({
+        receipts: [
+          {
+            operationId: current.operationId,
+            receipt: {
+              ...current,
+              phase: "stopped",
+              stop: { stopId, requestedAt: stamp, result: "stopped" },
+            },
+          },
+        ],
+      }),
+    );
     await click("Read operation status");
     expect(container.textContent).not.toContain("Not confirmed");
     expect(container.textContent).toContain("· stopped");
@@ -278,7 +404,12 @@ describe("mobile host update controls", () => {
   });
 
   it("shows held and launcher-unknown operations separately, with plan correlation and no membership controls", async () => {
-    const current = { ...running(), phase: "held" as const, code: "unreaped", correlation: { planId, deviceKey: "host" } };
+    const current = {
+      ...running(),
+      phase: "held" as const,
+      code: "unreaped",
+      correlation: { planId, deviceKey: "host" },
+    };
     await render({ ...state(), operation: current });
     expect(container.textContent).toContain("Stop not confirmed · unreaped");
     expect(container.textContent).toContain(current.operationId);
@@ -287,20 +418,31 @@ describe("mobile host update controls", () => {
     expect(button("Stop download").disabled).toBe(true);
     await render({ ...state(), revision: 0 });
     expect(container.textContent).toContain("Stop not confirmed · unreaped");
-    await render({ ...state(), operation: { ...current, phase: "handed-off", code: "launcher-unconfirmed" } });
+    await render({
+      ...state(),
+      operation: { ...current, phase: "handed-off", code: "launcher-unconfirmed" },
+    });
     expect(container.textContent).toContain("Not confirmed");
-    expect([...container.querySelectorAll("button")].map((entry) => entry.textContent)).not.toContain("Edit");
+    expect(
+      [...container.querySelectorAll("button")].map((entry) => entry.textContent),
+    ).not.toContain("Edit");
     expect(harness.operation).not.toHaveBeenCalled();
   });
 
   it("respects follower policy and only reviews a manual directive target after the server reports it", async () => {
-    const follower = { ...state(true), policy: { role: "follower" as const, leaderSource: installed, leaderTree: tree } };
+    const follower = {
+      ...state(true),
+      policy: { role: "follower" as const, leaderSource: installed, leaderTree: tree },
+    };
     await render(follower);
     expect(button("Install downloaded build").disabled).toBe(true);
     await click("Install downloaded build");
     expect(harness.alert).not.toHaveBeenCalled();
     expect(harness.operation).not.toHaveBeenCalled();
-    await render({ ...follower, policy: { ...follower.policy, reviewTarget: { source, tree, directiveId: planId } } });
+    await render({
+      ...follower,
+      policy: { ...follower.policy, reviewTarget: { source, tree, directiveId: planId } },
+    });
     expect(button("Install downloaded build").disabled).toBe(false);
     expect(harness.operation).not.toHaveBeenCalled();
     await click("Install downloaded build");
@@ -314,7 +456,10 @@ describe("mobile host update controls", () => {
     const legacy = { ...state(), capability: { check: true, download: true, install: true } };
     await render(legacy);
     await click("Download");
-    expect(harness.action.mock.calls[0]?.[0]).toEqual({ environmentId, input: { action: "download", input: { artifactId: 2, sourceSha: source } } });
+    expect(harness.action.mock.calls[0]?.[0]).toEqual({
+      environmentId,
+      input: { action: "download", input: { artifactId: 2, sourceSha: source } },
+    });
     expect(harness.operation).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain("Stop download");
     await render({ ...legacy, phase: "staged", stagedHandle: "legacy-stage" });
@@ -322,9 +467,17 @@ describe("mobile host update controls", () => {
     await click("Install downloaded build");
     expect(harness.action).toHaveBeenCalledTimes(1);
     await answer("Install");
-    expect(harness.action.mock.calls[1]?.[0]).toEqual({ environmentId, input: { action: "install", input: {
-      environmentId, stagedHandle: "legacy-stage", currentVersion: "old",
-    } } });
+    expect(harness.action.mock.calls[1]?.[0]).toEqual({
+      environmentId,
+      input: {
+        action: "install",
+        input: {
+          environmentId,
+          stagedHandle: "legacy-stage",
+          currentVersion: "old",
+        },
+      },
+    });
     expect(harness.operation).not.toHaveBeenCalled();
   });
 
@@ -341,11 +494,20 @@ describe("mobile host update controls", () => {
     expect(harness.operation).not.toHaveBeenCalled();
   });
 
-  it.each(["qualification-pending", "qualification-failed", "no-eligible-package-in-window", "incomplete-discovery", "failure"] as const)("shows additive %s classification while retaining the legacy phase", async (kind) => {
+  it.each([
+    "qualification-pending",
+    "qualification-failed",
+    "no-eligible-package-in-window",
+    "incomplete-discovery",
+    "failure",
+  ] as const)("shows additive %s classification while retaining the legacy phase", async (kind) => {
     await render({ ...state(), phase: "no-new", checkClassification: { kind, checkedAt: stamp } });
     const text: Record<typeof kind, string> = {
-      "qualification-pending": "qualification is still pending", "qualification-failed": "qualification failed",
-      "no-eligible-package-in-window": "in this search window", "incomplete-discovery": "Discovery was incomplete", failure: "update check failed",
+      "qualification-pending": "qualification is still pending",
+      "qualification-failed": "qualification failed",
+      "no-eligible-package-in-window": "in this search window",
+      "incomplete-discovery": "Discovery was incomplete",
+      failure: "update check failed",
     };
     expect(container.textContent).toContain(text[kind]);
     expect(latestState().phase).toBe("no-new");
@@ -357,7 +519,10 @@ describe("mobile host update controls", () => {
     expect(button("Download").disabled).toBe(false);
     await render(latestState(), "stale");
     expect(button("Download").disabled).toBe(true);
-    await render({ ...latestState(), capability: { check: false, download: false, install: false } });
+    await render({
+      ...latestState(),
+      capability: { check: false, download: false, install: false },
+    });
     expect(button("Download").disabled).toBe(true);
     expect(container.textContent).not.toContain("Stop download");
     await click("Download");
@@ -371,37 +536,133 @@ describe("mobile host update controls", () => {
     await answer("Cancel");
     expect(harness.operation).not.toHaveBeenCalled();
     await render({ ...state(true), capability: { ...state().capability, recoveryPolicy: 1 } });
-    harness.operation.mockResolvedValue(success({
-      protocol: 1, preflightId: planId, measuredAt: stamp, expiresAt: "2099-10-27T05:00:00.000Z",
-      binding: { environmentId, stagedHandle: "stage", currentVersion: "old", expectedInstalledSource: installed },
-      firstInstall: true, stateBytes: 0, volumes: [], clone: { status: "unknown" },
-      policies: { cloneOrCopy: { admissible: true }, cloneRequired: { admissible: false } },
-    } satisfies JonesRecoveryPreflight));
+    harness.operation.mockResolvedValue(
+      success({
+        protocol: 1,
+        preflightId: planId,
+        measuredAt: stamp,
+        expiresAt: "2099-10-27T05:00:00.000Z",
+        binding: {
+          environmentId,
+          stagedHandle: "stage",
+          currentVersion: "old",
+          expectedInstalledSource: installed,
+        },
+        firstInstall: true,
+        stateBytes: 0,
+        volumes: [],
+        clone: { status: "unknown" },
+        policies: { cloneOrCopy: { admissible: true }, cloneRequired: { admissible: false } },
+      } satisfies JonesRecoveryPreflight),
+    );
     await click("Install downloaded build");
     await answer("Install");
     expect(harness.alert.mock.calls.at(-1)?.[1]).toContain("no existing state backup is claimed");
     await answer("Stop");
-    expect(harness.operation.mock.calls.filter(([call]) => call.input.action === "operationStart")).toHaveLength(0);
+    expect(
+      harness.operation.mock.calls.filter(([call]) => call.input.action === "operationStart"),
+    ).toHaveLength(0);
   });
 
-  it.each([true, false])("offers Clone or Stop only from negotiated host preflight proof (clone proved: %s)", async (proved) => {
+  it.each([true, false])(
+    "offers Clone or Stop only from negotiated host preflight proof (clone proved: %s)",
+    async (proved) => {
+      await render({ ...state(true), capability: { ...state().capability, recoveryPolicy: 1 } });
+      const preflight: JonesRecoveryPreflight = {
+        protocol: 1,
+        preflightId: planId,
+        measuredAt: stamp,
+        expiresAt: "2099-10-27T05:00:00.000Z",
+        binding: {
+          environmentId,
+          stagedHandle: "stage",
+          currentVersion: "old",
+          expectedInstalledSource: installed,
+        },
+        firstInstall: false,
+        stateBytes: 100,
+        volumes: [],
+        clone: { status: proved ? "proved" : "unknown" },
+        policies: {
+          cloneOrCopy: { admissible: false, reason: "Not enough host space for a copy." },
+          cloneRequired: { admissible: proved },
+        },
+      };
+      harness.operation.mockImplementation(async ({ input }) =>
+        input.action === "recoveryPreflight" ? success(preflight) : success(receipt(input.input)),
+      );
+      await click("Install downloaded build");
+      await answer("Install");
+      expect(harness.operation.mock.calls[0]?.[0]).toMatchObject({
+        environmentId,
+        input: { action: "recoveryPreflight", input: preflight.binding },
+      });
+      const choices = harness.alert.mock.calls.at(-1)?.[2] as AlertButton[];
+      expect(choices.map((entry) => entry.text)).toEqual(proved ? ["Stop", "Clone"] : ["Stop"]);
+      await answer(proved ? "Clone" : "Stop");
+      const starts = harness.operation.mock.calls.filter(
+        ([call]) => call.input.action === "operationStart",
+      );
+      expect(starts).toHaveLength(proved ? 1 : 0);
+      if (proved)
+        expect(starts[0]?.[0].input.input.action.recovery).toEqual({
+          policy: "clone-required",
+          preflightId: planId,
+        });
+      expect(harness.action).not.toHaveBeenCalled();
+    },
+  );
+
+  it("sends the reviewed clone-or-copy policy only after the host recovery confirmation", async () => {
     await render({ ...state(true), capability: { ...state().capability, recoveryPolicy: 1 } });
     const preflight: JonesRecoveryPreflight = {
-      protocol: 1, preflightId: planId, measuredAt: stamp, expiresAt: "2099-10-27T05:00:00.000Z",
-      binding: { environmentId, stagedHandle: "stage", currentVersion: "old", expectedInstalledSource: installed },
-      firstInstall: false, stateBytes: 100, volumes: [], clone: { status: proved ? "proved" : "unknown" },
-      policies: { cloneOrCopy: { admissible: false, reason: "Not enough host space for a copy." }, cloneRequired: { admissible: proved } },
+      protocol: 1,
+      preflightId: planId,
+      measuredAt: stamp,
+      expiresAt: "2099-10-27T05:00:00.000Z",
+      binding: {
+        environmentId,
+        stagedHandle: "stage",
+        currentVersion: "old",
+        expectedInstalledSource: installed,
+      },
+      firstInstall: false,
+      stateBytes: 100,
+      volumes: [],
+      clone: { status: "unknown" },
+      policies: { cloneOrCopy: { admissible: true }, cloneRequired: { admissible: false } },
     };
-    harness.operation.mockImplementation(async ({ input }) => input.action === "recoveryPreflight" ? success(preflight) : success(receipt(input.input)));
+    harness.operation.mockImplementation(async ({ input }) =>
+      input.action === "recoveryPreflight" ? success(preflight) : success(receipt(input.input)),
+    );
     await click("Install downloaded build");
     await answer("Install");
-    expect(harness.operation.mock.calls[0]?.[0]).toMatchObject({ environmentId, input: { action: "recoveryPreflight", input: preflight.binding } });
+    expect(harness.operation).toHaveBeenCalledTimes(1);
+    expect(harness.operation.mock.calls[0]?.[0]).toMatchObject({
+      environmentId,
+      input: { action: "recoveryPreflight", input: preflight.binding },
+    });
     const choices = harness.alert.mock.calls.at(-1)?.[2] as AlertButton[];
-    expect(choices.map((entry) => entry.text)).toEqual(proved ? ["Stop", "Clone"] : ["Stop"]);
-    await answer(proved ? "Clone" : "Stop");
-    const starts = harness.operation.mock.calls.filter(([call]) => call.input.action === "operationStart");
-    expect(starts).toHaveLength(proved ? 1 : 0);
-    if (proved) expect(starts[0]?.[0].input.input.action.recovery).toEqual({ policy: "clone-required", preflightId: planId });
+    expect(choices.map((entry) => entry.text)).toEqual(["Stop", "Continue"]);
+    await answer("Continue");
+    expect(harness.operation).toHaveBeenCalledTimes(2);
+    expect(harness.operation.mock.calls[1]?.[0]).toMatchObject({
+      environmentId,
+      input: {
+        action: "operationStart",
+        input: {
+          environmentId,
+          expectedInstalledSource: installed,
+          action: {
+            kind: "install",
+            stagedHandle: "stage",
+            currentVersion: "old",
+            targetSource: source,
+            recovery: { policy: "clone-or-copy", preflightId: planId },
+          },
+        },
+      },
+    });
     expect(harness.action).not.toHaveBeenCalled();
   });
 });

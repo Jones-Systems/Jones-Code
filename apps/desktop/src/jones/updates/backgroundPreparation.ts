@@ -320,7 +320,12 @@ export class JonesBackgroundPreparation {
       const latest = this.#controller.latestAvailable;
       if (latest === undefined || latest.source !== decision.target.source) return;
       if (await this.#options.suppressed?.(latest.source)) {
-        await this.#controller.setPreparationStatus({ enabled: this.#record.enabled, phase: "watching", reason: "Background preparation is paused by the update plan. Use its explicit actions when ready." });
+        await this.#controller.setPreparationStatus({
+          enabled: this.#record.enabled,
+          phase: "watching",
+          reason:
+            "Background preparation is paused by the update plan. Use its explicit actions when ready.",
+        });
         return;
       }
       const backoff = () =>

@@ -1,5 +1,8 @@
 import { classifiedCheckFeedback } from "../../jones/installStatus/checkFeedback";
-import { canOpenInstallStatusPill, routeInstallStatusPill } from "../../jones/installStatus/entrypoints";
+import {
+  canOpenInstallStatusPill,
+  routeInstallStatusPill,
+} from "../../jones/installStatus/entrypoints";
 import { useInstallPlan } from "../../jones/installStatus/useInstallPlan";
 import type { DesktopBridge, DesktopUpdateState } from "@t3tools/contracts";
 import { TriangleAlertIcon } from "lucide-react";
@@ -236,7 +239,10 @@ async function downloadLocalUpdate(
 }
 
 export async function installLocalUpdate(
-  bridge: Pick<DesktopBridge, "getUpdateState" | "installUpdate" | "fleetUpdates" | "installPlan" | "openExternal">,
+  bridge: Pick<
+    DesktopBridge,
+    "getUpdateState" | "installUpdate" | "fleetUpdates" | "installPlan" | "openExternal"
+  >,
   reportError: ReportLocalUpdateError = toastUpdateError,
 ): Promise<boolean> {
   try {
@@ -317,16 +323,22 @@ function SidebarUpdateControl() {
   });
   const idleTooltip =
     !showUpdateDetails && !showCheckIcon ? getDesktopUpdateIdleTooltip(state) : null;
-  const opensInstallStatus = canOpenInstallStatusPill(installPlan.native, state, everything.hasUpdates);
-  const tooltip = opensInstallStatus ? "Open Install status" : runsEverything
-    ? everything.summary
-    : showUpdateDetails
-      ? state
-        ? getDesktopUpdateButtonTooltip(state)
-        : "Update available"
-      : showCheckIcon
-        ? "Checking for updates…"
-        : (idleTooltip?.title ?? "Check for updates");
+  const opensInstallStatus = canOpenInstallStatusPill(
+    installPlan.native,
+    state,
+    everything.hasUpdates,
+  );
+  const tooltip = opensInstallStatus
+    ? "Open Install status"
+    : runsEverything
+      ? everything.summary
+      : showUpdateDetails
+        ? state
+          ? getDesktopUpdateButtonTooltip(state)
+          : "Update available"
+        : showCheckIcon
+          ? "Checking for updates…"
+          : (idleTooltip?.title ?? "Check for updates");
   const disabled = showCheckIcon
     ? true
     : runsEverything
@@ -334,7 +346,8 @@ function SidebarUpdateControl() {
       : showUpdateDetails
         ? isDesktopUpdateButtonDisabled(state)
         : !canCheckForUpdate(state);
-  const isInteractionDisabled = !opensInstallStatus && (disabled || isActionPending || isRunningEverything);
+  const isInteractionDisabled =
+    !opensInstallStatus && (disabled || isActionPending || isRunningEverything);
   const showReleaseNotesPopover =
     !isRunningEverything && shouldUseSidebarUpdateReleaseNotesPopover(showUpdateDetails, state);
 
@@ -353,9 +366,18 @@ function SidebarUpdateControl() {
   const handleAction = async () => {
     const bridge = window.desktopBridge;
     if (bridge?.installPlan) {
-      const route = await routeInstallStatusPill(bridge, state, everything.hasUpdates).catch(() => { toastUpdateError("Install status unavailable", "The native plan could not be read. No update was started."); return "opened" as const; });
+      const route = await routeInstallStatusPill(bridge, state, everything.hasUpdates).catch(() => {
+        toastUpdateError(
+          "Install status unavailable",
+          "The native plan could not be read. No update was started.",
+        );
+        return "opened" as const;
+      });
       if (route === "opened") return;
-      if (route === "last-and-check") { void checkForSidebarUpdate(bridge); return; }
+      if (route === "last-and-check") {
+        void checkForSidebarUpdate(bridge);
+        return;
+      }
     }
     if (isInteractionDisabled) return;
 

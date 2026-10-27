@@ -117,7 +117,9 @@ function updateMember(state: FleetDesktopState, input: FleetUpdateMemberInput): 
     ["staging", "dispatching", "install-blocked", "reconciling", "pending"].includes(input.phase) &&
     (campaign.phase !== "committed" || campaign.committedGeneration === undefined)
   ) {
-    throw new Error("The laptop update has not committed; remote preparation and activation are forbidden.");
+    throw new Error(
+      "The laptop update has not committed; remote preparation and activation are forbidden.",
+    );
   }
   if (input.phase === "staging" || input.phase === "dispatching") {
     const enrolled = state.enrollments.some(
@@ -301,34 +303,38 @@ export function createDesktopFleetStore(options: {
   };
   return {
     request: async (request) => {
-      if (request.action === "prepare" && await options.isPlanManaged?.(request.input.targetSource))
+      if (
+        request.action === "prepare" &&
+        (await options.isPlanManaged?.(request.input.targetSource))
+      )
         throw new Error("This build is managed by the update plan.");
-      const perform = () => transact((state) => {
-        if (!validRequest(request)) throw new Error("Invalid fleet request.");
-        let next = state;
-        switch (request.action) {
-          case "read":
-            break;
-          case "enroll":
-            next = {
-              ...state,
-              enrollments: [
-                ...state.enrollments.filter(
-                  (entry) => entry.environmentId !== request.enrollment.environmentId,
-                ),
-                request.enrollment,
-              ],
-            };
-            break;
-          case "prepare":
-            next = prepare(state, request.input);
-            break;
-          case "updateMember":
-            next = updateMember(state, request.input);
-            break;
-        }
-        return { state: next, result: next };
-      });
+      const perform = () =>
+        transact((state) => {
+          if (!validRequest(request)) throw new Error("Invalid fleet request.");
+          let next = state;
+          switch (request.action) {
+            case "read":
+              break;
+            case "enroll":
+              next = {
+                ...state,
+                enrollments: [
+                  ...state.enrollments.filter(
+                    (entry) => entry.environmentId !== request.enrollment.environmentId,
+                  ),
+                  request.enrollment,
+                ],
+              };
+              break;
+            case "prepare":
+              next = prepare(state, request.input);
+              break;
+            case "updateMember":
+              next = updateMember(state, request.input);
+              break;
+          }
+          return { state: next, result: next };
+        });
       return request.action === "prepare" && options.withUnmanagedTarget !== undefined
         ? options.withUnmanagedTarget(request.input.targetSource, perform)
         : perform();
