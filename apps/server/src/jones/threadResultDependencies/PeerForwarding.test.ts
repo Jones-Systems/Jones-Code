@@ -46,9 +46,7 @@ const threadPorts = Layer.unwrap(
 const withPeer = (seen: Seen[], mode: "old" | "held" | "lost" | "answered") =>
   Forwarding.layer.pipe(
     Layer.provideMerge(threadPorts),
-    Layer.provide(
-      Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
-    ),
+    Layer.provide(Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone })),
     Layer.provide(Layer.mock(Links.PeerLinks)({ get: () => Effect.succeedNone })),
     Layer.provide(
       Layer.mock(Peers.PeerMcpClient)({
@@ -175,13 +173,13 @@ for (const mode of ["held", "lost"] as const)
           })
           .pipe(Effect.result);
         assert.isTrue(Result.isFailure(result));
-      if (Result.isFailure(result)) {
-        assert.isDefined(result.failure.dependency);
-        assert.equal(
-          result.failure.message,
-          mode === "held" ? "Owner review required" : "Lost response after possible dispatch",
-        );
-      }
+        if (Result.isFailure(result)) {
+          assert.isDefined(result.failure.dependency);
+          assert.equal(
+            result.failure.message,
+            mode === "held" ? "Owner review required" : "Lost response after possible dispatch",
+          );
+        }
         const dependency = (yield* f.store.dependencies(f.waiter.id))[0]!;
         assert.equal(
           dependency.observation,

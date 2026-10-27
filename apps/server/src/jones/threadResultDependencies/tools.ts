@@ -87,9 +87,7 @@ const update = <A, E, R>(
     const changes = yield* Changes.DependencyChanges;
     return yield* makeCommit(sql, store, changes)(run(store, bound.thread.threadId));
   }).pipe(
-    Effect.mapError((error) =>
-      Schema.is(OrchestratorMcpFailure)(error) ? error : unavailable(),
-    ),
+    Effect.mapError((error) => (Schema.is(OrchestratorMcpFailure)(error) ? error : unavailable())),
   );
 
 export const threadRequestFulfillHandler = Access.actsAsCaller(

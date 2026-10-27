@@ -65,7 +65,11 @@ it.effect("MCP and runtime construction share the event sink's dependency notifi
       const opened = yield* Queue.take(subscription);
       assert.include(opened.threadIds, fixture.waiter.id);
       assert.include(opened.threadIds, fixture.receiver.id);
-      yield* makeCommit(fixture.sql, fixture.store, mcpChanges)(
+      yield* makeCommit(
+        fixture.sql,
+        fixture.store,
+        mcpChanges,
+      )(
         fixture.store.answer(
           fixture.receiver.id,
           request.requestId,

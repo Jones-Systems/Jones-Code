@@ -14,7 +14,10 @@ it.effect(
       yield* f.send("first");
       const waiting = yield* f.projection.getThreadShell(f.waiter.id);
       assert.equal(waiting?.status, "completed");
-      assert.equal(waiting?.pendingBackgroundTasks?.[0]?.taskId, "jones-dependency:dependency:first");
+      assert.equal(
+        waiting?.pendingBackgroundTasks?.[0]?.taskId,
+        "jones-dependency:dependency:first",
+      );
       assert.deepEqual(yield* f.store.duties(f.waiter.id), { outgoing: 1, owed: 0 });
       yield* f.sink.write({
         events: [
