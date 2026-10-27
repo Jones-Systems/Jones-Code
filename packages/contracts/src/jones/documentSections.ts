@@ -7,7 +7,20 @@ const DOCUMENT_SECTIONS_MAX_REFERENCE_BYTES = 2048;
 const DOCUMENT_SECTIONS_MAX_SUMMARY_BYTES = 512;
 
 const utf8Bytes = (value: string) => new TextEncoder().encode(value).length;
-const exactText = (value: string) => value.isWellFormed() && !value.includes("\0");
+const exactText = (value: string) => {
+  for (let index = 0; index < value.length; index++) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit === 0) return false;
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+      index++;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return false;
+    }
+  }
+  return true;
+};
 export const DocumentRepositoryIdentity = Schema.String.check(
   Schema.isPattern(
     /^github:[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9._-]{1,100}(?![\s\S])/,

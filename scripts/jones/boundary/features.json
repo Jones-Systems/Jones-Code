@@ -24,9 +24,10 @@
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
         "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
         "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
-        "packages/contracts/src/jones/goalContinuity.test.ts"
+        "packages/contracts/src/jones/goalContinuity.test.ts",
+        "apps/server/src/jones/persistence/Migrations/115_JonesScheduledWebhookPendingRuns.test.ts"
       ],
-      "scope": "Jones-owned exact-conversation continuity stores immutable intent, preserve-by-default progress, append-only finish coverage and durable CAS receipts separately from native goal lifecycle. Authenticated owner administration is separate from live agent witnesses. Durable recovery delivery history fences startup and native successors, including retired records; only a committed one-use permit authorizes the captured producer. Fresh untrusted Codex context is asynchronous and makes no strict pre-token barrier claim. Other adapters advertise unsupported automatic recovery. Sparse Jones migration125 and narrow shared registration/admission hooks preserve existing task-continuation and native-conversation guards."
+      "scope": "Jones-owned exact-conversation continuity stores immutable intent, preserve-by-default progress, append-only finish coverage and durable CAS receipts separately from native goal lifecycle. Authenticated owner administration is separate from live agent witnesses. Durable recovery delivery history fences startup and native successors, including retired records; only a committed one-use permit authorizes the captured producer. Fresh untrusted Codex context is asynchronous and makes no strict pre-token barrier claim. Other adapters advertise unsupported automatic recovery. Sparse Jones migration134 and narrow shared registration/admission hooks preserve existing task-continuation and native-conversation guards."
     },
     {
       "id": "document-sections",
@@ -37,9 +38,10 @@
         "apps/server/src/jones/documentSections/rawGit.test.ts",
         "apps/server/src/jones/documentSections/rawGitRunner.test.ts",
         "packages/contracts/src/jones/documentSections.test.ts",
-        "packages/shared/src/jones/documentMarkdownAst.test.ts"
+        "packages/shared/src/jones/documentMarkdownAst.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts"
       ],
-      "scope": "Independent native document extraction uses an authorized environment-local workspace, exact GitHub repository identity and locally available commit/blob, original byte digests, strict UTF-8 and bounded stable Markdown sections. A parse-only shared CommonMark helper supplies validated source positions without renderer transforms; original physical ATX lines and raw line slices retain section identity and bytes. Git subprocesses deny network and replacements and own bounded cancellation. Compact decision references and extracted text confer no authority. Shared contracts and MCP registration require no continuity record or external Python CLI."
+      "scope": "Independent native document extraction uses an authorized environment-local workspace, exact GitHub repository identity and locally available commit/blob, original byte digests, strict UTF-8 and bounded stable Markdown sections. A parse-only shared CommonMark helper supplies validated source positions without renderer transforms; original physical ATX lines and raw line slices retain section identity and bytes. Git subprocesses deny network and replacements and own bounded cancellation. Compact decision references and extracted text confer no authority. Shared contracts and MCP registration require no continuity record or external Python CLI. Claude read-only sandbox approval includes the annotated authorized extraction tool while mixed-action continuity remains unapproved. Contract paths and decision summaries preserve valid astral Unicode and reject lone surrogates and NUL using consumer-compatible ES APIs."
     },
     {
       "id": "native-goal-controls",

@@ -72,4 +72,23 @@ describe("document extraction wire bounds", () => {
     ])
       expect(() => decode({ ...reference, ...patch })).toThrow();
   });
+  it("preserves a valid surrogate pair in paths and rejects lone surrogates and NUL", () => {
+    const decode = Schema.decodeUnknownSync(DocumentSectionsSelector);
+    const documentPath = "docs/\ud83d\ude80.md";
+    expect(decode({ ...selector, documentPath }).documentPath).toBe(documentPath);
+    for (const invalid of ["\ud800", "\udfff", "\0"])
+      expect(() => decode({ ...selector, documentPath: `docs/${invalid}.md` })).toThrow();
+  });
+  it("preserves a valid surrogate pair in decision summaries and rejects lone surrogates and NUL", () => {
+    const decode = Schema.decodeUnknownSync(DocumentDecisionReference);
+    const reference = {
+      ...selector,
+      summary: "Keep \ud83d\ude80 exact",
+      schema: "jones.document-decision-ref/v1",
+      authorityEffect: "none",
+    };
+    expect(decode(reference).summary).toBe(reference.summary);
+    for (const invalid of ["\ud800", "\udfff", "\0"])
+      expect(() => decode({ ...reference, summary: `Keep ${invalid} exact` })).toThrow();
+  });
 });
