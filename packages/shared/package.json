@@ -575,6 +575,10 @@
       "types": "./src/jones/linkedThreads/handoffText.ts",
       "import": "./src/jones/linkedThreads/handoffText.ts"
     },
+    "./jones/packaging/pnpmProjectLockfile": {
+      "types": "./src/jones/packaging/pnpmProjectLockfile.ts",
+      "import": "./src/jones/packaging/pnpmProjectLockfile.ts"
+    },
     "./githubMarkdownLinks": {
       "types": "./src/githubMarkdownLinks.ts",
       "import": "./src/githubMarkdownLinks.ts"
