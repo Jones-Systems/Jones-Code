@@ -180,10 +180,7 @@ it.effect.each(["held", "lost"] as const)(
         );
       }
       const dependency = (yield* f.store.dependencies(f.waiter.id))[0]!;
-      assert.equal(
-        dependency.observation,
-        mode === "held" ? "admission_held" : "delivery_unknown",
-      );
+      assert.equal(dependency.observation, mode === "held" ? "admission_held" : "delivery_unknown");
       assert.equal(dependency.state, mode === "held" ? "awaiting" : "sending");
       assert.equal((yield* f.store.duties(f.waiter.id)).outgoing, 1);
       const send = seen.find((call) => call.tool === "t3_thread_send")!;
