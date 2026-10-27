@@ -75,8 +75,9 @@ it.effect(
     }).pipe(Effect.provide(Fixture.layer)),
 );
 
-for (const disposition of ["deleted", "settled"] as const)
-  it.effect(`${disposition} records receiver disposal together with its upstream cause`, () =>
+it.effect.each(["deleted", "settled"] as const)(
+  "%s records receiver disposal together with its upstream cause",
+  (disposition) =>
     Effect.gen(function* () {
       const f = yield* Fixture.seed;
       yield* f.send(disposition);
@@ -111,4 +112,4 @@ for (const disposition of ["deleted", "settled"] as const)
       assert.equal((yield* f.store.get(`dependency:${disposition}`))?.outcome, "dropped");
       assert.equal((yield* f.store.requests(f.receiver.id))[0]?.state, "dropped");
     }).pipe(Effect.provide(Fixture.layer)),
-  );
+);

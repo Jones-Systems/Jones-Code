@@ -73,13 +73,13 @@ export const ThreadRequestObserveTool = Tool.make("t3_thread_request_observe", {
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true);
 
-const update = <A, E, R>(
+const update = Effect.fn("ThreadResultDependencies.update")(function* <A, E, R>(
   run: (
     store: ReturnType<typeof makeDependencyStore>,
     threadId: import("@t3tools/contracts").ThreadId,
   ) => Effect.Effect<A, E, R>,
-) =>
-  Effect.gen(function* () {
+) {
+  return yield* Effect.gen(function* () {
     const { scope } = yield* readCaller();
     const bound = yield* Invocation.requireThreadScope(scope, "Result requests");
     const sql = yield* SqlClient.SqlClient;
@@ -89,6 +89,7 @@ const update = <A, E, R>(
   }).pipe(
     Effect.mapError((error) => (Schema.is(OrchestratorMcpFailure)(error) ? error : unavailable())),
   );
+});
 
 export const threadRequestFulfillHandler = Access.actsAsCaller(
   (input: typeof ThreadRequestFulfillInput.Type) =>

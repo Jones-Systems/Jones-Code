@@ -156,48 +156,47 @@ it.effect("capability denial occurs before any send or durable intent", () => {
   }).pipe(Effect.provide(withPeer(seen, "old")));
 });
 
-for (const mode of ["held", "lost"] as const)
-  it.effect(
-    `${mode} remote response preserves one exact forwarding intent and a visible duty`,
-    () => {
-      const seen: Seen[] = [];
-      return Effect.gen(function* () {
-        const f = yield* Fixture.seed;
-        const forwarding = yield* Forwarding.PeerForwarding;
-        const result = yield* forwarding
-          .call(scopeFor(f), OrchestratorToolkit.tools.t3_thread_send, EnvironmentId.make("peer"), {
-            threadId: f.receiver.id,
-            message: "Need a result",
-            awaitResult: true,
-            clientRequestId: mode,
-          })
-          .pipe(Effect.result);
-        assert.isTrue(Result.isFailure(result));
-        if (Result.isFailure(result)) {
-          assert.isDefined(result.failure.dependency);
-          assert.equal(
-            result.failure.message,
-            mode === "held" ? "Owner review required" : "Lost response after possible dispatch",
-          );
-        }
-        const dependency = (yield* f.store.dependencies(f.waiter.id))[0]!;
+it.effect.each(["held", "lost"] as const)(
+  "%s remote response preserves one exact forwarding intent and a visible duty",
+  (mode) => {
+    const seen: Seen[] = [];
+    return Effect.gen(function* () {
+      const f = yield* Fixture.seed;
+      const forwarding = yield* Forwarding.PeerForwarding;
+      const result = yield* forwarding
+        .call(scopeFor(f), OrchestratorToolkit.tools.t3_thread_send, EnvironmentId.make("peer"), {
+          threadId: f.receiver.id,
+          message: "Need a result",
+          awaitResult: true,
+          clientRequestId: mode,
+        })
+        .pipe(Effect.result);
+      assert.isTrue(Result.isFailure(result));
+      if (Result.isFailure(result)) {
+        assert.isDefined(result.failure.dependency);
         assert.equal(
-          dependency.observation,
-          mode === "held" ? "admission_held" : "delivery_unknown",
+          result.failure.message,
+          mode === "held" ? "Owner review required" : "Lost response after possible dispatch",
         );
-        assert.equal(dependency.state, mode === "held" ? "awaiting" : "sending");
-        assert.equal((yield* f.store.duties(f.waiter.id)).outgoing, 1);
-        const send = seen.find((call) => call.tool === "t3_thread_send")!;
-        assert.isUndefined(send.arguments.awaitResult);
-        assert.deepEqual(send.arguments.resultRequest, {
-          schemaVersion: "t3.thread-result-request/v1",
-          operationId: dependency.operationId,
-        });
-        assert.equal(dependency.forwardedRequestKey, send.arguments.clientRequestId);
-        assert.equal(dependency.scope?.requestNamespace, "original-namespace");
-      }).pipe(Effect.provide(withPeer(seen, mode)));
-    },
-  );
+      }
+      const dependency = (yield* f.store.dependencies(f.waiter.id))[0]!;
+      assert.equal(
+        dependency.observation,
+        mode === "held" ? "admission_held" : "delivery_unknown",
+      );
+      assert.equal(dependency.state, mode === "held" ? "awaiting" : "sending");
+      assert.equal((yield* f.store.duties(f.waiter.id)).outgoing, 1);
+      const send = seen.find((call) => call.tool === "t3_thread_send")!;
+      assert.isUndefined(send.arguments.awaitResult);
+      assert.deepEqual(send.arguments.resultRequest, {
+        schemaVersion: "t3.thread-result-request/v1",
+        operationId: dependency.operationId,
+      });
+      assert.equal(dependency.forwardedRequestKey, send.arguments.clientRequestId);
+      assert.equal(dependency.scope?.requestNamespace, "original-namespace");
+    }).pipe(Effect.provide(withPeer(seen, mode)));
+  },
+);
 
 it.effect(
   "an explicit answer before forwarding returns is bound and resolved without waiting for run completion",

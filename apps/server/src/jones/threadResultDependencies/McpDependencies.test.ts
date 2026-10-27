@@ -2,7 +2,7 @@ import { assert, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Queue from "effect/Queue";
+import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
@@ -62,7 +62,7 @@ it.effect("MCP and runtime construction share the event sink's dependency notifi
       assert.strictEqual(mcpChanges, runtimeChanges);
       const subscription = yield* runtimeChanges.subscribe;
       const request = yield* fixture.send("composition");
-      const opened = yield* Queue.take(subscription);
+      const opened = yield* PubSub.take(subscription);
       assert.include(opened.threadIds, fixture.waiter.id);
       assert.include(opened.threadIds, fixture.receiver.id);
       yield* makeCommit(
@@ -78,7 +78,7 @@ it.effect("MCP and runtime construction share the event sink's dependency notifi
           fixture.receiverRun.id,
         ),
       );
-      const answered = yield* Queue.take(subscription);
+      const answered = yield* PubSub.take(subscription);
       assert.include(answered.threadIds, fixture.waiter.id);
       assert.include(answered.threadIds, fixture.receiver.id);
       const observed = yield* Context.get(mcp, RequestWatch.RequestWatch).observe({

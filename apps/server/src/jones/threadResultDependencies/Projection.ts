@@ -13,7 +13,7 @@ const reasons = {
   receiver_idle_unanswered: "Receiver ended its turn without answering",
   receiver_stopped: "Receiver stopped without answering",
   unreachable: "Environment unreachable; observation continues",
-  delivery_unknown: "Delivery unknown — checking",
+  delivery_unknown: "Delivery unknown; checking",
 };
 export function roster(
   dependencies: ReadonlyArray<ThreadResultDependency>,
@@ -25,7 +25,7 @@ export function roster(
       kind: "monitor" as const,
       awaited: true,
       description:
-        `${dependency.state === "resolved" ? "Result ready — delivering" : reasons[dependency.observation]}: ${dependency.targetLabel}`.slice(
+        `${dependency.state === "resolved" ? "Result ready; delivering" : reasons[dependency.observation]}: ${dependency.targetLabel}`.slice(
           0,
           160,
         ),

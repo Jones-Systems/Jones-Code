@@ -702,22 +702,6 @@ function stableMessageId(input: {
   );
 }
 
-function stableOperationMessageId(input: {
-  readonly scope: McpInvocationScope;
-  readonly requestKey: string;
-  readonly operation: string;
-}): MessageId {
-  return MessageId.make(
-    [
-      "message",
-      "mcp",
-      stablePart(input.scope.requestNamespace),
-      stablePart(input.operation),
-      stablePart(input.requestKey),
-    ].join(":"),
-  );
-}
-
 function threadTitle(input: {
   readonly parentTitle: string;
   readonly prompt: string | undefined;
