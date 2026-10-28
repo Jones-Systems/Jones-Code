@@ -1,3 +1,4 @@
+import { backgroundRead, interactiveRead } from "../jones/serverParallelism/readClassification.ts";
 import {
   CommandId,
   isOrchestrationV2WorkActive,
@@ -360,7 +361,9 @@ export const make = Effect.gen(function* () {
       Cause.hasInterruptsOnly(cause) ? Effect.failCause(cause) : Effect.logWarning(message, fields);
 
   const sweep = Effect.fn("PullRequestSyncReactor.sweep")(function* (scope: "all" | "requested") {
-    const threads = yield* projections.getThreadsWithPullRequests();
+    const threads = yield* projections.getThreadsWithPullRequests().pipe(
+      scope === "all" ? backgroundRead : interactiveRead,
+    );
     const now = yield* DateTime.now;
     const nowMs = DateTime.toEpochMillis(now);
     const nowIso = DateTime.formatIso(now);

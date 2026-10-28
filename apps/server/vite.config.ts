@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+import { computeBuildPlaceholder, serverComputeBuildIdentity } from "../../scripts/jones/serverParallelism/buildIdentity.ts";
 import { typecheckTask } from "../../scripts/jones/tsrs/task-cache.ts";
 import "vite-plus/test/config";
 import { defineConfig, mergeConfig } from "vite-plus";
@@ -80,6 +82,9 @@ export default mergeConfig(
       },
     },
     pack: {
+      plugins: [serverComputeBuildIdentity(fileURLToPath(new URL("../../", import.meta.url)), {
+        packExecutable, packExecutableTarget, telemetryChannel, cliBuildChannel, repoEnv,
+      })],
       // SEA embeds one entry; expose the history worker as a hidden subcommand.
       entry: packExecutable ? ["src/bin.ts"] : ["src/bin.ts", "src/claude-history-worker.ts"],
       outDir: packExecutable ? "dist-exe" : "dist",
@@ -103,9 +108,10 @@ export default mergeConfig(
         onlyBundle: false,
       },
       banner: {
-        js: "#!/usr/bin/env node\n",
+        js: `#!/usr/bin/env node\n// jones-server-compute-build:${computeBuildPlaceholder}\n`,
       },
       define: {
+        __JONES_SERVER_COMPUTE_BUILD_ID__: JSON.stringify(computeBuildPlaceholder),
         __T3CODE_BUILD_CHANNEL__: JSON.stringify(cliBuildChannel),
         __T3CODE_TELEMETRY_CHANNEL__: JSON.stringify(telemetryChannel),
         __T3CODE_BUILD_RELAY_URL__: JSON.stringify(repoEnv.T3CODE_RELAY_URL?.trim() ?? ""),

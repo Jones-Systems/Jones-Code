@@ -1,3 +1,4 @@
+import { nativeWorkspaceTestLayer } from "../jones/serverParallelism/nativeWorkspace.testkit.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it, afterEach, describe, expect } from "@effect/vitest";
@@ -25,6 +26,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 const layerTest = Layer.empty.pipe(
   Layer.provideMerge(WorkspaceEntries.layer.pipe(Layer.provide(WorkspacePaths.layer))),
   Layer.provideMerge(WorkspacePaths.layer),
+  Layer.provide(nativeWorkspaceTestLayer),
   Layer.provideMerge(VcsProcess.layer),
   Layer.provide(
     ServerConfig.ServerConfig.layerTest(process.cwd(), {

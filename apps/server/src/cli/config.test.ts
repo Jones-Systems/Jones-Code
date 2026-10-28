@@ -85,6 +85,46 @@ const liveProcess = Effect.acquireRelease(
 );
 
 it.layer(NodeServices.layer)("cli config resolution", (it) => {
+  it.effect("resolves the startup worker profile through the CLI environment", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "jones-parallelism-config-" });
+      for (const profile of [undefined, "laptop", "vps"] as const) {
+        const config = yield* resolveServerConfig(minimalDesktopFlags(baseDir), Option.none()).pipe(
+          Effect.provide(Layer.mergeAll(
+            NetService.layer,
+            ConfigProvider.layer(ConfigProvider.fromEnv({
+              env: profile === undefined ? {} : { JONES_SERVER_PARALLELISM_PROFILE: profile },
+            })),
+          )),
+        );
+        expect(config.serverParallelism.profile).toBe(profile ?? "laptop");
+        expect(config.serverParallelism.readerCount).toBe(profile === "vps" ? 3 : 2);
+        expect(config.serverParallelism.computeWorkerCount).toBe(profile === "vps" ? 3 : 2);
+      }
+    }),
+  );
+
+  it.effect("fails invalid worker profiles before creating application directories", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const parent = yield* fs.makeTempDirectoryScoped({ prefix: "jones-parallelism-invalid-" });
+      const baseDir = path.join(parent, "must-not-exist");
+      const error = yield* resolveServerConfig(minimalDesktopFlags(baseDir), Option.none()).pipe(
+        Effect.provide(Layer.mergeAll(
+          NetService.layer,
+          ConfigProvider.layer(ConfigProvider.fromEnv({
+            env: { JONES_SERVER_PARALLELISM_PROFILE: "invalid-profile" },
+          })),
+        )),
+        Effect.flip,
+      );
+      expect(String(error)).toContain("JONES_SERVER_PARALLELISM_PROFILE");
+      expect(yield* fs.exists(baseDir)).toBe(false);
+    }),
+  );
+
   it.effect("keeps an explicitly configured native authority directory outside userdata", () =>
     Effect.gen(function* () {
       const { join } = yield* Path.Path;

@@ -7,6 +7,9 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 import { runMigrations } from "./Migrations.ts";
 import { initializeV2Database } from "./initializeV2Database.ts";
+import type { SqliteReaderPoolOptions } from "@t3tools/shared/jones/sqliteReaderContracts";
+import { readerPoolOptions } from "../jones/serverParallelism/persistenceOptions.ts";
+import { makePoolObservers } from "../jones/serverParallelism/metrics.ts";
 import * as ServerConfig from "../config.ts";
 import { holdJonesServerNativeWriterFence } from "../jones/updates/nativeWriterStartup.ts";
 
@@ -47,7 +50,7 @@ const layerSetup = Layer.effectDiscard(
   }),
 );
 
-export const layerFromPath = Effect.fn("makeSqlitePersistenceLive")(function* (dbPath: string) {
+export const layerFromPath = Effect.fn("makeSqlitePersistenceLive")(function* (dbPath: string, readerPool?: SqliteReaderPoolOptions) {
   yield* Effect.sync(() => holdJonesServerNativeWriterFence(dbPath));
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -57,6 +60,7 @@ export const layerFromPath = Effect.fn("makeSqlitePersistenceLive")(function* (d
     layerSetup,
     NodeSqliteClient.layer({
       filename: dbPath,
+      ...(readerPool === undefined ? {} : { readerPool }),
       readerWorker: true,
       readerFailureMode: "fail",
       // Checkpoints sync the database, with F_FULLFSYNC on macOS. Run them off
@@ -77,9 +81,10 @@ export const layerMemory = Layer.provideMerge(
 
 export const layerConfig = Layer.unwrap(
   Effect.gen(function* () {
-    const { dbPath } = yield* ServerConfig.ServerConfig;
+    const { dbPath, serverParallelism } = yield* ServerConfig.ServerConfig;
+    const observers = yield* makePoolObservers(serverParallelism.profile);
     yield* Effect.sync(() => holdJonesServerNativeWriterFence(dbPath));
     yield* initializeV2Database(dbPath);
-    return layerFromPath(dbPath);
+    return layerFromPath(dbPath, readerPoolOptions(serverParallelism.readerCount, observers.reader));
   }),
 );

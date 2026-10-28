@@ -1,0 +1,189 @@
+// @effect-diagnostics nodeBuiltinImport:off globalTimers:off preferSchemaOverJson:off -- Hidden entry is the native callback/runtime boundary with a closed bootstrap decoder.
+import type * as EffectTypes from "effect/Effect";
+import type * as ScopeTypes from "effect/Scope";
+import { Worker } from "node:worker_threads";
+import { getHeapStatistics } from "node:v8";
+import { availableParallelism } from "node:os";
+import { setImmediate as nodeTurn } from "node:timers/promises";
+import type { Writable } from "node:stream";
+import { guardianSource } from "./guardian.ts";
+import { currentBuildIdentity } from "./workerCommand.ts";
+import { computeFailure } from "./failure.ts";
+import { decodeBootstrap, decodeRequest, encodeFrame, frames, LIMITS, replyByteTotal, sameToken, writeEncodedFrame,
+  type Reply, type Request, type ScanStatus } from "./protocol.ts";
+import type { WorkspaceJobs, WorkspaceKey } from "../serverParallelism/computeContract.ts";
+
+type Output = WorkspaceJobs["list" | "search" | "searchContents"]["output"];
+
+/** A failed result remains a typed terminal failure; the same child can serve the next request. */
+export class WorkerReplies {
+  private sequence = 0;
+  private total = 0;
+  private credits: number = LIMITS.credits;
+  private wake: (() => void) | undefined;
+  private readonly request: Request;
+  private readonly output: Writable;
+  constructor(request: Request, output: Writable) { this.request = request; this.output = output; }
+  acknowledge(): void {
+    if (this.credits >= LIMITS.credits) throw computeFailure("protocol");
+    this.credits++; this.wake?.(); this.wake = undefined;
+  }
+  async send(body: Reply["body"]): Promise<void> {
+    const { input: _input, ...envelope } = this.request;
+    const frame: Reply = { ...envelope, sequence: this.sequence, body };
+    const encoded = encodeFrame(frame, LIMITS.batchBytes);
+    const next = replyByteTotal(this.total, encoded.length, body.type !== "chunk");
+    // Encoding and every byte limit precede sequence/credit consumption. Rejected frames are never owed an ack.
+    while (this.credits === 0) await new Promise<void>((resolve) => { this.wake = resolve; });
+    this.credits--; this.sequence++; this.total = next;
+    await writeEncodedFrame(this.output, encoded);
+  }
+  async result(output: Output | undefined, status: ScanStatus | undefined, signal: AbortSignal): Promise<void> {
+    if (output !== undefined) {
+      const items = "matches" in output ? output.matches : output.entries;
+      let batch: unknown[] = [], bytes = 2048;
+      for (const item of items) {
+        const size = Buffer.byteLength(JSON.stringify(item)) + 1;
+        if (size + 2048 > LIMITS.batchBytes) throw computeFailure("oversize");
+        if (batch.length === LIMITS.batchEntries || bytes + size > LIMITS.batchBytes) {
+          await this.send({ type: "chunk", items: batch }); batch = []; bytes = 2048; await nodeTurn();
+        }
+        batch.push(item); bytes += size;
+        if (signal.aborted) throw computeFailure("cancelled");
+      }
+      if (batch.length) await this.send({ type: "chunk", items: batch });
+    }
+    await this.send({ type: "done", ...(status ? { status } : {}), ...(output === undefined ? {} : {
+      truncated: output.truncated, ...("regexFallbackError" in output && output.regexFallbackError !== undefined ? { regexFallbackError: output.regexFallbackError } : {}),
+    }) });
+  }
+  async failure(cause: unknown, signal: AbortSignal): Promise<void> {
+    const tag = typeof cause === "object" && cause !== null && "_tag" in cause ? cause._tag : undefined;
+    // Protocol/ownership uncertainty is fatal: the parent must prove process exit before reuse.
+    if (tag === "ComputeFailure" && (cause as { reason?: string }).reason === "protocol") throw cause;
+    const oversize = tag === "ComputeFailure" && (cause as { reason?: string }).reason === "oversize";
+    // Keep the same aggregate counter; reserved terminal bytes make a partial result an explicit failure.
+    await this.send({ type: "failure", reason: signal.aborted ? "cancelled" : oversize ? "oversize" :
+      this.request.operation === "open" ? "finder-create" : this.request.operation === "refresh" ? "finder-refresh" : "finder-search",
+      scanTimedOut: tag === "WorkspaceSearchIndexScanTimedOut" });
+  }
+  async settle(): Promise<void> {
+    while (this.credits < LIMITS.credits) await new Promise<void>((resolve) => { this.wake = resolve; });
+  }
+}
+
+/** Generation-lifetime tombstones: scope close and failed creation never refund native ownership. */
+export class WorkerAllocations {
+  private readonly attempts = new Map<string, { readonly token: Request["token"]; readonly key: WorkspaceKey }>();
+  reserve(token: Request["token"], key: WorkspaceKey): void {
+    if (this.attempts.size >= LIMITS.residents || this.attempts.has(token.keyId) ||
+        [...this.attempts.values()].some((attempt) => attempt.key.cwd === key.cwd && attempt.key.variant === key.variant))
+      throw computeFailure("protocol");
+    // Runs before Scope.make / native creation. Records survive failure, close and loss of the JS resident.
+    this.attempts.set(token.keyId, { token, key });
+  }
+}
+
+/** Closed hidden command. Root dispatches here before loading the normal server graph. */
+export async function runServerComputeWorkerCommand(args: ReadonlyArray<string>): Promise<void> {
+  if (args.length !== 1 || Buffer.byteLength(args[0]!) > 4096 ||
+      (process.platform !== "linux" && process.platform !== "darwin")) throw computeFailure("protocol");
+  const boot = decodeBootstrap(JSON.parse(args[0]!));
+  if (boot.build !== await currentBuildIdentity()) throw computeFailure("protocol");
+  const heapLimit = getHeapStatistics().heap_size_limit;
+  const heapSelected = process.execArgv.includes("--max-old-space-size=256") || process.env.NODE_OPTIONS === "--max-old-space-size=256";
+  if (!heapSelected || heapLimit < 256 * 1024 * 1024 || heapLimit > 400 * 1024 * 1024) throw computeFailure("unavailable");
+  const guardian = new Worker(guardianSource, { eval: true, workerData: boot });
+  // In a Worker, process.exit would exit only that thread. This callback is on child main.
+  guardian.on("error", () => process.kill(process.pid, "SIGKILL"));
+  guardian.on("exit", () => process.kill(process.pid, "SIGKILL"));
+  await new Promise<void>((resolve) => guardian.once("message", (msg) => {
+    if (msg?.type !== "go") process.kill(process.pid, "SIGKILL");
+    resolve();
+  }));
+  // GO was issued only after the parent durably registered this captured child PID.
+  const [{ make }, Effect, Scope, Exit] = await Promise.all([
+    import("../workspace/nativeSearchRuntime.ts"), import("effect/Effect"), import("effect/Scope"), import("effect/Exit"),
+  ]);
+  guardian.postMessage({ type: "nativeReady", heapLimit, availableParallelism: availableParallelism() });
+  // Preserve typed native errors across the Promise boundary (runPromise rejection can wrap a Cause).
+  const execute = async <A, E>(effect: EffectTypes.Effect<A, E>, signal?: AbortSignal): Promise<A> => {
+    const result = await Effect.runPromise(effect.pipe(Effect.result), signal ? { signal } : undefined);
+    if (result._tag === "Failure") throw result.failure;
+    return result.success;
+  };
+  type Native = EffectTypes.Success<ReturnType<typeof make>>;
+  // Scope carries native destruction. No parent-side native instance exists.
+  const residents = new Map<string, { token: Request["token"]; key: WorkspaceKey; scope: ScopeTypes.Closeable; runtime: Native }>();
+  const allocations = new WorkerAllocations();
+  let active: { id: number; controller: AbortController; replies: WorkerReplies } | undefined;
+  let lastRequestId = 0, lastCompletedId = 0;
+  let pendingCancellation: number | undefined;
+  guardian.on("message", (msg) => {
+    if (msg.type === "cancel" && Number.isSafeInteger(msg.requestId)) {
+      if (msg.requestId <= lastCompletedId) return;
+      if (!active && msg.requestId > lastRequestId && pendingCancellation === undefined) { pendingCancellation = msg.requestId; return; }
+    }
+    if (!active || msg.requestId !== active.id) return process.kill(process.pid, "SIGKILL");
+    if (msg.type === "cancel") active.controller.abort();
+    else if (msg.type === "credit") {
+      try { active.replies.acknowledge(); } catch { process.kill(process.pid, "SIGKILL"); }
+    } else process.kill(process.pid, "SIGKILL");
+  });
+  for await (const raw of frames(process.stdin, LIMITS.requestBytes)) {
+    const request = decodeRequest(raw, boot);
+    if (request.requestId <= lastRequestId || active) throw computeFailure("protocol");
+    lastRequestId = request.requestId;
+    active = { id: request.requestId, controller: new AbortController(), replies: new WorkerReplies(request, process.stdout) };
+    const job = active;
+    if (pendingCancellation !== undefined) {
+      if (pendingCancellation !== request.requestId) throw computeFailure("protocol");
+      job.controller.abort(); pendingCancellation = undefined;
+    }
+    try {
+      job.controller.signal.throwIfAborted();
+      let resident = residents.get(request.token.keyId);
+      if (request.operation === "open") {
+        const key = request.input as WorkspaceKey;
+        allocations.reserve(request.token, key);
+        const scope = await Effect.runPromise(Scope.make());
+        try {
+          const runtime = await execute(make(key.cwd, key.variant).pipe(Effect.provideService(Scope.Scope, scope)), job.controller.signal);
+          resident = { token: request.token, key, scope, runtime };
+          residents.set(request.token.keyId, resident);
+        } catch (cause) {
+          // Best-effort cleanup is not native exit proof. The parent retires this failed generation.
+          await Effect.runPromise(Scope.close(scope, Exit.void));
+          throw cause;
+        }
+      } else if (!resident || !sameToken(resident.token, request.token)) throw computeFailure("protocol");
+      if (!resident) throw computeFailure("protocol");
+      let output: Output | undefined;
+      switch (request.operation) {
+        case "list": output = await execute(resident.runtime.list(), job.controller.signal); break;
+        case "search": {
+          const input = request.input as WorkspaceJobs["search"]["input"];
+          output = await execute(resident.runtime.search(input.query, input.limit, input.kind, input.imageOnly), job.controller.signal); break;
+        }
+        case "searchContents": output = await execute(resident.runtime.searchContents(request.input as WorkspaceJobs["searchContents"]["input"]), job.controller.signal); break;
+        case "refresh": await execute(resident.runtime.refresh(), job.controller.signal); break;
+        case "close":
+          // Close is diagnostic teardown only; the allocation tombstone survives until process exit.
+          await Effect.runPromise(Scope.close(resident.scope, Exit.void)); residents.delete(request.token.keyId); break;
+        case "open": case "status": break;
+      }
+      let status: ScanStatus | undefined;
+      if (request.operation !== "close") {
+        try { status = resident.runtime.status(); } catch { throw computeFailure("protocol"); }
+      }
+      await job.replies.result(output, status, job.controller.signal);
+    } catch (cause) {
+      await job.replies.failure(cause, job.controller.signal);
+    } finally {
+      // Drain written-frame credits before this main loop admits the next data request.
+      await job.replies.settle();
+      lastCompletedId = request.requestId; active = undefined;
+    }
+  }
+  process.kill(process.pid, "SIGKILL");
+}

@@ -1,3 +1,4 @@
+import { backgroundRead } from "../jones/serverParallelism/readClassification.ts";
 import * as DependencyChanges from "../jones/threadResultDependencies/DependencyChanges.ts";
 import * as Option from "effect/Option";
 import { LifecycleError } from "../jones/workspaceLifecycle/Protocol.ts";
@@ -321,15 +322,15 @@ export const make = Effect.gen(function* () {
     if (!autoSettlementConfigured(settings)) {
       return;
     }
-    const threads = yield* projections.getSettlementCandidates(threadId);
+    const threads = yield* projections.getSettlementCandidates(threadId).pipe(backgroundRead);
     if (threads.length === 0) return;
-    const projectShells = yield* projectStore.listShells();
+    const projectShells = yield* projectStore.listShells().pipe(backgroundRead);
     const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
     const projects = new Map(projectShells.map((project) => [project.id, project]));
     // Merge events resweep all candidates because unlinked threads settle through branch lookup.
     const candidates = threads.filter((thread) => isAutoSettlementCandidate(thread, nowMs));
     const settlementActivity = yield* workModeSettlementActivity(
-      projections,
+      { getThreadRecords: (...args) => projections.getThreadRecords(...args).pipe(backgroundRead) },
       settings,
       candidates,
       nowMs,

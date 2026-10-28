@@ -139,6 +139,21 @@ Metrics are not written to a local file.
 
 If OTLP is not configured, metrics still exist in-process, but you will not have a local artifact to inspect.
 
+Pool timings use the existing metric registry through the Jones pool adapter.
+Reader queue, startup, checkpoint admission, worker execution, estimated reply and
+lease duration are separate. Compute `request_round_trip` includes control/IPC,
+execution and result delivery; it is not worker-local execution or exact transfer.
+The current compute source has no local-execution clock handshake or resource-sample
+callback. Qualification collects aggregate process resources separately. Generation
+is a per-slot gauge instead of an ever-growing metric label.
+
+Native scan/warmup gauges are incomplete readiness samples. Zero does not prove
+native quiescence. `activeForegroundOpenRefresh`, `chargedAllocations` and
+`retiringGenerations` measure different lifetimes; only captured exit followed by
+durable retirement releases a generation's charges. Keep paths, SQL, content and
+credentials out of all pool metric labels. The adapter swallows sink failure and
+retains no observation queue.
+
 ### Event Loop Stalls
 
 `apps/server/src/observability/EventLoopMonitor.ts` samples the server's event loop every 30 s. When

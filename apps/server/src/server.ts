@@ -140,6 +140,8 @@ import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
 import * as T3ProjectFileLoader from "./project/T3ProjectFileLoader.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
+import * as ServerCompute from "./jones/serverCompute/ServerCompute.ts";
+import { makePoolObservers } from "./jones/serverParallelism/metrics.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as KnownWorkspaces from "./workspace/KnownWorkspaces.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
@@ -499,7 +501,18 @@ const layerDevice = DeviceService.layer.pipe(
   Layer.provide(NetService.layer),
 );
 
-const layerWorkspaceEntries = WorkspaceEntries.layer.pipe(Layer.provide(WorkspacePaths.layer));
+// One layer identity for every HTTP/RPC/MCP/scheduled workspace consumer. Placement
+// comes from the same outer ProcessPlacementRuntime context as provider processes.
+const layerServerCompute = ServerCompute.layer.pipe(
+  Layer.provide(Layer.effect(ServerCompute.ComputeObserver, Effect.gen(function* () {
+    const config = yield* ServerConfig.ServerConfig;
+    return (yield* makePoolObservers(config.serverParallelism.profile)).compute;
+  }))),
+);
+const layerWorkspaceEntries = WorkspaceEntries.layer.pipe(
+  Layer.provide(WorkspacePaths.layer),
+  Layer.provide(layerServerCompute),
+);
 
 const layerWorkspaceFileSystem = WorkspaceFileSystem.layer.pipe(
   Layer.provide(WorkspacePaths.layer),
