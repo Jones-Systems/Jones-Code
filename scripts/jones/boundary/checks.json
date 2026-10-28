@@ -4196,22 +4196,28 @@
         "apps/server/src/workspace/WorkspaceFileSystem.test.ts",
         "scripts/jones/serverParallelism/buildIdentity.node-test.mjs",
         "apps/server/src/jones/serverParallelism/metrics.test.ts",
-        "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts"
+        "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
+        "apps/server/src/jones/serverParallelism/resourceSamples.test.ts",
+        "scripts/jones/serverParallelism/commandIdentity.node-test.mjs",
+        "scripts/jones/serverParallelism/qualificationResult.node-test.mjs"
       ],
       "commands": [
         "vp test run apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts apps/server/src/jones/serverParallelism/metrics.test.ts apps/server/src/jones/serverParallelism/composition.test.ts apps/server/src/jones/serverParallelism/config.test.ts apps/server/src/jones/serverParallelism/controlProgress.integration.test.ts apps/server/src/jones/serverParallelism/observations.test.ts apps/server/src/jones/serverParallelism/shellCapture.integration.test.ts apps/server/src/jones/threadResultDependencies/Refresh.integration.test.ts apps/server/src/jones/threadResultDependencies/Settlement.test.ts apps/server/src/orchestration-v2/ProjectionStore.test.ts apps/server/src/workspace/WorkspaceEntries.test.ts apps/server/src/workspace/WorkspaceFileSystem.test.ts --maxWorkers=1 --no-file-parallelism",
-        "node --test scripts/jones/serverParallelism/buildIdentity.node-test.mjs"
+        "node --test --test-concurrency=1 scripts/jones/serverParallelism/buildIdentity.node-test.mjs scripts/jones/serverParallelism/commandIdentity.node-test.mjs scripts/jones/serverParallelism/qualificationResult.node-test.mjs",
+        "vp test run apps/server/src/jones/serverParallelism/resourceSamples.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
       "id": "sp-packaging",
       "tests": [
         "apps/server/src/jones/serverParallelism/nativeProcess.integration.test.ts",
-        "scripts/jones/serverParallelism/buildIdentity.node-test.mjs"
+        "scripts/jones/serverParallelism/buildIdentity.node-test.mjs",
+        "scripts/jones/serverParallelism/commandIdentity.node-test.mjs",
+        "scripts/jones/serverParallelism/qualificationResult.node-test.mjs"
       ],
       "commands": [
         "test -n \"$JONES_SP_COMMAND_MANIFEST\" && vp test run apps/server/src/jones/serverParallelism/nativeProcess.integration.test.ts --maxWorkers=1 --no-file-parallelism",
-        "node --test scripts/jones/serverParallelism/buildIdentity.node-test.mjs"
+        "node --test --test-concurrency=1 scripts/jones/serverParallelism/buildIdentity.node-test.mjs scripts/jones/serverParallelism/commandIdentity.node-test.mjs scripts/jones/serverParallelism/qualificationResult.node-test.mjs"
       ]
     },
     {

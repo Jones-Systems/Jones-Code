@@ -9,8 +9,20 @@ import type { Writable } from "node:stream";
 import { guardianSource } from "./guardian.ts";
 import { currentBuildIdentity } from "./workerCommand.ts";
 import { computeFailure } from "./failure.ts";
-import { decodeBootstrap, decodeRequest, encodeFrame, frames, LIMITS, replyByteTotal, sameToken, writeEncodedFrame,
-  type Reply, type ReplyTiming, type Request, type ScanStatus } from "./protocol.ts";
+import {
+  decodeBootstrap,
+  decodeRequest,
+  encodeFrame,
+  frames,
+  LIMITS,
+  replyByteTotal,
+  sameToken,
+  writeEncodedFrame,
+  type Reply,
+  type ReplyTiming,
+  type Request,
+  type ScanStatus,
+} from "./protocol.ts";
 import type { WorkspaceJobs, WorkspaceKey } from "../serverParallelism/computeContract.ts";
 
 type Output = WorkspaceJobs["list" | "search" | "searchContents"]["output"];
@@ -25,81 +37,149 @@ export class WorkerReplies {
   private readonly output: Writable;
   private readonly now: () => number;
   private readonly receivedMs: number;
-  private execution: Pick<ReplyTiming, "executionStartedMs" | "executionCompletedMs" | "executionOutcome"> | undefined;
+  private execution:
+    | Pick<ReplyTiming, "executionStartedMs" | "executionCompletedMs" | "executionOutcome">
+    | undefined;
   private replyStartedMs: number | undefined;
   constructor(request: Request, output: Writable, now = () => performance.now()) {
-    this.request = request; this.output = output; this.now = now; this.receivedMs = now();
+    this.request = request;
+    this.output = output;
+    this.now = now;
+    this.receivedMs = now();
   }
   /** Await native/Effect cleanup before ending this interval; telemetry never settles the data lease. */
   async execute<A>(work: () => Promise<A>, signal: AbortSignal): Promise<A> {
     const executionStartedMs = this.now();
     let executionOutcome: ReplyTiming["executionOutcome"] = "ok";
-    try { return await work(); }
-    catch (cause) { executionOutcome = signal.aborted ? "cancelled" : "failed"; throw cause; }
-    finally {
+    try {
+      return await work();
+    } catch (cause) {
+      executionOutcome = signal.aborted ? "cancelled" : "failed";
+      throw cause;
+    } finally {
       this.execution = { executionStartedMs, executionCompletedMs: this.now(), executionOutcome };
     }
   }
   acknowledge(): void {
     if (this.credits >= LIMITS.credits) throw computeFailure("protocol");
-    this.credits++; this.wake?.(); this.wake = undefined;
+    this.credits++;
+    this.wake?.();
+    this.wake = undefined;
   }
   async send(body: Reply["body"]): Promise<void> {
     const { input: _input, clock, ...envelope } = this.request;
-    const timing = body.type !== "chunk" && clock && this.execution ? {
-      parentSentMs: clock.parentSentMs, receivedMs: this.receivedMs, ...this.execution,
-      replyStartedMs: this.replyStartedMs ?? this.now(), handoffMs: this.now(),
-    } : undefined;
-    const frame: Reply = { ...envelope, sequence: this.sequence, body, ...(timing ? { timing } : {}) };
+    const timing =
+      body.type !== "chunk" && clock && this.execution
+        ? {
+            parentSentMs: clock.parentSentMs,
+            receivedMs: this.receivedMs,
+            ...this.execution,
+            replyStartedMs: this.replyStartedMs ?? this.now(),
+            handoffMs: this.now(),
+          }
+        : undefined;
+    const frame: Reply = {
+      ...envelope,
+      sequence: this.sequence,
+      body,
+      ...(timing ? { timing } : {}),
+    };
     const encoded = encodeFrame(frame, LIMITS.batchBytes);
     const next = replyByteTotal(this.total, encoded.length, body.type !== "chunk");
     // Encoding and every byte limit precede sequence/credit consumption. Rejected frames are never owed an ack.
-    while (this.credits === 0) await new Promise<void>((resolve) => { this.wake = resolve; });
-    this.credits--; this.sequence++; this.total = next;
+    while (this.credits === 0)
+      await new Promise<void>((resolve) => {
+        this.wake = resolve;
+      });
+    this.credits--;
+    this.sequence++;
+    this.total = next;
     await writeEncodedFrame(this.output, encoded);
   }
-  async result(output: Output | undefined, status: ScanStatus | undefined, signal: AbortSignal): Promise<void> {
+  async result(
+    output: Output | undefined,
+    status: ScanStatus | undefined,
+    signal: AbortSignal,
+  ): Promise<void> {
     this.replyStartedMs ??= this.now();
     if (output !== undefined) {
       const items = "matches" in output ? output.matches : output.entries;
-      let batch: unknown[] = [], bytes = 2048;
+      let batch: unknown[] = [],
+        bytes = 2048;
       for (const item of items) {
         const size = Buffer.byteLength(JSON.stringify(item)) + 1;
         if (size + 2048 > LIMITS.batchBytes) throw computeFailure("oversize");
         if (batch.length === LIMITS.batchEntries || bytes + size > LIMITS.batchBytes) {
-          await this.send({ type: "chunk", items: batch }); batch = []; bytes = 2048; await nodeTurn();
+          await this.send({ type: "chunk", items: batch });
+          batch = [];
+          bytes = 2048;
+          await nodeTurn();
         }
-        batch.push(item); bytes += size;
+        batch.push(item);
+        bytes += size;
         if (signal.aborted) throw computeFailure("cancelled");
       }
       if (batch.length) await this.send({ type: "chunk", items: batch });
     }
-    await this.send({ type: "done", ...(status ? { status } : {}), ...(output === undefined ? {} : {
-      truncated: output.truncated, ...("regexFallbackError" in output && output.regexFallbackError !== undefined ? { regexFallbackError: output.regexFallbackError } : {}),
-    }) });
+    await this.send({
+      type: "done",
+      ...(status ? { status } : {}),
+      ...(output === undefined
+        ? {}
+        : {
+            truncated: output.truncated,
+            ...("regexFallbackError" in output && output.regexFallbackError !== undefined
+              ? { regexFallbackError: output.regexFallbackError }
+              : {}),
+          }),
+    });
   }
   async failure(cause: unknown, signal: AbortSignal): Promise<void> {
     this.replyStartedMs ??= this.now();
-    const tag = typeof cause === "object" && cause !== null && "_tag" in cause ? cause._tag : undefined;
+    const tag =
+      typeof cause === "object" && cause !== null && "_tag" in cause ? cause._tag : undefined;
     // Protocol/ownership uncertainty is fatal: the parent must prove process exit before reuse.
-    if (tag === "ComputeFailure" && (cause as { reason?: string }).reason === "protocol") throw cause;
-    const oversize = tag === "ComputeFailure" && (cause as { reason?: string }).reason === "oversize";
+    if (tag === "ComputeFailure" && (cause as { reason?: string }).reason === "protocol")
+      throw cause;
+    const oversize =
+      tag === "ComputeFailure" && (cause as { reason?: string }).reason === "oversize";
     // Keep the same aggregate counter; reserved terminal bytes make a partial result an explicit failure.
-    await this.send({ type: "failure", reason: signal.aborted ? "cancelled" : oversize ? "oversize" :
-      this.request.operation === "open" ? "finder-create" : this.request.operation === "refresh" ? "finder-refresh" : "finder-search",
-      scanTimedOut: tag === "WorkspaceSearchIndexScanTimedOut" });
+    await this.send({
+      type: "failure",
+      reason: signal.aborted
+        ? "cancelled"
+        : oversize
+          ? "oversize"
+          : this.request.operation === "open"
+            ? "finder-create"
+            : this.request.operation === "refresh"
+              ? "finder-refresh"
+              : "finder-search",
+      scanTimedOut: tag === "WorkspaceSearchIndexScanTimedOut",
+    });
   }
   async settle(): Promise<void> {
-    while (this.credits < LIMITS.credits) await new Promise<void>((resolve) => { this.wake = resolve; });
+    while (this.credits < LIMITS.credits)
+      await new Promise<void>((resolve) => {
+        this.wake = resolve;
+      });
   }
 }
 
 /** Generation-lifetime tombstones: scope close and failed creation never refund native ownership. */
 export class WorkerAllocations {
-  private readonly attempts = new Map<string, { readonly token: Request["token"]; readonly key: WorkspaceKey }>();
+  private readonly attempts = new Map<
+    string,
+    { readonly token: Request["token"]; readonly key: WorkspaceKey }
+  >();
   reserve(token: Request["token"], key: WorkspaceKey): void {
-    if (this.attempts.size >= LIMITS.residents || this.attempts.has(token.keyId) ||
-        [...this.attempts.values()].some((attempt) => attempt.key.cwd === key.cwd && attempt.key.variant === key.variant))
+    if (
+      this.attempts.size >= LIMITS.residents ||
+      this.attempts.has(token.keyId) ||
+      [...this.attempts.values()].some(
+        (attempt) => attempt.key.cwd === key.cwd && attempt.key.variant === key.variant,
+      )
+    )
       throw computeFailure("protocol");
     // Runs before Scope.make / native creation. Records survive failure, close and loss of the JS resident.
     this.attempts.set(token.keyId, { token, key });
@@ -108,59 +188,97 @@ export class WorkerAllocations {
 
 /** Closed hidden command. Root dispatches here before loading the normal server graph. */
 export async function runServerComputeWorkerCommand(args: ReadonlyArray<string>): Promise<void> {
-  if (args.length !== 1 || Buffer.byteLength(args[0]!) > 4096 ||
-      (process.platform !== "linux" && process.platform !== "darwin")) throw computeFailure("protocol");
+  if (
+    args.length !== 1 ||
+    Buffer.byteLength(args[0]!) > 4096 ||
+    (process.platform !== "linux" && process.platform !== "darwin")
+  )
+    throw computeFailure("protocol");
   const boot = decodeBootstrap(JSON.parse(args[0]!));
-  if (boot.build !== await currentBuildIdentity()) throw computeFailure("protocol");
+  if (boot.build !== (await currentBuildIdentity())) throw computeFailure("protocol");
   const heapLimit = getHeapStatistics().heap_size_limit;
-  const heapSelected = process.execArgv.includes("--max-old-space-size=256") || process.env.NODE_OPTIONS === "--max-old-space-size=256";
-  if (!heapSelected || heapLimit < 256 * 1024 * 1024 || heapLimit > 400 * 1024 * 1024) throw computeFailure("unavailable");
+  const heapSelected =
+    process.execArgv.includes("--max-old-space-size=256") ||
+    process.env.NODE_OPTIONS === "--max-old-space-size=256";
+  if (!heapSelected || heapLimit < 256 * 1024 * 1024 || heapLimit > 400 * 1024 * 1024)
+    throw computeFailure("unavailable");
   const guardian = new Worker(guardianSource, { eval: true, workerData: boot });
   // In a Worker, process.exit would exit only that thread. This callback is on child main.
   guardian.on("error", () => process.kill(process.pid, "SIGKILL"));
   guardian.on("exit", () => process.kill(process.pid, "SIGKILL"));
-  await new Promise<void>((resolve) => guardian.once("message", (msg) => {
-    if (msg?.type !== "go") process.kill(process.pid, "SIGKILL");
-    resolve();
-  }));
+  await new Promise<void>((resolve) =>
+    guardian.once("message", (msg) => {
+      if (msg?.type !== "go") process.kill(process.pid, "SIGKILL");
+      resolve();
+    }),
+  );
   // GO was issued only after the parent durably registered this captured child PID.
   const [{ make }, Effect, Scope, Exit] = await Promise.all([
-    import("../workspace/nativeSearchRuntime.ts"), import("effect/Effect"), import("effect/Scope"), import("effect/Exit"),
+    import("../workspace/nativeSearchRuntime.ts"),
+    import("effect/Effect"),
+    import("effect/Scope"),
+    import("effect/Exit"),
   ]);
-  guardian.postMessage({ type: "nativeReady", heapLimit, availableParallelism: availableParallelism() });
+  guardian.postMessage({
+    type: "nativeReady",
+    heapLimit,
+    availableParallelism: availableParallelism(),
+  });
   // Preserve typed native errors across the Promise boundary (runPromise rejection can wrap a Cause).
-  const execute = async <A, E>(effect: EffectTypes.Effect<A, E>, signal?: AbortSignal): Promise<A> => {
-    const result = await Effect.runPromise(effect.pipe(Effect.result), signal ? { signal } : undefined);
+  const execute = async <A, E>(
+    effect: EffectTypes.Effect<A, E>,
+    signal?: AbortSignal,
+  ): Promise<A> => {
+    const result = await Effect.runPromise(
+      effect.pipe(Effect.result),
+      signal ? { signal } : undefined,
+    );
     if (result._tag === "Failure") throw result.failure;
     return result.success;
   };
   type Native = EffectTypes.Success<ReturnType<typeof make>>;
   // Scope carries native destruction. No parent-side native instance exists.
-  const residents = new Map<string, { token: Request["token"]; key: WorkspaceKey; scope: ScopeTypes.Closeable; runtime: Native }>();
+  const residents = new Map<
+    string,
+    { token: Request["token"]; key: WorkspaceKey; scope: ScopeTypes.Closeable; runtime: Native }
+  >();
   const allocations = new WorkerAllocations();
   let active: { id: number; controller: AbortController; replies: WorkerReplies } | undefined;
-  let lastRequestId = 0, lastCompletedId = 0;
+  let lastRequestId = 0,
+    lastCompletedId = 0;
   let pendingCancellation: number | undefined;
   guardian.on("message", (msg) => {
     if (msg.type === "cancel" && Number.isSafeInteger(msg.requestId)) {
       if (msg.requestId <= lastCompletedId) return;
-      if (!active && msg.requestId > lastRequestId && pendingCancellation === undefined) { pendingCancellation = msg.requestId; return; }
+      if (!active && msg.requestId > lastRequestId && pendingCancellation === undefined) {
+        pendingCancellation = msg.requestId;
+        return;
+      }
     }
     if (!active || msg.requestId !== active.id) return process.kill(process.pid, "SIGKILL");
     if (msg.type === "cancel") active.controller.abort();
     else if (msg.type === "credit") {
-      try { active.replies.acknowledge(); } catch { process.kill(process.pid, "SIGKILL"); }
+      try {
+        active.replies.acknowledge();
+      } catch {
+        process.kill(process.pid, "SIGKILL");
+      }
     } else process.kill(process.pid, "SIGKILL");
   });
   for await (const raw of frames(process.stdin, LIMITS.requestBytes)) {
     const request = decodeRequest(raw, boot);
     if (request.requestId <= lastRequestId || active) throw computeFailure("protocol");
     lastRequestId = request.requestId;
-    active = { id: request.requestId, controller: new AbortController(), replies: new WorkerReplies(request, process.stdout) };
+    active = {
+      id: request.requestId,
+      controller: new AbortController(),
+      replies: new WorkerReplies(request, process.stdout),
+    };
     const job = active;
     if (pendingCancellation !== undefined) {
       if (pendingCancellation !== request.requestId) throw computeFailure("protocol");
-      job.controller.abort(); pendingCancellation = undefined;
+      job.controller.abort();
+      pendingCancellation = undefined;
     }
     try {
       const { output, status } = await job.replies.execute(async () => {
@@ -171,7 +289,10 @@ export async function runServerComputeWorkerCommand(args: ReadonlyArray<string>)
           allocations.reserve(request.token, key);
           const scope = await Effect.runPromise(Scope.make());
           try {
-            const runtime = await execute(make(key.cwd, key.variant).pipe(Effect.provideService(Scope.Scope, scope)), job.controller.signal);
+            const runtime = await execute(
+              make(key.cwd, key.variant).pipe(Effect.provideService(Scope.Scope, scope)),
+              job.controller.signal,
+            );
             resident = { token: request.token, key, scope, runtime };
             residents.set(request.token.keyId, resident);
           } catch (cause) {
@@ -179,25 +300,49 @@ export async function runServerComputeWorkerCommand(args: ReadonlyArray<string>)
             await Effect.runPromise(Scope.close(scope, Exit.void));
             throw cause;
           }
-        } else if (!resident || !sameToken(resident.token, request.token)) throw computeFailure("protocol");
+        } else if (!resident || !sameToken(resident.token, request.token))
+          throw computeFailure("protocol");
         if (!resident) throw computeFailure("protocol");
         let output: Output | undefined;
         switch (request.operation) {
-          case "list": output = await execute(resident.runtime.list(), job.controller.signal); break;
+          case "list":
+            output = await execute(resident.runtime.list(), job.controller.signal);
+            break;
           case "search": {
             const input = request.input as WorkspaceJobs["search"]["input"];
-            output = await execute(resident.runtime.search(input.query, input.limit, input.kind, input.imageOnly), job.controller.signal); break;
+            output = await execute(
+              resident.runtime.search(input.query, input.limit, input.kind, input.imageOnly),
+              job.controller.signal,
+            );
+            break;
           }
-          case "searchContents": output = await execute(resident.runtime.searchContents(request.input as WorkspaceJobs["searchContents"]["input"]), job.controller.signal); break;
-          case "refresh": await execute(resident.runtime.refresh(), job.controller.signal); break;
+          case "searchContents":
+            output = await execute(
+              resident.runtime.searchContents(
+                request.input as WorkspaceJobs["searchContents"]["input"],
+              ),
+              job.controller.signal,
+            );
+            break;
+          case "refresh":
+            await execute(resident.runtime.refresh(), job.controller.signal);
+            break;
           case "close":
             // Close is diagnostic teardown only; the allocation tombstone survives until process exit.
-            await Effect.runPromise(Scope.close(resident.scope, Exit.void)); residents.delete(request.token.keyId); break;
-          case "open": case "status": break;
+            await Effect.runPromise(Scope.close(resident.scope, Exit.void));
+            residents.delete(request.token.keyId);
+            break;
+          case "open":
+          case "status":
+            break;
         }
         let status: ScanStatus | undefined;
         if (request.operation !== "close") {
-          try { status = resident.runtime.status(); } catch { throw computeFailure("protocol"); }
+          try {
+            status = resident.runtime.status();
+          } catch {
+            throw computeFailure("protocol");
+          }
         }
         return { output, status };
       }, job.controller.signal);
@@ -207,7 +352,8 @@ export async function runServerComputeWorkerCommand(args: ReadonlyArray<string>)
     } finally {
       // Drain written-frame credits before this main loop admits the next data request.
       await job.replies.settle();
-      lastCompletedId = request.requestId; active = undefined;
+      lastCompletedId = request.requestId;
+      active = undefined;
     }
   }
   process.kill(process.pid, "SIGKILL");

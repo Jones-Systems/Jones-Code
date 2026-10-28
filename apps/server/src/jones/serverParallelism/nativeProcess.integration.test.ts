@@ -10,9 +10,12 @@ import { setTimeout as pause } from "node:timers/promises";
 import { expect, it } from "vite-plus/test";
 import { runNativeQualification } from "./nativeQualification.ts";
 import { minimalWorkerEnvironment } from "../serverCompute/workerCommand.ts";
-import { proveAbsent } from "../serverCompute/journal.ts";
+import { proveAbsent, GenerationJournal } from "../serverCompute/journal.ts";
+import { ComputeSupervisor } from "../serverCompute/supervisor.ts";
+import { ProcessSlot } from "../serverCompute/processSlot.ts";
 
 const manifestPath = process.env.JONES_SP_COMMAND_MANIFEST;
+const parentLossCount = process.env.JONES_SP_PROFILE === "vps" ? 3 : 2;
 // Missing packaging inputs are an explicit skip/unknown, never passing evidence.
 const native = manifestPath ? it : it.skip;
 for (const count of [2, 3] as const)
@@ -25,6 +28,7 @@ for (const count of [2, 3] as const)
       try {
         const report = await runNativeQualification({
           count,
+          onShutdown: () => { retired = true; },
           directory: join(scratch, "fixture"),
           command: {
             ...manifest,
@@ -38,6 +42,10 @@ for (const count of [2, 3] as const)
         retired = report.shutdownProved;
         expect(report.productiveOverlapSamples).toBeGreaterThan(0);
         expect(report.predicates.normalTargets).toBe(true);
+        expect(report.predicates.resourcesComplete).toBe(true);
+        expect(report.predicates.childRssWithinBudget).toBe(true);
+        expect(report.predicates.serializedNegativeControl).toBe(true);
+        expect(report.predicates.noSteadyChurn).toBe(true);
         expect(report.rotations).toBeGreaterThan(0);
         expect(
           report.churnWindows.every((window) => Object.keys(window.failures).length === 0),
@@ -59,7 +67,7 @@ native(
         import.meta.url,
       ),
     );
-    const parent = spawn(process.execPath, [fixture, manifestPath!, scratch], {
+    const parent = spawn(process.execPath, [fixture, manifestPath!, scratch, String(parentLossCount)], {
       stdio: ["ignore", "pipe", "pipe"],
       env: minimalWorkerEnvironment(process.env, false, false),
     });
@@ -85,7 +93,7 @@ native(
           timer = setTimeout(() => reject(new Error("No productive native receipt")), 120_000);
         }),
       ]);
-      expect(children).toHaveLength(2);
+      expect(children).toHaveLength(parentLossCount);
       parent.kill("SIGKILL"); // Only this test's captured parent handle.
       await exited;
       // Restart admission uses the same bounded OS absence predicate, never kills
@@ -94,6 +102,23 @@ native(
       while (performance.now() < deadline && !children.every(proveAbsent)) await pause(20);
       proved = children.every(proveAbsent);
       expect(proved).toBe(true);
+      const manifest = JSON.parse(await readFile(manifestPath!, "utf8"));
+      const command = { ...manifest, env: minimalWorkerEnvironment(process.env,
+        manifest.runtimeForm === "sea", manifest.runtimeForm === "electron") };
+      proved = false;
+      const journal = await GenerationJournal.acquire(join(scratch, "parent-loss", "journal"), parentLossCount);
+      const replacement = new ComputeSupervisor({ count: parentLossCount, build: command.build, journal,
+        start: (boot, register, onExit) => ProcessSlot.start(command, boot, register, onExit) });
+      proved = false;
+      try {
+        const handle = replacement.register({ cwd: join(scratch, "parent-loss", "workspace-0"), variant: "paths" });
+        await replacement.ensure(handle);
+        const result = await replacement.run(handle, "search", { query: "file", limit: 32 });
+        expect(result.entries.length).toBeGreaterThan(0);
+      } finally {
+        await replacement.shutdown();
+        proved = true;
+      }
     } finally {
       clearTimeout(timer);
       lines.close();
@@ -107,7 +132,7 @@ native(
   180_000,
 );
 
-for (const invalid of ["bootstrap", "missing-fd3"] as const)
+for (const invalid of ["bootstrap", "missing-fd3", "wrong-build"] as const)
   native(
     `private dispatch fails closed for ${invalid}`,
     async () => {
@@ -117,14 +142,14 @@ for (const invalid of ["bootstrap", "missing-fd3"] as const)
           ? {}
           : {
               version: 1,
-              build: manifest.build,
+              build: invalid === "wrong-build" ? (manifest.build === "0".repeat(64) ? "1" : "0").repeat(64) : manifest.build,
               authorityId: "negative-smoke",
               nonce: "negative-smoke",
               slotId: 0,
               slotGeneration: 1,
             };
       const child = spawn(manifest.file, [...manifest.args, JSON.stringify(boot)], {
-        stdio: ["pipe", "pipe", "pipe"], // FD3 deliberately absent; never a provider/server child.
+        stdio: invalid === "wrong-build" ? ["pipe", "pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe"],
         env: minimalWorkerEnvironment(
           process.env,
           manifest.runtimeForm === "sea",

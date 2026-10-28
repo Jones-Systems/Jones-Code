@@ -1,7 +1,15 @@
 // @effect-diagnostics nodeBuiltinImport:off globalTimers:off -- Real response encoding and credits use bounded synthetic pipes, without a native finder.
 import { PassThrough } from "node:stream";
 import { expect, it } from "vite-plus/test";
-import { decodeReply, frames, LIMITS, type Bootstrap, type Request, type Operation, type Reply } from "./protocol.ts";
+import {
+  decodeReply,
+  frames,
+  LIMITS,
+  type Bootstrap,
+  type Request,
+  type Operation,
+  type Reply,
+} from "./protocol.ts";
 import { WorkerAllocations, WorkerReplies } from "./worker.ts";
 
 const boot: Bootstrap = {
@@ -27,50 +35,102 @@ const request: Request = {
 };
 
 it.each(["open", "list", "search", "searchContents", "refresh", "close"] as const)(
-  "brackets %s execution separately from chunking and preserves failure/cancellation settlement", async (operation: Operation) => {
+  "brackets %s execution separately from chunking and preserves failure/cancellation settlement",
+  async (operation: Operation) => {
     for (const mode of ["ok", "failed", "cancelled"] as const) {
-      const pipe = new PassThrough(), decoded: Reply[] = [];
+      const pipe = new PassThrough(),
+        decoded: Reply[] = [];
       const controller = new AbortController();
-      let now = 1_000_000, release!: () => void, settled = false;
-      const gate = new Promise<void>((resolve) => { release = resolve; });
-      const replies = new WorkerReplies({ ...request, operation, clock: { parentSentMs: 10 } }, pipe, () => now);
+      let now = 1_000_000,
+        release!: () => void,
+        settled = false;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const replies = new WorkerReplies(
+        { ...request, operation, clock: { parentSentMs: 10 } },
+        pipe,
+        () => now,
+      );
       const read = (async () => {
         for await (const frame of frames(pipe, LIMITS.batchBytes)) {
-          decoded.push(decodeReply(frame, boot)); replies.acknowledge();
+          decoded.push(decodeReply(frame, boot));
+          replies.acknowledge();
         }
       })();
       const cause = { _tag: "WorkspaceSearchIndexScanTimedOut" };
       try {
         now += 3;
-        const work = replies.execute(async () => {
-          await gate;
-          if (mode !== "ok") throw cause;
-        }, controller.signal).finally(() => { settled = true; });
+        const work = replies
+          .execute(async () => {
+            await gate;
+            if (mode !== "ok") throw cause;
+          }, controller.signal)
+          .finally(() => {
+            settled = true;
+          });
         void work.catch(() => {});
         if (mode === "cancelled") controller.abort();
         await Promise.resolve();
-        expect(settled).toBe(false); expect(decoded).toEqual([]);
-        now += 20; release();
+        expect(settled).toBe(false);
+        expect(decoded).toEqual([]);
+        now += 20;
+        release();
         let failure: unknown;
-        try { await work; } catch (error) { failure = error; }
+        try {
+          await work;
+        } catch (error) {
+          failure = error;
+        }
         now += 5;
         if (failure) await replies.failure(failure, controller.signal);
         else {
-          const output = ["list", "search"].includes(operation) ? { entries: [{ path: "a", kind: "file" as const }], truncated: false } :
-            operation === "searchContents" ? { matches: [], truncated: false } : undefined;
-          await replies.result(output, operation === "close" ? undefined : { scanning: false, warmupComplete: true }, controller.signal);
+          const output = ["list", "search"].includes(operation)
+            ? { entries: [{ path: "a", kind: "file" as const }], truncated: false }
+            : operation === "searchContents"
+              ? { matches: [], truncated: false }
+              : undefined;
+          await replies.result(
+            output,
+            operation === "close" ? undefined : { scanning: false, warmupComplete: true },
+            controller.signal,
+          );
         }
-        await replies.settle(); pipe.end(); await read;
+        await replies.settle();
+        pipe.end();
+        await read;
         const terminal = decoded.at(-1)!;
-        expect(terminal.timing).toEqual({ parentSentMs: 10, receivedMs: 1_000_000,
-          executionStartedMs: 1_000_003, executionCompletedMs: 1_000_023,
-          executionOutcome: mode, replyStartedMs: 1_000_028, handoffMs: 1_000_028 });
+        expect(terminal.timing).toEqual({
+          parentSentMs: 10,
+          receivedMs: 1_000_000,
+          executionStartedMs: 1_000_003,
+          executionCompletedMs: 1_000_023,
+          executionOutcome: mode,
+          replyStartedMs: 1_000_028,
+          handoffMs: 1_000_028,
+        });
         expect(terminal.sequence).toBe(decoded.length - 1);
-        if (mode !== "ok") expect(terminal.body).toMatchObject({ type: "failure", scanTimedOut: true,
-          reason: mode === "cancelled" ? "cancelled" : operation === "open" ? "finder-create" : operation === "refresh" ? "finder-refresh" : "finder-search" });
-      } finally { release(); pipe.destroy(); await read.catch(() => {}); }
+        if (mode !== "ok")
+          expect(terminal.body).toMatchObject({
+            type: "failure",
+            scanTimedOut: true,
+            reason:
+              mode === "cancelled"
+                ? "cancelled"
+                : operation === "open"
+                  ? "finder-create"
+                  : operation === "refresh"
+                    ? "finder-refresh"
+                    : "finder-search",
+          });
+      } finally {
+        release();
+        pipe.destroy();
+        await read.catch(() => {});
+      }
     }
-  });
+  },
+);
 
 it("rejects an unwritable frame before waiting on exhausted credits and leaves no sequence hole", async () => {
   const pipe = new PassThrough(),

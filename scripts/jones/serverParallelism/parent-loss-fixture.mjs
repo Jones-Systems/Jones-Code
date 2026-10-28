@@ -2,11 +2,11 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runNativeQualification } from "../../../apps/server/src/jones/serverParallelism/nativeQualification.ts";
 import { minimalWorkerEnvironment } from "../../../apps/server/src/jones/serverCompute/workerCommand.ts";
-const [manifestPath, scratch] = process.argv.slice(2);
+const [manifestPath, scratch, count = "2"] = process.argv.slice(2);
 const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
 let announced = false;
 await runNativeQualification({
-  count: 2,
+  count: count === "3" ? 3 : 2,
   directory: join(scratch, "parent-loss"),
   command: {
     ...manifest,

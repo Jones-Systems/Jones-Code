@@ -2414,7 +2414,17 @@
     "apps/server/src/jones/cloud/launcherHandoffProcesses.test.ts": "jones-owned",
     "apps/server/src/jones/updates/launcherHandoff.ts": "jones-owned",
     "apps/server/src/jones/updates/launcherHandoff.test.ts": "jones-owned",
-    "docs/internals/launcher-handoff.md": "jones-owned"
+    "docs/internals/launcher-handoff.md": "jones-owned",
+    ".github/workflows/server-parallel-qualification.yml": "jones-owned",
+    "apps/server/src/jones/serverParallelism/resourceSamples.test.ts": "jones-owned",
+    "scripts/jones/serverParallelism/baseline.mjs": "jones-owned",
+    "scripts/jones/serverParallelism/ci-run.mjs": "jones-owned",
+    "scripts/jones/serverParallelism/commandIdentity.mjs": "jones-owned",
+    "scripts/jones/serverParallelism/commandIdentity.node-test.mjs": "jones-owned",
+    "scripts/jones/serverParallelism/packaging-smoke.mjs": "jones-owned",
+    "scripts/jones/serverParallelism/qualificationResult.mjs": "jones-owned",
+    "scripts/jones/serverParallelism/qualificationResult.node-test.mjs": "jones-owned",
+    "scripts/jones/serverParallelism/storage.mjs": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

@@ -393,6 +393,8 @@ protection or ruleset enforces it today; this contract does.
 Every other check is advisory:
 
 - `Jones update qualification`;
+- `Server parallel qualification` (serial Linux/macOS source, bundle, Electron Node
+  and installed SEA measurements; failed or unknown evidence is not qualification);
 - `Native enrollment candidate`;
 - `Linux CLI artifacts`;
 - `Mac Desktop Artifact`;

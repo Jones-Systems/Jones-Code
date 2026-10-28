@@ -4,16 +4,18 @@ import * as NodeTimers from "node:timers";
 import type { Worker } from "node:worker_threads";
 
 /** A timeout is uncertainty, never permission to replace a native connection. */
-export const retireReaderWorker = async (
-  worker: Worker,
-  timeoutMs = 10_000,
-): Promise<boolean> => {
+export const retireReaderWorker = async (worker: Worker, timeoutMs = 10_000): Promise<boolean> => {
   let timer: ReturnType<typeof NodeTimers.setTimeout> | undefined;
   try {
     return await Promise.race([
-      worker.terminate().then(() => true, () => false),
+      worker.terminate().then(
+        () => true,
+        () => false,
+      ),
       // @effect-diagnostics-next-line globalTimers:off -- Worker termination must time out independently of any caller fiber or Effect test clock; finally clears this timer.
-      new Promise<false>((resolve) => { timer = NodeTimers.setTimeout(() => resolve(false), timeoutMs); }),
+      new Promise<false>((resolve) => {
+        timer = NodeTimers.setTimeout(() => resolve(false), timeoutMs);
+      }),
     ]);
   } catch {
     return false;

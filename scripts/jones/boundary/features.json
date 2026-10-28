@@ -2652,7 +2652,10 @@
         "packages/shared/src/nodeSqliteClient.test.ts",
         "scripts/jones/serverParallelism/buildIdentity.node-test.mjs",
         "apps/server/src/jones/serverParallelism/metrics.test.ts",
-        "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts"
+        "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
+        "apps/server/src/jones/serverParallelism/resourceSamples.test.ts",
+        "scripts/jones/serverParallelism/commandIdentity.node-test.mjs",
+        "scripts/jones/serverParallelism/qualificationResult.node-test.mjs"
       ],
       "scope": "One writer/provider/event authority; explicit 2/3-reader admission and one shared 2/3-child workspace compute layer. Whole-generation charged residency, hidden same-build dispatch, scoped maintenance reads and transactional shell-dependency capture. Native/process/benchmark harnesses require qualified execution; authored tests alone are not passing evidence. Existing shared domain tests retain real native algorithms through a test-only service adapter; actual process isolation is covered separately. The existing MCP integration harness retains its completion-offer barrier correction because its real toolkit scenarios reset results independently of queued wake notifications; assertions retain exact delivery counts."
     },

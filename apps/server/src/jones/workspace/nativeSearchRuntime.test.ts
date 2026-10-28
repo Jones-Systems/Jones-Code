@@ -177,64 +177,172 @@ it.effect.each(["paths", "content"] as const)(
     ),
 );
 
-it.effect("sets the pinned native cache and watcher controls without a grep file-size filter", () => Effect.scoped(Effect.gen(function* () {
-  const grep = vi.fn((_query: string, _options?: GrepOptions) => ({ ok: true as const, value: { items: [], totalMatched: 0, totalFilesSearched: 0, totalFiles: 0, filteredFileCount: 0, nextCursor: null } }));
-  const finder = { destroy: vi.fn(), waitForIndexReady: vi.fn(async () => ({ ok: true as const, value: true })), grep } as unknown as FileFinder;
-  const create = vi.spyOn(FileFinder, "create").mockReturnValueOnce({ ok: true, value: finder });
-  const runtime = yield* WorkspaceSearchIndex.make("/synthetic", "content");
-  yield* runtime.searchContents({ query: "rare", limit: 3, caseSensitive: true, wholeWord: false, useRegex: false });
-  expect(create).toHaveBeenCalledWith(expect.objectContaining({ disableWatch: false, disableMmapCache: true,
-    disableContentIndexing: false, cacheBudgetMaxFiles: 1024, cacheBudgetMaxBytes: 32 * 1024 * 1024 }));
-  expect(create.mock.calls[0]?.[0]).not.toHaveProperty("cacheBudgetMaxFileSize");
-  const options = grep.mock.calls[0]?.[1] as GrepOptions | undefined;
-  expect(options).toMatchObject({ timeBudgetMs: 10, enforceTimeBudget: true });
-  expect(options).not.toHaveProperty("maxFileSize");
-})));
+it.effect("sets the pinned native cache and watcher controls without a grep file-size filter", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const grep = vi.fn((_query: string, _options?: GrepOptions) => ({
+        ok: true as const,
+        value: {
+          items: [],
+          totalMatched: 0,
+          totalFilesSearched: 0,
+          totalFiles: 0,
+          filteredFileCount: 0,
+          nextCursor: null,
+        },
+      }));
+      const finder = {
+        destroy: vi.fn(),
+        waitForIndexReady: vi.fn(async () => ({ ok: true as const, value: true })),
+        grep,
+      } as unknown as FileFinder;
+      const create = vi
+        .spyOn(FileFinder, "create")
+        .mockReturnValueOnce({ ok: true, value: finder });
+      const runtime = yield* WorkspaceSearchIndex.make("/synthetic", "content");
+      yield* runtime.searchContents({
+        query: "rare",
+        limit: 3,
+        caseSensitive: true,
+        wholeWord: false,
+        useRegex: false,
+      });
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          disableWatch: false,
+          disableMmapCache: true,
+          disableContentIndexing: false,
+          cacheBudgetMaxFiles: 1024,
+          cacheBudgetMaxBytes: 32 * 1024 * 1024,
+        }),
+      );
+      expect(create.mock.calls[0]?.[0]).not.toHaveProperty("cacheBudgetMaxFileSize");
+      const options = grep.mock.calls[0]?.[1] as GrepOptions | undefined;
+      expect(options).toMatchObject({ timeBudgetMs: 10, enforceTimeBudget: true });
+      expect(options).not.toHaveProperty("maxFileSize");
+    }),
+  ),
+);
 
-it.effect("retains sorted directory ancestors and the 25000-entry listing boundary", () => Effect.scoped(Effect.gen(function* () {
-  const mixedSearch = vi.fn(() => ({ ok: true as const, value: { items: Array.from({ length: 25_002 }, (_, i) => ({ type: "file" as const, item: fileItem(`src/nested/${String(i).padStart(5, "0")}.ts`) })), scores: [], totalMatched: 25_002, totalFiles: 25_002, totalDirs: 0 } }));
-  const finder = { destroy: vi.fn(), waitForIndexReady: vi.fn(async () => ({ ok: true as const, value: true })), mixedSearch } as unknown as FileFinder;
-  vi.spyOn(FileFinder, "create").mockReturnValueOnce({ ok: true, value: finder });
-  const runtime = yield* WorkspaceSearchIndex.make("/synthetic");
-  const result = yield* runtime.list();
-  expect(result.entries).toHaveLength(25_000); expect(result.truncated).toBe(true);
-  expect(result.entries.slice(0, 2)).toEqual([{ path: "src", kind: "directory" }, { path: "src/nested", kind: "directory" }]);
-  expect(mixedSearch).toHaveBeenCalledWith("", { pageSize: 25_002, maxThreads: 1 });
-})));
+it.effect("retains sorted directory ancestors and the 25000-entry listing boundary", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const mixedSearch = vi.fn(() => ({
+        ok: true as const,
+        value: {
+          items: Array.from({ length: 25_002 }, (_, i) => ({
+            type: "file" as const,
+            item: fileItem(`src/nested/${String(i).padStart(5, "0")}.ts`),
+          })),
+          scores: [],
+          totalMatched: 25_002,
+          totalFiles: 25_002,
+          totalDirs: 0,
+        },
+      }));
+      const finder = {
+        destroy: vi.fn(),
+        waitForIndexReady: vi.fn(async () => ({ ok: true as const, value: true })),
+        mixedSearch,
+      } as unknown as FileFinder;
+      vi.spyOn(FileFinder, "create").mockReturnValueOnce({ ok: true, value: finder });
+      const runtime = yield* WorkspaceSearchIndex.make("/synthetic");
+      const result = yield* runtime.list();
+      expect(result.entries).toHaveLength(25_000);
+      expect(result.truncated).toBe(true);
+      expect(result.entries.slice(0, 2)).toEqual([
+        { path: "src", kind: "directory" },
+        { path: "src/nested", kind: "directory" },
+      ]);
+      expect(mixedSearch).toHaveBeenCalledWith("", { pageSize: 25_002, maxThreads: 1 });
+    }),
+  ),
+);
 
-it.effect("allows partial path readiness while retaining native scan/warmup observations", () => Effect.scoped(Effect.gen(function* () {
-  const finder = { destroy: vi.fn(), waitForIndexReady: vi.fn(async () => ({ ok: true as const, value: false })),
-    isScanning: () => true,
-    getScanProgress: () => ({ ok: true as const, value: { isScanning: true, isWarmupComplete: false } }),
-    mixedSearch: () => ({ ok: true as const, value: { items: [], scores: [], totalMatched: 0, totalFiles: 0, totalDirs: 0 } }),
-  } as unknown as FileFinder;
-  vi.spyOn(FileFinder, "create").mockReturnValueOnce({ ok: true, value: finder });
-  const runtime = yield* WorkspaceSearchIndex.make("/synthetic", "paths");
-  expect(yield* runtime.list()).toEqual({ entries: [], truncated: true });
-  expect(runtime.status()).toEqual({ scanning: true, warmupComplete: false });
-})));
+it.effect("allows partial path readiness while retaining native scan/warmup observations", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const finder = {
+        destroy: vi.fn(),
+        waitForIndexReady: vi.fn(async () => ({ ok: true as const, value: false })),
+        isScanning: () => true,
+        getScanProgress: () => ({
+          ok: true as const,
+          value: { isScanning: true, isWarmupComplete: false },
+        }),
+        mixedSearch: () => ({
+          ok: true as const,
+          value: { items: [], scores: [], totalMatched: 0, totalFiles: 0, totalDirs: 0 },
+        }),
+      } as unknown as FileFinder;
+      vi.spyOn(FileFinder, "create").mockReturnValueOnce({ ok: true, value: finder });
+      const runtime = yield* WorkspaceSearchIndex.make("/synthetic", "paths");
+      expect(yield* runtime.list()).toEqual({ entries: [], truncated: true });
+      expect(runtime.status()).toEqual({ scanning: true, warmupComplete: false });
+    }),
+  ),
+);
 
-it.effect("preserves actual pinned-native Unicode whole-word matches and refresh over synthetic files", () => Effect.scoped(Effect.gen(function* () {
-  const fs = yield* Effect.promise(() => import("node:fs/promises"));
-  const os = yield* Effect.promise(() => import("node:os"));
-  const path = yield* Effect.promise(() => import("node:path"));
-  const directory = yield* Effect.acquireRelease(
-    Effect.promise(async () => fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "jones-native-compute-")))) ,
-    (directory) => Effect.promise(() => fs.rm(directory, { recursive: true, force: true })),
-  );
-  yield* Effect.promise(() => fs.writeFile(path.join(directory, "unicode.txt"), "café needle needleSuffix\n前 😀needle.\n"));
-  const runtime = yield* WorkspaceSearchIndex.make(directory, "content");
-  const result = yield* runtime.searchContents({ query: "needle", limit: 20, caseSensitive: true, wholeWord: true, useRegex: false });
-  expect(result.matches.map((m) => ({ line: m.lineNumber, ranges: m.matchRanges }))).toEqual([
-    { line: 1, ranges: [{ start: 5, end: 11 }] }, { line: 2, ranges: [{ start: 4, end: 10 }] },
-  ]);
-  yield* Effect.promise(() => fs.writeFile(path.join(directory, "fresh.txt"), "rare-fresh-match\n"));
-  yield* runtime.refresh();
-  const refreshed = yield* runtime.searchContents({ query: "rare-fresh-match", limit: 2, caseSensitive: true, wholeWord: false, useRegex: false });
-  expect(refreshed.matches.map((m) => m.path)).toEqual(["fresh.txt"]);
-  // The cache budget must not narrow the native default searchable file-size range.
-  yield* Effect.promise(() => fs.writeFile(path.join(directory, "large.txt"), "x".repeat(1024 * 1024 + 100) + "\nlarge-file-match\n"));
-  yield* runtime.refresh();
-  const large = yield* runtime.searchContents({ query: "large-file-match", limit: 2, caseSensitive: true, wholeWord: false, useRegex: false });
-  expect(large.matches.map((m) => m.path)).toEqual(["large.txt"]);
-})));
+it.effect(
+  "preserves actual pinned-native Unicode whole-word matches and refresh over synthetic files",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* Effect.promise(() => import("node:fs/promises"));
+        const os = yield* Effect.promise(() => import("node:os"));
+        const path = yield* Effect.promise(() => import("node:path"));
+        const directory = yield* Effect.acquireRelease(
+          Effect.promise(async () =>
+            fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "jones-native-compute-"))),
+          ),
+          (directory) => Effect.promise(() => fs.rm(directory, { recursive: true, force: true })),
+        );
+        yield* Effect.promise(() =>
+          fs.writeFile(
+            path.join(directory, "unicode.txt"),
+            "café needle needleSuffix\n前 😀needle.\n",
+          ),
+        );
+        const runtime = yield* WorkspaceSearchIndex.make(directory, "content");
+        const result = yield* runtime.searchContents({
+          query: "needle",
+          limit: 20,
+          caseSensitive: true,
+          wholeWord: true,
+          useRegex: false,
+        });
+        expect(result.matches.map((m) => ({ line: m.lineNumber, ranges: m.matchRanges }))).toEqual([
+          { line: 1, ranges: [{ start: 5, end: 11 }] },
+          { line: 2, ranges: [{ start: 4, end: 10 }] },
+        ]);
+        yield* Effect.promise(() =>
+          fs.writeFile(path.join(directory, "fresh.txt"), "rare-fresh-match\n"),
+        );
+        yield* runtime.refresh();
+        const refreshed = yield* runtime.searchContents({
+          query: "rare-fresh-match",
+          limit: 2,
+          caseSensitive: true,
+          wholeWord: false,
+          useRegex: false,
+        });
+        expect(refreshed.matches.map((m) => m.path)).toEqual(["fresh.txt"]);
+        // The cache budget must not narrow the native default searchable file-size range.
+        yield* Effect.promise(() =>
+          fs.writeFile(
+            path.join(directory, "large.txt"),
+            "x".repeat(1024 * 1024 + 100) + "\nlarge-file-match\n",
+          ),
+        );
+        yield* runtime.refresh();
+        const large = yield* runtime.searchContents({
+          query: "large-file-match",
+          limit: 2,
+          caseSensitive: true,
+          wholeWord: false,
+          useRegex: false,
+        });
+        expect(large.matches.map((m) => m.path)).toEqual(["large.txt"]);
+      }),
+    ),
+);

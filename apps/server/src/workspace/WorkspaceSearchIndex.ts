@@ -1,9 +1,19 @@
-import type { ProjectEntryKind, ProjectListEntriesResult, ProjectSearchContentsInput, ProjectSearchContentsResult, ProjectSearchEntriesResult } from "@t3tools/contracts";
+import type {
+  ProjectEntryKind,
+  ProjectListEntriesResult,
+  ProjectSearchContentsInput,
+  ProjectSearchContentsResult,
+  ProjectSearchEntriesResult,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as LayerMap from "effect/LayerMap";
-import { WorkspaceSearchIndexSearchFailed, WorkspaceSearchIndexRefreshFailed, WorkspaceSearchIndexScanTimedOut } from "../jones/serverCompute/workspaceErrors.ts";
+import {
+  WorkspaceSearchIndexSearchFailed,
+  WorkspaceSearchIndexRefreshFailed,
+  WorkspaceSearchIndexScanTimedOut,
+} from "../jones/serverCompute/workspaceErrors.ts";
 export * from "../jones/serverCompute/workspaceErrors.ts";
 import { makeSearchWorkerProxy } from "../jones/workspace/searchWorkerProxy.ts";
 
@@ -28,8 +38,10 @@ export class WorkspaceSearchIndex extends Context.Service<
   }
 >()("t3/workspace/WorkspaceSearchIndex") {}
 
-const make = Effect.fn("WorkspaceSearchIndex.make")((cwd: string, variant: WorkspaceSearchIndexVariant = "paths") =>
-  makeSearchWorkerProxy({ cwd, variant }).pipe(Effect.map(WorkspaceSearchIndex.of)));
+const make = Effect.fn("WorkspaceSearchIndex.make")(
+  (cwd: string, variant: WorkspaceSearchIndexVariant = "paths") =>
+    makeSearchWorkerProxy({ cwd, variant }).pipe(Effect.map(WorkspaceSearchIndex.of)),
+);
 
 export const WORKSPACE_SEARCH_INDEX_VARIANTS = ["paths", "content"] as const;
 export type WorkspaceSearchIndexVariant = (typeof WORKSPACE_SEARCH_INDEX_VARIANTS)[number];

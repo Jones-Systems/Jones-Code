@@ -11,7 +11,9 @@
     "apps/server/src/jones/workspace/nativeSearchRuntime.ts",
     "apps/server/src/jones/workspace/nativeSearchRuntime.test.ts",
     "apps/server/src/jones/workspace/searchWorkerProxy.ts",
-    "apps/server/src/jones/workspace/searchWorkerProxy.test.ts"
+    "apps/server/src/jones/workspace/searchWorkerProxy.test.ts",
+    "scripts/jones/serverParallelism/",
+    ".github/workflows/server-parallel-qualification.yml"
   ],
   "hookPaths": [],
   "tombstones": [],
