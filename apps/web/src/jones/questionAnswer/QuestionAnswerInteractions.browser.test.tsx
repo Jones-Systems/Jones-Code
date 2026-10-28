@@ -29,6 +29,7 @@ import {
 import { act, useEffect, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import { userEvent } from "vite-plus/test/browser";
 import { ComposerPendingUserInputPanel } from "../../components/chat/ComposerPendingUserInputPanel";
 import {
   buildPendingUserInputAnswers,
@@ -286,16 +287,56 @@ it("ignores digits, Shift+Enter and IME while typing, then submits once with Ent
   expect(output("messages")).toBe("[]");
 });
 
-it.each(["  literal\n  ", ""])("sends literal answer %j exactly with Mod+Enter", async (value) => {
+it.each(["  literal\n  ", ""])("sends literal answer %j exactly with Enter", async (value) => {
   await act(async () =>
     root.render(<Harness questions={[{ ...question, initialAnswer: "  original\n  " }]} />),
   );
   expect(answerField().value).toBe("  original\n  ");
   await typeAnswer(value);
-  expect((await key({})).defaultPrevented).toBe(false);
-  expect(output("answer")).toBe("null");
-  await key({ ctrlKey: true });
+  expect((await key({})).defaultPrevented).toBe(true);
   expect(output("answer")).toBe(JSON.stringify({ approach: value }));
+  expect(output("messages")).toBe("[]");
+});
+
+it("saves each free-form answer with Enter, advances one question, and sends on the last", async () => {
+  const questions = [0, 1, 2].map((index) => ({
+    ...question,
+    id: `question-${index}`,
+    header: `Question ${index + 1}`,
+    options: [],
+    initialAnswer: "",
+  }));
+  await act(async () => root.render(<Harness questions={questions} />));
+  for (const [index, answer] of ["First answer", "Second answer", "Third answer"].entries()) {
+    expect(container.textContent).toContain(`${index + 1}/3`);
+    await typeAnswer(answer);
+    expect((await key({})).defaultPrevented).toBe(true);
+    if (index < 2) {
+      expect(output("answer")).toBe("null");
+      expect(answerField().value).toBe("");
+    }
+  }
+  expect(output("answer")).toBe(
+    JSON.stringify({
+      "question-0": "First answer",
+      "question-1": "Second answer",
+      "question-2": "Third answer",
+    }),
+  );
+  expect(output("messages")).toBe("[]");
+});
+
+it("inserts a newline with Shift+Enter in a prefilled answer, then submits with Enter", async () => {
+  await act(async () =>
+    root.render(<Harness questions={[{ ...question, options: [], initialAnswer: "First line" }]} />),
+  );
+  answerField().focus();
+  answerField().setSelectionRange(answerField().value.length, answerField().value.length);
+  await act(async () => userEvent.keyboard("{Shift>}{Enter}{/Shift}Second line"));
+  expect(answerField().value).toBe("First line\nSecond line");
+  expect(output("answer")).toBe("null");
+  await act(async () => userEvent.keyboard("{Enter}"));
+  expect(output("answer")).toBe(JSON.stringify({ approach: "First line\nSecond line" }));
   expect(output("messages")).toBe("[]");
 });
 

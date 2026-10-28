@@ -50,7 +50,6 @@ export function isQuestionAnswerSubmitKey(
     KeyboardEvent,
     "key" | "shiftKey" | "altKey" | "ctrlKey" | "metaKey" | "isComposing" | "keyCode" | "repeat"
   >,
-  literal: boolean,
 ): boolean {
   return (
     event.key === "Enter" &&
@@ -58,8 +57,7 @@ export function isQuestionAnswerSubmitKey(
     !event.altKey &&
     !event.isComposing &&
     event.keyCode !== 229 &&
-    !event.repeat &&
-    (!literal || event.ctrlKey || event.metaKey)
+    !event.repeat
   );
 }
 

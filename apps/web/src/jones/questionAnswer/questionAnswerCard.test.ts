@@ -93,11 +93,10 @@ it("blocks final submission while another question's attachment is unready", () 
   ).toBe(true);
 });
 
-it("ignores composing, repeat and newline keys; literal editing requires Mod+Enter", () => {
-  expect(isQuestionAnswerSubmitKey(event, false)).toBe(true);
-  expect(isQuestionAnswerSubmitKey(event, true)).toBe(false);
-  expect(isQuestionAnswerSubmitKey({ ...event, metaKey: true }, true)).toBe(true);
-  expect(isQuestionAnswerSubmitKey({ ...event, ctrlKey: true }, true)).toBe(true);
+it("submits with Enter or Mod+Enter and ignores composing, repeat and newline keys", () => {
+  expect(isQuestionAnswerSubmitKey(event)).toBe(true);
+  expect(isQuestionAnswerSubmitKey({ ...event, metaKey: true })).toBe(true);
+  expect(isQuestionAnswerSubmitKey({ ...event, ctrlKey: true })).toBe(true);
   for (const change of [
     { isComposing: true },
     { keyCode: 229 },
@@ -105,7 +104,7 @@ it("ignores composing, repeat and newline keys; literal editing requires Mod+Ent
     { shiftKey: true },
     { altKey: true },
   ])
-    expect(isQuestionAnswerSubmitKey({ ...event, ...change }, false)).toBe(false);
+    expect(isQuestionAnswerSubmitKey({ ...event, ...change })).toBe(false);
 });
 
 describe("normal message delivery while a question is pending", () => {
