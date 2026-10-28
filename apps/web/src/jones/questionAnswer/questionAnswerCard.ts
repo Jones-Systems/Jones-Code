@@ -48,8 +48,7 @@ export function deriveQuestionAnswerFooterState(input: {
   return {
     notes,
     hasChoice,
-    fieldLabel: notes && hasChoice ? "Note (optional): sent with your choice" : "Your answer",
-    sends: prompt.responseCapability === "message" ? progress.resolvedAnswer : null,
+    fieldLabel: notes && hasChoice ? "Note (optional): sent with your choice" : null,
     blockedReason,
     showField: progress.activeQuestion?.allowCustomAnswer !== false,
     fieldDisabled,
