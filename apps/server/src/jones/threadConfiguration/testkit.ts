@@ -250,8 +250,8 @@ export function makeRestartAdapter(
             updatedAt: createdAt,
           } satisfies OrchestrationV2ProviderThread);
         }),
-        retireThreadForTransfer: ({ providerThread, allowProducerRetirement }) =>
-          Effect.gen(function* () {
+        retireThreadForTransfer: Effect.fn("ThreadConfigurationTest.retireThreadForTransfer")(
+          function* ({ providerThread, allowProducerRetirement }) {
             const binding = ProviderAdapter.runtimeBinding(providerThread, runtimeGeneration);
             if (
               binding === undefined ||
@@ -269,7 +269,8 @@ export function makeRestartAdapter(
                   ? ("producer_exited" as const)
                   : ("thread_closed" as const),
             };
-          }),
+          },
+        ),
         resumeThread: ({ providerThread, modelSelection }) =>
           Ref.update(state, (current) => ({
             ...current,
