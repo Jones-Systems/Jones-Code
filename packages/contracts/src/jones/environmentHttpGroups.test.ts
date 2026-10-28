@@ -113,6 +113,7 @@ describe("Jones environment HTTP registration", () => {
       ["download", "POST", "/api/jones-updates/download"],
       ["downloadExact", "POST", "/api/jones-updates/download-exact"],
       ["install", "POST", "/api/jones-updates/install"],
+      ["peerSetupOwnerOperations", "POST", "/api/workstreams/native/peer-setup/v1/operations"],
       ["ownerOperations", "POST", "/api/workstreams/native/owner/v1/operations"],
       ["context", "GET", "/api/workstreams/native/v1/context"],
       ["attestations", "POST", "/api/workstreams/native/v1/attestations"],

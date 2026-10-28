@@ -1217,7 +1217,7 @@ export const layerNativeHomeBindToolkit = Layer.unwrap(
   ),
 );
 
-export const layerNativePeerSetupToolkit = Layer.unwrap(
+const layerNativePeerSetupToolkit = Layer.unwrap(
   Effect.map(Effect.serviceOption(NativePeerSetup.PeerSetup), (setup) =>
     Option.isNone(setup)
       ? Layer.empty

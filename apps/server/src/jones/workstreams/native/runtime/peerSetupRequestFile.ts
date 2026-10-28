@@ -47,13 +47,13 @@ const failure = (e: unknown) =>
 const unsafe = () => {
   throw new SetupRequestFileError({ code: "unsafe_file" });
 };
-const safeDirectory = (path: string) => {
+const safeDirectory = (path: string, privateDirectory = false) => {
   const s = NodeFS.lstatSync(path);
   if (
     !s.isDirectory() ||
     s.isSymbolicLink() ||
     s.uid !== process.getuid?.() ||
-    (s.mode & 0o077) !== 0 ||
+    (s.mode & (privateDirectory ? 0o077 : 0o022)) !== 0 ||
     NodeFS.realpathSync(path) !== path
   )
     unsafe();
@@ -81,7 +81,7 @@ const location = (home: string, setupId: string, create: boolean, phase?: SetupA
   for (const leaf of ["workstreams", "native-peer-setup"]) {
     dir = NodePath.join(dir, leaf);
     try {
-      safeDirectory(dir);
+      safeDirectory(dir, leaf === "native-peer-setup");
     } catch (e) {
       if (!missing(e) || !create) throw e;
       try {
@@ -92,7 +92,7 @@ const location = (home: string, setupId: string, create: boolean, phase?: SetupA
         )
           throw race;
       }
-      safeDirectory(dir);
+      safeDirectory(dir, leaf === "native-peer-setup");
       syncDirectory(NodePath.dirname(dir));
     }
   }
