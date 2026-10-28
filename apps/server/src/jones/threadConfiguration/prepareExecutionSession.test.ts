@@ -98,7 +98,9 @@ function makeFixture(
     projection.runs[0]!,
     projection.providerThreads[0]!,
     projection,
-    fault === "selection" ? Effect.fail("Selection changed while retirement was pending.") : Effect.void,
+    fault === "selection"
+      ? Effect.fail("Selection changed while retirement was pending.")
+      : Effect.void,
   ).pipe(
     Effect.andThen(
       Effect.sync(() => {
@@ -175,12 +177,14 @@ it.effect.each(["switch_model_in_session", "create_with_handoff"] as const)(
     }),
 );
 
-it.effect("a selection changed during retirement prevents replacement persistence and opening", () =>
-  Effect.gen(function* () {
-    const fixture = makeFixture("restart_and_resume", "selection");
-    const result = yield* Effect.exit(fixture.start);
-    assert.equal(result._tag, "Failure");
-    assert.deepEqual(fixture.order, ["detach"]);
-    assert.deepEqual(fixture.writes, []);
-  }),
+it.effect(
+  "a selection changed during retirement prevents replacement persistence and opening",
+  () =>
+    Effect.gen(function* () {
+      const fixture = makeFixture("restart_and_resume", "selection");
+      const result = yield* Effect.exit(fixture.start);
+      assert.equal(result._tag, "Failure");
+      assert.deepEqual(fixture.order, ["detach"]);
+      assert.deepEqual(fixture.writes, []);
+    }),
 );

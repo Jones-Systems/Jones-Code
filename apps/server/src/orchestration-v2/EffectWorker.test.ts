@@ -1094,7 +1094,9 @@ it.effect.each(["single", "batch", "notification"] as const)(
 it.effect("restart replacement requests confirmed writer retirement before start", () =>
   Effect.gen(function* () {
     const events = yield* Ref.make<ReadonlyArray<string>>([]);
-    const detaches: Array<Parameters<ProviderSessionManager.ProviderSessionManagerV2Shape["detach"]>[0]> = [];
+    const detaches: Array<
+      Parameters<ProviderSessionManager.ProviderSessionManagerV2Shape["detach"]>[0]
+    > = [];
     yield* Effect.gen(function* () {
       const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
       const effect = restartEffect(yield* DateTime.now, { type: "detach" });

@@ -1875,11 +1875,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               ? "Codex cannot admit a thread while a native start is unconfirmed."
               : !producer.active || producer !== currentProducer
                 ? "Codex cannot admit a thread to an inactive or replaced runtime producer."
-                : [...producer.bindings].some(([nativeId, bound]) =>
-                    bound.appThreadId === threadId && threadRetirements.owns(producer, nativeId),
-                  )
+                : [...producer.bindings].some(
+                      ([nativeId, bound]) =>
+                        bound.appThreadId === threadId &&
+                        threadRetirements.owns(producer, nativeId),
+                    )
                   ? "Codex cannot rejoin a conversation committed to writer transfer in this producer."
-                : undefined;
+                  : undefined;
             return detail !== undefined
               ? Effect.fail(new ProviderRuntimeBindingError({ driver: CODEX_PROVIDER, detail }))
               : (input.runtimeLifecycle?.admit({
@@ -1898,7 +1900,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               const producerScope = yield* Scope.make();
               const retirement = yield* makeCodexProducerRetirement(
                 Scope.close(producerScope, Exit.void),
-                controlAdmission.retireGeneration({ instanceId: adapterOptions.instanceId, runtimeGeneration: generation }),
+                controlAdmission.retireGeneration({
+                  instanceId: adapterOptions.instanceId,
+                  runtimeGeneration: generation,
+                }),
               );
               const termination = yield* Deferred.make<CodexErrors.CodexAppServerError>();
               const opened = yield* restore(
@@ -1970,14 +1975,18 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               producer.client.handleServerNotification(method, (payload) =>
                 Effect.gen(function* () {
                   // Closure evidence belongs to the captured producer, even while it retires.
-                  if (method === "thread/closed" && typeof payload === "object" && payload !== null) {
+                  if (
+                    method === "thread/closed" &&
+                    typeof payload === "object" &&
+                    payload !== null
+                  ) {
                     const nativeId = Reflect.get(payload, "threadId");
                     if (typeof nativeId === "string") {
                       producer.unloadedThreads.add(nativeId);
                       yield* threadRetirements.observeClosed(producer, nativeId);
                     }
                   }
-                  return yield* (producer.active && producer === currentProducer
+                  return yield* producer.active && producer === currentProducer
                     ? deferPendingStartNotification(
                         producer,
                         method,
@@ -1986,7 +1995,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                           Effect.provideService(CodexProducerContext, producer),
                         ),
                       )
-                    : Effect.void);
+                    : Effect.void;
                 }),
               );
             registrations.push(install);
@@ -3875,25 +3884,40 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   Effect.orElseSucceed(() => null),
                   Effect.flatMap((response) =>
                     response === null
-                      ? lifecyclePermit.withPermits(1)(Effect.gen(function* () {
-                          if (!metadataProducer.active || metadataProducer !== currentProducer || threadRetirements.owns(metadataProducer, input.nativeThreadId))
-                            return yield* CodexErrors.CodexAppServerRequestError.invalidRequest("The captured Codex child cannot resume during writer transfer.");
-                          yield* requestAdmission("thread/resume", { threadId: input.nativeThreadId });
-                          return yield* metadataProducer.client.raw.request("thread/resume", {
-                            threadId: input.nativeThreadId,
-                            excludeTurns: true,
-                          }).pipe(Effect.flatMap(decodeCodexChildModel));
-                        })).pipe(
-                          // The metadata deadline cannot cancel an already dispatched native resume.
-                          Effect.forkIn(metadataProducer.scope, { startImmediately: true }),
-                          Effect.flatMap(Fiber.join),
-                        )
+                      ? lifecyclePermit
+                          .withPermits(1)(
+                            Effect.gen(function* () {
+                              if (
+                                !metadataProducer.active ||
+                                metadataProducer !== currentProducer ||
+                                threadRetirements.owns(metadataProducer, input.nativeThreadId)
+                              )
+                                return yield* CodexErrors.CodexAppServerRequestError.invalidRequest(
+                                  "The captured Codex child cannot resume during writer transfer.",
+                                );
+                              yield* requestAdmission("thread/resume", {
+                                threadId: input.nativeThreadId,
+                              });
+                              return yield* metadataProducer.client.raw
+                                .request("thread/resume", {
+                                  threadId: input.nativeThreadId,
+                                  excludeTurns: true,
+                                })
+                                .pipe(Effect.flatMap(decodeCodexChildModel));
+                            }),
+                          )
+                          .pipe(
+                            // The metadata deadline cannot cancel an already dispatched native resume.
+                            Effect.forkIn(metadataProducer.scope, { startImmediately: true }),
+                            Effect.flatMap(Fiber.join),
+                          )
                       : Effect.succeed(response),
                   ),
                   Effect.timeout("5 seconds"),
                   Effect.flatMap((response) =>
                     response.thread.id === input.nativeThreadId &&
-                    metadataProducer.active && metadataProducer === currentProducer &&
+                    metadataProducer.active &&
+                    metadataProducer === currentProducer &&
                     !subagentSelections.has(input.nativeThreadId)
                       ? updateSubagentSelection(
                           input.nativeThreadId,
@@ -10016,7 +10040,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             }
           }
           const bound = currentProducer.bindings.get(nativeId);
-          if (bound === undefined || bound.id !== turnInput.providerThread.id || currentProducer.unloadedThreads.has(nativeId)) {
+          if (
+            bound === undefined ||
+            bound.id !== turnInput.providerThread.id ||
+            currentProducer.unloadedThreads.has(nativeId)
+          ) {
             const resumed = yield* runtime
               .resumeThread({
                 providerThread: turnInput.providerThread,
@@ -10146,75 +10174,118 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         const assertThreadNotRetiring = (providerThread: OrchestrationV2ProviderThread) =>
           Effect.suspend(() =>
             threadRetirements.owns(currentProducer, providerThread.nativeThreadRef?.nativeId ?? "")
-              ? toProtocolError("This Codex conversation is committed to writer transfer; this producer cannot rejoin it.")
+              ? toProtocolError(
+                  "This Codex conversation is committed to writer transfer; this producer cannot rejoin it.",
+                )
               : Effect.void,
           );
-        const canRetireExclusiveProducer = Effect.fn("CodexAdapterV2.canRetireExclusiveProducer")(function* (
-          producer: CodexRuntimeProducer,
-          providerThread: OrchestrationV2ProviderThread,
-        ) {
-          const nativeId = providerThread.nativeThreadRef?.nativeId ?? "";
-          if (
-            !producer.active || producer !== currentProducer || producer.processExit === undefined ||
-            producer.bindings.size !== 1 || producer.bindings.get(nativeId)?.id !== providerThread.id ||
-            hasUnknownNativeStart() || capacityScopeClosed ||
-            (yield* Ref.get(activeTurns)).size > 0 || (yield* Ref.get(pendingRootTurns)).size > 0 ||
-            (yield* Ref.get(pendingSubagentTurns)).size > 0 ||
-            (yield* Ref.get(pendingRuntimeRequests)).size > 0 ||
-            (yield* Ref.get(interruptingNativeTurns)).size > 0 ||
-            pendingForkBindings.size > 0 || capacityByThread.size > 0 || goalHolds.size > 0 ||
-            goalActivations.size > 0 || goalStops.size > 0 ||
-            providerThread.goal?.status === "active" ||
-            [...goalsByNativeThread.values()].some((goal) => goal?.status === "active") ||
-            [...continuityByThread.values()].some((entry) => entry.recovery.held) ||
-            [...(yield* Ref.get(subagentThreads)).values()].some((agent) => isOrchestrationV2WorkActive(agent.task.status)) ||
-            (yield* runtime.hasPendingBackgroundWork!)
-          ) return false;
-          producer.active = false;
-          producer.eventProducer.drain();
-          return true;
-        });
+        const canRetireExclusiveProducer = Effect.fn("CodexAdapterV2.canRetireExclusiveProducer")(
+          function* (
+            producer: CodexRuntimeProducer,
+            providerThread: OrchestrationV2ProviderThread,
+          ) {
+            const nativeId = providerThread.nativeThreadRef?.nativeId ?? "";
+            if (
+              !producer.active ||
+              producer !== currentProducer ||
+              producer.processExit === undefined ||
+              producer.bindings.size !== 1 ||
+              producer.bindings.get(nativeId)?.id !== providerThread.id ||
+              hasUnknownNativeStart() ||
+              capacityScopeClosed ||
+              (yield* Ref.get(activeTurns)).size > 0 ||
+              (yield* Ref.get(pendingRootTurns)).size > 0 ||
+              (yield* Ref.get(pendingSubagentTurns)).size > 0 ||
+              (yield* Ref.get(pendingRuntimeRequests)).size > 0 ||
+              (yield* Ref.get(interruptingNativeTurns)).size > 0 ||
+              pendingForkBindings.size > 0 ||
+              capacityByThread.size > 0 ||
+              goalHolds.size > 0 ||
+              goalActivations.size > 0 ||
+              goalStops.size > 0 ||
+              providerThread.goal?.status === "active" ||
+              [...goalsByNativeThread.values()].some((goal) => goal?.status === "active") ||
+              [...continuityByThread.values()].some((entry) => entry.recovery.held) ||
+              [...(yield* Ref.get(subagentThreads)).values()].some((agent) =>
+                isOrchestrationV2WorkActive(agent.task.status),
+              ) ||
+              (yield* runtime.hasPendingBackgroundWork!)
+            )
+              return false;
+            producer.active = false;
+            producer.eventProducer.drain();
+            return true;
+          },
+        );
         return {
           ...runtime,
-          retireThreadForTransfer: Effect.fn("CodexAdapterV2.retireThreadForTransfer")(function* (value) {
-            const request = yield* lifecyclePermit.withPermits(1)(Effect.gen(function* () {
-              const generation = value.providerThread.runtimeIdentity?.runtimeGeneration;
-              const producer = generation === undefined ? undefined : producers.get(generation);
-              const nativeId = value.providerThread.nativeThreadRef?.nativeId;
-              const bound = nativeId === undefined ? undefined : producer?.bindings.get(nativeId);
-              const binding = bound === undefined || producer === undefined ? undefined : runtimeBinding(bound, producer.generation);
-              if (
-                producer === undefined || bound === undefined || binding === undefined ||
-                bound.id !== value.providerThread.id || bound.appThreadId !== value.providerThread.appThreadId ||
-                value.providerThread.driver !== CODEX_PROVIDER || value.providerThread.nativeThreadRef?.driver !== CODEX_PROVIDER ||
-                value.providerThread.providerSessionId !== input.providerSessionId ||
-                value.providerThread.providerInstanceId !== adapterOptions.instanceId
-              ) return yield* toProtocolError("Cannot retire an unconfirmed captured Codex conversation binding.");
-              const pending = yield* threadRetirements.begin({
-                producer,
-                binding,
-                processExit: producer.processExit,
-                dispatch: Effect.gen(function* () {
-                  const exclusive = value.allowProducerRetirement && producer.processExit !== undefined &&
-                    (yield* codexProducerOwnershipIsExclusive({
-                      nativeThreadId: binding.nativeThreadId,
-                      request: (method, params) => producer.client.raw.request(method, params),
-                    }));
-                  if (exclusive && (yield* lifecyclePermit.withPermits(1)(canRetireExclusiveProducer(producer, bound)))) {
-                    yield* producer.retirement.close.pipe(Effect.ignore, Effect.forkDetach({ startImmediately: true }));
-                    return "producer" as const;
-                  } else if (producer.active) {
-                    sessionApprovals.delete(binding.nativeThreadId);
-                    yield* producer.client.request("thread/unsubscribe", { threadId: binding.nativeThreadId }).pipe(Effect.ignore, Effect.forkDetach({ startImmediately: true }));
-                  }
-                  return "thread" as const;
+          retireThreadForTransfer: Effect.fn("CodexAdapterV2.retireThreadForTransfer")(
+            function* (value) {
+              const request = yield* lifecyclePermit.withPermits(1)(
+                Effect.gen(function* () {
+                  const generation = value.providerThread.runtimeIdentity?.runtimeGeneration;
+                  const producer = generation === undefined ? undefined : producers.get(generation);
+                  const nativeId = value.providerThread.nativeThreadRef?.nativeId;
+                  const bound =
+                    nativeId === undefined ? undefined : producer?.bindings.get(nativeId);
+                  const binding =
+                    bound === undefined || producer === undefined
+                      ? undefined
+                      : runtimeBinding(bound, producer.generation);
+                  if (
+                    producer === undefined ||
+                    bound === undefined ||
+                    binding === undefined ||
+                    bound.id !== value.providerThread.id ||
+                    bound.appThreadId !== value.providerThread.appThreadId ||
+                    value.providerThread.driver !== CODEX_PROVIDER ||
+                    value.providerThread.nativeThreadRef?.driver !== CODEX_PROVIDER ||
+                    value.providerThread.providerSessionId !== input.providerSessionId ||
+                    value.providerThread.providerInstanceId !== adapterOptions.instanceId
+                  )
+                    return yield* toProtocolError(
+                      "Cannot retire an unconfirmed captured Codex conversation binding.",
+                    );
+                  const pending = yield* threadRetirements.begin({
+                    producer,
+                    binding,
+                    processExit: producer.processExit,
+                    dispatch: Effect.gen(function* () {
+                      const exclusive =
+                        value.allowProducerRetirement &&
+                        producer.processExit !== undefined &&
+                        (yield* codexProducerOwnershipIsExclusive({
+                          nativeThreadId: binding.nativeThreadId,
+                          request: (method, params) => producer.client.raw.request(method, params),
+                        }));
+                      if (
+                        exclusive &&
+                        (yield* lifecyclePermit.withPermits(1)(
+                          canRetireExclusiveProducer(producer, bound),
+                        ))
+                      ) {
+                        yield* producer.retirement.close.pipe(
+                          Effect.ignore,
+                          Effect.forkDetach({ startImmediately: true }),
+                        );
+                        return "producer" as const;
+                      } else if (producer.active) {
+                        sessionApprovals.delete(binding.nativeThreadId);
+                        yield* producer.client
+                          .request("thread/unsubscribe", { threadId: binding.nativeThreadId })
+                          .pipe(Effect.ignore, Effect.forkDetach({ startImmediately: true }));
+                      }
+                      return "thread" as const;
+                    }),
+                  });
+                  if (pending === undefined)
+                    return yield* toProtocolError("The captured Codex transfer binding changed.");
+                  return pending;
                 }),
-              });
-              if (pending === undefined) return yield* toProtocolError("The captured Codex transfer binding changed.");
-              return pending;
-            }));
-            return yield* request.wait;
-          }),
+              );
+              return yield* request.wait;
+            },
+          ),
           captureRuntimeStop: Effect.fn("CodexAdapterV2.captureRuntimeStop")(
             function* (providerThread) {
               const producer = currentProducer;
@@ -10245,39 +10316,43 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 binding,
                 evidenceRevision: revision,
                 isCurrent,
-                stop: lifecyclePermit.withPermits(1)(
-                  Effect.gen(function* () {
-                    if (!(yield* isCurrent) && !producer.retirement.closing)
-                      return yield* toProtocolError(
-                        "Captured Codex runtime was replaced before stop.",
-                      );
-                    if (producer.retirement.closing) return;
-                    yield* turnTerminalizationPermit
-                      .withPermits(1)(releaseGoalHold(binding.nativeThreadId))
-                      .pipe(Effect.provideService(CodexProducerContext, producer));
-                    yield* handoffCompaction.cancel("cancelled");
-                    producer.active = false;
-                    producer.eventProducer.drain();
-                  }),
-                ).pipe(
-                  Effect.andThen(
-                    producer.retirement.close.pipe(
-                      Effect.timeout("3 seconds"),
-                      Effect.mapError(
-                        (cause) =>
-                          new ProviderRuntimeBindingError({
-                            driver: CODEX_PROVIDER,
-                            detail: "The captured Codex process exit could not be verified.",
-                            cause,
-                          }),
+                stop: lifecyclePermit
+                  .withPermits(1)(
+                    Effect.gen(function* () {
+                      if (!(yield* isCurrent) && !producer.retirement.closing)
+                        return yield* toProtocolError(
+                          "Captured Codex runtime was replaced before stop.",
+                        );
+                      if (producer.retirement.closing) return;
+                      yield* turnTerminalizationPermit
+                        .withPermits(1)(releaseGoalHold(binding.nativeThreadId))
+                        .pipe(Effect.provideService(CodexProducerContext, producer));
+                      yield* handoffCompaction.cancel("cancelled");
+                      producer.active = false;
+                      producer.eventProducer.drain();
+                    }),
+                  )
+                  .pipe(
+                    Effect.andThen(
+                      producer.retirement.close.pipe(
+                        Effect.timeout("3 seconds"),
+                        Effect.mapError(
+                          (cause) =>
+                            new ProviderRuntimeBindingError({
+                              driver: CODEX_PROVIDER,
+                              detail: "The captured Codex process exit could not be verified.",
+                              cause,
+                            }),
+                        ),
                       ),
                     ),
+                    Effect.andThen(
+                      handoffCompaction.retire({
+                        runtimeGeneration: producer.generation,
+                        nativeThreadId: binding.nativeThreadId,
+                      }),
+                    ),
                   ),
-                  Effect.andThen(handoffCompaction.retire({
-                      runtimeGeneration: producer.generation,
-                      nativeThreadId: binding.nativeThreadId,
-                    })),
-                ),
               };
             },
           ),
@@ -10306,7 +10381,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                           "Codex has an unconfirmed native effect; another resume is not safe.",
                       }),
                     )
-                  : assertThreadNotRetiring(value.providerThread).pipe(Effect.andThen(withProducer(runtime.resumeThread(value)))),
+                  : assertThreadNotRetiring(value.providerThread).pipe(
+                      Effect.andThen(withProducer(runtime.resumeThread(value))),
+                    ),
               ),
             ),
           forkThread: (value) =>
@@ -10316,7 +10393,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   ? toProtocolError(
                       "Codex has an unconfirmed native effect; reforking is not safe.",
                     )
-                  : assertThreadNotRetiring(value.sourceProviderThread).pipe(Effect.andThen(withProducer(runtime.forkThread(value))),
+                  : assertThreadNotRetiring(value.sourceProviderThread).pipe(
+                      Effect.andThen(withProducer(runtime.forkThread(value))),
                       Effect.onInterrupt(() =>
                         Effect.sync(() => {
                           nativeStartUnknown = true;
@@ -10542,7 +10620,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               Effect.suspend(() =>
                 hasUnknownNativeStart()
                   ? toProtocolError("Codex has an unconfirmed native effect; rollback is not safe.")
-                  : assertThreadNotRetiring(value.providerThread).pipe(Effect.andThen(withProducer(runtime.rollbackThread(value)))),
+                  : assertThreadNotRetiring(value.providerThread).pipe(
+                      Effect.andThen(withProducer(runtime.rollbackThread(value))),
+                    ),
               ),
             ),
         } satisfies ProviderAdapterV2SessionRuntime;

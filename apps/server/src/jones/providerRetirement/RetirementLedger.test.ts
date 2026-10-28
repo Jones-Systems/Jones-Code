@@ -43,7 +43,10 @@ it.effect(
       const record = ledger.retain(input);
       assert.strictEqual(ledger.retain(input), record);
       assert.isTrue(
-        ledger.blocks({ providerSessionId: ProviderSessionId.make("replacement-session"), threadId }),
+        ledger.blocks({
+          providerSessionId: ProviderSessionId.make("replacement-session"),
+          threadId,
+        }),
       );
       assert.isTrue(ledger.blocks({ providerSessionId: sessionId, threadId, source }));
       assert.isFalse(

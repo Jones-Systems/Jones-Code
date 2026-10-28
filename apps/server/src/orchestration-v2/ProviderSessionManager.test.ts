@@ -6156,7 +6156,17 @@ const openTransferFixture = (name: string) =>
     });
     const input = { threadId, providerSessionId, modelSelection, runtimePolicy };
     const runtime = yield* manager.open(input);
-    return { manager, sink, idAllocator, now, threadId, providerSessionId, providerThread, input, runtime };
+    return {
+      manager,
+      sink,
+      idAllocator,
+      now,
+      threadId,
+      providerSessionId,
+      providerThread,
+      input,
+      runtime,
+    };
   });
 
 it.effect(
@@ -6179,7 +6189,10 @@ it.effect(
           yield* Deferred.await(release);
           yield* Deferred.succeed(completed, undefined);
           return {
-            binding: runtimeBinding(providerThread, providerThread.runtimeIdentity!.runtimeGeneration!)!,
+            binding: runtimeBinding(
+              providerThread,
+              providerThread.runtimeIdentity!.runtimeGeneration!,
+            )!,
             evidence: "thread_closed" as const,
           };
         });
@@ -6249,7 +6262,10 @@ it.effect("a shared transfer preserves its sibling and never grants producer ret
         yield* Deferred.succeed(reached, undefined);
         yield* Deferred.await(release);
         return {
-          binding: runtimeBinding(providerThread, providerThread.runtimeIdentity!.runtimeGeneration!)!,
+          binding: runtimeBinding(
+            providerThread,
+            providerThread.runtimeIdentity!.runtimeGeneration!,
+          )!,
           evidence: "thread_closed" as const,
         };
       });

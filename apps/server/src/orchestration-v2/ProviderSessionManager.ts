@@ -3122,7 +3122,9 @@ export const layerWithOptions = (
                 sessionWide: attachedThreadIds.size === 0,
                 bindings,
               });
-              const loadedProviderThreadKeyByThread = new Map(latest.loadedProviderThreadKeyByThread);
+              const loadedProviderThreadKeyByThread = new Map(
+                latest.loadedProviderThreadKeyByThread,
+              );
               loadedProviderThreadKeyByThread.delete(input.threadId);
               const idleThreadUnloads = new Map(latest.idleThreadUnloads);
               idleThreadUnloads.delete(input.threadId);
@@ -3140,7 +3142,9 @@ export const layerWithOptions = (
           if (captured === undefined) {
             const pending = retirements.find(input.providerSessionId, input.threadId);
             if (pending !== undefined) {
-              yield* Deferred.await(pending.completion).pipe(Effect.timeout(UNLOAD_THREAD_TIMEOUT_MS));
+              yield* Deferred.await(pending.completion).pipe(
+                Effect.timeout(UNLOAD_THREAD_TIMEOUT_MS),
+              );
               return;
             }
             return yield* Effect.fail("The source runtime changed before retirement was captured.");
@@ -3195,10 +3199,7 @@ export const layerWithOptions = (
           yield* Deferred.await(record.completion).pipe(Effect.timeout(UNLOAD_THREAD_TIMEOUT_MS));
         },
         (effect) =>
-          effect.pipe(
-            Effect.forkDetach({ startImmediately: true }),
-            Effect.flatMap(Fiber.join),
-          ),
+          effect.pipe(Effect.forkDetach({ startImmediately: true }), Effect.flatMap(Fiber.join)),
       );
 
       return ProviderSessionManagerV2.of({

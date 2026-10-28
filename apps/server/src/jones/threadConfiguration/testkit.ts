@@ -203,7 +203,10 @@ export function makeRestartAdapter(
       const bindThread = Effect.fn("ThreadConfigurationTest.bindThread")(function* (
         providerThread: OrchestrationV2ProviderThread,
       ) {
-        const requested = ProviderAdapter.requestedRuntimeIdentity(sessionInput.modelSelection, driver);
+        const requested = ProviderAdapter.requestedRuntimeIdentity(
+          sessionInput.modelSelection,
+          driver,
+        );
         const observed = ProviderAdapter.unobservedRuntimeIdentity();
         return sessionInput.runtimeLifecycle === undefined
           ? { ...providerThread, runtimeIdentity: { runtimeGeneration, requested, observed } }
@@ -263,8 +266,8 @@ export function makeRestartAdapter(
               evidence:
                 allowProducerRetirement &&
                 !sessionCapabilities.sessions.supportsMultipleProviderThreadsPerSession
-                  ? "producer_exited" as const
-                  : "thread_closed" as const,
+                  ? ("producer_exited" as const)
+                  : ("thread_closed" as const),
             };
           }),
         resumeThread: ({ providerThread, modelSelection }) =>

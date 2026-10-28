@@ -817,7 +817,10 @@ export const layer: Layer.Layer<
         prepareExecutionSession(run, providerThread, projection, revalidateReplacement).pipe(
           Effect.provideService(ProviderSessionManager.ProviderSessionManagerV2, providerSessions),
           Effect.provideService(EventSink.EventSinkV2, eventSink),
-          Effect.provideService(ProviderSwitchService.ProviderSwitchServiceV2, selectionTransitions),
+          Effect.provideService(
+            ProviderSwitchService.ProviderSwitchServiceV2,
+            selectionTransitions,
+          ),
           Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })),
         ),
       );

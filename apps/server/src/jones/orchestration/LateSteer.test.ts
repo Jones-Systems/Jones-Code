@@ -227,7 +227,11 @@ describe("captured child exit proof", () => {
         exitCode: Deferred.await(exited).pipe(Effect.as(ChildProcessSpawner.ExitCode(0))),
         isRunning: Effect.succeed(false),
       }).pipe(Effect.forkScoped);
-      const caller = yield* Fiber.join(readback).pipe(Effect.timeout("3 seconds"), Effect.exit, Effect.forkScoped);
+      const caller = yield* Fiber.join(readback).pipe(
+        Effect.timeout("3 seconds"),
+        Effect.exit,
+        Effect.forkScoped,
+      );
       yield* TestClock.adjust("3 seconds");
       assert.equal((yield* Fiber.join(caller))._tag, "Failure");
       assert.isUndefined(readback.pollUnsafe());

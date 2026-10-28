@@ -10,13 +10,20 @@ interface CodexRetirementReceipt {
 }
 
 const decodeLoaded = Schema.decodeUnknownEffect(
-  Schema.Struct({ data: Schema.Array(Schema.String), nextCursor: Schema.optionalKey(Schema.NullOr(Schema.String)) }),
+  Schema.Struct({
+    data: Schema.Array(Schema.String),
+    nextCursor: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  }),
 );
 const decodeThread = Schema.decodeUnknownEffect(
-  Schema.Struct({ thread: Schema.Struct({ id: Schema.String, status: Schema.Struct({ type: Schema.String }) }) }),
+  Schema.Struct({
+    thread: Schema.Struct({ id: Schema.String, status: Schema.Struct({ type: Schema.String }) }),
+  }),
 );
 const decodeGoal = Schema.decodeUnknownEffect(
-  Schema.Struct({ goal: Schema.NullOr(Schema.Struct({ threadId: Schema.String, status: Schema.String })) }),
+  Schema.Struct({
+    goal: Schema.NullOr(Schema.Struct({ threadId: Schema.String, status: Schema.String })),
+  }),
 );
 const decodeTerminals = Schema.decodeUnknownEffect(
   Schema.Struct({ data: Schema.Array(Schema.Unknown), nextCursor: Schema.NullOr(Schema.String) }),
@@ -26,15 +33,37 @@ const decodeTerminals = Schema.decodeUnknownEffect(
 export const codexProducerOwnershipIsExclusive = Effect.fn("codexProducerOwnershipIsExclusive")(
   function* (input: {
     readonly nativeThreadId: string;
-    readonly request: (method: string, params: { readonly threadId?: string; readonly includeTurns?: boolean }) => Effect.Effect<unknown, unknown>;
+    readonly request: (
+      method: string,
+      params: { readonly threadId?: string; readonly includeTurns?: boolean },
+    ) => Effect.Effect<unknown, unknown>;
   }) {
-    const loaded = yield* input.request("thread/loaded/list", {}).pipe(Effect.flatMap(decodeLoaded));
-    if (loaded.nextCursor != null || loaded.data.length !== 1 || loaded.data[0] !== input.nativeThreadId) return false;
-    const thread = yield* input.request("thread/read", { threadId: input.nativeThreadId, includeTurns: false }).pipe(Effect.flatMap(decodeThread));
-    if (thread.thread.id !== input.nativeThreadId || thread.thread.status.type !== "idle") return false;
-    const goal = yield* input.request("thread/goal/get", { threadId: input.nativeThreadId }).pipe(Effect.flatMap(decodeGoal));
-    if (goal.goal !== null && (goal.goal.threadId !== input.nativeThreadId || !["paused", "complete"].includes(goal.goal.status))) return false;
-    const terminals = yield* input.request("thread/backgroundTerminals/list", { threadId: input.nativeThreadId }).pipe(Effect.flatMap(decodeTerminals));
+    const loaded = yield* input
+      .request("thread/loaded/list", {})
+      .pipe(Effect.flatMap(decodeLoaded));
+    if (
+      loaded.nextCursor != null ||
+      loaded.data.length !== 1 ||
+      loaded.data[0] !== input.nativeThreadId
+    )
+      return false;
+    const thread = yield* input
+      .request("thread/read", { threadId: input.nativeThreadId, includeTurns: false })
+      .pipe(Effect.flatMap(decodeThread));
+    if (thread.thread.id !== input.nativeThreadId || thread.thread.status.type !== "idle")
+      return false;
+    const goal = yield* input
+      .request("thread/goal/get", { threadId: input.nativeThreadId })
+      .pipe(Effect.flatMap(decodeGoal));
+    if (
+      goal.goal !== null &&
+      (goal.goal.threadId !== input.nativeThreadId ||
+        !["paused", "complete"].includes(goal.goal.status))
+    )
+      return false;
+    const terminals = yield* input
+      .request("thread/backgroundTerminals/list", { threadId: input.nativeThreadId })
+      .pipe(Effect.flatMap(decodeTerminals));
     return terminals.data.length === 0 && terminals.nextCursor === null;
   },
   Effect.timeout("1 second"),
@@ -42,54 +71,57 @@ export const codexProducerOwnershipIsExclusive = Effect.fn("codexProducerOwnersh
 );
 
 /** Scope closure and physical exit share one worker; caller deadlines never own it. */
-export const makeCodexProducerRetirement = Effect.fn("makeCodexProducerRetirement")(
-  function* (closeScope: Effect.Effect<void>, afterExit: Effect.Effect<void> = Effect.void) {
-    const exited = yield* Deferred.make<void, CodexErrors.CodexAppServerError>();
-    const closed = yield* Deferred.make<void, CodexErrors.CodexAppServerError>();
-    let readProcessExit: Effect.Effect<void, CodexErrors.CodexAppServerError> | undefined;
-    let observing = false;
-    let closing = false;
-    const observeProcessExit = Effect.uninterruptible(
-      Effect.suspend(() => {
-        if (observing || readProcessExit === undefined) return Effect.void;
-        observing = true;
-        return Deferred.complete(exited, readProcessExit).pipe(
-          Effect.forkDetach({ startImmediately: true }),
-          Effect.asVoid,
-        );
-      }),
-    );
-    return {
-      captureProcessExit: (readback: Effect.Effect<void, CodexErrors.CodexAppServerError>) => {
-        readProcessExit ??= readback;
-      },
-      observeProcessExit,
-      get closing() {
-        return closing;
-      },
-      get processExit() {
-        return readProcessExit === undefined ? undefined : Deferred.await(exited);
-      },
-      close: Effect.uninterruptibleMask((restore) =>
-        Effect.gen(function* () {
-          yield* observeProcessExit;
-          if (!closing) {
-            closing = true;
-            yield* Deferred.complete(
-              closed,
-              closeScope.pipe(
-                Effect.andThen(() =>
-                  readProcessExit === undefined ? Effect.void : Deferred.await(exited).pipe(Effect.andThen(afterExit)),
-                ),
+export const makeCodexProducerRetirement = Effect.fn("makeCodexProducerRetirement")(function* (
+  closeScope: Effect.Effect<void>,
+  afterExit: Effect.Effect<void> = Effect.void,
+) {
+  const exited = yield* Deferred.make<void, CodexErrors.CodexAppServerError>();
+  const closed = yield* Deferred.make<void, CodexErrors.CodexAppServerError>();
+  let readProcessExit: Effect.Effect<void, CodexErrors.CodexAppServerError> | undefined;
+  let observing = false;
+  let closing = false;
+  const observeProcessExit = Effect.uninterruptible(
+    Effect.suspend(() => {
+      if (observing || readProcessExit === undefined) return Effect.void;
+      observing = true;
+      return Deferred.complete(exited, readProcessExit).pipe(
+        Effect.forkDetach({ startImmediately: true }),
+        Effect.asVoid,
+      );
+    }),
+  );
+  return {
+    captureProcessExit: (readback: Effect.Effect<void, CodexErrors.CodexAppServerError>) => {
+      readProcessExit ??= readback;
+    },
+    observeProcessExit,
+    get closing() {
+      return closing;
+    },
+    get processExit() {
+      return readProcessExit === undefined ? undefined : Deferred.await(exited);
+    },
+    close: Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        yield* observeProcessExit;
+        if (!closing) {
+          closing = true;
+          yield* Deferred.complete(
+            closed,
+            closeScope.pipe(
+              Effect.andThen(() =>
+                readProcessExit === undefined
+                  ? Effect.void
+                  : Deferred.await(exited).pipe(Effect.andThen(afterExit)),
               ),
-            ).pipe(Effect.forkDetach({ startImmediately: true }));
-          }
-          return yield* restore(Deferred.await(closed));
-        }),
-      ),
-    };
-  },
-);
+            ),
+          ).pipe(Effect.forkDetach({ startImmediately: true }));
+        }
+        return yield* restore(Deferred.await(closed));
+      }),
+    ),
+  };
+});
 
 interface ThreadRetirement {
   readonly binding: ProviderRuntimeBinding;
@@ -114,7 +146,8 @@ export function makeCodexThreadRetirements<Producer extends object>() {
     find,
     // A committed transfer permanently fences this producer/thread incarnation.
     // Codex thread/closed carries no incarnation ID with which to distinguish a rejoin.
-    owns: (producer: Producer, nativeThreadId: string) => find(producer, nativeThreadId) !== undefined,
+    owns: (producer: Producer, nativeThreadId: string) =>
+      find(producer, nativeThreadId) !== undefined,
     observeClosed: (producer: Producer, nativeThreadId: string) =>
       Effect.suspend(() => {
         const pending = find(producer, nativeThreadId);
@@ -143,9 +176,13 @@ export function makeCodexThreadRetirements<Producer extends object>() {
       producers.set(input.producer, threads);
       yield* Effect.gen(function* () {
         // Install the record before dispatch. A closure can precede the unsubscribe ACK.
-        const mode = yield* input.dispatch.pipe(Effect.catch(() => Effect.succeed("thread" as const)));
+        const mode = yield* input.dispatch.pipe(
+          Effect.catch(() => Effect.succeed("thread" as const)),
+        );
         const evidence = yield* Effect.race(
-          mode === "producer" ? Effect.never : Deferred.await(closed).pipe(Effect.as("thread_closed" as const)),
+          mode === "producer"
+            ? Effect.never
+            : Deferred.await(closed).pipe(Effect.as("thread_closed" as const)),
           input.processExit === undefined
             ? Effect.never
             : input.processExit.pipe(
