@@ -244,8 +244,16 @@ export class ProviderSessionManagerV2 extends Context.Service<
   ProviderSessionManagerV2Shape
 >()("t3/orchestration-v2/ProviderSessionManager/ProviderSessionManagerV2") {}
 
+interface CompletedThreadTransfer {
+  readonly source: ProviderAdapterV2SessionRuntime;
+  readonly bindings: ReadonlyArray<ProviderRuntimeBinding>;
+  readonly providerThreadId: ProviderThreadId | undefined;
+  readonly replacementProviderSessionId: ProviderSessionId | undefined;
+}
+
 interface LiveSessionEntry {
   readonly attachedThreadIds: ReadonlySet<ThreadId>;
+  readonly completedThreadTransfers: ReadonlyMap<ThreadId, CompletedThreadTransfer>;
   readonly servedThreadIds: ReadonlySet<ThreadId>;
   readonly loadedProviderThreadKeyByThread: ReadonlyMap<ThreadId, string>;
   /** Scope revocation to recorded credential ids so superseded sessions cannot revoke replacements opened before detach. */
@@ -559,6 +567,7 @@ export const layerWithOptions = (
                 return yield* protocolError(
                   "The native binding changed before its boundary committed.",
                 );
+              yield* forgetCompletedThreadTransfers(thread.appThreadId);
               reservation.bindings.set(thread.id, thread.appThreadId);
               yield* revalidateObservation;
               yield* providerEventIngestor.ingestNormalized({
@@ -735,6 +744,17 @@ export const layerWithOptions = (
           }),
       );
       const sessions = yield* Ref.make(new Map<string, LiveSessionEntry>());
+      const forgetCompletedThreadTransfers = (threadId: ThreadId) =>
+        Ref.update(sessions, (current) => {
+          const updated = new Map(current);
+          for (const [key, entry] of current) {
+            if (!entry.completedThreadTransfers.has(threadId)) continue;
+            const completedThreadTransfers = new Map(entry.completedThreadTransfers);
+            completedThreadTransfers.delete(threadId);
+            updated.set(key, { ...entry, completedThreadTransfers });
+          }
+          return updated;
+        });
       const retirements = RetirementLedger.makeRetirementLedger();
       const scopeClosures = new WeakMap<Scope.Closeable, Deferred.Deferred<Exit.Exit<void>>>();
       const transferWorkers = new WeakSet<RetirementLedger.Retirement>();
@@ -1780,9 +1800,12 @@ export const layerWithOptions = (
               if (entry === undefined || entry.attachedThreadIds.has(input.threadId)) {
                 return [undefined, current] as const;
               }
+              const completedThreadTransfers = new Map(entry.completedThreadTransfers);
+              completedThreadTransfers.delete(input.threadId);
               const updated = new Map(current);
               updated.set(sessionKey(input.providerSessionId), {
                 ...entry,
+                completedThreadTransfers,
                 attachedThreadIds: new Set([...entry.attachedThreadIds, input.threadId]),
                 servedThreadIds: new Set([...entry.servedThreadIds, input.threadId]),
               });
@@ -3075,6 +3098,44 @@ export const layerWithOptions = (
             Effect.mapError((cause) => new ProviderRuntimeStopCaptureError({ threadId, cause })),
           ),
       );
+      const selectTransferBindings = (
+        input: Parameters<ProviderSessionManagerV2Shape["detach"]>[0],
+        entry: LiveSessionEntry,
+        threads: ReadonlyArray<OrchestrationV2ProviderThread>,
+      ) => {
+        const selected = threads.filter(
+          (thread) =>
+            (input.providerThreadId === undefined || thread.id === input.providerThreadId) &&
+            (thread.providerSessionId === input.providerSessionId ||
+              (input.providerThreadId !== undefined &&
+                input.replacementProviderSessionId !== undefined &&
+                thread.providerSessionId === input.replacementProviderSessionId)),
+        );
+        const providerThreads = selected.flatMap((thread) => {
+          if (
+            thread.appThreadId !== input.threadId ||
+            thread.driver !== entry.runtime.driver ||
+            thread.providerInstanceId !== entry.runtime.instanceId ||
+            thread.nativeThreadRef?.driver !== entry.runtime.driver ||
+            thread.nativeThreadRef?.nativeId == null
+          )
+            return [];
+          // Restart commits the replacement first; only its recorded source may retire the old writer.
+          return [{ ...thread, providerSessionId: input.providerSessionId }];
+        });
+        const bindings = providerThreads
+          .flatMap((thread) => {
+            const generation = thread.runtimeIdentity?.runtimeGeneration;
+            const binding = generation === undefined ? undefined : runtimeBinding(thread, generation);
+            return binding === undefined ? [] : [binding];
+          })
+          .sort((left, right) => left.providerThreadId.localeCompare(right.providerThreadId));
+        return {
+          providerThreads,
+          bindings,
+          complete: selected.length > 0 && selected.length === bindings.length,
+        };
+      };
       const detachForTransfer = Effect.fn("ProviderSessionManager.detachForTransfer")(
         function* (input: Parameters<ProviderSessionManagerV2Shape["detach"]>[0]) {
           const prior = retirements.find(input.providerSessionId, input.threadId);
@@ -3084,34 +3145,61 @@ export const layerWithOptions = (
           }
           const entry = (yield* Ref.get(sessions)).get(sessionKey(input.providerSessionId));
           if (entry === undefined) return;
+          const reused = yield* threadAttachment.withLock(
+            threadAttachmentKey(input),
+            Effect.gen(function* () {
+              const before = (yield* Ref.get(sessions)).get(sessionKey(input.providerSessionId));
+              const proof = before?.completedThreadTransfers.get(input.threadId);
+              if (
+                proof === undefined ||
+                proof.source !== entry.runtime ||
+                before?.runtime !== entry.runtime ||
+                before.attachedThreadIds.has(input.threadId) ||
+                before.loadedProviderThreadKeyByThread.has(input.threadId) ||
+                (input.providerThreadId !== undefined &&
+                  input.providerThreadId !== proof.providerThreadId) ||
+                (input.replacementProviderSessionId !== undefined &&
+                  input.replacementProviderSessionId !== proof.replacementProviderSessionId)
+              )
+                return false;
+              const fresh = yield* projectionStore.getThreadRecords(input.threadId, [
+                "providerThreads",
+              ]);
+              const omittedSelector =
+                (proof.providerThreadId !== undefined && input.providerThreadId === undefined) ||
+                (proof.replacementProviderSessionId !== undefined &&
+                  input.replacementProviderSessionId === undefined);
+              const selected = selectTransferBindings(
+                omittedSelector
+                  ? { providerSessionId: input.providerSessionId, threadId: input.threadId }
+                  : input,
+                entry,
+                fresh.providerThreads,
+              );
+              const current = (yield* Ref.get(sessions)).get(sessionKey(input.providerSessionId));
+              return (
+                current?.runtime === entry.runtime &&
+                current.completedThreadTransfers.get(input.threadId) === proof &&
+                !current.attachedThreadIds.has(input.threadId) &&
+                !current.loadedProviderThreadKeyByThread.has(input.threadId) &&
+                selected.complete &&
+                selected.bindings.length === proof.bindings.length &&
+                selected.bindings.every((binding, index) =>
+                  equivalentBinding(binding, proof.bindings[index]!),
+                )
+              );
+            }),
+          );
+          if (reused) return;
           const projection = yield* projectionStore.getThreadRecords(input.threadId, [
             "providerThreads",
             "providerTurns",
           ]);
-          const providerThreads = projection.providerThreads.flatMap((thread) => {
-            const targetsRecordedSession = thread.providerSessionId === input.providerSessionId;
-            const targetsCommittedReplacement =
-              input.providerThreadId !== undefined &&
-              thread.id === input.providerThreadId &&
-              input.replacementProviderSessionId !== undefined &&
-              thread.providerSessionId === input.replacementProviderSessionId;
-            if (
-              (input.providerThreadId !== undefined && thread.id !== input.providerThreadId) ||
-              (!targetsRecordedSession && !targetsCommittedReplacement) ||
-              thread.appThreadId !== input.threadId ||
-              thread.driver !== entry.runtime.driver ||
-              thread.providerInstanceId !== entry.runtime.instanceId ||
-              thread.nativeThreadRef?.driver !== entry.runtime.driver ||
-              thread.nativeThreadRef?.nativeId == null
-            )
-              return [];
-            // Restart commits the replacement first; only its recorded source may retire the old writer.
-            return [
-              targetsRecordedSession
-                ? thread
-                : { ...thread, providerSessionId: input.providerSessionId },
-            ];
-          });
+          const { providerThreads, bindings, complete } = selectTransferBindings(
+            input,
+            entry,
+            projection.providerThreads,
+          );
           const loadedKey = entry.loadedProviderThreadKeyByThread.get(input.threadId);
           const providerThreadsById = new Map(providerThreads.map((thread) => [thread.id, thread]));
           yield* Effect.forEach(
@@ -3141,12 +3229,6 @@ export const layerWithOptions = (
                 return [undefined, current] as const;
               const attachedThreadIds = new Set(latest.attachedThreadIds);
               attachedThreadIds.delete(input.threadId);
-              const bindings = providerThreads.flatMap((thread) => {
-                const generation = thread.runtimeIdentity?.runtimeGeneration;
-                const binding =
-                  generation === undefined ? undefined : runtimeBinding(thread, generation);
-                return binding === undefined ? [] : [binding];
-              });
               const record = retirements.retain({
                 source: latest.runtime,
                 scope: latest.scope,
@@ -3193,7 +3275,7 @@ export const layerWithOptions = (
                 yield* cancelIdleFiber(captured.idleFiber);
                 if (
                   retire === undefined ||
-                  providerThreads.length === 0 ||
+                  !complete ||
                   record.bindings.length !== providerThreads.length
                 )
                   return yield* Effect.fail("The captured Codex writer cannot prove retirement.");
@@ -3221,6 +3303,29 @@ export const layerWithOptions = (
                     reason: "manual_shutdown",
                     detachedThreadId: input.threadId,
                   });
+                yield* threadAttachment.withLock(
+                  threadAttachmentKey(input),
+                  Ref.update(sessions, (current) => {
+                    const latest = current.get(sessionKey(input.providerSessionId));
+                    if (
+                      latest?.runtime !== entry.runtime ||
+                      latest.attachedThreadIds.has(input.threadId) ||
+                      latest.loadedProviderThreadKeyByThread.has(input.threadId)
+                    )
+                      return current;
+                    const completedThreadTransfers = new Map(latest.completedThreadTransfers);
+                    completedThreadTransfers.set(input.threadId, {
+                      source: entry.runtime,
+                      bindings: record.bindings,
+                      providerThreadId: input.providerThreadId,
+                      replacementProviderSessionId: input.replacementProviderSessionId,
+                    });
+                    return new Map(current).set(sessionKey(input.providerSessionId), {
+                      ...latest,
+                      completedThreadTransfers,
+                    });
+                  }),
+                );
                 yield* retirements.complete(record);
                 if (input.revokeMcpCredential === true) yield* clearMcpSession(input.threadId);
                 yield* scheduleIdleRelease(input.providerSessionId);
@@ -3335,7 +3440,9 @@ export const layerWithOptions = (
                 instanceId: input.modelSelection.instanceId,
                 source: originalEntry?.runtime,
               }).pipe(
-                Effect.andThen(beforeSessionUse(input.threadId, input.providerSessionId, checkOpen)),
+                Effect.andThen(
+                  beforeSessionUse(input.threadId, input.providerSessionId, checkOpen),
+                ),
               );
               yield* beforeOpen.pipe(
                 Effect.mapError(
@@ -3524,6 +3631,7 @@ export const layerWithOptions = (
               const now = yield* Clock.currentTimeMillis;
               const entry: LiveSessionEntry = {
                 attachedThreadIds: new Set([input.threadId]),
+                completedThreadTransfers: new Map(),
                 servedThreadIds: new Set([input.threadId]),
                 loadedProviderThreadKeyByThread: new Map(),
                 mcpCredentialIdByThread:

@@ -3105,13 +3105,14 @@ it.effect("ProviderSessionManagerV2 does not apply a stale idle pin to a replace
       for (let i = 0; i < 20; i += 1) {
         yield* Effect.yieldNow;
       }
-      yield* manager.open({
-        threadId,
-        providerSessionId,
-        modelSelection,
-        runtimePolicy,
-      });
-      assert.equal((yield* Ref.get(state)).openCount, 2);
+      assert.isTrue(
+        Exit.isFailure(
+          yield* Effect.exit(
+            manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy }),
+          ),
+        ),
+      );
+      assert.equal((yield* Ref.get(state)).openCount, 1);
 
       yield* Deferred.succeed(checkGate, undefined);
       yield* Fiber.join(closeFiber);
@@ -3119,6 +3120,8 @@ it.effect("ProviderSessionManagerV2 does not apply a stale idle pin to a replace
         yield* Effect.yieldNow;
       }
 
+      yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+      assert.equal((yield* Ref.get(state)).openCount, 2);
       assert.isTrue(Option.isSome(yield* manager.get(providerSessionId)));
       assert.equal((yield* Ref.get(state)).closeCount, 1);
 
@@ -3129,6 +3132,7 @@ it.effect("ProviderSessionManagerV2 does not apply a stale idle pin to a replace
     });
 
     yield* effect.pipe(
+      Effect.ensuring(Deferred.succeed(checkGate, undefined)),
       Effect.provide(
         layerTest({
           state,
@@ -3323,6 +3327,7 @@ it.effect.each(["drain", "replace", "shutdown"] as const)(
           requested: requestedRuntimeIdentity(modelSelection, CODEX_DRIVER),
           observed: unobservedRuntimeIdentity(),
         });
+        const originalBinding = runtimeBinding(providerThread, original.generation)!;
         const subscription = yield* runtime.subscribeEvents!;
         const observer = yield* runtime.subscribeEvents!;
         let processed = false;
@@ -3392,6 +3397,22 @@ it.effect.each(["drain", "replace", "shutdown"] as const)(
         let replacementGeneration: string | undefined;
         let replacement: ProviderAdapter.ProviderAdapterV2SessionRuntime | undefined;
         if (mode === "replace") {
+          assert.isTrue(
+            Exit.isFailure(
+              yield* Effect.exit(
+                manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy }),
+              ),
+            ),
+          );
+          assert.equal((yield* Ref.get(state)).openCount, 1);
+        }
+        yield* Deferred.succeed(finishProcessing, undefined);
+        yield* Fiber.join(consumer);
+        yield* Deferred.await(firstScopeClosed);
+        yield* manager.close(providerSessionId);
+        assert.equal(processed, true);
+        assert.equal((yield* Ref.get(state)).closeCount, 1);
+        if (mode === "replace") {
           replacement = yield* manager.open({
             threadId,
             providerSessionId,
@@ -3408,13 +3429,7 @@ it.effect.each(["drain", "replace", "shutdown"] as const)(
             requested: requestedRuntimeIdentity(modelSelection, CODEX_DRIVER),
             observed: unobservedRuntimeIdentity(),
           });
-        }
-        yield* Deferred.succeed(finishProcessing, undefined);
-        yield* Fiber.join(consumer);
-        yield* Deferred.await(firstScopeClosed);
-        assert.equal(processed, true);
-        assert.equal((yield* Ref.get(state)).closeCount, 1);
-        if (mode === "replace") {
+          yield* original.lifecycle.invalidate(originalBinding);
           assert.equal(yield* manager.isLive(providerSessionId), true);
           assert.equal(
             (yield* store.getThreadProjection(threadId)).providerSessions.at(-1)?.status,
@@ -3452,11 +3467,14 @@ it.effect.each(["drain", "replace", "shutdown"] as const)(
           assert.equal(starts, 1);
           assert.equal((yield* Ref.get(state)).openCount, 2);
         }
-      }).pipe(Effect.provide(context));
+      }).pipe(
+        Effect.ensuring(Deferred.succeed(finishProcessing, undefined)),
+        Effect.provide(context),
+      );
     }).pipe(Effect.scoped),
 );
 
-it.effect("ProviderSessionManagerV2 drains a queued terminal after same-session replacement", () =>
+it.effect("ProviderSessionManagerV2 drains a queued terminal before same-session replacement", () =>
   Effect.gen(function* () {
     const state = yield* Ref.make(emptyState);
     const processing = yield* Deferred.make<void>();
@@ -3550,13 +3568,14 @@ it.effect("ProviderSessionManagerV2 drains a queued terminal after same-session 
       assert.isTrue(Exit.isFailure(observerResult));
       assert.equal(yield* manager.isLive(providerSessionId), false);
       assert.equal((yield* Ref.get(state)).closeCount, 0);
-      const replacement = yield* manager.open({
-        threadId,
-        providerSessionId,
-        modelSelection,
-        runtimePolicy,
-      });
-      assert.notEqual(replacement, runtime);
+      assert.isTrue(
+        Exit.isFailure(
+          yield* Effect.exit(
+            manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy }),
+          ),
+        ),
+      );
+      assert.equal((yield* Ref.get(state)).openCount, 1);
       yield* Deferred.succeed(finishProcessing, undefined);
       const result = yield* Fiber.join(consumer);
       assert.deepStrictEqual(received, [earlierEvent, terminal]);
@@ -3571,10 +3590,21 @@ it.effect("ProviderSessionManagerV2 drains a queued terminal after same-session 
         );
       }
       yield* Deferred.await(firstScopeClosed);
+      yield* manager.close(providerSessionId);
       assert.equal((yield* Ref.get(state)).closeCount, 1);
+      const replacement = yield* manager.open({
+        threadId,
+        providerSessionId,
+        modelSelection,
+        runtimePolicy,
+      });
+      assert.notEqual(replacement, runtime);
       assert.equal(yield* manager.isLive(providerSessionId), true);
       assert.equal(Option.getOrThrow(yield* manager.get(providerSessionId)), replacement);
-    }).pipe(Effect.provide(context));
+    }).pipe(
+      Effect.ensuring(Deferred.succeed(finishProcessing, undefined)),
+      Effect.provide(context),
+    );
   }).pipe(Effect.scoped),
 );
 
@@ -6198,7 +6228,10 @@ it.effect.each([
       });
     yield* Effect.gen(function* () {
       const fixture = yield* openTransferFixture(`committed-transfer-${mode}`);
-      source = fixture.providerThread;
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      source = (yield* store.getThreadRecords(fixture.threadId, ["providerThreads"]))
+        .providerThreads.find((thread) => thread.id === fixture.providerThread.id);
+      assert.isDefined(source);
       const replacementProviderSessionId = ProviderSessionId.make("committed-transfer:replacement");
       const replacement = {
         ...fixture.providerThread,
@@ -6208,7 +6241,7 @@ it.effect.each([
             : replacementProviderSessionId,
         providerInstanceId:
           mode === "changed-instance"
-            ? ProviderInstanceId.make("committed-transfer:other-instance")
+            ? ProviderInstanceId.make("committed-transfer-other-instance")
             : fixture.providerThread.providerInstanceId,
         nativeThreadRef: {
           ...fixture.providerThread.nativeThreadRef!,
@@ -6280,6 +6313,249 @@ it.effect.each([
         assert.equal((yield* Ref.get(state)).closeCount, 0);
         yield* fixture.manager.close(fixture.providerSessionId);
       }
+    }).pipe(
+      Effect.provide(layerTest({ state, idleTimeoutMs: 60_000, retireThreadForTransfer: proof })),
+    );
+  }),
+);
+
+it.effect("completed pooled transfer survives a replacement open failure before reservation", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const replacementProviderSessionId = ProviderSessionId.make("pooled-transfer:replacement");
+    let failedReplacement = false;
+    let retirementCount = 0;
+    let replacementLifecycle: ProviderRuntimeLifecycle | undefined;
+    const proof: NonNullable<ProviderAdapterV2SessionRuntime["retireThreadForTransfer"]> = ({
+      providerThread,
+      allowProducerRetirement,
+    }) =>
+      Effect.sync(() => {
+        assert.isFalse(allowProducerRetirement);
+        retirementCount += 1;
+        return {
+          binding: runtimeBinding(providerThread, providerThread.runtimeIdentity!.runtimeGeneration!)!,
+          evidence: "thread_closed" as const,
+        };
+      });
+    yield* Effect.gen(function* () {
+      const fixture = yield* openTransferFixture("pooled-transfer-retry");
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const source = (yield* store.getThreadRecords(fixture.threadId, ["providerThreads"]))
+        .providerThreads[0]!;
+      const sibling = ThreadId.make("pooled-transfer-retry-sibling");
+      yield* fixture.sink.write({
+        events: [
+          yield* makeThreadCreatedEvent({
+            idAllocator: fixture.idAllocator,
+            threadId: sibling,
+            now: fixture.now,
+          }),
+        ],
+      });
+      yield* fixture.manager.open({ ...fixture.input, threadId: sibling });
+      const detach = {
+        providerSessionId: fixture.providerSessionId,
+        threadId: fixture.threadId,
+        providerThreadId: source.id,
+        requireWriterRetirement: true,
+      };
+      yield* fixture.manager.detach(detach);
+      const replacement = { ...fixture.input, providerSessionId: replacementProviderSessionId };
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(fixture.manager.open(replacement))));
+      assert.isTrue(failedReplacement);
+      yield* fixture.manager.detach(detach);
+      yield* fixture.manager.detach({
+        providerSessionId: fixture.providerSessionId,
+        threadId: fixture.threadId,
+        requireWriterRetirement: true,
+      });
+      assert.equal(retirementCount, 1);
+      assert.equal((yield* Ref.get(state)).closeCount, 0);
+      assert.strictEqual(
+        yield* fixture.manager.open({ ...fixture.input, threadId: sibling }),
+        fixture.runtime,
+      );
+      yield* fixture.manager.open(replacement);
+      assert.equal((yield* Ref.get(state)).openCount, 2);
+      const generation = yield* replacementLifecycle!.reserve(fixture.threadId);
+      yield* replacementLifecycle!.admit({
+        runtimeGeneration: generation,
+        threadId: fixture.threadId,
+      });
+      yield* replacementLifecycle!.bind({
+        providerThread: { ...source, providerSessionId: replacementProviderSessionId },
+        runtimeGeneration: generation,
+        requested: requestedRuntimeIdentity(modelSelection, CODEX_DRIVER),
+        observed: unobservedRuntimeIdentity(),
+      });
+      yield* fixture.sink.write({
+        events: [
+          {
+            id: yield* fixture.idAllocator.allocate.event({ threadId: fixture.threadId }),
+            type: "provider-thread.updated",
+            threadId: fixture.threadId,
+            occurredAt: fixture.now,
+            payload: source,
+          },
+        ],
+      });
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(fixture.manager.detach(detach))));
+      assert.equal(retirementCount, 1, "a successor binding clears the old completed proof");
+      assert.equal((yield* Ref.get(state)).closeCount, 0);
+    }).pipe(
+      Effect.provide(
+        layerTest({
+          state,
+          idleTimeoutMs: 60_000,
+          retireThreadForTransfer: proof,
+          beforeOpen: (input) =>
+            Effect.gen(function* () {
+              if (input.providerSessionId !== replacementProviderSessionId) return;
+              if (!failedReplacement) {
+                failedReplacement = true;
+                return yield* Effect.die("Synthetic replacement open failure before reserve.");
+              }
+              replacementLifecycle = input.runtimeLifecycle;
+            }),
+        }),
+      ),
+    );
+  }),
+);
+
+it.effect.each([
+  "changed-generation",
+  "changed-native",
+  "changed-instance",
+  "changed-provider-thread-selector",
+  "matching-replacement-selectors",
+  "changed-replacement-selector",
+  "missing-replacement-selector",
+  "extra-row",
+  "sibling",
+  "reattached",
+] as const)("completed pooled transfer validates %s proof reuse", (mode) =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    let retirementCount = 0;
+    const proof: NonNullable<ProviderAdapterV2SessionRuntime["retireThreadForTransfer"]> = ({
+      providerThread,
+    }) =>
+      Effect.gen(function* () {
+        retirementCount += 1;
+        if (retirementCount > 1)
+          return yield* unimplemented("A reattached writer needs new physical retirement evidence.");
+        return {
+          binding: runtimeBinding(
+            providerThread,
+            providerThread.runtimeIdentity!.runtimeGeneration!,
+          )!,
+          evidence: "thread_closed" as const,
+        };
+      });
+    yield* Effect.gen(function* () {
+      const fixture = yield* openTransferFixture(`pooled-proof-${mode}`);
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const source = (yield* store.getThreadRecords(fixture.threadId, ["providerThreads"]))
+        .providerThreads[0]!;
+      const sibling = ThreadId.make(`pooled-proof-${mode}-sibling`);
+      yield* fixture.sink.write({
+        events: [
+          yield* makeThreadCreatedEvent({
+            idAllocator: fixture.idAllocator,
+            threadId: sibling,
+            now: fixture.now,
+          }),
+        ],
+      });
+      yield* fixture.manager.open({ ...fixture.input, threadId: sibling });
+      const committedReplacement =
+        mode === "matching-replacement-selectors" ||
+        mode === "changed-replacement-selector" ||
+        mode === "missing-replacement-selector";
+      const replacementProviderSessionId = ProviderSessionId.make("pooled-proof:replacement");
+      const writeThread = (providerThread: OrchestrationV2ProviderThread) =>
+        Effect.gen(function* () {
+          yield* fixture.sink.write({
+            events: [
+              {
+                id: yield* fixture.idAllocator.allocate.event({ threadId: fixture.threadId }),
+                type: "provider-thread.updated",
+                threadId: fixture.threadId,
+                occurredAt: fixture.now,
+                payload: providerThread,
+              },
+            ],
+          });
+        });
+      if (committedReplacement)
+        yield* writeThread({ ...source, providerSessionId: replacementProviderSessionId });
+      const detach = {
+        providerSessionId: fixture.providerSessionId,
+        threadId: fixture.threadId,
+        providerThreadId: source.id,
+        requireWriterRetirement: true,
+        ...(committedReplacement ? { replacementProviderSessionId } : {}),
+      };
+      yield* fixture.manager.detach(detach);
+      if (mode === "changed-generation")
+        yield* writeThread({
+          ...source,
+          runtimeIdentity: { ...source.runtimeIdentity!, runtimeGeneration: "changed-generation" },
+        });
+      if (mode === "changed-native")
+        yield* writeThread({
+          ...source,
+          nativeThreadRef: { ...source.nativeThreadRef!, nativeId: "changed-native" },
+        });
+      if (mode === "changed-instance")
+        yield* writeThread({
+          ...source,
+          providerInstanceId: ProviderInstanceId.make("changed-instance"),
+        });
+      if (mode === "extra-row")
+        yield* writeThread({
+          ...source,
+          id: fixture.idAllocator.derive.providerThread({
+            driver: CODEX_DRIVER,
+            nativeThreadId: "extra-native",
+          }),
+          nativeThreadRef: { ...source.nativeThreadRef!, nativeId: "extra-native" },
+        });
+      if (mode === "reattached") yield* fixture.manager.open(fixture.input);
+      const result = yield* Effect.exit(
+        fixture.manager.detach({
+          providerSessionId: detach.providerSessionId,
+          threadId: mode === "sibling" ? sibling : detach.threadId,
+          requireWriterRetirement: true,
+          ...(mode === "extra-row"
+            ? {}
+            : {
+                providerThreadId:
+                  mode === "changed-provider-thread-selector"
+                    ? fixture.idAllocator.derive.providerThread({
+                        driver: CODEX_DRIVER,
+                        nativeThreadId: "different-source",
+                      })
+                    : source.id,
+              }),
+          ...(mode === "matching-replacement-selectors"
+            ? { replacementProviderSessionId }
+            : mode === "changed-replacement-selector"
+              ? {
+                  replacementProviderSessionId: ProviderSessionId.make("pooled-proof:other-replacement"),
+                }
+              : {}),
+        }),
+      );
+      if (mode === "matching-replacement-selectors") assert.isTrue(Exit.isSuccess(result));
+      else assert.isTrue(Exit.isFailure(result));
+      assert.equal(retirementCount, mode === "reattached" ? 2 : 1);
+      assert.equal((yield* Ref.get(state)).openCount, 1);
+      assert.equal((yield* Ref.get(state)).closeCount, 0);
+      assert.isTrue(yield* fixture.manager.isLive(fixture.providerSessionId));
+      yield* fixture.manager.close(fixture.providerSessionId);
     }).pipe(
       Effect.provide(layerTest({ state, idleTimeoutMs: 60_000, retireThreadForTransfer: proof })),
     );
