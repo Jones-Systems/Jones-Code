@@ -2394,6 +2394,8 @@
     {
       "id": "workstreams-native-read-projection",
       "tests": [
+        "apps/server/src/jones/workstreams/native/read/coherentSnapshot.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/coherentReadConsumer.test.ts",
         "apps/server/src/jones/workstreams/native/read/projection.test.ts",
         "apps/server/src/jones/workstreams/native/read/routes.test.ts",
         "apps/server/src/jones/workstreams/native/read/memberRead.test.ts",

@@ -27,6 +27,7 @@ import {
 import { requireAttested } from "../domain/decider.ts";
 import { WorkstreamDomainError } from "../domain/errors.ts";
 import type { PageQuery } from "../domain/state.ts";
+import { canonicalJson } from "../domain/validation.ts";
 
 export interface ProjectionItem {
   readonly workstream: Wire.Workstream;
@@ -35,6 +36,10 @@ export interface ProjectionItem {
   readonly lifecycle: typeof Wire.WorkstreamLifecycleDeclaration.Type | null;
 }
 export interface ProjectionSnapshot {
+  /** Complete native read content/currentness fence; observation renewal is excluded. */
+  readonly fingerprint: string;
+  /** Earliest future time-driven coverage change in this complete captured state. */
+  readonly valid_until: number | null;
   readonly envelope: WorkstreamsNativeReadEnvelope;
   readonly items: readonly ProjectionItem[];
   readonly counts: Wire.WorkstreamRegistryCounts;
@@ -274,7 +279,57 @@ export const layer = Layer.effect(
               authority_effect: "none",
               ...lifecycleCounts(state),
             };
-            const result = { envelope, items, counts, authorization };
+            // History/receipts are deliberately excluded: history continuations retain the
+            // original SQL keyset high-water even when rejected/no-op commands append events.
+            // Every non-history collection, independent appearance, raw native evidence,
+            // latest source binding revision, authorization and current coverage are included.
+            const maps = {
+              workstreams: state.workstreams,
+              references: state.references,
+              memberships: state.memberships,
+              declarations: state.declarations,
+              lifecycle_declarations: state.lifecycle_declarations,
+              edges: state.edges,
+              observations: state.observations,
+              source_bindings: state.source_bindings,
+            };
+            const content = {
+              home,
+              context,
+              authorization,
+              state: Object.fromEntries(
+                Object.entries(maps).map(([name, map]) => [
+                  name,
+                  [...map.entries()].toSorted((a, b) => byteOrder(a[0], b[0])),
+                ]),
+              ),
+              rawReferences: rawReferences.toSorted((a, b) =>
+                byteOrder(canonicalJson(a.metadata), canonicalJson(b.metadata)),
+              ),
+              appearance: appearanceRows.toSorted((a, b) =>
+                byteOrder(canonicalJson(a.metadata), canonicalJson(b.metadata)),
+              ),
+              sourceBindings: (yield* store.listPlain(home, "source_bindings")).toSorted((a, b) =>
+                byteOrder(canonicalJson(a), canonicalJson(b)),
+              ),
+              visible: visible.toSorted((a, b) =>
+                byteOrder(a.native_reference_id, b.native_reference_id),
+              ),
+              coverage: envelope.coverage,
+            };
+            const contentJson = canonicalJson(content);
+            if (Buffer.byteLength(contentJson) > 16 * 1024 * 1024)
+              return yield* new Session.RegistryError({ code: "backpressure" });
+            const fingerprint = NodeCrypto.createHash("sha256").update(contentJson).digest("hex");
+            const boundaries = [...state.references.values()].flatMap((r) =>
+              [r.registration.attested_at, r.registration.expires_at]
+                .flatMap((time) => (time === null ? [] : [Date.parse(time)]))
+                .filter((time) => Number.isFinite(time) && time > Date.parse(at)),
+            );
+            const valid_until = boundaries.length
+              ? boundaries.reduce((a, b) => Math.min(a, b))
+              : null;
+            const result = { envelope, items, counts, authorization, fingerprint, valid_until };
             const encoded = yield* encodeMaterial(result);
             if (Buffer.byteLength(encoded) > 8 * 1024 * 1024)
               return yield* new Session.RegistryError({ code: "backpressure" });
@@ -338,8 +393,7 @@ export const layer = Layer.effect(
               if (
                 current.authorization.grant.grant_version !==
                   snapshot.authorization.grant.grant_version ||
-                current.authorization.actor.principal_id !==
-                  snapshot.authorization.actor.principal_id
+                canonicalJson(current.authorization) !== canonicalJson(snapshot.authorization)
               )
                 return yield* new Session.RegistryError({ code: "forbidden" });
             }),
