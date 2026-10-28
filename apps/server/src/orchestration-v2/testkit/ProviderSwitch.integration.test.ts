@@ -140,6 +140,30 @@ function makeTestAdapter(input: {
           updatedAt: now,
           lastError: null,
         };
+        const runtimeGeneration =
+          sessionInput.runtimeLifecycle === undefined
+            ? `synthetic:${sessionInput.providerSessionId}`
+            : yield* sessionInput.runtimeLifecycle.reserve(sessionInput.threadId);
+        if (sessionInput.runtimeLifecycle !== undefined)
+          yield* sessionInput.runtimeLifecycle.admit({
+            runtimeGeneration,
+            threadId: sessionInput.threadId,
+          });
+        const bindThread = Effect.fn("ProviderSwitchTest.bindThread")(function* (
+          providerThread: OrchestrationV2ProviderThread,
+          selection: ModelSelection = sessionInput.modelSelection,
+        ) {
+          const requested = ProviderAdapter.requestedRuntimeIdentity(selection, input.driver);
+          const observed = ProviderAdapter.unobservedRuntimeIdentity();
+          return sessionInput.runtimeLifecycle === undefined
+            ? { ...providerThread, runtimeIdentity: { runtimeGeneration, requested, observed } }
+            : yield* sessionInput.runtimeLifecycle.bind({
+                providerThread,
+                runtimeGeneration,
+                requested,
+                observed,
+              });
+        });
 
         const runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
           instanceId: input.instanceId,
@@ -161,8 +185,10 @@ function makeTestAdapter(input: {
                   ? ""
                   : `:${yield* Ref.getAndUpdate(input.nativeThreadGeneration, (value) => value + 1)}`;
               const nativeThreadId = `${input.driver}:${threadInput.threadId}${generation}`;
-              return {
-                id: ProviderThreadId.make(`provider-thread:${nativeThreadId}`),
+              const providerThread = {
+                id:
+                  threadInput.existingProviderThread?.id ??
+                  ProviderThreadId.make(`provider-thread:${nativeThreadId}`),
                 driver: input.driver,
                 providerInstanceId: input.instanceId,
                 providerSessionId: sessionInput.providerSessionId,
@@ -183,8 +209,34 @@ function makeTestAdapter(input: {
                 createdAt,
                 updatedAt: createdAt,
               } satisfies OrchestrationV2ProviderThread;
+              return yield* bindThread(providerThread, threadInput.modelSelection);
             }),
-          resumeThread: ({ providerThread }) =>
+          retireThreadForTransfer: Effect.fn("ProviderSwitchTest.retireThreadForTransfer")(
+            function* ({ providerThread, allowProducerRetirement }) {
+              const binding = ProviderAdapter.runtimeBinding(providerThread, runtimeGeneration);
+              if (
+                binding === undefined ||
+                providerThread.runtimeIdentity?.runtimeGeneration !== runtimeGeneration ||
+                providerThread.providerSessionId !== sessionInput.providerSessionId ||
+                providerThread.providerInstanceId !== input.instanceId ||
+                providerThread.driver !== input.driver
+              )
+                return yield* new ProviderAdapter.ProviderRuntimeBindingError({
+                  driver: input.driver,
+                  detail: "Synthetic writer binding changed.",
+                });
+              yield* runtime.unloadThread?.({ providerThread }) ?? Effect.void;
+              return {
+                binding,
+                evidence:
+                  allowProducerRetirement &&
+                  !input.capabilities.sessions.supportsMultipleProviderThreadsPerSession
+                    ? ("producer_exited" as const)
+                    : ("thread_closed" as const),
+              };
+            },
+          ),
+          resumeThread: ({ providerThread, modelSelection }) =>
             Effect.gen(function* () {
               if (
                 input.failResume ||
@@ -192,7 +244,14 @@ function makeTestAdapter(input: {
                   (yield* Ref.getAndSet(input.failResumeOnce, false)))
               )
                 return yield* unimplemented(input.driver, "simulated native resume failure");
-              return providerThread;
+              return yield* bindThread(
+                {
+                  ...providerThread,
+                  providerInstanceId: input.instanceId,
+                  providerSessionId: sessionInput.providerSessionId,
+                },
+                modelSelection,
+              );
             }),
           ...(input.injectedHistory === undefined
             ? {}

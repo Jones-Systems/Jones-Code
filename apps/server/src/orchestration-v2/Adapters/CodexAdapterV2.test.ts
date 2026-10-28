@@ -57,6 +57,7 @@ import * as CodexClient from "effect-codex-app-server/client";
 import * as CodexReplay from "effect-codex-app-server/replay";
 import type * as CodexSchema from "effect-codex-app-server/schema";
 import * as DateTime from "effect/DateTime";
+import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
@@ -1690,6 +1691,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         ordinal: number,
       ) => Effect.Effect<void, ProviderAdapter.ProviderAdapterOpenSessionError>;
       readonly onClose?: (ordinal: number) => Effect.Effect<void>;
+      readonly afterProcessExit?: Effect.Effect<void>;
       readonly onNotification?: (
         method: string,
         handler: (payload: unknown) => Effect.Effect<unknown>,
@@ -1717,7 +1719,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               if (actualTranscript === undefined)
                 return Effect.die("Unexpected synthetic Codex client replacement");
               const processExited = Deferred.makeUnsafe<void>();
-              openInput.captureProcessExit?.(Deferred.await(processExited));
+              openInput.captureProcessExit?.(
+                Deferred.await(processExited).pipe(
+                  Effect.andThen(options.afterProcessExit ?? Effect.void),
+                ),
+              );
               return Effect.addFinalizer(() => Deferred.succeed(processExited, undefined)).pipe(
                 Effect.andThen(options.onOpen?.(openInput, ordinal) ?? Effect.void),
                 Effect.andThen(
@@ -1889,6 +1895,322 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         awaitTerminal: (count: number) => changes.until(() => terminalEvents().length >= count),
       };
     });
+
+  const makeRetirementHarness = (input: {
+    readonly allowProducerRetirement: boolean;
+    readonly nativeSiblings?: boolean;
+  }) =>
+    Effect.gen(function* () {
+      const nativeThreadId = "retirement-source";
+      const ack = yield* Deferred.make<void>();
+      const sent = yield* Deferred.make<void>();
+      const acknowledged = yield* Deferred.make<void>();
+      const scopeClosed = yield* Deferred.make<void>();
+      const exited = yield* Deferred.make<void>();
+      let unsubscribes = 0;
+      let closes = 0;
+      let closed: ((payload: unknown) => Effect.Effect<unknown>) | undefined;
+      const transcript = makeCodexReplayTranscript({
+        scenario: `retirement-${input.allowProducerRetirement}-${input.nativeSiblings ?? false}`,
+        entries: [
+          ...codexReplayPreamble({
+            nativeThreadId,
+            nativeTurnId: "unused",
+            prompt: "unused",
+          }).slice(0, 5),
+          ...(!input.allowProducerRetirement || input.nativeSiblings
+            ? [
+                {
+                  type: "expect_outbound" as const,
+                  frame: {
+                    id: 3,
+                    method: "thread/unsubscribe",
+                    params: { threadId: nativeThreadId },
+                  },
+                },
+                {
+                  type: "emit_inbound" as const,
+                  label: "unsubscribe-ack",
+                  frame: { id: 3, result: { status: "notSubscribed" } },
+                },
+              ]
+            : []),
+        ],
+      });
+      const driver = yield* CodexReplay.makeReplayDriver(transcript, {
+        beforeEmitInbound: (entry) =>
+          entry.label === "unsubscribe-ack"
+            ? Deferred.succeed(sent, undefined).pipe(Effect.andThen(Deferred.await(ack)))
+            : Effect.void,
+      });
+      const replay = makeCodexReplayClientFactory({ transcript, driver });
+      const harness = yield* makeCodexReplayHarness(transcript, undefined, undefined, undefined, {
+        replayClientFactory: {
+          open: (openInput) =>
+            replay
+              .open({
+                ...openInput,
+                captureProcessExit: () => openInput.captureProcessExit?.(Deferred.await(exited)),
+              })
+              .pipe(
+                Effect.tap(() =>
+                  Effect.addFinalizer(() =>
+                    Effect.sync(() => {
+                      closes++;
+                    }).pipe(Effect.andThen(Deferred.succeed(scopeClosed, undefined))),
+                  ),
+                ),
+                Effect.map(
+                  (client) =>
+                    ({
+                      ...client,
+                      request: (method, params) =>
+                        Effect.sync(() => {
+                          if (method === "thread/unsubscribe") unsubscribes++;
+                        }).pipe(
+                          Effect.andThen(client.request(method, params)),
+                          Effect.tap(() =>
+                            method === "thread/unsubscribe"
+                              ? Deferred.succeed(acknowledged, undefined)
+                              : Effect.void,
+                          ),
+                        ),
+                      handleServerNotification: (method, handler) => {
+                        if (method === "thread/closed")
+                          closed = (payload) => Reflect.apply(handler, undefined, [payload]);
+                        return client.handleServerNotification(method, handler);
+                      },
+                      raw: {
+                        ...client.raw,
+                        request: (method, params) =>
+                          method === "thread/loaded/list"
+                            ? Effect.succeed({
+                                data: input.nativeSiblings
+                                  ? [nativeThreadId, "native-sibling"]
+                                  : [nativeThreadId],
+                              })
+                            : method === "thread/read"
+                              ? Effect.succeed({
+                                  thread: { id: nativeThreadId, status: { type: "idle" } },
+                                })
+                              : method === "thread/goal/get"
+                                ? Effect.succeed({ goal: null })
+                                : method === "thread/backgroundTerminals/list"
+                                  ? Effect.succeed({ data: [], nextCursor: null })
+                                  : client.raw.request(method, params),
+                      },
+                    }) satisfies CodexClient.CodexAppServerClient["Service"],
+                ),
+              ),
+        },
+      });
+      yield* Effect.addFinalizer(() =>
+        Deferred.succeed(ack, undefined).pipe(Effect.andThen(Deferred.succeed(exited, undefined))),
+      );
+      return {
+        ...harness,
+        nativeThreadId,
+        sent: Deferred.await(sent),
+        acknowledge: Deferred.succeed(ack, undefined),
+        acknowledged: Deferred.await(acknowledged),
+        scopeClosed: Deferred.await(scopeClosed),
+        exit: Deferred.succeed(exited, undefined),
+        close: (threadId: string) => closed!({ threadId }),
+        counts: () => ({ unsubscribes, closes }),
+      };
+    });
+
+  it.effect.each([false, true])(
+    "retains captured closure before ACK and preserves a shared producer (permission: %s)",
+    (allowProducerRetirement) =>
+      Effect.gen(function* () {
+        const harness = yield* makeRetirementHarness({
+          allowProducerRetirement,
+          nativeSiblings: true,
+        });
+        const value = { providerThread: harness.providerThread, allowProducerRetirement };
+        const first = yield* harness.runtime.retireThreadForTransfer!(value).pipe(Effect.forkChild);
+        yield* harness.sent;
+        yield* harness.close("wrong-thread");
+        assert.isUndefined(first.pollUnsafe());
+        yield* Fiber.interrupt(first);
+        const duplicate = yield* harness.runtime.retireThreadForTransfer!(value).pipe(
+          Effect.forkChild,
+        );
+        const resume = yield* harness.runtime
+          .resumeThread({ providerThread: harness.providerThread })
+          .pipe(Effect.exit);
+        assert.equal(resume._tag, "Failure", "a committed transfer fences same-producer resume");
+        if (allowProducerRetirement) {
+          yield* harness.acknowledge;
+          yield* harness.acknowledged;
+          assert.isUndefined(
+            duplicate.pollUnsafe(),
+            "notSubscribed ACK alone is not writer release",
+          );
+        }
+        yield* harness.close(harness.nativeThreadId);
+        const receipt = yield* Fiber.join(duplicate);
+        assert.equal(receipt.evidence, "thread_closed");
+        assert.equal(receipt.binding.nativeThreadId, harness.nativeThreadId);
+        assert.equal(
+          receipt.binding.runtimeGeneration,
+          harness.providerThread.runtimeIdentity?.runtimeGeneration,
+        );
+        assert.deepEqual(harness.counts(), { unsubscribes: 1, closes: 0 });
+        yield* harness.acknowledge;
+        yield* harness.exit;
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
+
+  it.effect.each([false, true])(
+    "rejoins the saved native ID after idle unload and preserves foreign writer refusal (%s)",
+    (foreignWriter) =>
+      Effect.gen(function* () {
+        const nativeThreadId = "idle-rejoin-source";
+        const preamble = codexReplayPreamble({
+          nativeThreadId,
+          nativeTurnId: "idle-rejoin-turn",
+          prompt: "Return",
+        });
+        const methods: string[] = [];
+        const refusal = "Thread already has an active writer in another Codex process";
+        const transcript = makeCodexReplayTranscript({
+          scenario: `idle-rejoin-${foreignWriter}`,
+          entries: [
+            ...preamble.slice(0, 5),
+            {
+              type: "expect_outbound",
+              frame: { id: 3, method: "thread/unsubscribe", params: { threadId: nativeThreadId } },
+            },
+            { type: "emit_inbound", frame: { id: 3, result: { status: "unsubscribed" } } },
+            {
+              type: "expect_outbound",
+              frame: {
+                id: 4,
+                method: "thread/resume",
+                params: {
+                  threadId: nativeThreadId,
+                  excludeTurns: true,
+                  config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              frame: foreignWriter
+                ? { id: 4, error: { code: -32600, message: refusal } }
+                : {
+                    id: 4,
+                    result: {
+                      thread: { id: nativeThreadId, updatedAt: 1782622450 },
+                      model: CODEX_TEST_MODEL_SELECTION.model,
+                      modelProvider: "openai",
+                      serviceTier: null,
+                    },
+                  },
+            },
+            ...(!foreignWriter
+              ? preamble.slice(5, 7).map((entry) => withReplayRequestId(entry, 5))
+              : []),
+          ],
+        });
+        const harness = yield* makeCodexReplayHarness(
+          transcript,
+          undefined,
+          (method) =>
+            Effect.sync(() => {
+              methods.push(method);
+            }),
+          undefined,
+          {
+            onRawRequest: (method, params) =>
+              Effect.sync(() => {
+                methods.push(method);
+                if (method === "thread/resume")
+                  assert.propertyVal(params, "threadId", nativeThreadId);
+              }),
+          },
+        );
+        yield* harness.runtime.unloadThread!({ providerThread: harness.providerThread });
+        const result = yield* harness.runtime
+          .startTurn(
+            makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make(`idle-rejoin-${foreignWriter}`),
+              text: "Return",
+            }),
+          )
+          .pipe(Effect.exit);
+        assert.equal(result._tag, foreignWriter ? "Failure" : "Success");
+        assert.equal(methods.filter((method) => method === "thread/start").length, 1);
+        assert.equal(methods.filter((method) => method === "thread/resume").length, 1);
+        assert.equal(
+          methods.filter((method) => method === "turn/start").length,
+          foreignWriter ? 0 : 1,
+        );
+        if (result._tag === "Failure") {
+          let error = Cause.squash(result.cause);
+          while (
+            error instanceof Error &&
+            !Schema.is(CodexError.CodexAppServerRequestError)(error) &&
+            error.cause !== undefined
+          )
+            error = error.cause;
+          assert.instanceOf(error, CodexError.CodexAppServerRequestError);
+          const requestError = error as CodexError.CodexAppServerRequestError;
+          assert.equal(requestError.code, -32600);
+          assert.equal(requestError.method, "thread/resume");
+          assert.equal(requestError.requestId, "4");
+          assert.equal(requestError.errorMessage, refusal);
+        }
+        assert.equal(harness.providerThread.nativeThreadRef?.nativeId, nativeThreadId);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
+
+  it.effect(
+    "exclusive transfer joins physical exit and duplicate calls instead of accepting scope close",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeRetirementHarness({ allowProducerRetirement: true });
+        const value = { providerThread: harness.providerThread, allowProducerRetirement: true };
+        const first = yield* harness.runtime.retireThreadForTransfer!(value).pipe(Effect.forkChild);
+        yield* harness.scopeClosed;
+        yield* harness.close(harness.nativeThreadId);
+        assert.isUndefined(
+          first.pollUnsafe(),
+          "closure from a retiring producer does not replace its exit witness",
+        );
+        yield* Fiber.interrupt(first);
+        const duplicate = yield* harness.runtime.retireThreadForTransfer!(value).pipe(
+          Effect.forkChild,
+        );
+        yield* TestClock.adjust("30 seconds");
+        assert.isUndefined(duplicate.pollUnsafe());
+        assert.deepEqual(harness.counts(), { unsubscribes: 0, closes: 1 });
+        yield* harness.exit;
+        const receipt = yield* Fiber.join(duplicate);
+        assert.equal(receipt.evidence, "producer_exited");
+        assert.equal(receipt.binding.nativeThreadId, harness.nativeThreadId);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
 
   it.effect("fails active turns exactly once on producer termination without replay", () =>
     Effect.gen(function* () {
@@ -6155,6 +6477,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         const nativeThreadId = `steer-teardown-${ending}`;
         const nativeTurnId = "teardown-steer-turn";
         const sent = yield* Deferred.make<void>();
+        const physicalExit = yield* Deferred.make<void>();
+        const scopeClosed = yield* Deferred.make<void>();
         let terminate: Parameters<
           CodexAdapterV2.CodexAppServerClientFactoryShape["open"]
         >[0]["onTermination"];
@@ -6184,12 +6508,15 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               : Effect.void,
           undefined,
           {
+            afterProcessExit: Deferred.await(physicalExit),
+            onClose: () => Deferred.succeed(scopeClosed, undefined).pipe(Effect.asVoid),
             onOpen: (input) =>
               Effect.sync(() => {
                 terminate = input.onTermination;
               }),
           },
         );
+        yield* Effect.addFinalizer(() => Deferred.succeed(physicalExit, undefined));
         const turnInput = makeCodexTestTurnInput({
           threadId: harness.threadId,
           providerThread: harness.providerThread,
@@ -6226,13 +6553,15 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             ? new CodexError.CodexAppServerProcessExitedError({ code: 7 })
             : new CodexError.CodexAppServerInputStreamEndedError({}),
         );
-        yield* harness.eventsEnded;
-        if (ending === "process-exit")
-          yield* harness.controlAdmission.assertOpen(CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID);
-        else
+        if (ending === "transport-loss") {
+          yield* Deferred.await(scopeClosed);
           yield* harness.controlAdmission
             .assertOpen(CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID)
             .pipe(Effect.flip);
+        }
+        yield* Deferred.succeed(physicalExit, undefined);
+        yield* harness.eventsEnded;
+        yield* harness.controlAdmission.assertOpen(CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID);
       }).pipe(
         Effect.scoped,
         Effect.provide(
@@ -6385,6 +6714,14 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     "retains admission when captured Stop has %s child exit evidence",
     (proof) =>
       Effect.gen(function* () {
+        const sessionScope = yield* Scope.make();
+        const exitReleased = yield* Deferred.make<void>();
+        yield* Effect.addFinalizer(() =>
+          Deferred.succeed(exitReleased, undefined).pipe(
+            Effect.andThen(Scope.close(sessionScope, Exit.void).pipe(Effect.exit)),
+            Effect.asVoid,
+          ),
+        );
         const nativeThreadId = `unproved-stop-${proof}`;
         const nativeTurnId = `unproved-turn-${proof}`;
         const transcript = makeCodexReplayTranscript({
@@ -6402,7 +6739,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   verifyCodexProcessExit({
                     exitCode:
                       proof === "pending"
-                        ? Effect.never
+                        ? Deferred.await(exitReleased).pipe(
+                            Effect.as(ChildProcessSpawner.ExitCode(0)),
+                          )
                         : Effect.fail(
                             PlatformError.systemError({
                               _tag: "Unknown",
@@ -6410,7 +6749,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                               method: "exitCode",
                             }),
                           ),
-                    isRunning: Effect.succeed(true),
+                    isRunning: Deferred.isDone(exitReleased).pipe(Effect.map((done) => !done)),
                   }),
                 );
               },
@@ -6418,7 +6757,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         };
         const harness = yield* makeCodexReplayHarness(transcript, undefined, undefined, undefined, {
           replayClientFactory: factory,
-        });
+        }).pipe(Effect.provideService(Scope.Scope, sessionScope));
         const turnInput = makeCodexTestTurnInput({
           threadId: harness.threadId,
           providerThread: harness.providerThread,
@@ -6465,6 +6804,13 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           })
           .pipe(Effect.exit);
         assert.equal(opened._tag, "Failure");
+        yield* Deferred.succeed(exitReleased, undefined);
+        if (proof === "pending") {
+          yield* captured!.stop;
+          yield* harness.controlAdmission.assertOpen(CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID);
+        }
+        const cleanup = yield* Scope.close(sessionScope, Exit.void).pipe(Effect.exit);
+        assert.equal(cleanup._tag, proof === "failed" ? "Failure" : "Success");
       }).pipe(
         Effect.scoped,
         Effect.provide(
