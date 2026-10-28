@@ -1145,3 +1145,101 @@ it.effect(
       expect(yield* Fiber.join(request)).toBe(input.operationId);
     }),
 );
+
+it.effect(
+  "exposes handoff only with explicit launcher support and correlates actual-ready and handoff replies",
+  () =>
+    Effect.gen(function* () {
+      const context = {
+        protocol: 4,
+        childVersion: "1.0.0",
+        launcherVersion: "0.9.0",
+        startupGateProtocol: 1,
+        launcherHandoffProtocol: 1,
+      };
+      const older = yield* makeClient(
+        new FakeLauncherProcess({
+          protocol: 4,
+          childVersion: "1.0.0",
+          startupGateProtocol: 1,
+        }),
+        "1.0.0",
+      );
+      expect(older.markRuntimeReady).toBeUndefined();
+      expect(older.requestLauncherHandoff).toBeUndefined();
+      const host = new FakeLauncherProcess(context);
+      const client = yield* makeClient(host, "1.0.0");
+      const ready = yield* client.markRuntimeReady!.pipe(Effect.forkChild);
+      yield* Effect.promise(() => host.sentSignal.promise);
+      const sent = host.sent[0];
+      expect(sent?.type).toBe("runtime-ready");
+      if (sent?.type !== "runtime-ready") return yield* Effect.die("Missing ready message");
+      host.emit({ type: "runtime-ready-accepted", queryId: sent.queryId + 1 });
+      expect(ready.pollUnsafe()).toBeUndefined();
+      host.emit({ type: "runtime-ready-accepted", queryId: sent.queryId });
+      yield* Fiber.join(ready);
+      const sentHandoff = Promise.withResolvers<ServiceLauncherChildMessage>();
+      const send = host.send;
+      host.send = (message, callback) => {
+        const result = send(message, callback);
+        if (message.type === "request-launcher-handoff") sentHandoff.resolve(message);
+        return result;
+      };
+      const handoff = yield* client.requestLauncherHandoff!.pipe(Effect.forkChild);
+      const request = yield* Effect.promise(() => sentHandoff.promise);
+      expect(request?.type).toBe("request-launcher-handoff");
+      if (request?.type !== "request-launcher-handoff")
+        return yield* Effect.die("Missing handoff request");
+      host.emit({
+        type: "launcher-handoff-outcome",
+        queryId: request.queryId,
+        outcome: "deferred",
+      });
+      expect(yield* Fiber.join(handoff)).toBe("deferred");
+      expect(host.listenerCount()).toBe(0);
+    }),
+);
+
+it("strictly decodes additive handoff capabilities and bounded IPC while retaining protocol4", () => {
+  const context = {
+    protocol: 4,
+    childVersion: "1.0.0",
+    startupGateProtocol: 1,
+    launcherHandoffProtocol: 1,
+  };
+  expect(decodeServiceLauncherContext(JSON.stringify(context))?.launcherHandoffProtocol).toBe(1);
+  for (const change of [
+    { launcherHandoffProtocol: 2 },
+    { launcherHandoffProtocol: null },
+    { launcherHandoffProtocol: "1" },
+    { protocol: 3 },
+    { startupGateProtocol: undefined },
+  ])
+    expect(decodeServiceLauncherContext(JSON.stringify({ ...context, ...change }))).toBeUndefined();
+  for (const message of [
+    { type: "runtime-ready", childVersion: "1.0.0", queryId: 1 },
+    { type: "request-launcher-handoff", queryId: 2 },
+  ]) {
+    expect(decodeServiceLauncherChildMessage(message)).toEqual(message);
+    for (const queryId of [-1, 0, 1.5, null, "1"])
+      expect(decodeServiceLauncherChildMessage({ ...message, queryId })).toBeUndefined();
+  }
+  expect(
+    decodeServiceLauncherChildMessage({
+      type: "runtime-ready",
+      childVersion: "../outside",
+      queryId: 1,
+    }),
+  ).toBeUndefined();
+  for (const outcome of ["accepted", "deferred", "unavailable"]) {
+    const message = { type: "launcher-handoff-outcome", queryId: 1, outcome };
+    expect(decodeServiceLauncherParentMessage(message)).toEqual(message);
+  }
+  expect(
+    decodeServiceLauncherParentMessage({
+      type: "launcher-handoff-outcome",
+      queryId: 1,
+      outcome: "unknown",
+    }),
+  ).toBeUndefined();
+});

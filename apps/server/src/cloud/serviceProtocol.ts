@@ -73,6 +73,7 @@ export interface ServiceLauncherContext {
   /** The launcher answers `reconcile-update` from its durable operation outcomes. */
   readonly updateOutcomeProtocol?: 1;
   readonly updateSettlementProtocol?: 1;
+  readonly launcherHandoffProtocol?: 1;
   readonly startupGateProtocol?: 1;
   readonly update?: ServiceUpdateRecord | LegacyPendingServiceUpdate;
 }
@@ -106,6 +107,8 @@ export type ServiceUpdateReconciliationResult =
   | { readonly result: "refused"; readonly reason: ServiceUpdateReconciliationRefusal };
 
 export type ServiceLauncherChildMessage =
+  | { readonly type: "runtime-ready"; readonly childVersion: string; readonly queryId: number }
+  | { readonly type: "request-launcher-handoff"; readonly queryId: number }
   | ({ readonly type: "reconcile-failed-update" } & ServiceUpdateReconciliationRequest)
   | ({
       readonly type: "record-retired-operation";
@@ -135,6 +138,12 @@ export type ServiceLauncherChildMessage =
     };
 
 export type ServiceLauncherParentMessage =
+  | { readonly type: "runtime-ready-accepted"; readonly queryId: number }
+  | {
+      readonly type: "launcher-handoff-outcome";
+      readonly queryId: number;
+      readonly outcome: "accepted" | "deferred" | "unavailable";
+    }
   | ({ readonly type: "update-reconciled" } & ServiceUpdateReconciliationRequest &
       ServiceUpdateReconciliationResult)
   | {
@@ -366,6 +375,10 @@ export function decodeServiceLauncherContext(value: string): ServiceLauncherCont
   }
   if (
     !isRecord(parsed) ||
+    ("launcherHandoffProtocol" in parsed &&
+      (parsed.launcherHandoffProtocol !== 1 ||
+        parsed.protocol !== SERVICE_LAUNCHER_PROTOCOL ||
+        parsed.startupGateProtocol !== 1)) ||
     ("qualifiedRecoveryProtocol" in parsed && parsed.qualifiedRecoveryProtocol !== 1) ||
     ("stateRecoveryPolicyProtocol" in parsed && parsed.stateRecoveryPolicyProtocol !== 1) ||
     (parsed.protocol !== SERVICE_LAUNCHER_PROTOCOL &&
@@ -420,6 +433,7 @@ export function decodeServiceLauncherContext(value: string): ServiceLauncherCont
     ...(parsed.updateRetirementProtocol === 1 ? { updateRetirementProtocol: 1 as const } : {}),
     ...(parsed.updateOutcomeProtocol === 1 ? { updateOutcomeProtocol: 1 as const } : {}),
     ...(parsed.updateSettlementProtocol === 1 ? { updateSettlementProtocol: 1 as const } : {}),
+    ...(parsed.launcherHandoffProtocol === 1 ? { launcherHandoffProtocol: 1 as const } : {}),
     ...(parsed.startupGateProtocol === 1 ? { startupGateProtocol: 1 as const } : {}),
     ...(update === undefined ? {} : { update }),
   };
@@ -458,6 +472,15 @@ export function decodeServiceLauncherChildMessage(
   value: unknown,
 ): ServiceLauncherChildMessage | undefined {
   if (!isRecord(value)) return undefined;
+  if (value.type === "runtime-ready")
+    return isQueryId(value.queryId) &&
+      typeof value.childVersion === "string" &&
+      isExactServiceVersion(value.childVersion)
+      ? { type: value.type, queryId: value.queryId, childVersion: value.childVersion }
+      : undefined;
+  if (value.type === "request-launcher-handoff")
+    return isQueryId(value.queryId) ? { type: value.type, queryId: value.queryId } : undefined;
+
   if (value.type === "reconcile-failed-update" || value.type === "record-retired-operation") {
     if (
       typeof value.operationId !== "string" ||
@@ -567,6 +590,16 @@ export function decodeServiceLauncherParentMessage(
   value: unknown,
 ): ServiceLauncherParentMessage | undefined {
   if (!isRecord(value)) return undefined;
+  if (value.type === "runtime-ready-accepted")
+    return isQueryId(value.queryId) ? { type: value.type, queryId: value.queryId } : undefined;
+  if (value.type === "launcher-handoff-outcome")
+    return isQueryId(value.queryId) &&
+      (value.outcome === "accepted" ||
+        value.outcome === "deferred" ||
+        value.outcome === "unavailable")
+      ? { type: value.type, queryId: value.queryId, outcome: value.outcome }
+      : undefined;
+
   if (value.type === "update-reconciled") {
     if (
       typeof value.operationId !== "string" ||
