@@ -322,7 +322,7 @@
         "apps/web/src/jones/hostStatus/ResponsiveHostStatusPills.browser.test.tsx",
         "apps/web/src/jones/hostStatus/useHeaderControlsClearance.browser.test.tsx"
       ],
-      "scope": "Host status badges discover a registered connected gateway with configured VPS telemetry using shared HTTP authentication. Gateway selection survives thread switches and temporary disconnection; explicit removal clears selection and old samples. Host chips retain both readings through measured spacing, individual name reductions, diagonal and vertical layouts; the title keeps priority and expansion restores full detail. Header clearance follows the measured fixed controls so telemetry stays outside their hit targets. Hover and focus expose one semantic bullet per CPU, available/total RAM, Mac swap I/O and optional single-filesystem free/total storage reading; old collectors retain CPU and RAM without storage."
+      "scope": "Host status badges discover a registered connected gateway with configured VPS telemetry using shared HTTP authentication. Gateway selection survives thread switches and temporary disconnection; explicit removal clears selection and old samples. Host chips retain both readings through measured spacing, individual name reductions, diagonal and vertical layouts; the title keeps priority and expansion restores full detail. Header clearance follows the measured fixed controls so telemetry stays outside their hit targets. Hover and focus expose one semantic bullet per CPU, available/total RAM, Mac swap I/O and optional single-filesystem free/total storage reading; old collectors retain CPU and RAM without storage. Fresh gateway readings tolerate the same five-second future clock skew as the server and survive transient transport failures only until their original thirty-second expiry; explicit per-host unavailable responses replace retained values."
     },
     {
       "id": "desktop-background-preparation",
@@ -2042,7 +2042,7 @@
         "apps/web/src/jones/remoteAgentLineage/ThreadRelationships.browser.test.tsx",
         "apps/web/src/jones/remoteAgentLineage/MachineIdentity.browser.test.tsx"
       ],
-      "scope": "Sparse Jones-owned navigation links join ordinary launch parent/child relationships, offered and receiver-accepted continuations, and manual peers. Existing fork and delegated-task lineage folds into one default-collapsed Linked section with scoped deduplication, connected-environment discovery, truthful incomplete/offline coverage, existing task controls and portable origin/return-address text. Automatic launch claims preserve creation receipts, retry fences and first-message rejection semantics. Authenticated remote origins retain current endpoint and access checks; link copies grant no connection or task authority. Soft removal prevents automatic retry resurrection. Existing toolkit embeddings without the application layers retain lineage-only behavior. Tests cover storage, migration, launch hooks, forwarding, handoff delivery, RPC/MCP registration, presentation and UI interactions; component tests do not establish installed cross-machine runtime availability."
+      "scope": "Sparse Jones-owned navigation links join ordinary launch parent/child relationships, offered and receiver-accepted continuations, and manual peers. Existing fork and delegated-task lineage folds into one default-collapsed Linked section with scoped deduplication, connected-environment discovery, truthful incomplete/offline coverage, existing task controls and portable origin/return-address text. Automatic launch claims preserve creation receipts, retry fences and first-message rejection semantics. Authenticated remote origins retain current endpoint and access checks; link copies grant no connection or task authority. Soft removal prevents automatic retry resurrection. Existing toolkit embeddings without the application layers retain lineage-only behavior. Tests cover storage, migration, launch hooks, forwarding, handoff delivery, RPC/MCP registration, presentation and UI interactions; component tests do not establish installed cross-machine runtime availability. Read authorization uses canonical thread metadata without constructing historical shell counts, and complete link listings use the read-only connection while retaining existing transaction affinity."
     },
     {
       "id": "coherent-reference-reads",
@@ -2573,6 +2573,41 @@
         "apps/mobile/src/jones/remoteDelegation/thread-order.delegateRequests.test.ts"
       ],
       "scope": "Reduced HTTP and WebSocket snapshots retain existing active owners of bound remote tasks in the snapshot reader transaction, preserving local ancestry and older-settled counts. A shared attention rule keeps asking remote delegates eligible for navigation when the loaded local parent chain is settled, incomplete, cyclic, or itself delegated. Existing orphan, environment, list placement and notification policies remain; no wire, schema, index or installed-runtime changes."
+    },
+    {
+      "id": "launcher-handoff",
+      "tests": [
+        "apps/server/src/jones/cloud/launcherPointer.test.ts",
+        "apps/server/src/jones/cloud/launcherHandoffProcesses.test.ts",
+        "apps/server/src/jones/updates/launcherHandoff.test.ts",
+        "apps/server/src/jones/updates/UpdateAdmissionFence.test.ts",
+        "apps/server/src/jones/updates/hostWork.test.ts",
+        "apps/server/src/jones/cloud/qualifiedCommitAttempt.test.ts",
+        "apps/server/src/jones/cloud/qualifiedLauncher.test.ts",
+        "apps/server/src/jones/cloud/launcherCapability.test.ts",
+        "apps/server/src/serviceLauncher.test.ts",
+        "apps/server/src/cloud/serviceLauncherClient.test.ts",
+        "apps/server/src/serverRuntimeStartup.test.ts"
+      ],
+      "scope": "Quiet automatic launcher handoff after qualified commit, exact child readiness, immutable pointer receipts, bounded manager membership and three-start fallback. Native bootstrap and operational authority remain separate."
+    },
+    {
+      "id": "provider-writer-retirement",
+      "tests": [
+        "apps/server/src/jones/providerRetirement/RetirementLedger.test.ts",
+        "apps/server/src/jones/provider/codex/CodexRetirement.test.ts",
+        "apps/server/src/jones/orchestration/LateSteer.test.ts",
+        "apps/server/src/jones/threadConfiguration/prepareExecutionSession.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/EffectWorker.test.ts",
+        "apps/server/src/orchestration-v2/SelectionRestart.integration.test.ts",
+        "apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.integration.test.ts",
+        "apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts"
+      ],
+      "scope": "Retain captured session and logical-thread retirement fences through subscriber drain, thread closure and verified Codex process exit. Confirmed transfer has a narrow optional adapter receipt; ordinary idle unsubscribe keeps native rejoin behavior. ProviderAdapter adds an internal optional contract, and transfer callers use small existing manager hooks. No wire or persisted-state changes."
     }
   ]
 }

@@ -186,6 +186,12 @@ export class ServiceLauncherClient extends Context.Service<
       readonly qualifiedRecoveryProtocol?: 1;
       readonly stateRecovery?: "clone-required" | "clone-or-copy";
     }) => Effect.Effect<string, ServiceLauncherClientError | ServiceLauncherRejectedError>;
+    /** Sent after HTTP, activation, command admission and the public ready event. */
+    readonly markRuntimeReady?: Effect.Effect<void, ServiceLauncherClientError>;
+    readonly requestLauncherHandoff?: Effect.Effect<
+      "accepted" | "deferred" | "unavailable",
+      ServiceLauncherClientError
+    >;
     readonly prepareTrial: Effect.Effect<
       ServerSelfUpdateOutcome | undefined,
       ServiceLauncherClientError
@@ -660,6 +666,30 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
       return qualifiedTransaction ? outcome : undefined;
     },
     prepareTrial,
+    ...(context?.launcherHandoffProtocol !== 1
+      ? {}
+      : {
+          markRuntimeReady: Effect.suspend(() => {
+            const queryId = ++queries;
+            return exchange(
+              { type: "runtime-ready", childVersion: context.childVersion, queryId },
+              (reply) => reply.type === "runtime-ready-accepted" && reply.queryId === queryId,
+            ).pipe(Effect.asVoid);
+          }),
+          requestLauncherHandoff: Effect.suspend(() => {
+            const queryId = ++queries;
+            return exchange(
+              { type: "request-launcher-handoff", queryId },
+              (reply) => reply.type === "launcher-handoff-outcome" && reply.queryId === queryId,
+            ).pipe(
+              Effect.map((reply) => {
+                if (reply.type !== "launcher-handoff-outcome")
+                  throw new Error("Unexpected launcher handoff response.");
+                return reply.outcome;
+              }),
+            );
+          }),
+        }),
   });
 });
 

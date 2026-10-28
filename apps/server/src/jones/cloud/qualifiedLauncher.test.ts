@@ -44,6 +44,11 @@ import {
 import type { ServiceLauncherChildMessage, ServiceState } from "../../cloud/serviceProtocol.ts";
 
 import { retainStagedSelection } from "../updates/stagedSelection.ts";
+import {
+  bootstrapLauncherPointer,
+  readLauncherPointer,
+  readLauncherHandoff,
+} from "./launcherPointer.ts";
 import { assertStageNotRevoked } from "../updates/stageRevocation.ts";
 
 const baseline = "0.0.0-preview.20261002.100";
@@ -100,6 +105,8 @@ async function runScenario(
     readonly beforeLaunch?: (base: string, staged: StagedQualifiedRuntime) => Promise<void>;
     readonly recoveryIO?: NonNullable<ConstructorParameters<typeof Launcher>[2]>["recoveryIO"];
     readonly preparedTimeoutMs?: number;
+    readonly launcherHandoff?: "accept" | "defer" | "corrupt";
+    readonly handoffResume?: "healthy" | "silent";
   } = {},
 ) {
   const allocated = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-launcher-test-"));
@@ -223,6 +230,14 @@ if (${JSON.stringify(options.settlementRequests !== undefined)}) {
   });
   if (${JSON.stringify(mode)} === "stale-child") receipt.processId += 1;
   process.on("message", async m => {
+    if (${JSON.stringify(options.launcherHandoff !== undefined)} && m.type === "runtime-ready-accepted") {
+      process.send({type:"request-launcher-handoff", queryId:2}); return;
+    }
+    if (${JSON.stringify(options.launcherHandoff !== undefined)} && m.type === "launcher-handoff-outcome") {
+      writeFileSync(${JSON.stringify(NodePath.join(base, "runtime", "launcher-handoff-outcome.json"))}, JSON.stringify(m));
+      if (m.outcome !== "accepted") process.exit(0);
+      return;
+    }
     if (m.type !== "committed") return;
     if (m.startupGateProtocol !== 1 || m.qualified?.generation !== context.update.id ||
       !sameQualifiedTrialIdentity(receipt, m.qualified)) process.exit(2);
@@ -238,6 +253,11 @@ if (${JSON.stringify(options.settlementRequests !== undefined)}) {
       }
     }
     await reserveQualifiedResume({receipt});
+    if (${JSON.stringify(options.launcherHandoff === "corrupt")}) {
+      const executable = ${JSON.stringify(NodePath.join(base, "runtime", "versions", target, "t3"))};
+      writeFileSync(executable, readFileSync(executable, "utf8") + "// corrupted after commit");
+    }
+
     if (${JSON.stringify(mode)} === "commit-then-rollback") {
       const { protocol, payloadSha256, ...artifact } = JSON.parse(readFileSync(${JSON.stringify(NodePath.join(base, "runtime", "versions", target, QUALIFIED_RUNTIME_RECEIPT))}, "utf8"));
       const staged = await stageQualifiedRuntime({
@@ -247,7 +267,8 @@ if (${JSON.stringify(options.settlementRequests !== undefined)}) {
       });
       await retainStagedSelection(staged);
       process.send({type:"request-update", targetVersion:${JSON.stringify(laterTarget)}, dbPath:${JSON.stringify(dbPath)}, stagedHandle:staged.stagedHandle});
-    } else process.exit(0);
+    } else if (${JSON.stringify(options.launcherHandoff !== undefined)}) process.send({type:"runtime-ready", childVersion:context.childVersion, queryId:1});
+    else process.exit(0);
   });
   if (${JSON.stringify(options.cleanupFailure === true)}) {
     mkdirSync(${JSON.stringify(NodePath.join(base, "runtime", "db-backup"))} + "/" + context.update.id + "/database-shm");
@@ -257,6 +278,12 @@ if (${JSON.stringify(options.settlementRequests !== undefined)}) {
     mkdirSync(${JSON.stringify(NodePath.join(base, "runtime", "service-state.json"))});
   }
   process.send({type:"prepared", updateId:context.update.id, startupGateProtocol:1, qualified:receipt});
+} else if (${JSON.stringify(options.handoffResume !== undefined)} && context.update?.status === "committed") {
+  process.on("message", m => {
+    if (m.type === "runtime-ready-accepted") process.exit(0);
+  });
+  if (${JSON.stringify(options.handoffResume === "healthy")}) process.send({type:"runtime-ready", childVersion:context.childVersion, queryId:1});
+  setInterval(() => {}, 1000);
 } else if (context.update === undefined && ${JSON.stringify(options.outcomeQueries === true)}) {
   const handle = readFileSync(${JSON.stringify(NodePath.join(base, "runtime", "test-handle"))}, "utf8");
   const operationId = "12345678-1234-4234-8234-123456789abc";
@@ -317,7 +344,14 @@ if (${JSON.stringify(options.settlementRequests !== undefined)}) {
     const payload = NodePath.join(base, "payload");
     for (const directory of [active, payload]) {
       await NodeFSP.mkdir(directory, { recursive: true, mode: 0o700 });
-      await NodeFSP.writeFile(NodePath.join(directory, "t3"), child, { mode: 0o755 });
+      await NodeFSP.writeFile(
+        NodePath.join(directory, "t3"),
+        child +
+          (options.launcherHandoff === undefined
+            ? ""
+            : "\n// " + (directory === active ? "baseline" : "target") + "\n"),
+        { mode: 0o755 },
+      );
     }
     if (mode === "commit-then-rollback") {
       const laterPayload = NodePath.join(base, "later-payload");
@@ -445,8 +479,16 @@ if (${JSON.stringify(options.settlementRequests !== undefined)}) {
       ...(previousUpdate === undefined ? {} : { update: previousUpdate }),
     });
     await options.beforeLaunch?.(base, staged);
+    if (options.launcherHandoff !== undefined)
+      await bootstrapLauncherPointer(base, baseline, "[Service]\nExecStart=synthetic-retained\n");
     let reservations = 0;
     const launcher = new Launcher(base, await readServiceState(statePath), {
+      ...(options.launcherHandoff === undefined
+        ? {}
+        : {
+            launcherVersion: baseline,
+            handoffProcessesQuiet: async () => options.launcherHandoff !== "defer",
+          }),
       ...(options.startupGateProtocol === "missing" ? {} : { startupGateProtocol: 1 as const }),
       ...(options.backupAdapter === undefined ? {} : { backupAdapter: options.backupAdapter }),
       ...(options.recoveryIO === undefined ? {} : { recoveryIO: options.recoveryIO }),
@@ -498,7 +540,8 @@ if (${JSON.stringify(options.settlementRequests !== undefined)}) {
       if (options.productionMain) process.env.T3CODE_HOME = base;
       await (options.productionMain ? main() : launcher.run()).then(
         () => {
-          throw new Error("Unexpected launcher completion");
+          if (options.launcherHandoff !== "accept")
+            throw new Error("Unexpected launcher completion");
         },
         (cause: unknown) => {
           launcherFailure = cause;
@@ -2368,4 +2411,81 @@ it("a strict clone lost after preflight never copies state and preserves the pre
   );
   assert.equal(flags.length, 2);
   assert.isTrue(flags.every((flag) => !!(flag & NodeFS.constants.COPYFILE_FICLONE_FORCE)));
+});
+
+it("hands off a committed qualified child only after actual-ready IPC and defers manager descendants", async () => {
+  for (const mode of ["accept", "defer", "corrupt"] as const) {
+    let observed: Launcher | undefined;
+    await runScenario(
+      "commit",
+      async (base, failure) => {
+        const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+        assert.equal(state.activeVersion, target);
+        assert.equal(state.update?.status, "committed");
+        const pointer = await readLauncherPointer(base);
+        assert.equal(pointer?.currentVersion, baseline);
+        if (mode === "accept") {
+          assert.isUndefined(failure);
+          assert.equal(observed?.exitCode, 75);
+          assert.equal(pointer?.pendingVersion, target);
+          assert.equal((await readLauncherHandoff(base))?.status, "requested");
+        } else {
+          assert.include(String(failure), "Active child exited unexpectedly");
+          const outcome = JSON.parse(
+            await NodeFSP.readFile(
+              NodePath.join(base, "runtime", "launcher-handoff-outcome.json"),
+              "utf8",
+            ),
+          );
+          assert.equal(outcome.outcome, mode === "defer" ? "deferred" : "unavailable");
+
+          assert.equal(observed?.exitCode, 0);
+          assert.isUndefined(pointer?.pendingVersion);
+          assert.isUndefined(await readLauncherHandoff(base));
+        }
+      },
+      (launcher) => {
+        observed = launcher;
+      },
+      { launcherHandoff: mode },
+    );
+  }
+});
+
+it("promotes a captured healthy pending launcher and bounds a child that never announces readiness", async () => {
+  for (const resume of ["healthy", "silent"] as const) {
+    await runScenario(
+      "commit",
+      async (base, failure) => {
+        assert.isUndefined(failure);
+        const directory = NodePath.join(base, "runtime", "launcher");
+        // A simulated manager consumes the first pending attempt; no host unit is started.
+        await NodeFSP.writeFile(NodePath.join(directory, "attempts"), "1\n", { mode: 0o600 });
+        const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+        const pendingLauncher = new Launcher(base, state, {
+          startupGateProtocol: 1,
+          launcherVersion: target,
+          preparedTimeoutMs: 1000,
+        });
+        await NodeAssert.rejects(
+          pendingLauncher.run(),
+          resume === "healthy" ? /Active child exited unexpectedly/ : /did not become healthy/,
+        );
+        const pointer = await readLauncherPointer(base);
+        if (resume === "healthy") {
+          assert.equal(pointer?.currentVersion, target);
+          assert.isUndefined(pointer?.pendingVersion);
+          assert.equal(pointer?.attempts, 0);
+          assert.equal((await readLauncherHandoff(base))?.status, "committed");
+        } else {
+          assert.equal(pointer?.currentVersion, baseline);
+          assert.equal(pointer?.pendingVersion, target);
+          assert.equal(pointer?.attempts, 1);
+          assert.equal((await readLauncherHandoff(base))?.status, "requested");
+        }
+      },
+      undefined,
+      { launcherHandoff: "accept", handoffResume: resume },
+    );
+  }
 });

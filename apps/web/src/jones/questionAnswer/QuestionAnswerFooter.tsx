@@ -121,12 +121,13 @@ export function QuestionAnswerFooter({
         }}
         className="ms-5 space-y-2 pb-2"
       >
-        {state.showField ? (
+        {state.showField &&
+        (state.fieldLabel || (!state.notes && progress.activeQuestion?.options.length)) ? (
           <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
             <span>
               {state.fieldLabel}
               {!state.notes && progress.activeQuestion?.options.length
-                ? " · Typing replaces your choice"
+                ? "Typing replaces your choice"
                 : ""}
             </span>
             {state.notes && state.hasChoice ? (
@@ -250,14 +251,6 @@ export function QuestionAnswerFooter({
             </Button>
           </div>
         </div>
-        {state.sends !== null ? (
-          <p
-            role="status"
-            className="max-h-24 overflow-y-auto whitespace-pre-wrap wrap-anywhere text-xs text-muted-foreground"
-          >
-            Sends: {state.sends || "Your attachment"}
-          </p>
-        ) : null}
         {state.blockedReason ? (
           <p id={reasonId} className="text-xs text-muted-foreground">
             {state.blockedReason}

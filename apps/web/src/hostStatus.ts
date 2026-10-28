@@ -10,6 +10,7 @@ export const HOST_STATUS_NAMES = {
 export const HOST_STATUS_IDS = ["vps", "test", "mini", "home"] as const;
 
 const HOST_STATUS_MAX_AGE_MS = 30_000;
+const HOST_STATUS_MAX_FUTURE_SKEW_MS = 5_000;
 // oxlint-disable-next-line t3code/no-em-dash-copy -- Owner-approved missing-reading symbol, not prose punctuation.
 const UNAVAILABLE_READING = "—";
 
@@ -26,7 +27,9 @@ function utilizationHealth(percent: number) {
 function freshHostStatus(host: HostStatus, now: number): HostStatus {
   if (host.status === "unavailable") return host;
   const age = now - Date.parse(host.sampledAt);
-  return !Number.isFinite(age) || age < 0 || age >= HOST_STATUS_MAX_AGE_MS
+  return !Number.isFinite(age) ||
+    age < -HOST_STATUS_MAX_FUTURE_SKEW_MS ||
+    age >= HOST_STATUS_MAX_AGE_MS
     ? { id: host.id, status: "unavailable", reason: "stale" }
     : host;
 }
@@ -175,7 +178,7 @@ export function observeHostStatus(
     } catch {
       if (!disposed) {
         cache.settledAt = Date.now();
-        publish(null);
+        publish(cache.snapshot);
       }
     } finally {
       pending = false;

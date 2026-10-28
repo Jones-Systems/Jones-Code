@@ -10,6 +10,10 @@
     "apps/web/src/components/settings/ProjectSettingsPanel.tsx": "accepted-shared",
     "apps/web/src/jones/settings/ProjectSettingsPanel.faviconSearch.browser.test.tsx": "jones-owned",
     "scripts/jones/boundary/fragments/project-favicon-search-demand.json": "jones-owned",
+    "apps/server/src/jones/provider/codex/CodexRetirement.test.ts": "jones-owned",
+    "apps/server/src/jones/provider/codex/CodexRetirement.ts": "jones-owned",
+    "apps/server/src/jones/providerRetirement/RetirementLedger.test.ts": "jones-owned",
+    "apps/server/src/jones/providerRetirement/RetirementLedger.ts": "jones-owned",
     "scripts/jones/boundary/fragments/thread-result-dependencies.json": "jones-owned",
     "apps/server/src/jones/persistence/Migrations/132_JonesOwnerSelections.ts": "jones-owned",
     "apps/server/src/jones/threadConfiguration/ownerIngress.test.ts": "jones-owned",
@@ -2349,7 +2353,13 @@
     "apps/web/src/jones/remoteDelegation/Sidebar.delegateRequests.browser.test.tsx": "jones-owned",
     "apps/mobile/src/jones/remoteDelegation/threadListV2.delegateRequests.test.ts": "jones-owned",
     "apps/mobile/src/jones/remoteDelegation/thread-order.delegateRequests.test.ts": "jones-owned",
-    "infra/task-cache/src/runHook.test.ts": "jones-tests-in-upstream"
+    "infra/task-cache/src/runHook.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/cloud/launcherHandoffProcesses.ts": "jones-owned",
+    "apps/server/src/jones/cloud/launcherHandoffProcesses.test.ts": "jones-owned",
+    "apps/server/src/jones/updates/launcherHandoff.ts": "jones-owned",
+    "apps/server/src/jones/updates/launcherHandoff.test.ts": "jones-owned",
+    "docs/internals/launcher-handoff.md": "jones-owned",
+    "apps/server/src/storageCleanup.ts": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -3135,6 +3145,30 @@
     {
       "from": "apps/server/src/ws.ts",
       "to": "apps/server/src/jones/remoteDelegation/ShellRetention.ts"
+    },
+    {
+      "from": "apps/server/src/serverRuntimeStartup.ts",
+      "to": "apps/server/src/jones/updates/launcherHandoff.ts"
+    },
+    {
+      "from": "apps/server/src/serviceLauncher.ts",
+      "to": "apps/server/src/jones/cloud/launcherPointer.ts"
+    },
+    {
+      "from": "apps/server/src/serviceLauncher.ts",
+      "to": "apps/server/src/jones/cloud/launcherHandoffProcesses.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/providerRetirement/RetirementLedger.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/provider/codex/CodexRetirement.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+      "to": "packages/shared/src/jones/shutdownBudget.ts"
     }
   ]
 }

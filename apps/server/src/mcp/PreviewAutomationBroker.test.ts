@@ -12,7 +12,9 @@ import {
   ProviderInstanceId,
   ThreadId,
   type PreviewAutomationHost,
+  type PreviewAutomationRecordingStatus,
   type PreviewAutomationRequest,
+  type PreviewAutomationSnapshot,
   type PreviewAutomationStreamEvent,
   SERVER_BROWSER_AUTOMATION_CLIENT_ID,
 } from "@t3tools/contracts";
@@ -1620,6 +1622,311 @@ it.effect("an exact late unknown reply retains quarantine until a settled reply 
   ),
 );
 
+it.effect.each(["expiry", "cap eviction"] as const)(
+  "reconciles recording quarantine from the original settled reply after tombstone %s",
+  (retentionLoss) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const broker = yield* makeBroker;
+        const received = yield* Deferred.make<RoutedRequest>();
+        const overflowReceived = yield* Deferred.make<void>();
+        const tabId = PreviewTabId.make("recording-tab");
+        const routed: RoutedRequest[] = [];
+        let overflowRequests = 0;
+        const recording: PreviewAutomationRecordingStatus = {
+          tabId,
+          recording: true,
+          startedAt: "2026-10-26T00:00:00.000Z",
+        };
+        const snapshot: PreviewAutomationSnapshot = {
+          url: "http://localhost:3200",
+          title: "Recording tab",
+          loading: false,
+          visibleText: "Recording tab",
+          interactiveElements: [],
+          accessibilityTree: null,
+          consoleEntries: [],
+          networkEntries: [],
+          actionTimeline: [],
+          screenshot: {
+            mimeType: "image/png",
+            data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
+            width: 1,
+            height: 1,
+          },
+        };
+        yield* Stream.runForEach(
+          requestsFrom(yield* broker.connect(makeHost({ supportsSnapshotBarrier: true }))),
+          (request) => {
+            routed.push(request);
+            if (request.operation === "recordingStart") return Deferred.succeed(received, request);
+            if (request.operation === "waitFor") {
+              overflowRequests++;
+              return overflowRequests === 256
+                ? Deferred.succeed(overflowReceived, undefined)
+                : Effect.void;
+            }
+            return broker.respond({
+              clientId: "client-1",
+              connectionId: request.connectionId,
+              requestId: request.requestId,
+              ok: true,
+              result:
+                request.operation === "snapshot"
+                  ? snapshot
+                  : request.operation === "click"
+                    ? "dispatched"
+                    : { available: true, tabId },
+            });
+          },
+        ).pipe(Effect.forkScoped);
+        yield* Effect.yieldNow;
+
+        const expired = yield* broker
+          .invoke({
+            scope,
+            operation: "recordingStart",
+            tabId,
+            input: {},
+            timeoutMs: 100,
+            failurePolicy: "request_only",
+          })
+          .pipe(Effect.flip, Effect.orDie, Effect.forkScoped);
+        const original = yield* Deferred.await(received);
+        yield* broker.invoke({ scope, operation: "status", tabId, input: {} });
+        yield* TestClock.adjust(1100);
+        expect(yield* Fiber.join(expired)).toMatchObject({
+          _tag: "PreviewAutomationTimeoutError",
+          operation: "recordingStart",
+          requestId: original.requestId,
+          connectionId: original.connectionId,
+          tabId,
+          outcome: "unknown",
+        });
+
+        const expectFenced = Effect.gen(function* () {
+          const dispatched = routed.length;
+          expect(
+            yield* broker
+              .invoke({ scope, operation: "click", tabId, input: {} })
+              .pipe(Effect.flip, Effect.orDie),
+          ).toMatchObject({
+            _tag: "PreviewAutomationTimeoutError",
+            outcome: "not_started",
+            unreconciled: true,
+            tabId,
+          });
+          expect(routed).toHaveLength(dispatched);
+        });
+        yield* expectFenced;
+
+        if (retentionLoss === "expiry") {
+          yield* TestClock.adjust(60_001);
+        } else {
+          const overflow = yield* Effect.forEach(
+            Array.from({ length: 256 }),
+            () =>
+              broker
+                .invoke({
+                  scope,
+                  operation: "waitFor",
+                  tabId,
+                  input: {},
+                  timeoutMs: 100,
+                  failurePolicy: "request_only",
+                })
+                .pipe(Effect.flip, Effect.orDie),
+            { concurrency: "unbounded" },
+          ).pipe(Effect.forkScoped);
+          yield* Deferred.await(overflowReceived);
+          yield* TestClock.adjust(1100);
+          for (const error of yield* Fiber.join(overflow)) {
+            expect(error).toMatchObject({
+              _tag: "PreviewAutomationTimeoutError",
+              operation: "waitFor",
+              outcome: "unknown",
+            });
+          }
+        }
+        yield* expectFenced;
+
+        const settled = {
+          clientId: "client-1",
+          connectionId: original.connectionId,
+          requestId: original.requestId,
+          ok: true,
+          result: recording,
+        };
+        for (const mismatch of [
+          { clientId: "client-foreign" },
+          { connectionId: "connection-stale" },
+          { requestId: "request-never-dispatched" },
+        ]) {
+          yield* broker.respond({ ...settled, ...mismatch });
+          yield* expectFenced;
+        }
+        yield* broker.respond({
+          clientId: settled.clientId,
+          connectionId: settled.connectionId,
+          requestId: settled.requestId,
+          ok: false,
+          error: {
+            _tag: "PreviewAutomationTimeoutError",
+            message: "Recording start outcome remains unknown",
+            outcome: "unknown",
+          },
+        });
+        yield* expectFenced;
+        yield* broker.respond({
+          clientId: settled.clientId,
+          connectionId: settled.connectionId,
+          requestId: settled.requestId,
+          ok: false,
+        });
+        yield* expectFenced;
+        expect(yield* broker.invoke({ scope, operation: "snapshot", tabId, input: {} })).toEqual(
+          snapshot,
+        );
+        yield* expectFenced;
+
+        yield* broker.respond(settled);
+        expect(yield* broker.invoke<string>({ scope, operation: "click", tabId, input: {} })).toBe(
+          "dispatched",
+        );
+        expect(routed.filter((request) => request.operation === "click")).toHaveLength(1);
+        expect(routed.at(-1)).toMatchObject({
+          operation: "click",
+          tabId,
+          connectionId: original.connectionId,
+        });
+      }),
+    ),
+);
+
+it.effect(
+  "reconciles an expired recording only from its original connection after replacement",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const broker = yield* makeBroker;
+        const received = yield* Deferred.make<RoutedRequest>();
+        const tabId = PreviewTabId.make("replaced-recording-tab");
+        const originalRequests: RoutedRequest[] = [];
+        const replacementRequests: RoutedRequest[] = [];
+        const recording: PreviewAutomationRecordingStatus = {
+          tabId,
+          recording: true,
+          startedAt: "2026-10-26T00:00:00.000Z",
+        };
+        yield* Stream.runForEach(
+          requestsFrom(yield* broker.connect(makeHost({ runtimeIdentity: testRuntimeIdentity }))),
+          (request) => {
+            originalRequests.push(request);
+            if (request.operation === "recordingStart") return Deferred.succeed(received, request);
+            return broker.respond({
+              clientId: "client-1",
+              connectionId: request.connectionId,
+              requestId: request.requestId,
+              ok: true,
+              result: { available: true, tabId },
+            });
+          },
+        ).pipe(Effect.forkScoped);
+        yield* Effect.yieldNow;
+
+        const expired = yield* broker
+          .invoke({
+            scope,
+            operation: "recordingStart",
+            tabId,
+            input: {},
+            timeoutMs: 100,
+            failurePolicy: "request_only",
+          })
+          .pipe(Effect.flip, Effect.orDie, Effect.forkScoped);
+        const original = yield* Deferred.await(received);
+        yield* broker.invoke({ scope, operation: "status", tabId, input: {} });
+        yield* TestClock.adjust(1100);
+        expect(yield* Fiber.join(expired)).toMatchObject({
+          _tag: "PreviewAutomationTimeoutError",
+          operation: "recordingStart",
+          requestId: original.requestId,
+          connectionId: original.connectionId,
+          tabId,
+          outcome: "unknown",
+        });
+
+        let replacementConnectionId = "";
+        yield* Stream.runForEach(
+          requestsFrom(
+            yield* broker.connect(makeHost({ runtimeIdentity: testRuntimeIdentity })),
+            (id) => {
+              replacementConnectionId = id;
+            },
+          ),
+          (request) => {
+            replacementRequests.push(request);
+            return broker.respond({
+              clientId: "client-1",
+              connectionId: request.connectionId,
+              requestId: request.requestId,
+              ok: true,
+              result: "dispatched",
+            });
+          },
+        ).pipe(Effect.forkScoped);
+        yield* Effect.yieldNow;
+        expect(replacementConnectionId).not.toBe("");
+        expect(replacementConnectionId).not.toBe(original.connectionId);
+        yield* TestClock.adjust(60_001);
+
+        const expectFenced = Effect.gen(function* () {
+          expect(
+            yield* broker
+              .invoke({ scope, operation: "click", tabId, input: {} })
+              .pipe(Effect.flip, Effect.orDie),
+          ).toMatchObject({
+            _tag: "PreviewAutomationTimeoutError",
+            outcome: "not_started",
+            unreconciled: true,
+            tabId,
+          });
+          expect(replacementRequests).toHaveLength(0);
+          expect(originalRequests.filter((request) => request.operation === "click")).toHaveLength(
+            0,
+          );
+        });
+        yield* expectFenced;
+        yield* broker.respond({
+          clientId: "client-1",
+          connectionId: replacementConnectionId,
+          requestId: original.requestId,
+          ok: true,
+          result: recording,
+        });
+        yield* expectFenced;
+
+        yield* broker.respond({
+          clientId: "client-1",
+          connectionId: original.connectionId,
+          requestId: original.requestId,
+          ok: true,
+          result: recording,
+        });
+        expect(yield* broker.invoke<string>({ scope, operation: "click", tabId, input: {} })).toBe(
+          "dispatched",
+        );
+        expect(replacementRequests).toHaveLength(1);
+        expect(replacementRequests[0]).toMatchObject({
+          operation: "click",
+          tabId,
+          connectionId: replacementConnectionId,
+        });
+        expect(originalRequests.filter((request) => request.operation === "click")).toHaveLength(0);
+      }),
+    ),
+);
+
 it.effect.each(["stable", "reattached", "detached", "headless"] as const)(
   "captures request-target runtime evidence and invalidates a %s attachment",
   (mode) =>
@@ -1714,8 +2021,12 @@ it.effect(
           .invoke({ scope, operation: "evaluate", input: {} })
           .pipe(Effect.flip, Effect.orDie);
         expect(detached).toMatchObject({
-          _tag: "PreviewAutomationRequestQueueClosedError",
-          outcome: "not_started",
+          _tag: "PreviewAutomationNoAvailableHostError",
+          operation: "evaluate",
+          reconnecting: true,
+          clientId: "client-1",
+          tabId,
+          timeoutMs: 15_000,
         });
         expect(dispatched).toBe(1);
         evidence = {
@@ -1725,7 +2036,11 @@ it.effect(
         const replaced = yield* broker
           .invoke({ scope, operation: "evaluate", input: {} })
           .pipe(Effect.flip, Effect.orDie);
-        expect(replaced).toMatchObject({ outcome: "not_started" });
+        expect(replaced).toMatchObject({
+          _tag: "PreviewAutomationNoAvailableHostError",
+          reconnecting: true,
+          tabId,
+        });
         expect(dispatched).toBe(1);
         evidence = { runtimeIdentity: identity, attachmentGeneration: 3 };
         yield* broker.invoke({ scope, operation: "status", tabId, input: {} });
@@ -1742,6 +2057,66 @@ it.effect(
         expect(dispatched).toBe(3);
       }),
     ),
+);
+
+it.effect("reports a spent pre-dispatch budget without delivery or quarantine", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const resolving = yield* Deferred.make<void>();
+      const tabId = PreviewTabId.make("pre-dispatch-budget-tab");
+      const routed: RoutedRequest[] = [];
+      let slow = true;
+      yield* Stream.runForEach(
+        requestsFrom(
+          yield* broker.connect(makeHost(), {
+            resolveRuntimeEvidence: () =>
+              Effect.gen(function* () {
+                if (slow) {
+                  yield* Deferred.succeed(resolving, undefined);
+                  yield* Effect.sleep(200);
+                }
+                return { runtimeIdentity: testRuntimeIdentity, attachmentGeneration: 1 };
+              }),
+          }),
+        ),
+        (request) => {
+          routed.push(request);
+          return broker.respond({
+            clientId: "client-1",
+            connectionId: request.connectionId,
+            requestId: request.requestId,
+            ok: true,
+            result: "dispatched",
+          });
+        },
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const expired = yield* broker
+        .invoke({ scope, operation: "click", tabId, input: {}, timeoutMs: 100 })
+        .pipe(Effect.flip, Effect.orDie, Effect.forkScoped);
+      yield* Deferred.await(resolving);
+      yield* TestClock.adjust(200);
+      const error = yield* Fiber.join(expired);
+      expect(error).toMatchObject({
+        _tag: "PreviewAutomationTimeoutError",
+        operation: "click",
+        tabId,
+        timeoutMs: 100,
+        outcome: "not_started",
+      });
+      expect(error).not.toHaveProperty("unreconciled", true);
+      expect(routed).toHaveLength(0);
+
+      slow = false;
+      expect(yield* broker.invoke<string>({ scope, operation: "click", tabId, input: {} })).toBe(
+        "dispatched",
+      );
+      expect(routed).toHaveLength(1);
+      expect(routed[0]).toMatchObject({ operation: "click", tabId });
+    }),
+  ),
 );
 
 it.effect("evicts an unanswered host and lets later calls use a healthy runtime", () =>
