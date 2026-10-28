@@ -243,6 +243,265 @@ const dispatch = (service: Continuity.GoalContinuity["Service"], captured: Recov
   });
 
 it.effect(
+  "discovers an original ACKed delivery without its ID and reads its unchanged receipt as a read-only owner",
+  () =>
+    Effect.gen(function* () {
+      const { service, snapshot } = yield* start;
+      const captured = boundary();
+      const { permit, ticket } = yield* dispatch(service, captured);
+      const ack = yield* service.settleDelivery({
+        permit,
+        evidence: {
+          outcome: "acknowledged",
+          rpcRequestId: permit.rpcRequestId,
+          acknowledgementRef: "native-ack",
+          witness,
+          producer: captured.producer,
+        },
+      });
+      if (ack.outcome !== "settled") throw new Error("Expected settled ACK");
+      const caller = yield* service
+        .authorize(owner.threadId)
+        .pipe(Effect.provideService(Invocation.McpInvocationContext, scope("read-only")));
+      const sql = yield* SqlClient.SqlClient;
+      const before =
+        yield* sql`SELECT * FROM jones_goal_continuity_receipts ORDER BY kind,receipt_key`;
+      const result = yield* service.execute(caller, {
+        action: "discover_deliveries",
+        expected: expected(snapshot),
+      });
+      if (result.outcome !== "deliveries") throw new Error("Expected discovery");
+      expect(result.nextCursor).toBeNull();
+      expect(result.deliveries).toEqual([
+        {
+          deliveryId: permit.identity.deliveryId,
+          originalOwner: owner,
+          goalId: snapshot.intent.goalId,
+          revision: "1",
+          generation: snapshot.generation,
+          point: captured.point,
+          witness,
+          deliveryRevision: ack.receipt.deliveryRevision,
+          fenceRevision: ack.receipt.fenceRevision,
+          phase: "acknowledged",
+          gate: "settled",
+          preparation: ticket.preparation,
+        },
+      ]);
+      expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(16384);
+      expect(JSON.stringify(result)).not.toMatch(/permitId|producerOrigin|capsuleText|native-ack/);
+      const found = yield* service.execute(caller, {
+        action: "delivery_receipt",
+        deliveryId: result.deliveries[0]!.deliveryId,
+      });
+      expect(found).toEqual({
+        outcome: "delivery_receipt",
+        receipt: ack.receipt,
+        gate: { outcome: "clear", fenceRevision: ack.receipt.fenceRevision },
+      });
+      expect(
+        yield* sql`SELECT * FROM jones_goal_continuity_receipts ORDER BY kind,receipt_key`,
+      ).toEqual(before);
+      expect(yield* service.execute(caller, { action: "read" })).toEqual({
+        outcome: "snapshot",
+        snapshot,
+        snapshotDigest: continuityDigest(snapshot),
+      });
+    }).pipe(Effect.provideService(Invocation.McpInvocationContext, scope()), Effect.provide(layer)),
+);
+
+it.effect(
+  "discovery pages are stable, exactly filtered and refuse changed targets, fences and tampered cursors atomically",
+  () =>
+    Effect.gen(function* () {
+      const { service, caller, snapshot } = yield* start;
+      const store = yield* Store.GoalContinuityStore;
+      const captured = boundary();
+      const { permit } = yield* dispatch(service, captured);
+      const settled = yield* service.settleDelivery({
+        permit,
+        evidence: {
+          outcome: "not_sent",
+          proof: {
+            type: "protocol_no_effect",
+            rpcRequestId: permit.rpcRequestId,
+            responseRef: "no-effect",
+          },
+        },
+      });
+      if (settled.outcome !== "settled") throw new Error("Expected settled fixture");
+      const originalKey: Store.ContinuityRowKey = {
+        ...owner,
+        kind: "delivery",
+        namespace: "server",
+        key: permit.identity.deliveryId,
+      };
+      const originalRow = yield* store.row(originalKey);
+      const fixture = (id: string, other: Partial<C.ContinuityDeliveryIdentity> = {}) => ({
+        ...settled.receipt,
+        identity: { ...settled.receipt.identity, ...other, deliveryId: id },
+      });
+      // Synthetic copies exercise historical filtering without producing runtime effects.
+      for (let i = 0; i < 9; i++) {
+        yield* store.writeRow(
+          { ...originalKey, key: `000-${i}` },
+          null,
+          fixture(
+            `000-${i}`,
+            i < 4
+              ? { goalId: "other-goal" }
+              : i === 4
+                ? { originalOwner: { ...owner, nativeThreadId: "other-native" } }
+                : {},
+          ),
+        );
+      }
+      const request = { action: "discover_deliveries", expected: expected(snapshot) } as const;
+      const first = yield* service.execute(caller, request);
+      if (first.outcome !== "deliveries" || !first.nextCursor)
+        throw new Error("Expected filtered first page");
+      expect(first.deliveries).toEqual([]);
+      expect(yield* service.execute(caller, request)).toEqual(first);
+      const secondRequest = { ...request, cursor: first.nextCursor };
+      const second = yield* service.execute(caller, secondRequest);
+      if (second.outcome !== "deliveries" || !second.nextCursor)
+        throw new Error("Expected second page");
+      expect(second.deliveries.map((item) => item.deliveryId)).toEqual(["000-5", "000-6", "000-7"]);
+      const third = yield* service.execute(caller, { ...request, cursor: second.nextCursor });
+      if (third.outcome !== "deliveries") throw new Error("Expected last page");
+      expect(third.deliveries.map((item) => item.deliveryId)).toEqual(
+        ["000-8", permit.identity.deliveryId].sort(),
+      );
+      expect(third.nextCursor).toBeNull();
+      expect(
+        yield* service.execute(caller, { ...secondRequest, cursor: first.nextCursor + "x" }),
+      ).toEqual({ outcome: "refused", reason: "selection_bounds" });
+      expect(
+        yield* service.execute(caller, {
+          ...request,
+          expected: { ...request.expected, owner: { ...owner, nativeThreadId: "other-native" } },
+        }),
+      ).toEqual({ outcome: "refused", reason: "binding_mismatch" });
+      expect(
+        yield* service.execute(caller, {
+          ...request,
+          expected: { ...request.expected, snapshotDigest: "a".repeat(64) },
+        }),
+      ).toEqual({ outcome: "refused", reason: "stale" });
+      const rebuilt = yield* Continuity.GoalContinuity.pipe(
+        Effect.provide(Layer.fresh(Continuity.layer)),
+      );
+      const rebuiltCaller = yield* rebuilt.authorize(owner.threadId);
+      expect(yield* rebuilt.execute(rebuiltCaller, secondRequest)).toEqual({
+        outcome: "refused",
+        reason: "selection_bounds",
+      });
+      const fenceKey = { ...owner, kind: "fence", namespace: "server", key: "current" } as const;
+      yield* store.writeRow(fenceKey, yield* store.row(fenceKey), { revision: "100" });
+      expect(yield* service.execute(caller, secondRequest)).toEqual({
+        outcome: "refused",
+        reason: "stale",
+      });
+      expect(yield* store.row(originalKey)).toEqual(originalRow);
+    }).pipe(Effect.provideService(Invocation.McpInvocationContext, scope()), Effect.provide(layer)),
+);
+
+it.effect(
+  "discovery is bounded in UTF-8, validates digests and never reconstructs unfinished delivery history",
+  () =>
+    Effect.gen(function* () {
+      const { service, snapshot } = yield* start;
+      const { permit } = yield* dispatch(service, boundary());
+      const store = yield* Store.GoalContinuityStore;
+      const sql = yield* SqlClient.SqlClient;
+      const rebuilt = yield* Continuity.GoalContinuity.pipe(
+        Effect.provide(Layer.fresh(Continuity.layer)),
+      );
+      const caller = yield* rebuilt.authorize(owner.threadId);
+      const before =
+        yield* sql`SELECT * FROM jones_goal_continuity_receipts ORDER BY kind,receipt_key`;
+      const request = { action: "discover_deliveries", expected: expected(snapshot) } as const;
+      const result = yield* rebuilt.execute(caller, request);
+      if (result.outcome !== "deliveries") throw new Error("Expected read-only summary");
+      expect(result.deliveries[0]!.phase).toBe("dispatching");
+      expect(result.deliveries[0]!.gate).toBe("delivery_unknown");
+      expect(
+        yield* sql`SELECT * FROM jones_goal_continuity_receipts ORDER BY kind,receipt_key`,
+      ).toEqual(before);
+      const key: Store.ContinuityRowKey = {
+        ...owner,
+        kind: "delivery",
+        namespace: "server",
+        key: permit.identity.deliveryId,
+      };
+      const row = yield* store.row(key);
+      const receipt = JSON.parse(row!.payload) as C.ContinuityDeliveryReceipt;
+      yield* store.writeRow(
+        { ...key, key: "000-valid" },
+        null,
+        {
+          ...receipt,
+          identity: { ...receipt.identity, deliveryId: "000-valid" },
+        },
+        true,
+      );
+      const large = {
+        ...receipt,
+        identity: {
+          ...receipt.identity,
+          point: { type: "compaction", nativeTurnId: "😀".repeat(4000), itemId: "item" },
+        },
+      };
+      yield* store.writeRow(key, row, large, true);
+      expect(yield* rebuilt.execute(caller, request)).toEqual({
+        outcome: "refused",
+        reason: "projection_too_large",
+      });
+      yield* sql`UPDATE jones_goal_continuity_receipts SET body_digest=${"a".repeat(64)} WHERE kind='delivery' AND receipt_key=${key.key}`;
+      expect((yield* rebuilt.execute(caller, request).pipe(Effect.flip)).reason).toBe(
+        "corrupt_snapshot",
+      );
+    }).pipe(Effect.provideService(Invocation.McpInvocationContext, scope()), Effect.provide(layer)),
+);
+
+it.effect(
+  "discovery requires the exact live agent attachment and refuses cross-thread targets without fallback",
+  () =>
+    Effect.gen(function* () {
+      const { service, snapshot } = yield* start;
+      let attached = true;
+      const manager = Layer.mock(Sessions.ProviderSessionManagerV2)({
+        isMcpCallerAttached: () => Effect.sync(() => attached),
+      });
+      const agent = yield* service
+        .authorize()
+        .pipe(
+          Effect.provideService(Invocation.McpInvocationContext, agentScope("attached-credential")),
+          Effect.provide(manager),
+        );
+      const request = { action: "discover_deliveries", expected: expected(snapshot) } as const;
+      expect((yield* service.execute(agent, request)).outcome).toBe("deliveries");
+      expect(
+        (yield* service
+          .authorize(C.ThreadId.make("another-thread"))
+          .pipe(
+            Effect.provideService(
+              Invocation.McpInvocationContext,
+              agentScope("attached-credential"),
+            ),
+            Effect.provide(manager),
+            Effect.flip,
+          )).reason,
+      ).toBe("forbidden");
+      attached = false;
+      expect((yield* service.execute(agent, request).pipe(Effect.flip)).reason).toBe("forbidden");
+      expect((yield* service.execute({ ...agent }, request).pipe(Effect.flip)).reason).toBe(
+        "forbidden",
+      );
+    }).pipe(Effect.provideService(Invocation.McpInvocationContext, scope()), Effect.provide(layer)),
+);
+
+it.effect(
   "owner administration is provider-offline and durable replay returns its historical result after reconstruction",
   () =>
     Effect.gen(function* () {

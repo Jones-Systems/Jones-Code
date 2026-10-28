@@ -92,7 +92,13 @@ const counter = (value: string) => {
   const next = incrementCounter(value);
   return typeof next === "string" ? Effect.succeed(next) : Effect.fail(fail(next.reason));
 };
-const readonlyActions = new Set(["read", "selection", "receipt", "delivery_receipt"]);
+const readonlyActions = new Set([
+  "read",
+  "selection",
+  "receipt",
+  "delivery_receipt",
+  "discover_deliveries",
+]);
 const capability: C.ContinuityRecoveryCapability = {
   strongIdentity: true,
   turnStart: "fresh_context",
@@ -160,6 +166,15 @@ const make = Effect.gen(function* () {
     { readonly boundary: RecoveryBoundary; settled: boolean }
   >();
   const liveDeliveries = new Set<string>();
+  const cursorSecret = NodeCrypto.randomBytes(32);
+  const signCursor = (body: string) =>
+    NodeCrypto.createHmac("sha256", cursorSecret).update(body).digest("hex");
+  const cursorSchema = Schema.Struct({
+    after: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
+    targetDigest: C.ContinuityDigest,
+    fenceRevision: C.ContinuityCounter,
+  });
+  const decodeCursor = Schema.decodeEffect(Schema.fromJsonString(cursorSchema));
 
   const authorize: GoalContinuity["Service"]["authorize"] = Effect.fn("GoalContinuity.authorize")(
     function* (target) {
@@ -509,6 +524,101 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const discoverDeliveries = Effect.fn("GoalContinuity.discoverDeliveries")(function* (
+    caller: ContinuityCaller,
+    snapshot: C.ContinuitySnapshot | null,
+    request: C.ContinuityDeliveryDiscoveryRequest,
+  ) {
+    if (snapshot === null) return refused("unavailable");
+    if (
+      !sameContinuityOwner(caller.owner, request.expected.owner) ||
+      !sameContinuityOwner(snapshot.owner, request.expected.owner)
+    )
+      return refused("binding_mismatch");
+    if (canonicalJson(expectedOf(snapshot)) !== canonicalJson(request.expected))
+      return refused("stale");
+    const fenceRevision = (yield* fence(caller.owner)).revision;
+    const targetDigest = continuityDigest(request.expected);
+    let after = "";
+    if (request.cursor !== undefined) {
+      const [body, signature, extra] = request.cursor.split(".");
+      if (!body || !signature || extra !== undefined || signature !== signCursor(body))
+        return refused("selection_bounds");
+      const parsed = yield* decodeCursor(Buffer.from(body, "base64url").toString("utf8")).pipe(
+        Effect.option,
+      );
+      if (Option.isNone(parsed)) return refused("selection_bounds");
+      if (
+        parsed.value.targetDigest !== targetDigest ||
+        parsed.value.fenceRevision !== fenceRevision
+      )
+        return refused("stale");
+      after = parsed.value.after;
+    }
+    const rows = yield* store.deliveryPage(
+      caller.owner.environmentId,
+      caller.owner.threadId,
+      after,
+    );
+    const deliveries: C.ContinuityDeliverySummary[] = [];
+    for (const row of rows.slice(0, 4)) {
+      if (row.payload === "") return refused("projection_too_large");
+      const receipt = yield* decode(C.ContinuityDeliveryReceipt, row);
+      const identity = receipt.identity;
+      if (
+        identity.deliveryId !== row.key ||
+        identity.originalOwner.environmentId !== caller.owner.environmentId ||
+        identity.originalOwner.threadId !== caller.owner.threadId
+      )
+        return yield* fail("corrupt_snapshot");
+      if (
+        !sameContinuityOwner(identity.originalOwner, caller.owner) ||
+        identity.goalId !== request.expected.goalId ||
+        identity.revision !== request.expected.revision
+      )
+        continue;
+      deliveries.push({
+        deliveryId: identity.deliveryId,
+        originalOwner: identity.originalOwner,
+        goalId: identity.goalId,
+        revision: identity.revision,
+        generation: identity.generation,
+        point: identity.point,
+        witness: identity.witness,
+        deliveryRevision: receipt.deliveryRevision,
+        fenceRevision: receipt.fenceRevision,
+        phase: receipt.phase,
+        gate: !row.open
+          ? "settled"
+          : receipt.phase === "unknown" ||
+              (receipt.phase === "dispatching" && !liveDeliveries.has(identity.deliveryId))
+            ? "delivery_unknown"
+            : ["pending", "prepared", "dispatching"].includes(receipt.phase)
+              ? "delivery_pending"
+              : "recovery_required",
+        preparation: receipt.preparation,
+      });
+    }
+    const body =
+      rows.length > 4
+        ? Buffer.from(
+            canonicalJson({
+              after: rows[3]!.key,
+              targetDigest,
+              fenceRevision,
+            }),
+          ).toString("base64url")
+        : null;
+    const result: C.ContinuityDeliveryDiscoveryResult = {
+      outcome: "deliveries",
+      expected: request.expected,
+      fenceRevision,
+      deliveries,
+      nextCursor: body === null ? null : `${body}.${signCursor(body)}`,
+    };
+    return utf8Bytes(canonicalJson(result)) > 16384 ? refused("projection_too_large") : result;
+  });
+
   const execute: GoalContinuity["Service"]["execute"] = Effect.fn("GoalContinuity.execute")(
     function* (caller, request) {
       if (!callers.has(caller) || !Schema.is(C.ContinuityRequest)(request))
@@ -547,6 +657,8 @@ const make = Effect.gen(function* () {
           return snapshot === null
             ? refused("unavailable")
             : selectContinuity(snapshot, request.selection);
+        if (request.action === "discover_deliveries")
+          return yield* discoverDeliveries(caller, snapshot, request);
         if (request.action === "delivery_receipt") {
           const found = yield* delivery(caller.owner, request.deliveryId);
           return found === null

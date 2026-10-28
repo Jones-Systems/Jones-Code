@@ -84,6 +84,14 @@ export class GoalContinuityStore extends Context.Service<
       value: unknown,
       open?: boolean,
     ) => Effect.Effect<void, GoalContinuityError>;
+    readonly deliveryPage: (
+      environmentId: EnvironmentId,
+      threadId: ThreadId,
+      after: string,
+    ) => Effect.Effect<
+      readonly (ContinuityStoredRow & { readonly key: string })[],
+      GoalContinuityError
+    >;
     readonly openDeliveries: (
       environmentId: EnvironmentId,
       threadId: ThreadId,
@@ -293,6 +301,30 @@ const make = Effect.gen(function* () {
       return yield* new GoalContinuityError({ reason: "binding_mismatch" });
     }
   }, Effect.mapError(storageError));
+  const deliveryPage: GoalContinuityStore["Service"]["deliveryPage"] = Effect.fn(
+    "GoalContinuityStore.deliveryPage",
+  )(function* (environmentId, threadId, after) {
+    if (!(yield* present("jones_goal_continuity_receipts"))) return [];
+    // The primary key supplies the thread-local keyset range. Filtering JSON
+    // in SQL could scan an unbounded number of other goals' receipts.
+    const rows = yield* sql<{
+      receipt_key: string;
+      body_digest: string;
+      payload_json: string | null;
+      open_gate: number;
+    }>`SELECT receipt_key,body_digest,open_gate,
+      CASE WHEN length(CAST(payload_json AS BLOB)) <= 1048576 THEN payload_json ELSE NULL END AS payload_json
+      FROM jones_goal_continuity_receipts
+      WHERE kind='delivery' AND environment_id=${environmentId} AND thread_id=${threadId}
+      AND namespace='server' AND receipt_key > ${after}
+      ORDER BY receipt_key LIMIT 5`;
+    return rows.map((entry) => ({
+      key: entry.receipt_key,
+      bodyDigest: entry.body_digest,
+      payload: entry.payload_json ?? "",
+      open: entry.open_gate === 1,
+    }));
+  }, Effect.mapError(storageError));
   const openDeliveries: GoalContinuityStore["Service"]["openDeliveries"] = Effect.fn(
     "GoalContinuityStore.openDeliveries",
   )(function* (environmentId, threadId) {
@@ -316,6 +348,7 @@ const make = Effect.gen(function* () {
     row,
     writeRow,
     openDeliveries,
+    deliveryPage,
     transaction: (effect) => sql.withTransaction(effect).pipe(Effect.mapError(storageError)),
     readOnly: (effect) =>
       sql.withTransaction(effect).pipe(NodeSqliteClient.readOnly, Effect.mapError(storageError)),
