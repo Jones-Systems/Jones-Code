@@ -119,6 +119,114 @@ function harness() {
 }
 
 describe("native monitor broker", () => {
+  it("authenticates minimal Restore replay against the surviving correlation after repeated peer loss", async () => {
+    const h = harness();
+    const publish = (frame: unknown) => h.broker.publish(publisherPayload(envelope(frame)));
+    const intent = (frame: unknown) => h.broker.intent(peerPayload(envelope(frame)));
+    h.broker.publish(view());
+    const settle = {
+      ...ref,
+      type: "settle",
+      actionId: "settle",
+      commandId: "settle-command",
+      expectedUpdatedAt: row.updatedAt,
+    };
+    intent(settle);
+    publish({
+      ...ref,
+      type: "actionResult",
+      actionId: settle.actionId,
+      commandId: settle.commandId,
+      status: "accepted",
+      reason: null,
+      settleCommandId: settle.commandId,
+    });
+    h.broker.peerLost();
+    h.broker.ready();
+    h.broker.publish(
+      view({ revision: 2, upserts: [], counts: { needsYou: 0, working: 0, waiting: 0, done: 0 } }),
+    );
+    const restore = {
+      ...ref,
+      type: "restore",
+      actionId: "restore",
+      commandId: "restore-command",
+      settleCommandId: settle.commandId,
+    };
+    intent(restore);
+    const unknown = {
+      ...ref,
+      type: "actionResult",
+      actionId: restore.actionId,
+      commandId: restore.commandId,
+      status: "unknown",
+      reason: null,
+    };
+    publish(unknown);
+    h.broker.peerLost();
+    h.broker.ready();
+    h.broker.publish(view({ revision: 3, upserts: [] }));
+    h.peer.mockClear();
+    const replay = {
+      ...unknown,
+      restoreIdentity: { type: "restore", settleCommandId: settle.commandId },
+    };
+    publish(replay);
+    expect(h.peer).toHaveBeenLastCalledWith(unknown);
+    const request = {
+      type: "requestSnapshot",
+      restoreIdentityReplay: { publisherGeneration: lifetime.publisherGeneration },
+    };
+    intent(request);
+    expect(h.publisher).toHaveBeenLastCalledWith(request);
+    expect(() =>
+      intent({ ...request, restoreIdentityReplay: { publisherGeneration: "forged-generation" } }),
+    ).toThrow("Stale restore replay request");
+    publish(replay);
+    expect(h.peer).toHaveBeenLastCalledWith(replay);
+    h.peer.mockClear();
+    publish({ ...replay, commandId: "forged-command" });
+    publish({ ...replay, actionId: "forged-action" });
+    publish({ ...replay, threadId: "forged-thread" });
+    expect(h.peer).not.toHaveBeenCalled();
+    expect(() =>
+      publish({
+        ...replay,
+        restoreIdentity: { type: "restore", settleCommandId: "forged-settle" },
+      }),
+    ).toThrow("Restore result identity mismatch");
+    expect(() =>
+      publish({ ...replay, actionId: settle.actionId, commandId: settle.commandId }),
+    ).toThrow("Restore result identity mismatch");
+    expect(() => publish({ ...replay, environmentEpoch: 1 })).toThrow("Retired monitor lifetime");
+    const reconcile = {
+      ...ref,
+      type: "reconcile",
+      actionId: "reconcile",
+      commandId: "reconcile-command",
+      originalActionId: restore.actionId,
+      originalCommandId: restore.commandId,
+    };
+    expect(() => intent({ ...reconcile, originalCommandId: "forged-command" })).toThrow(
+      "Unknown original operation",
+    );
+    intent(reconcile);
+    const count = h.publisher.mock.calls.length;
+    intent(reconcile);
+    expect(h.publisher.mock.calls).toHaveLength(count);
+    expect(h.publisher).toHaveBeenLastCalledWith(reconcile);
+    publish({ ...replay, status: "accepted" });
+    h.peer.mockClear();
+    publish({ ...replay, status: "pending" });
+    publish(replay);
+    expect(h.peer).not.toHaveBeenCalled();
+    const retired = invalidation();
+    const acknowledged = h.broker.invalidate(retired);
+    intent({ ...retired, type: "environmentInvalidated" });
+    await acknowledged;
+    expect(() => publish(replay)).toThrow("Retired monitor lifetime");
+    h.broker.dispose();
+  });
   it("commits an entire ordered snapshot before enabling actions and recovers gaps without a partial cohort", () => {
     const h = harness();
     h.broker.publish(view({ chunkCount: 2, complete: false, upserts: [] }));
